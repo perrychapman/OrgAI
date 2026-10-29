@@ -11,10 +11,12 @@ import {
   type Edge,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { Project } from '@shared/types'
+import type { AgentInstance, Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { activeRun, useAppStore } from '../store/useAppStore'
 import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
+import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
+import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
@@ -25,10 +27,31 @@ import { formatCost, treeLayout } from '../lib/layout'
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
 
-const nodeTypes = { agent: AgentNode }
+const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 const NODE_W = 240
 const NODE_H = 112
 const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'waiting'])
+/** A finished report keeps its own node this long before folding into its parent's "done" group. */
+const COLLAPSE_GRACE_MS = 6000
+const SETTLED_WORKTREE = new Set(['merged', 'empty', 'removed', 'held', 'conflict'])
+const COLLAPSE_KEY = 'orgai.collapseFinished'
+
+type CanvasNode = AgentFlowNode | DoneGroupFlowNode
+
+/** True once a report has reported back and nothing is still happening to its branch. */
+function isSettled(a: AgentInstance, now: number): boolean {
+  if (a.state !== 'done' && a.state !== 'error') return false
+  if (a.worktree && !SETTLED_WORKTREE.has(a.worktree.status)) return false
+  return now - (a.endedAt ?? now) >= COLLAPSE_GRACE_MS
+}
+
+function readCollapsePref(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSE_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
 
 export default function LiveRunView({ project }: { project: Project }): ReactElement {
   return (
@@ -62,6 +85,21 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)
+  const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
+  const [now, setNow] = useState(() => Date.now())
+
+  const toggleCollapse = (): void => {
+    setCollapseFinished((v) => {
+      try {
+        localStorage.setItem(COLLAPSE_KEY, v ? 'off' : 'on')
+      } catch {
+        /* storage unavailable */
+      }
+      return !v
+    })
+  }
+  const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
 
   const isSetupRun = run?.summary.kind === 'setup'
   const needsSetup = setupPending(project)
@@ -83,10 +121,55 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     [project.roles]
   )
 
-  // Recompute the tree layout only when the set of agents or their parent links change.
-  const topologyKey = agents.map((a) => `${a.id}>${a.parentId ?? ''}`).sort().join('|')
+  // Finished reports fold into one "done" node per parent after a short grace period. A ticker keeps
+  // the grace period honest while anything recently finished is still shown.
+  useEffect(() => {
+    const pending = agents.some((a) => (a.state === 'done' || a.state === 'error') && !isSettled(a, Date.now()))
+    if (!collapseFinished || !pending) return undefined
+    const t = setInterval(() => setNow(Date.now()), 1500)
+    return () => clearInterval(t)
+  }, [agents, collapseFinished])
+
+  const { visibleAgents, groups } = useMemo(() => {
+    if (!collapseFinished) return { visibleAgents: agents, groups: new Map<string, AgentInstance[]>() }
+    const byId = new Map(agents.map((a) => [a.id, a]))
+    const hasLiveDescendant = (id: string): boolean =>
+      agents.some((c) => c.parentId === id && (!isSettled(c, now) || hasLiveDescendant(c.id)))
+    const groups = new Map<string, AgentInstance[]>()
+    const visibleAgents: AgentInstance[] = []
+    for (const a of agents) {
+      const parentVisible = !a.parentId || byId.has(a.parentId)
+      const foldable =
+        a.parentId !== null && parentVisible && isSettled(a, now) && !hasLiveDescendant(a.id) && !expandedGroups[a.parentId as string]
+      if (foldable) groups.set(a.parentId as string, [...(groups.get(a.parentId as string) ?? []), a])
+      else visibleAgents.push(a)
+    }
+    // Hide the subtree under a folded report too; the list in the side panel still reaches them.
+    const folded = new Set([...groups.values()].flat().map((a) => a.id))
+    const hiddenUnder = (a: AgentInstance): boolean => {
+      let p = a.parentId
+      while (p) {
+        if (folded.has(p)) return true
+        p = byId.get(p)?.parentId ?? null
+      }
+      return false
+    }
+    return { visibleAgents: visibleAgents.filter((a) => !hiddenUnder(a)), groups }
+  }, [agents, collapseFinished, expandedGroups, now])
+
+  // Recompute the tree layout only when the set of shown nodes or their parent links change.
+  const topologyKey = [
+    ...visibleAgents.map((a) => `${a.id}>${a.parentId ?? ''}`),
+    ...[...groups.keys()].map((p) => `${groupId(p)}>${p}`)
+  ]
+    .sort()
+    .join('|')
   const positions = useMemo(
-    () => treeLayout(agents.map((a) => ({ id: a.id, parentId: a.parentId, width: NODE_W, height: NODE_H }))),
+    () =>
+      treeLayout([
+        ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: NODE_W, height: NODE_H })),
+        ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: p, width: GROUP_W, height: GROUP_H }))
+      ]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topologyKey]
   )
@@ -101,39 +184,72 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     return undefined
   }, [topologyKey, fitView])
 
-  const nodes: AgentFlowNode[] = useMemo(
-    () =>
-      agents.map((agent) => ({
-        id: agent.id,
-        type: 'agent',
-        position: positions[agent.id] ?? { x: 0, y: 0 },
-        selected: agent.id === selectedAgentId,
+  const nodes: CanvasNode[] = useMemo(() => {
+    const agentNodes: CanvasNode[] = visibleAgents.map((agent) => ({
+      id: agent.id,
+      type: 'agent' as const,
+      position: positions[agent.id] ?? { x: 0, y: 0 },
+      selected: agent.id === selectedAgentId,
+      draggable: false,
+      data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
+    }))
+    const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
+      const parent = run?.agents[parentId]
+      return {
+        id: groupId(parentId),
+        type: 'done-group' as const,
+        position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
+        selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
-        data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
-      })),
-    [agents, positions, selectedAgentId, roleColor]
-  )
+        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : '#646d84', onToggle: toggleGroup }
+      }
+    })
+    return [...agentNodes, ...groupNodes]
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, run, toggleGroup])
 
-  const edges: Edge[] = useMemo(
-    () =>
-      agents
-        .filter((a) => a.parentId && run?.agents[a.parentId])
-        .map((a) => {
-          const color = roleColor(a.roleId, a.roleSlug)
-          const live = LIVE_STATES.has(a.state)
-          return {
-            id: `e-${a.parentId}-${a.id}`,
-            source: a.parentId as string,
-            target: a.id,
-            animated: live,
-            style: { stroke: color, strokeWidth: live ? 2.2 : 1.4, opacity: a.state === 'done' ? 0.45 : 1 },
-            markerEnd: { type: MarkerType.ArrowClosed, color }
-          }
-        }),
-    [agents, roleColor, run]
-  )
+  const edges: Edge[] = useMemo(() => {
+    const shown = new Set(visibleAgents.map((a) => a.id))
+    const agentEdges: Edge[] = visibleAgents
+      .filter((a) => a.parentId && shown.has(a.parentId))
+      .map((a) => {
+        const color = roleColor(a.roleId, a.roleSlug)
+        const live = LIVE_STATES.has(a.state)
+        return {
+          id: `e-${a.parentId}-${a.id}`,
+          source: a.parentId as string,
+          target: a.id,
+          animated: live,
+          style: { stroke: color, strokeWidth: live ? 2.2 : 1.4, opacity: a.state === 'done' ? 0.45 : 1 },
+          markerEnd: { type: MarkerType.ArrowClosed, color }
+        }
+      })
+    const groupEdges: Edge[] = [...groups.keys()]
+      .filter((p) => shown.has(p))
+      .map((p) => ({
+        id: `e-${p}-${groupId(p)}`,
+        source: p,
+        target: groupId(p),
+        style: { stroke: 'var(--border-strong)', strokeWidth: 1.2, strokeDasharray: '4 4' }
+      }))
+    return [...agentEdges, ...groupEdges]
+  }, [visibleAgents, groups, roleColor])
 
-  const onNodeClick: NodeMouseHandler<AgentFlowNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
+  const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
+
+  // A selected "done" group lists its reports in the side panel.
+  const finishedGroup: FinishedGroup | undefined = useMemo(() => {
+    if (!run || !selectedAgentId?.startsWith('group:')) return undefined
+    const parentId = selectedAgentId.slice('group:'.length)
+    const members = groups.get(parentId)
+    if (!members) return undefined
+    return {
+      parentName: run.agents[parentId]?.name ?? 'its parent',
+      agents: members,
+      onPick: (id) => selectAgent(id),
+      onExpand: () => toggleGroup(parentId)
+    }
+  }, [run, selectedAgentId, groups, selectAgent, toggleGroup])
+  const finishedCount = [...groups.values()].reduce((n, g) => n + g.length, 0)
 
   const status = run?.summary.status
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
@@ -192,6 +308,15 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             <span className="pill">
               {agents.length} agent{agents.length === 1 ? '' : 's'}
             </span>
+            {agents.length > 1 && (
+              <button
+                className={`btn sm ${collapseFinished ? '' : 'ghost'}`}
+                onClick={toggleCollapse}
+                title={collapseFinished ? 'Finished reports fold into one node per parent. Click to show them all.' : 'Click to fold finished reports into one node per parent.'}
+              >
+                {collapseFinished ? `Folding finished${finishedCount ? ` (${finishedCount})` : ''}` : 'Showing all'}
+              </button>
+            )}
             {sessionOpen && (
               <>
                 <button className="btn sm" onClick={() => void interrupt()} disabled={status !== 'running'}>
@@ -404,7 +529,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
       </div>
 
       <div className="side">
-        <TranscriptPanel agent={selectedAgent} entries={entries} logs={run?.logs ?? []} />
+        <TranscriptPanel agent={selectedAgent} entries={entries} logs={run?.logs ?? []} finished={finishedGroup} />
       </div>
     </div>
   )

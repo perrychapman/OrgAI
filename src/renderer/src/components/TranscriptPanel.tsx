@@ -4,11 +4,14 @@ import type { AgentInstance, RunSummary, TranscriptEntry } from '@shared/types'
 import { activeRun, useAppStore, type LogLine } from '../store/useAppStore'
 import { formatCost, formatElapsed, formatTokens } from '../lib/layout'
 import { Markdown } from './Markdown'
+import FinishedList, { type FinishedGroup } from './FinishedList'
 
 interface Props {
   agent: AgentInstance | undefined
   entries: TranscriptEntry[]
   logs: LogLine[]
+  /** When a folded "done" group is selected on the chart, list its reports instead of a transcript. */
+  finished?: FinishedGroup
 }
 
 function RunHistory(): ReactElement {
@@ -72,7 +75,7 @@ function describeInput(input: unknown): string {
   return s.length > 400 ? s.slice(0, 400) + '…' : s
 }
 
-export default function TranscriptPanel({ agent, entries, logs }: Props): ReactElement {
+export default function TranscriptPanel({ agent, entries, logs, finished }: Props): ReactElement {
   const [tab, setTab] = useState<'transcript' | 'logs' | 'runs'>('transcript')
   const [showThinking, setShowThinking] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
@@ -87,7 +90,7 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
   return (
     <>
       <div className="side-header">
-        <h2>{agent ? agent.name : 'Transcript'}</h2>
+        <h2>{agent ? agent.name : finished ? 'Finished reports' : 'Transcript'}</h2>
         <div style={{ flex: 1 }} />
         <div className="tabs">
           <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>
@@ -102,6 +105,7 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
         </div>
       </div>
       {tab === 'runs' && <RunHistory />}
+      {tab === 'transcript' && finished && !agent && <FinishedList group={finished} />}
       {agent && tab === 'transcript' && (
         <div className="agent-summary">
           <span className="k">Role</span>
@@ -132,7 +136,7 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
           )}
         </div>
       )}
-      {tab === 'runs' ? null : tab === 'transcript' ? (
+      {tab === 'runs' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <div className="transcript">
           {!agent && <div className="entry system">Select an agent on the chart to read its transcript.</div>}
           {agent && (

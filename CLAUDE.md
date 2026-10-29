@@ -30,3 +30,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   worktree (the hook must return `worktreePath`), so do not register them just to observe. Commit and merge are
   the harness's job: `src/main/runtime/worktrees.ts`.
 - Smoke tests cost real tokens (fractions of a cent on haiku). Do not run them in loops.
+
+<!-- orgai:architecture -->
+## Architecture and conventions
+
+Read `.orgai/ARCHITECTURE.md` before changing code. It records the agreed stack, module layout, conventions and commands for this project. Keep it current when they change.
