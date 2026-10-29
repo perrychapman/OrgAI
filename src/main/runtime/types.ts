@@ -1,4 +1,5 @@
 import type {
+  ConnectionId,
   ImageAttachment,
   McpInstallDecision,
   McpInstallRequest,
@@ -9,6 +10,7 @@ import type {
   MergeReview,
   PermissionDecision,
   PermissionRequest,
+  PluginSpec,
   Project,
   Proposal,
   ProposalDecision,
@@ -17,6 +19,7 @@ import type {
   QuestionAnswer,
   Role,
   RunEvent,
+  RunKind,
   RunPlan,
   RunSummary,
   UsageStatus,
@@ -25,6 +28,49 @@ import type {
 
 /** Harness id of the root orchestrator's AgentInstance, shared by every adapter. */
 export const ROOT_AGENT_ID = 'root'
+
+/**
+ * Setup-like runs ('setup' and 'mcp-assist') run a built-in role instead of the project's org chart, get
+ * their own harness tool set and are never nudged by the ContinuationDriver.
+ */
+export function isSetupLikeRun(kind: RunKind): boolean {
+  return kind === 'setup' || kind === 'mcp-assist'
+}
+
+/**
+ * How one run reaches its models, resolved by RunManager from the project's connection (adapterForProject
+ * plus the connection service) right before the adapter starts. Holds secret values: adapters pass them to
+ * the child process environment or config and never emit, log or persist them.
+ */
+export interface RunConnection {
+  connection: ConnectionId
+  /** The adapter adapterForProject chose; equals the adapter receiving this context. */
+  adapter: ProviderId
+  /**
+   * Extra environment for the adapter's child process, merged over process.env.
+   * Claude adapter on LiteLLM: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
+   * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL; empty for the anthropic connection (auth stays on
+   * project.provider.auth / ANTHROPIC_API_KEY as today).
+   * Codex adapter: always CODEX_HOME = codexHomeDir(dataDir) (codexAppServer.ts), so runs use OrgAI's own
+   * ChatGPT login and config, never the user's ~/.codex/config.toml.
+   */
+  env?: Record<string, string>
+  /** Codex adapter: how it authenticates. 'chatgpt' = the login Codex keeps in CODEX_HOME. */
+  codexAuth?: 'chatgpt' | 'apiKey'
+  /** Codex adapter with an API key (OpenAI env var or LiteLLM key). Secret. */
+  apiKey?: string
+  /** Codex adapter on LiteLLM: the OpenAI-compatible base URL ("<litellm baseUrl>/v1"). */
+  openaiBaseUrl?: string
+}
+
+/** An MCP server spec with its secret values filled in, ready for an adapter. Never emit, log or persist. */
+export interface ResolvedMcpServer {
+  spec: McpServerSpec
+  /** spec.env plus secretEnv values (stdio). */
+  env: Record<string, string>
+  /** spec.headers plus secretHeaders values (http / sse). */
+  headers: Record<string, string>
+}
 
 /**
  * Everything a runtime adapter needs to run one project session.
@@ -105,6 +151,15 @@ export interface RuntimeContext {
    * process only; never put them in RunEvents. Optional until implemented.
    */
   resolveMcpSecrets?(serverId: string): Promise<{ env: Record<string, string>; headers: Record<string, string> }>
+  /**
+   * Every MCP server available to this run with secrets resolved (mcpServers() + resolveMcpSecrets). Adapters
+   * call it at session start and again after an install was approved. Optional: missing = no MCP servers.
+   */
+  resolvedMcpServers?(): Promise<ResolvedMcpServer[]>
+  /** Enabled project plugins (Claude adapter only). Optional: missing = none. */
+  plugins?(): PluginSpec[]
+  /** Model access for this run. Missing = the anthropic connection with project.provider.auth (tests, older code). */
+  connection?: RunConnection
 }
 
 export interface RuntimeSession {

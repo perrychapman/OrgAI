@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { PlanStep, ProposalDecision, QuestionAnswer, RunPlan } from '@shared/types'
+import type { McpServerSpec, PlanStep, ProposalDecision, QuestionAnswer, RunPlan } from '@shared/types'
 import { PERMISSION_MODES, TOOL_CATALOG } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
@@ -28,7 +28,21 @@ export interface HarnessToolHooks {
   integratePending?(wt: { path: string; branch: string }): Promise<string>
   /** Work runs: a plan tool changed the plan (the adapter shows the step in progress on the root node). */
   onPlanUpdated?(plan: RunPlan): void
+  /**
+   * request_mcp_install was approved and RunManager added the server to the run (ctx.mcpServers() now lists
+   * it): attach it to the live session (Claude: Query.setMcpServers with every resolved server; Codex: restart
+   * or resume the thread with the new config). Resolves with the tool prefix the agent should use
+   * (mcp__<name>__) or rejects with a reason the tool returns to the agent. Missing = the server is available
+   * from the next run only.
+   */
+  addMcpServer?(spec: McpServerSpec): Promise<string>
 }
+
+/**
+ * Which agents get a harness tool. 'root' (the default): the root role only. 'spawners': the root and every
+ * role with canSpawn (the MCP tools list_mcp_servers, search_mcp_registry, request_mcp_install).
+ */
+export type HarnessToolAudience = 'root' | 'spawners'
 
 /** Harness tools that return at once; every other harness tool waits on the user (the node shows "waiting"). */
 const NON_BLOCKING_TOOLS = new Set<string>([PLAN_TOOLS.set, PLAN_TOOLS.update, PLAN_TOOLS.complete, PLAN_TOOLS.blocked, INTEGRATE_TOOL])
@@ -41,6 +55,8 @@ export function isBlockingHarnessTool(name: string): boolean {
 export interface HarnessToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   name: string
   description: string
+  /** Default 'root'. */
+  audience?: HarnessToolAudience
   inputSchema: z.ZodObject<S>
   handler(ctx: RuntimeContext, args: z.infer<z.ZodObject<S>>, hooks: HarnessToolHooks): Promise<string>
 }
@@ -49,6 +65,7 @@ export interface HarnessToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
 export interface HarnessTool {
   name: string
   description: string
+  audience: HarnessToolAudience
   inputSchema: z.ZodObject<z.ZodRawShape>
   call(args: unknown): Promise<string>
 }
@@ -61,6 +78,7 @@ function bind(defs: HarnessToolDef[], ctx: RuntimeContext, hooks: HarnessToolHoo
   return defs.map((def) => ({
     name: def.name,
     description: def.description,
+    audience: def.audience ?? 'root',
     inputSchema: def.inputSchema,
     call: async (args) => def.handler(ctx, def.inputSchema.parse(args ?? {}), hooks)
   }))
@@ -408,4 +426,17 @@ export function setupTools(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): H
 
 export function workTools(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): HarnessTool[] {
   return bind(WORK_TOOL_DEFS, ctx, hooks)
+}
+
+/** MCP assistant runs ('mcp-assist'): registry search, the server list and the proposal tool. Filled by the MCP brief. */
+export const MCP_ASSIST_TOOL_DEFS: HarnessToolDef[] = [askUser]
+
+/**
+ * The harness tools for a run, by kind. Adapters call this instead of choosing setupTools / workTools
+ * themselves, then give each tool to the root, or to the root and every canSpawn role (tool.audience).
+ */
+export function harnessToolsFor(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): HarnessTool[] {
+  if (ctx.run.kind === 'setup') return setupTools(ctx, hooks)
+  if (ctx.run.kind === 'mcp-assist') return bind(MCP_ASSIST_TOOL_DEFS, ctx, hooks)
+  return workTools(ctx, hooks)
 }

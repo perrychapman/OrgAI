@@ -30,7 +30,7 @@ const api: OrgAIApi = {
     setSecret: (input) => ipcRenderer.invoke(IPC.connectionsSetSecret, input),
     test: (id) => ipcRenderer.invoke(IPC.connectionsTest, id),
     connect: (id) => ipcRenderer.invoke(IPC.connectionsConnect, id),
-    login: (id) => ipcRenderer.invoke(IPC.connectionsLogin, id),
+    login: (id, method) => ipcRenderer.invoke(IPC.connectionsLogin, id, method),
     cancelLogin: (loginId) => ipcRenderer.invoke(IPC.connectionsCancelLogin, loginId),
     logout: (id) => ipcRenderer.invoke(IPC.connectionsLogout, id)
   },

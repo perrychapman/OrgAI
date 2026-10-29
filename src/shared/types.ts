@@ -152,6 +152,9 @@ export type ConnectionLoginStart =
   | { loginId: string; connection: 'openai'; method: 'browser'; authUrl: string }
   | { loginId: string; connection: 'openai'; method: 'deviceCode'; verificationUrl: string; userCode: string }
 
+/** connections:login method for the OpenAI ChatGPT login. Default 'browser'. */
+export type ConnectionLoginMethod = 'browser' | 'deviceCode'
+
 /** Progress of one login started with connections:login. */
 export interface ConnectionLoginUpdate {
   loginId: string
@@ -1256,8 +1259,11 @@ export interface OrgAIApi {
     test(id: ConnectionId): Promise<ConnectionStatus>
     /** Enable and connect: probe, discover models, fill tierModels, remap projects. */
     connect(id: ConnectionId): Promise<ConnectionInfo>
-    /** Start the OpenAI ChatGPT (Codex) login. Progress arrives as connection.login events. */
-    login(id: 'openai'): Promise<ConnectionLoginStart>
+    /**
+     * Start the OpenAI ChatGPT (Codex) login. 'browser' (default) opens the system browser; 'deviceCode'
+     * returns a code for another device. Progress arrives as connection.login events.
+     */
+    login(id: 'openai', method?: ConnectionLoginMethod): Promise<ConnectionLoginStart>
     /** Abandon a pending login. */
     cancelLogin(loginId: string): Promise<void>
     /** Sign out (OpenAI ChatGPT login) or forget the stored key (LiteLLM), and mark the connection disconnected. */
