@@ -10,6 +10,7 @@ import type {
   PermissionDecision,
   PermissionRequest,
   Project,
+  ImageAttachment,
   Proposal,
   ProposalDecision,
   QuestionAnswer,
@@ -97,7 +98,7 @@ interface AppState {
   updateRoles(projectId: string, mutate: (roles: Role[]) => Role[]): void
   removeProject(id: string): Promise<void>
 
-  startRun(prompt: string, opts?: { scaffold?: boolean }): Promise<void>
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[] }): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Architect session that reviews a finished run and revises the org chart. */
@@ -107,9 +108,9 @@ interface AppState {
   loadHistory(): Promise<void>
   /** Show a past run on the canvas. */
   openRun(runId: string): Promise<void>
-  sendMessage(text: string): Promise<void>
+  sendMessage(text: string, images?: ImageAttachment[]): Promise<void>
   /** Start a new run that resumes a finished run's session, and show it. */
-  continueRun(fromRunId: string, text: string): Promise<void>
+  continueRun(fromRunId: string, text: string, images?: ImageAttachment[]): Promise<void>
   /** A paused run: continue it now instead of at the usage window's reset. */
   resumeNow(runId: string): Promise<void>
   /** A paused run: drop its auto-resume; it stays paused until the user continues it. */
@@ -314,7 +315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async startRun(prompt, opts) {
     const project = selectedProject(get())
     if (!project) return
-    const summary = await window.orgai.runs.start({ projectId: project.id, prompt, scaffold: opts?.scaffold })
+    const summary = await window.orgai.runs.start({ projectId: project.id, prompt, scaffold: opts?.scaffold, images: opts?.images })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
       // Events may have landed before the IPC call returned; keep them and take the real summary.
@@ -352,16 +353,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().loadProjects()
   },
 
-  async sendMessage(text) {
+  async sendMessage(text, images) {
     const run = activeRun(get())
     if (!run) return
-    await window.orgai.runs.send({ runId: run.summary.id, text })
+    await window.orgai.runs.send({ runId: run.summary.id, text, images })
   },
 
-  async continueRun(fromRunId, text) {
+  async continueRun(fromRunId, text, images) {
     const project = selectedProject(get())
     if (!project) return
-    const summary = await window.orgai.runs.continue({ runId: fromRunId, text })
+    const summary = await window.orgai.runs.continue({ runId: fromRunId, text, images })
     showContinuation(summary)
   },
 
