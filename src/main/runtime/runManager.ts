@@ -205,6 +205,11 @@ export class RunManager {
     }
   }
 
+  /** Summary of a live run, without copying its record. Undefined once the run has ended. */
+  summaryOf(runId: string): RunSummary | undefined {
+    return this.runs.get(runId)?.summary
+  }
+
   get(runId: string): RunRecord | null {
     const active = this.runs.get(runId)
     if (active) return { ...active.record, summary: { ...active.summary } }

@@ -18,6 +18,7 @@ import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
+import RunStrip, { useStripRuns } from '../components/RunStrip'
 import { formatCost, treeLayout } from '../lib/layout'
 
 const SCAFFOLD_PROMPT =
@@ -51,6 +52,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const composerFocusToken = useAppStore((s) => s.composerFocusToken)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const answerQuestion = useAppStore((s) => s.answerQuestion)
+  const composerMode = useAppStore((s) => s.composerMode)
+  const stripRuns = useStripRuns()
+  const showStrip = stripRuns.length > 0
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -131,6 +135,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
   const status = run?.summary.status
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
+  // "+ New run" starts another run even while this session stays open.
+  const replying = sessionOpen && composerMode !== 'new'
   const canSend = text.trim().length > 0 && !busy
   // A finished run with a provider session can be continued with its memory intact.
   const canContinue = !!run && (status === 'finished' || status === 'error') && !!run.summary.sessionId
@@ -145,8 +151,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     setText('')
     setBusy(true)
     try {
-      if (sessionOpen) await sendMessage(prompt)
-      else if (canContinue && !fresh && run) await continueRun(run.summary.id, prompt)
+      if (replying) await sendMessage(prompt)
+      else if (canContinue && !fresh && run && composerMode !== 'new') await continueRun(run.summary.id, prompt)
       else await startRun(prompt)
     } finally {
       setBusy(false)
@@ -171,8 +177,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   return (
     <div className="live">
       <div className="canvas">
+        {showStrip && <RunStrip runs={stripRuns} />}
         {run && (
-          <div className="canvas-toolbar">
+          <div className="canvas-toolbar" style={showStrip ? { top: 52 } : undefined}>
             {isSetupRun && <span className="pill warn"><span className="dot" /> Setup session</span>}
             {run.summary.resumedFrom && (
               <span className="pill" title={`Continued from run ${run.summary.resumedFrom}`}>
@@ -214,7 +221,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length || run.questions?.length ? { right: 'auto', left: 12, top: 56 } : undefined}>
+          <div className="permissions" style={run.proposals.length || run.questions?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : showStrip ? { top: 52 } : undefined}>
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>
@@ -346,7 +353,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             }
           }}
           placeholder={
-            sessionOpen
+            sessionOpen && composerMode === 'new'
+              ? 'Describe the task for a new run. The open session keeps running… (Enter to start)'
+              : sessionOpen
               ? isSetupRun
                 ? 'Answer the Architect… (Enter to send, Shift+Enter for a new line)'
                 : 'Reply to the orchestrator… (Enter to send, Shift+Enter for a new line)'
@@ -363,7 +372,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           </button>
         )}
         <button className="btn primary" disabled={!canSend} onClick={() => void submit()}>
-          {sessionOpen ? 'Send' : canContinue ? 'Continue' : 'Start'}
+          {replying ? 'Send' : canContinue && composerMode !== 'new' ? 'Continue' : 'Start'}
         </button>
       </div>
 

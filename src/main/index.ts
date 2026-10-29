@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import type { RunEvent } from '@shared/types'
 import { IPC } from '@shared/types'
@@ -10,13 +10,20 @@ import { ClaudeAdapter } from './runtime/claude'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
 import { registerIpc } from './ipc'
+import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 
 let runManager: RunManager | undefined
+let notifier: Notifier | undefined
 
 function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.runEvent, event)
+  }
+  try {
+    notifier?.handle(event)
+  } catch (e) {
+    console.error('Notification failed:', e)
   }
 }
 
@@ -38,6 +45,7 @@ function createWindow(): void {
   })
 
   win.on('ready-to-show', () => win.show())
+  notifier?.attach(win)
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
@@ -59,6 +67,14 @@ app.whenReady().then(() => {
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   runManager = new RunManager({ claude: new ClaudeAdapter() }, broadcast, runStore, setup, keepRunsFor)
   registerIpc(projects, runManager, setup, new MaintenanceService(projects), settings)
+  notifier = new Notifier({
+    projectOfRun: (runId) => {
+      const summary = runManager?.summaryOf(runId)
+      return summary ? { projectId: summary.projectId, kind: summary.kind } : undefined
+    },
+    projectName: (projectId) => projects.get(projectId)?.name
+  })
+  ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean) => notifier?.setEnabled(!!enabled))
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   const knownProjects = new Set(projects.list().map((p) => p.id))

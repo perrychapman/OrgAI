@@ -377,6 +377,12 @@ export type RunEvent =
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
 
+/** Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked. */
+export interface FocusRunTarget {
+  projectId: string
+  runId: string
+}
+
 // ---------- AI drafting ----------
 
 export interface DraftRequest {
@@ -438,6 +444,12 @@ export interface OrgAIApi {
     continue(input: { runId: string; text: string }): Promise<RunSummary>
   }
   onRunEvent(cb: (event: RunEvent) => void): () => void
+  /** A clicked OS notification asks the renderer to show this run. */
+  onFocusRun(cb: (target: FocusRunTarget) => void): () => void
+  notifications: {
+    /** Global on/off for OS attention notifications. The renderer persists the choice. */
+    setEnabled(enabled: boolean): Promise<void>
+  }
   auth: {
     status(): Promise<AuthStatusResult>
   }
@@ -478,5 +490,7 @@ export const IPC = {
   authStatus: 'auth:status',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
-  appOpenPath: 'app:openPath'
+  appOpenPath: 'app:openPath',
+  appFocusRun: 'app:focusRun',
+  appSetNotifications: 'app:setNotifications'
 } as const

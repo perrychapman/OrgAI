@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppSettings, DraftRequest, OrgAIApi, PermissionDecision, Project, RunEvent } from '../shared/types'
+import type { AppSettings, DraftRequest, FocusRunTarget, OrgAIApi, PermissionDecision, Project, RunEvent } from '../shared/types'
 import { IPC } from '../shared/types'
 
 const api: OrgAIApi = {
@@ -50,6 +50,14 @@ const api: OrgAIApi = {
   },
   app: {
     openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path)
+  },
+  onFocusRun: (cb) => {
+    const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)
+    ipcRenderer.on(IPC.appFocusRun, listener)
+    return () => ipcRenderer.removeListener(IPC.appFocusRun, listener)
+  },
+  notifications: {
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
   }
 }
 
