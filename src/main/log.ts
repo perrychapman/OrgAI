@@ -22,7 +22,9 @@ let writing = false
 const original = { error: console.error.bind(console), warn: console.warn.bind(console) }
 
 export function logsDir(): string {
-  if (!dir) dir = join(app.getPath('userData'), 'logs')
+  // app.getPath('logs') is ~/Library/Logs/<name> on macOS (where Console.app looks); on Windows and Linux it is
+  // <userData>/logs, the same place as before.
+  if (!dir) dir = app.getPath('logs')
   return dir
 }
 

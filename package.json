@@ -14,6 +14,8 @@
     "start": "electron-vite preview",
     "icon": "node scripts/make-icon.mjs",
     "dist": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac:unsigned": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
     "dist:dir": "npm run build && electron-builder --dir",
     "test:watch": "vitest",
     "e2e:free": "node e2e/layout.mjs && node e2e/maintenance.mjs"

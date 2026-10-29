@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
@@ -103,9 +103,20 @@ async function listAgentWorktrees(root: string): Promise<{ path: string; branch:
   return (await listAllWorktrees(root)).flatMap((e) => (e.branch?.startsWith(BRANCH_PREFIX) ? [{ path: e.path, branch: e.branch }] : []))
 }
 
-/** Path comparison key: forward slashes, no trailing slash, case-folded (Windows paths). */
-export function pathKey(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+/**
+ * Path comparison key: forward slashes, no trailing slash. Case-folded on Windows and macOS, whose default
+ * file systems are case-insensitive, but not on Linux. Symlinks are resolved when the path exists: git prints
+ * real paths (/private/var/... for /var/...) while a project folder may have been picked through a symlink.
+ */
+export function pathKey(p: string, platform: string = process.platform): string {
+  let real = p
+  try {
+    real = realpathSync.native(p)
+  } catch {
+    /* the path does not exist (yet): compare as given */
+  }
+  const key = real.replace(/\\/g, '/').replace(/\/+$/, '')
+  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
 }
 
 /**

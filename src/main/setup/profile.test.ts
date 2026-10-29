@@ -48,6 +48,14 @@ describe('profileRepo', () => {
     expect(p.gitLog).toEqual([])
   })
 
+  it('ignores Finder and Explorer litter when judging emptiness', async () => {
+    put('.DS_Store', 'x')
+    put('Thumbs.db', 'x')
+    const p = await profileRepo(root)
+    expect(p.isEmpty).toBe(true)
+    expect(p.fileCount).toBe(0)
+  })
+
   it('builds an indented, sorted tree and counts languages', async () => {
     put('package.json', '{"name":"demo"}')
     put('README.md', '# Demo')

@@ -19,6 +19,9 @@ const KEY_FILES = new Set([
   'next.config.ts', 'electron.vite.config.ts', 'angular.json', 'nx.json', 'turbo.json', 'pnpm-workspace.yaml'
 ])
 
+/** Files the OS creates in any folder Finder or Explorer has opened; they must not make an empty folder look populated. */
+const OS_JUNK_FILES = new Set(['.DS_Store', '.localized', '.AppleDouble', 'Icon\r', 'Thumbs.db', 'desktop.ini'])
+
 const MAX_TREE_ENTRIES = 400
 const MAX_DEPTH = 4
 const MAX_KEY_FILE_BYTES = 6000
@@ -45,6 +48,7 @@ export async function profileRepo(root: string): Promise<ProjectProfile> {
       return
     }
     for (const name of entries) {
+      if (OS_JUNK_FILES.has(name)) continue
       const full = join(dir, name)
       const rel = relative(root, full).replace(/\\/g, '/')
       let isDir = false

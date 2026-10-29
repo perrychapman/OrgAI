@@ -10,6 +10,7 @@ import {
   inspectPending,
   integrateWorktree,
   isGitRepo,
+  pathKey,
   pendingWorktrees,
   prepareRepo,
   removeExcludeLine
@@ -312,5 +313,23 @@ describe('discardWorktree', () => {
     expect(existsSync(wt.path)).toBe(false)
     expect(branches()).toEqual(['main'])
     expect(await inspectPending(root)).toEqual([])
+  })
+})
+
+describe('pathKey', () => {
+  it('normalises separators and trailing slashes', () => {
+    expect(pathKey('C:\\Repo\\Sub\\', 'win32')).toBe('c:/repo/sub')
+  })
+  it('folds case on win32 and darwin but not on linux', () => {
+    expect(pathKey('/Users/Me/Proj', 'darwin')).toBe('/users/me/proj')
+    expect(pathKey('/Users/Me/Proj', 'linux')).toBe('/Users/Me/Proj')
+  })
+  it('resolves existing directories to their real path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-pk-'))
+    try {
+      expect(pathKey(dir, 'linux')).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
