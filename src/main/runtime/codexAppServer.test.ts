@@ -1,0 +1,109 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { CodexAppServer, CodexRpcError, codexHomeDir, resolveCodexBinary } from './codexAppServer'
+import { buildLaunchConfig } from './codexProtocol'
+import { fakeCtx, project } from './testHelpers'
+import { harnessToolsFor } from './harnessTools'
+import { dynamicToolSpec } from './codexProtocol'
+import type { ResolvedMcpServer } from './types'
+
+/**
+ * Token-free checks against the real binary: `initialize` and `config/read` only, with an empty temp CODEX_HOME.
+ * Skipped unless ORGAI_CODEX_INTEGRATION=1 (needs @openai/codex's native package installed).
+ */
+const live = process.env.ORGAI_CODEX_INTEGRATION === '1' && !!resolveCodexBinary()
+
+describe('codexHomeDir', () => {
+  it('lives under the data dir', () => {
+    expect(codexHomeDir('/data').replace(/\\/g, '/')).toBe('/data/codex')
+  })
+})
+
+describe('request plumbing without a process', () => {
+  it('rejects requests before start', async () => {
+    const s = new CodexAppServer()
+    await expect(s.request('thread/start')).rejects.toThrow(/not running/)
+  })
+
+  it('reports a missing binary clearly', async () => {
+    const prev = process.env.ORGAI_CODEX_PATH
+    process.env.ORGAI_CODEX_PATH = join(tmpdir(), 'definitely-not-codex')
+    try {
+      await expect(new CodexAppServer().start()).rejects.toThrow(/not installed/)
+    } finally {
+      if (prev === undefined) delete process.env.ORGAI_CODEX_PATH
+      else process.env.ORGAI_CODEX_PATH = prev
+    }
+  })
+
+  it('exposes the rpc error code', () => {
+    const e = new CodexRpcError('thread/start', { code: -32600, message: 'bad' })
+    expect(e.message).toBe('thread/start: bad')
+    expect(e.error.code).toBe(-32600)
+  })
+})
+
+describe.skipIf(!live)('real codex app-server (token-free)', () => {
+  let home = ''
+  let server: CodexAppServer | undefined
+  afterEach(async () => {
+    server?.close()
+    await server?.exited
+    server = undefined
+    try {
+      if (home) rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    } catch {
+      // Windows can hold the directory for a moment after the process exits; the OS temp cleaner gets it.
+    }
+    home = ''
+  })
+
+  it('accepts the api-key provider and MCP overrides we build (config/read shows them)', async () => {
+    home = mkdtempSync(join(tmpdir(), 'orgai-codexhome-'))
+    const servers: ResolvedMcpServer[] = [
+      {
+        spec: { id: 'm1', name: 'files', transport: 'stdio', command: 'npx', args: ['-y', 'srv', '--flag'], env: { A: '1' }, secretEnv: ['TOKEN'], enabled: true, source: 'user', addedAt: '' },
+        env: { A: '1', TOKEN: 's3cret' },
+        headers: {}
+      },
+      {
+        spec: { id: 'm2', name: 'remote', transport: 'http', url: 'https://example.com/mcp', headers: { 'X-A': 'b' }, secretHeaders: ['Authorization'], enabled: true, source: 'user', addedAt: '' },
+        env: {},
+        headers: { 'X-A': 'b', Authorization: 'Bearer tok' }
+      }
+    ]
+    const launch = buildLaunchConfig({ connection: 'litellm' as never, adapter: 'codex', env: { CODEX_HOME: home }, codexAuth: 'apiKey', apiKey: 'sk-test', openaiBaseUrl: 'http://localhost:4000/v1' }, servers)
+    server = new CodexAppServer({ env: launch.env, config: launch.config, cwd: project().path === '/repo' ? tmpdir() : project().path })
+    await server.start('test')
+    const res = (await server.request('config/read', { includeLayers: false })) as { config: Record<string, unknown> }
+    const cfg = res.config as { model_provider?: string; model_providers?: Record<string, Record<string, unknown>>; mcp_servers?: Record<string, Record<string, unknown>> }
+    expect(cfg.model_provider).toBe('orgai')
+    expect(cfg.model_providers?.orgai).toMatchObject({ base_url: 'http://localhost:4000/v1', env_key: 'ORGAI_CODEX_API_KEY', wire_api: 'responses' })
+    expect(cfg.mcp_servers?.files).toMatchObject({ command: 'npx', args: ['-y', 'srv', '--flag'], env: { A: '1' }, env_vars: ['TOKEN'] })
+    expect(cfg.mcp_servers?.remote).toMatchObject({ url: 'https://example.com/mcp', http_headers: { 'X-A': 'b' } })
+    expect(JSON.stringify(res)).not.toContain('s3cret')
+  }, 30_000)
+
+  it('thread/start accepts our dynamic tools, instructions, policy and the auto reviewer, and a turn-less thread cannot be resumed (no model turn)', async () => {
+    home = mkdtempSync(join(tmpdir(), 'orgai-codexhome-'))
+    server = new CodexAppServer({ env: { CODEX_HOME: home }, cwd: tmpdir() })
+    await server.start('test')
+    const tools = harnessToolsFor(fakeCtx()).map(dynamicToolSpec)
+    const params = {
+      cwd: tmpdir(),
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+      approvalsReviewer: 'auto_review',
+      developerInstructions: 'You are a test role.',
+      dynamicTools: tools,
+      serviceName: 'orgai'
+    }
+    const started = (await server.request('thread/start', params)) as { thread: { id: string }; approvalPolicy: unknown; sandbox: { type?: string } }
+    expect(started.thread.id).toBeTruthy()
+    expect(started.approvalPolicy).toBe('on-request')
+    // A thread without a first turn has no rollout on disk yet, so it cannot be resumed (verified): resume only after a turn ran.
+    await expect(server.request('thread/resume', { threadId: started.thread.id, cwd: tmpdir() })).rejects.toThrow(/no rollout/)
+  }, 30_000)
+})

@@ -132,6 +132,8 @@ export class CodexAppServer {
     child.stderr.on('data', (chunk: string) => {
       for (const line of chunk.split(/\r?\n/)) if (line.trim()) this.options.onStderr?.(line.trim())
     })
+    // A write to a dying process raises EPIPE on stdin; the exit handler reports the real failure.
+    child.stdin.on('error', () => {})
     child.on('error', (err) => this.handleExit(null, err))
     child.on('exit', (code) => this.handleExit(code))
     const result = await this.request('initialize', {
