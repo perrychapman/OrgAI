@@ -215,6 +215,7 @@
 
 :root {
   /* Spacing, 4 px grid (spec 4.2). */
+  --space-0h: 2px;
   --space-1: 4px;
   --space-1h: 6px;
   --space-2: 8px;
