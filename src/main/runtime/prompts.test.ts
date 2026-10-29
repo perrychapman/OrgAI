@@ -75,9 +75,11 @@ describe('buildRolePrompt', () => {
     expect(text).toContain('engineer-1, engineer-2')
     expect(text).toContain('SendMessage({to: handle')
     expect(text).toContain('ListAgents lists the agents running now')
-    expect(text).not.toContain('can message each other and you')
+    expect(text).not.toContain('can message each other')
     const talkers = roles.map((r) => (r.id === 'r-eng' ? { ...r, tools: [...r.tools, 'SendMessage' as const] } : r))
-    expect(buildRolePrompt(talkers[0], talkers, project(), { isSetup: false, isolation: false })).toContain('Reports with SendMessage (engineer) can message each other and you.')
+    const withTalkers = buildRolePrompt(talkers[0], talkers, project(), { isSetup: false, isolation: false })
+    expect(withTalkers).toContain('Reports with SendMessage (engineer) can message each other')
+    expect(withTalkers).toContain('sending to "main"')
   })
 
   it('tells a report with SendMessage how to coordinate, and leaves others and setup alone', () => {
