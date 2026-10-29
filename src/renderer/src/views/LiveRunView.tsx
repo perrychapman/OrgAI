@@ -17,6 +17,7 @@ import { activeRun, useAppStore } from '../store/useAppStore'
 import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
+import RunStrip, { useStripRuns } from '../components/RunStrip'
 import { formatCost, treeLayout } from '../lib/layout'
 
 const SCAFFOLD_PROMPT =
@@ -46,6 +47,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const stopRun = useAppStore((s) => s.stopRun)
   const decide = useAppStore((s) => s.decide)
   const decideProposal = useAppStore((s) => s.decideProposal)
+  const composerMode = useAppStore((s) => s.composerMode)
+  const stripRuns = useStripRuns()
+  const showStrip = stripRuns.length > 0
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -126,6 +130,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
   const status = run?.summary.status
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
+  // "+ New run" starts another run even while this session stays open.
+  const replying = sessionOpen && composerMode !== 'new'
   const canSend = text.trim().length > 0 && !busy
 
   const submit = async (): Promise<void> => {
@@ -134,7 +140,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     setText('')
     setBusy(true)
     try {
-      if (sessionOpen) await sendMessage(prompt)
+      if (replying) await sendMessage(prompt)
       else await startRun(prompt)
     } finally {
       setBusy(false)
@@ -159,8 +165,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   return (
     <div className="live">
       <div className="canvas">
+        {showStrip && <RunStrip runs={stripRuns} />}
         {run && (
-          <div className="canvas-toolbar">
+          <div className="canvas-toolbar" style={showStrip ? { top: 52 } : undefined}>
             {isSetupRun && <span className="pill warn"><span className="dot" /> Setup session</span>}
             <span className="pill">{formatCost(run.summary.totalCostUsd)}</span>
             <span className="pill">
@@ -194,7 +201,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length ? { right: 'auto', left: 12, top: 56 } : undefined}>
+          <div className="permissions" style={run.proposals.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : showStrip ? { top: 52 } : undefined}>
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>
@@ -325,7 +332,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             }
           }}
           placeholder={
-            sessionOpen
+            sessionOpen && composerMode === 'new'
+              ? 'Describe the task for a new run. The open session keeps running… (Enter to start)'
+              : sessionOpen
               ? isSetupRun
                 ? 'Answer the Architect… (Enter to send, Shift+Enter for a new line)'
                 : 'Reply to the orchestrator… (Enter to send, Shift+Enter for a new line)'
@@ -335,7 +344,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           }
         />
         <button className="btn primary" disabled={!canSend} onClick={() => void submit()}>
-          {sessionOpen ? 'Send' : 'Start'}
+          {replying ? 'Send' : 'Start'}
         </button>
       </div>
 

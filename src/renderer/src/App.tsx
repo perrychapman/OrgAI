@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect } from 'react'
-import { activeRun, selectedProject, useAppStore } from './store/useAppStore'
+import { activeRun, isRunLive, selectedProject, useAppStore } from './store/useAppStore'
+import NotificationsToggle from './components/NotificationsToggle'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import LiveRunView from './views/LiveRunView'
@@ -25,8 +26,12 @@ export default function App(): ReactElement {
   const isLive = (projectId: string): boolean => {
     const runId = activeRunByProject[projectId]
     const status = runId ? runs[runId]?.summary.status : undefined
-    return status === 'running' || status === 'starting' || status === 'idle'
+    if (status === 'running' || status === 'starting' || status === 'idle') return true
+    return Object.values(runs).some((r) => r.summary.projectId === projectId && isRunLive(r))
   }
+  /** Some run of the project holds a permission or proposal card nobody answered yet. */
+  const needsAttention = (projectId: string): boolean =>
+    Object.values(runs).some((r) => r.summary.projectId === projectId && r.permissions.length + r.proposals.length > 0)
 
   return (
     <div className="app">
@@ -53,7 +58,7 @@ export default function App(): ReactElement {
               }}
               title={p.path}
             >
-              <span className={`dot ${isLive(p.id) ? 'live' : ''}`} />
+              <span className={`dot ${needsAttention(p.id) ? 'warn' : isLive(p.id) ? 'live' : ''}`} />
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
             </button>
           ))}
@@ -63,6 +68,7 @@ export default function App(): ReactElement {
             <span className="dot" />
             {auth == null ? 'Checking Claude login…' : auth.loggedIn ? `Claude · ${auth.method ?? 'logged in'}` : 'Claude not logged in'}
           </span>
+          <NotificationsToggle />
         </div>
       </aside>
 

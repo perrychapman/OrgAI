@@ -16,6 +16,8 @@ import type {
 } from '@shared/types'
 
 export type View = 'projects' | 'settings' | 'run'
+/** 'reply' sends to the viewed session; 'new' starts another run even while one is open. */
+export type ComposerMode = 'reply' | 'new'
 export type SettingsTab = 'org' | 'project'
 
 export interface LogLine {
@@ -50,6 +52,9 @@ interface AppState {
   drafting: boolean
   draftResult: DraftResult | null
   draftError: string | null
+  /** Runs hidden from the run strip (finished runs the user closed). */
+  dismissedRuns: Record<string, true>
+  composerMode: ComposerMode
 
   init(): Promise<void>
   loadProjects(): Promise<void>
@@ -77,6 +82,13 @@ interface AppState {
   decide(requestId: string, decision: PermissionDecision): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
   handleEvent(e: RunEvent): void
+  /** Replace a placeholder summary (created by an event of an unknown run) with the real one. */
+  fillSummary(runId: string): Promise<void>
+  setComposerMode(mode: ComposerMode): void
+  /** Hide a finished run from the run strip. Stops viewing it if it was the viewed run. */
+  dismissRun(runId: string): void
+  /** Select a project and view one of its runs (e.g. from a clicked notification). */
+  focusRun(projectId: string, runId: string): Promise<void>
 
   draftOrgChart(req: Omit<DraftRequest, 'projectId'>): Promise<void>
   applyDraft(): void
@@ -84,6 +96,8 @@ interface AppState {
 }
 
 let unsubscribeEvents: (() => void) | null = null
+/** Runs whose real summary is being fetched after an event created a placeholder. */
+const summaryLookups = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function debouncedSave(project: Project): void {
   const t = saveTimers.get(project.id)
@@ -106,6 +120,18 @@ export const activeRun = (s: AppState): RunState | undefined => {
   return runId ? s.runs[runId] : undefined
 }
 
+const LIVE_RUN_STATUSES = new Set(['starting', 'running', 'idle', 'stopping'])
+export const isRunLive = (run: RunState): boolean => LIVE_RUN_STATUSES.has(run.summary.status)
+
+/** Every run of a project known to the renderer: live runs first, then newest first. */
+export const runsOfProject = (s: AppState, projectId: string): RunState[] =>
+  Object.values(s.runs)
+    .filter((r) => r.summary.projectId === projectId)
+    .sort((a, b) => Number(isRunLive(b)) - Number(isRunLive(a)) || b.summary.startedAt - a.summary.startedAt)
+
+/** Runs of the selected project. Returns a fresh array: use with `useShallow`. */
+export const projectRuns = (s: AppState): RunState[] => (s.selectedProjectId ? runsOfProject(s, s.selectedProjectId) : [])
+
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   selectedProjectId: null,
@@ -119,11 +145,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   drafting: false,
   draftResult: null,
   draftError: null,
+  dismissedRuns: {},
+  composerMode: 'reply',
 
   async init() {
     // React StrictMode mounts twice in development; subscribing twice would double every transcript entry.
     if (unsubscribeEvents) return
     unsubscribeEvents = window.orgai.onRunEvent((e) => get().handleEvent(e))
+    window.orgai.onFocusRun(({ projectId, runId }) => void get().focusRun(projectId, runId))
     await get().loadProjects()
     try {
       const auth = await window.orgai.auth.status()
@@ -139,7 +168,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectProject(id) {
-    set({ selectedProjectId: id, selectedRoleId: null, selectedAgentId: null, draftResult: null, draftError: null, history: [] })
+    set({ selectedProjectId: id, selectedRoleId: null, selectedAgentId: null, draftResult: null, draftError: null, history: [], composerMode: 'reply' })
     void get().loadHistory()
   },
 
@@ -208,7 +237,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], logs: record.logs } }
       }))
     }
-    set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run' }))
+    set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run', composerMode: 'reply' }))
   },
 
   async startRun(prompt, opts) {
@@ -221,7 +250,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
       activeRunByProject: { ...s.activeRunByProject, [project.id]: summary.id },
       selectedAgentId: 'root',
-      view: 'run'
+      view: 'run',
+      composerMode: 'reply'
     }))
   },
 
@@ -273,7 +303,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const existing = s.runs[e.runId]
       const run: RunState = existing
         ? { ...existing }
-        : emptyRun({ id: e.runId, projectId: s.selectedProjectId ?? '', kind: 'work', prompt: '', status: 'starting', startedAt: Date.now(), totalCostUsd: 0 })
+        : emptyRun({ id: e.runId, projectId: '', kind: 'work', prompt: '', status: 'starting', startedAt: Date.now(), totalCostUsd: 0 })
+      // A run nobody opened yet (another run of this project, or another project's): fetch its real summary.
+      if (!existing) queueMicrotask(() => void get().fillSummary(e.runId))
       switch (e.type) {
         case 'run.status':
           run.summary = {
@@ -319,6 +351,51 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       return { runs: { ...s.runs, [e.runId]: run } }
     })
+  },
+
+  setComposerMode(mode) {
+    set({ composerMode: mode })
+  },
+
+  dismissRun(runId) {
+    set((s) => {
+      const projectId = s.runs[runId]?.summary.projectId
+      const activeRunByProject = { ...s.activeRunByProject }
+      if (projectId && activeRunByProject[projectId] === runId) delete activeRunByProject[projectId]
+      return { dismissedRuns: { ...s.dismissedRuns, [runId]: true }, activeRunByProject }
+    })
+  },
+
+  async focusRun(projectId, runId) {
+    if (!get().projects.some((p) => p.id === projectId)) return
+    if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    set((s) => {
+      const { [runId]: _shown, ...dismissedRuns } = s.dismissedRuns
+      return { dismissedRuns }
+    })
+    await get().openRun(runId)
+  },
+
+  async fillSummary(runId) {
+    if (summaryLookups.has(runId)) return
+    summaryLookups.add(runId)
+    try {
+      const record = await window.orgai.runs.get(runId)
+      if (!record) return
+      set((s) => {
+        const run = s.runs[runId]
+        if (!run) return {}
+        const { projectId, kind, prompt, startedAt } = record.summary
+        // Keep live fields (status, cost) from events; take identity fields from the main process.
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt }
+        const agents = Object.keys(run.agents).length ? run.agents : record.agents
+        return { runs: { ...s.runs, [runId]: { ...run, summary, agents } } }
+      })
+    } catch {
+      // The run vanished; its placeholder simply stays unassigned.
+    } finally {
+      summaryLookups.delete(runId)
+    }
   },
 
   async draftOrgChart(req) {
