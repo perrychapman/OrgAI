@@ -649,7 +649,7 @@ export class MockSession implements RuntimeSession {
       let text: string
       let isError = false
       try {
-        const res = await this.untilStopped(t.call(step.args ?? {}))
+        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID }))
         if (res === STOPPED) return
         text = res
       } catch (e) {

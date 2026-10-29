@@ -262,14 +262,64 @@ export function buildAgents(
   return agents
 }
 
+/**
+ * Who called a harness tool. PreToolUse sees every call with its tool_use_id and agent_id (absent for the
+ * root); the MCP handler may only see the tool name, so calls are matched by tool_use_id when the handler's
+ * request metadata carries it, otherwise first-in-first-out per tool name.
+ */
+export class HarnessCallerTracker {
+  private byToolUse = new Map<string, string | undefined>()
+  private queues = new Map<string, Array<{ toolUseId?: string; agentId?: string }>>()
+
+  /** Record a PreToolUse sighting. agentId is the SDK agent id (undefined for the root). */
+  record(toolName: string, toolUseId: string | undefined, agentId: string | undefined): void {
+    if (toolUseId) this.byToolUse.set(toolUseId, agentId)
+    this.queues.set(toolName, [...(this.queues.get(toolName) ?? []), { toolUseId, agentId }])
+  }
+
+  /** Resolve and consume the caller; undefined means the root (or unknown). Never throws. */
+  resolve(toolName: string, meta?: unknown): string | undefined {
+    try {
+      const id = toolUseIdFromMeta(meta)
+      const queue = this.queues.get(toolName) ?? []
+      if (id && this.byToolUse.has(id)) {
+        const agentId = this.byToolUse.get(id)
+        this.byToolUse.delete(id)
+        const i = queue.findIndex((e) => e.toolUseId === id)
+        if (i >= 0) queue.splice(i, 1)
+        return agentId
+      }
+      const next = queue.shift()
+      if (next?.toolUseId) this.byToolUse.delete(next.toolUseId)
+      return next?.agentId
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/** Pull a tool_use id out of MCP request _meta (key name unverified at runtime). */
+export function toolUseIdFromMeta(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== 'object') return undefined
+  const m = meta as Record<string, unknown>
+  for (const key of ['claudecode/toolUseId', 'toolUseId', 'tool_use_id']) {
+    const v = m[key]
+    if (typeof v === 'string' && v) return v
+  }
+  return undefined
+}
+
 /** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
-function buildHarnessServer(tools: HarnessTool[], instructions?: string): McpSdkServerConfigWithInstance {
+function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, instructions?: string): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: ORGAI_MCP,
     version: '1.0.0',
     ...(instructions ? { instructions } : {}),
     tools: tools.map((t) =>
-      tool(t.name, t.description, t.inputSchema.shape, async (args) => ({ content: [{ type: 'text' as const, text: await t.call(args) }] }))
+      tool(t.name, t.description, t.inputSchema.shape, async (args, extra) => {
+        const agentId = callers.resolve(ORGAI_TOOL_PREFIX + t.name, (extra as { _meta?: unknown } | undefined)?._meta)
+        return { content: [{ type: 'text' as const, text: await t.call(args, agentId ? { agentId } : undefined) }] }
+      })
     )
   })
 }
@@ -311,6 +361,7 @@ class ClaudeSession implements RuntimeSession {
    * canUseTool carries neither an agent nor a tool_use id, so the call is matched by content.
    */
   private pendingPermissionIssuers = new Map<string, string[]>()
+  private harnessCallers = new HarnessCallerTracker()
   private rolesBySlug: Map<string, Role>
   private root: Role
   private isSetup: boolean
@@ -637,6 +688,7 @@ class ClaudeSession implements RuntimeSession {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
       this.lastToolAgent.set(input.tool_name, agentId)
+      if (input.tool_name.startsWith(ORGAI_TOOL_PREFIX)) this.harnessCallers.record(input.tool_name, input.tool_use_id, input.agent_id)
       const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
       const key = permissionKey(input.tool_name, toolInput)
       this.pendingPermissionIssuers.set(key, [...(this.pendingPermissionIssuers.get(key) ?? []), agentId])
@@ -832,7 +884,7 @@ class ClaudeSession implements RuntimeSession {
       },
       addMcpServer: (spec) => this.addMcpServer(spec)
     })
-    this.harnessServer = buildHarnessServer(tools, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
+    this.harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
     const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []

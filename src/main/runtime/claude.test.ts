@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { agentMcpServerNames, buildAgents, buildEnv, collectSecrets, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -135,5 +135,30 @@ describe('secret redaction', () => {
     expect(redactSecrets('start fs TOKEN=sekrit-token via proxy-token; Authorization: Bearer abc123', secrets)).toBe(
       'start fs TOKEN=*** via ***; Authorization: ***'
     )
+  })
+})
+
+describe('HarnessCallerTracker', () => {
+  const T = 'mcp__orgai__request_mcp_install'
+  it('matches by tool_use_id from _meta', () => {
+    const t = new HarnessCallerTracker()
+    t.record(T, 'a', 'sub-1')
+    t.record(T, 'b', undefined)
+    expect(t.resolve(T, { 'claudecode/toolUseId': 'b' })).toBeUndefined()
+    expect(t.resolve(T, { 'claudecode/toolUseId': 'a' })).toBe('sub-1')
+  })
+  it('falls back to FIFO per tool name', () => {
+    const t = new HarnessCallerTracker()
+    t.record(T, 'a', 'sub-1')
+    t.record(T, 'b', 'sub-2')
+    t.record('mcp__orgai__other', 'c', 'sub-3')
+    expect(t.resolve(T)).toBe('sub-1')
+    expect(t.resolve(T, {})).toBe('sub-2')
+    expect(t.resolve('mcp__orgai__other')).toBe('sub-3')
+  })
+  it('never throws and omits unknown callers', () => {
+    const t = new HarnessCallerTracker()
+    expect(t.resolve(T, 5)).toBeUndefined()
+    expect(t.resolve(T, { 'claudecode/toolUseId': 'zzz' })).toBeUndefined()
   })
 })
