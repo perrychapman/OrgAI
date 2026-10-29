@@ -30,6 +30,7 @@ const api: OrgAIApi = {
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),
+    retro: (input) => ipcRenderer.invoke(IPC.setupRetro, input),
     decide: (input) => ipcRenderer.invoke(IPC.setupDecide, input),
     answer: (input) => ipcRenderer.invoke(IPC.setupAnswer, input)
   },

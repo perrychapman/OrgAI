@@ -9,7 +9,9 @@ export const PROPOSAL_TOOLS = {
   orgChart: 'propose_org_chart',
   settings: 'propose_settings',
   complete: 'complete_setup',
-  question: 'ask_user'
+  question: 'ask_user',
+  /** Work runs: the orchestrator proposes an org chart revision for future runs. */
+  orgChange: 'propose_org_change'
 } as const
 
 const ARCHITECT_PROMPT = `You are the Architect for OrgAI, a desktop harness that runs an org chart of AI coding agents on a software project. Your job is to set the project up with the user: agree on the architecture, design the org chart of agent roles, and tune the run settings. Every decision goes through the user, who approves or asks for changes.
@@ -20,6 +22,8 @@ How you work:
 3. After the architecture is approved, propose the org chart with propose_org_chart. Tailor the roles to this project's real domains and workflow.
 4. After the org chart is approved, propose run settings with propose_settings, including a concise project brief that every agent will read. Set isolateWriters to true when the project is (or will be) a git repository and more than one role can edit files: each writing report then works in its own git worktree and the harness merges it back, so parallel reports cannot clobber each other.
 5. When all three are approved, call complete_setup with a short summary of what was decided and what the user should do next.
+
+Revisions and retrospectives: when the project is already set up, propose only what should change. If the architecture, chart or settings still fit, say so in one line and skip that step; usually that means going straight to propose_org_chart. When you are given a run record (a retrospective), judge how each role performed: prompts that led reports astray, tools a role lacked, specialties that were missing, roles that were never used, merge conflicts caused by overlapping briefs, and work the orchestrator did itself that a report should have done. Turn each finding into a concrete change to a role's prompt, tools, model or reporting line, keep everything that worked, and explain each change in the rationale. Then call complete_setup.
 
 Each proposal tool blocks until the user decides. Its result starts with APPROVED or REVISE. On REVISE, read the feedback, adjust, and call the same tool again. Do not move to the next step until the current one is approved. Keep chat messages short; the proposals carry the detail.
 

@@ -202,9 +202,32 @@ export const integrateWorktrees = defineTool({
 })
 
 /** Setup runs: proposal tools, ask_user and complete_setup, in the order the Architect uses them. */
+/** Work runs: the orchestrator proposes a revised chart when a task exposes a gap. Applies to future runs. */
+export const proposeOrgChange = defineTool({
+  name: PROPOSAL_TOOLS.orgChange,
+  description:
+    'Propose a revision of the org chart for future runs: the full chart with minimal changes (a new specialty, a sharper prompt, missing tools, a changed reporting line). Blocks until the user approves or asks for changes. This session keeps its current roles.',
+  inputSchema: z.object({
+    title: z.string().describe('Short title naming the change, e.g. "Add a database specialist"'),
+    rationale: z.string().describe('What this run revealed and exactly what changes; two to four sentences'),
+    roles: z.array(draftRoleSchema).describe('The complete revised chart, unchanged roles included')
+  }),
+  async handler(ctx, { title, rationale, roles }, hooks) {
+    let converted
+    try {
+      converted = toRoles({ rationale, roles })
+    } catch (e) {
+      return `REVISE. The org chart could not be validated: ${(e as Error).message}`
+    }
+    const d = await ctx.requestProposal({ kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: converted, rationale } })
+    hooks.onDecided?.()
+    return decisionText(d, 'The org chart was updated for future runs. This session keeps its current roles; carry on with the task.')
+  }
+})
+
 export const SETUP_TOOL_DEFS: HarnessToolDef[] = [proposeArchitecture, proposeOrgChart, proposeSettings, askUser, completeSetup]
 /** Work runs with isolation: the merge-retry tool. */
-export const WORK_TOOL_DEFS: HarnessToolDef[] = [integrateWorktrees]
+export const WORK_TOOL_DEFS: HarnessToolDef[] = [integrateWorktrees, proposeOrgChange]
 
 export function setupTools(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): HarnessTool[] {
   return bind(SETUP_TOOL_DEFS, ctx, hooks)

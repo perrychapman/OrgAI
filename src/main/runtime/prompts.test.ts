@@ -66,8 +66,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, architecture, drift, brief
-    expect(parts).toHaveLength(6)
+    // prompt, reports, isolation, architecture, drift, org-change guidance, brief
+    expect(parts).toHaveLength(7)
   })
 })
 

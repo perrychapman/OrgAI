@@ -15,15 +15,17 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
   const [instruction, setInstruction] = useState('')
   const [mode, setMode] = useState<'replace' | 'revise'>('revise')
   const [architectBusy, setArchitectBusy] = useState(false)
+  const [revision, setRevision] = useState('')
 
   const reviseWithArchitect = async (): Promise<void> => {
     setArchitectBusy(true)
     try {
       await startSetup(
-        instruction.trim()
-          ? `Revise this project's setup. ${instruction.trim()}`
+        revision.trim()
+          ? `Revise this project's org chart and setup: ${revision.trim()}`
           : 'Review this project and revise its architecture document, org chart and settings where they no longer fit the code.'
       )
+      setRevision('')
     } finally {
       setArchitectBusy(false)
     }
@@ -38,23 +40,30 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
         <div className="draft-box" style={{ marginTop: 0, marginBottom: 14 }}>
           <strong>Revise with the Architect</strong>
           <div className="rationale">
-            Starts a setup session on the live view. The Architect reads the repository and the current chart, then proposes changes
-            you approve one by one.
+            Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles on the
+            live view for you to approve. Leave it empty for a full review.
             {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
           </div>
+          <textarea
+            className="textarea"
+            style={{ minHeight: 90, marginBottom: 10 }}
+            value={revision}
+            onChange={(e) => setRevision(e.target.value)}
+            placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to Sonnet."'
+          />
           <button className="btn primary" disabled={architectBusy} onClick={() => void reviseWithArchitect()}>
             {architectBusy ? (
               <>
                 <span className="spinner" /> Starting…
               </>
             ) : (
-              'Open a setup session'
+              'Revise with the Architect'
             )}
           </button>
         </div>
         <div className="side-section-title">Quick draft (no repository access)</div>
         <p style={{ margin: '0 0 10px', color: 'var(--text-dim)', fontSize: 12.5 }}>
-          A one-shot drafter that works from your description alone. Use the instruction box below for both.
+          A one-shot drafter that works from your description alone, without reading the repository or asking for approval.
         </p>
         <div className="field">
           <textarea

@@ -87,6 +87,8 @@ interface AppState {
   startRun(prompt: string, opts?: { scaffold?: boolean }): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
+  /** Architect session that reviews a finished run and revises the org chart. */
+  startRetro(runId: string): Promise<void>
   /** Past runs of the selected project, newest first. */
   history: RunSummary[]
   loadHistory(): Promise<void>
@@ -310,6 +312,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const project = selectedProject(get())
     if (!project) return
     const summary = await window.orgai.setup.start({ projectId: project.id, instruction })
+    set((s) => ({
+      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
+      activeRunByProject: { ...s.activeRunByProject, [project.id]: summary.id },
+      selectedAgentId: 'root',
+      view: 'run'
+    }))
+    await get().loadProjects()
+  },
+
+  async startRetro(runId) {
+    const project = selectedProject(get())
+    if (!project) return
+    const summary = await window.orgai.setup.retro({ projectId: project.id, runId })
     set((s) => ({
       runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
       activeRunByProject: { ...s.activeRunByProject, [project.id]: summary.id },

@@ -557,6 +557,8 @@ export interface OrgAIApi {
   setup: {
     /** Profile the working directory and start an Architect session. */
     start(input: { projectId: string; instruction?: string }): Promise<RunSummary>
+    /** Architect session that reviews a finished run and revises the org chart where roles struggled. */
+    retro(input: { projectId: string; runId: string }): Promise<RunSummary>
     decide(input: { runId: string; proposalId: string; decision: ProposalDecision }): Promise<void>
     /** Answer an ask_user question from the Architect. */
     answer(input: { runId: string; questionId: string; answer: QuestionAnswer }): Promise<void>
@@ -646,6 +648,7 @@ export const IPC = {
   runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',
+  setupRetro: 'setup:retro',
   setupDecide: 'setup:decide',
   setupAnswer: 'setup:answer',
   maintListWorktrees: 'maintenance:listWorktrees',

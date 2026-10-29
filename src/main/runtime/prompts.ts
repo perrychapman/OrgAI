@@ -68,6 +68,15 @@ export function architectureText(architecturePath: string): string {
 }
 
 /** For the root orchestrator: keep the architecture document true when the work changes it. */
+/** Work-run orchestrators keep the org chart honest: propose revisions when a task exposes a gap. */
+export function orgChangeText(): string {
+  return (
+    'The org chart is yours to keep honest. If this task shows a gap, such as a missing specialty, a role whose prompt misled its report, ' +
+    'tools a role lacked, or work you had to do yourself because no role fit, call propose_org_change at the end of the run with the full chart and the smallest change that fixes it. ' +
+    'The user approves it; it applies to future runs, not this one. Do not propose changes for one-off situations.'
+  )
+}
+
 export function architectureDriftText(architecturePath: string): string {
   return `When a task changes the stack, module layout, conventions or commands, update ${architecturePath} in the same run so it stays true, and mention the update in your report.`
 }
@@ -96,6 +105,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
       parts.push(architectureText(archPath))
       if (role.reportsTo === null) parts.push(architectureDriftText(archPath))
     }
+    if (role.reportsTo === null) parts.push(orgChangeText())
     const brief = briefText(project.brief)
     if (brief) parts.push(brief)
   }

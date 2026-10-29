@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ArchitectureSpec, Project, Proposal, ProjectSetup } from '@shared/types'
+import type { ArchitectureSpec, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
 import { setupKindLabel } from '@shared/setup'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
@@ -35,6 +35,45 @@ export class SetupService {
     return kind === 'new'
       ? `Set up this new project. Idea: ${project.brief.trim() || '(no description yet)'}`
       : `Read this existing project and set it up for OrgAI.`
+  }
+
+  /** The visible first message of a retrospective session. */
+  retroPrompt(record: RunRecord): string {
+    const task = record.summary.prompt.replace(/\s+/g, ' ').trim().slice(0, 140)
+    return `Retrospective on the run "${task}${record.summary.prompt.length > 140 ? '…' : ''}": review how the org chart performed and propose the revisions it needs.`
+  }
+
+  /** What happened in a run, condensed for the Architect: outcomes per role, warnings, and the final report. */
+  retroContext(record: RunRecord): string {
+    const s = record.summary
+    const agents = Object.values(record.agents)
+    const byId = new Map(agents.map((a) => [a.id, a]))
+    const mins = s.endedAt ? Math.round((s.endedAt - s.startedAt) / 60000) : null
+    const lines: string[] = [
+      `Run record (${s.kind} run ${s.id}): status ${s.status}, ${mins === null ? 'still open' : `${mins} min`}, estimated cost $${s.totalCostUsd.toFixed(2)}${s.error ? `, error: ${s.error}` : ''}.`,
+      `Task: ${s.prompt.trim()}`,
+      '',
+      'Agents:'
+    ]
+    for (const a of agents) {
+      const parent = a.parentId ? byId.get(a.parentId)?.name ?? a.parentId : null
+      const wt = a.worktree ? `, branch ${a.worktree.status}${a.worktree.changedFiles?.length ? ` (${a.worktree.changedFiles.length} files)` : ''}` : ''
+      const result = (a.result ?? a.lastText ?? '').replace(/\s+/g, ' ').trim().slice(0, 240)
+      lines.push(
+        `- ${a.name} [${a.roleSlug}, ${a.model ?? 'model unknown'}]${parent ? ` under ${parent}` : ''}: ${a.state}, ${a.inputTokens + a.outputTokens} tokens, $${a.costUsd.toFixed(2)}${wt}${result ? `. Report: ${result}` : ''}`
+      )
+    }
+    const noteworthy = record.logs.filter((l) => l.level !== 'info').map((l) => `- [${l.level}] ${l.message.slice(0, 200)}`)
+    if (noteworthy.length) lines.push('', 'Warnings and errors from the harness:', ...noteworthy.slice(0, 40))
+    const denied = record.transcript.filter((e) => e.block.kind === 'tool_result' && e.block.isError).length
+    if (denied) lines.push('', `${denied} tool call${denied === 1 ? '' : 's'} returned an error during the run.`)
+    const userTurns = record.transcript.filter((e) => e.block.kind === 'user').map((e) => (e.block.kind === 'user' ? e.block.text : '')).slice(1)
+    if (userTurns.length) lines.push('', 'Follow-up messages from the user during the run:', ...userTurns.map((t) => `- ${t.replace(/\s+/g, ' ').slice(0, 200)}`))
+    const root = agents.find((a) => a.parentId === null)
+    const finalText = record.transcript.filter((e) => e.agentId === root?.id && e.block.kind === 'text').map((e) => (e.block.kind === 'text' ? e.block.text : '')).pop()
+    if (finalText) lines.push('', 'Final report from the orchestrator:', finalText.trim().slice(0, 2500))
+    const text = lines.join('\n')
+    return text.length > 14000 ? `${text.slice(0, 14000)}\n… (run record truncated)` : text
   }
 
   /** Context appended to the first message but kept out of the transcript. */

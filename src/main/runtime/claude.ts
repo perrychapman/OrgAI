@@ -631,7 +631,7 @@ class ClaudeSession implements RuntimeSession {
       })
       harnessServer = buildHarnessServer(tools, SETUP_TOOLS_INSTRUCTIONS)
       extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
-    } else if (this.isolation) {
+    } else {
       const tools = workTools(this.ctx, { integratePending: (wt) => this.integrator.integratePending(wt) })
       harnessServer = buildHarnessServer(tools)
       extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)

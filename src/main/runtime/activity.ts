@@ -13,7 +13,8 @@ export const HARNESS_TOOL_ACTIVITY: Record<string, string> = {
   [PROPOSAL_TOOLS.orgChart]: 'Proposing the org chart…',
   [PROPOSAL_TOOLS.settings]: 'Proposing run settings…',
   [PROPOSAL_TOOLS.complete]: 'Wrapping up setup…',
-  [PROPOSAL_TOOLS.question]: 'Asking you a question…'
+  [PROPOSAL_TOOLS.question]: 'Asking you a question…',
+  [PROPOSAL_TOOLS.orgChange]: 'Proposing an org chart change…'
 }
 
 /** Label for one of the harness's own tools (bare name). */

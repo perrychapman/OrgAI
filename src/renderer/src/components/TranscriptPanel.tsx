@@ -18,6 +18,7 @@ function RunHistory(): ReactElement {
   const history = useAppStore((s) => s.history)
   const openRun = useAppStore((s) => s.openRun)
   const focusComposer = useAppStore((s) => s.focusComposer)
+  const startRetro = useAppStore((s) => s.startRetro)
   const current = useAppStore(activeRun)
   const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
   if (history.length === 0) return <div className="entry system">No runs yet for this project.</div>
@@ -66,6 +67,26 @@ function RunHistory(): ReactElement {
                 }}
               >
                 Continue
+              </span>
+            )}
+            {r.kind === 'work' && (r.status === 'finished' || r.status === 'error') && (
+              <span
+                role="button"
+                tabIndex={0}
+                className="btn sm ghost"
+                title="Have the Architect review this run and revise the org chart where roles struggled"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void startRetro(r.id)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  void startRetro(r.id)
+                }}
+              >
+                Retrospective
               </span>
             )}
           </div>

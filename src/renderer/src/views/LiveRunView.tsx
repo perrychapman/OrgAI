@@ -67,6 +67,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const selectAgent = useAppStore((s) => s.selectAgent)
   const startRun = useAppStore((s) => s.startRun)
   const startSetup = useAppStore((s) => s.startSetup)
+  const startRetro = useAppStore((s) => s.startRetro)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const interrupt = useAppStore((s) => s.interrupt)
   const stopRun = useAppStore((s) => s.stopRun)
@@ -335,6 +336,15 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                 Session {status}
                 {run.summary.error ? `: ${run.summary.error.slice(0, 60)}` : ''}
               </span>
+            )}
+            {!sessionOpen && run.summary.kind === 'work' && (status === 'finished' || status === 'error') && (
+              <button
+                className="btn sm"
+                title="Have the Architect review this run and revise the org chart where roles struggled"
+                onClick={() => void startRetro(run.summary.id)}
+              >
+                Org retrospective
+              </button>
             )}
           </div>
         )}

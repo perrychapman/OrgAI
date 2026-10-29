@@ -38,8 +38,11 @@ const draftRole = (name: string, reportsTo: string | null, spawnable: string[] =
 describe('setupTools', () => {
   it('lists the proposal tools by bare name', () => {
     const names = setupTools(fakeCtx()).map((t) => t.name)
-    expect(names.sort()).toEqual(Object.values(PROPOSAL_TOOLS).sort())
+    // propose_org_change belongs to work runs, not setup.
+    const setupNames = Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange)
+    expect(names.sort()).toEqual(setupNames.sort())
     expect(names).not.toContain(INTEGRATE_TOOL)
+    expect(names).not.toContain(PROPOSAL_TOOLS.orgChange)
   })
 
   it('propose_architecture returns APPROVED and sends the payload without the title', async () => {

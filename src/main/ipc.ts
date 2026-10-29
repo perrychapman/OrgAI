@@ -54,6 +54,19 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
       hiddenContext: setup.hiddenContext(project)
     })
   })
+  ipcMain.handle(IPC.setupRetro, async (_e, input: { projectId: string; runId: string }) => {
+    const existing = projects.get(input.projectId)
+    if (!existing) throw new Error('Project not found')
+    const record = runs.get(input.runId)
+    if (!record || record.summary.projectId !== existing.id) throw new Error('Run not found')
+    const project = await setup.prepare(existing)
+    return runs.start({
+      project,
+      kind: 'setup',
+      prompt: setup.retroPrompt(record),
+      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record)}`
+    })
+  })
   ipcMain.handle(
     IPC.setupDecide,
     (_e, input: { runId: string; proposalId: string; decision: ProposalDecision }) =>
