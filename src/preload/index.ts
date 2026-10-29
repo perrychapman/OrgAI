@@ -34,6 +34,10 @@ const api: OrgAIApi = {
     discardWorktree: (input) => ipcRenderer.invoke(IPC.maintDiscard, input),
     uninstallRepo: (projectId: string) => ipcRenderer.invoke(IPC.maintUninstall, projectId)
   },
+  permissions: {
+    list: (projectId: string) => ipcRenderer.invoke(IPC.permissionsList, projectId),
+    remove: (input) => ipcRenderer.invoke(IPC.permissionsRemove, input)
+  },
   onRunEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: RunEvent): void => cb(event)
     ipcRenderer.on(IPC.runEvent, listener)

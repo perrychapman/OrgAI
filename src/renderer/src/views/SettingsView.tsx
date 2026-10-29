@@ -20,6 +20,7 @@ import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
 import DraftPanel from '../components/DraftPanel'
 import { treeLayout } from '../lib/layout'
+import PermissionRulesPanel from '../components/PermissionRulesPanel'
 
 const nodeTypes = { role: RoleNode }
 
@@ -413,6 +414,7 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           <span className="hint">More providers plug in as runtime adapters. Claude is the only one wired up so far.</span>
         </div>
       </div>
+      <PermissionRulesPanel project={project} />
     </div>
   )
 }

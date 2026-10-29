@@ -199,10 +199,27 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>
                 <div className="what">{p.summary}</div>
-                <div className="row">
-                  <button className="btn primary sm" onClick={() => void decide(p.id, { behavior: 'allow' })}>
-                    Allow
+                {p.ruleLabels && p.ruleLabels.length > 0 && (
+                  <div className="rules" title="What “Allow for session” and “Always allow” approve">
+                    {p.ruleLabels.map((r) => (
+                      <code key={r}>{r}</code>
+                    ))}
+                  </div>
+                )}
+                <div className="row" style={{ flexWrap: 'wrap' }}>
+                  <button className="btn primary sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'once' })}>
+                    Allow once
                   </button>
+                  {p.suggestions && p.suggestions.length > 0 && (
+                    <>
+                      <button className="btn sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'session' })}>
+                        Allow for session
+                      </button>
+                      <button className="btn sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'project' })}>
+                        Always allow (project)
+                      </button>
+                    </>
+                  )}
                   <button
                     className="btn sm"
                     onClick={() => void decide(p.id, { behavior: 'deny', message: 'The user declined this action. Find another way or ask.' })}

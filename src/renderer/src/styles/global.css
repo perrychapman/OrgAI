@@ -845,6 +845,20 @@ textarea {
   max-height: 90px;
   overflow: auto;
 }
+.permission .rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -4px 0 8px;
+  font-size: 11px;
+}
+.permission .rules code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  word-break: break-all;
+}
 
 .legend {
   position: absolute;

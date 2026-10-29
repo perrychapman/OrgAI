@@ -305,9 +305,33 @@ export interface PermissionRequest {
   input: unknown
   /** Human description built by the harness. */
   summary: string
+  /** Rule updates that would stop prompts for matching calls (provider suggestions or harness-derived). */
+  suggestions?: PermissionSuggestion[]
+  /** Human-readable rules the suggestions grant, e.g. "Bash(npm test:*)". Shown on the card. */
+  ruleLabels?: string[]
 }
 
-export type PermissionDecision = { behavior: 'allow' } | { behavior: 'deny'; message: string }
+/** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */
+export type PermissionScope = 'once' | 'session' | 'project'
+
+/** One permission rule: a tool name plus optional content, written as `Tool(content)`. */
+export interface PermissionRuleSpec {
+  toolName: string
+  ruleContent?: string
+}
+
+/** Structured-clone-safe copy of a provider permission update (the Claude SDK's PermissionUpdate). */
+export type PermissionSuggestion =
+  | {
+      type: 'addRules' | 'replaceRules' | 'removeRules'
+      rules: PermissionRuleSpec[]
+      behavior: 'allow' | 'deny' | 'ask'
+      destination: string
+    }
+  | { type: 'addDirectories' | 'removeDirectories'; directories: string[]; destination: string }
+  | { type: 'setMode'; mode: string; destination: string }
+
+export type PermissionDecision = { behavior: 'allow'; scope?: PermissionScope } | { behavior: 'deny'; message: string }
 
 // ---------- Run events (main -> renderer) ----------
 
@@ -381,6 +405,12 @@ export interface OrgAIApi {
     get(runId: string): Promise<RunRecord | null>
     decide(input: { runId: string; requestId: string; decision: PermissionDecision }): Promise<void>
   }
+  permissions: {
+    /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
+    list(projectId: string): Promise<string[]>
+    /** Remove one saved allow rule; returns the remaining rules. */
+    remove(input: { projectId: string; rule: string }): Promise<string[]>
+  }
   onRunEvent(cb: (event: RunEvent) => void): () => void
   auth: {
     status(): Promise<{ loggedIn: boolean; method?: string; detail?: string }>
@@ -409,5 +439,7 @@ export const IPC = {
   maintIntegrate: 'maintenance:integrateWorktree',
   maintDiscard: 'maintenance:discardWorktree',
   maintUninstall: 'maintenance:uninstallRepo',
-  authStatus: 'auth:status'
+  authStatus: 'auth:status',
+  permissionsList: 'permissions:list',
+  permissionsRemove: 'permissions:remove'
 } as const

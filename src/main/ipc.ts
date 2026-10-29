@@ -7,6 +7,7 @@ import type { RunManager } from './runtime/runManager'
 import type { SetupService } from './setup/service'
 import type { MaintenanceService } from './maintenance'
 import { draftOrgChart } from './ai/draft'
+import { listRules, removeRule } from './runtime/permissionRules'
 
 export function registerIpc(projects: ProjectStore, runs: RunManager, setup: SetupService, maintenance: MaintenanceService): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
@@ -72,6 +73,17 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
   ipcMain.handle(IPC.maintUninstall, (_e, projectId: string) => maintenance.uninstallRepo(projectId))
 
   ipcMain.handle(IPC.authStatus, () => authStatus())
+
+  ipcMain.handle(IPC.permissionsList, (_e, projectId: string) => {
+    const project = projects.get(projectId)
+    if (!project) throw new Error('Project not found')
+    return listRules(project.path)
+  })
+  ipcMain.handle(IPC.permissionsRemove, (_e, input: { projectId: string; rule: string }) => {
+    const project = projects.get(input.projectId)
+    if (!project) throw new Error('Project not found')
+    return removeRule(project.path, input.rule)
+  })
 }
 
 type AuthStatus = { loggedIn: boolean; method?: string; detail?: string }
