@@ -6,6 +6,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - `npm run typecheck` runs both tsconfigs (node + web). Keep it clean. TypeScript 6: no `baseUrl`, paths are `./`-relative.
 - Shared types live in `src/shared/types.ts`. Anything crossing IPC must be defined there and be structured-clone safe.
 - The renderer only sees normalized `RunEvent`s. Vendor specifics stay inside `src/main/runtime/<provider>.ts`.
+- Adding a provider: the adapter is SDK event mapping plus hook mechanics only (spawn enforcement, deciding isolation
+  at spawn time, reporting an agent's real cwd, exposing tools). Harness tools live in `harnessTools.ts`, role
+  prompts in `prompts.ts`, activity strings in `activity.ts`, the worktree state machine in `integration.ts`
+  (`WorktreeIntegrator`, adapter supplies `notify`), permission scopes in `permissionRules.ts`. `mock.ts` is the
+  reference adapter; `npm test` runs vitest (`*.test.ts` beside the modules) and never spends tokens.
 - Claude Agent SDK facts verified against v0.3.312 (see `scripts/smoke-*.mjs`):
   - `task_started` (system message) arrives before the `SubagentStart` hook and carries `task_id` (= `agent_id`),
     `tool_use_id` of the spawning Agent call, `subagent_type`, `description`, optional `parent_task_id`.

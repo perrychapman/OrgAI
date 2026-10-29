@@ -5,7 +5,8 @@
 
 // ---------- Providers ----------
 
-export type ProviderId = 'claude'
+/** 'mock' is a scripted, token-free adapter for UI work and tests; registered only with ORGAI_MOCK=1. */
+export type ProviderId = 'claude' | 'mock'
 
 /** How a role authenticates with its provider. */
 export type ProviderAuth =

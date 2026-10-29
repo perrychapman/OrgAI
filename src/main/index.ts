@@ -7,6 +7,7 @@ import { SettingsStore } from './store/settings'
 import { RunStore } from './store/runs'
 import { RunManager } from './runtime/runManager'
 import { ClaudeAdapter } from './runtime/claude'
+import { MockAdapter } from './runtime/mock'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
 import { registerIpc } from './ipc'
@@ -71,7 +72,9 @@ app.whenReady().then(() => {
   const runStore = new RunStore(dataDir)
   const setup = new SetupService(projects)
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
-  runManager = new RunManager({ claude: new ClaudeAdapter() }, broadcast, runStore, setup, keepRunsFor)
+  // The scripted mock adapter (no tokens) is opt-in; a project uses it only when its provider.id is "mock".
+  const adapters = { claude: new ClaudeAdapter(), ...(process.env.ORGAI_MOCK === '1' ? { mock: new MockAdapter() } : {}) }
+  runManager = new RunManager(adapters, broadcast, runStore, setup, keepRunsFor)
   registerIpc(projects, runManager, setup, new MaintenanceService(projects), settings)
   notifier = new Notifier({
     projectOfRun: (runId) => {

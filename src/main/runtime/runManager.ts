@@ -55,7 +55,7 @@ export class RunManager {
   private runs = new Map<string, ActiveRun>()
 
   constructor(
-    private adapters: Record<ProviderId, RuntimeAdapter>,
+    private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
     private broadcast: (e: RunEvent) => void,
     private store: RunStore,
     private setup: SetupService,

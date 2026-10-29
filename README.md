@@ -33,6 +33,8 @@ src/shared/         types shared across processes (Project, Role, RunEvent, IPC 
 src/main/           Electron main process
   runtime/types.ts  RuntimeAdapter / RuntimeSession interfaces
   runtime/claude.ts Claude adapter over @anthropic-ai/claude-agent-sdk
+  runtime/mock.ts   scripted, token-free adapter for tests and UI work (ORGAI_MOCK=1)
+  runtime/harnessTools.ts, prompts.ts, activity.ts, integration.ts  provider-neutral session core
   runtime/runManager.ts  active runs, permission and proposal round-trips, event broadcast
   setup/profile.ts  token-free repository profile (tree, manifests, docs, git log)
   setup/service.ts  setup prompts, applying approved proposals, writing .orgai/ARCHITECTURE.md
@@ -93,3 +95,13 @@ scripts/            SDK smoke tests (cost well under a cent each)
 
 Implement `RuntimeAdapter` in `src/main/runtime/`, register it in `src/main/index.ts`, and add its id to
 `ProviderId` in `src/shared/types.ts`. The renderer never talks to a vendor directly.
+
+An adapter only maps its SDK's events and hooks onto normalized `RunEvent`s. The rest is shared in
+`src/main/runtime/`: `harnessTools.ts` (proposal, `ask_user`, `complete_setup` and `integrate_worktrees` tools as
+zod schemas plus handlers; expose them through your SDK's custom-tool mechanism), `prompts.ts` (role system prompts),
+`activity.ts` (node activity strings), `integration.ts` (`WorktreeIntegrator`: commit, review, merge and orchestrator
+notifications for isolated reports; you supply `notify`), and `permissionRules.ts` (suggestions and allow scopes).
+`mock.ts` is a reference adapter that uses all of them without an SDK.
+
+For UI work without spending tokens, start the app with `ORGAI_MOCK=1` and set a project's `provider.id` to `"mock"`
+in `projects.json` under the data folder; `ORGAI_MOCK_SCRIPT=<file.json>` swaps in your own `MockScript`.
