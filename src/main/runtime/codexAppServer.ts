@@ -23,6 +23,15 @@ const PLATFORM_PACKAGES: Record<string, { pkg: string; triple: string }> = {
   'win32-arm64': { pkg: '@openai/codex-win32-arm64', triple: 'aarch64-pc-windows-msvc' }
 }
 
+/**
+ * OrgAI's own CODEX_HOME under the data dir. The connection service (login, account, models) and the Codex
+ * adapter (runs) both use it, so OrgAI keeps its own ChatGPT login and config.toml and never loads the
+ * user's personal ~/.codex configuration (their MCP servers, profiles, approval defaults).
+ */
+export function codexHomeDir(dataDir: string): string {
+  return join(dataDir, 'codex')
+}
+
 export interface CodexBinary {
   /** The native codex executable. */
   path: string
