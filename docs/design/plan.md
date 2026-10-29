@@ -1,6 +1,6 @@
 # OrgAI UI overhaul: implementation plan
 
-Inputs: `ui-review.md` (findings), `spec.md` (design). Nothing here is implemented yet and nothing needs to be built before the decisions D1-D12 in `spec.md` section 11 are answered (D1, D3, D4 and D11 gate the most work).
+Inputs: `ui-review.md` (findings), `spec.md` (design). Status: the user approved all recommendations D1-D12 in `spec.md` section 11 as written (2026-10-29).
 
 Planning rules, taken from `.orgai/ARCHITECTURE.md` and `CLAUDE.md`:
 
