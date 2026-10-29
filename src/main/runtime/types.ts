@@ -1,5 +1,10 @@
 import type {
   ImageAttachment,
+  McpInstallDecision,
+  McpInstallRequest,
+  McpRegistrySearchInput,
+  McpRegistrySearchResult,
+  McpServerSpec,
   MergeDecision,
   MergeReview,
   PermissionDecision,
@@ -79,6 +84,27 @@ export interface RuntimeContext {
   maxAutoContinues?: number
   /** Delay between a turn ending and the continuation check, in ms. Tests shorten it. */
   continuationDelayMs?: number
+  /**
+   * request_mcp_install: put an agent's MCP server request in front of the user (mcpInstall.request event)
+   * and block until mcp:answerInstall, like requestProposal. Resolves `{ approved: false, scope: 'run' }` if
+   * the run ends first. The decision may carry secret values for the adapter to pass to the server's env or
+   * headers; they must never be emitted, logged or persisted outside safeStorage.
+   * Optional until the implementation brief wires it into RunManager; a missing hook means "deny".
+   */
+  requestMcpInstall?(req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>): Promise<McpInstallDecision>
+  /** search_mcp_registry: query the official MCP Registry. Optional until implemented. */
+  searchMcpRegistry?(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
+  /**
+   * list_mcp_servers and adapter setup: the MCP servers available in this run (the project's enabled servers
+   * plus any approved with scope 'run'). Secret-free specs; resolve values with resolveMcpSecrets.
+   * Optional until implemented.
+   */
+  mcpServers?(): McpServerSpec[]
+  /**
+   * Secret values for one server, keyed by secretEnv / secretHeaders name, read from safeStorage. Main
+   * process only; never put them in RunEvents. Optional until implemented.
+   */
+  resolveMcpSecrets?(serverId: string): Promise<{ env: Record<string, string>; headers: Record<string, string> }>
 }
 
 export interface RuntimeSession {

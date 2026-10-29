@@ -133,6 +133,8 @@ export class SetupService {
         if (rules.length) addRules(project.path, rules)
         return this.projects.save(next)
       }
+      case 'mcpServers':
+        throw new Error('not implemented')
     }
   }
 

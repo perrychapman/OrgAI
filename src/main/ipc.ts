@@ -4,18 +4,40 @@ import type {
   AppSettings,
   AppSettingsInfo,
   AuthStatusResult,
+  ConnectionId,
+  ConnectionInfo,
+  ConnectionLoginStart,
+  ConnectionSecretInput,
+  ConnectionStatus,
   ContinueRunInput,
   DraftRequest,
+  McpAnswerInstallInput,
+  McpAssistInput,
+  McpMutationResult,
+  McpRegistrySearchInput,
+  McpRegistrySearchResult,
+  McpSecretInput,
+  McpServerInfo,
+  McpTestResult,
+  McpUpsertInput,
   MergeDecision,
+  ModelsQuery,
   PermissionDecision,
+  PluginUpsertInput,
   Project,
   ProposalDecision,
+  ProviderConnection,
+  ProviderModel,
   QuestionAnswer,
+  RemapModelsInput,
+  RemapModelsOutput,
+  RunSummary,
   SendRunInput,
   SetupKind,
   StartRunInput
 } from '@shared/types'
-import { IPC } from '@shared/types'
+import { CONNECTION_IDS, IPC } from '@shared/types'
+import { builtinModels, mcpSecretNames } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
 import type { SetupService } from './setup/service'
@@ -162,6 +184,70 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     if (!project) throw new Error('Project not found')
     return removeRule(project.path, input.rule)
   })
+
+  registerConnectionIpc(projects, settings)
+  registerMcpIpc(projects)
+}
+
+/** Contract stub: the implementation brief replaces these handlers. */
+function notImplemented(): never {
+  throw new Error('not implemented')
+}
+
+/**
+ * Connections, model catalog and remaps. Reads answer from settings and the builtin catalog; everything that
+ * probes, logs in, stores secrets or remaps is a stub until the implementation lands.
+ */
+function registerConnectionIpc(projects: ProjectStore, settings: SettingsStore): void {
+  const catalog = (query?: ModelsQuery): ProviderModel[] => {
+    const s = settings.get()
+    const ids = query?.connection ? [query.connection] : CONNECTION_IDS.filter((id) => s.connections[id].enabled)
+    return ids.flatMap((id) => builtinModels(id))
+  }
+  const info = (id: ConnectionId): ConnectionInfo => ({
+    connection: settings.get().connections[id],
+    status: { state: 'disconnected' },
+    modelCount: builtinModels(id).length
+  })
+  ipcMain.handle(IPC.connectionsList, (): ConnectionInfo[] => CONNECTION_IDS.map(info))
+  ipcMain.handle(IPC.connectionsUpdate, (_e, connection: ProviderConnection): ConnectionInfo => {
+    if (!CONNECTION_IDS.includes(connection?.id)) throw new Error('Unknown connection')
+    const current = settings.get()
+    // SettingsStore.set keeps the stored hasApiKey and syncs the legacy providerAuth.
+    settings.set({ ...current, connections: { ...current.connections, [connection.id]: connection } })
+    return info(connection.id)
+  })
+  ipcMain.handle(IPC.connectionsSetSecret, (_e, _input: ConnectionSecretInput): ConnectionInfo => notImplemented())
+  ipcMain.handle(IPC.connectionsTest, (_e, _id: ConnectionId): ConnectionStatus => notImplemented())
+  ipcMain.handle(IPC.connectionsConnect, (_e, _id: ConnectionId): ConnectionInfo => notImplemented())
+  ipcMain.handle(IPC.connectionsLogin, (_e, _id: 'openai'): ConnectionLoginStart => notImplemented())
+  ipcMain.handle(IPC.connectionsCancelLogin, (_e, _loginId: string): void => notImplemented())
+  ipcMain.handle(IPC.connectionsLogout, (_e, _id: ConnectionId): ConnectionInfo => notImplemented())
+  ipcMain.handle(IPC.modelsList, (_e, query?: ModelsQuery): ProviderModel[] => catalog(query))
+  ipcMain.handle(IPC.modelsRefresh, (_e, query?: ModelsQuery): ProviderModel[] => catalog(query))
+  ipcMain.handle(IPC.projectsRemapModels, (_e, input: RemapModelsInput): RemapModelsOutput => {
+    if (!projects.get(input.projectId)) throw new Error('Project not found')
+    return notImplemented()
+  })
+}
+
+/** MCP servers, plugins, registry search and install approvals. mcp:list reads the project; the rest are stubs. */
+function registerMcpIpc(projects: ProjectStore): void {
+  ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => {
+    const project = projects.get(projectId)
+    if (!project) throw new Error('Project not found')
+    // No secret store yet, so every secret slot reports missing.
+    return (project.mcpServers ?? []).map((spec) => ({ spec, envSet: [], headersSet: [], missingSecrets: mcpSecretNames(spec) }))
+  })
+  ipcMain.handle(IPC.mcpUpsert, (_e, _input: McpUpsertInput): McpMutationResult => notImplemented())
+  ipcMain.handle(IPC.mcpRemove, (_e, _input: { projectId: string; serverId: string }): McpMutationResult => notImplemented())
+  ipcMain.handle(IPC.mcpSetSecret, (_e, _input: McpSecretInput): McpMutationResult => notImplemented())
+  ipcMain.handle(IPC.mcpTest, (_e, _input: { projectId: string; serverId: string }): McpTestResult => notImplemented())
+  ipcMain.handle(IPC.mcpRegistrySearch, (_e, _input: McpRegistrySearchInput): McpRegistrySearchResult => notImplemented())
+  ipcMain.handle(IPC.mcpAnswerInstall, (_e, _input: McpAnswerInstallInput): void => notImplemented())
+  ipcMain.handle(IPC.mcpStartAssist, (_e, _input: McpAssistInput): RunSummary => notImplemented())
+  ipcMain.handle(IPC.pluginsUpsert, (_e, _input: PluginUpsertInput): Project => notImplemented())
+  ipcMain.handle(IPC.pluginsRemove, (_e, _input: { projectId: string; pluginId: string }): Project => notImplemented())
 }
 
 type AuthStatus = { loggedIn: boolean; method?: string; detail?: string }
