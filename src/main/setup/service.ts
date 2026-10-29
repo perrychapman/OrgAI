@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ArchitectureSpec, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
+import type { ArchitectureSpec, McpServerSpec, McpServersProposalPayload, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
+import { validateSpec } from '../mcp/validate'
 import { setupKindLabel } from '@shared/setup'
 import { isPermissionMode } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
@@ -17,7 +18,14 @@ export const CLAUDE_MD_MARKER = '<!-- orgai:architecture -->'
  * the user approved to the project and the repo.
  */
 export class SetupService {
-  constructor(private projects: ProjectStore) {}
+  constructor(
+    private projects: ProjectStore,
+    /** Optional hooks into other services; the constructor stays backward compatible. */
+    private hooks: {
+      /** An approved MCP proposal removed a server: forget its stored secrets. */
+      removeMcpSecrets?(projectId: string, serverId: string): void
+    } = {}
+  ) {}
 
   /** Profile the working directory and record it on the project. */
   async prepare(project: Project): Promise<Project> {
@@ -134,8 +142,35 @@ export class SetupService {
         return this.projects.save(next)
       }
       case 'mcpServers':
-        throw new Error('not implemented')
+        return this.applyMcpServers(project, proposal.payload)
     }
+  }
+
+  /**
+   * Apply an approved MCP assistant proposal: validate everything first (nothing is saved when any spec is
+   * invalid), then replace/add the specs, remove the listed servers and drop role grants to them.
+   */
+  private applyMcpServers(project: Project, p: McpServersProposalPayload): Project {
+    const removeIds = new Set((Array.isArray(p.remove) ? p.remove : []).filter((id): id is string => typeof id === 'string'))
+    let next = (project.mcpServers ?? []).filter((s) => !removeIds.has(s.id))
+    const now = new Date().toISOString()
+    const problems: string[] = []
+    for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
+      const spec: McpServerSpec = { ...raw, enabled: raw.enabled !== false, source: raw.source ?? 'user', addedAt: raw.addedAt || now }
+      const others = next.filter((s) => s.id !== spec.id)
+      const errors = validateSpec(spec, others)
+      if (errors.length) {
+        problems.push(`${typeof spec.name === 'string' ? spec.name : 'server'}: ${errors.join(' ')}`)
+        continue
+      }
+      next = next.some((s) => s.id === spec.id) ? next.map((s) => (s.id === spec.id ? spec : s)) : [...next, spec]
+    }
+    if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
+    const removed = (project.mcpServers ?? []).filter((s) => removeIds.has(s.id))
+    const roles = project.roles.map((r) => (r.mcpServers?.some((id) => removeIds.has(id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => !removeIds.has(id)) } : r))
+    const saved = this.projects.save({ ...project, roles, mcpServers: next })
+    for (const s of removed) this.hooks.removeMcpSecrets?.(project.id, s.id)
+    return saved
   }
 
   markScaffolded(projectId: string): Project {

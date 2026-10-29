@@ -1,6 +1,13 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import type {
+  AdapterChoice,
   ImageAttachment,
+  McpInstallDecision,
+  McpInstallOutcome,
+  McpInstallRequest,
+  McpRegistrySearchInput,
+  McpRegistrySearchResult,
+  McpServerSpec,
   MergeDecision,
   MergeReview,
   PermissionDecision,
@@ -9,7 +16,9 @@ import type {
   Proposal,
   ProposalDecision,
   ProviderId,
+  ProviderModel,
   QuestionAnswer,
+  Role,
   RunEvent,
   RunKind,
   RunPlan,
@@ -17,15 +26,17 @@ import type {
   RunSummary,
   UserQuestion
 } from '@shared/types'
-import { newId } from '@shared/defaults'
+import { adapterForProject, mcpSecretNames, modelFamily, newId } from '@shared/defaults'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
-import { architectRole } from '@shared/setup'
-import { ROOT_AGENT_ID, type RuntimeAdapter, type RuntimeSession } from './types'
+import { architectRole, mcpAssistantRole } from '@shared/setup'
+import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { describePlanChange } from './continuation'
+import { validateSpec } from '../mcp/validate'
+import { assistContext } from '../mcp/assist'
 
 /** The path as the file system spells it (true case on Windows). Falls back to the input when it cannot be resolved. */
 export function canonicalPath(p: string): string {
@@ -66,6 +77,10 @@ interface ActiveRun {
   pendingProposals: Map<string, (d: ProposalDecision) => void>
   pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
   pendingMerges: Map<string, (d: MergeDecision) => void>
+  /** request_mcp_install cards waiting for mcp:answerInstall. */
+  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision) => void }>
+  /** Servers approved with scope 'run': kept in memory (secret values included) until the run ends. */
+  runServers: Map<string, { spec: McpServerSpec; secrets: Record<string, string> }>
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
   record: RunRecord
   flushTimer?: ReturnType<typeof setTimeout>
@@ -82,7 +97,22 @@ export interface RunManagerOptions {
   opusGuardThreshold?: () => number
   /** Delay between a turn ending and the automatic-continue check (RuntimeContext.continuationDelayMs). */
   continuationDelayMs?: number
+  /** The model catalog used to decide which adapter a LiteLLM project runs on (adapterForProject). Default: empty. */
+  catalog?: () => ProviderModel[]
+  /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
+  resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
+  /** MCP servers and secrets (McpService). Missing = runs have no MCP servers and cannot install any. */
+  mcp?: {
+    enabledServers(project: Project): McpServerSpec[]
+    resolve(projectId: string, spec: McpServerSpec, extra?: Record<string, string>): ResolvedMcpServer
+    persistInstall(projectId: string, spec: McpServerSpec, secrets: Record<string, string>): Project
+    searchRegistry(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
+  }
 }
+
+/** Human label of a model family for refusal messages. */
+const FAMILY_LABEL: Record<string, string> = { claude: 'Claude', openai: 'OpenAI', other: 'other' }
+const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
 export interface StartInput {
   project: Project
@@ -132,10 +162,31 @@ export class RunManager {
     this.store.removeProject(projectId)
   }
 
+  /** The adapter a project's runs use (also used by the org chart drafter). Does not check role mismatches. */
   adapterFor(project: Project): RuntimeAdapter {
-    const adapter = this.adapters[project.provider.id]
-    if (!adapter) throw new Error(`No runtime adapter for provider "${project.provider.id}"`)
-    return adapter
+    return this.choose(project, 'setup').adapter
+  }
+
+  /**
+   * Pick the adapter for a run. Work runs refuse to start when some roles would need the other adapter;
+   * setup-like runs use a built-in role and only need the root's adapter.
+   */
+  private choose(project: Project, kind: RunKind): { adapter: RuntimeAdapter; choice: AdapterChoice } {
+    const choice = adapterForProject(project, this.options.catalog?.() ?? [])
+    if (!isSetupLikeRun(kind) && choice.mismatched.length) {
+      const catalog = this.options.catalog?.() ?? []
+      const bad = choice.mismatched.map((id) => project.roles.find((r) => r.id === id)).filter((r): r is Role => !!r)
+      const names = bad.length ? bad.map((r) => r.name) : choice.mismatched
+      const families = [...new Set(bad.map((r) => catalog.find((m) => m.id === r.model && m.connection === choice.connection)?.family ?? modelFamily(r.model)))]
+      const other = families.length ? families.map((f) => (f === 'other' ? 'non-Claude' : (FAMILY_LABEL[f] ?? f))).join('/') : 'other'
+      const rootFamily = choice.family ?? 'claude'
+      throw new Error(
+        `Roles ${names.join(', ')} use ${other}-family models, but this ${CONNECTION_LABEL[choice.connection] ?? choice.connection} project's orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}. Pick models of one family.`
+      )
+    }
+    const adapter = this.adapters[choice.adapter]
+    if (!adapter) throw new Error(`No runtime adapter for provider "${choice.adapter}"`)
+    return { adapter, choice }
   }
 
   async start({
@@ -150,6 +201,10 @@ export class RunManager {
     plan: carriedPlan,
     images: rawImages
   }: StartInput): Promise<RunSummary> {
+    // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
+    const { adapter, choice } = this.choose(project, kind)
+    const connection = this.options.resolveConnection?.(project, choice)
+    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project)
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     const summary: RunSummary = {
       id: newId('run'),
@@ -167,6 +222,8 @@ export class RunManager {
       pendingProposals: new Map(),
       pendingQuestions: new Map(),
       pendingMerges: new Map(),
+      pendingInstalls: new Map(),
+      runServers: new Map(),
       record: { summary, agents: {}, transcript: [], logs: [] }
     }
     this.runs.set(summary.id, active)
@@ -216,29 +273,70 @@ export class RunManager {
       }
     }
 
-    const adapter = this.adapterFor(project)
+    const setupLike = isSetupLikeRun(kind)
+    const mcp = this.options.mcp
+    /** The project as saved after installs this run made; the canonical path is kept. */
+    let live: Project = project
+    const projectServers = (): McpServerSpec[] => (setupLike ? [] : (mcp?.enabledServers(live) ?? live.mcpServers?.filter((s) => s.enabled) ?? []))
+    const runServerSpecs = (): McpServerSpec[] => [...active.runServers.values()].map((r) => r.spec)
+    const allServers = (): McpServerSpec[] => {
+      const base = projectServers()
+      return [...base, ...runServerSpecs().filter((s) => !base.some((b) => b.id === s.id))]
+    }
+    const resolveOne = (spec: McpServerSpec): ResolvedMcpServer => {
+      const extra = active.runServers.get(spec.id)?.secrets
+      if (mcp) return mcp.resolve(live.id, spec, extra)
+      const env = { ...(spec.env ?? {}) }
+      const headers = { ...(spec.headers ?? {}) }
+      for (const n of spec.secretEnv ?? []) if (extra?.[n]) env[n] = extra[n]
+      for (const n of spec.secretHeaders ?? []) if (extra?.[n]) headers[n] = extra[n]
+      return { spec, env, headers }
+    }
     try {
       // A new project's folder may not exist yet, and the provider needs a real cwd.
       mkdirSync(project.path, { recursive: true })
       // Git and Claude Code compare paths case-sensitively on Windows; a project path typed in a different
       // case than the folder on disk makes worktree isolation refuse to start. Use the on-disk spelling.
       project = { ...project, path: canonicalPath(project.path) }
+      live = project
       if (scaffold) {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
       }
-      active.session = await adapter.start({
+      const ctx: RuntimeContext = {
         run: summary,
         project,
-        roles: kind === 'setup' ? [architectRole()] : project.roles,
+        roles: kind === 'setup' ? [architectRole()] : kind === 'mcp-assist' ? [mcpAssistantRole()] : project.roles,
         prompt,
         images: images.length ? images : undefined,
         hiddenContext,
         resumeSessionId,
         resumeBaseCostUsd,
         emit,
+        ...(connection ? { connection } : {}),
         requestPermission: (req) => this.requestPermission(active, req),
-        requestProposal: (req) => this.requestProposal(active, req),
+        requestProposal: (req) =>
+          this.requestProposal(active, req, (saved) => {
+            // Keep the harness tools' view of the project current after an approved MCP change.
+            if (req.kind === 'mcpServers') {
+              live = { ...saved, path: live.path }
+              ctx.project = live
+            }
+          }),
+        requestMcpInstall: (req) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })),
+        ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
+        mcpServers: allServers,
+        resolveMcpSecrets: async (serverId) => {
+          const spec = allServers().find((s) => s.id === serverId)
+          if (!spec) return { env: {}, headers: {} }
+          const r = resolveOne(spec)
+          return {
+            env: Object.fromEntries((spec.secretEnv ?? []).filter((n) => r.env[n] !== undefined).map((n) => [n, r.env[n]])),
+            headers: Object.fromEntries((spec.secretHeaders ?? []).filter((n) => r.headers[n] !== undefined).map((n) => [n, r.headers[n]]))
+          }
+        },
+        resolvedMcpServers: async () => allServers().map(resolveOne),
+        plugins: () => (setupLike ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
         requestQuestion: (req) => this.requestQuestion(active, req),
         noteArchitectureUpdated: async () => {
           const updated = this.setup.markArchitectureUpdated(project.id)
@@ -251,7 +349,8 @@ export class RunManager {
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
-        pendingInteractions: () => active.pending.size + active.pendingProposals.size + active.pendingQuestions.size + active.pendingMerges.size,
+        pendingInteractions: () =>
+          active.pending.size + active.pendingProposals.size + active.pendingQuestions.size + active.pendingMerges.size + active.pendingInstalls.size,
         autoContinue: project.autoContinue !== false,
         maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
@@ -259,7 +358,8 @@ export class RunManager {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
-      })
+      }
+      active.session = await adapter.start(ctx)
       void active.session.finished.finally(() => {
         for (const resolve of active.pending.values()) resolve({ behavior: 'deny', message: 'Run ended' })
         active.pending.clear()
@@ -276,6 +376,13 @@ export class RunManager {
           this.broadcast({ type: 'merge.resolved', runId: summary.id, reviewId, decision: { behavior: 'hold' } })
         }
         active.pendingMerges.clear()
+        // Unanswered installs are denied; servers approved for this run only (and their secrets) are forgotten.
+        for (const [requestId, p] of active.pendingInstalls) {
+          p.resolve({ approved: false, scope: 'run' })
+          this.broadcast({ type: 'mcpInstall.resolved', runId: summary.id, requestId, outcome: { approved: false, scope: 'run' } })
+        }
+        active.pendingInstalls.clear()
+        active.runServers.clear()
         this.flush(active)
         this.runs.delete(summary.id)
         this.store.prune(this.keepRunsFor)
@@ -363,7 +470,8 @@ export class RunManager {
 
   private requestProposal(
     active: ActiveRun,
-    req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>
+    req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>,
+    onApplied?: (saved: Project) => void
   ): Promise<ProposalDecision> {
     const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now() } as Proposal
     return new Promise((resolve) => {
@@ -371,6 +479,7 @@ export class RunManager {
         if (decision.behavior === 'approve') {
           try {
             const updated = this.setup.applyProposal(active.summary.projectId, proposal)
+            onApplied?.(updated)
             this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
           } catch (e) {
             const message = (e as Error).message
@@ -439,6 +548,72 @@ export class RunManager {
     active.pendingMerges.delete(reviewId)
     resolve(decision)
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+  }
+
+  // ---------- MCP install requests ----------
+
+  private requestMcpInstall(
+    active: ActiveRun,
+    req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>,
+    getProject: () => Project,
+    setProject: (saved: Project) => void
+  ): Promise<McpInstallDecision> {
+    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now() }
+    return new Promise((resolve) => {
+      active.pendingInstalls.set(request.id, {
+        request,
+        resolve: (raw) => {
+          const decision = this.settleInstall(active, request, raw, getProject(), setProject)
+          // Secrets stop here: the agent and the renderer only ever see the outcome.
+          const outcome: McpInstallOutcome = {
+            approved: decision.approved,
+            scope: decision.scope,
+            ...(decision.note ? { note: decision.note } : {}),
+            ...(decision.spec ? { spec: decision.spec } : {})
+          }
+          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome })
+          resolve(outcome)
+        }
+      })
+      this.broadcast({ type: 'mcpInstall.request', runId: active.summary.id, request })
+    })
+  }
+
+  /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
+  private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
+    const scope = raw?.scope === 'project' ? 'project' : 'run'
+    const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
+    if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
+    const spec: McpServerSpec = raw.spec ?? request.spec
+    const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)].filter((s) => s.id !== spec.id)
+    const errors = validateSpec(spec, others)
+    if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }
+    const secrets: Record<string, string> = {}
+    for (const n of mcpSecretNames(spec)) {
+      const v = raw.secrets?.[n]
+      if (typeof v === 'string' && v) secrets[n] = v
+    }
+    if (scope === 'project' && this.options.mcp) {
+      try {
+        const saved = this.options.mcp.persistInstall(project.id, spec, secrets)
+        setProject(saved)
+        this.broadcast({ type: 'project.updated', runId: active.summary.id, project: saved })
+      } catch (e) {
+        return { approved: false, scope, note: `The harness could not save the server: ${(e as Error).message}` }
+      }
+    } else {
+      active.runServers.set(spec.id, { spec, secrets })
+    }
+    return { approved: true, scope: scope === 'project' && this.options.mcp ? 'project' : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec: raw.spec } : {}) }
+  }
+
+  /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */
+  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision): void {
+    const active = this.runs.get(runId)
+    const pending = active?.pendingInstalls.get(requestId)
+    if (!active || !pending) return
+    active.pendingInstalls.delete(requestId)
+    pending.resolve(decision)
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {

@@ -18,6 +18,17 @@ describe('buildRolePrompt', () => {
     expect(text).not.toContain('Parallel work is safe')
   })
 
+  it('tells the root and canSpawn leads to reach for MCP servers, never reports, never setup runs', () => {
+    const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
+    expect(text).toContain('call list_mcp_servers')
+    expect(text).toContain('search_mcp_registry, then request_mcp_install')
+    expect(text).toContain('never ask for the same server twice in a run')
+    const mid = { ...eng, canSpawn: true, spawnable: [rev.id] }
+    expect(buildRolePrompt(mid, roles, project(), { isSetup: false, isolation: false })).toContain('request_mcp_install')
+    expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).not.toContain('request_mcp_install')
+    expect(buildRolePrompt(lead, roles, project(), { isSetup: true, isolation: false })).not.toContain('request_mcp_install')
+  })
+
   it('adds the orchestrator isolation paragraph only with isolation', () => {
     const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: true })
     expect(text).toContain('Parallel work is safe')
@@ -66,8 +77,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, brief
-    expect(parts).toHaveLength(9)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, MCP guidance, brief
+    expect(parts).toHaveLength(10)
   })
 
   it('tells only the work-run orchestrator to plan and work unattended', () => {
