@@ -1346,6 +1346,8 @@ textarea {
   display: block;
   color: var(--text-dim);
   font-size: 11.5px;
+}
+
 /* ---------- Run strip (several runs per project) ---------- */
 
 .run-strip {
@@ -1450,6 +1452,8 @@ textarea {
   margin-top: 8px;
   cursor: pointer;
   user-select: none;
+}
+
 /* ---------- Merge review and diff view (review-before-merge) ---------- */
 
 .proposal.merge-review {
@@ -1496,6 +1500,8 @@ textarea {
 .agent-node .worktree.wt-held {
   color: var(--text-dim);
   border-style: solid;
+}
+
 /* Text an agent is still streaming; replaced by the final entry when its message completes. */
 .entry.text.streaming {
   border-style: dashed;
