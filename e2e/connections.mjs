@@ -36,7 +36,7 @@ try {
       await shot(`connections-${w}x${h}-${theme}`)
 
       // Project settings
-      await page.locator('.nav-item', { hasText: NAME }).click()
+      await page.locator('.nav-item', { hasText: NAME }).first().click()
       await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
       await page.getByRole('button', { name: 'Project settings', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
@@ -56,6 +56,40 @@ try {
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
       await shot(`role-model-${w}x${h}-${theme}`)
     }
+  }
+
+  // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
+  const CANARY = 'sk-e2e-canary-9f3a7c1d'
+  await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+  await page.waitForSelector('#connections-title', { timeout: 10_000 })
+  const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
+  if ((await lite.count()) === 1) {
+    if ((await lite.locator('#litellm-url').count()) === 0) await lite.getByRole('button', { name: /^Expand/ }).click()
+    const stored = await page.evaluate((k) => window.orgai.connections.setSecret({ id: 'litellm', apiKey: k }).then(() => true, () => false), CANARY)
+    console.log('canary key stored:', stored)
+    await lite.locator('#litellm-url').fill('http://127.0.0.1:9')
+    await lite.getByRole('button', { name: 'Test and connect' }).click()
+    await page.waitForFunction(
+      () => /error|fail|reach|refused|ECONN|timed/i.test(document.querySelector('[data-provider=litellm] [data-testid=connection-status]')?.textContent ?? ''),
+      null,
+      { timeout: 30_000 }
+    ).catch(() => {})
+    const status = (await lite.locator('[data-testid=connection-status]').textContent()) ?? ''
+    check(/error|fail|reach|refused|ECONN|timed/i.test(status), 'LiteLLM test against an unreachable URL shows an error state', status)
+    check(!status.includes(CANARY), 'status text has no secret')
+    check((await page.locator('[data-testid=connection-card]').count()) === 3, 'connections page still lists three cards after the failed test')
+    await shot('litellm-unreachable')
+    const userData = await app.evaluate(({ app: a }) => a.getPath('userData'))
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (['runs', 'Cache', 'Code Cache', 'GPUCache', 'blob_storage'].includes(e.name) ? [] : walk(path.join(d, e.name))) : [path.join(d, e.name)]))
+    const leaks = walk(userData).filter((f) => { try { return fs.statSync(f).size < 20e6 && fs.readFileSync(f).includes(CANARY) } catch { return false } })
+    check(leaks.length === 0, 'no plain-text secret in settings, projects or logs in the data dir', leaks.join(', '))
+    await lite.getByRole('button', { name: 'Remove connection' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click()
+    await sleep(800)
+    check((await page.evaluate(() => window.orgai.connections.list())).find((c) => c.connection.id === 'litellm')?.connection.hasApiKey !== true, 'Remove connection clears the stored key')
+    await page.locator('.nav-item', { hasText: NAME }).first().click()
+  } else {
+    check(false, 'LiteLLM card present')
   }
 } catch (e) {
   check(false, 'connections flow ran without throwing', e.stack ?? String(e))
