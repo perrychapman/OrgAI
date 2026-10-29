@@ -2,6 +2,8 @@
 
 Status: proposal, awaiting approval of the decisions in section 11. Findings behind it are in `ui-review.md`; the build order is in `plan.md`.
 
+Related: connections, model remap, the model picker, MCP servers and plugins, and the live MCP install approval are specified in `providers-and-mcp.md`.
+
 Goal from the user: the app should feel **modern and clean**, and controls and data that are currently poorly organized should be grouped and easy to find.
 
 Design stance: a calm, dense-but-airy desktop tool in the vein of Linear / VS Code settings / Vercel dashboard. Neutral surfaces, one accent, status color only for status, hierarchy from type weight and spacing rather than from borders and uppercase labels.
