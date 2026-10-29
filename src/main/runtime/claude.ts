@@ -1,4 +1,6 @@
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import {
   createSdkMcpServer,
   query,
@@ -60,6 +62,26 @@ function isOpusModel(model: string | undefined): boolean {
  * role prompts (prompts.ts), activity strings (activity.ts), worktree integration (integration.ts)
  * and permission scopes (permissionRules.ts).
  */
+
+/**
+ * Inside a packaged Electron app the SDK resolves its native CLI to a path inside app.asar, which
+ * cannot be spawned. electron-builder unpacks that binary beside the archive (app.asar.unpacked),
+ * so point the SDK there. Outside a package this returns undefined and the SDK's default is used.
+ */
+function packagedClaudeExecutable(): string | undefined {
+  try {
+    const req = createRequire(import.meta.url)
+    const pkgJson = req.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`)
+    if (!pkgJson.includes('app.asar')) return undefined
+    const dir = dirname(pkgJson).replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
+    const bin = join(dir, process.platform === 'win32' ? 'claude.exe' : 'claude')
+    return existsSync(bin) ? bin : undefined
+  } catch {
+    return undefined
+  }
+}
+const CLAUDE_EXECUTABLE = packagedClaudeExecutable()
+const EXECUTABLE_OPTION = CLAUDE_EXECUTABLE ? { pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE } : {}
 
 const ROOT_ID = ROOT_AGENT_ID
 /** MCP server name for the harness's own tools; tool names surface as mcp__orgai__<name>. */
@@ -659,6 +681,7 @@ class ClaudeSession implements RuntimeSession {
         return { behavior: 'deny', message: decision.message }
       }
     }
+    if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
     if (harnessServer) options.mcpServers = { [ORGAI_MCP]: harnessServer }
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     const savedRules = listRules(project.path)
@@ -968,7 +991,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       release?.({ value: undefined as never, done: true })
     }
     try {
-      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [] } })
+      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [], ...EXECUTABLE_OPTION } })
       // Drain the stream in the background so the process keeps running until we abort it.
       const drain = (async () => {
         try {
@@ -1003,7 +1026,8 @@ export class ClaudeAdapter implements RuntimeAdapter {
       tools: [],
       maxTurns: 1,
       settingSources: [],
-      permissionMode: 'dontAsk'
+      permissionMode: 'dontAsk',
+      ...EXECUTABLE_OPTION
     }
     if (input.model) options.model = input.model
     let text = ''

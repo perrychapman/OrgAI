@@ -7,6 +7,9 @@ files:
   - out/**
   - package.json
 asar: true
+# The SDK's native CLI must live outside the archive to be spawned; the adapter points the SDK at it.
+asarUnpack:
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/**
 npmRebuild: false
 # build/icon.png (512x512, from `npm run icon`) is converted to ICO/ICNS by electron-builder.
 icon: build/icon.png
