@@ -316,6 +316,8 @@ export type RunEvent =
   | { type: 'agent.upsert'; runId: string; agent: AgentInstance }
   | { type: 'agent.remove'; runId: string; agentId: string }
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
+  /** Text the agent is streaming right now; '' clears it once the completed message lands. Never persisted. */
+  | { type: 'agent.partial'; runId: string; agentId: string; text: string }
   | { type: 'permission.request'; runId: string; request: PermissionRequest }
   | { type: 'permission.resolved'; runId: string; requestId: string }
   | { type: 'run.cost'; runId: string; totalCostUsd: number }

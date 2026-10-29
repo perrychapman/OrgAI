@@ -6,6 +6,7 @@ import {
   type AgentDefinition,
   type HookCallback,
   type McpSdkServerConfigWithInstance,
+  type ModelUsage,
   type Options,
   type PreToolUseHookInput,
   type PostToolUseHookInput,
@@ -23,6 +24,8 @@ import { PROPOSAL_TOOLS } from '@shared/setup'
 import { toRoles } from '../ai/draft'
 import type { CompletionInput, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { commitLeftovers, findWorktree, inspectPending, integrateWorktree, isGitRepo, pendingWorktrees, prepareRepo } from './worktrees'
+import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
+import { PartialText } from './claudePartial'
 
 const INTEGRATE_TOOL = 'integrate_worktrees'
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit'])
@@ -335,7 +338,11 @@ class ClaudeSession implements RuntimeSession {
   private spawnDescription = new Map<string, string>()
   private sessionLogged = false
   /** agent id -> message id -> latest usage, so streamed and re-sent messages are counted once. */
-  private usageByMessage = new Map<string, Map<string, { input: number; output: number }>>()
+  private usageByMessage = new Map<string, Map<string, { input: number; output: number; model?: string; mix: TokenMix }>>()
+  /** Per-model USD rates from the latest result message; applied to new tokens until the next result. */
+  private costRates: CostRates | null = null
+  /** Streamed text per agent, throttled into agent.partial events. */
+  private partial = new PartialText((agentId, text) => this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text }))
   private seenBlocks = new Set<string>()
   private seenToolUses = new Set<string>()
 
@@ -428,6 +435,24 @@ class ClaudeSession implements RuntimeSession {
     if (activity !== undefined) a.activity = activity
     if (state === 'done' || state === 'error') a.endedAt = Date.now()
     this.upsert(a)
+  }
+
+  /**
+   * Split the run's cost across agents: per-model rates come from the result's cumulative modelUsage,
+   * each agent pays for its own token mix at those rates. Emits agent.upsert for every agent whose cost moved.
+   */
+  private apportionCost(modelUsage: Record<string, ModelUsage> | undefined): void {
+    const rates = ratesFromModelUsage(modelUsage)
+    if (!rates) return
+    this.costRates = rates
+    for (const [agentId, perAgent] of this.usageByMessage) {
+      const a = this.agents.get(agentId)
+      if (!a) continue
+      const cost = costOf(perAgent.values(), rates)
+      if (Math.abs(cost - a.costUsd) < 1e-9) continue
+      a.costUsd = cost
+      this.upsert(a)
+    }
   }
 
   // ---------- worktree integration ----------
@@ -622,6 +647,7 @@ class ClaudeSession implements RuntimeSession {
       a.state = 'done'
       a.activity = 'Reported back'
       a.endedAt = Date.now()
+      this.partial.clear(a.id, true)
       this.upsert(a)
       this.integrateIfIsolated(a)
       return {}
@@ -677,6 +703,8 @@ class ClaudeSession implements RuntimeSession {
       allowDangerouslySkipPermissions: !this.isSetup && project.permissionMode === 'bypassPermissions',
       settingSources: ['project'],
       hooks: this.buildHooks(),
+      // stream_event messages drive the live "agent.partial" text; transcripts still come from complete messages.
+      includePartialMessages: true,
       abortController: this.abort,
       env,
       stderr: (data) => {
@@ -747,6 +775,7 @@ class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId, status: 'error', error: message })
       }
     } finally {
+      this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
           a.state = 'done'
@@ -824,10 +853,18 @@ class ClaudeSession implements RuntimeSession {
         if (usage) {
           // Streaming emits one message per content block and the CLI may re-send a message after a
           // permission answer, all sharing message.id. Count each message id once, using its latest usage.
-          const perAgent = this.usageByMessage.get(agentId) ?? new Map<string, { input: number; output: number }>()
+          const perAgent = this.usageByMessage.get(agentId) ?? new Map<string, { input: number; output: number; model?: string; mix: TokenMix }>()
+          const mix: TokenMix = {
+            input: usage.input_tokens ?? 0,
+            output: usage.output_tokens ?? 0,
+            cacheRead: usage.cache_read_input_tokens ?? 0,
+            cacheCreation: usage.cache_creation_input_tokens ?? 0
+          }
           perAgent.set(messageId, {
-            input: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-            output: usage.output_tokens ?? 0
+            input: mix.input + mix.cacheRead + mix.cacheCreation,
+            output: mix.output,
+            model: msg.message.model || perAgent.get(messageId)?.model || a.model,
+            mix
           })
           this.usageByMessage.set(agentId, perAgent)
           let input = 0
@@ -838,6 +875,8 @@ class ClaudeSession implements RuntimeSession {
           }
           a.inputTokens = input
           a.outputTokens = output
+          // Live estimate at the last known per-model rates; the next result message reconciles it.
+          if (this.costRates) a.costUsd = costOf(perAgent.values(), this.costRates)
         }
         if (msg.message.model) a.model = msg.message.model
         // A background report can wake an idle orchestrator into a new turn.
@@ -866,7 +905,13 @@ class ClaudeSession implements RuntimeSession {
           }
         }
         if (msg.error) this.log('warn', `Assistant message error: ${JSON.stringify(msg.error)}`)
+        // The completed text block replaces whatever was streamed for it.
+        if (msg.message.content.some((b) => b.type === 'text')) this.partial.clear(agentId)
         this.upsert(a)
+        break
+      }
+      case 'stream_event': {
+        this.partial.onEvent(this.resolveAgentId(msg), msg.event)
         break
       }
       case 'user': {
@@ -888,8 +933,9 @@ class ClaudeSession implements RuntimeSession {
       }
       case 'result': {
         this.emit({ type: 'run.cost', runId, totalCostUsd: msg.total_cost_usd })
+        this.apportionCost(msg.modelUsage)
+        this.partial.clear(ROOT_ID, true)
         const root = this.ensureAgent(ROOT_ID)
-        root.costUsd = msg.total_cost_usd
         if (msg.subtype === 'success') {
           root.result = msg.result
           root.state = 'idle'
