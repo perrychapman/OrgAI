@@ -67,8 +67,15 @@ scripts/            SDK smoke tests (cost well under a cent each)
 - When the report finishes, the harness commits whatever it left, merges the branch into the main checkout with a
   merge commit, removes the worktree, and tells the orchestrator what landed. A conflict keeps the branch and hands
   it to the orchestrator, which can resolve it with git or call `integrate_worktrees` after committing its own work.
-- Nested spawns (depth 2 and below) stay in their parent's checkout. Nodes on the canvas show the worktree state:
-  isolated, merging, merged, no changes, or merge conflict.
+- Isolation nests. A writing report spawned by an isolated report gets its own worktree too, on a branch cut from
+  its parent's branch. When it finishes, its branch merges into the parent's worktree, not the main checkout, and
+  the parent's branch carries it to the main checkout later. A parent that finishes first waits until its reports
+  are integrated. If a child conflicts with its parent, the child's branch is kept and the orchestrator is told
+  both branch names; the parent still merges, and the child's branch stays pending for `integrate_worktrees` or
+  the maintenance panel. Writers under a report that is not isolated (a read-only lead) share its checkout.
+- Merges into the same checkout run one at a time. With review on, nested merges are reviewed against the parent's
+  branch. Nodes on the canvas show the worktree state: isolated, merging, waiting for its reports, merged, no
+  changes, or merge conflict.
 
 ## Cleanup
 

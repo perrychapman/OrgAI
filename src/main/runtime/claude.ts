@@ -151,8 +151,8 @@ class ClaudeSession implements RuntimeSession {
   private isSetup: boolean
   /** Writing reports get their own git worktree. Only for work runs inside a git repository. */
   private isolation: boolean
-  /** Agent tool_use ids that were given isolation:"worktree". */
-  private isolatedSpawns = new Set<string>()
+  /** Agent tool_use ids that were given isolation:"worktree" -> the spawning agent's id (ROOT_ID for the orchestrator). */
+  private isolatedSpawns = new Map<string, string>()
   /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
   private integrator: WorktreeIntegrator
   private sessionLogged = false
@@ -344,11 +344,14 @@ class ClaudeSession implements RuntimeSession {
           }
         }
         this.setState(agentId, 'delegating', describe(input.tool_name, toolInput))
-        // Writing reports spawned by the orchestrator get their own worktree. Nested spawns stay in
-        // their parent's checkout; merging worktrees into worktrees is not worth the complexity.
+        // Writing reports get their own worktree when their parent is the orchestrator or is itself
+        // isolated (nested isolation). A nested spawn runs from the parent's worktree, so Claude Code
+        // cuts the child's branch from the parent's branch; the integrator merges it back into the
+        // parent's worktree (see worktrees.ts). Writers under a non-isolated parent share its checkout.
         const target = this.rolesBySlug.get(requested)
-        if (this.isolation && !input.agent_id && target && canWrite(target) && !toolInput.isolation) {
-          this.isolatedSpawns.add(input.tool_use_id)
+        const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
+        if (this.isolation && parentIsolated && target && canWrite(target) && !toolInput.isolation) {
+          this.isolatedSpawns.set(input.tool_use_id, agentId)
           return {
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -624,14 +627,19 @@ class ClaudeSession implements RuntimeSession {
           const existing = this.agents.get(msg.task_id)
           if (msg.description) this.integrator.noteBrief(msg.task_id, msg.description)
           // Claude Code creates the worktree itself at a known path; the first tool call confirms the real cwd.
-          const isolated = !!msg.tool_use_id && this.isolatedSpawns.has(msg.tool_use_id)
+          // A nested spawn's worktree lands inside its parent's worktree; integration re-locates it with git either way.
+          const spawner = msg.tool_use_id ? this.isolatedSpawns.get(msg.tool_use_id) : undefined
+          const parentWt = spawner && spawner !== ROOT_ID ? this.integrator.worktreeOf(spawner) : undefined
           const worktree: WorktreeInfo | undefined =
             this.integrator.worktreeOf(msg.task_id) ??
-            (isolated
+            (spawner
               ? this.integrator.track(msg.task_id, {
-                  path: join(this.ctx.project.path, '.claude', 'worktrees', `agent-${msg.task_id}`),
+                  path: join(parentWt?.path ?? this.ctx.project.path, '.claude', 'worktrees', `agent-${msg.task_id}`),
                   branch: `worktree-agent-${msg.task_id}`,
-                  status: 'active'
+                  status: 'active',
+                  ...(parentWt
+                    ? { mergeTarget: 'parent' as const, parentAgentId: spawner, parentBranch: parentWt.branch }
+                    : { mergeTarget: 'main' as const })
                 })
               : undefined)
           this.upsert({

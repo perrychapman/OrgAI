@@ -277,18 +277,25 @@ export interface AgentInstance {
 export type WorktreeStatus =
   | 'active' // the agent is working in it
   | 'merging' // the harness is committing and merging it
-  | 'merged' // merged into the main checkout and removed
+  | 'merged' // merged into its merge target (main checkout or parent's worktree) and removed
   | 'empty' // the report changed nothing; removed
   | 'conflict' // could not merge automatically; branch kept for the orchestrator
   | 'removed' // gone before the harness looked
   | 'review' // waiting for the user to review the diff before merging
   | 'held' // the user chose to hold it; branch kept for later
+  | 'waiting-children' // the agent finished; its branch merges after its own isolated reports are integrated
 
 export interface WorktreeInfo {
   path: string
   branch: string
   status: WorktreeStatus
   changedFiles?: string[]
+  /** Where the branch merges when the agent finishes. Absent means 'main' (older records). */
+  mergeTarget?: 'main' | 'parent'
+  /** Nested isolation: the isolated agent that spawned this one; its worktree is the merge target. */
+  parentAgentId?: string
+  /** Nested isolation: the parent's branch this one was cut from and merges into. */
+  parentBranch?: string
 }
 
 /** A report branch still sitting in the repository, as shown by the maintenance panel. */

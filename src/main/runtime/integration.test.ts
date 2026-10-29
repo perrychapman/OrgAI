@@ -241,3 +241,174 @@ describe('WorktreeIntegrator', () => {
     expect(await integrator.reconcileLeftovers()).toBeNull()
   })
 })
+
+describe('nested isolation', () => {
+  const P = '/repo/.claude/worktrees/agent-p1'
+  const PARENT: WorktreeInfo = { path: P, branch: 'worktree-agent-p1', status: 'active', mergeTarget: 'main' }
+  const child = (id: string): WorktreeInfo => ({
+    path: `${P}/.claude/worktrees/agent-${id}`,
+    branch: `worktree-agent-${id}`,
+    status: 'active',
+    mergeTarget: 'parent',
+    parentAgentId: 'p1',
+    parentBranch: 'worktree-agent-p1'
+  })
+
+  /** integrateWorktree stand-in that lands each branch in its own status (default merged). */
+  function integrateBy(statuses: Record<string, WorktreeStatus>) {
+    vi.mocked(integrateWorktree).mockImplementation(async (_root, info, _msg, review) => {
+      let final = statuses[info.branch] ?? 'merged'
+      if (review) {
+        const d = await review(['a.ts'])
+        final = d.behavior === 'discard' ? 'removed' : d.behavior === 'hold' ? 'held' : final
+      }
+      return { info: { ...info, status: final, changedFiles: ['a.ts'] }, message: `${info.branch} ${final}` }
+    })
+  }
+
+  function nested(reviewMerges = false, decision: MergeDecision = { behavior: 'merge' }) {
+    const s = setup(reviewMerges, decision)
+    s.agents.set('p1', agent('p1', 'Lead'))
+    s.agents.set('c1', { ...agent('c1', 'Dev1'), parentId: 'p1' })
+    s.agents.set('c2', { ...agent('c2', 'Dev2'), parentId: 'p1' })
+    s.integrator.track('p1', PARENT)
+    s.integrator.track('c1', child('c1'))
+    s.integrator.track('c2', child('c2'))
+    const roots = () => vi.mocked(integrateWorktree).mock.calls.map((c) => `${c[1].branch} -> ${c[0]}`)
+    const statusesOf = (id: string) => s.transitions.filter((t) => t.id === id).map((t) => t.status)
+    return { ...s, roots, statusesOf }
+  }
+
+  beforeEach(() => {
+    vi.mocked(findWorktree).mockReset()
+    vi.mocked(findWorktree).mockResolvedValue(null)
+  })
+
+  it('merges a depth-2 report into its parent worktree, quietly', async () => {
+    integrateBy({})
+    const { integrator, notes, logs, roots } = nested()
+    await integrator.onSubagentFinished('c1')
+    expect(roots()).toEqual([`worktree-agent-c1 -> ${P}`])
+    expect(integrator.worktreeOf('c1')?.status).toBe('merged')
+    // A clean nested merge is logged only; the lead verifies and its branch carries it on.
+    expect(notes).toEqual([])
+    expect(logs()).toContain('info: Dev1: worktree-agent-c1 merged')
+  })
+
+  it('makes a parent that finishes first wait for its children, then merges it into main', async () => {
+    integrateBy({})
+    const { integrator, notes, roots, statusesOf } = nested()
+    await integrator.onSubagentFinished('p1')
+    expect(integrator.worktreeOf('p1')?.status).toBe('waiting-children')
+    expect(commitLeftovers).toHaveBeenCalledWith(P, expect.stringMatching(/^Lead: /))
+    expect(integrateWorktree).not.toHaveBeenCalled()
+
+    await integrator.onSubagentFinished('c1')
+    expect(integrator.worktreeOf('p1')?.status).toBe('waiting-children')
+    await integrator.onSubagentFinished('c2')
+    expect(roots()).toEqual([`worktree-agent-c1 -> ${P}`, `worktree-agent-c2 -> ${P}`, 'worktree-agent-p1 -> /repo'])
+    expect(statusesOf('p1')).toEqual(['waiting-children', 'merging', 'merged'])
+    expect(notes).toEqual([
+      "Harness: Lead's report was merged into the main checkout. worktree-agent-p1 merged Verify the merged result before relying on it."
+    ])
+    // Finishing again (SubagentStop and task_notification both fire) changes nothing.
+    await integrator.onSubagentFinished('p1')
+    expect(integrateWorktree).toHaveBeenCalledTimes(3)
+  })
+
+  it('merges a parent with no unsettled children right away', async () => {
+    integrateBy({})
+    const { integrator, roots } = nested()
+    await integrator.onSubagentFinished('c1')
+    await integrator.onSubagentFinished('c2')
+    await integrator.onSubagentFinished('p1')
+    expect(roots()).toEqual([`worktree-agent-c1 -> ${P}`, `worktree-agent-c2 -> ${P}`, 'worktree-agent-p1 -> /repo'])
+    expect(commitLeftovers).not.toHaveBeenCalled()
+  })
+
+  it('holds a child that conflicts with its parent, names both branches, and still merges the parent', async () => {
+    integrateBy({ 'worktree-agent-c1': 'conflict' })
+    // After the parent leaves, git reports the child's worktree at its moved location.
+    vi.mocked(findWorktree).mockImplementation(async (_root, id) =>
+      id === 'c1' && vi.mocked(integrateWorktree).mock.calls.length >= 3
+        ? { path: '/repo/.claude/worktrees/agent-c1', branch: 'worktree-agent-c1' }
+        : null
+    )
+    const { integrator, notes, roots, logs } = nested()
+    await integrator.onSubagentFinished('p1')
+    await integrator.onSubagentFinished('c1')
+    expect(integrator.worktreeOf('c1')?.status).toBe('conflict')
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain("Harness: Dev1's report (spawned by Lead) could not be merged into Lead's worktree automatically.")
+    expect(notes[0]).toContain('Child branch: worktree-agent-c1')
+    expect(notes[0]).toContain('Parent branch: worktree-agent-p1')
+    expect(notes[0]).toContain('call integrate_worktrees')
+    expect(logs()).toContain('warn: Dev1: worktree-agent-c1 conflict')
+    // The conflicted child counts as settled; the parent still waits for c2.
+    expect(integrator.worktreeOf('p1')?.status).toBe('waiting-children')
+    await integrator.onSubagentFinished('c2')
+    expect(roots()).toEqual([`worktree-agent-c1 -> ${P}`, `worktree-agent-c2 -> ${P}`, 'worktree-agent-p1 -> /repo'])
+    expect(integrator.worktreeOf('p1')?.status).toBe('merged')
+    // The pending child now targets the main checkout at its moved worktree.
+    expect(integrator.worktreeOf('c1')).toMatchObject({ status: 'conflict', mergeTarget: 'main', path: '/repo/.claude/worktrees/agent-c1' })
+
+    integrateBy({})
+    await integrator.integratePending({ path: '/repo/.claude/worktrees/agent-c1', branch: 'worktree-agent-c1' })
+    expect(vi.mocked(integrateWorktree).mock.calls.at(-1)![0]).toBe('/repo')
+  })
+
+  it('retries a conflicted child into its parent while the parent is still running', async () => {
+    integrateBy({ 'worktree-agent-c1': 'conflict' })
+    const { integrator } = nested()
+    await integrator.onSubagentFinished('c1')
+    integrateBy({})
+    const line = await integrator.integratePending({ path: child('c1').path, branch: 'worktree-agent-c1' })
+    expect(line).toBe('worktree-agent-c1: worktree-agent-c1 merged')
+    expect(vi.mocked(integrateWorktree).mock.calls.at(-1)![0]).toBe(P)
+  })
+
+  it('refuses to integrate a branch whose report is still running', async () => {
+    const { integrator } = nested()
+    const line = await integrator.integratePending({ path: P, branch: 'worktree-agent-p1' })
+    expect(line).toBe('worktree-agent-p1: still in progress (active); the harness merges it when its report finishes.')
+    expect(integrateWorktree).not.toHaveBeenCalled()
+  })
+
+  it('reviews a child against its parent branch before merging into the parent', async () => {
+    integrateBy({})
+    const { integrator, ctx, statusesOf, logs } = nested(true, { behavior: 'merge' })
+    await integrator.onSubagentFinished('c1')
+    expect(diffWorktree).toHaveBeenCalledWith(P, 'worktree-agent-c1')
+    expect(ctx.requestMergeReview).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'c1', agentName: 'Dev1', branch: 'worktree-agent-c1' }))
+    expect(statusesOf('c1')).toEqual(['merging', 'review', 'merging', 'merged'])
+    expect(logs()).toContain('info: Dev1: waiting for the user to review worktree-agent-c1 before merging into worktree-agent-p1.')
+  })
+
+  it('tells the orchestrator when the user holds a child, and the parent still merges', async () => {
+    integrateBy({})
+    const { integrator, notes, roots } = nested(true, { behavior: 'hold' })
+    await integrator.onSubagentFinished('p1')
+    await integrator.onSubagentFinished('c1')
+    await integrator.onSubagentFinished('c2')
+    expect(notes[0]).toContain("chose to hold it instead of merging it into Lead's branch worktree-agent-p1")
+    expect(roots()).toEqual([`worktree-agent-c1 -> ${P}`, `worktree-agent-c2 -> ${P}`, 'worktree-agent-p1 -> /repo'])
+    // The (reviewed) parent is held too in this fixture, since every review answers "hold".
+    expect(integrator.worktreeOf('p1')?.status).toBe('held')
+  })
+
+  it('serializes merges into the same worktree', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.mocked(integrateWorktree).mockImplementation(async (_root, info) => {
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((r) => setTimeout(r, 5))
+      inFlight--
+      return { info: { ...info, status: 'merged' }, message: 'ok' }
+    })
+    const { integrator } = nested()
+    await Promise.all([integrator.onSubagentFinished('c1'), integrator.onSubagentFinished('c2')])
+    expect(maxInFlight).toBe(1)
+    expect(integrateWorktree).toHaveBeenCalledTimes(2)
+  })
+})

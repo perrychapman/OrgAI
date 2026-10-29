@@ -1200,7 +1200,8 @@ textarea {
   border-color: rgba(255, 107, 107, 0.5);
   border-style: solid;
 }
-.agent-node .worktree.wt-merging {
+.agent-node .worktree.wt-merging,
+.agent-node .worktree.wt-waiting-children {
   color: var(--warn);
 }
 
