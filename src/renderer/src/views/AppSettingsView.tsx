@@ -128,7 +128,7 @@ export default function AppSettingsView(): ReactElement {
               </select>
             </div>
             <div className="field">
-              <label>Spend cap per run (USD)</label>
+              <label>Estimated-cost cap per run (API-equivalent USD)</label>
               <input
                 className="input"
                 type="number"
@@ -158,9 +158,42 @@ export default function AppSettingsView(): ReactElement {
               writing reports in git worktrees
             </label>
           </div>
+          <div className="field">
+            <label>Subscription limits</label>
+            <label className={`check ${info.defaultPreferSonnetNearLimit ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
+              <input
+                type="checkbox"
+                checked={info.defaultPreferSonnetNearLimit}
+                onChange={(e) => patch({ defaultPreferSonnetNearLimit: e.target.checked })}
+              />{' '}
+              Prefer Sonnet for new reports when the Opus weekly window is above the threshold
+            </label>
+          </div>
           <span className="hint" style={{ display: 'block', fontSize: 11, color: 'var(--text-faint)', marginBottom: 18 }}>
             These apply when a project is created. Existing projects keep their own settings.
           </span>
+
+          <div className="side-section-title" style={{ margin: '0 0 10px' }}>
+            Usage
+          </div>
+          <div className="field">
+            <label>Opus weekly threshold (%)</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={100}
+              style={{ maxWidth: 160 }}
+              value={info.opusGuardThreshold}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                if (Number.isFinite(v) && v >= 1 && v <= 100) patch({ opusGuardThreshold: v })
+              }}
+            />
+            <span className="hint">
+              Projects that prefer Sonnet near the limit spawn Opus reports on Sonnet once the Opus weekly window (or the seven-day window) reaches this.
+            </span>
+          </div>
 
           <div className="side-section-title" style={{ margin: '0 0 10px' }}>
             App

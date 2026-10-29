@@ -90,6 +90,25 @@ scripts/            SDK smoke tests (cost well under a cent each)
 - **Remove OrgAI files from repository** deletes `.orgai/ARCHITECTURE.md`, the CLAUDE.md section, the
   `.git/info/exclude` entry and any empty worktrees. It refuses while a report branch still holds unmerged work.
 
+## Subscription limits
+
+- On a claude.ai login the limits that matter are the plan's five-hour and seven-day windows (plus per-model weekly
+  windows on some plans), not dollars. While a session is live the Claude adapter polls the SDK's (experimental) usage
+  method every minute and reads the `rate_limit_event`s that accompany requests; the sidebar meter shows each window's
+  use and reset time. If the usage method is missing or fails, the meter just says usage is not reported.
+- Cost figures are the SDK's API-price estimate. On a subscription they are shown as `≈$0.09` and are not billed; the
+  per-run cost cap is then a safety cap, not money.
+- **Pause and auto-resume.** When a request is rejected at a limit, the session ends and the run is marked *paused*
+  with the reset time. At the reset the harness continues it (same SDK session) with a resume message; the live view
+  offers *Resume now* and *Cancel auto-resume*. Timers live only in the app process: after a restart a paused run shows
+  as finished and can be continued by hand. Reports cut off by the limit leave their worktrees; the continued run's
+  startup reconciliation commits them and tells the orchestrator.
+- **Window cap** (project setting): stop a run once it has used more than N% of the five-hour window. The turn is
+  interrupted and the orchestrator is told why with your next message.
+- **Prefer Sonnet near the limit** (project setting): while the Opus weekly window (or the seven-day window on plans
+  without one) is at or above the threshold in app settings (default 80%), new reports whose role uses Opus are
+  spawned on Sonnet.
+
 ## How the org chart is enforced
 
 - Each role becomes a programmatic subagent definition; the root role runs the main thread.

@@ -2,12 +2,13 @@ import type { ReactElement } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import type { RunStatus } from '@shared/types'
 import { isRunLive, projectRuns, useAppStore, type RunState } from '../store/useAppStore'
-import { formatCost } from '../lib/layout'
+import { costLabel } from '../lib/layout'
 
 function dotClass(status: RunStatus): string {
   if (status === 'running' || status === 'starting') return 'live'
   if (status === 'idle' || status === 'stopping') return 'idle'
   if (status === 'error') return 'danger'
+  if (status === 'paused') return 'paused'
   return 'ok'
 }
 
@@ -28,6 +29,7 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
   const setComposerMode = useAppStore((s) => s.setComposerMode)
   const openRun = useAppStore((s) => s.openRun)
   const dismissRun = useAppStore((s) => s.dismissRun)
+  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
 
   return (
     <div className="run-strip">
@@ -35,6 +37,7 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
         const live = isRunLive(r)
         const waiting = r.permissions.length + r.proposals.length > 0
         const active = r.summary.id === viewedRunId && composerMode === 'reply'
+        const cost = costLabel(r.summary.totalCostUsd, authMode)
         return (
           <div
             key={r.summary.id}
@@ -50,7 +53,9 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
             <span className={`run-dot ${waiting ? 'warn' : dotClass(r.summary.status)}`} />
             <span className="run-kind">{r.summary.kind === 'setup' ? 'Setup' : 'Work'}</span>
             <span className="run-prompt">{r.summary.prompt || 'run'}</span>
-            <span className="run-cost">{formatCost(r.summary.totalCostUsd)}</span>
+            <span className="run-cost" title={cost.title}>
+              {cost.text}
+            </span>
             {!live && (
               <button
                 className="run-close"

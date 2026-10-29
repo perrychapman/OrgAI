@@ -11,7 +11,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultRootModel: 'opus',
   defaultReportModel: 'sonnet',
   providerAuth: { kind: 'subscription' },
-  notifications: true
+  notifications: true,
+  opusGuardThreshold: 80,
+  defaultPreferSonnetNearLimit: false
 }
 
 /** Provider label matching an auth choice. */
@@ -148,6 +150,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
       maxConcurrentSubagents: 6,
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
+      preferSonnetNearLimit: settings.defaultPreferSonnetNearLimit,
       roles,
       setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
       createdAt: now,

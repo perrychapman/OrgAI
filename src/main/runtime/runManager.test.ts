@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, Proposal, RunEvent } from '@shared/types'
-import { RunManager } from './runManager'
+import { RESUME_TEXT, RunManager, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript } from './mock'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -52,10 +52,10 @@ function fakeSetup(p: Project) {
   return { service: service as unknown as SetupService, applied, completed, raw: service }
 }
 
-function manager(p: Project, script: MockScript = {}) {
+function manager(p: Project, script: MockScript = {}, options: RunManagerOptions = {}) {
   const setup = fakeSetup(p)
   const store = new RunStore(join(dir, 'data'))
-  const m = new RunManager({ mock: new MockAdapter({ script: { delayMs: 0, ...script } }) }, (e) => events.push(e), store, setup.service, () => 100)
+  const m = new RunManager({ mock: new MockAdapter({ script: { delayMs: 0, ...script } }) }, (e) => events.push(e), store, setup.service, () => 100, options)
   return { m, store, setup }
 }
 
@@ -213,5 +213,85 @@ describe('RunManager with the mock adapter', () => {
     const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } } })
     const { m } = manager(p)
     expect(() => m.adapterFor(p)).toThrow('No runtime adapter for provider "claude"')
+  })
+
+  describe('usage limits', () => {
+    const HOUR = 60 * 60 * 1000
+    const limitScript: MockScript = { work: [{ type: 'text', text: 'Working on it' }, { type: 'rateLimit', window: 'five_hour', untilInMs: HOUR }] }
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('pauses a run that ends at a usage limit and resumes it when the window resets', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, store } = manager(p, limitScript, { resolveProject: () => p })
+      const run = await m.start({ project: p, prompt: 'Big job' })
+
+      const paused = await waitFor(isType('run.status', (e) => e.status === 'paused'))
+      expect(events.some((e) => e.type === 'run.status' && e.status === 'finished' && e.runId === run.id)).toBe(false)
+      expect(events.some((e) => e.type === 'usage.status' && e.usage.status === 'rejected')).toBe(true)
+      expect(paused.autoResume).toBe(true)
+      expect(paused.pausedUntil).toBeGreaterThan(Date.now() + HOUR - 5000)
+      expect(paused.pauseReason).toContain('five-hour usage limit')
+      expect(paused.pauseReason).toContain('worktrees')
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+      expect(store.get(run.id)).toMatchObject({ status: 'paused', autoResume: true, pausedUntil: paused.pausedUntil })
+      expect(m.hasAutoResume(run.id)).toBe(true)
+
+      const continueRun = vi.spyOn(m, 'continueRun')
+      vi.advanceTimersByTime(HOUR + 1000)
+      await vi.waitFor(() => expect(continueRun).toHaveBeenCalledWith(p, run.id, RESUME_TEXT))
+      const next = await continueRun.mock.results[0].value
+      expect(next.resumedFrom).toBe(run.id)
+      expect(store.get(run.id)).toMatchObject({ status: 'finished', autoResume: false })
+      await m.stopAll()
+    })
+
+    it('falls back to a short pause when the limit gives no reset time', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, { work: [{ type: 'rateLimit' }] }, { resolveProject: () => p })
+      const before = Date.now()
+      await m.start({ project: p, prompt: 'Go' })
+      const paused = await waitFor(isType('run.status', (e) => e.status === 'paused'))
+      expect(paused.pausedUntil).toBeGreaterThanOrEqual(before + 5 * 60 * 1000)
+      await m.stopAll()
+    })
+
+    it('cancelAutoResume keeps the run paused; resumeNow continues it', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, store } = manager(p, limitScript, { resolveProject: () => p })
+      const run = await m.start({ project: p, prompt: 'Big job' })
+      await waitFor(isType('run.status', (e) => e.status === 'paused'))
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+
+      const continueRun = vi.spyOn(m, 'continueRun')
+      const seen = events.length
+      m.cancelAutoResume(run.id)
+      expect(m.hasAutoResume(run.id)).toBe(false)
+      expect(store.get(run.id)).toMatchObject({ status: 'paused', autoResume: false })
+      expect(events.slice(seen).find(isType('run.status'))).toMatchObject({ status: 'paused', autoResume: false })
+      vi.advanceTimersByTime(2 * HOUR)
+      await Promise.resolve()
+      expect(continueRun).not.toHaveBeenCalled()
+
+      const next = await m.resumeNow(run.id)
+      expect(continueRun).toHaveBeenCalledWith(p, run.id, RESUME_TEXT)
+      expect(next.resumedFrom).toBe(run.id)
+      await expect(m.resumeNow(run.id)).rejects.toThrow('Run is not paused')
+      await m.stopAll()
+    })
+
+    it('a run the user stops is not paused', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'hi' }] })
+      const run = await m.start({ project: p, prompt: 'Go' })
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      await m.stop(run.id)
+      await waitFor(isType('run.status', (e) => e.status === 'finished'))
+      expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
+    })
   })
 })

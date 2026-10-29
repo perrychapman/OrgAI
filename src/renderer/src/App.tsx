@@ -7,6 +7,7 @@ import SettingsView from './views/SettingsView'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import LogsLink from './components/LogsLink'
+import UsageMeter from './components/UsageMeter'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -84,6 +85,7 @@ export default function App(): ReactElement {
                   ? `Claude · ${auth.method ?? 'logged in'}`
                   : 'Claude not logged in'}
           </span>
+          <UsageMeter />
           <NotificationsToggle />
           <LogsLink />
         </div>
@@ -103,7 +105,7 @@ export default function App(): ReactElement {
               </span>
               <div className="spacer" />
               {run && (
-                <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'live' : run.summary.status === 'error' ? 'danger' : 'ok'}`}>
+                <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'live' : run.summary.status === 'error' ? 'danger' : run.summary.status === 'paused' ? 'warn' : 'ok'}`}>
                   <span className="dot" /> {run.summary.kind === 'setup' ? 'setup · ' : ''}
                   {run.summary.status}
                 </span>

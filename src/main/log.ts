@@ -128,6 +128,7 @@ export function logRunEvent(summary: RunSummary, e: RunEvent): void {
     const tag = `run ${summary.id} kind=${summary.kind} project=${summary.projectId}`
     if (e.status === 'starting') log.info(`${tag} started`)
     else if (e.status === 'finished') log.info(`${tag} finished cost=$${summary.totalCostUsd.toFixed(4)}`)
+    else if (e.status === 'paused') log.info(`${tag} paused until ${e.pausedUntil ? new Date(e.pausedUntil).toISOString() : '?'} autoResume=${!!e.autoResume}`)
     else if (e.status === 'error') log.info(`${tag} error cost=$${summary.totalCostUsd.toFixed(4)}: ${e.error ?? 'unknown error'}`)
   } else if (e.type === 'log' && (e.level === 'warn' || e.level === 'error')) {
     write(e.level, [`run ${e.runId}: ${e.message}`])

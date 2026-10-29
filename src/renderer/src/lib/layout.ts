@@ -43,6 +43,29 @@ export function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`
 }
 
+export type CostAuthMode = 'subscription' | 'apiKey' | 'unknown'
+
+export const COST_ESTIMATE_HINT = 'API-equivalent estimate; not billed on a subscription'
+
+/**
+ * A cost figure labelled for how the user pays. On a subscription (or when unknown) the SDK's cost is
+ * only an estimate at API prices, so it reads "≈$0.09"; with an API key it is real spend.
+ */
+export function costLabel(usd: number, authMode: CostAuthMode): { text: string; title: string } {
+  if (authMode === 'apiKey') return { text: formatCost(usd), title: 'API spend' }
+  return { text: `≈${formatCost(usd)}`, title: COST_ESTIMATE_HINT }
+}
+
+/** "3h 12m", "12m", "<1m" until `at` (epoch ms). */
+export function formatUntil(at: number, now = Date.now()): string {
+  const mins = Math.max(0, Math.round((at - now) / 60000))
+  if (mins < 1) return '<1m'
+  if (mins < 60) return `${mins}m`
+  const h = Math.floor(mins / 60)
+  if (h < 48) return `${h}h ${mins % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
 export function formatElapsed(startedAt: number, endedAt?: number): string {
   const ms = (endedAt ?? Date.now()) - startedAt
   const s = Math.floor(ms / 1000)

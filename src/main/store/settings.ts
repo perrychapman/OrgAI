@@ -18,6 +18,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
   }
   const budget = r.defaultMaxBudgetUsd
   const keep = Number(r.defaultKeepRuns)
+  const threshold = Number(r.opusGuardThreshold)
   return {
     defaultPermissionMode: PERMISSION_MODES.includes(r.defaultPermissionMode as PermissionMode)
       ? (r.defaultPermissionMode as PermissionMode)
@@ -28,7 +29,11 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultRootModel: str(r.defaultRootModel, d.defaultRootModel),
     defaultReportModel: str(r.defaultReportModel, d.defaultReportModel),
     providerAuth: auth(r.providerAuth),
-    notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications
+    notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
+    opusGuardThreshold:
+      r.opusGuardThreshold != null && Number.isFinite(threshold) && threshold >= 1 && threshold <= 100 ? threshold : d.opusGuardThreshold,
+    defaultPreferSonnetNearLimit:
+      typeof r.defaultPreferSonnetNearLimit === 'boolean' ? r.defaultPreferSonnetNearLimit : d.defaultPreferSonnetNearLimit
   }
 }
 

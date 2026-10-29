@@ -67,6 +67,7 @@ export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { 
     completeSetup: vi.fn(async () => {}),
     requestQuestion: vi.fn(async () => ({ selected: [] })),
     noteArchitectureUpdated: vi.fn(async () => {}),
+    rateLimited: vi.fn(),
     ...over,
     events
   }

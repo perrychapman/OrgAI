@@ -377,6 +377,13 @@ function MaintenancePanel({ project }: { project: Project }): ReactElement {
 
 function ProjectSettings({ project, onChange }: { project: Project; onChange: (p: Project) => void }): ReactElement {
   const patch = (p: Partial<Project>): void => onChange({ ...project, ...p })
+  const [opusGuard, setOpusGuard] = useState<number | null>(null)
+  useEffect(() => {
+    window.orgai.settings
+      .get()
+      .then((s) => setOpusGuard(s.opusGuardThreshold))
+      .catch(() => setOpusGuard(null))
+  }, [])
   return (
     <div style={{ maxWidth: 640 }}>
       <div className="field">
@@ -415,7 +422,7 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           <span className="hint">Prompts appear as approval cards in the live view.</span>
         </div>
         <div className="field">
-          <label>Spend cap per run (USD)</label>
+          <label>Estimated-cost cap per run (API-equivalent USD)</label>
           <input
             className="input"
             type="number"
@@ -425,6 +432,7 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
             onChange={(e) => patch({ maxBudgetUsd: e.target.value ? Number(e.target.value) : undefined })}
             placeholder="No cap"
           />
+          <span className="hint">Measured at API prices. On a subscription this is a safety cap, not money you are billed.</span>
         </div>
         <div className="field">
           <label>Max subagent depth</label>
@@ -435,6 +443,37 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           <label>Max concurrent subagents</label>
           <input className="input" type="number" min={1} max={20} value={project.maxConcurrentSubagents} onChange={(e) => patch({ maxConcurrentSubagents: Number(e.target.value) || 1 })} />
         </div>
+      </div>
+      <div className="field">
+        <label>Subscription limits</label>
+        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>Stop when one run uses more than</span>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={100}
+            style={{ width: 80 }}
+            value={project.maxWindowShare ?? ''}
+            onChange={(e) => {
+              const v = Number(e.target.value)
+              patch({ maxWindowShare: e.target.value && Number.isFinite(v) && v > 0 ? Math.min(100, v) : undefined })
+            }}
+            placeholder="off"
+          />
+          <span>% of the five-hour window</span>
+        </div>
+        <span className="hint">
+          Blank turns it off. The run is interrupted and waits for you; the orchestrator is told why with your next message.
+        </span>
+        <label className={`check ${project.preferSonnetNearLimit ? 'on' : ''}`} style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+          <input type="checkbox" checked={!!project.preferSonnetNearLimit} onChange={(e) => patch({ preferSonnetNearLimit: e.target.checked })} /> Prefer Sonnet
+          for new reports when the Opus weekly window is above {opusGuard ?? 80}%
+        </label>
+        <span className="hint">
+          Reports whose role uses Opus are spawned on Sonnet while the Opus weekly window (or the seven-day window, on plans without one) is at or above
+          the threshold in app settings. Running agents are not changed.
+        </span>
       </div>
       <div className="field">
         <label>Parallel work</label>

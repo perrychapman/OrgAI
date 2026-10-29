@@ -23,6 +23,27 @@ import type { SetupService } from '../setup/service'
 import { logRunEvent } from '../log'
 
 const FLUSH_INTERVAL_MS = 1500
+/** When a usage limit gives no reset time, try again after this long. */
+export const DEFAULT_PAUSE_MS = 5 * 60 * 1000
+/** Sent to the orchestrator when a paused run continues. */
+export const RESUME_TEXT =
+  'The usage window has reset. Continue exactly where you left off; the harness has reconciled any report branches left in progress.'
+
+const WINDOW_LABELS: Record<string, string> = {
+  five_hour: 'five-hour',
+  seven_day: 'seven-day',
+  seven_day_opus: 'Opus weekly',
+  seven_day_sonnet: 'Sonnet weekly'
+}
+
+/** The pause reason shown to the user. */
+export function pauseReasonText(window: string | undefined, error?: string): string {
+  const label = window ? `${WINDOW_LABELS[window] ?? window.replace(/_/g, ' ')} usage limit` : 'subscription usage limit'
+  return (
+    `The ${label} was reached${error ? ` (${error.slice(0, 120)})` : ''}, so the session ended. ` +
+    'Reports still working were cut off; any worktrees they left are committed by the continued run, which tells the orchestrator what is pending.'
+  )
+}
 
 interface ActiveRun {
   summary: RunSummary
@@ -34,6 +55,17 @@ interface ActiveRun {
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
   record: RunRecord
   flushTimer?: ReturnType<typeof setTimeout>
+  /** Set when the provider reported a usage-limit rejection; the run pauses instead of ending. */
+  limited?: { until?: number; window?: string }
+  /** The user ended the session; never pause it. */
+  userStopped?: boolean
+}
+
+export interface RunManagerOptions {
+  /** The current project for a run being resumed automatically. */
+  resolveProject?: (projectId: string) => Project | null | undefined
+  /** App setting passed to adapters (see RuntimeContext.opusGuardThreshold). */
+  opusGuardThreshold?: () => number
 }
 
 export interface StartInput {
@@ -53,6 +85,8 @@ export interface StartInput {
 
 export class RunManager {
   private runs = new Map<string, ActiveRun>()
+  /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
+  private resumeTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -60,18 +94,21 @@ export class RunManager {
     private store: RunStore,
     private setup: SetupService,
     /** Retention per project; older finished runs are deleted when a run ends. */
-    private keepRunsFor: (projectId: string) => number
+    private keepRunsFor: (projectId: string) => number,
+    private options: RunManagerOptions = {}
   ) {}
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
   async removeProject(projectId: string): Promise<void> {
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
+        r.userStopped = true
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         this.runs.delete(r.summary.id)
       }
     }
+    for (const s of this.store.list(projectId)) this.clearResume(s.id)
     this.store.removeProject(projectId)
   }
 
@@ -112,12 +149,25 @@ export class RunManager {
     this.runs.set(summary.id, active)
     this.store.upsert(summary)
 
-    const emit = (e: RunEvent): void => {
+    const emit = (raw: RunEvent): void => {
+      let e = raw
+      // A session that ends after a usage-limit rejection is paused, not finished.
+      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
+        const now = Date.now()
+        const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
+        e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
+      }
       if (e.type === 'run.status') {
         summary.status = e.status
         if (e.sessionId) summary.sessionId = e.sessionId
         if (e.error) summary.error = e.error
-        if (e.status === 'finished' || e.status === 'error') summary.endedAt = Date.now()
+        if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') summary.endedAt = Date.now()
+        if (e.status === 'paused') {
+          summary.pausedUntil = e.pausedUntil
+          summary.pauseReason = e.pauseReason
+          summary.autoResume = e.autoResume
+          this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
+        }
         this.store.upsert(summary)
       } else if (e.type === 'run.cost') {
         summary.totalCostUsd = e.totalCostUsd
@@ -155,6 +205,10 @@ export class RunManager {
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         },
         requestMergeReview: (req) => this.requestMergeReview(active, req),
+        rateLimited: (info) => {
+          active.limited = { ...active.limited, ...info }
+        },
+        opusGuardThreshold: this.options.opusGuardThreshold?.(),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
@@ -343,11 +397,14 @@ export class RunManager {
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
     if (!active?.session) return
+    active.userStopped = true
     this.broadcast({ type: 'run.status', runId, status: 'stopping' })
     await active.session.stop()
   }
 
   async stopAll(): Promise<void> {
+    for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
+    for (const r of this.runs.values()) r.userStopped = true
     await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
     for (const r of this.runs.values()) this.flush(r)
   }
@@ -371,10 +428,16 @@ export class RunManager {
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')
     if (from.projectId !== project.id) throw new Error('Run belongs to another project')
-    if (from.status !== 'finished' && from.status !== 'error') throw new Error('Run is still active; send a message instead')
+    if (from.status !== 'finished' && from.status !== 'error' && from.status !== 'paused') throw new Error('Run is still active; send a message instead')
     if (!from.sessionId) throw new Error('This run has no session to continue')
     const prompt = text.trim()
     if (!prompt) throw new Error('Nothing to send')
+    if (from.status === 'paused') {
+      // The paused run is handed over to its continuation; it stays in history as finished.
+      this.clearResume(from.id)
+      const done = this.patchSummary(from.id, { status: 'finished', autoResume: false })
+      if (done) this.broadcast({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false })
+    }
     return this.start({
       project,
       prompt,
@@ -384,5 +447,70 @@ export class RunManager {
       resumedFrom: from.id,
       resumeBaseCostUsd: from.totalCostUsd
     })
+  }
+
+  // ---------- pause and auto-resume ----------
+
+  private scheduleResume(runId: string, at: number): void {
+    this.clearResume(runId)
+    const delay = Math.max(0, at - Date.now())
+    const timer = setTimeout(() => {
+      this.resumeTimers.delete(runId)
+      this.resumeNow(runId).catch((err) => {
+        const message = `Could not resume the paused run: ${(err as Error).message}`
+        this.broadcast({ type: 'log', runId, level: 'error', message })
+        const s = this.patchSummary(runId, { autoResume: false })
+        if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+      })
+    }, delay)
+    this.resumeTimers.set(runId, timer)
+  }
+
+  private clearResume(runId: string): void {
+    const t = this.resumeTimers.get(runId)
+    if (t) clearTimeout(t)
+    this.resumeTimers.delete(runId)
+  }
+
+  /** Is an auto-resume timer pending for this run? */
+  hasAutoResume(runId: string): boolean {
+    return this.resumeTimers.has(runId)
+  }
+
+  /** Change a run's summary, live or persisted, and save it. Returns the updated copy. */
+  private patchSummary(runId: string, patch: Partial<RunSummary>): RunSummary | null {
+    const active = this.runs.get(runId)
+    if (active) {
+      Object.assign(active.summary, patch)
+      this.store.upsert(active.summary)
+      return { ...active.summary }
+    }
+    const stored = this.store.get(runId)
+    if (!stored) return null
+    const next = { ...stored, ...patch }
+    this.store.upsert(next)
+    return next
+  }
+
+  /** Continue a paused run now, with the harness's resume message. */
+  async resumeNow(runId: string): Promise<RunSummary> {
+    this.clearResume(runId)
+    const from = this.summary(runId)
+    if (!from) throw new Error('Run not found')
+    if (from.status !== 'paused') throw new Error('Run is not paused')
+    const current = this.options.resolveProject?.(from.projectId)
+    if (!current) throw new Error('Project not found')
+    // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
+    const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
+    return this.continueRun(project, runId, RESUME_TEXT)
+  }
+
+  /** Keep a paused run paused; the user continues it by hand. */
+  cancelAutoResume(runId: string): void {
+    this.clearResume(runId)
+    const s = this.patchSummary(runId, { autoResume: false })
+    if (s && s.status === 'paused') {
+      this.broadcast({ type: 'run.status', runId, status: 'paused', pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+    }
   }
 }

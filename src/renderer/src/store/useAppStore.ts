@@ -17,6 +17,7 @@ import type {
   RunSummary,
   SetupKind,
   TranscriptEntry,
+  UsageStatus,
   UserQuestion
 } from '@shared/types'
 
@@ -66,6 +67,8 @@ interface AppState {
   /** Runs hidden from the run strip (finished runs the user closed). */
   dismissedRuns: Record<string, true>
   composerMode: ComposerMode
+  /** Latest plan usage reported by any live session. */
+  usage: UsageStatus | null
 
   init(): Promise<void>
   loadProjects(): Promise<void>
@@ -90,6 +93,10 @@ interface AppState {
   sendMessage(text: string): Promise<void>
   /** Start a new run that resumes a finished run's session, and show it. */
   continueRun(fromRunId: string, text: string): Promise<void>
+  /** A paused run: continue it now instead of at the usage window's reset. */
+  resumeNow(runId: string): Promise<void>
+  /** A paused run: drop its auto-resume; it stays paused until the user continues it. */
+  cancelAutoResume(runId: string): Promise<void>
   /** Bumped to ask the live view's composer to take focus (e.g. "Continue" in the Runs tab). */
   composerFocusToken: number
   focusComposer(): void
@@ -150,6 +157,20 @@ export const runsOfProject = (s: AppState, projectId: string): RunState[] =>
 /** Runs of the selected project. Returns a fresh array: use with `useShallow`. */
 export const projectRuns = (s: AppState): RunState[] => (s.selectedProjectId ? runsOfProject(s, s.selectedProjectId) : [])
 
+/** Show a run that continues an earlier one (Continue, Resume now). */
+function showContinuation(summary: RunSummary): void {
+  const { getState, setState } = useAppStore
+  getState().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
+  setState((s) => ({
+    // Events may have landed before the IPC call returned; keep them and take the real summary.
+    runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, resumedFrom: summary.resumedFrom } } },
+    activeRunByProject: { ...s.activeRunByProject, [summary.projectId]: summary.id },
+    selectedAgentId: 'root',
+    view: 'run'
+  }))
+  void getState().loadHistory()
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   selectedProjectId: null,
@@ -165,6 +186,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftError: null,
   dismissedRuns: {},
   composerMode: 'reply',
+  usage: null,
 
   async init() {
     // React StrictMode mounts twice in development; subscribing twice would double every transcript entry.
@@ -296,15 +318,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const project = selectedProject(get())
     if (!project) return
     const summary = await window.orgai.runs.continue({ runId: fromRunId, text })
-    get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
-    set((s) => ({
-      // Events may have landed before the IPC call returned; keep them and take the real summary.
-      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, resumedFrom: summary.resumedFrom } } },
-      activeRunByProject: { ...s.activeRunByProject, [summary.projectId]: summary.id },
-      selectedAgentId: 'root',
-      view: 'run'
-    }))
-    void get().loadHistory()
+    showContinuation(summary)
+  },
+
+  async resumeNow(runId) {
+    const summary = await window.orgai.runs.resumeNow(runId)
+    showContinuation(summary)
+  },
+
+  async cancelAutoResume(runId) {
+    await window.orgai.runs.cancelAutoResume(runId)
   },
 
   composerFocusToken: 0,
@@ -348,6 +371,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
       return
     }
+    // Plan usage is account-wide: keep the latest, whichever run reported it.
+    if (e.type === 'usage.status') {
+      set({ usage: e.usage })
+      return
+    }
     set((s) => {
       const existing = s.runs[e.runId]
       const run: RunState = existing
@@ -362,9 +390,12 @@ export const useAppStore = create<AppState>((set, get) => ({
             status: e.status,
             sessionId: e.sessionId ?? run.summary.sessionId,
             error: e.error ?? run.summary.error,
-            endedAt: e.status === 'finished' || e.status === 'error' ? Date.now() : run.summary.endedAt
+            endedAt: e.status === 'finished' || e.status === 'error' || e.status === 'paused' ? Date.now() : run.summary.endedAt,
+            pausedUntil: e.pausedUntil ?? run.summary.pausedUntil,
+            pauseReason: e.pauseReason ?? run.summary.pauseReason,
+            autoResume: e.autoResume ?? run.summary.autoResume
           }
-          if (e.status === 'finished' || e.status === 'error' || e.status === 'running') void get().loadHistory()
+          if (e.status === 'finished' || e.status === 'error' || e.status === 'running' || e.status === 'paused') void get().loadHistory()
           break
         case 'agent.upsert':
           run.agents = { ...run.agents, [e.agent.id]: e.agent }
@@ -451,11 +482,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => {
         const run = s.runs[runId]
         if (!run) return {}
-        const { projectId, kind, prompt, startedAt } = record.summary
+        const { projectId, kind, prompt, startedAt, resumedFrom } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt }
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
-        return { runs: { ...s.runs, [runId]: { ...run, summary, agents } } }
+        // A paused run the user is looking at was resumed automatically: follow it to its continuation.
+        const viewed = s.activeRunByProject[projectId]
+        const follow = !!resumedFrom && viewed === resumedFrom && s.runs[resumedFrom]?.summary.pausedUntil !== undefined
+        return {
+          runs: { ...s.runs, [runId]: { ...run, summary, agents } },
+          ...(follow ? { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root' } : {})
+        }
       })
     } catch {
       // The run vanished; its placeholder simply stays unassigned.
