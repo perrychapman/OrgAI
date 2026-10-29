@@ -53,7 +53,7 @@ try {
   const claudeMd = path.join(target, 'CLAUDE.md')
   check(fs.existsSync(claudeMd) && fs.readFileSync(claudeMd, 'utf8').includes('<!-- orgai:architecture -->'), 'CLAUDE.md references the architecture')
 
-  await page.getByRole('button', { name: 'Logs' }).click().catch(() => {})
+  await page.locator('.side .tabs').getByRole('button', { name: 'Logs' }).click().catch(() => {})
   log('run logs:\n' + (await page.locator('.logs').innerText().catch(() => '')).slice(0, 1500))
   await endSession(page)
 } catch (e) {

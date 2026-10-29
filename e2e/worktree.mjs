@@ -65,7 +65,7 @@ try {
   check(seenIsolated, 'reports ran in isolated worktrees')
   check(badges.filter((b) => /merged/.test(b)).length >= 2, 'both reports merged', badges.join(' | '))
   log('final root text:', (await page.locator('.transcript .entry.text').last().innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 700))
-  await page.getByRole('button', { name: 'Logs' }).click().catch(() => {})
+  await page.locator('.side .tabs').getByRole('button', { name: 'Logs' }).click().catch(() => {})
   log('logs:\n' + (await page.locator('.logs').innerText().catch(() => '')).slice(0, 2500))
   await endSession(page)
 } catch (e) {
