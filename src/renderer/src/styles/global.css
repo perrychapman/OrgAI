@@ -2,6 +2,9 @@
 @import './tokens.css';
 @import './shell.css';
 @import './controls.css';
+@import './ui.css';
+@import './connections.css';
+@import './mcp.css';
 @import './projects.css';
 @import './editor.css';
 @import './flow.css';
