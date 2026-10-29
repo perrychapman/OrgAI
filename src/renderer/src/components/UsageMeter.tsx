@@ -2,6 +2,24 @@ import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import type { RateLimitWindow, UsageStatus } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
+
+function RefreshLink(): ReactElement {
+  const refreshUsage = useAppStore((s) => s.refreshUsage)
+  const [busy, setBusy] = useState(false)
+  return (
+    <button
+      className="usage-refresh"
+      disabled={busy}
+      title="Read plan usage now"
+      onClick={() => {
+        setBusy(true)
+        void refreshUsage().finally(() => setBusy(false))
+      }}
+    >
+      {busy ? 'refreshing…' : 'refresh'}
+    </button>
+  )
+}
 import { formatUntil } from '../lib/layout'
 
 const WARN_AT = 80
@@ -47,10 +65,13 @@ export default function UsageMeter(): ReactElement {
   if (!usage?.available) {
     return (
       <div className="usage-meter">
-        <div className="usage-empty" title="Plan usage is reported by a live session and updates every minute while a run is open.">
+        <div className="usage-empty" title="Plan usage is read at startup, every 10 minutes while idle, and every minute during a run.">
           Usage: not reported yet
         </div>
-        <div className="usage-hint">Updates while a run is live.</div>
+        <div className="usage-foot">
+          <span className="usage-hint">Read at startup and every 10 minutes.</span>
+          <RefreshLink />
+        </div>
       </div>
     )
   }
@@ -80,6 +101,12 @@ export default function UsageMeter(): ReactElement {
         )
       })}
       {usage.overageInUse && <div className="usage-hint">Extra usage in use</div>}
+      <div className="usage-foot">
+        <span className="usage-hint" title={new Date(usage.updatedAt).toLocaleString()}>
+          as of {new Date(usage.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+        </span>
+        <RefreshLink />
+      </div>
     </div>
   )
 }

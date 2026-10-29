@@ -601,6 +601,10 @@ export interface OrgAIApi {
   onRunEvent(cb: (event: RunEvent) => void): () => void
   /** A clicked OS notification asks the renderer to show this run. */
   onFocusRun(cb: (target: FocusRunTarget) => void): () => void
+  usage: {
+    /** Read plan usage now, without a run. null when the provider cannot report it. */
+    refresh(): Promise<UsageStatus | null>
+  }
   notifications: {
     /** Global on/off for OS attention notifications. The renderer persists the choice. */
     setEnabled(enabled: boolean): Promise<void>
@@ -656,6 +660,7 @@ export const IPC = {
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
   appSetNotifications: 'app:setNotifications',
+  usageRefresh: 'usage:refresh',
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   permissionsList: 'permissions:list',

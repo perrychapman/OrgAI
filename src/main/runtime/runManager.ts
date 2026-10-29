@@ -273,6 +273,11 @@ export class RunManager {
   }
 
   /** Summary of a live run, without copying its record. Undefined once the run has ended. */
+  /** Runs whose session is still open. */
+  liveRunCount(): number {
+    return this.runs.size
+  }
+
   summaryOf(runId: string): RunSummary | undefined {
     return this.runs.get(runId)?.summary
   }

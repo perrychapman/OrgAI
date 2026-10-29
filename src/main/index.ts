@@ -4,6 +4,7 @@ import type { RunEvent } from '@shared/types'
 import { IPC } from '@shared/types'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
+import { UsageMonitor } from './usageMonitor'
 import { RunStore } from './store/runs'
 import { RunManager } from './runtime/runManager'
 import { ClaudeAdapter } from './runtime/claude'
@@ -87,6 +88,17 @@ app.whenReady().then(() => {
     projectName: (projectId) => projects.get(projectId)?.name
   })
   ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean) => notifier?.setEnabled(!!enabled))
+
+  // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
+  const usageMonitor = new UsageMonitor({
+    adapter: adapters.claude,
+    auth: () => settings.get().providerAuth,
+    broadcast,
+    liveRuns: () => runManager?.liveRunCount() ?? 0
+  })
+  ipcMain.handle(IPC.usageRefresh, () => usageMonitor.refresh())
+  usageMonitor.start()
+  app.on('before-quit', () => usageMonitor.stop())
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   const knownProjects = new Set(projects.list().map((p) => p.id))

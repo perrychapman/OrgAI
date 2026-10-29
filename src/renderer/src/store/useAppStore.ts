@@ -69,6 +69,8 @@ interface AppState {
   composerMode: ComposerMode
   /** Latest plan usage reported by any live session. */
   usage: UsageStatus | null
+  /** Ask the main process to read plan usage now (no run needed). */
+  refreshUsage(): Promise<void>
 
   init(): Promise<void>
   loadProjects(): Promise<void>
@@ -187,6 +189,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   dismissedRuns: {},
   composerMode: 'reply',
   usage: null,
+
+  async refreshUsage() {
+    try {
+      const usage = await window.orgai.usage.refresh()
+      if (usage) set({ usage })
+    } catch {
+      /* provider could not report usage */
+    }
+  },
 
   async init() {
     // React StrictMode mounts twice in development; subscribing twice would double every transcript entry.

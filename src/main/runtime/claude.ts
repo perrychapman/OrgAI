@@ -19,7 +19,7 @@ import {
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
-import type { PermissionDecision, PermissionSuggestion } from '@shared/types'
+import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
@@ -949,6 +949,51 @@ export class ClaudeAdapter implements RuntimeAdapter {
 
   async start(ctx: RuntimeContext): Promise<RuntimeSession> {
     return new ClaudeSession(ctx)
+  }
+
+  /**
+   * Plan usage without a run. A query whose input never yields still answers the usage control
+   * request within a second of starting (verified in scripts/smoke-usage-probe.mjs), so this
+   * spends nothing: no prompt is sent and the process is aborted right after the answer.
+   */
+  async probeUsage(auth: ProviderAuth): Promise<UsageStatus | null> {
+    if (auth.kind === 'apiKey') return mapUsageResponse(null, 'apiKey')
+    const abort = new AbortController()
+    let release: ((r: IteratorResult<SDKUserMessage>) => void) | undefined
+    const never: AsyncIterable<SDKUserMessage> = {
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<SDKUserMessage>>((r) => (release = r)) })
+    }
+    const finish = (): void => {
+      abort.abort()
+      release?.({ value: undefined as never, done: true })
+    }
+    try {
+      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [] } })
+      // Drain the stream in the background so the process keeps running until we abort it.
+      const drain = (async () => {
+        try {
+          for await (const _ of q as AsyncIterable<unknown>) void _
+        } catch {
+          /* aborted */
+        }
+      })()
+      const fn = (q as unknown as Record<string, unknown>)[USAGE_METHOD]
+      if (typeof fn !== 'function') {
+        finish()
+        await drain
+        return null
+      }
+      const resp = (await Promise.race([
+        (fn as (o: { skipBehaviors: boolean }) => Promise<unknown>).call(q, { skipBehaviors: true }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('usage probe timed out')), 10_000))
+      ])) as UsageResponseLike
+      finish()
+      await drain
+      return mapUsageResponse(resp, 'subscription')
+    } catch {
+      finish()
+      return null
+    }
   }
 
   async complete(input: CompletionInput): Promise<string> {

@@ -6,11 +6,13 @@ import type {
   Project,
   Proposal,
   ProposalDecision,
+  ProviderAuth,
   ProviderId,
   QuestionAnswer,
   Role,
   RunEvent,
   RunSummary,
+  UsageStatus,
   UserQuestion
 } from '@shared/types'
 
@@ -87,4 +89,9 @@ export interface RuntimeAdapter {
   start(ctx: RuntimeContext): Promise<RuntimeSession>
   /** One-shot text completion with no tools, used by the org chart drafter. */
   complete(input: CompletionInput): Promise<string>
+  /**
+   * Read plan usage without a run, e.g. at boot. Returns null when the provider cannot report it.
+   * Must not spend tokens.
+   */
+  probeUsage?(auth: ProviderAuth): Promise<UsageStatus | null>
 }

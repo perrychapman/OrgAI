@@ -66,6 +66,9 @@ const api: OrgAIApi = {
     ipcRenderer.on(IPC.appFocusRun, listener)
     return () => ipcRenderer.removeListener(IPC.appFocusRun, listener)
   },
+  usage: {
+    refresh: () => ipcRenderer.invoke(IPC.usageRefresh)
+  },
   notifications: {
     setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
   }

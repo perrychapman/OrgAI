@@ -1749,3 +1749,28 @@ textarea {
 .run-dot.paused {
   background: var(--warn);
 }
+
+/* ---------- Usage meter footer (as-of time and refresh) ---------- */
+
+.usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.usage-refresh {
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  cursor: pointer;
+  padding: 0;
+}
+.usage-refresh:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.usage-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
