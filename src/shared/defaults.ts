@@ -1,0 +1,138 @@
+import type { Project, Role, SetupKind, ToolName } from './types'
+
+export const ROLE_COLORS = ['#7c5cff', '#2bb0ff', '#22c58b', '#f5a524', '#ff6b6b', '#e879f9', '#38bdf8', '#a3e635']
+
+export function slugify(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'role'
+  )
+}
+
+export function newId(prefix = ''): string {
+  const rnd = Math.random().toString(36).slice(2, 10)
+  const stamp = Date.now().toString(36)
+  return prefix ? `${prefix}_${stamp}${rnd}` : `${stamp}${rnd}`
+}
+
+const READ_ONLY: ToolName[] = ['Read', 'Glob', 'Grep']
+const FULL: ToolName[] = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']
+
+/**
+ * A sensible starting org for a coding project: one orchestrator with three
+ * purpose-built reports. The AI drafter can replace or revise it.
+ */
+export function defaultRoles(): Role[] {
+  const orchestrator: Role = {
+    id: newId('role'),
+    slug: 'orchestrator',
+    name: 'Orchestrator',
+    description:
+      'Lead agent. Plans the work, delegates to specialists, integrates results and reports to the user.',
+    responsibilities: [
+      'Understand the request and break it into well-scoped tasks',
+      'Delegate each task to the most suitable specialist',
+      'Review returned work for correctness and integration',
+      'Keep the user informed with concise status and a final summary'
+    ],
+    prompt: `You are the lead engineer and orchestrator for this project.
+Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
+    tools: FULL,
+    model: 'opus',
+    canSpawn: true,
+    spawnable: [],
+    reportsTo: null,
+    position: { x: 0, y: 0 },
+    color: ROLE_COLORS[0]
+  }
+  const implementer: Role = {
+    id: newId('role'),
+    slug: 'implementer',
+    name: 'Implementer',
+    description:
+      'Writes and edits code to complete a precisely scoped task. Use for feature work and bug fixes.',
+    responsibilities: [
+      'Implement the assigned change end to end',
+      'Keep edits minimal and consistent with the codebase',
+      'Run the relevant build or tests before reporting'
+    ],
+    prompt: `You are a senior software engineer. Implement exactly the task you are given. Read the surrounding code first, follow existing conventions, and run the relevant build or tests before you report. Report what you changed, file by file, and anything you could not verify.`,
+    tools: FULL,
+    model: 'sonnet',
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: orchestrator.id,
+    position: { x: -280, y: 200 },
+    color: ROLE_COLORS[1]
+  }
+  const reviewer: Role = {
+    id: newId('role'),
+    slug: 'reviewer',
+    name: 'Reviewer',
+    description:
+      'Read-only code reviewer. Use to check a change for bugs, security issues and missed cases.',
+    responsibilities: [
+      'Review diffs for correctness and risk',
+      'Call out missing tests and edge cases',
+      'Never modify files'
+    ],
+    prompt: `You are a meticulous code reviewer. You may read anything but must not modify files. Review the described change for correctness bugs, security problems, and missed edge cases. Report findings ranked by severity with file and line references, and say explicitly when you find nothing.`,
+    tools: READ_ONLY,
+    model: 'sonnet',
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: orchestrator.id,
+    position: { x: 0, y: 200 },
+    color: ROLE_COLORS[2]
+  }
+  const researcher: Role = {
+    id: newId('role'),
+    slug: 'researcher',
+    name: 'Researcher',
+    description:
+      'Explores the codebase or the web to answer a question. Use before planning when context is missing.',
+    responsibilities: [
+      'Locate relevant code, docs and prior decisions',
+      'Summarize findings with references',
+      'Never modify files'
+    ],
+    prompt: `You are a research specialist. Find and summarize the information requested, citing file paths or URLs. Be concise and concrete. Do not modify files.`,
+    tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
+    model: 'haiku',
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: orchestrator.id,
+    position: { x: 280, y: 200 },
+    color: ROLE_COLORS[3]
+  }
+  orchestrator.spawnable = [implementer.id, reviewer.id, researcher.id]
+  return [orchestrator, implementer, reviewer, researcher]
+}
+
+export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Project {
+  const now = new Date().toISOString()
+  return {
+    id: newId('proj'),
+    name: input.name,
+    path: input.path,
+    brief: input.brief,
+    provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' } },
+    permissionMode: 'acceptEdits',
+    maxSubagentDepth: 2,
+    maxConcurrentSubagents: 6,
+    isolateWriters: true,
+    roles: defaultRoles(),
+    setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
+    createdAt: now,
+    updatedAt: now
+  }
+}
+
+/** Root orchestrator = the role with no manager. Falls back to the first role. */
+export function rootRole(project: Project): Role | undefined {
+  return project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+}

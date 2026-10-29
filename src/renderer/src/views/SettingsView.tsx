@@ -1,0 +1,418 @@
+import type { ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { MaintenanceResult, PendingWorktree } from '@shared/types'
+import { DEFAULT_KEEP_RUNS } from '@shared/types'
+import {
+  ReactFlow,
+  Background,
+  BackgroundVariant,
+  Controls,
+  MarkerType,
+  type Connection,
+  type Edge,
+  type NodeChange,
+  type NodeMouseHandler
+} from '@xyflow/react'
+import type { PermissionMode, Project, Role } from '@shared/types'
+import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import { useAppStore } from '../store/useAppStore'
+import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
+import RoleInspector from '../components/RoleInspector'
+import DraftPanel from '../components/DraftPanel'
+import { treeLayout } from '../lib/layout'
+
+const nodeTypes = { role: RoleNode }
+
+export default function SettingsView({ project }: { project: Project }): ReactElement {
+  const tab = useAppStore((s) => s.settingsTab)
+  const setTab = useAppStore((s) => s.setSettingsTab)
+  const selectedRoleId = useAppStore((s) => s.selectedRoleId)
+  const selectRole = useAppStore((s) => s.selectRole)
+  const updateRoles = useAppStore((s) => s.updateRoles)
+  const updateProject = useAppStore((s) => s.updateProject)
+
+  const nodes: RoleFlowNode[] = useMemo(
+    () =>
+      project.roles.map((role) => ({
+        id: role.id,
+        type: 'role',
+        position: role.position,
+        selected: role.id === selectedRoleId,
+        data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length }
+      })),
+    [project.roles, selectedRoleId]
+  )
+
+  const edges: Edge[] = useMemo(
+    () =>
+      project.roles
+        .filter((r) => r.reportsTo && project.roles.some((x) => x.id === r.reportsTo))
+        .map((r) => {
+          const parent = project.roles.find((x) => x.id === r.reportsTo)!
+          const allowed = parent.canSpawn && parent.spawnable.includes(r.id)
+          return {
+            id: `e-${parent.id}-${r.id}`,
+            source: parent.id,
+            target: r.id,
+            style: { stroke: allowed ? r.color : 'var(--text-faint)', strokeDasharray: allowed ? undefined : '4 4' },
+            markerEnd: { type: MarkerType.ArrowClosed, color: allowed ? r.color : '#646d84' },
+            label: allowed ? undefined : 'not delegable',
+            labelStyle: { fill: '#9aa3b8', fontSize: 10 },
+            labelBgStyle: { fill: '#11141c' }
+          }
+        }),
+    [project.roles]
+  )
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<RoleFlowNode>[]) => {
+      const moves = changes.filter((c) => c.type === 'position' && c.position)
+      if (moves.length) {
+        updateRoles(project.id, (roles) =>
+          roles.map((r) => {
+            const m = moves.find((c) => c.type === 'position' && c.id === r.id)
+            return m && m.type === 'position' && m.position ? { ...r, position: m.position } : r
+          })
+        )
+      }
+    },
+    [project.id, updateRoles]
+  )
+
+  const onConnect = useCallback(
+    (c: Connection) => {
+      if (!c.source || !c.target || c.source === c.target) return
+      updateRoles(project.id, (roles) =>
+        roles.map((r) => {
+          if (r.id === c.target) return { ...r, reportsTo: c.source }
+          if (r.id === c.source) return { ...r, canSpawn: true, spawnable: [...new Set([...r.spawnable, c.target as string])] }
+          return { ...r, spawnable: r.spawnable.filter((id) => id !== c.target) }
+        })
+      )
+    },
+    [project.id, updateRoles]
+  )
+
+  const onNodeClick: NodeMouseHandler<RoleFlowNode> = useCallback((_e, node) => selectRole(node.id), [selectRole])
+
+  const addRole = (): void => {
+    const root = project.roles.find((r) => r.reportsTo === null)
+    const selected = project.roles.find((r) => r.id === selectedRoleId)
+    const manager = selected ?? root
+    const name = `New role ${project.roles.length + 1}`
+    const role: Role = {
+      id: newId('role'),
+      slug: slugify(name),
+      name,
+      description: 'Describe when a manager should delegate to this role.',
+      responsibilities: [],
+      prompt: 'You are a specialist. Complete the assigned task and report back concisely.',
+      tools: ['Read', 'Glob', 'Grep'],
+      model: 'sonnet',
+      canSpawn: false,
+      spawnable: [],
+      reportsTo: manager?.id ?? null,
+      position: { x: (manager?.position.x ?? 0) + 120, y: (manager?.position.y ?? 0) + 210 },
+      color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length]
+    }
+    updateRoles(project.id, (roles) => [
+      ...roles.map((r) => (r.id === manager?.id ? { ...r, canSpawn: true, spawnable: [...r.spawnable, role.id] } : r)),
+      role
+    ])
+    selectRole(role.id)
+  }
+
+  const autoLayout = (): void => {
+    const pos = treeLayout(
+      project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: 220, height: 96 })),
+      { nodesep: 60, ranksep: 110 }
+    )
+    updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
+  }
+
+  const selectedRole = project.roles.find((r) => r.id === selectedRoleId)
+
+  if (tab === 'project') {
+    return (
+      <div className="editor">
+        <div style={{ padding: 24, overflow: 'auto' }}>
+          <div className="tabs" style={{ marginBottom: 18 }}>
+            <button onClick={() => setTab('org')}>Org chart</button>
+            <button className="active">Project settings</button>
+          </div>
+          <ProjectSettings project={project} onChange={updateProject} />
+          <MaintenancePanel project={project} />
+        </div>
+        <div className="side">
+          <DraftPanel project={project} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="editor">
+      <div className="canvas">
+        <div className="canvas-toolbar">
+          <div className="tabs">
+            <button className="active">Org chart</button>
+            <button onClick={() => setTab('project')}>Project settings</button>
+          </div>
+          <button className="btn" onClick={addRole}>
+            + Add role
+          </button>
+          <button className="btn" onClick={autoLayout}>
+            Auto-layout
+          </button>
+        </div>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={onNodesChange}
+          onConnect={onConnect}
+          onNodeClick={onNodeClick}
+          onPaneClick={() => selectRole(null)}
+          fitView
+          fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
+          proOptions={{ hideAttribution: true }}
+          deleteKeyCode={null}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1f2432" />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+        <div className="legend">
+          <span>Drag from a node's bottom handle to another node to make it a report.</span>
+        </div>
+      </div>
+      <div className="side">
+        {selectedRole ? <RoleInspector project={project} role={selectedRole} /> : <DraftPanel project={project} />}
+      </div>
+    </div>
+  )
+}
+
+function MaintenancePanel({ project }: { project: Project }): ReactElement {
+  const loadProjects = useAppStore((s) => s.loadProjects)
+  const [worktrees, setWorktrees] = useState<PendingWorktree[] | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [notice, setNotice] = useState<MaintenanceResult | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      setWorktrees(await window.orgai.maintenance.listWorktrees(project.id))
+    } catch (e) {
+      setNotice({ ok: false, message: (e as Error).message })
+      setWorktrees([])
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const act = async (key: string, fn: () => Promise<MaintenanceResult>): Promise<void> => {
+    setBusy(key)
+    setNotice(null)
+    try {
+      setNotice(await fn())
+      await refresh()
+      await loadProjects()
+    } catch (e) {
+      setNotice({ ok: false, message: (e as Error).message })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const hasFootprint = !!project.setup?.architecturePath
+
+  return (
+    <div style={{ maxWidth: 640, marginTop: 28 }}>
+      <div className="side-section-title" style={{ margin: '0 0 10px' }}>
+        Maintenance
+      </div>
+
+      <div className="field">
+        <label>Report branches waiting in the repository</label>
+        {worktrees === null ? (
+          <span className="hint">Looking…</span>
+        ) : worktrees.length === 0 ? (
+          <span className="hint">None. Every report branch has been merged or discarded.</span>
+        ) : (
+          <div className="maint-list">
+            {worktrees.map((w) => (
+              <div key={w.branch} className="maint-row">
+                <div className="row" style={{ gap: 8 }}>
+                  <code>{w.branch}</code>
+                  {!w.exists && <span className="chip">directory missing</span>}
+                  {w.uncommittedFiles > 0 && <span className="chip" style={{ color: 'var(--warn)' }}>{w.uncommittedFiles} uncommitted</span>}
+                  <span className="chip">{w.commitsAhead} commit{w.commitsAhead === 1 ? '' : 's'} ahead</span>
+                  <span style={{ marginLeft: 'auto', color: 'var(--text-faint)', fontSize: 11 }}>
+                    {w.lastCommitAt ? new Date(w.lastCommitAt).toLocaleString() : ''}
+                  </span>
+                </div>
+                {w.lastSubject && <div style={{ fontSize: 12.5 }}>{w.lastSubject}</div>}
+                {w.changedFiles.length > 0 && (
+                  <div className="mono-dim">
+                    {w.changedFiles.slice(0, 10).join(', ')}
+                    {w.changedFiles.length > 10 ? `, +${w.changedFiles.length - 10} more` : ''}
+                  </div>
+                )}
+                <div className="row" style={{ marginTop: 4 }}>
+                  <button
+                    className="btn primary sm"
+                    disabled={busy !== null}
+                    onClick={() => void act(w.branch, () => window.orgai.maintenance.integrateWorktree({ projectId: project.id, branch: w.branch }))}
+                  >
+                    {busy === w.branch ? 'Merging…' : 'Merge into main checkout'}
+                  </button>
+                  <button
+                    className="btn sm danger"
+                    disabled={busy !== null}
+                    onClick={() => {
+                      if (confirm(`Discard ${w.branch}? Its ${w.commitsAhead} commit(s) and any uncommitted files are lost.`))
+                        void act(w.branch, () => window.orgai.maintenance.discardWorktree({ projectId: project.id, branch: w.branch }))
+                    }}
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="row" style={{ marginTop: 6 }}>
+          <button className="btn ghost sm" onClick={() => void refresh()} disabled={busy !== null}>
+            Refresh
+          </button>
+          <span className="hint">Left by merge conflicts or interrupted runs. Merging commits any leftovers first; conflicts are reported and the branch is kept.</span>
+        </div>
+      </div>
+
+      <div className="field">
+        <label>Files OrgAI added to the repository</label>
+        <span className="hint">
+          {hasFootprint
+            ? `${project.setup?.architecturePath} and a short section in CLAUDE.md, plus a .git/info/exclude entry for agent worktrees.`
+            : 'None recorded. Any leftover worktrees and the .git/info/exclude entry are still removed.'}
+        </span>
+        <div className="row" style={{ marginTop: 4 }}>
+          <button
+            className="btn sm danger"
+            disabled={busy !== null}
+            onClick={() => {
+              if (confirm('Remove the OrgAI files from this repository? The project itself stays in OrgAI; its approved architecture is cleared.'))
+                void act('uninstall', () => window.orgai.maintenance.uninstallRepo(project.id))
+            }}
+          >
+            {busy === 'uninstall' ? 'Removing…' : 'Remove OrgAI files from repository'}
+          </button>
+        </div>
+      </div>
+
+      {notice && (
+        <div className="draft-box" style={notice.ok ? undefined : { borderColor: 'rgba(255,107,107,0.5)', color: 'var(--danger)' }}>
+          {notice.message}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProjectSettings({ project, onChange }: { project: Project; onChange: (p: Project) => void }): ReactElement {
+  const patch = (p: Partial<Project>): void => onChange({ ...project, ...p })
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div className="field">
+        <label>Name</label>
+        <input className="input" value={project.name} onChange={(e) => patch({ name: e.target.value })} />
+      </div>
+      <div className="field">
+        <label>Working directory</label>
+        <div className="row">
+          <input className="input" value={project.path} onChange={(e) => patch({ path: e.target.value })} />
+          <button
+            className="btn"
+            onClick={async () => {
+              const dir = await window.orgai.projects.pickDirectory()
+              if (dir) patch({ path: dir })
+            }}
+          >
+            Browse
+          </button>
+        </div>
+      </div>
+      <div className="field">
+        <label>Project brief</label>
+        <textarea className="textarea" style={{ minHeight: 110 }} value={project.brief} onChange={(e) => patch({ brief: e.target.value })} />
+        <span className="hint">Appended to every role's system prompt and used by the org chart drafter.</span>
+      </div>
+      <div className="grid-2">
+        <div className="field">
+          <label>Permission mode</label>
+          <select className="select" value={project.permissionMode} onChange={(e) => patch({ permissionMode: e.target.value as PermissionMode })}>
+            <option value="default">Ask for everything risky</option>
+            <option value="acceptEdits">Auto-accept file edits, ask for commands</option>
+            <option value="plan">Plan only (no changes)</option>
+            <option value="bypassPermissions">Bypass all permission prompts</option>
+          </select>
+          <span className="hint">Prompts appear as approval cards in the live view.</span>
+        </div>
+        <div className="field">
+          <label>Spend cap per run (USD)</label>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            step={0.5}
+            value={project.maxBudgetUsd ?? ''}
+            onChange={(e) => patch({ maxBudgetUsd: e.target.value ? Number(e.target.value) : undefined })}
+            placeholder="No cap"
+          />
+        </div>
+        <div className="field">
+          <label>Max subagent depth</label>
+          <input className="input" type="number" min={1} max={5} value={project.maxSubagentDepth} onChange={(e) => patch({ maxSubagentDepth: Number(e.target.value) || 1 })} />
+          <span className="hint">1 means reports cannot spawn their own subagents.</span>
+        </div>
+        <div className="field">
+          <label>Max concurrent subagents</label>
+          <input className="input" type="number" min={1} max={20} value={project.maxConcurrentSubagents} onChange={(e) => patch({ maxConcurrentSubagents: Number(e.target.value) || 1 })} />
+        </div>
+      </div>
+      <div className="field">
+        <label>Parallel work</label>
+        <label className={`check ${project.isolateWriters !== false ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
+          <input type="checkbox" checked={project.isolateWriters !== false} onChange={(e) => patch({ isolateWriters: e.target.checked })} /> Isolate writing reports in git worktrees
+        </label>
+        <span className="hint">
+          Each report that can edit files works in its own git worktree. When it reports back, the harness commits its changes and merges them into the main
+          checkout; conflicts are handed to the orchestrator. Needs a git repository.
+        </span>
+      </div>
+      <div className="field">
+        <label>Runs to keep</label>
+        <input
+          className="input"
+          type="number"
+          min={1}
+          max={5000}
+          style={{ maxWidth: 160 }}
+          value={project.keepRuns ?? DEFAULT_KEEP_RUNS}
+          onChange={(e) => patch({ keepRuns: Math.max(1, Number(e.target.value) || DEFAULT_KEEP_RUNS) })}
+        />
+        <span className="hint">Older finished runs and their transcripts are deleted from disk when a run ends.</span>
+      </div>
+      <div className="field">
+        <label>Provider</label>
+        <div className="row">
+          <span className="pill ok">
+            <span className="dot" /> {project.provider.label}
+          </span>
+          <span className="hint">More providers plug in as runtime adapters. Claude is the only one wired up so far.</span>
+        </div>
+      </div>
+    </div>
+  )
+}

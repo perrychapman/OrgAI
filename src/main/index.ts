@@ -1,0 +1,81 @@
+import { app, BrowserWindow, shell } from 'electron'
+import { join } from 'node:path'
+import type { RunEvent } from '@shared/types'
+import { IPC } from '@shared/types'
+import { ProjectStore } from './store/projects'
+import { RunStore } from './store/runs'
+import { RunManager } from './runtime/runManager'
+import { ClaudeAdapter } from './runtime/claude'
+import { SetupService } from './setup/service'
+import { MaintenanceService } from './maintenance'
+import { registerIpc } from './ipc'
+import { DEFAULT_KEEP_RUNS } from '@shared/types'
+
+let runManager: RunManager | undefined
+
+function broadcast(event: RunEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.runEvent, event)
+  }
+}
+
+function createWindow(): void {
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 1024,
+    minHeight: 680,
+    show: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#0b0d12',
+    title: 'OrgAI',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.mjs'),
+      sandbox: false,
+      contextIsolation: true
+    }
+  })
+
+  win.on('ready-to-show', () => win.show())
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void win.loadURL(process.env.ELECTRON_RENDERER_URL)
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+app.whenReady().then(() => {
+  const dataDir = join(app.getPath('userData'), 'data')
+  const projects = new ProjectStore(dataDir)
+  const runStore = new RunStore(dataDir)
+  const setup = new SetupService(projects)
+  const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
+  runManager = new RunManager({ claude: new ClaudeAdapter() }, broadcast, runStore, setup, keepRunsFor)
+  registerIpc(projects, runManager, setup, new MaintenanceService(projects))
+
+  // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
+  const knownProjects = new Set(projects.list().map((p) => p.id))
+  let dropped = 0
+  for (const projectId of new Set(runStore.allProjectIds())) if (!knownProjects.has(projectId)) dropped += runStore.removeProject(projectId)
+  dropped += runStore.prune(keepRunsFor)
+  dropped += runStore.sweepOrphans()
+  if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+  createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('before-quit', () => {
+  void runManager?.stopAll()
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
