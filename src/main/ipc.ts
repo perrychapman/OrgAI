@@ -56,6 +56,15 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     (_e, input: { runId: string; proposalId: string; decision: ProposalDecision }) =>
       runs.decideProposal(input.runId, input.proposalId, input.decision)
   )
+  ipcMain.handle(IPC.runsContinue, async (_e, input: { runId: string; text: string }) => {
+    const from = runs.summary(input.runId)
+    if (!from) throw new Error('Run not found')
+    const existing = projects.get(from.projectId)
+    if (!existing) throw new Error('Project not found')
+    // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
+    const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
+    return runs.continueRun(project, input.runId, input.text)
+  })
   ipcMain.handle(IPC.runsSend, (_e, input: { runId: string; text: string }) => runs.send(input.runId, input.text))
   ipcMain.handle(IPC.runsInterrupt, (_e, runId: string) => runs.interrupt(runId))
   ipcMain.handle(IPC.runsStop, (_e, runId: string) => runs.stop(runId))

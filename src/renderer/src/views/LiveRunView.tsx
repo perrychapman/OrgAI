@@ -46,6 +46,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const stopRun = useAppStore((s) => s.stopRun)
   const decide = useAppStore((s) => s.decide)
   const decideProposal = useAppStore((s) => s.decideProposal)
+  const continueRun = useAppStore((s) => s.continueRun)
+  const composerFocusToken = useAppStore((s) => s.composerFocusToken)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -127,14 +130,21 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const status = run?.summary.status
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
   const canSend = text.trim().length > 0 && !busy
+  // A finished run with a provider session can be continued with its memory intact.
+  const canContinue = !!run && (status === 'finished' || status === 'error') && !!run.summary.sessionId
 
-  const submit = async (): Promise<void> => {
+  useEffect(() => {
+    if (composerFocusToken) composerRef.current?.focus()
+  }, [composerFocusToken])
+
+  const submit = async (fresh = false): Promise<void> => {
     if (!canSend) return
     const prompt = text.trim()
     setText('')
     setBusy(true)
     try {
       if (sessionOpen) await sendMessage(prompt)
+      else if (canContinue && !fresh && run) await continueRun(run.summary.id, prompt)
       else await startRun(prompt)
     } finally {
       setBusy(false)
@@ -162,6 +172,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         {run && (
           <div className="canvas-toolbar">
             {isSetupRun && <span className="pill warn"><span className="dot" /> Setup session</span>}
+            {run.summary.resumedFrom && (
+              <span className="pill" title={`Continued from run ${run.summary.resumedFrom}`}>
+                continued
+              </span>
+            )}
             <span className="pill">{formatCost(run.summary.totalCostUsd)}</span>
             <span className="pill">
               {agents.length} agent{agents.length === 1 ? '' : 's'}
@@ -315,6 +330,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
       <div className="composer">
         <textarea
+          ref={composerRef}
           className="textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -329,13 +345,20 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
               ? isSetupRun
                 ? 'Answer the Architect… (Enter to send, Shift+Enter for a new line)'
                 : 'Reply to the orchestrator… (Enter to send, Shift+Enter for a new line)'
-              : needsSetup
-                ? 'Setup is not finished. You can still start a work run with the current roles…'
-                : 'Describe the task for this project…'
+              : canContinue
+                ? 'Continue this session with its memory… (Enter to continue, or New run for a fresh start)'
+                : needsSetup
+                  ? 'Setup is not finished. You can still start a work run with the current roles…'
+                  : 'Describe the task for this project…'
           }
         />
+        {canContinue && !sessionOpen && (
+          <button className="btn" disabled={!canSend} onClick={() => void submit(true)} title="Start a fresh run with no memory of this one">
+            New run
+          </button>
+        )}
         <button className="btn primary" disabled={!canSend} onClick={() => void submit()}>
-          {sessionOpen ? 'Send' : 'Start'}
+          {sessionOpen ? 'Send' : canContinue ? 'Continue' : 'Start'}
         </button>
       </div>
 

@@ -14,6 +14,7 @@ interface Props {
 function RunHistory(): ReactElement {
   const history = useAppStore((s) => s.history)
   const openRun = useAppStore((s) => s.openRun)
+  const focusComposer = useAppStore((s) => s.focusComposer)
   const current = useAppStore(activeRun)
   if (history.length === 0) return <div className="entry system">No runs yet for this project.</div>
   return (
@@ -22,10 +23,36 @@ function RunHistory(): ReactElement {
         <button key={r.id} className={`run-row ${current?.summary.id === r.id ? 'active' : ''}`} onClick={() => void openRun(r.id)}>
           <div className="row" style={{ gap: 6 }}>
             <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
+            {r.resumedFrom && (
+              <span className="chip" title={`Continued from run ${r.resumedFrom}`}>
+                continued
+              </span>
+            )}
             <span className={`pill ${r.status === 'error' ? 'danger' : r.status === 'finished' ? '' : 'live'}`} style={{ padding: '1px 7px' }}>
               <span className="dot" /> {r.status}
             </span>
             <span style={{ marginLeft: 'auto', color: 'var(--text-faint)', fontSize: 11 }}>{formatCost(r.totalCostUsd)}</span>
+            {(r.status === 'finished' || r.status === 'error') && r.sessionId && (
+              // The row itself is a button, so this is a span acting as one.
+              <span
+                role="button"
+                tabIndex={0}
+                className="btn sm"
+                title="Open this run and continue its session"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void openRun(r.id).then(() => focusComposer())
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  void openRun(r.id).then(() => focusComposer())
+                }}
+              >
+                Continue
+              </span>
+            )}
           </div>
           <div className="prompt">{r.prompt || '(no prompt)'}</div>
           <div className="when">{new Date(r.startedAt).toLocaleString()}</div>

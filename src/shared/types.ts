@@ -287,6 +287,8 @@ export interface RunSummary {
   endedAt?: number
   totalCostUsd: number
   error?: string
+  /** Set when this run continues an earlier run's SDK session; the earlier run's id. */
+  resumedFrom?: string
 }
 
 /** A finished or live run as persisted on disk: everything needed to redraw it later. */
@@ -380,6 +382,8 @@ export interface OrgAIApi {
     /** Load a past run with its agents and transcript. null when nothing was persisted. */
     get(runId: string): Promise<RunRecord | null>
     decide(input: { runId: string; requestId: string; decision: PermissionDecision }): Promise<void>
+    /** Start a new run that resumes a finished run's session, so the orchestrator keeps its memory. */
+    continue(input: { runId: string; text: string }): Promise<RunSummary>
   }
   onRunEvent(cb: (event: RunEvent) => void): () => void
   auth: {
@@ -402,6 +406,7 @@ export const IPC = {
   runsList: 'runs:list',
   runsGet: 'runs:get',
   runsDecide: 'runs:decide',
+  runsContinue: 'runs:continue',
   runEvent: 'runs:event',
   setupStart: 'setup:start',
   setupDecide: 'setup:decide',

@@ -22,7 +22,8 @@ const api: OrgAIApi = {
     list: (projectId: string) => ipcRenderer.invoke(IPC.runsList, projectId),
     get: (runId: string) => ipcRenderer.invoke(IPC.runsGet, runId),
     decide: (input: { runId: string; requestId: string; decision: PermissionDecision }) =>
-      ipcRenderer.invoke(IPC.runsDecide, input)
+      ipcRenderer.invoke(IPC.runsDecide, input),
+    continue: (input) => ipcRenderer.invoke(IPC.runsContinue, input)
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),
