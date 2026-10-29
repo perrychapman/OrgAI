@@ -1,4 +1,4 @@
-import type { AppSettings, Project, Role, SetupKind, ToolName } from './types'
+import type { AppSettings, ImageMediaType, Project, Role, SetupKind, ToolName } from './types'
 import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
@@ -9,6 +9,13 @@ export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
 export const MAX_SUBAGENT_DEPTH_LIMIT = 5
 /** Upper bound of maxAutoContinues (settings inputs, proposal schema, applying proposals). */
 export const MAX_AUTO_CONTINUES_LIMIT = 500
+
+/** Image types the composer accepts and the main process forwards to the provider. */
+export const SUPPORTED_IMAGE_TYPES: readonly ImageMediaType[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+/** Largest image accepted, in decoded bytes (Anthropic's per-image limit). */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+/** Most images sent with one user message. */
+export const MAX_IMAGES_PER_MESSAGE = 10
 
 export const ROLE_COLORS = ['#7c5cff', '#2bb0ff', '#22c58b', '#f5a524', '#ff6b6b', '#e879f9', '#38bdf8', '#a3e635']
 

@@ -20,7 +20,7 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, ImageAttachment, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
@@ -53,6 +53,27 @@ import {
 const USAGE_POLL_MS = 60_000
 const USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET'
 const DEFAULT_OPUS_GUARD = 80
+
+type UserContent = SDKUserMessage['message']['content']
+
+/**
+ * Content for a user turn. Plain string when there are no images; otherwise image blocks first, then the
+ * text block (left out when the text is empty).
+ */
+export function userContent(text: string, images?: ImageAttachment[]): UserContent {
+  if (!images?.length) return text
+  const blocks: Exclude<UserContent, string> = images.map((i) => ({
+    type: 'image' as const,
+    source: { type: 'base64' as const, media_type: i.mediaType, data: i.data }
+  }))
+  if (text) blocks.push({ type: 'text', text })
+  return blocks
+}
+
+/** The transcript block for a user message; `images` is left off when there are none. */
+function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
+  return images?.length ? { kind: 'user', text, images } : { kind: 'user', text }
+}
 
 function isOpusModel(model: string | undefined): boolean {
   return !!model && /opus/i.test(model)
@@ -282,7 +303,7 @@ class ClaudeSession implements RuntimeSession {
 
   // ---------- public API ----------
 
-  async send(text: string): Promise<void> {
+  async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
     // After a window-cap stop, the orchestrator learns why with the user's next message, and the cap
     // measures afresh from here.
@@ -292,12 +313,13 @@ class ClaudeSession implements RuntimeSession {
       this.capTripped = false
       this.share = null
     }
+    const composed = note ? (text ? `${note}\n\n---\n${text}` : note) : text
     this.input.push({
       type: 'user',
-      message: { role: 'user', content: note ? `${note}\n\n---\n${text}` : text },
+      message: { role: 'user', content: userContent(composed, images) },
       parent_tool_use_id: null
     })
-    this.transcript(ROOT_ID, { kind: 'user', text })
+    this.transcript(ROOT_ID, userBlock(text, images))
     this.setState(ROOT_ID, 'thinking', 'Thinking…')
   }
 
@@ -787,7 +809,7 @@ class ClaudeSession implements RuntimeSession {
     if (this.ctx.resumeSessionId) {
       this.transcript(ROOT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` })
     }
-    this.transcript(ROOT_ID, { kind: 'user', text: this.ctx.prompt })
+    this.transcript(ROOT_ID, userBlock(this.ctx.prompt, this.ctx.images))
 
     let firstMessage = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
 
@@ -798,7 +820,7 @@ class ClaudeSession implements RuntimeSession {
       }
       this.input.push({
         type: 'user',
-        message: { role: 'user', content: firstMessage },
+        message: { role: 'user', content: userContent(firstMessage, this.ctx.images) },
         parent_tool_use_id: null
       })
       this.q = query({ prompt: this.input, options: this.buildOptions() })

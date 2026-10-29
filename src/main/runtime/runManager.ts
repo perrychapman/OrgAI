@@ -1,5 +1,6 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import type {
+  ImageAttachment,
   MergeDecision,
   MergeReview,
   PermissionDecision,
@@ -22,7 +23,8 @@ import { architectRole } from '@shared/setup'
 import { ROOT_AGENT_ID, type RuntimeAdapter, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { logPermission, logRunEvent } from '../log'
+import { log, logPermission, logRunEvent } from '../log'
+import { hasContent, sanitizeImages } from './attachments'
 import { describePlanChange } from './continuation'
 
 /** The path as the file system spells it (true case on Windows). Falls back to the input when it cannot be resolved. */
@@ -97,6 +99,8 @@ export interface StartInput {
   resumeBaseCostUsd?: number
   /** The continued run's plan; it carries over with a fresh automatic-continue count. */
   plan?: RunPlan
+  /** Pasted images for the first message; validated here before reaching the adapter. */
+  images?: ImageAttachment[]
 }
 
 export class RunManager {
@@ -143,8 +147,10 @@ export class RunManager {
     resumeSessionId,
     resumedFrom,
     resumeBaseCostUsd,
-    plan: carriedPlan
+    plan: carriedPlan,
+    images: rawImages
   }: StartInput): Promise<RunSummary> {
+    const images = sanitizeImages(rawImages, (m) => log.warn(m))
     const summary: RunSummary = {
       id: newId('run'),
       projectId: project.id,
@@ -226,6 +232,7 @@ export class RunManager {
         project,
         roles: kind === 'setup' ? [architectRole()] : project.roles,
         prompt,
+        images: images.length ? images : undefined,
         hiddenContext,
         resumeSessionId,
         resumeBaseCostUsd,
@@ -434,11 +441,13 @@ export class RunManager {
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
   }
 
-  async send(runId: string, text: string): Promise<void> {
+  async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     const active = this.runs.get(runId)
     if (!active?.session) throw new Error('Run is not active')
+    const images = sanitizeImages(rawImages, (m) => log.warn(m))
+    if (!hasContent(text, images)) throw new Error('Nothing to send')
     this.broadcast({ type: 'run.status', runId, status: 'running' })
-    await active.session.send(text)
+    await active.session.send(text, images.length ? images : undefined)
   }
 
   async interrupt(runId: string): Promise<void> {
@@ -475,14 +484,15 @@ export class RunManager {
    * its memory. Same kind as the old run: setup runs keep the Architect (with its hidden profile
    * context), work runs use the project's roles. `project` must be the old run's project.
    */
-  async continueRun(project: Project, fromRunId: string, text: string): Promise<RunSummary> {
+  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[]): Promise<RunSummary> {
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')
     if (from.projectId !== project.id) throw new Error('Run belongs to another project')
     if (from.status !== 'finished' && from.status !== 'error' && from.status !== 'paused') throw new Error('Run is still active; send a message instead')
     if (!from.sessionId) throw new Error('This run has no session to continue')
     const prompt = text.trim()
-    if (!prompt) throw new Error('Nothing to send')
+    const images = sanitizeImages(rawImages, (m) => log.warn(m))
+    if (!hasContent(prompt, images)) throw new Error('Nothing to send')
     if (from.status === 'paused') {
       // The paused run is handed over to its continuation; it stays in history as finished.
       this.clearResume(from.id)
@@ -492,6 +502,7 @@ export class RunManager {
     return this.start({
       project,
       prompt,
+      images,
       kind: from.kind,
       hiddenContext: from.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
       resumeSessionId: from.sessionId,

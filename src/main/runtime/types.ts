@@ -1,4 +1,5 @@
 import type {
+  ImageAttachment,
   MergeDecision,
   MergeReview,
   PermissionDecision,
@@ -29,7 +30,13 @@ export interface RuntimeContext {
   project: Project
   /** The org chart to run. For setup runs this is the built-in Architect, not the project's roles. */
   roles: Role[]
+  /** The first user message. May be empty when `images` is set. */
   prompt: string
+  /**
+   * Images sent with the first message, already validated (attachments.ts). The adapter sends them as
+   * image content ahead of the prompt text and records them on the user transcript block.
+   */
+  images?: ImageAttachment[]
   /** Extra text sent with the first message but kept out of the transcript (repo profile, project facts). */
   hiddenContext?: string
   /** Resume this provider session instead of starting fresh (continuing a finished run). */
@@ -75,8 +82,11 @@ export interface RuntimeContext {
 }
 
 export interface RuntimeSession {
-  /** Send a follow-up user message to the orchestrator. */
-  send(text: string): Promise<void>
+  /**
+   * Send a follow-up user message to the orchestrator. `images` are already validated; `text` may be
+   * empty when images are present. The user transcript block records both.
+   */
+  send(text: string, images?: ImageAttachment[]): Promise<void>
   /** Interrupt the current turn but keep the session open. */
   interrupt(): Promise<void>
   /** End the session. */

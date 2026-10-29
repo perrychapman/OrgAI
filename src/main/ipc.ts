@@ -1,6 +1,20 @@
 import { exec } from 'node:child_process'
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import type { AppSettings, AppSettingsInfo, AuthStatusResult, DraftRequest, MergeDecision, PermissionDecision, Project, ProposalDecision, QuestionAnswer, SetupKind } from '@shared/types'
+import type {
+  AppSettings,
+  AppSettingsInfo,
+  AuthStatusResult,
+  ContinueRunInput,
+  DraftRequest,
+  MergeDecision,
+  PermissionDecision,
+  Project,
+  ProposalDecision,
+  QuestionAnswer,
+  SendRunInput,
+  SetupKind,
+  StartRunInput
+} from '@shared/types'
 import { IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -36,10 +50,10 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     return draftOrgChart(runs.adapterFor(project), project, req)
   })
 
-  ipcMain.handle(IPC.runsStart, async (_e, input: { projectId: string; prompt: string; scaffold?: boolean }) => {
+  ipcMain.handle(IPC.runsStart, async (_e, input: StartRunInput) => {
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
-    return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold })
+    return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images })
   })
   ipcMain.handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
 
@@ -72,14 +86,14 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     (_e, input: { runId: string; proposalId: string; decision: ProposalDecision }) =>
       runs.decideProposal(input.runId, input.proposalId, input.decision)
   )
-  ipcMain.handle(IPC.runsContinue, async (_e, input: { runId: string; text: string }) => {
+  ipcMain.handle(IPC.runsContinue, async (_e, input: ContinueRunInput) => {
     const from = runs.summary(input.runId)
     if (!from) throw new Error('Run not found')
     const existing = projects.get(from.projectId)
     if (!existing) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
-    return runs.continueRun(project, input.runId, input.text)
+    return runs.continueRun(project, input.runId, input.text, input.images)
   })
   ipcMain.handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
   ipcMain.handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
@@ -88,7 +102,7 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     (_e, input: { runId: string; questionId: string; answer: QuestionAnswer }) =>
       runs.answerQuestion(input.runId, input.questionId, input.answer)
   )
-  ipcMain.handle(IPC.runsSend, (_e, input: { runId: string; text: string }) => runs.send(input.runId, input.text))
+  ipcMain.handle(IPC.runsSend, (_e, input: SendRunInput) => runs.send(input.runId, input.text, input.images))
   ipcMain.handle(IPC.runsInterrupt, (_e, runId: string) => runs.interrupt(runId))
   ipcMain.handle(IPC.runsStop, (_e, runId: string) => runs.stop(runId))
   ipcMain.handle(IPC.runsList, (_e, projectId: string) => runs.list(projectId))

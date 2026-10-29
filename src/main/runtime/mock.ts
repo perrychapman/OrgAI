@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, ImageAttachment, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
@@ -233,11 +233,13 @@ export class MockSession implements RuntimeSession {
 
   // ---------- public API ----------
 
-  async send(text: string): Promise<void> {
+  async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
-    this.transcript(ROOT_AGENT_ID, { kind: 'user', text })
+    this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
-    this.inbox.push({ text, harness: false })
+    // An image-only message is still a turn; give the scripted reply something to echo.
+    const n = images?.length ?? 0
+    this.inbox.push({ text: text || (n ? `[${n} image${n === 1 ? '' : 's'}]` : ''), harness: false })
     this.poke()
   }
 
@@ -380,7 +382,11 @@ export class MockSession implements RuntimeSession {
     if (this.ctx.resumeSessionId) {
       this.transcript(ROOT_AGENT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` })
     }
-    this.transcript(ROOT_AGENT_ID, { kind: 'user', text: this.ctx.prompt })
+    const firstImages = this.ctx.images
+    this.transcript(
+      ROOT_AGENT_ID,
+      firstImages?.length ? { kind: 'user', text: this.ctx.prompt, images: firstImages } : { kind: 'user', text: this.ctx.prompt }
+    )
     const sessionId = this.ctx.resumeSessionId ?? `mock-${runId}`
     try {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })

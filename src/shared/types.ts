@@ -418,12 +418,25 @@ export interface MaintenanceResult {
 /** How many runs to keep per project when none is set. */
 export const DEFAULT_KEEP_RUNS = 100
 
+/** Image formats the provider accepts as image content (pasted into the run composer). */
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+
+/** An image sent with a user message. Structured-clone safe; persisted inline in the transcript. */
+export interface ImageAttachment {
+  mediaType: ImageMediaType
+  /** Base64 of the image bytes, without a `data:` URL prefix. */
+  data: string
+  /** Original file name, when the paste or drop carried one. */
+  name?: string
+}
+
 export type TranscriptBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
-  | { kind: 'user'; text: string }
+  /** `text` may be empty when the message is only images. */
+  | { kind: 'user'; text: string; images?: ImageAttachment[] }
   | { kind: 'system'; text: string }
 
 export interface TranscriptEntry {
@@ -645,6 +658,31 @@ export interface DraftResult {
 
 // ---------- IPC surface ----------
 
+/** runs:start. `scaffold` marks a new project's first build run so the setup banner can step aside. */
+export interface StartRunInput {
+  projectId: string
+  /** May be empty when images are attached. */
+  prompt: string
+  scaffold?: boolean
+  images?: ImageAttachment[]
+}
+
+/** runs:send: a follow-up message to a live run's orchestrator. */
+export interface SendRunInput {
+  runId: string
+  /** May be empty when images are attached. */
+  text: string
+  images?: ImageAttachment[]
+}
+
+/** runs:continue: start a new run that resumes a finished run's session. */
+export interface ContinueRunInput {
+  runId: string
+  /** May be empty when images are attached. */
+  text: string
+  images?: ImageAttachment[]
+}
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
@@ -681,8 +719,8 @@ export interface OrgAIApi {
   }
   runs: {
     /** `scaffold` marks a new project's first build run so the setup banner can step aside. */
-    start(input: { projectId: string; prompt: string; scaffold?: boolean }): Promise<RunSummary>
-    send(input: { runId: string; text: string }): Promise<void>
+    start(input: StartRunInput): Promise<RunSummary>
+    send(input: SendRunInput): Promise<void>
     interrupt(runId: string): Promise<void>
     stop(runId: string): Promise<void>
     list(projectId: string): Promise<RunSummary[]>
@@ -690,7 +728,7 @@ export interface OrgAIApi {
     get(runId: string): Promise<RunRecord | null>
     decide(input: { runId: string; requestId: string; decision: PermissionDecision }): Promise<void>
     /** Start a new run that resumes a finished run's session, so the orchestrator keeps its memory. */
-    continue(input: { runId: string; text: string }): Promise<RunSummary>
+    continue(input: ContinueRunInput): Promise<RunSummary>
     /** Answer a merge review: merge, discard or hold the report's branch. */
     decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
     /** A paused run: continue it now instead of waiting for the usage window to reset. */
