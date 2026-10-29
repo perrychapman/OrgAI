@@ -27,4 +27,27 @@ describe('mock adapter image attachments', () => {
     expect(blocks[2]).toEqual({ kind: 'user', text: 'No images' })
     expect('images' in blocks[2]).toBe(false)
   })
+
+  it('treats an image-only send as a turn and replies', async () => {
+    const ctx = fakeCtx({ prompt: 'Start' })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await session.send('', [png])
+    await session.send('', [png, png])
+    const texts: string[] = []
+    const collect = (): void => {
+      texts.length = 0
+      for (const e of ctx.events) {
+        if (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'text') texts.push(e.entry.block.text)
+      }
+    }
+    for (let i = 0; i < 200; i++) {
+      collect()
+      if (texts.includes('Mock reply to: [2 images]')) break
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    await session.stop()
+    await session.finished
+    expect(texts).toContain('Mock reply to: [1 image]')
+    expect(texts).toContain('Mock reply to: [2 images]')
+  })
 })

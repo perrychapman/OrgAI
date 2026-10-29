@@ -237,7 +237,9 @@ export class MockSession implements RuntimeSession {
     this.continuation.userMessage()
     this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
-    this.inbox.push({ text, harness: false })
+    // An image-only message is still a turn; give the scripted reply something to echo.
+    const n = images?.length ?? 0
+    this.inbox.push({ text: text || (n ? `[${n} image${n === 1 ? '' : 's'}]` : ''), harness: false })
     this.poke()
   }
 

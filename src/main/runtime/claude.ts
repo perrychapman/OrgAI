@@ -50,6 +50,10 @@ import {
 } from './usage'
 
 /** How often a live session asks for plan usage. */
+const USAGE_POLL_MS = 60_000
+const USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET'
+const DEFAULT_OPUS_GUARD = 80
+
 type UserContent = SDKUserMessage['message']['content']
 
 /**
@@ -70,10 +74,6 @@ export function userContent(text: string, images?: ImageAttachment[]): UserConte
 function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
   return images?.length ? { kind: 'user', text, images } : { kind: 'user', text }
 }
-
-const USAGE_POLL_MS = 60_000
-const USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET'
-const DEFAULT_OPUS_GUARD = 80
 
 function isOpusModel(model: string | undefined): boolean {
   return !!model && /opus/i.test(model)
