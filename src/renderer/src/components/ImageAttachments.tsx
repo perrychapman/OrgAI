@@ -52,6 +52,7 @@ export async function filesToImages(
 /** Composer strip: thumbnails with remove buttons. */
 export function ComposerImages({ images, onRemove }: { images: ImageAttachment[]; onRemove: (index: number) => void }): ReactElement | null {
   if (images.length === 0) return null
+  // Composer images come from fresh file reads; dataUrl is only reached with real data.
   return (
     <ul className="attach-strip" aria-label="Attached images">
       {images.map((img, i) => (
@@ -67,8 +68,10 @@ export function ComposerImages({ images, onRemove }: { images: ImageAttachment[]
 }
 
 /** Transcript thumbnails; a thumbnail button toggles an in-flow larger view. */
-export function TranscriptImages({ images }: { images: ImageAttachment[] }): ReactElement | null {
+export function TranscriptImages({ images: all }: { images: ImageAttachment[] }): ReactElement | null {
   const [open, setOpen] = useState<number | null>(null)
+  // Images whose file went missing on disk arrive with empty data; skip them.
+  const images = all.filter((img) => img.data !== '')
   if (images.length === 0) return null
   return (
     <div className="entry-images">
