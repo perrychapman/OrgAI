@@ -12,13 +12,15 @@ interface Props {
 const KIND_LABEL: Record<Proposal['kind'], string> = {
   architecture: 'Architecture',
   orgChart: 'Org chart',
-  settings: 'Run settings'
+  settings: 'Run settings',
+  mcpServers: 'MCP servers'
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
-  settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.'
+  settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.',
+  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.'
 }
 
 export default function ProposalCard({ proposal, onDecide }: Props): ReactElement {

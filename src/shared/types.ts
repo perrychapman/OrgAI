@@ -5,19 +5,248 @@
 
 // ---------- Providers ----------
 
-/** 'mock' is a scripted, token-free adapter for UI work and tests; registered only with ORGAI_MOCK=1. */
-export type ProviderId = 'claude' | 'mock'
+/**
+ * A runtime adapter: the code that drives one agent runtime (src/main/runtime/<adapter>.ts).
+ * 'claude' drives the Claude Agent SDK; 'codex' drives `codex app-server` (JSON-RPC over stdio);
+ * 'mock' is a scripted, token-free adapter for UI work and tests, registered only with ORGAI_MOCK=1.
+ * Adapters are separate from connections: one connection (LiteLLM) can feed either adapter.
+ */
+export type ProviderId = 'claude' | 'codex' | 'mock'
 
-/** How a role authenticates with its provider. */
+/** How a role authenticates with its provider. Also the Anthropic connection's auth. */
 export type ProviderAuth =
   | { kind: 'subscription' } // e.g. Claude Code login
   | { kind: 'apiKey'; envVar: string } // read from the named environment variable at run time
 
 export interface ProviderConfig {
+  /** The adapter that runs this project. For litellm projects the run picks it by model family (adapterForProject). */
   id: ProviderId
   label: string
+  /** Legacy per-project Anthropic auth. Superseded by the app-wide connection when `connection` is set. */
+  auth: ProviderAuth
+  /**
+   * The app-wide connection (AppSettings.connections) this project's models come from. Missing on projects
+   * saved before connections existed; read it with projectConnection(), which treats missing as 'anthropic'
+   * (or 'openai' for a 'codex' provider).
+   */
+  connection?: ConnectionId
+}
+
+// ---------- Connections and model catalog ----------
+
+/**
+ * Where model access comes from, independent of the adapter that drives it. 'anthropic' = Claude Code login
+ * or an Anthropic API key; 'openai' = ChatGPT (Codex) login or an OpenAI API key; 'litellm' = a LiteLLM proxy
+ * that serves Claude-family and OpenAI-family models behind one base URL and key.
+ */
+export type ConnectionId = 'anthropic' | 'openai' | 'litellm'
+
+/** Every connection id, in settings display order. */
+export const CONNECTION_IDS: readonly ConnectionId[] = ['anthropic', 'openai', 'litellm']
+
+/**
+ * The intent behind a role's model, so the model can be remapped when the project's connection changes.
+ * top = most capable (fable), deep = deep reasoning (opus), everyday = fast and capable (sonnet),
+ * fast = cheap and quick (haiku).
+ */
+export type ModelTier = 'top' | 'deep' | 'everyday' | 'fast'
+
+/** Every tier, most capable first, with labels for selects. */
+export const MODEL_TIER_OPTIONS: { value: ModelTier; label: string; hint: string }[] = [
+  { value: 'top', label: 'Top', hint: 'Most capable, highest cost' },
+  { value: 'deep', label: 'Deep', hint: 'Deep reasoning, orchestration, architecture' },
+  { value: 'everyday', label: 'Everyday', hint: 'Fast and capable, everyday coding' },
+  { value: 'fast', label: 'Fast', hint: 'Cheap and quick, lookups and summaries' }
+]
+
+export const MODEL_TIERS: readonly ModelTier[] = MODEL_TIER_OPTIONS.map((o) => o.value)
+
+export function isModelTier(v: unknown): v is ModelTier {
+  return typeof v === 'string' && (MODEL_TIERS as readonly string[]).includes(v)
+}
+
+/** Model lineage. Decides the adapter for litellm models: 'claude' runs on the Claude adapter, anything else on Codex. */
+export type ModelFamily = 'claude' | 'openai' | 'other'
+
+/** Live state of one connection. Never persisted; the main process probes it. */
+export interface ConnectionStatus {
+  state: 'disconnected' | 'connecting' | 'connected' | 'error'
+  /** Human-readable detail, e.g. the error message or "Using ANTHROPIC_API_KEY". */
+  detail?: string
+  /** The signed-in account (email or plan name) when the provider reports one. */
+  account?: string
+  /** When the status was last checked, epoch ms. */
+  checkedAt?: number
+}
+
+/** Fields every connection record has. */
+interface ConnectionBase {
+  /** Off = the connection is hidden from project pickers and never probed. */
+  enabled: boolean
+  /**
+   * The model each tier maps to on this connection (ProviderModel.id). Auto-filled from the catalog when the
+   * connection connects or its catalog changes; the user can override each entry. Missing tiers mean
+   * "no model for this tier": roles of that tier keep their current model on remap.
+   */
+  tierModels: Partial<Record<ModelTier, ModelRef>>
+}
+
+/** OpenAI auth: the ChatGPT login Codex keeps (connections:login), or an API key read from an env var. */
+export type OpenAIAuth = { kind: 'chatgpt' } | { kind: 'apiKey'; envVar: string }
+
+/** Anthropic access through the Claude adapter. `auth` is mirrored into the legacy AppSettings.providerAuth. */
+export interface AnthropicConnection extends ConnectionBase {
+  id: 'anthropic'
   auth: ProviderAuth
 }
+
+/** OpenAI access through the Codex adapter. */
+export interface OpenAIConnection extends ConnectionBase {
+  id: 'openai'
+  auth: OpenAIAuth
+}
+
+/**
+ * A LiteLLM proxy. Claude-family models run on the Claude adapter (ANTHROPIC_BASE_URL = baseUrl), other
+ * models on the Codex adapter (openai_base_url). The key lives in Electron safeStorage and is set only with
+ * connections:setSecret; this record carries only whether one is stored.
+ */
+export interface LiteLLMConnection extends ConnectionBase {
+  id: 'litellm'
+  /** Proxy root, e.g. "http://localhost:4000". '' until the user sets it. */
+  baseUrl: string
+  /** A LiteLLM key is stored in safeStorage. Read-only for the renderer: the main process sets it. */
+  hasApiKey: boolean
+}
+
+/** One app-wide connection record, discriminated by id. Persisted in settings.json; never holds secrets. */
+export type ProviderConnection = AnthropicConnection | OpenAIConnection | LiteLLMConnection
+
+/** All connection records, one per ConnectionId. */
+export interface ProviderConnections {
+  anthropic: AnthropicConnection
+  openai: OpenAIConnection
+  litellm: LiteLLMConnection
+}
+
+/** connections:list entry: the persisted record plus its live status. */
+export interface ConnectionInfo {
+  connection: ProviderConnection
+  status: ConnectionStatus
+  /** Models currently in the catalog for this connection (builtin plus discovered). */
+  modelCount: number
+}
+
+/** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
+export interface ConnectionSecretInput {
+  id: 'litellm'
+  apiKey: string | null
+}
+
+/**
+ * connections:login result for the OpenAI ChatGPT login. 'browser': the main process opened `authUrl` in the
+ * system browser and waits for the callback. 'deviceCode': show `userCode` and let the user open
+ * `verificationUrl`. Progress arrives as `connection.login` events with the same loginId.
+ */
+export type ConnectionLoginStart =
+  | { loginId: string; connection: 'openai'; method: 'browser'; authUrl: string }
+  | { loginId: string; connection: 'openai'; method: 'deviceCode'; verificationUrl: string; userCode: string }
+
+/** Progress of one login started with connections:login. */
+export interface ConnectionLoginUpdate {
+  loginId: string
+  connection: 'openai'
+  state: 'pending' | 'success' | 'error' | 'cancelled'
+  /** Error text, or a hint while pending. */
+  detail?: string
+  /** On success: the signed-in account. */
+  account?: string
+}
+
+/** A model a connection can serve. Structured-clone safe. */
+export interface ProviderModel {
+  /** What Role.model holds: an alias ('opus') or a full model id ('gpt-5', 'anthropic/claude-sonnet-4-5'). */
+  id: ModelRef
+  label: string
+  connection: ConnectionId
+  family: ModelFamily
+  /** The adapter that runs this model: 'claude' for the claude family, 'codex' otherwise. */
+  adapter: ProviderId
+  /** Suggested tier, used to auto-fill ConnectionBase.tierModels. */
+  tier?: ModelTier
+  /** Context window in tokens, when known (LiteLLM /model/info, Codex model/list). */
+  contextWindow?: number
+  /** One-line hint for pickers. */
+  hint?: string
+  /** 'builtin' = shipped with OrgAI; 'discovered' = listed by the connection at runtime. */
+  source: 'builtin' | 'discovered'
+}
+
+/** models:list and models:refresh input. Omit `connection` for every enabled connection. */
+export interface ModelsQuery {
+  connection?: ConnectionId
+}
+
+/** One role whose model a remap changed. */
+export interface RemapChange {
+  roleId: string
+  from: ModelRef
+  to: ModelRef
+}
+
+/**
+ * Why a remap ran. 'connected': the connection just connected. 'catalog': its model list changed.
+ * 'tierModels': the user edited the tier mapping. 'switched': the project moved to another connection
+ * (every tiered role is remapped). 'manual': projects:remapModels without a connection change.
+ */
+export type RemapReason = 'connected' | 'catalog' | 'tierModels' | 'switched' | 'manual'
+
+/**
+ * What a model remap did to one project. Rules: each role with a tier gets tierModels[role.tier] of the
+ * project's connection; a role whose current model is a valid catalog model that differs from its tier's
+ * default is an explicit user pick and is kept, except on 'switched'. Roles without a tier and 'inherit'
+ * roles are never touched. `changes` is empty when nothing moved.
+ */
+export interface RemapResult {
+  projectId: string
+  connection: ConnectionId
+  reason: RemapReason
+  changes: RemapChange[]
+}
+
+/** projects:remapModels input. With `connection`, the project switches to it first (reason 'switched'). */
+export interface RemapModelsInput {
+  projectId: string
+  connection?: ConnectionId
+}
+
+/** projects:remapModels output: the result plus the saved project, so the renderer replaces its copy. */
+export interface RemapModelsOutput {
+  result: RemapResult
+  project: Project
+}
+
+/**
+ * Which adapter a project's run uses (adapterForProject). For 'litellm' the root role's model family decides;
+ * every role in the run must then share it, because one run drives one adapter.
+ */
+export interface AdapterChoice {
+  adapter: ProviderId
+  connection: ConnectionId
+  /** Family of the root role's model, when it is known. */
+  family?: ModelFamily
+  /** Ids of roles whose model would need the other adapter. Non-empty = the run cannot start as configured. */
+  mismatched: string[]
+}
+
+/** Push events on the connections:event channel (main -> renderer). */
+export type ConnectionEvent =
+  | { type: 'connection.status'; connection: ConnectionId; status: ConnectionStatus }
+  | { type: 'connection.login'; login: ConnectionLoginUpdate }
+  /** The catalog for a connection changed (discovery, refresh, login). Carries that connection's full list. */
+  | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[] }
+  /** A connection change remapped role models. Only projects with at least one change are listed; reload them. */
+  | { type: 'projects.remapped'; results: RemapResult[] }
 
 /** Model choices are provider-scoped aliases or full model IDs. */
 export type ModelRef = string
@@ -73,6 +302,11 @@ export interface Role {
   prompt: string
   tools: ToolName[]
   model: ModelRef
+  /**
+   * The intent behind `model`, used to remap it when the project's connection or tier mapping changes.
+   * Missing on older projects (derive it with tierForModel). 'inherit' roles have no tier.
+   */
+  tier?: ModelTier
   effort?: Effort
   /** May this role create subagents at all? */
   canSpawn: boolean
@@ -84,6 +318,11 @@ export interface Role {
   position: { x: number; y: number }
   /** Accent color for the node. */
   color: string
+  /**
+   * Explicit MCP server grants: McpServerSpec ids this role may use even when the server's own `roles`
+   * list leaves it out. See mcpServersForRole. Missing = no explicit grants.
+   */
+  mcpServers?: string[]
 }
 
 /**
@@ -151,11 +390,272 @@ export interface Project {
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
   roles: Role[]
+  /**
+   * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
+   * never stored here, only their names (secretEnv, secretHeaders). Change it through mcp:upsert / mcp:remove
+   * (which return the saved project) so a stale renderer copy does not overwrite it.
+   */
+  mcpServers?: McpServerSpec[]
+  /** Claude Code plugins loaded for this project's runs (Claude adapter only). Missing = none. */
+  plugins?: PluginSpec[]
   /** AI-driven setup state. Missing on projects created before setup existed. */
   setup?: ProjectSetup
   createdAt: string
   updatedAt: string
 }
+
+// ---------- MCP servers and plugins ----------
+
+/** How OrgAI reaches an MCP server. 'http' is the MCP streamable HTTP transport. */
+export type McpTransport = 'stdio' | 'http' | 'sse'
+
+/** Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. */
+export type McpServerSource = 'user' | 'registry' | 'agent'
+
+/** The MCP Registry package a server was installed from. */
+export interface McpRegistryRef {
+  /** Registry server name, e.g. "io.github.owner/server". */
+  name: string
+  version: string
+  /** Package ecosystem, e.g. 'npm', 'pypi', 'oci', or 'remote' for a hosted endpoint. */
+  registryType: string
+  /** Package identifier (npm name, PyPI name, image) or the remote URL. */
+  identifier: string
+}
+
+/**
+ * One MCP server configured for a project. Structured-clone safe and free of secrets: secret env vars and
+ * headers are listed by name only and their values live in Electron safeStorage (mcp:setSecret).
+ */
+export interface McpServerSpec {
+  /** Stable id (newId('mcp')). Role.mcpServers and the mcp:* channels refer to it. */
+  id: string
+  /** Kebab-case server name; its tools surface as mcp__<name>__<tool>. Unique within the project. */
+  name: string
+  transport: McpTransport
+  /** stdio: the executable to launch, e.g. "npx". */
+  command?: string
+  /** stdio: command-line arguments. */
+  args?: string[]
+  /** stdio: non-secret environment variables. */
+  env?: Record<string, string>
+  /** stdio: names of environment variables whose values are secrets stored in safeStorage. */
+  secretEnv?: string[]
+  /** http / sse: the endpoint URL. */
+  url?: string
+  /** http / sse: non-secret request headers. */
+  headers?: Record<string, string>
+  /** http / sse: names of headers whose values are secrets stored in safeStorage (e.g. "Authorization"). */
+  secretHeaders?: string[]
+  /** Off = kept in the list but not passed to runs. */
+  enabled: boolean
+  /** Role slugs allowed to use it. undefined = every role. Role.mcpServers grants it to more roles. */
+  roles?: string[]
+  source: McpServerSource
+  /** Set when the entry was installed from the MCP Registry. */
+  registry?: McpRegistryRef
+  /** One-line description shown in the list (from the registry or the user). */
+  description?: string
+  /** ISO timestamp. */
+  addedAt: string
+}
+
+/** Which secret slot a value fills: an entry of McpServerSpec.secretEnv or of .secretHeaders. */
+export type McpSecretKind = 'env' | 'header'
+
+/** mcp:list entry: the spec plus which secrets have a stored value. Secret values never cross IPC. */
+export interface McpServerInfo {
+  spec: McpServerSpec
+  /** secretEnv names with a stored value. */
+  envSet: string[]
+  /** secretHeaders names with a stored value. */
+  headersSet: string[]
+  /** Secret names (env and headers) still missing a value; the server cannot start until they are set. */
+  missingSecrets: string[]
+}
+
+/** mcp:upsert input. A spec whose id is new is added; otherwise it replaces the entry with that id. */
+export interface McpUpsertInput {
+  projectId: string
+  spec: McpServerSpec
+}
+
+/** mcp:upsert / mcp:remove / mcp:setSecret output: the saved project and the refreshed list. */
+export interface McpMutationResult {
+  project: Project
+  servers: McpServerInfo[]
+}
+
+/** mcp:setSecret input. `value: null` deletes the stored value. Write-only: values are never read back. */
+export interface McpSecretInput {
+  projectId: string
+  serverId: string
+  kind: McpSecretKind
+  /** The env var or header name; must be listed in the spec's secretEnv or secretHeaders. */
+  name: string
+  value: string | null
+}
+
+/** mcp:test result: starting the server and listing its tools, without a run. */
+export interface McpTestResult {
+  ok: boolean
+  /** Tool names the server reported (without the mcp__<name>__ prefix). */
+  tools?: string[]
+  error?: string
+  /** How long the check took, ms. */
+  durationMs?: number
+}
+
+/** A Claude Code plugin directory loaded for a project's runs (Claude adapter only). */
+export interface PluginSpec {
+  /** Stable id (newId('plugin')). */
+  id: string
+  name: string
+  /** Absolute path to the plugin directory. */
+  path: string
+  enabled: boolean
+  /** Do not load the MCP servers the plugin declares. */
+  skipMcpDiscovery?: boolean
+}
+
+/** plugins:upsert input. A plugin whose id is new is added; otherwise it replaces the entry with that id. */
+export interface PluginUpsertInput {
+  projectId: string
+  plugin: PluginSpec
+}
+
+/** An environment variable (or header) a registry package needs. */
+export interface McpRegistryEnvVar {
+  name: string
+  description?: string
+  /** Treat the value as a secret (safeStorage, secretEnv/secretHeaders). */
+  isSecret: boolean
+  isRequired?: boolean
+  /** Default value the registry suggests, for non-secret variables. */
+  default?: string
+}
+
+/** Registry transport names. 'streamable-http' maps to McpTransport 'http'. */
+export type McpRegistryTransport = 'stdio' | 'streamable-http' | 'sse'
+
+/** One installable package of a registry server. */
+export interface McpRegistryPackage {
+  /** e.g. 'npm', 'pypi', 'oci', 'nuget', 'mcpb'. */
+  registryType: string
+  identifier: string
+  version: string
+  transport: { type: McpRegistryTransport; url?: string }
+  /** e.g. 'npx', 'uvx', 'docker': the launcher the registry suggests. */
+  runtimeHint?: string
+  environmentVariables: McpRegistryEnvVar[]
+}
+
+/** A hosted endpoint of a registry server. */
+export interface McpRegistryRemote {
+  type: Exclude<McpRegistryTransport, 'stdio'>
+  url: string
+  /** Headers the remote needs, described like env vars. */
+  headers?: McpRegistryEnvVar[]
+}
+
+/**
+ * One server from the official MCP Registry (GET https://registry.modelcontextprotocol.io/v0.1/servers),
+ * normalized by the main process from the registry's { server, _meta } wrapper.
+ */
+export interface McpRegistryEntry {
+  /** Reverse-DNS name, e.g. "io.github.owner/server". */
+  name: string
+  /** Display title when the registry has one. */
+  title?: string
+  description: string
+  version: string
+  /** Source repository URL. */
+  repositoryUrl?: string
+  websiteUrl?: string
+  packages: McpRegistryPackage[]
+  remotes: McpRegistryRemote[]
+  /** Registry status; deprecated entries are shown but not suggested. */
+  status?: 'active' | 'deprecated' | 'deleted'
+  /** ISO timestamp from the registry metadata. */
+  publishedAt?: string
+}
+
+/** mcp:registrySearch input. */
+export interface McpRegistrySearchInput {
+  /** Substring search on server names. '' lists everything. */
+  query: string
+  /** Opaque cursor from a previous result's nextCursor. */
+  cursor?: string
+  /** Page size; the main process caps it. */
+  limit?: number
+}
+
+/** mcp:registrySearch output. Only the latest version of each server is returned. */
+export interface McpRegistrySearchResult {
+  entries: McpRegistryEntry[]
+  /** Pass back as `cursor` for the next page; undefined on the last page. */
+  nextCursor?: string
+}
+
+/** An agent asks to add an MCP server (request_mcp_install). Shown as an approval card. */
+export interface McpInstallRequest {
+  id: string
+  runId: string
+  agentId: string
+  /** Why the agent needs it, in its words. */
+  reason: string
+  /** The proposed server. Its source is 'agent' (or 'registry' when built from a registry entry). */
+  spec: McpServerSpec
+  /** The registry entry the spec was built from, when there is one. */
+  registry?: McpRegistryEntry
+  /** Secret names (from spec.secretEnv and spec.secretHeaders) the user must fill to approve. */
+  requiredSecrets: string[]
+  createdAt: number
+}
+
+/**
+ * The user's answer to an McpInstallRequest (renderer -> main only). `secrets` maps required secret names to
+ * values; the main process moves them into safeStorage and never echoes them. `scope` 'run' adds the server
+ * for this run only; 'project' also saves it to Project.mcpServers.
+ */
+export interface McpInstallDecision {
+  approved: boolean
+  secrets?: Record<string, string>
+  /** Shown to the agent, e.g. why it was denied or what was changed. */
+  note?: string
+  scope: 'run' | 'project'
+  /** The spec as the user edited it before approving. Omitted = the proposed spec. */
+  spec?: McpServerSpec
+}
+
+/** The secret-free part of a decision, as carried by the mcpInstall.resolved event. */
+export type McpInstallOutcome = Omit<McpInstallDecision, 'secrets'>
+
+/** mcp:answerInstall input. */
+export interface McpAnswerInstallInput {
+  runId: string
+  requestId: string
+  decision: McpInstallDecision
+}
+
+/** mcp:startAssist input: start the MCP assistant session for a project. */
+export interface McpAssistInput {
+  projectId: string
+  /** What the user wants, e.g. "connect our Postgres and GitHub". */
+  instruction?: string
+}
+
+/**
+ * Harness tool names for MCP (bare names; adapters expose them under their harness server, e.g.
+ * mcp__orgai__search_mcp_registry). propose_mcp_servers is the MCP assistant's proposal tool.
+ */
+export const MCP_HARNESS_TOOLS = {
+  searchRegistry: 'search_mcp_registry',
+  requestInstall: 'request_mcp_install',
+  listServers: 'list_mcp_servers',
+  proposeServers: 'propose_mcp_servers'
+} as const
+export type McpHarnessToolName = (typeof MCP_HARNESS_TOOLS)[keyof typeof MCP_HARNESS_TOOLS]
 
 // ---------- App settings (global) ----------
 
@@ -168,7 +668,15 @@ export interface AppSettings {
   defaultIsolateWriters: boolean
   defaultRootModel: ModelRef
   defaultReportModel: ModelRef
+  /**
+   * Legacy Anthropic auth, kept as a mirror of connections.anthropic.auth so older code keeps working.
+   * settings:set keeps the two in sync (whichever one the caller changed wins).
+   */
   providerAuth: ProviderAuth
+  /** App-wide connection records (no secrets). Filled with defaults for settings saved before connections existed. */
+  connections: ProviderConnections
+  /** Connection new projects use. Default 'anthropic'. */
+  defaultConnection: ConnectionId
   notifications?: boolean
   /** Weekly-window utilization (percent) above which projects that prefer Sonnet steer Opus spawns to Sonnet. */
   opusGuardThreshold: number
@@ -261,7 +769,21 @@ export interface SettingsProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings'
+/**
+ * MCP assistant proposal (propose_mcp_servers): servers to add or replace, servers to remove, and the secret
+ * slots the user must fill after approving. Applying it saves Project.mcpServers.
+ */
+export interface McpServersProposalPayload {
+  /** Specs to add (new id) or replace (existing id). */
+  upsert: McpServerSpec[]
+  /** Ids of servers to remove. */
+  remove?: string[]
+  /** Secret slots to fill once approved; values are entered through mcp:setSecret, never in the proposal. */
+  secrets?: { serverId: string; kind: McpSecretKind; name: string; description?: string }[]
+  rationale: string
+}
+
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers'
 
 interface ProposalBase {
   id: string
@@ -275,6 +797,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'architecture'; payload: ArchitectureSpec })
   | (ProposalBase & { kind: 'orgChart'; payload: OrgChartProposalPayload })
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
+  | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
 
 export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
 
@@ -458,8 +981,12 @@ export interface TranscriptEntry {
 /** 'paused': the session ended on a subscription usage limit; it can resume when the window resets. */
 export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished' | 'error' | 'paused'
 
-/** 'work' runs the project's org chart; 'setup' runs the built-in Architect that designs it. */
-export type RunKind = 'work' | 'setup'
+/**
+ * 'work' runs the project's org chart; 'setup' runs the built-in Architect that designs it; 'mcp-assist' runs
+ * a built-in MCP assistant (like setup, never the project's roles, never nudged) that proposes McpServerSpec
+ * changes through the proposal mechanism (kind 'mcpServers').
+ */
+export type RunKind = 'work' | 'setup' | 'mcp-assist'
 
 export interface RunSummary {
   id: string
@@ -583,6 +1110,10 @@ export interface ModelRateLimitWindow extends RateLimitWindow {
 
 /** The plan limits that constrain a subscription login, as last reported by the provider. */
 export interface UsageStatus {
+  /** The adapter that reported it. Missing on older records = 'claude'. */
+  provider?: ProviderId
+  /** The connection the limits belong to. Missing = 'anthropic'. Lets Codex (ChatGPT) limits show beside Claude's. */
+  connection?: ConnectionId
   authMode: 'subscription' | 'apiKey' | 'unknown'
   /** e.g. 'pro', 'max'; null for API keys or when unknown. */
   subscriptionType: string | null
@@ -643,6 +1174,10 @@ export type RunEvent =
   | { type: 'plan.updated'; runId: string; plan: RunPlan }
   /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
   | ({ type: 'agent.message'; runId: string } & AgentMessage)
+  /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
+  | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
+  /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
+  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome }
 
 /** Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked. */
 export interface FocusRunTarget {
@@ -701,6 +1236,64 @@ export interface OrgAIApi {
     save(project: Project): Promise<Project>
     remove(id: string): Promise<void>
     pickDirectory(): Promise<string | null>
+    /**
+     * Remap the project's tiered role models to its connection's tierModels. With `connection`, switch the
+     * project to that connection first and remap every tiered role. Returns the change list and the saved project.
+     */
+    remapModels(input: RemapModelsInput): Promise<RemapModelsOutput>
+  }
+  connections: {
+    /** Every connection record (CONNECTION_IDS order) with its live status. */
+    list(): Promise<ConnectionInfo[]>
+    /**
+     * Save one connection record. LiteLLM's hasApiKey is ignored (the main process owns it). Changing
+     * tierModels remaps the projects on that connection (a projects.remapped event follows).
+     */
+    update(connection: ProviderConnection): Promise<ConnectionInfo>
+    /** Store or clear the LiteLLM key in safeStorage. Write-only: the key never comes back. */
+    setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo>
+    /** Probe the connection (auth, reachability) without changing its enabled flag or catalog. */
+    test(id: ConnectionId): Promise<ConnectionStatus>
+    /** Enable and connect: probe, discover models, fill tierModels, remap projects. */
+    connect(id: ConnectionId): Promise<ConnectionInfo>
+    /** Start the OpenAI ChatGPT (Codex) login. Progress arrives as connection.login events. */
+    login(id: 'openai'): Promise<ConnectionLoginStart>
+    /** Abandon a pending login. */
+    cancelLogin(loginId: string): Promise<void>
+    /** Sign out (OpenAI ChatGPT login) or forget the stored key (LiteLLM), and mark the connection disconnected. */
+    logout(id: ConnectionId): Promise<ConnectionInfo>
+  }
+  models: {
+    /** The model catalog: builtin plus discovered, for one connection or every enabled one. */
+    list(query?: ModelsQuery): Promise<ProviderModel[]>
+    /** Re-discover models (LiteLLM /v1/models and /model/info, Codex model/list) and return the new catalog. */
+    refresh(query?: ModelsQuery): Promise<ProviderModel[]>
+  }
+  /** Connection status, login progress, catalog changes and remaps. Returns an unsubscribe function. */
+  onConnectionEvent(cb: (event: ConnectionEvent) => void): () => void
+  mcp: {
+    /** The project's MCP servers with their secret has-flags. */
+    list(projectId: string): Promise<McpServerInfo[]>
+    /** Add or replace one server. */
+    upsert(input: McpUpsertInput): Promise<McpMutationResult>
+    /** Remove one server and its stored secrets. */
+    remove(input: { projectId: string; serverId: string }): Promise<McpMutationResult>
+    /** Store or clear one secret value. Write-only. */
+    setSecret(input: McpSecretInput): Promise<McpMutationResult>
+    /** Start the server outside a run and list its tools. */
+    test(input: { projectId: string; serverId: string }): Promise<McpTestResult>
+    /** Search the official MCP Registry. */
+    registrySearch(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
+    /** Answer an agent's request_mcp_install card. */
+    answerInstall(input: McpAnswerInstallInput): Promise<void>
+    /** Start the MCP assistant session (RunKind 'mcp-assist'); its proposals are answered with setup.decide. */
+    startAssist(input: McpAssistInput): Promise<RunSummary>
+  }
+  plugins: {
+    /** Add or replace one plugin. Returns the saved project. */
+    upsert(input: PluginUpsertInput): Promise<Project>
+    /** Remove one plugin. Returns the saved project. */
+    remove(input: { projectId: string; pluginId: string }): Promise<Project>
   }
   draft: {
     orgChart(req: DraftRequest): Promise<DraftResult>
@@ -818,5 +1411,28 @@ export const IPC = {
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   permissionsList: 'permissions:list',
-  permissionsRemove: 'permissions:remove'
+  permissionsRemove: 'permissions:remove',
+  projectsRemapModels: 'projects:remapModels',
+  connectionsList: 'connections:list',
+  connectionsUpdate: 'connections:update',
+  connectionsSetSecret: 'connections:setSecret',
+  connectionsTest: 'connections:test',
+  connectionsConnect: 'connections:connect',
+  connectionsLogin: 'connections:login',
+  connectionsCancelLogin: 'connections:cancelLogin',
+  connectionsLogout: 'connections:logout',
+  /** main -> renderer push channel carrying ConnectionEvent. */
+  connectionsEvent: 'connections:event',
+  modelsList: 'models:list',
+  modelsRefresh: 'models:refresh',
+  mcpList: 'mcp:list',
+  mcpUpsert: 'mcp:upsert',
+  mcpRemove: 'mcp:remove',
+  mcpSetSecret: 'mcp:setSecret',
+  mcpTest: 'mcp:test',
+  mcpRegistrySearch: 'mcp:registrySearch',
+  mcpAnswerInstall: 'mcp:answerInstall',
+  mcpStartAssist: 'mcp:startAssist',
+  pluginsUpsert: 'plugins:upsert',
+  pluginsRemove: 'plugins:remove'
 } as const

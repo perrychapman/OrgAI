@@ -1,4 +1,21 @@
-import type { AppSettings, ImageMediaType, Project, Role, SetupKind, ToolName } from './types'
+import type {
+  AdapterChoice,
+  AppSettings,
+  ConnectionId,
+  ImageMediaType,
+  McpServerSpec,
+  ModelFamily,
+  ModelRef,
+  ModelTier,
+  Project,
+  ProviderAuth,
+  ProviderConnections,
+  ProviderId,
+  ProviderModel,
+  Role,
+  SetupKind,
+  ToolName
+} from './types'
 import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
@@ -19,6 +36,141 @@ export const MAX_IMAGES_PER_MESSAGE = 10
 
 export const ROLE_COLORS = ['#7c5cff', '#2bb0ff', '#22c58b', '#f5a524', '#ff6b6b', '#e879f9', '#38bdf8', '#a3e635']
 
+// ---------- Model catalog ----------
+
+const builtin = (
+  connection: ConnectionId,
+  family: ModelFamily,
+  adapter: ProviderId,
+  list: { id: string; label: string; hint: string; tier: ModelTier }[]
+): ProviderModel[] => list.map((m) => ({ ...m, connection, family, adapter, source: 'builtin' }))
+
+/** Anthropic's models as Claude Code aliases, one per tier. Always in the catalog for the anthropic connection. */
+export const ANTHROPIC_BUILTIN_MODELS: readonly ProviderModel[] = builtin('anthropic', 'claude', 'claude', [
+  { id: 'fable', label: 'Fable', hint: 'Most capable, highest cost', tier: 'top' },
+  { id: 'opus', label: 'Opus', hint: 'Deep reasoning, orchestration, architecture', tier: 'deep' },
+  { id: 'sonnet', label: 'Sonnet', hint: 'Fast and capable, everyday coding', tier: 'everyday' },
+  { id: 'haiku', label: 'Haiku', hint: 'Cheap and quick, lookups and summaries', tier: 'fast' }
+])
+
+/**
+ * Placeholder OpenAI models until the Codex app-server's model/list answers at runtime. The ids are NOT
+ * verified against the live list; discovery replaces them.
+ */
+export const OPENAI_PLACEHOLDER_MODELS: readonly ProviderModel[] = builtin('openai', 'openai', 'codex', [
+  { id: 'gpt-5-codex', label: 'GPT-5 Codex', hint: 'Agentic coding (placeholder id)', tier: 'top' },
+  { id: 'gpt-5', label: 'GPT-5', hint: 'Deep reasoning (placeholder id)', tier: 'deep' },
+  { id: 'gpt-5-mini', label: 'GPT-5 mini', hint: 'Everyday work (placeholder id)', tier: 'everyday' },
+  { id: 'gpt-5-nano', label: 'GPT-5 nano', hint: 'Cheap and quick (placeholder id)', tier: 'fast' }
+])
+
+/** The builtin catalog of one connection. LiteLLM has none: its models are discovered from the proxy. */
+export function builtinModels(connection: ConnectionId): ProviderModel[] {
+  if (connection === 'anthropic') return ANTHROPIC_BUILTIN_MODELS.map((m) => ({ ...m }))
+  if (connection === 'openai') return OPENAI_PLACEHOLDER_MODELS.map((m) => ({ ...m }))
+  return []
+}
+
+/** Fill a tier mapping from a catalog: the first model suggested for each tier. Tiers with none are left out. */
+export function defaultTierModels(models: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
+  const out: Partial<Record<ModelTier, ModelRef>> = {}
+  for (const m of models) if (m.tier && !out[m.tier]) out[m.tier] = m.id
+  return out
+}
+
+const CLAUDE_ALIAS_TIERS: Record<string, ModelTier> = { fable: 'top', opus: 'deep', sonnet: 'everyday', haiku: 'fast' }
+
+/** Lowercase a model id and strip a gateway prefix such as "anthropic/" or "openai/". */
+function bareModelId(model: string): string {
+  const id = model.trim().toLowerCase()
+  const slash = id.lastIndexOf('/')
+  return slash >= 0 ? id.slice(slash + 1) : id
+}
+
+/**
+ * The tier a model expresses, for migrating roles saved before Role.tier existed. Claude aliases and full
+ * Claude ids (claude-opus-..., anthropic/claude-sonnet-...) map by name; 'inherit' and other models have none.
+ */
+export function tierForModel(model: ModelRef): ModelTier | undefined {
+  const id = bareModelId(model)
+  if (!id || id === 'inherit') return undefined
+  if (Object.hasOwn(CLAUDE_ALIAS_TIERS, id)) return CLAUDE_ALIAS_TIERS[id]
+  if (id.includes('claude')) {
+    for (const [alias, tier] of Object.entries(CLAUDE_ALIAS_TIERS)) if (id.includes(alias)) return tier
+  }
+  return undefined
+}
+
+/** Guess a model's family from its id, for discovered models the proxy does not describe. */
+export function modelFamily(model: ModelRef): ModelFamily {
+  const id = bareModelId(model)
+  if (Object.hasOwn(CLAUDE_ALIAS_TIERS, id) || id.includes('claude')) return 'claude'
+  if (/^(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
+  return 'other'
+}
+
+/** The adapter that runs a model family: Claude models on the Claude adapter, everything else on Codex. */
+export function adapterForFamily(family: ModelFamily): ProviderId {
+  return family === 'claude' ? 'claude' : 'codex'
+}
+
+/** The connection a project uses. Projects saved before connections existed are on 'anthropic'. */
+export function projectConnection(project: Pick<Project, 'provider'>): ConnectionId {
+  return project.provider.connection ?? (project.provider.id === 'codex' ? 'openai' : 'anthropic')
+}
+
+/**
+ * Pick the adapter for a project's run. 'anthropic' runs on Claude, 'openai' on Codex. 'litellm' follows the
+ * root role's model family (its catalog entry first, else modelFamily), and every role's model must share it:
+ * roles that would need the other adapter are listed in `mismatched`. 'inherit' roles always match.
+ * A 'mock' provider always runs on the mock adapter with nothing mismatched.
+ */
+export function adapterForProject(project: Pick<Project, 'provider' | 'roles'>, catalog: readonly ProviderModel[]): AdapterChoice {
+  const connection = projectConnection(project)
+  const familyOf = (model: ModelRef): ModelFamily =>
+    catalog.find((m) => m.id === model && m.connection === connection)?.family ?? modelFamily(model)
+  const root = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+  const family = root && root.model !== 'inherit' ? familyOf(root.model) : undefined
+  if (project.provider.id === 'mock') return { adapter: 'mock', connection, family, mismatched: [] }
+  const adapter: ProviderId =
+    connection === 'anthropic' ? 'claude' : connection === 'openai' ? 'codex' : adapterForFamily(family ?? 'claude')
+  const mismatched = project.roles
+    .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
+    .map((r) => r.id)
+  return { adapter, connection, family, mismatched }
+}
+
+/** Connection records for fresh settings. The Anthropic connection takes the given (legacy) auth. */
+export function defaultConnections(auth: ProviderAuth = { kind: 'subscription' }): ProviderConnections {
+  return {
+    anthropic: { id: 'anthropic', enabled: true, auth: { ...auth }, tierModels: defaultTierModels(ANTHROPIC_BUILTIN_MODELS) },
+    openai: { id: 'openai', enabled: false, auth: { kind: 'chatgpt' }, tierModels: defaultTierModels(OPENAI_PLACEHOLDER_MODELS) },
+    litellm: { id: 'litellm', enabled: false, baseUrl: '', hasApiKey: false, tierModels: {} }
+  }
+}
+
+// ---------- MCP ----------
+
+/** MCP server names become mcp__<name>__*: lowercase kebab-case, at most 48 characters. */
+export function isValidMcpServerName(name: string): boolean {
+  return name.length <= 48 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)
+}
+
+/** Every secret slot of a spec: secretEnv names followed by secretHeaders names. */
+export function mcpSecretNames(spec: Pick<McpServerSpec, 'secretEnv' | 'secretHeaders'>): string[] {
+  return [...(spec.secretEnv ?? []), ...(spec.secretHeaders ?? [])]
+}
+
+/**
+ * The enabled MCP servers a role may use: those with no `roles` list, those listing the role's slug, and
+ * those the role is granted explicitly in Role.mcpServers.
+ */
+export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pick<Role, 'slug' | 'mcpServers'>): McpServerSpec[] {
+  return (project.mcpServers ?? []).filter(
+    (s) => s.enabled && (s.roles === undefined || s.roles.includes(role.slug) || (role.mcpServers ?? []).includes(s.id))
+  )
+}
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPermissionMode: 'auto',
   defaultMaxBudgetUsd: undefined,
@@ -27,6 +179,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultRootModel: 'opus',
   defaultReportModel: 'sonnet',
   providerAuth: { kind: 'subscription' },
+  connections: defaultConnections(),
+  defaultConnection: 'anthropic',
   notifications: true,
   opusGuardThreshold: 80,
   defaultPreferSonnetNearLimit: false,
@@ -80,6 +234,7 @@ export function defaultRoles(): Role[] {
 Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
     tools: FULL,
     model: 'opus',
+    tier: 'deep',
     canSpawn: true,
     spawnable: [],
     reportsTo: null,
@@ -100,6 +255,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     prompt: `You are a senior software engineer. Implement exactly the task you are given. Read the surrounding code first, follow existing conventions, and run the relevant build or tests before you report. Report what you changed, file by file, and anything you could not verify.`,
     tools: FULL,
     model: 'sonnet',
+    tier: 'everyday',
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -120,6 +276,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     prompt: `You are a meticulous code reviewer. You may read anything but must not modify files. Review the described change for correctness bugs, security problems, and missed edge cases. Report findings ranked by severity with file and line references, and say explicitly when you find nothing.`,
     tools: READ_ONLY,
     model: 'sonnet',
+    tier: 'everyday',
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -140,6 +297,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     prompt: `You are a research specialist. Find and summarize the information requested, citing file paths or URLs. Be concise and concrete. Do not modify files.`,
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
     model: 'haiku',
+    tier: 'fast',
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -154,14 +312,17 @@ export function newProject(input: { name: string; path: string; brief: string; s
   const now = new Date().toISOString()
   let roles = defaultRoles()
   if (settings) {
-    roles = roles.map((r) => ({ ...r, model: r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel }))
+    roles = roles.map((r) => {
+      const model = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
+      return { ...r, model, tier: tierForModel(model) }
+    })
     const auth = settings.providerAuth.kind === 'apiKey' ? { kind: 'apiKey' as const, envVar: settings.providerAuth.envVar } : { kind: 'subscription' as const }
     return {
       id: newId('proj'),
       name: input.name,
       path: input.path,
       brief: input.brief,
-      provider: { id: 'claude', label: claudeProviderLabel(auth), auth },
+      provider: { id: 'claude', label: claudeProviderLabel(auth), auth, connection: 'anthropic' },
       permissionMode: settings.defaultPermissionMode,
       maxBudgetUsd: settings.defaultMaxBudgetUsd,
       maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
@@ -182,7 +343,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
     name: input.name,
     path: input.path,
     brief: input.brief,
-    provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' } },
+    provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' }, connection: 'anthropic' },
     permissionMode: 'auto',
     maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
     maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,

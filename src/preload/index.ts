@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
+  ConnectionEvent,
   ContinueRunInput,
   DraftRequest,
   FocusRunTarget,
@@ -20,7 +21,41 @@ const api: OrgAIApi = {
     create: (input) => ipcRenderer.invoke(IPC.projectsCreate, input),
     save: (project: Project) => ipcRenderer.invoke(IPC.projectsSave, project),
     remove: (id: string) => ipcRenderer.invoke(IPC.projectsRemove, id),
-    pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir)
+    pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
+    remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input)
+  },
+  connections: {
+    list: () => ipcRenderer.invoke(IPC.connectionsList),
+    update: (connection) => ipcRenderer.invoke(IPC.connectionsUpdate, connection),
+    setSecret: (input) => ipcRenderer.invoke(IPC.connectionsSetSecret, input),
+    test: (id) => ipcRenderer.invoke(IPC.connectionsTest, id),
+    connect: (id) => ipcRenderer.invoke(IPC.connectionsConnect, id),
+    login: (id) => ipcRenderer.invoke(IPC.connectionsLogin, id),
+    cancelLogin: (loginId) => ipcRenderer.invoke(IPC.connectionsCancelLogin, loginId),
+    logout: (id) => ipcRenderer.invoke(IPC.connectionsLogout, id)
+  },
+  models: {
+    list: (query) => ipcRenderer.invoke(IPC.modelsList, query),
+    refresh: (query) => ipcRenderer.invoke(IPC.modelsRefresh, query)
+  },
+  onConnectionEvent: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: ConnectionEvent): void => cb(event)
+    ipcRenderer.on(IPC.connectionsEvent, listener)
+    return () => ipcRenderer.removeListener(IPC.connectionsEvent, listener)
+  },
+  mcp: {
+    list: (projectId) => ipcRenderer.invoke(IPC.mcpList, projectId),
+    upsert: (input) => ipcRenderer.invoke(IPC.mcpUpsert, input),
+    remove: (input) => ipcRenderer.invoke(IPC.mcpRemove, input),
+    setSecret: (input) => ipcRenderer.invoke(IPC.mcpSetSecret, input),
+    test: (input) => ipcRenderer.invoke(IPC.mcpTest, input),
+    registrySearch: (input) => ipcRenderer.invoke(IPC.mcpRegistrySearch, input),
+    answerInstall: (input) => ipcRenderer.invoke(IPC.mcpAnswerInstall, input),
+    startAssist: (input) => ipcRenderer.invoke(IPC.mcpStartAssist, input)
+  },
+  plugins: {
+    upsert: (input) => ipcRenderer.invoke(IPC.pluginsUpsert, input),
+    remove: (input) => ipcRenderer.invoke(IPC.pluginsRemove, input)
   },
   draft: {
     orgChart: (req: DraftRequest) => ipcRenderer.invoke(IPC.draftOrgChart, req)
