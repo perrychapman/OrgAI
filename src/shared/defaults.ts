@@ -1,6 +1,23 @@
-import type { Project, Role, SetupKind, ToolName } from './types'
+import type { AppSettings, Project, Role, SetupKind, ToolName } from './types'
+import { DEFAULT_KEEP_RUNS } from './types'
 
 export const ROLE_COLORS = ['#7c5cff', '#2bb0ff', '#22c58b', '#f5a524', '#ff6b6b', '#e879f9', '#38bdf8', '#a3e635']
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  defaultPermissionMode: 'acceptEdits',
+  defaultMaxBudgetUsd: undefined,
+  defaultKeepRuns: DEFAULT_KEEP_RUNS,
+  defaultIsolateWriters: true,
+  defaultRootModel: 'opus',
+  defaultReportModel: 'sonnet',
+  providerAuth: { kind: 'subscription' },
+  notifications: true
+}
+
+/** Provider label matching an auth choice. */
+export function claudeProviderLabel(auth: AppSettings['providerAuth']): string {
+  return auth.kind === 'apiKey' ? `Claude (API key from ${auth.envVar})` : 'Claude (Claude Code login)'
+}
 
 export function slugify(name: string): string {
   return (
@@ -113,8 +130,30 @@ Plan before acting. Delegate implementation, review and testing to your speciali
   return [orchestrator, implementer, reviewer, researcher]
 }
 
-export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Project {
+export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }, settings?: AppSettings): Project {
   const now = new Date().toISOString()
+  let roles = defaultRoles()
+  if (settings) {
+    roles = roles.map((r) => ({ ...r, model: r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel }))
+    const auth = settings.providerAuth.kind === 'apiKey' ? { kind: 'apiKey' as const, envVar: settings.providerAuth.envVar } : { kind: 'subscription' as const }
+    return {
+      id: newId('proj'),
+      name: input.name,
+      path: input.path,
+      brief: input.brief,
+      provider: { id: 'claude', label: claudeProviderLabel(auth), auth },
+      permissionMode: settings.defaultPermissionMode,
+      maxBudgetUsd: settings.defaultMaxBudgetUsd,
+      maxSubagentDepth: 2,
+      maxConcurrentSubagents: 6,
+      isolateWriters: settings.defaultIsolateWriters,
+      keepRuns: settings.defaultKeepRuns,
+      roles,
+      setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
+      createdAt: now,
+      updatedAt: now
+    }
+  }
   return {
     id: newId('proj'),
     name: input.name,

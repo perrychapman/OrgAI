@@ -106,6 +106,34 @@ export interface Project {
   updatedAt: string
 }
 
+// ---------- App settings (global) ----------
+
+/** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
+export interface AppSettings {
+  defaultPermissionMode: PermissionMode
+  /** undefined = no cap. */
+  defaultMaxBudgetUsd?: number
+  defaultKeepRuns: number
+  defaultIsolateWriters: boolean
+  defaultRootModel: ModelRef
+  defaultReportModel: ModelRef
+  providerAuth: ProviderAuth
+  notifications?: boolean
+}
+
+/** What settings:get returns: the settings plus read-only facts about the install. */
+export type AppSettingsInfo = AppSettings & { dataDir: string }
+
+/** Result of auth:status, shown as the sidebar pill. */
+export interface AuthStatusResult {
+  loggedIn: boolean
+  method?: string
+  detail?: string
+  mode: 'subscription' | 'apiKey'
+  envVar?: string
+  envVarSet?: boolean
+}
+
 // ---------- Setup (AI-driven onboarding) ----------
 
 export type SetupKind = 'new' | 'existing'
@@ -383,7 +411,15 @@ export interface OrgAIApi {
   }
   onRunEvent(cb: (event: RunEvent) => void): () => void
   auth: {
-    status(): Promise<{ loggedIn: boolean; method?: string; detail?: string }>
+    status(): Promise<AuthStatusResult>
+  }
+  settings: {
+    get(): Promise<AppSettingsInfo>
+    set(s: AppSettings): Promise<AppSettingsInfo>
+  }
+  app: {
+    /** Open a file or folder with the OS default handler. Resolves to an error message, or '' on success. */
+    openPath(path: string): Promise<string>
   }
 }
 
@@ -409,5 +445,8 @@ export const IPC = {
   maintIntegrate: 'maintenance:integrateWorktree',
   maintDiscard: 'maintenance:discardWorktree',
   maintUninstall: 'maintenance:uninstallRepo',
-  authStatus: 'auth:status'
+  authStatus: 'auth:status',
+  settingsGet: 'settings:get',
+  settingsSet: 'settings:set',
+  appOpenPath: 'app:openPath'
 } as const

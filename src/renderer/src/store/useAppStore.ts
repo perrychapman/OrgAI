@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AgentInstance,
+  AuthStatusResult,
   DraftRequest,
   DraftResult,
   PermissionDecision,
@@ -15,7 +16,7 @@ import type {
   TranscriptEntry
 } from '@shared/types'
 
-export type View = 'projects' | 'settings' | 'run'
+export type View = 'projects' | 'settings' | 'run' | 'appSettings'
 export type SettingsTab = 'org' | 'project'
 
 export interface LogLine {
@@ -46,7 +47,7 @@ interface AppState {
   runs: Record<string, RunState>
   activeRunByProject: Record<string, string>
   selectedAgentId: string | null
-  auth: { loggedIn: boolean; method?: string; detail?: string } | null
+  auth: AuthStatusResult | null
   drafting: boolean
   draftResult: DraftResult | null
   draftError: string | null
@@ -129,7 +130,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const auth = await window.orgai.auth.status()
       set({ auth })
     } catch {
-      set({ auth: { loggedIn: false } })
+      set({ auth: { loggedIn: false, mode: 'subscription' } })
     }
   },
 

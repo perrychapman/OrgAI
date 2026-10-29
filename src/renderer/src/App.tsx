@@ -4,6 +4,7 @@ import { activeRun, selectedProject, useAppStore } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import LiveRunView from './views/LiveRunView'
+import AppSettingsView from './views/AppSettingsView'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -39,6 +40,9 @@ export default function App(): ReactElement {
           <button className={`nav-item ${view === 'projects' ? 'active' : ''}`} onClick={() => setView('projects')}>
             <span>▦</span> Projects
           </button>
+          <button className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} onClick={() => setView('appSettings')}>
+            <span>⚙</span> Settings
+          </button>
         </div>
         <div className="sidebar-label">Workspaces</div>
         <div className="sidebar-section" style={{ overflow: 'auto' }}>
@@ -46,10 +50,10 @@ export default function App(): ReactElement {
           {projects.map((p) => (
             <button
               key={p.id}
-              className={`nav-item ${selectedId === p.id && view !== 'projects' ? 'active' : ''}`}
+              className={`nav-item ${selectedId === p.id && view !== 'projects' && view !== 'appSettings' ? 'active' : ''}`}
               onClick={() => {
                 selectProject(p.id)
-                if (view === 'projects') setView('run')
+                if (view === 'projects' || view === 'appSettings') setView('run')
               }}
               title={p.path}
             >
@@ -59,15 +63,28 @@ export default function App(): ReactElement {
           ))}
         </div>
         <div className="sidebar-footer">
-          <span className={`pill ${auth?.loggedIn ? 'ok' : auth ? 'danger' : ''}`}>
+          <span
+            className={`pill ${auth?.loggedIn ? 'ok' : auth?.mode === 'apiKey' ? 'warn' : auth ? 'danger' : ''}`}
+            title={auth?.detail}
+          >
             <span className="dot" />
-            {auth == null ? 'Checking Claude login…' : auth.loggedIn ? `Claude · ${auth.method ?? 'logged in'}` : 'Claude not logged in'}
+            {auth == null
+              ? 'Checking Claude login…'
+              : auth.mode === 'apiKey'
+                ? auth.envVarSet
+                  ? `Claude · API key (${auth.envVar})`
+                  : `Claude · ${auth.envVar} not set`
+                : auth.loggedIn
+                  ? `Claude · ${auth.method ?? 'logged in'}`
+                  : 'Claude not logged in'}
           </span>
         </div>
       </aside>
 
       <main className="main">
-        {view === 'projects' || !project ? (
+        {view === 'appSettings' ? (
+          <AppSettingsView />
+        ) : view === 'projects' || !project ? (
           <ProjectsView />
         ) : (
           <>
