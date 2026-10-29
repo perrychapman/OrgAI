@@ -8,6 +8,8 @@ import {
   type McpSdkServerConfigWithInstance,
   type ModelUsage,
   type Options,
+  type PermissionResult,
+  type PermissionUpdate,
   type PreToolUseHookInput,
   type PostToolUseHookInput,
   type SubagentStartHookInput,
@@ -18,11 +20,13 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import type { AgentInstance, MergeDecision, Project, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import type { PermissionDecision, PermissionSuggestion } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { toRoles } from '../ai/draft'
 import type { CompletionInput, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import { addRules, allowRuleStrings, deriveSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, isGitRepo, pendingWorktrees, prepareRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
 import { PartialText } from './claudePartial'
@@ -834,28 +838,65 @@ class ClaudeSession implements RuntimeSession {
         const line = data.trim()
         if (line) this.log('warn', line)
       },
-      canUseTool: async (toolName, input) => {
+      canUseTool: async (toolName, input, permOptions) => {
         // The harness's own tools carry their approval inside the proposal round-trip.
         if (toolName.startsWith(ORGAI_TOOL_PREFIX)) return { behavior: 'allow', updatedInput: input }
         const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(toolName, input)}`)
+        // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
+        const suggestions = permOptions.suppressAlwaysAllowRule
+          ? []
+          : permOptions.suggestions?.length
+            ? fromSdkSuggestions(permOptions.suggestions)
+            : deriveSuggestions(toolName, input)
         const decision = await this.ctx.requestPermission({
           agentId,
           toolName,
           input,
-          summary: describeTool(toolName, input)
+          summary: describeTool(toolName, input),
+          ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
         })
         const a = this.agents.get(agentId)
         if (a && a.state === 'waiting') this.setState(agentId, 'tool', describeTool(toolName, input))
-        if (decision.behavior === 'allow') return { behavior: 'allow', updatedInput: input }
+        if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input)
         return { behavior: 'deny', message: decision.message }
       }
     }
     if (harnessServer) options.mcpServers = { [ORGAI_MCP]: harnessServer }
+    // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
+    const savedRules = listRules(project.path)
+    if (savedRules.length) options.allowedTools = savedRules
     if (this.root.model && this.root.model !== 'inherit') options.model = this.root.model
     if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
     if (this.ctx.resumeSessionId) options.resume = this.ctx.resumeSessionId
     return options
+  }
+
+  /** Allow result for a decision; session and project scopes add the suggested rules for the rest of the session. */
+  private allowWithScope(
+    decision: Extract<PermissionDecision, { behavior: 'allow' }>,
+    suggestions: PermissionSuggestion[],
+    input: Record<string, unknown>
+  ): PermissionResult {
+    const scope = decision.scope ?? 'once'
+    if (scope === 'once' || suggestions.length === 0) return { behavior: 'allow', updatedInput: input }
+    if (scope === 'project') {
+      const rules = allowRuleStrings(suggestions)
+      try {
+        if (rules.length) {
+          addRules(this.ctx.project.path, rules)
+          this.log('info', `Saved permission rule${rules.length === 1 ? '' : 's'} for this project: ${rules.join(', ')}`)
+        }
+      } catch (e) {
+        this.log('warn', `Could not save permission rules: ${(e as Error).message}`)
+      }
+    }
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      updatedPermissions: toSdkSessionUpdates(suggestions),
+      decisionClassification: 'user_permanent'
+    }
   }
 
   private async run(): Promise<void> {
@@ -1118,3 +1159,36 @@ export class ClaudeAdapter implements RuntimeAdapter {
     return text
   }
 }
+
+/** Copy SDK permission updates into the structured-clone-safe shared shape. */
+function fromSdkSuggestions(updates: PermissionUpdate[]): PermissionSuggestion[] {
+  return updates.map((u): PermissionSuggestion => {
+    switch (u.type) {
+      case 'addRules':
+      case 'replaceRules':
+      case 'removeRules':
+        return {
+          type: u.type,
+          rules: u.rules.map((r) => (r.ruleContent ? { toolName: r.toolName, ruleContent: r.ruleContent } : { toolName: r.toolName })),
+          behavior: u.behavior,
+          destination: u.destination
+        }
+      case 'addDirectories':
+      case 'removeDirectories':
+        return { type: u.type, directories: [...u.directories], destination: u.destination }
+      case 'setMode':
+        return { type: 'setMode', mode: u.mode, destination: u.destination }
+    }
+  })
+}
+
+/** Shared suggestions back to SDK updates, all scoped to this session (persistence is the harness's job). */
+function toSdkSessionUpdates(suggestions: PermissionSuggestion[]): PermissionUpdate[] {
+  return suggestions.map((s): PermissionUpdate => {
+    if (s.type === 'setMode') return { type: 'setMode', mode: s.mode as SdkPermissionMode, destination: 'session' }
+    if ('directories' in s) return { type: s.type, directories: [...s.directories], destination: 'session' }
+    return { type: s.type, rules: s.rules.map((r) => ({ ...r })), behavior: s.behavior, destination: 'session' }
+  })
+}
+
+type SdkPermissionMode = Extract<PermissionUpdate, { type: 'setMode' }>['mode']

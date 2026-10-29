@@ -9,6 +9,7 @@ import type { MaintenanceService } from './maintenance'
 import type { SettingsStore } from './store/settings'
 import { draftOrgChart } from './ai/draft'
 import { log, logPath, logsDir } from './log'
+import { listRules, removeRule } from './runtime/permissionRules'
 
 export function registerIpc(projects: ProjectStore, runs: RunManager, setup: SetupService, maintenance: MaintenanceService, settings: SettingsStore): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
@@ -121,6 +122,16 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     logPath() // creates the folder if nothing has been logged yet
     const error = await shell.openPath(logsDir())
     if (error) log.warn(`Could not open logs folder: ${error}`)
+  })
+  ipcMain.handle(IPC.permissionsList, (_e, projectId: string) => {
+    const project = projects.get(projectId)
+    if (!project) throw new Error('Project not found')
+    return listRules(project.path)
+  })
+  ipcMain.handle(IPC.permissionsRemove, (_e, input: { projectId: string; rule: string }) => {
+    const project = projects.get(input.projectId)
+    if (!project) throw new Error('Project not found')
+    return removeRule(project.path, input.rule)
   })
 }
 

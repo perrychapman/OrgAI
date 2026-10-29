@@ -23,6 +23,7 @@ import DraftPanel from '../components/DraftPanel'
 import ProviderAuthPicker from '../components/ProviderAuthPicker'
 import { claudeProviderLabel } from '@shared/defaults'
 import { treeLayout } from '../lib/layout'
+import PermissionRulesPanel from '../components/PermissionRulesPanel'
 
 const nodeTypes = { role: RoleNode }
 
@@ -485,6 +486,7 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           onChange={(auth) => patch({ provider: { ...project.provider, auth, label: claudeProviderLabel(auth) } })}
         />
       </div>
+      <PermissionRulesPanel project={project} />
     </div>
   )
 }
