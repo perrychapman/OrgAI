@@ -49,6 +49,23 @@
   margin: 0;
   font-size: var(--text-body);
   font-weight: var(--weight-semibold);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@container side (max-width: 320px) {
+  .side-header {
+    padding: 12px 10px;
+    gap: 6px;
+  }
+  .side-header .tabs {
+    padding: 2px;
+    gap: 1px;
+  }
+  .side-header .tabs button {
+    padding: 4px 8px;
+  }
 }
 .side-body {
   padding: 14px;
