@@ -11,7 +11,9 @@ import {
   type Edge,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentInstance, ImageAttachment, Project } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpInstallOutcome, McpInstallRequest, Project } from '@shared/types'
+import McpInstallCard from '../components/McpInstallCard'
+import { Badge } from '../components/ui/Badge'
 import { MAX_IMAGES_PER_MESSAGE } from '@shared/defaults'
 import { ComposerImages, filesToImages } from '../components/ImageAttachments'
 import { setupPending } from '@shared/setup'
@@ -100,6 +102,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
+  const [pickedInstall, setPickedInstall] = useState<string | null>(null)
+  const [dismissedInstalls, setDismissedInstalls] = useState<Record<string, boolean>>({})
 
   const toggleCollapse = (): void => {
     setCollapseFinished((v) => {
@@ -370,6 +374,22 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     }
   }
 
+  // Install approval cards: open ones first (one expanded, the rest collapsed), answered ones until dismissed.
+  const openInstalls = run?.mcpInstalls ?? []
+  const resolvedInstalls = Object.values(run?.mcpResolved ?? {}).filter((r) => !dismissedInstalls[r.request.id])
+  const cardItems: { request: McpInstallRequest; outcome?: McpInstallOutcome }[] = [
+    ...openInstalls.map((request) => ({ request })),
+    ...resolvedInstalls.map((r) => ({ request: r.request, outcome: r.outcome }))
+  ]
+  const expandedInstallId = openInstalls.some((r) => r.id === pickedInstall) ? pickedInstall : (openInstalls[0]?.id ?? null)
+
+  // The card region resizes the canvas; re-fit once it settles.
+  const cardsKey = cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : c.request.id === expandedInstallId ? 'e' : 'c'}`).join('|')
+  useEffect(() => {
+    const t = setTimeout(() => fitView({ padding: 0.25, duration: 200, maxZoom: 1 }), 80)
+    return () => clearTimeout(t)
+  }, [cardsKey, fitView])
+
   const selectedAgent = run && selectedAgentId ? run.agents[selectedAgentId] : undefined
   const entries = useMemo(
     () => (run && selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
@@ -378,6 +398,34 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
   return (
     <div className="live">
+      <div className="live-cards" aria-live="polite">
+        {run && cardItems.length > 0 && (
+          <>
+            <span className="sr-only">
+              {openInstalls.length > 0
+                ? `${run.agents[openInstalls[0].agentId]?.name ?? 'An agent'} is asking to install an MCP server`
+                : 'MCP install request answered'}
+            </span>
+            {openInstalls.length > 1 && (
+              <Badge tone="warning" testId="mcp-install-count">
+                {openInstalls.length} install requests waiting
+              </Badge>
+            )}
+            {cardItems.map((it) => (
+              <McpInstallCard
+                key={it.request.id}
+                runId={run.summary.id}
+                request={it.request}
+                agentName={run.agents[it.request.agentId]?.name ?? 'An agent'}
+                resolved={it.outcome}
+                collapsed={!it.outcome && it.request.id !== expandedInstallId}
+                onExpand={() => setPickedInstall(it.request.id)}
+                onDismiss={() => setDismissedInstalls((d) => ({ ...d, [it.request.id]: true }))}
+              />
+            ))}
+          </>
+        )}
+      </div>
       <div className="canvas">
         {showStrip && <RunStrip runs={stripRuns} />}
         {run && (
