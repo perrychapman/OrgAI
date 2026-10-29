@@ -16,13 +16,13 @@ import {
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import type { AgentInstance, Project, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, MergeDecision, Project, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { toRoles } from '../ai/draft'
 import type { CompletionInput, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
-import { commitLeftovers, findWorktree, inspectPending, integrateWorktree, isGitRepo, pendingWorktrees, prepareRepo } from './worktrees'
+import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, isGitRepo, pendingWorktrees, prepareRepo } from './worktrees'
 
 const INTEGRATE_TOOL = 'integrate_worktrees'
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit'])
@@ -267,7 +267,8 @@ function buildSetupServer(ctx: RuntimeContext, onDecided: () => void): McpSdkSer
           maxBudgetUsd: z.number().nullable().optional().describe('Spend cap per run in USD; null for no cap'),
           maxSubagentDepth: z.number().int().min(1).max(5).optional(),
           maxConcurrentSubagents: z.number().int().min(1).max(20).optional(),
-          isolateWriters: z.boolean().optional().describe('Run writing reports in their own git worktrees and merge them back; true for git repositories with more than one writing role')
+          isolateWriters: z.boolean().optional().describe('Run writing reports in their own git worktrees and merge them back; true for git repositories with more than one writing role'),
+          reviewMerges: z.boolean().optional().describe('Show the user each report\'s diff and wait for approval before merging it; only when the user wants to review changes')
         },
         async ({ title, ...payload }) => {
           const d = await ctx.requestProposal({ kind: 'settings', agentId: ROOT_ID, title, payload })
@@ -520,12 +521,23 @@ class ClaudeSession implements RuntimeSession {
     const located = await findWorktree(root, agent.id)
     const info: WorktreeInfo = { ...agent.worktree!, ...(located ?? {}), status: 'merging' }
     const brief = this.spawnDescription.get(agent.id) ?? agent.activity
-    const result = await integrateWorktree(root, info, `${agent.name}: ${brief}`.slice(0, 120))
+    const result = await integrateWorktree(root, info, `${agent.name}: ${brief}`.slice(0, 120), this.reviewGate(agent, info))
     const current = this.agents.get(agent.id) ?? agent
     current.worktree = result.info
     this.upsert(current)
     const level = result.info.status === 'conflict' ? 'warn' : 'info'
     this.log(level, `${agent.name}: ${result.message}`)
+    if (result.info.status === 'held') {
+      this.notifyOrchestrator(
+        `Harness: the user reviewed ${agent.name}'s report and chose to hold it for later instead of merging. Its changes are NOT in the main checkout; ` +
+          `they stay on branch ${result.info.branch} (worktree "${result.info.path}"). Do not build on them and do not merge the branch yourself; ` +
+          `if you need them now, ask the user, or call ${INTEGRATE_TOOL}, which asks the user to review the branch again.`
+      )
+    } else if (result.info.status === 'removed' && result.info.changedFiles?.length) {
+      this.notifyOrchestrator(
+        `Harness: the user reviewed ${agent.name}'s report and discarded it. None of its changes were merged and its branch was deleted. Redo or reassign that work if it is still needed.`
+      )
+    }
     if (result.info.status === 'merged' || result.info.status === 'conflict') {
       this.notifyOrchestrator(
         result.info.status === 'merged'
@@ -544,13 +556,50 @@ class ClaudeSession implements RuntimeSession {
       this.upsert(owner)
     }
     const brief = owner ? this.spawnDescription.get(owner.id) ?? owner.activity : wt.branch
-    const result = await integrateWorktree(this.ctx.project.path, info, `${owner?.name ?? 'report'}: ${brief}`.slice(0, 120))
+    const result = await integrateWorktree(
+      this.ctx.project.path,
+      info,
+      `${owner?.name ?? 'report'}: ${brief}`.slice(0, 120),
+      this.reviewGate(owner ?? null, info)
+    )
     if (owner) {
       owner.worktree = result.info
       this.upsert(owner)
     }
     this.log(result.info.status === 'conflict' ? 'warn' : 'info', `${owner?.name ?? wt.branch}: ${result.message}`)
     return `${wt.branch}: ${result.message}`
+  }
+
+  /**
+   * With reviewMerges on, the gate integrateWorktree calls before merging: mark the worktree as
+   * under review, show the diff to the user and wait for merge, discard or hold.
+   */
+  private reviewGate(agent: AgentInstance | null, info: WorktreeInfo): ((changedFiles: string[]) => Promise<MergeDecision>) | undefined {
+    if (!this.ctx.project.reviewMerges) return undefined
+    return async (changedFiles) => {
+      const root = this.ctx.project.path
+      const owner = agent ? this.agents.get(agent.id) ?? agent : null
+      if (owner) {
+        owner.worktree = { ...info, status: 'review', changedFiles }
+        this.upsert(owner)
+      }
+      const diff = await diffWorktree(root, info.branch)
+      this.log('info', `${owner?.name ?? info.branch}: waiting for the user to review ${info.branch} before merging.`)
+      const decision = await this.ctx.requestMergeReview({
+        agentId: owner?.id ?? ROOT_ID,
+        agentName: owner?.name ?? info.branch,
+        branch: info.branch,
+        path: info.path,
+        changedFiles: diff.changedFiles.length ? diff.changedFiles : changedFiles,
+        stat: diff.stat,
+        patch: diff.patch
+      })
+      if (owner && decision.behavior === 'merge') {
+        owner.worktree = { ...info, status: 'merging', changedFiles }
+        this.upsert(owner)
+      }
+      return decision
+    }
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */

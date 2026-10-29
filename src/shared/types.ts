@@ -97,6 +97,11 @@ export interface Project {
    * when it finishes. Needs a git repository; silently off otherwise. Default true.
    */
   isolateWriters?: boolean
+  /**
+   * With isolateWriters: pause before merging each report's branch and show its diff to the user,
+   * who merges, discards or holds it. Default false (merge automatically).
+   */
+  reviewMerges?: boolean
   /** Runs to keep on disk for this project; older ones are deleted. Default DEFAULT_KEEP_RUNS. */
   keepRuns?: number
   roles: Role[]
@@ -192,6 +197,7 @@ export interface SettingsProposalPayload {
   maxSubagentDepth?: number
   maxConcurrentSubagents?: number
   isolateWriters?: boolean
+  reviewMerges?: boolean
   rationale: string
 }
 
@@ -274,6 +280,8 @@ export type WorktreeStatus =
   | 'empty' // the report changed nothing; removed
   | 'conflict' // could not merge automatically; branch kept for the orchestrator
   | 'removed' // gone before the harness looked
+  | 'review' // waiting for the user to review the diff before merging
+  | 'held' // the user chose to hold it; branch kept for later
 
 export interface WorktreeInfo {
   path: string
@@ -294,6 +302,30 @@ export interface PendingWorktree {
   changedFiles: string[]
   lastCommitAt?: number
   lastSubject?: string
+}
+
+/** A finished report's branch waiting for the user's review before it is merged. */
+export interface MergeReview {
+  id: string
+  runId: string
+  agentId: string
+  agentName: string
+  branch: string
+  path: string
+  changedFiles: string[]
+  /** Output of git diff --stat. */
+  stat: string
+  /** Unified diff, truncated when very large. */
+  patch: string
+  createdAt: number
+}
+
+export type MergeDecision = { behavior: 'merge' } | { behavior: 'discard' } | { behavior: 'hold' }
+
+/** A branch's diff against the main checkout, as shown by the maintenance panel. */
+export interface WorktreeDiff {
+  stat: string
+  patch: string
 }
 
 export interface MaintenanceResult {
@@ -374,6 +406,8 @@ export type RunEvent =
   | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision }
   | { type: 'question.request'; runId: string; question: UserQuestion }
   | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer }
+  | { type: 'merge.request'; runId: string; review: MergeReview }
+  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
 
@@ -427,6 +461,8 @@ export interface OrgAIApi {
     integrateWorktree(input: { projectId: string; branch: string }): Promise<MaintenanceResult>
     /** Delete one branch and its worktree, losing its work. */
     discardWorktree(input: { projectId: string; branch: string }): Promise<MaintenanceResult>
+    /** The branch's changes against the main checkout. */
+    diffWorktree(input: { projectId: string; branch: string }): Promise<WorktreeDiff>
     /** Remove the files OrgAI added to the repository. Refuses while report branches hold work. */
     uninstallRepo(projectId: string): Promise<MaintenanceResult>
   }
@@ -442,6 +478,8 @@ export interface OrgAIApi {
     decide(input: { runId: string; requestId: string; decision: PermissionDecision }): Promise<void>
     /** Start a new run that resumes a finished run's session, so the orchestrator keeps its memory. */
     continue(input: { runId: string; text: string }): Promise<RunSummary>
+    /** Answer a merge review: merge, discard or hold the report's branch. */
+    decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
   }
   onRunEvent(cb: (event: RunEvent) => void): () => void
   /** A clicked OS notification asks the renderer to show this run. */
@@ -487,6 +525,8 @@ export const IPC = {
   maintIntegrate: 'maintenance:integrateWorktree',
   maintDiscard: 'maintenance:discardWorktree',
   maintUninstall: 'maintenance:uninstallRepo',
+  maintDiff: 'maintenance:diff',
+  mergesDecide: 'merges:decide',
   authStatus: 'auth:status',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { PendingWorktree, WorktreeInfo } from '@shared/types'
+import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
  * Git plumbing for isolated subagents. Vendor-neutral: any adapter whose subagents work
@@ -147,7 +147,13 @@ export interface IntegrateResult {
  * Clean merges remove the worktree and branch. Conflicts and refusals leave the branch for
  * the orchestrator or the user to integrate by hand.
  */
-export async function integrateWorktree(root: string, info: WorktreeInfo, commitMessage: string): Promise<IntegrateResult> {
+export async function integrateWorktree(
+  root: string,
+  info: WorktreeInfo,
+  commitMessage: string,
+  /** Optional gate before merging (review-before-merge). Not called when there is nothing to merge. */
+  review?: (changedFiles: string[]) => Promise<MergeDecision>
+): Promise<IntegrateResult> {
   const wt = info.path
   if (!existsSync(wt)) {
     return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
@@ -169,6 +175,20 @@ export async function integrateWorktree(root: string, info: WorktreeInfo, commit
   const changed = await git(root, ['diff', '--name-only', `${head.out}...${info.branch}`])
   const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
 
+  if (review) {
+    const decision = await review(changedFiles)
+    if (decision.behavior === 'discard') {
+      await discardWorktree(root, info)
+      return { info: { ...info, status: 'removed', changedFiles }, message: `The user discarded ${info.branch}; its changes were deleted.` }
+    }
+    if (decision.behavior === 'hold') {
+      return {
+        info: { ...info, status: 'held', changedFiles },
+        message: `The user is holding ${info.branch} for later review; it was not merged and is kept at ${wt}.`
+      }
+    }
+  }
+
   const merge = await git(root, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, info.branch])
   if (!merge.ok) {
     const conflicts = await git(root, ['diff', '--name-only', '--diff-filter=U'])
@@ -186,5 +206,28 @@ export async function integrateWorktree(root: string, info: WorktreeInfo, commit
   return {
     info: { ...info, status: 'merged', changedFiles },
     message: `Merged ${info.branch} into the main checkout (${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}: ${changedFiles.slice(0, 12).join(', ')}${changedFiles.length > 12 ? ', …' : ''}).`
+  }
+}
+
+/** Largest patch sent to the renderer; bigger diffs are cut with a note. */
+const MAX_PATCH_BYTES = 200 * 1024
+
+/** A branch's changes since it forked from the main checkout's HEAD. */
+export async function diffWorktree(root: string, branch: string): Promise<WorktreeDiff & { changedFiles: string[] }> {
+  const range = `HEAD...${branch}`
+  const [stat, patch, names] = await Promise.all([
+    git(root, ['diff', '--stat', range]),
+    git(root, ['diff', range]),
+    git(root, ['diff', '--name-only', range])
+  ])
+  let text = patch.ok ? patch.out : `Could not compute the diff: ${patch.err}`
+  if (Buffer.byteLength(text, 'utf8') > MAX_PATCH_BYTES) {
+    const cut = Buffer.from(text, 'utf8').subarray(0, MAX_PATCH_BYTES).toString('utf8')
+    text = `${cut.slice(0, cut.lastIndexOf('\n') + 1)}\n… diff truncated at ${MAX_PATCH_BYTES / 1024} KB; run git diff ${range} for the rest.`
+  }
+  return {
+    stat: stat.ok ? stat.out : stat.err,
+    patch: text,
+    changedFiles: names.ok ? names.out.split(/\r?\n/).filter(Boolean) : []
   }
 }

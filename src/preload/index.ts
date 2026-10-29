@@ -23,7 +23,8 @@ const api: OrgAIApi = {
     get: (runId: string) => ipcRenderer.invoke(IPC.runsGet, runId),
     decide: (input: { runId: string; requestId: string; decision: PermissionDecision }) =>
       ipcRenderer.invoke(IPC.runsDecide, input),
-    continue: (input) => ipcRenderer.invoke(IPC.runsContinue, input)
+    continue: (input) => ipcRenderer.invoke(IPC.runsContinue, input),
+    decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input)
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),
@@ -34,7 +35,8 @@ const api: OrgAIApi = {
     listWorktrees: (projectId: string) => ipcRenderer.invoke(IPC.maintListWorktrees, projectId),
     integrateWorktree: (input) => ipcRenderer.invoke(IPC.maintIntegrate, input),
     discardWorktree: (input) => ipcRenderer.invoke(IPC.maintDiscard, input),
-    uninstallRepo: (projectId: string) => ipcRenderer.invoke(IPC.maintUninstall, projectId)
+    uninstallRepo: (projectId: string) => ipcRenderer.invoke(IPC.maintUninstall, projectId),
+    diffWorktree: (input) => ipcRenderer.invoke(IPC.maintDiff, input)
   },
   onRunEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: RunEvent): void => cb(event)

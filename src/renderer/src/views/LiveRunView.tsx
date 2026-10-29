@@ -19,6 +19,7 @@ import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RunStrip, { useStripRuns } from '../components/RunStrip'
+import MergeReviewCard from '../components/MergeReviewCard'
 import { formatCost, treeLayout } from '../lib/layout'
 
 const SCAFFOLD_PROMPT =
@@ -55,6 +56,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const composerMode = useAppStore((s) => s.composerMode)
   const stripRuns = useStripRuns()
   const showStrip = stripRuns.length > 0
+  const decideMerge = useAppStore((s) => s.decideMerge)
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -220,8 +222,16 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           </div>
         )}
 
+        {run && run.mergeReviews?.length > 0 && (
+          <div className="proposals merge-reviews">
+            {run.mergeReviews.map((m) => (
+              <MergeReviewCard key={m.id} review={m} onDecide={(d) => void decideMerge(m.id, d)} />
+            ))}
+          </div>
+        )}
+
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length || run.questions?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : showStrip ? { top: 52 } : undefined}>
+          <div className="permissions" style={run.proposals.length || run.questions?.length || run.mergeReviews?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : showStrip ? { top: 52 } : undefined}>
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>

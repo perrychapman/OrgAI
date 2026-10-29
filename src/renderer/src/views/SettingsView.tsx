@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { MaintenanceResult, PendingWorktree } from '@shared/types'
+import type { MaintenanceResult, PendingWorktree, WorktreeDiff } from '@shared/types'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import {
   ReactFlow,
@@ -18,6 +18,7 @@ import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
+import DiffView from '../components/DiffView'
 import DraftPanel from '../components/DraftPanel'
 import ProviderAuthPicker from '../components/ProviderAuthPicker'
 import { claudeProviderLabel } from '@shared/defaults'
@@ -231,6 +232,21 @@ function MaintenancePanel({ project }: { project: Project }): ReactElement {
 
   const hasFootprint = !!project.setup?.architecturePath
 
+  const [diffs, setDiffs] = useState<Record<string, WorktreeDiff | 'loading'>>({})
+  const toggleDiff = async (branch: string): Promise<void> => {
+    if (diffs[branch]) {
+      setDiffs(({ [branch]: _drop, ...rest }) => rest)
+      return
+    }
+    setDiffs((d) => ({ ...d, [branch]: 'loading' }))
+    try {
+      const diff = await window.orgai.maintenance.diffWorktree({ projectId: project.id, branch })
+      setDiffs((d) => ({ ...d, [branch]: diff }))
+    } catch (e) {
+      setDiffs((d) => ({ ...d, [branch]: { stat: '', patch: `Could not load the diff: ${(e as Error).message}` } }))
+    }
+  }
+
   return (
     <div style={{ maxWidth: 640, marginTop: 28 }}>
       <div className="side-section-title" style={{ margin: '0 0 10px' }}>
@@ -281,7 +297,13 @@ function MaintenancePanel({ project }: { project: Project }): ReactElement {
                   >
                     Discard
                   </button>
+                  <button className="btn ghost sm" disabled={diffs[w.branch] === 'loading'} onClick={() => void toggleDiff(w.branch)}>
+                    {diffs[w.branch] === 'loading' ? 'Loading…' : diffs[w.branch] ? 'Hide diff' : 'View diff'}
+                  </button>
                 </div>
+                {diffs[w.branch] && diffs[w.branch] !== 'loading' && (
+                  <DiffView stat={(diffs[w.branch] as WorktreeDiff).stat} patch={(diffs[w.branch] as WorktreeDiff).patch} />
+                )}
               </div>
             ))}
           </div>
@@ -422,6 +444,16 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           Each report that can edit files works in its own git worktree. When it reports back, the harness commits its changes and merges them into the main
           checkout; conflicts are handed to the orchestrator. Needs a git repository.
         </span>
+        <label className={`check ${project.reviewMerges ? 'on' : ''}`} style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+          <input
+            type="checkbox"
+            checked={!!project.reviewMerges}
+            disabled={project.isolateWriters === false}
+            onChange={(e) => patch({ reviewMerges: e.target.checked })}
+          />{' '}
+          Review each report's changes before it is merged
+        </label>
+        <span className="hint">The live view shows each finished report's diff; you merge it, hold it for later, or discard it.</span>
       </div>
       <div className="field">
         <label>Runs to keep</label>

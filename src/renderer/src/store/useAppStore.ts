@@ -4,6 +4,8 @@ import type {
   AuthStatusResult,
   DraftRequest,
   DraftResult,
+  MergeDecision,
+  MergeReview,
   PermissionDecision,
   PermissionRequest,
   Project,
@@ -37,11 +39,13 @@ export interface RunState {
   proposals: Proposal[]
   /** Open ask_user questions from the Architect. */
   questions: UserQuestion[]
+  /** Finished reports waiting for the user to merge, hold or discard their branch. */
+  mergeReviews: MergeReview[]
   logs: LogLine[]
 }
 
 function emptyRun(summary: RunSummary): RunState {
-  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], logs: [] }
+  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], mergeReviews: [], logs: [] }
 }
 
 interface AppState {
@@ -92,6 +96,7 @@ interface AppState {
   decide(requestId: string, decision: PermissionDecision): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
   answerQuestion(questionId: string, answer: QuestionAnswer): Promise<void>
+  decideMerge(reviewId: string, decision: MergeDecision): Promise<void>
   handleEvent(e: RunEvent): void
   /** Replace a placeholder summary (created by an event of an unknown run) with the real one. */
   fillSummary(runId: string): Promise<void>
@@ -245,7 +250,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId)
       if (!record) return
       set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], logs: record.logs } }
+        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], mergeReviews: [], logs: record.logs } }
       }))
     }
     set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run', composerMode: 'reply' }))
@@ -331,6 +336,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (run) await window.orgai.setup.answer({ runId: run.summary.id, questionId, answer })
   },
 
+  async decideMerge(reviewId, decision) {
+    const run = activeRun(get())
+    if (run) await window.orgai.runs.decideMerge({ runId: run.summary.id, reviewId, decision })
+  },
+
   handleEvent(e) {
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
@@ -384,6 +394,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'question.resolved':
           run.questions = (run.questions ?? []).filter((q) => q.id !== e.questionId)
+          break
+        case 'merge.request':
+          run.mergeReviews = [...(run.mergeReviews ?? []), e.review]
+          break
+        case 'merge.resolved':
+          run.mergeReviews = (run.mergeReviews ?? []).filter((m) => m.id !== e.reviewId)
           break
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }

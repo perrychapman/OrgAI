@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { MaintenanceResult, PendingWorktree, Project } from '@shared/types'
+import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
-import { discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine } from './runtime/worktrees'
+import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine } from './runtime/worktrees'
 
 /**
  * Cleanup that happens outside a run: leftover report branches, and removing OrgAI's
@@ -39,6 +39,13 @@ export class MaintenanceService {
     const { root, wt } = await this.find(projectId, branch)
     await discardWorktree(root, wt)
     return { ok: true, message: `Discarded ${branch}.` }
+  }
+
+  /** The branch's committed changes against the main checkout. Uncommitted files in its worktree are not included. */
+  async diffWorktree(projectId: string, branch: string): Promise<WorktreeDiff> {
+    const { root, wt } = await this.find(projectId, branch)
+    const { stat, patch } = await diffWorktree(root, wt.branch)
+    return { stat, patch }
   }
 
   /** Remove the architecture document, the CLAUDE.md block, the exclude line and the setup record. */
