@@ -1,0 +1,288 @@
+/* Live-run MCP install approval card (docs/design/providers-and-mcp.md section 6). Sized by its region. */
+
+.mcp-install {
+  background: var(--surface-2);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.mcp-install.resolved,
+.mcp-install.collapsed {
+  border-color: var(--border-default);
+}
+.mcp-install.resolved.ok {
+  border-color: var(--success-border);
+}
+
+.mcpi-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mcpi-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.collapsed .mcpi-tile,
+.resolved .mcpi-tile {
+  width: var(--space-6);
+  height: var(--space-6);
+}
+.mcpi-head-text {
+  min-width: 0;
+}
+.mcpi-title {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.mcpi-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+
+.mcpi-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.mcpi-sec {
+  min-width: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mcpi-label {
+  padding: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+.mcpi-reason {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mcpi-reason.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+.mcpi-link {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.mcpi-link:hover {
+  text-decoration: underline;
+}
+.mcpi-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.mcpi-command {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.mcpi-command .code-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.mcpi-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.mcpi-facts > div {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.mcpi-facts dt {
+  flex: none;
+  width: var(--space-16);
+  color: var(--text-secondary);
+}
+.mcpi-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mcpi-warn {
+  color: var(--warning-text);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+
+.mcpi-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+.mcpi-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.mcpi-secret-name {
+  color: var(--text-secondary);
+}
+.mcpi-scope:disabled {
+  opacity: 0.7;
+}
+.mcpi-radio {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  cursor: pointer;
+}
+.mcpi-radio.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.mcpi-radio:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.mcpi-radio input {
+  margin: var(--space-1) 0 0;
+  accent-color: var(--accent);
+}
+.mcpi-radio-name {
+  display: block;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.mcpi-radio-desc {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.mcpi-note {
+  margin-bottom: 0;
+}
+
+.mcpi-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.mcpi-reason-disabled {
+  margin-right: auto;
+  font-size: var(--text-small);
+  color: var(--danger-text);
+}
+
+.mcpi-resolved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.mcpi-resolved-icon {
+  flex: none;
+  display: grid;
+}
+.resolved.ok .mcpi-resolved-icon {
+  color: var(--success-text);
+}
+.resolved.denied .mcpi-resolved-icon {
+  color: var(--danger-text);
+}
+.mcpi-resolved-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.collapsed .mcpi-resolved-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Wide region: facts in two columns, Secret and Scope side by side. */
+@container live-cards (min-width: 720px) {
+  .mcpi-facts {
+    grid-template-columns: 1fr 1fr;
+  }
+  .mcpi-facts > div {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+  .mcpi-facts dt {
+    width: auto;
+  }
+  .mcpi-cols:has(.mcpi-secret) {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+/* Compact region: actions stacked full width, Approve last. */
+@container live-cards (max-width: 479px) {
+  .mcpi-head,
+  .mcpi-body,
+  .mcpi-actions {
+    padding-inline: var(--space-3);
+  }
+  .mcpi-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .mcpi-actions .btn {
+    justify-content: center;
+  }
+  .mcpi-reason-disabled {
+    margin-right: 0;
+  }
+}

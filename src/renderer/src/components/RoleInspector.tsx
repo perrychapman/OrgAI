@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import type { Effort, Project, Role, ToolName } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
+import { TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
+import RoleModelPicker from './RoleModelPicker'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 
@@ -77,18 +78,8 @@ export default function RoleInspector({ project, role }: Props): ReactElement {
           <textarea className="textarea" value={role.description} onChange={(e) => patch({ description: e.target.value })} />
         </div>
 
-        <div className="grid-2">
-          <div className="field">
-            <label>Model</label>
-            <select className="select" value={role.model} onChange={(e) => patch({ model: e.target.value })}>
-              {CLAUDE_MODEL_OPTIONS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-            <span className="hint">{CLAUDE_MODEL_OPTIONS.find((m) => m.value === role.model)?.hint}</span>
-          </div>
+        <RoleModelPicker project={project} role={role} />
+        <div>
           <div className="field">
             <label>Effort</label>
             <select
