@@ -3,6 +3,7 @@ import { memo, useEffect, useState } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import type { AgentInstance } from '@shared/types'
 import { formatCost, formatElapsed, formatTokens, initials } from '../lib/layout'
+import { activeRun, useAppStore } from '../store/useAppStore'
 
 export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
 
@@ -31,6 +32,10 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   }, [live])
 
   const shortModel = agent.model ? agent.model.replace(/^claude-/, '').replace(/-\d{8}$/, '') : ''
+  // While the agent streams text, its first words stand in for the activity line.
+  const partial = useAppStore((s) => activeRun(s)?.partial[agent.id])
+  const streaming = partial !== undefined
+  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : agent.activity
 
   return (
     <div className={`agent-node state-${agent.state} ${selected ? 'selected' : ''}`} style={{ ['--role' as string]: color }}>
@@ -52,8 +57,8 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
           </div>
         </div>
       </div>
-      <div className={`activity ${WORKING.has(agent.state) ? 'working' : ''}`} title={agent.activity}>
-        {agent.activity}
+      <div className={`activity ${streaming || WORKING.has(agent.state) ? 'working' : ''}`} title={activity}>
+        {activity}
       </div>
       {agent.worktree && (
         <div className={`worktree wt-${agent.worktree.status}`} title={`${agent.worktree.branch} · ${agent.worktree.path}`}>
@@ -63,7 +68,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
       )}
       <div className="foot">
         <span>{formatTokens(agent.inputTokens + agent.outputTokens)} tok</span>
-        <span>{isRoot && agent.costUsd > 0 ? formatCost(agent.costUsd) : formatElapsed(agent.startedAt, agent.endedAt)}</span>
+        <span>{agent.costUsd > 0 ? formatCost(agent.costUsd) : formatElapsed(agent.startedAt, agent.endedAt)}</span>
       </div>
       <Handle type="source" position={Position.Bottom} />
     </div>

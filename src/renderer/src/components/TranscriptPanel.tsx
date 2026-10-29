@@ -76,10 +76,11 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
   const [tab, setTab] = useState<'transcript' | 'logs' | 'runs'>('transcript')
   const [showThinking, setShowThinking] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
+  const partial = useAppStore((s) => (agent ? activeRun(s)?.partial[agent.id] : undefined))
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' })
-  }, [entries.length, logs.length, tab])
+  }, [entries.length, logs.length, tab, partial])
 
   const visible = showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')
 
@@ -139,7 +140,7 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
               <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} /> Show thinking
             </label>
           )}
-          {agent && visible.length === 0 && <div className="entry system">Nothing yet.</div>}
+          {agent && visible.length === 0 && !partial && <div className="entry system">Nothing yet.</div>}
           {visible.map((e) => {
             const b = e.block
             switch (b.kind) {
@@ -191,6 +192,11 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
                 )
             }
           })}
+          {agent && partial && (
+            <div className="entry text streaming">
+              <Markdown text={partial} />
+            </div>
+          )}
           <div ref={bottom} />
         </div>
       ) : (

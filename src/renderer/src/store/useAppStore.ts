@@ -42,10 +42,12 @@ export interface RunState {
   /** Finished reports waiting for the user to merge, hold or discard their branch. */
   mergeReviews: MergeReview[]
   logs: LogLine[]
+  /** agent id -> text it is streaming right now. Live only, never persisted. */
+  partial: Record<string, string>
 }
 
 function emptyRun(summary: RunSummary): RunState {
-  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], mergeReviews: [], logs: [] }
+  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], mergeReviews: [], logs: [], partial: {} }
 }
 
 interface AppState {
@@ -250,7 +252,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId)
       if (!record) return
       set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], mergeReviews: [], logs: record.logs } }
+        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], mergeReviews: [], logs: record.logs, partial: {} } }
       }))
     }
     set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run', composerMode: 'reply' }))
@@ -370,6 +372,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'agent.remove': {
           const { [e.agentId]: _removed, ...rest } = run.agents
           run.agents = rest
+          break
+        }
+        case 'agent.partial': {
+          const { [e.agentId]: _cleared, ...others } = run.partial
+          run.partial = e.text ? { ...others, [e.agentId]: e.text } : others
           break
         }
         case 'transcript':

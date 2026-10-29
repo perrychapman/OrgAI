@@ -1481,4 +1481,8 @@ textarea {
 .agent-node .worktree.wt-held {
   color: var(--text-dim);
   border-style: solid;
+/* Text an agent is still streaming; replaced by the final entry when its message completes. */
+.entry.text.streaming {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--border) 50%, var(--accent, #7c5cff) 50%);
 }
