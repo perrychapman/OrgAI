@@ -30,7 +30,7 @@ try {
     const perm = page.locator('.permission').first()
     if (await perm.count()) {
       log('permission:', (await perm.locator('.what').innerText().catch(() => '')).slice(0, 100))
-      await perm.getByRole('button', { name: 'Allow' }).click()
+      await perm.getByRole('button', { name: 'Allow once' }).click()
       await sleep(800)
       continue
     }
