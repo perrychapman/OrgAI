@@ -76,7 +76,7 @@ afterEach(() => {
 describe('RunManager image attachments', () => {
   const PNG = 'iVBORw0KGgo='
   const good: ImageAttachment = { mediaType: 'image/png', data: PNG, name: 'a.png' }
-  const bad = { mediaType: 'image/svg+xml', data: PNG } as unknown as ImageAttachment
+  const bad = { mediaType: 'image/svg+xml', data: 'AAAA' } as unknown as ImageAttachment
 
   function fake(live = false) {
     const ctxs: RuntimeContext[] = []
