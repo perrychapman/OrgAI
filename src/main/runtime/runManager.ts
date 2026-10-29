@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, realpathSync } from 'node:fs'
 import type {
   MergeDecision,
   MergeReview,
@@ -24,6 +24,15 @@ import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { logPermission, logRunEvent } from '../log'
 import { describePlanChange } from './continuation'
+
+/** The path as the file system spells it (true case on Windows). Falls back to the input when it cannot be resolved. */
+export function canonicalPath(p: string): string {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return p
+  }
+}
 
 const FLUSH_INTERVAL_MS = 1500
 /** When a usage limit gives no reset time, try again after this long. */
@@ -205,6 +214,9 @@ export class RunManager {
     try {
       // A new project's folder may not exist yet, and the provider needs a real cwd.
       mkdirSync(project.path, { recursive: true })
+      // Git and Claude Code compare paths case-sensitively on Windows; a project path typed in a different
+      // case than the folder on disk makes worktree isolation refuse to start. Use the on-disk spelling.
+      project = { ...project, path: canonicalPath(project.path) }
       if (scaffold) {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
