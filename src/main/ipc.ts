@@ -1,6 +1,6 @@
 import { exec } from 'node:child_process'
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { DraftRequest, PermissionDecision, Project, ProposalDecision, SetupKind } from '@shared/types'
+import type { DraftRequest, PermissionDecision, Project, ProposalDecision, QuestionAnswer, SetupKind } from '@shared/types'
 import { IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -55,6 +55,11 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     IPC.setupDecide,
     (_e, input: { runId: string; proposalId: string; decision: ProposalDecision }) =>
       runs.decideProposal(input.runId, input.proposalId, input.decision)
+  )
+  ipcMain.handle(
+    IPC.setupAnswer,
+    (_e, input: { runId: string; questionId: string; answer: QuestionAnswer }) =>
+      runs.answerQuestion(input.runId, input.questionId, input.answer)
   )
   ipcMain.handle(IPC.runsSend, (_e, input: { runId: string; text: string }) => runs.send(input.runId, input.text))
   ipcMain.handle(IPC.runsInterrupt, (_e, runId: string) => runs.interrupt(runId))

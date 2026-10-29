@@ -147,6 +147,8 @@ export interface ProjectSetup {
   completedAt?: string
   /** New projects only: when the scaffold run was started. */
   scaffoldedAt?: string
+  /** When an agent last edited the architecture document during a work run. */
+  architectureUpdatedAt?: string
 }
 
 export interface OrgChartProposalPayload {
@@ -181,6 +183,24 @@ export type Proposal =
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
 
 export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
+
+/** A multiple-choice question the Architect puts to the user during setup (ask_user tool). */
+export interface UserQuestion {
+  id: string
+  runId: string
+  agentId: string
+  question: string
+  options: { label: string; description?: string }[]
+  allowMultiple: boolean
+  allowFreeText: boolean
+  createdAt: number
+}
+
+/** The user's answer: chosen option labels plus optional free text. Empty when the run ended unanswered. */
+export interface QuestionAnswer {
+  selected: string[]
+  text?: string
+}
 
 // ---------- Runs ----------
 
@@ -322,6 +342,8 @@ export type RunEvent =
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
   | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision }
+  | { type: 'question.request'; runId: string; question: UserQuestion }
+  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
 
@@ -359,6 +381,8 @@ export interface OrgAIApi {
     /** Profile the working directory and start an Architect session. */
     start(input: { projectId: string; instruction?: string }): Promise<RunSummary>
     decide(input: { runId: string; proposalId: string; decision: ProposalDecision }): Promise<void>
+    /** Answer an ask_user question from the Architect. */
+    answer(input: { runId: string; questionId: string; answer: QuestionAnswer }): Promise<void>
   }
   maintenance: {
     /** Report branches still in the repository. */
@@ -405,6 +429,7 @@ export const IPC = {
   runEvent: 'runs:event',
   setupStart: 'setup:start',
   setupDecide: 'setup:decide',
+  setupAnswer: 'setup:answer',
   maintListWorktrees: 'maintenance:listWorktrees',
   maintIntegrate: 'maintenance:integrateWorktree',
   maintDiscard: 'maintenance:discardWorktree',

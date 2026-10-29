@@ -26,7 +26,8 @@ const api: OrgAIApi = {
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),
-    decide: (input) => ipcRenderer.invoke(IPC.setupDecide, input)
+    decide: (input) => ipcRenderer.invoke(IPC.setupDecide, input),
+    answer: (input) => ipcRenderer.invoke(IPC.setupAnswer, input)
   },
   maintenance: {
     listWorktrees: (projectId: string) => ipcRenderer.invoke(IPC.maintListWorktrees, projectId),

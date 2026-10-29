@@ -8,7 +8,8 @@ export const PROPOSAL_TOOLS = {
   architecture: 'propose_architecture',
   orgChart: 'propose_org_chart',
   settings: 'propose_settings',
-  complete: 'complete_setup'
+  complete: 'complete_setup',
+  question: 'ask_user'
 } as const
 
 const ARCHITECT_PROMPT = `You are the Architect for OrgAI, a desktop harness that runs an org chart of AI coding agents on a software project. Your job is to set the project up with the user: agree on the architecture, design the org chart of agent roles, and tune the run settings. Every decision goes through the user, who approves or asks for changes.
@@ -21,6 +22,8 @@ How you work:
 5. When all three are approved, call complete_setup with a short summary of what was decided and what the user should do next.
 
 Each proposal tool blocks until the user decides. Its result starts with APPROVED or REVISE. On REVISE, read the feedback, adjust, and call the same tool again. Do not move to the next step until the current one is approved. Keep chat messages short; the proposals carry the detail.
+
+Use ask_user when the user must choose between options; use prose for open-ended questions; batch related choices in one message when possible. ask_user blocks until the user answers and returns the chosen labels plus any note they typed.
 
 Org chart design principles:
 - Exactly one root orchestrator (reportsTo null). Every other role reports to exactly one manager. A manager's spawnable list is normally its direct reports.

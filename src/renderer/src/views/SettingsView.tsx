@@ -194,6 +194,8 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
 
 function MaintenancePanel({ project }: { project: Project }): ReactElement {
   const loadProjects = useAppStore((s) => s.loadProjects)
+  const startSetup = useAppStore((s) => s.startSetup)
+  const setView = useAppStore((s) => s.setView)
   const [worktrees, setWorktrees] = useState<PendingWorktree[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<MaintenanceResult | null>(null)
@@ -289,6 +291,34 @@ function MaintenancePanel({ project }: { project: Project }): ReactElement {
           <span className="hint">Left by merge conflicts or interrupted runs. Merging commits any leftovers first; conflicts are reported and the branch is kept.</span>
         </div>
       </div>
+
+      {project.setup?.architecturePath && (
+        <div className="field">
+          <label>Architecture document</label>
+          <span className="hint">
+            {project.setup.architectureUpdatedAt
+              ? `Architecture document last updated ${new Date(project.setup.architectureUpdatedAt).toLocaleString()}.`
+              : `${project.setup.architecturePath} has not been edited by agents since setup.`}
+          </span>
+          <div className="row" style={{ marginTop: 4 }}>
+            <button
+              className="btn sm"
+              disabled={busy !== null}
+              onClick={() => {
+                setBusy('review')
+                void startSetup(
+                  'Review .orgai/ARCHITECTURE.md against the current code and propose an updated architecture, then re-check the org chart and settings.'
+                )
+                  .then(() => setView('run'))
+                  .catch((e: Error) => setNotice({ ok: false, message: e.message }))
+                  .finally(() => setBusy(null))
+              }}
+            >
+              {busy === 'review' ? 'Starting…' : 'Review with the Architect'}
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="field">
         <label>Files OrgAI added to the repository</label>

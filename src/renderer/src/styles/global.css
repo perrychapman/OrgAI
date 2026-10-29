@@ -1297,3 +1297,38 @@ textarea {
 .entry.system .md {
   font-size: 11.5px;
 }
+
+/* ---------- Questions (ask_user during setup) ---------- */
+
+.proposal.kind-question {
+  border-color: rgba(245, 165, 36, 0.55);
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.question-option.selected {
+  border-color: var(--accent);
+}
+.question-option input {
+  margin-top: 2px;
+}
+.question-label {
+  display: block;
+  font-weight: 600;
+}
+.question-desc {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}

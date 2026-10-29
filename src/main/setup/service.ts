@@ -93,6 +93,14 @@ export class SetupService {
     return this.projects.save({ ...project, setup })
   }
 
+  /** An agent edited the architecture document during a work run. */
+  markArchitectureUpdated(projectId: string): Project {
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error('Project not found')
+    const setup: ProjectSetup = { ...(project.setup ?? { kind: 'existing', state: 'complete' }), architectureUpdatedAt: new Date().toISOString() }
+    return this.projects.save({ ...project, setup })
+  }
+
   complete(projectId: string, summary: string): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
