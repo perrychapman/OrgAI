@@ -53,6 +53,11 @@ export class RunStore {
     return this.runs.filter((r) => r.projectId === projectId).sort((a, b) => b.startedAt - a.startedAt)
   }
 
+  get(runId: string): RunSummary | null {
+    const run = this.runs.find((r) => r.id === runId)
+    return run ? { ...run } : null
+  }
+
   allProjectIds(): string[] {
     return this.runs.map((r) => r.projectId)
   }

@@ -72,6 +72,11 @@ interface AppState {
   /** Show a past run on the canvas. */
   openRun(runId: string): Promise<void>
   sendMessage(text: string): Promise<void>
+  /** Start a new run that resumes a finished run's session, and show it. */
+  continueRun(fromRunId: string, text: string): Promise<void>
+  /** Bumped to ask the live view's composer to take focus (e.g. "Continue" in the Runs tab). */
+  composerFocusToken: number
+  focusComposer(): void
   interrupt(): Promise<void>
   stopRun(): Promise<void>
   decide(requestId: string, decision: PermissionDecision): Promise<void>
@@ -242,6 +247,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     const run = activeRun(get())
     if (!run) return
     await window.orgai.runs.send({ runId: run.summary.id, text })
+  },
+
+  async continueRun(fromRunId, text) {
+    const project = selectedProject(get())
+    if (!project) return
+    const summary = await window.orgai.runs.continue({ runId: fromRunId, text })
+    get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
+    set((s) => ({
+      // Events may have landed before the IPC call returned; keep them and take the real summary.
+      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, resumedFrom: summary.resumedFrom } } },
+      activeRunByProject: { ...s.activeRunByProject, [summary.projectId]: summary.id },
+      selectedAgentId: 'root',
+      view: 'run'
+    }))
+    void get().loadHistory()
+  },
+
+  composerFocusToken: 0,
+
+  focusComposer() {
+    set((s) => ({ composerFocusToken: s.composerFocusToken + 1 }))
   },
 
   async interrupt() {

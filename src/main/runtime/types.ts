@@ -22,6 +22,13 @@ export interface RuntimeContext {
   prompt: string
   /** Extra text sent with the first message but kept out of the transcript (repo profile, project facts). */
   hiddenContext?: string
+  /** Resume this provider session instead of starting fresh (continuing a finished run). */
+  resumeSessionId?: string
+  /**
+   * Cost already recorded on the run being continued. A resumed session's reported total may
+   * include the earlier turns; the adapter subtracts this so the new run counts only new spend.
+   */
+  resumeBaseCostUsd?: number
   emit(event: RunEvent): void
   /** Ask the user to approve a tool call. Resolves with their decision. */
   requestPermission(req: Omit<PermissionRequest, 'id' | 'runId'>): Promise<PermissionDecision>

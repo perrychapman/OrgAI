@@ -36,6 +36,12 @@ export interface StartInput {
   hiddenContext?: string
   /** A new project's first build run; recorded on the project so the UI stops offering it. */
   scaffold?: boolean
+  /** Continue an earlier run: resume its provider session. */
+  resumeSessionId?: string
+  /** The run being continued. */
+  resumedFrom?: string
+  /** Cost already recorded on the run being continued. */
+  resumeBaseCostUsd?: number
 }
 
 export class RunManager {
@@ -68,7 +74,16 @@ export class RunManager {
     return adapter
   }
 
-  async start({ project, prompt, kind = 'work', hiddenContext, scaffold }: StartInput): Promise<RunSummary> {
+  async start({
+    project,
+    prompt,
+    kind = 'work',
+    hiddenContext,
+    scaffold,
+    resumeSessionId,
+    resumedFrom,
+    resumeBaseCostUsd
+  }: StartInput): Promise<RunSummary> {
     const summary: RunSummary = {
       id: newId('run'),
       projectId: project.id,
@@ -78,6 +93,7 @@ export class RunManager {
       startedAt: Date.now(),
       totalCostUsd: 0
     }
+    if (resumedFrom) summary.resumedFrom = resumedFrom
     const active: ActiveRun = {
       summary,
       pending: new Map(),
@@ -118,6 +134,8 @@ export class RunManager {
         roles: kind === 'setup' ? [architectRole()] : project.roles,
         prompt,
         hiddenContext,
+        resumeSessionId,
+        resumeBaseCostUsd,
         emit,
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) => this.requestProposal(active, req),
@@ -257,5 +275,35 @@ export class RunManager {
 
   list(projectId: string): RunSummary[] {
     return this.store.list(projectId)
+  }
+
+  /** A run's summary, live or persisted. */
+  summary(runId: string): RunSummary | null {
+    const active = this.runs.get(runId)
+    return active ? { ...active.summary } : this.store.get(runId)
+  }
+
+  /**
+   * Start a new run that resumes a finished run's provider session, so the orchestrator keeps
+   * its memory. Same kind as the old run: setup runs keep the Architect (with its hidden profile
+   * context), work runs use the project's roles. `project` must be the old run's project.
+   */
+  async continueRun(project: Project, fromRunId: string, text: string): Promise<RunSummary> {
+    const from = this.summary(fromRunId)
+    if (!from) throw new Error('Run not found')
+    if (from.projectId !== project.id) throw new Error('Run belongs to another project')
+    if (from.status !== 'finished' && from.status !== 'error') throw new Error('Run is still active; send a message instead')
+    if (!from.sessionId) throw new Error('This run has no session to continue')
+    const prompt = text.trim()
+    if (!prompt) throw new Error('Nothing to send')
+    return this.start({
+      project,
+      prompt,
+      kind: from.kind,
+      hiddenContext: from.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
+      resumeSessionId: from.sessionId,
+      resumedFrom: from.id,
+      resumeBaseCostUsd: from.totalCostUsd
+    })
   }
 }

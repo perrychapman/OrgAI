@@ -338,6 +338,10 @@ class ClaudeSession implements RuntimeSession {
   private usageByMessage = new Map<string, Map<string, { input: number; output: number }>>()
   private seenBlocks = new Set<string>()
   private seenToolUses = new Set<string>()
+  /** Resumed sessions only: tool results already shown, in case the SDK replays history. */
+  private seenToolResults = new Set<string>()
+  /** Resumed sessions only: subtracted from the SDK's cumulative cost; null until the first result. */
+  private resumeCostBase: number | null = null
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -641,6 +645,20 @@ class ClaudeSession implements RuntimeSession {
     }
   }
 
+  /**
+   * The SDK's total_cost_usd is cumulative for the query() and, on resume, may start from the
+   * total the resumed transcript saved. Report only this run's spend. If the first result is below
+   * the earlier run's cost, the SDK evidently did not carry the old total, so nothing is subtracted.
+   */
+  private runCost(sdkTotal: number): number {
+    if (!this.ctx.resumeSessionId) return sdkTotal
+    if (this.resumeCostBase === null) {
+      const base = this.ctx.resumeBaseCostUsd ?? 0
+      this.resumeCostBase = sdkTotal >= base ? base : 0
+    }
+    return Math.max(0, sdkTotal - this.resumeCostBase)
+  }
+
   private buildOptions(): Options {
     const { project } = this.ctx
     const env: Record<string, string | undefined> = {
@@ -703,6 +721,7 @@ class ClaudeSession implements RuntimeSession {
     if (harnessServer) options.mcpServers = { [ORGAI_MCP]: harnessServer }
     if (this.root.model && this.root.model !== 'inherit') options.model = this.root.model
     if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
+    if (this.ctx.resumeSessionId) options.resume = this.ctx.resumeSessionId
     return options
   }
 
@@ -716,6 +735,9 @@ class ClaudeSession implements RuntimeSession {
       state: 'thinking',
       activity: 'Reading your request…'
     })
+    if (this.ctx.resumeSessionId) {
+      this.transcript(ROOT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` })
+    }
     this.transcript(ROOT_ID, { kind: 'user', text: this.ctx.prompt })
 
     let firstMessage = this.ctx.hiddenContext
@@ -875,6 +897,10 @@ class ClaudeSession implements RuntimeSession {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
+              if (this.ctx.resumeSessionId) {
+                if (this.seenToolResults.has(block.tool_use_id)) continue
+                this.seenToolResults.add(block.tool_use_id)
+              }
               this.transcript(agentId, {
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
@@ -887,9 +913,10 @@ class ClaudeSession implements RuntimeSession {
         break
       }
       case 'result': {
-        this.emit({ type: 'run.cost', runId, totalCostUsd: msg.total_cost_usd })
+        const totalCostUsd = this.runCost(msg.total_cost_usd)
+        this.emit({ type: 'run.cost', runId, totalCostUsd })
         const root = this.ensureAgent(ROOT_ID)
-        root.costUsd = msg.total_cost_usd
+        root.costUsd = totalCostUsd
         if (msg.subtype === 'success') {
           root.result = msg.result
           root.state = 'idle'
