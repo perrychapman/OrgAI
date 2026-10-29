@@ -3,7 +3,13 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { check, cleanup, createProject, deleteProject, finish, launch, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { check, cleanup, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+
+// The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
+process.env.ORGAI_MOCK = '1'
+
+// 1x1 transparent PNG, pasted into the composer to exercise the image path.
+const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
 const NAME = 'E2E layout (orgai test)'
 const NEW_NAME = 'E2E layout new idea (orgai test)'
@@ -36,6 +42,59 @@ try {
   check(/something to do/i.test(heading), 'empty state invites a first task', heading)
   check((await page.locator('.composer textarea').count()) === 1, 'composer is present')
   await shot('live-long-path')
+
+  // Viewport x theme matrix on the live view (screenshots for visual review), checking the composer never overflows.
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(400)
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await sleep(300)
+      const m = await page.evaluate(() => {
+        const c = document.querySelector('.composer')?.getBoundingClientRect()
+        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, ch: window.innerHeight, iw: window.innerWidth, c: c && { l: c.left, r: c.right, b: c.bottom } }
+      })
+      check(m.sw <= m.cw, `no horizontal scroll at ${w}x${h} ${theme}`, JSON.stringify(m))
+      check(!!m.c && m.c.r <= m.iw + 0.5 && m.c.l >= 0 && m.c.b <= m.ch + 0.5, `composer inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m))
+      await shot(`live-${w}x${h}-${theme}`)
+    }
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+
+  // Image paste under the mock adapter: switch the project to it, then paste, send, and read the transcript.
+  const live = await findProject(page, NAME)
+  await page.evaluate((p) => window.orgai.projects.save({ ...p, provider: { ...p.provider, id: 'mock' } }), live)
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await openProject(page, NAME)
+  await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+  const ta = page.locator('.composer textarea')
+  await ta.waitFor({ timeout: 10_000 })
+  await ta.evaluate((el, b64) => {
+    const bin = atob(b64)
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    const dt = new DataTransfer()
+    dt.items.add(new File([bytes], 'tiny.png', { type: 'image/png' }))
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+  }, TINY_PNG)
+  await page.locator('.attach-item').first().waitFor({ timeout: 5000 }).catch(() => {})
+  check((await page.locator('.attach-item .attach-thumb').count()) === 1, 'pasted image shows a thumbnail')
+  check((await page.getByRole('button', { name: 'Remove image 1' }).count()) === 1, 'thumbnail has a "Remove image 1" button')
+  const cm = await page.evaluate(() => {
+    const f = document.querySelector('.composer-field')?.getBoundingClientRect()
+    const c = document.querySelector('.composer')?.getBoundingClientRect()
+    return { f: f && [f.left, f.right], c: c && [c.left, c.right] }
+  })
+  check(!!cm.f && !!cm.c && cm.f[0] >= cm.c[0] - 0.5 && cm.f[1] <= cm.c[1] + 0.5, 'composer-field stays inside the composer', JSON.stringify(cm))
+  await shot('composer-with-image')
+  await ta.focus()
+  await shot('composer-focused')
+  await ta.fill('Look at this image')
+  await page.locator('.composer .btn.primary').click()
+  await page.locator('.entry.user').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  check((await page.locator('.entry.user .entry-thumb').count()) >= 1, 'user transcript entry shows an image thumbnail')
+  check((await page.locator('.attach-item').count()) === 0, 'attachment strip clears after sending')
+  await shot('transcript-with-image')
 
   // New-idea mode, also token-free with setup skipped.
   const created = await createProject(page, { mode: 'new', path: path.join(base, 'new-idea-folder'), name: NEW_NAME, brief: 'A tiny todo app for layout testing.' })
