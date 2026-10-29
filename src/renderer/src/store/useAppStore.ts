@@ -3,6 +3,8 @@ import type {
   AgentInstance,
   DraftRequest,
   DraftResult,
+  MergeDecision,
+  MergeReview,
   PermissionDecision,
   PermissionRequest,
   Project,
@@ -30,11 +32,13 @@ export interface RunState {
   transcript: TranscriptEntry[]
   permissions: PermissionRequest[]
   proposals: Proposal[]
+  /** Finished reports waiting for the user to merge, hold or discard their branch. */
+  mergeReviews: MergeReview[]
   logs: LogLine[]
 }
 
 function emptyRun(summary: RunSummary): RunState {
-  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], logs: [] }
+  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], mergeReviews: [], logs: [] }
 }
 
 interface AppState {
@@ -76,6 +80,7 @@ interface AppState {
   stopRun(): Promise<void>
   decide(requestId: string, decision: PermissionDecision): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
+  decideMerge(reviewId: string, decision: MergeDecision): Promise<void>
   handleEvent(e: RunEvent): void
 
   draftOrgChart(req: Omit<DraftRequest, 'projectId'>): Promise<void>
@@ -205,7 +210,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId)
       if (!record) return
       set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], logs: record.logs } }
+        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], mergeReviews: [], logs: record.logs } }
       }))
     }
     set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run' }))
@@ -264,6 +269,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (run) await window.orgai.setup.decide({ runId: run.summary.id, proposalId, decision })
   },
 
+  async decideMerge(reviewId, decision) {
+    const run = activeRun(get())
+    if (run) await window.orgai.runs.decideMerge({ runId: run.summary.id, reviewId, decision })
+  },
+
   handleEvent(e) {
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
@@ -309,6 +319,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'proposal.resolved':
           run.proposals = run.proposals.filter((p) => p.id !== e.proposalId)
+          break
+        case 'merge.request':
+          run.mergeReviews = [...(run.mergeReviews ?? []), e.review]
+          break
+        case 'merge.resolved':
+          run.mergeReviews = (run.mergeReviews ?? []).filter((m) => m.id !== e.reviewId)
           break
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }

@@ -1,5 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import type {
+  MergeDecision,
+  MergeReview,
   PermissionDecision,
   PermissionRequest,
   Project,
@@ -24,6 +26,7 @@ interface ActiveRun {
   session?: RuntimeSession
   pending: Map<string, (d: PermissionDecision) => void>
   pendingProposals: Map<string, (d: ProposalDecision) => void>
+  pendingMerges: Map<string, (d: MergeDecision) => void>
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
   record: RunRecord
   flushTimer?: ReturnType<typeof setTimeout>
@@ -82,6 +85,7 @@ export class RunManager {
       summary,
       pending: new Map(),
       pendingProposals: new Map(),
+      pendingMerges: new Map(),
       record: { summary, agents: {}, transcript: [], logs: [] }
     }
     this.runs.set(summary.id, active)
@@ -121,6 +125,7 @@ export class RunManager {
         emit,
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) => this.requestProposal(active, req),
+        requestMergeReview: (req) => this.requestMergeReview(active, req),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
@@ -131,6 +136,12 @@ export class RunManager {
         active.pending.clear()
         for (const resolve of active.pendingProposals.values()) resolve({ behavior: 'revise', feedback: 'Run ended' })
         active.pendingProposals.clear()
+        // Unanswered merge reviews keep their branch for later (maintenance panel or a future run).
+        for (const [reviewId, resolve] of active.pendingMerges) {
+          resolve({ behavior: 'hold' })
+          this.broadcast({ type: 'merge.resolved', runId: summary.id, reviewId, decision: { behavior: 'hold' } })
+        }
+        active.pendingMerges.clear()
         this.flush(active)
         this.runs.delete(summary.id)
         this.store.prune(this.keepRunsFor)
@@ -230,6 +241,26 @@ export class RunManager {
     active.pendingProposals.delete(proposalId)
     resolve(decision)
     this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
+  }
+
+  private requestMergeReview(
+    active: ActiveRun,
+    req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>
+  ): Promise<MergeDecision> {
+    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now() }
+    return new Promise((resolve) => {
+      active.pendingMerges.set(review.id, resolve)
+      this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
+    })
+  }
+
+  decideMerge(runId: string, reviewId: string, decision: MergeDecision): void {
+    const active = this.runs.get(runId)
+    const resolve = active?.pendingMerges.get(reviewId)
+    if (!active || !resolve) return
+    active.pendingMerges.delete(reviewId)
+    resolve(decision)
+    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
   }
 
   async send(runId: string, text: string): Promise<void> {

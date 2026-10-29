@@ -1,4 +1,6 @@
 import type {
+  MergeDecision,
+  MergeReview,
   PermissionDecision,
   PermissionRequest,
   Project,
@@ -27,6 +29,8 @@ export interface RuntimeContext {
   requestPermission(req: Omit<PermissionRequest, 'id' | 'runId'>): Promise<PermissionDecision>
   /** Setup runs only: put a proposal in front of the user. Resolves when they approve or ask for changes. */
   requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>): Promise<ProposalDecision>
+  /** Work runs with reviewMerges: show a finished report's diff and wait for merge, discard or hold. */
+  requestMergeReview(req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>): Promise<MergeDecision>
   /** Setup runs only: the Architect declares setup finished. */
   completeSetup(summary: string): Promise<void>
 }

@@ -1,6 +1,6 @@
 import { exec } from 'node:child_process'
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { DraftRequest, PermissionDecision, Project, ProposalDecision, SetupKind } from '@shared/types'
+import type { DraftRequest, MergeDecision, PermissionDecision, Project, ProposalDecision, SetupKind } from '@shared/types'
 import { IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -65,11 +65,15 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     (_e, input: { runId: string; requestId: string; decision: PermissionDecision }) =>
       runs.decide(input.runId, input.requestId, input.decision)
   )
+  ipcMain.handle(IPC.mergesDecide, (_e, input: { runId: string; reviewId: string; decision: MergeDecision }) =>
+    runs.decideMerge(input.runId, input.reviewId, input.decision)
+  )
 
   ipcMain.handle(IPC.maintListWorktrees, (_e, projectId: string) => maintenance.listWorktrees(projectId))
   ipcMain.handle(IPC.maintIntegrate, (_e, input: { projectId: string; branch: string }) => maintenance.integrateWorktree(input.projectId, input.branch))
   ipcMain.handle(IPC.maintDiscard, (_e, input: { projectId: string; branch: string }) => maintenance.discardWorktree(input.projectId, input.branch))
   ipcMain.handle(IPC.maintUninstall, (_e, projectId: string) => maintenance.uninstallRepo(projectId))
+  ipcMain.handle(IPC.maintDiff, (_e, input: { projectId: string; branch: string }) => maintenance.diffWorktree(input.projectId, input.branch))
 
   ipcMain.handle(IPC.authStatus, () => authStatus())
 }

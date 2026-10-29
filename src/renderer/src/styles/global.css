@@ -1297,3 +1297,51 @@ textarea {
 .entry.system .md {
   font-size: 11.5px;
 }
+
+/* ---------- Merge review and diff view (review-before-merge) ---------- */
+
+.proposal.merge-review {
+  border-color: rgba(245, 165, 36, 0.55);
+}
+.diff-view {
+  margin-top: 6px;
+}
+.diff-stat,
+.diff-patch {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+}
+.diff-patch {
+  max-height: 40vh;
+}
+.diff-patch .diff-add {
+  color: var(--ok);
+  background: rgba(34, 197, 139, 0.12);
+}
+.diff-patch .diff-del {
+  color: var(--danger);
+  background: rgba(255, 107, 107, 0.12);
+}
+.diff-patch .diff-hunk {
+  color: var(--accent);
+}
+.diff-patch .diff-meta,
+.diff-patch .diff-file {
+  color: var(--text-dim);
+}
+.agent-node .worktree.wt-review {
+  color: var(--warn);
+  border-style: solid;
+}
+.agent-node .worktree.wt-held {
+  color: var(--text-dim);
+  border-style: solid;
+}

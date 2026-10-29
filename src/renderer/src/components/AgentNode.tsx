@@ -14,7 +14,9 @@ const WORKTREE_LABEL: Record<NonNullable<AgentInstance['worktree']>['status'], s
   merged: 'merged',
   empty: 'no changes',
   conflict: 'merge conflict',
-  removed: 'worktree removed'
+  removed: 'worktree removed',
+  review: 'awaiting your review',
+  held: 'held for later'
 }
 
 function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactElement {

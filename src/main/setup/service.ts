@@ -81,6 +81,7 @@ export class SetupService {
         if (p.maxSubagentDepth) next.maxSubagentDepth = clamp(p.maxSubagentDepth, 1, 5)
         if (p.maxConcurrentSubagents) next.maxConcurrentSubagents = clamp(p.maxConcurrentSubagents, 1, 20)
         if (typeof p.isolateWriters === 'boolean') next.isolateWriters = p.isolateWriters
+        if (typeof p.reviewMerges === 'boolean') next.reviewMerges = p.reviewMerges
         return this.projects.save(next)
       }
     }
