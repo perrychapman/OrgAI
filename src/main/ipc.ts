@@ -1,18 +1,19 @@
 import { exec } from 'node:child_process'
-import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { DraftRequest, PermissionDecision, Project, ProposalDecision, SetupKind } from '@shared/types'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import type { AppSettings, AppSettingsInfo, AuthStatusResult, DraftRequest, PermissionDecision, Project, ProposalDecision, SetupKind } from '@shared/types'
 import { IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
 import type { SetupService } from './setup/service'
 import type { MaintenanceService } from './maintenance'
+import type { SettingsStore } from './store/settings'
 import { draftOrgChart } from './ai/draft'
 
-export function registerIpc(projects: ProjectStore, runs: RunManager, setup: SetupService, maintenance: MaintenanceService): void {
+export function registerIpc(projects: ProjectStore, runs: RunManager, setup: SetupService, maintenance: MaintenanceService, settings: SettingsStore): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projects.get(id))
   ipcMain.handle(IPC.projectsCreate, (_e, input: { name: string; path: string; brief: string; setupKind?: SetupKind }) =>
-    projects.create(input)
+    projects.create(input, settings.get())
   )
   ipcMain.handle(IPC.projectsSave, (_e, project: Project) => projects.save(project))
   ipcMain.handle(IPC.projectsRemove, async (_e, id: string) => {
@@ -80,7 +81,31 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
   ipcMain.handle(IPC.maintDiscard, (_e, input: { projectId: string; branch: string }) => maintenance.discardWorktree(input.projectId, input.branch))
   ipcMain.handle(IPC.maintUninstall, (_e, projectId: string) => maintenance.uninstallRepo(projectId))
 
-  ipcMain.handle(IPC.authStatus, () => authStatus())
+  ipcMain.handle(IPC.authStatus, async (): Promise<AuthStatusResult> => {
+    const auth = settings.get().providerAuth
+    if (auth.kind === 'apiKey') {
+      const envVarSet = !!process.env[auth.envVar]?.trim()
+      return {
+        loggedIn: envVarSet,
+        method: 'API key',
+        detail: envVarSet ? `Using ${auth.envVar}` : `${auth.envVar} is not set in OrgAI's environment`,
+        mode: 'apiKey',
+        envVar: auth.envVar,
+        envVarSet
+      }
+    }
+    return { ...(await authStatus()), mode: 'subscription' }
+  })
+
+  const settingsInfo = (): AppSettingsInfo => ({ ...settings.get(), dataDir: settings.dataDir })
+  ipcMain.handle(IPC.settingsGet, () => settingsInfo())
+  ipcMain.handle(IPC.settingsSet, (_e, next: AppSettings) => {
+    // Drop the read-only field if the renderer echoed it back.
+    const { dataDir: _ignored, ...rest } = next as AppSettings & { dataDir?: string }
+    settings.set(rest)
+    return settingsInfo()
+  })
+  ipcMain.handle(IPC.appOpenPath, (_e, path: string) => shell.openPath(path))
 }
 
 type AuthStatus = { loggedIn: boolean; method?: string; detail?: string }

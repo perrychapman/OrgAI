@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { Project, SetupKind } from '@shared/types'
+import type { AppSettings, Project, SetupKind } from '@shared/types'
 import { newProject } from '@shared/defaults'
 
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
@@ -40,8 +40,8 @@ export class ProjectStore {
     return this.projects.find((p) => p.id === id) ?? null
   }
 
-  create(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Project {
-    const project = newProject(input)
+  create(input: { name: string; path: string; brief: string; setupKind?: SetupKind }, settings?: AppSettings): Project {
+    const project = newProject(input, settings)
     this.projects.push(project)
     this.persist()
     return project

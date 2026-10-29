@@ -19,6 +19,8 @@ import { useAppStore } from '../store/useAppStore'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
 import DraftPanel from '../components/DraftPanel'
+import ProviderAuthPicker from '../components/ProviderAuthPicker'
+import { claudeProviderLabel } from '@shared/defaults'
 import { treeLayout } from '../lib/layout'
 
 const nodeTypes = { role: RoleNode }
@@ -412,6 +414,14 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           </span>
           <span className="hint">More providers plug in as runtime adapters. Claude is the only one wired up so far.</span>
         </div>
+      </div>
+      <div className="field">
+        <label>Authentication for this project</label>
+        <ProviderAuthPicker
+          name={`project-auth-${project.id}`}
+          value={project.provider.auth}
+          onChange={(auth) => patch({ provider: { ...project.provider, auth, label: claudeProviderLabel(auth) } })}
+        />
       </div>
     </div>
   )

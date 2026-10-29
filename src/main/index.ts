@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { RunEvent } from '@shared/types'
 import { IPC } from '@shared/types'
 import { ProjectStore } from './store/projects'
+import { SettingsStore } from './store/settings'
 import { RunStore } from './store/runs'
 import { RunManager } from './runtime/runManager'
 import { ClaudeAdapter } from './runtime/claude'
@@ -52,11 +53,12 @@ function createWindow(): void {
 app.whenReady().then(() => {
   const dataDir = join(app.getPath('userData'), 'data')
   const projects = new ProjectStore(dataDir)
+  const settings = new SettingsStore(dataDir)
   const runStore = new RunStore(dataDir)
   const setup = new SetupService(projects)
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   runManager = new RunManager({ claude: new ClaudeAdapter() }, broadcast, runStore, setup, keepRunsFor)
-  registerIpc(projects, runManager, setup, new MaintenanceService(projects))
+  registerIpc(projects, runManager, setup, new MaintenanceService(projects), settings)
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   const knownProjects = new Set(projects.list().map((p) => p.id))

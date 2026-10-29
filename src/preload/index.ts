@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { DraftRequest, OrgAIApi, PermissionDecision, Project, RunEvent } from '../shared/types'
+import type { AppSettings, DraftRequest, OrgAIApi, PermissionDecision, Project, RunEvent } from '../shared/types'
 import { IPC } from '../shared/types'
 
 const api: OrgAIApi = {
@@ -42,6 +42,13 @@ const api: OrgAIApi = {
   },
   auth: {
     status: () => ipcRenderer.invoke(IPC.authStatus)
+  },
+  settings: {
+    get: () => ipcRenderer.invoke(IPC.settingsGet),
+    set: (s: AppSettings) => ipcRenderer.invoke(IPC.settingsSet, s)
+  },
+  app: {
+    openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path)
   }
 }
 
