@@ -3,7 +3,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { check, cleanup, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { check, cleanup, endSession, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -96,6 +96,41 @@ try {
   check((await page.locator('.attach-item').count()) === 0, 'attachment strip clears after sending')
   await shot('transcript-with-image')
 
+  // Persistence: end the session, reload the renderer, reopen the run from history and expect the thumbnail
+  // to be rehydrated from the on-disk image store. Project deletion below removes the run; leftovers are checked after.
+  await endSession(page)
+  const imageDirs = () => {
+    const out = []
+    try {
+      for (const d of fs.readdirSync(runRecordsDir(), { withFileTypes: true })) {
+        const img = path.join(runRecordsDir(), d.name, 'images')
+        if (d.isDirectory() && fs.existsSync(img) && fs.readdirSync(img).length) out.push(d.name)
+      }
+    } catch {}
+    return out
+  }
+  const withImages = imageDirs()
+  check(withImages.length >= 1, 'sent image is stored on disk under runs/<id>/images', withImages.join(','))
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await openProject(page, NAME)
+  await sleep(800)
+  await page.getByRole('button', { name: 'Runs', exact: true }).click()
+  await sleep(500)
+  check((await page.locator('.run-row').count()) >= 1, 'run appears in history after reload')
+  await page.locator('.run-row').first().click()
+  await sleep(1500)
+  await page.getByRole('button', { name: 'Transcript', exact: true }).click()
+  await sleep(500)
+  const reopenedThumb = page.locator('.entry.user .entry-thumb').first()
+  check((await reopenedThumb.count()) >= 1, 'reopened run transcript still shows the image thumbnail')
+  const loaded = await reopenedThumb.evaluate((el) => {
+    const img = el.tagName === 'IMG' ? el : el.querySelector('img')
+    return !!img && img.complete && img.naturalWidth > 0
+  }).catch(() => false)
+  check(loaded, 'reopened thumbnail image decodes (rehydrated from disk)')
+  await shot('transcript-with-image-reopened')
+
   // New-idea mode, also token-free with setup skipped.
   const created = await createProject(page, { mode: 'new', path: path.join(base, 'new-idea-folder'), name: NEW_NAME, brief: 'A tiny todo app for layout testing.' })
   check(!!created, 'new-idea project created')
@@ -110,5 +145,9 @@ try {
 } finally {
   await cleanup(app, page, NAME)
   removeFixture(base)
+}
+{
+  const leftover = (() => { try { return fs.readdirSync(runRecordsDir()).filter((n) => !n.endsWith('.json')) } catch { return [] } })()
+  log('run dirs without a record file:', leftover.length)
 }
 finish('e2e/layout')
