@@ -715,7 +715,7 @@ class CodexSession implements RuntimeSession {
     if (!tool || !(agentId === ROOT_AGENT_ID || (role.canSpawn && tool.audience === 'spawners'))) return toolResponse(`Unknown tool ${call.tool}.`, false)
     if (isBlockingHarnessTool(tool.name)) this.setState(agentId, 'waiting', describeTool(tool.name, call.arguments, { harness: true }))
     try {
-      const text = await tool.call(call.arguments)
+      const text = await tool.call(call.arguments, { agentId })
       return toolResponse(text, true)
     } catch (e) {
       return toolResponse(`${tool.name} failed: ${(e as Error).message}`, false)

@@ -297,9 +297,7 @@ function OpenAIAuth({
     setError(null)
     setSigning(true)
     try {
-      // login(id, method?) is an additive contract change (ConnectionLoginMethod) from the Runtime Lead.
-      const login = window.orgai.connections.login as (id: 'openai', method?: 'browser' | 'deviceCode') => Promise<ConnectionLoginStart>
-      const res = await login('openai', method)
+      const res = await window.orgai.connections.login('openai', method)
       setStart(res)
     } catch (e) {
       setSigning(false)

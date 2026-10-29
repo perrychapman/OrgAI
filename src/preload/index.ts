@@ -22,7 +22,8 @@ const api: OrgAIApi = {
     save: (project: Project) => ipcRenderer.invoke(IPC.projectsSave, project),
     remove: (id: string) => ipcRenderer.invoke(IPC.projectsRemove, id),
     pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
-    remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input)
+    remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input),
+    previewRemap: (input) => ipcRenderer.invoke(IPC.projectsPreviewRemap, input)
   },
   connections: {
     list: () => ipcRenderer.invoke(IPC.connectionsList),

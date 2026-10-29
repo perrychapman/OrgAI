@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cancelLogin, listModels, logoutAccount, onLoginCompleted, parseLoginStart, parseModelPage, readAccount, startLogin } from './codexAccount'
+import { cancelLogin, expiryOf, listModels, logoutAccount, onLoginCompleted, parseLoginStart, parseModelPage, readAccount, startLogin } from './codexAccount'
 import { fakeRpc } from './testHelpers'
 
 describe('codexAccount', () => {
@@ -23,6 +23,18 @@ describe('codexAccount', () => {
     expect(await startLogin(rpc, 'deviceCode')).toEqual({ method: 'deviceCode', loginId: 'L2', verificationUrl: 'https://auth.example/device', userCode: 'ABCD-1234' })
     expect(rpc.calls.map((c) => c[1])).toEqual([{ type: 'chatgpt' }, { type: 'chatgptDeviceCode' }])
     expect(() => parseLoginStart({ type: 'chatgpt', loginId: 'x' })).toThrow(/login URL/)
+  })
+
+  it('reads an optional device-code expiry in any of the accepted shapes', () => {
+    const now = 1_700_000_000_000
+    expect(expiryOf({ expiresAt: '2030-01-01T00:00:00Z' }, now)).toBe(Date.parse('2030-01-01T00:00:00Z'))
+    expect(expiryOf({ expiresAt: 1_900_000_000 }, now)).toBe(1_900_000_000_000)
+    expect(expiryOf({ expiresAt: 1_900_000_000_000 }, now)).toBe(1_900_000_000_000)
+    expect(expiryOf({ expiresIn: 900 }, now)).toBe(now + 900_000)
+    expect(expiryOf({ expiresAt: 'soon' }, now)).toBeUndefined()
+    expect(expiryOf({}, now)).toBeUndefined()
+    const start = parseLoginStart({ type: 'chatgptDeviceCode', loginId: 'L', verificationUrl: 'https://v', userCode: 'C', expiresIn: 60 })
+    expect(start.method === 'deviceCode' && start.expiresAt).toBeGreaterThan(Date.now())
   })
 
   it('cancels, logs out and reports login completion', async () => {

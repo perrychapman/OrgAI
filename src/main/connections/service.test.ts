@@ -192,6 +192,22 @@ describe('runConnection', () => {
 })
 
 describe('remapModels', () => {
+  it('previewRemap returns the same result as remapModels and saves nothing', async () => {
+    const ctx = setup()
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    ctx.projects.save(project({
+      provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' }, connection: 'anthropic' },
+      roles: [role({ id: 'r0', slug: 'lead', model: 'opus', tier: 'deep' })]
+    }))
+    const before = JSON.stringify(ctx.projects.get('p1'))
+    const preview = ctx.service.previewRemap({ projectId: 'p1', connection: 'litellm' })
+    expect(preview).toMatchObject({ reason: 'switched', connection: 'litellm', changes: [{ roleId: 'r0', from: 'opus', to: 'claude-opus-4-5' }] })
+    expect(JSON.stringify(ctx.projects.get('p1'))).toBe(before)
+    expect(ctx.service.remapModels({ projectId: 'p1', connection: 'litellm' }).result).toEqual(preview)
+    expect(() => ctx.service.previewRemap({ projectId: 'nope' })).toThrow('Project not found')
+  })
+
   it('switching connection remaps every tiered role and fixes provider.id', async () => {
     const ctx = setup()
     await configureLiteLLM(ctx)

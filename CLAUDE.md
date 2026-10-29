@@ -57,6 +57,59 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   the harness's job: `src/main/runtime/worktrees.ts`.
 - Smoke tests cost real tokens (fractions of a cent on haiku). Do not run them in loops.
 
+## Connections, Codex, LiteLLM, MCP and macOS
+
+Each fact says how it was checked. "Unverified" means it comes from docs or typings and no live run has confirmed it.
+
+- Connections and adapters are separate. The connections are `anthropic`, `openai` and `litellm`, and the adapters are
+  `claude` and `codex`. `adapterForProject` (`src/shared/defaults.ts`) picks the adapter from the connection, or for
+  LiteLLM from the root role's model family. A work run whose roles mix families is refused before the run exists.
+  `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
+- Codex (`@openai/codex` 0.166.0):
+  - `codex app-server` speaks JSON-RPC over stdio, one object per line. The `jsonrpc` field is not needed. The
+    client sends `initialize` and then `initialized`. Verified offline against `generate-json-schema` /
+    `generate-ts --experimental` (token-free).
+  - OrgAI uses its own `CODEX_HOME` at `<data>/codex`, so the user's `~/.codex` config and MCP servers never load.
+    Config goes in as `-c key=value` TOML overrides. An API key travels only in the environment
+    (`model_providers.orgai.env_key`), never in argv. Verified by unit tests (`codexProtocol.test.ts`).
+  - Harness tools are `dynamicTools` on `thread/start`, answered through `item/tool/call`. `update_plan` collides
+    with a built-in Codex tool, so it is exposed as `orgai_update_plan`. Subagents are threads started by the
+    harness's own `spawn_agent` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
+    (spends tokens, consent required) has not been run.
+  - It is unverified that dynamic tools survive `thread/resume`. The adapter's MCP restart and run continuation
+    assume they do.
+  - The ChatGPT login (`account/login/start` with `chatgpt` / `chatgptDeviceCode`), `model/list` and
+    `account/rateLimits/read` are unverified (schema-derived). The device-code `expiresAt` field is a guess and
+    is optional.
+- LiteLLM: `/v1/models` and `/model/info` discovery is unverified against a live proxy. The Claude adapter reaches
+  LiteLLM through `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` and maps tiers through
+  `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL`. The Codex adapter reaches it with an `orgai` model provider at
+  `<base>/v1`. Both routes are unverified at runtime: `scripts/smoke-litellm.mjs` is free without `--yes` and spends
+  tokens with it.
+- MCP:
+  - Claude runs set `strictMcpConfig`, so only the project's enabled servers plus run-scoped installs load (this
+    also stops plugin-declared MCP servers). An approved mid-run install is attached with `Query.setMcpServers`.
+    Covered by unit tests only; `setMcpServers` at runtime is unverified.
+  - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
+    another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
+    Claude reads it from the PreToolUse `agent_id`. Claude matches the MCP call by a tool_use id in `extra._meta` if
+    present (the key is unverified), otherwise first-in-first-out per tool name. Verified by unit and mock tests.
+  - Registry search hits `https://registry.modelcontextprotocol.io/v0.1/servers`. The shape is unverified live,
+    the tests use a fixture, and registry content is untrusted data.
+  - `mcp:test` (`src/main/mcp/probe.ts`) runs initialize + tools/list without a run. It covers stdio and streamable
+    HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests.
+  - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
+    and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
+- macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
+  - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
+    GUI launches otherwise miss Homebrew, nvm and similar.
+  - `listClaudeBinaries` also tries `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and
+    `/usr/local/bin/claude`.
+  - The app menu is installed on darwin only. Closing the window keeps the app running, and `activate` re-creates
+    the window.
+  - These pieces are unit-tested where they are pure. Packaging (`dist:mac`, `dist:mac:unsigned`,
+    `build/entitlements.mac.plist`) is unverified.
+
 <!-- orgai:architecture -->
 ## Architecture and conventions
 

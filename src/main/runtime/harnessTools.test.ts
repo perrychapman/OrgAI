@@ -316,6 +316,15 @@ describe('MCP tools', () => {
     expect(ctx.requestMcpInstall).toHaveBeenCalledWith(expect.objectContaining({ reason: 'triage issues', requiredSecrets: ['GITHUB_TOKEN'] }))
   })
 
+  it('request_mcp_install: names the calling agent, defaulting to the root', async () => {
+    const ctx = fakeCtx()
+    await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'triage issues', manual: pinned }, { agentId: 'agent-7' })
+    expect(ctx.requestMcpInstall).toHaveBeenLastCalledWith(expect.objectContaining({ agentId: 'agent-7' }))
+    const other = fakeCtx()
+    await byName(workTools(other), 'request_mcp_install').call({ reason: 'triage issues', manual: pinned })
+    expect(other.requestMcpInstall).toHaveBeenLastCalledWith(expect.objectContaining({ agentId: 'root' }))
+  })
+
   it('request_mcp_install: uses the spec the user edited', async () => {
     const edited = mcpSpec({ name: 'github', args: ['-y', 'pkg@9.9.9'] })
     const addMcpServer = vi.fn(async () => 'mcp__github__')

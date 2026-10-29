@@ -61,13 +61,21 @@ export function isBlockingHarnessTool(name: string): boolean {
   return !NON_BLOCKING_TOOLS.has(name)
 }
 
+/**
+ * Who called a harness tool, as far as the adapter knows. Adapters pass it to HarnessTool.call when they can
+ * tell which agent made the call (Codex: the thread; Claude: the PreToolUse hook's agent_id). Missing = the root.
+ */
+export interface HarnessToolCaller {
+  agentId?: string
+}
+
 export interface HarnessToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   name: string
   description: string
   /** Default 'root'. */
   audience?: HarnessToolAudience
   inputSchema: z.ZodObject<S>
-  handler(ctx: RuntimeContext, args: z.infer<z.ZodObject<S>>, hooks: HarnessToolHooks): Promise<string>
+  handler(ctx: RuntimeContext, args: z.infer<z.ZodObject<S>>, hooks: HarnessToolHooks, caller: HarnessToolCaller): Promise<string>
 }
 
 /** A definition bound to one session: `call` validates the arguments and runs the handler. */
@@ -76,7 +84,8 @@ export interface HarnessTool {
   description: string
   audience: HarnessToolAudience
   inputSchema: z.ZodObject<z.ZodRawShape>
-  call(args: unknown): Promise<string>
+  /** Validate the arguments and run the handler. `caller` names the calling agent when the adapter knows it. */
+  call(args: unknown, caller?: HarnessToolCaller): Promise<string>
 }
 
 function defineTool<S extends z.ZodRawShape>(def: HarnessToolDef<S>): HarnessToolDef {
@@ -89,7 +98,7 @@ function bind(defs: HarnessToolDef[], ctx: RuntimeContext, hooks: HarnessToolHoo
     description: def.description,
     audience: def.audience ?? 'root',
     inputSchema: def.inputSchema,
-    call: async (args) => def.handler(ctx, def.inputSchema.parse(args ?? {}), hooks)
+    call: async (args, caller) => def.handler(ctx, def.inputSchema.parse(args ?? {}), hooks, caller ?? {})
   }))
 }
 
@@ -562,7 +571,7 @@ export const requestMcpInstall = defineTool({
       .optional(),
     manual: manualSpecInput.optional().describe('A server the registry does not list (or that you know how to launch)')
   }),
-  async handler(ctx, args, hooks) {
+  async handler(ctx, args, hooks, caller) {
     const state = asked.get(ctx) ?? new Map<string, 'approved' | 'denied'>()
     asked.set(ctx, state)
     const existing = ctx.mcpServers?.() ?? []
@@ -609,7 +618,7 @@ export const requestMcpInstall = defineTool({
 
     state.set(spec.name, 'denied') // blocks a second ask while the first is open; flipped on approval
     const decision: McpInstallDecision = ctx.requestMcpInstall
-      ? await ctx.requestMcpInstall({ agentId: ROOT_AGENT_ID, reason: args.reason.trim().slice(0, 600), spec, ...(entry ? { registry: entry } : {}), requiredSecrets: mcpSecretNames(spec) })
+      ? await ctx.requestMcpInstall({ agentId: caller.agentId || ROOT_AGENT_ID, reason: args.reason.trim().slice(0, 600), spec, ...(entry ? { registry: entry } : {}), requiredSecrets: mcpSecretNames(spec) })
       : { approved: false, scope: 'run' }
     const note = decision.note?.trim()
     if (!decision.approved) {

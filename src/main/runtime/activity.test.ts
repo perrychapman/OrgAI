@@ -47,6 +47,21 @@ describe('describeTool', () => {
     expect(harnessToolActivity('mark_blocked')).toBe('Marking the plan blocked…')
   })
 
+  it('labels the MCP harness tools, naming the server or query when given', () => {
+    expect(harnessToolActivity('list_mcp_servers')).toBe('Checking the MCP servers…')
+    expect(harnessToolActivity('search_mcp_registry')).toBe('Searching the MCP registry…')
+    expect(harnessToolActivity('request_mcp_install')).toBe('Asking you to add an MCP server…')
+    expect(harnessToolActivity('propose_mcp_servers')).toBe('Proposing MCP servers…')
+    expect(describeTool('search_mcp_registry', { query: '  post\ngres ' }, { harness: true })).toBe('Searching the MCP registry for "post gres"…')
+    expect(describeTool('search_mcp_registry', {}, { harness: true })).toBe('Searching the MCP registry…')
+    expect(describeTool('request_mcp_install', { reason: 'r', registry: { name: 'io.github.x/github' } }, { harness: true })).toBe(
+      'Asking you to add the io.github.x/github MCP server…'
+    )
+    expect(describeTool('request_mcp_install', { reason: 'r', manual: { name: 'pg' } }, { harness: true })).toBe('Asking you to add the pg MCP server…')
+    expect(describeTool('request_mcp_install', { reason: 'r', manual: { name: 'x'.repeat(80) } }, { harness: true }).length).toBeLessThan(80)
+    expect(describeTool('request_mcp_install', null, { harness: true })).toBe('Asking you to add an MCP server…')
+  })
+
   it('does not treat a bare non-harness call as a harness tool', () => {
     expect(describeTool(PROPOSAL_TOOLS.architecture, {})).toBe('Using propose_architecture')
   })

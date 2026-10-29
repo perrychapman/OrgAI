@@ -25,6 +25,7 @@ describe('testServer (stdio)', () => {
   it('lists tools from the fixture server', async () => {
     const r = await testServer(stdio('ok'))
     expect(r).toMatchObject({ ok: true, tools: ['echo', 'sum'] })
+    expect(r.toolDetails).toEqual([{ name: 'echo', description: 'Echo the input back.' }, { name: 'sum' }])
     expect(r.durationMs).toBeGreaterThanOrEqual(0)
   }, 30000)
 
@@ -40,6 +41,9 @@ describe('testServer (stdio)', () => {
     expect(r.error).toContain('boom')
     expect(r.error).not.toContain('hunter2-value')
     expect(r.error).toContain('[redacted]')
+    expect(r.exitCode).toBe(3)
+    expect(r.stderr).toContain('boom')
+    expect(r.stderr).not.toContain('hunter2-value')
   }, 30000)
 
   it('times out on a silent server', async () => {
