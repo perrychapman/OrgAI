@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, ImageAttachment, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
-import { SPAWN_TOOL } from '@shared/types'
-import { newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
+import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
+import { MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { mcpServersForRole, newId } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
@@ -54,6 +54,8 @@ export interface MockScript {
   work?: MockStep[]
   /** Steps for setup runs. */
   setup?: MockStep[]
+  /** Steps for MCP assistant runs ('mcp-assist'). */
+  mcpAssist?: MockStep[]
   /** Reply to follow-up messages; "{text}" is replaced with the user's message. */
   reply?: string
   /**
@@ -139,10 +141,27 @@ const DEFAULT_SETUP: MockStep[] = [
   { type: 'text', text: 'Setup is complete.' }
 ]
 
+const DEFAULT_MCP_ASSIST: MockStep[] = [
+  { type: 'text', text: 'I will check which MCP servers the project has, then look in the registry.' },
+  { type: 'harness', name: MCP_HARNESS_TOOLS.listServers, args: {} },
+  { type: 'harness', name: MCP_HARNESS_TOOLS.searchRegistry, args: { query: 'filesystem' } },
+  {
+    type: 'harness',
+    name: MCP_HARNESS_TOOLS.proposeServers,
+    args: {
+      title: 'Mock MCP servers',
+      rationale: 'A filesystem server lets the roles read shared notes.',
+      upsert: [{ id: 'mcp-mock-fs', name: 'mock-fs', transport: 'stdio', command: 'npx', args: ['-y', 'mock-fs-server'], enabled: true, source: 'registry', addedAt: '2026-01-01T00:00:00.000Z' }]
+    }
+  },
+  { type: 'text', text: 'The MCP servers are set up.' }
+]
+
 export const DEFAULT_MOCK_SCRIPT: Required<MockScript> = {
   delayMs: 400,
   work: DEFAULT_WORK,
   setup: DEFAULT_SETUP,
+  mcpAssist: DEFAULT_MCP_ASSIST,
   reply: 'Mock reply to: {text}',
   continue: []
 }
@@ -167,6 +186,14 @@ export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
   readonly harnessMessages: string[] = []
+  /** What a real adapter would grant: role slug -> names of the MCP servers that role may use. For tests. */
+  readonly mcpServersByRole: Record<string, string[]> = {}
+  /** The enabled plugins the session would load. For tests. */
+  readonly plugins: PluginSpec[] = []
+  /** Which adapter and connection the run was routed to; never secrets. Undefined without ctx.connection. For tests. */
+  readonly connection?: { adapter: ProviderId; connection: ConnectionId }
+  /** Servers attached mid-run through the harness's addMcpServer hook, in order. For tests. */
+  readonly addedMcpServers: McpServerSpec[] = []
   private agents = new Map<string, AgentInstance>()
   private rolesBySlug: Map<string, Role>
   private root: Role
@@ -194,7 +221,7 @@ export class MockSession implements RuntimeSession {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
     if (!root) throw new Error('Project has no roles')
     this.root = root
-    this.isSetup = ctx.run.kind === 'setup'
+    this.isSetup = isSetupLikeRun(ctx.run.kind)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
     const onDecided = (): void => {
       const a = this.agents.get(ROOT_AGENT_ID)
@@ -205,7 +232,11 @@ export class MockSession implements RuntimeSession {
       const activity = stepActivity(plan)
       if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
     }
-    this.tools = this.isSetup ? setupTools(ctx, { onDecided }) : workTools(ctx, { onDecided, onPlanUpdated })
+    this.tools = harnessToolsFor(ctx, { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec) })
+    const mcpSpecs = { mcpServers: ctx.mcpServers ? ctx.mcpServers() : ctx.project.mcpServers }
+    for (const r of ctx.roles) this.mcpServersByRole[r.slug] = mcpServersForRole(mcpSpecs, r).map((s) => s.name)
+    this.plugins.push(...(ctx.plugins?.() ?? []).filter((p) => p.enabled))
+    if (ctx.connection) this.connection = { adapter: ctx.connection.adapter, connection: ctx.connection.connection }
     this.continueTurns = [...(script.continue ?? [])]
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
@@ -255,6 +286,12 @@ export class MockSession implements RuntimeSession {
     this.stopped = true
     this.signalStop()
     this.poke()
+  }
+
+  /** The addMcpServer harness hook: record the server the way a live adapter would attach it. */
+  async addMcpServer(spec: McpServerSpec): Promise<string> {
+    this.addedMcpServers.push(spec)
+    return `mcp__${spec.name}__`
   }
 
   // ---------- events ----------
@@ -391,8 +428,8 @@ export class MockSession implements RuntimeSession {
     try {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
       const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
-      this.log('info', `Mock session ${sessionId} started (${this.isSetup ? 'setup' : 'work'} script, first message ${first.length} chars)`)
-      await this.turn(this.isSetup ? this.script.setup : this.script.work)
+      this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
+      await this.turn(this.ctx.run.kind === 'mcp-assist' ? this.script.mcpAssist : this.isSetup ? this.script.setup : this.script.work)
       while (!this.stopped) {
         const next = await this.nextMessage()
         if (next === null) break
@@ -602,7 +639,7 @@ export class MockSession implements RuntimeSession {
   private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<void> {
     const t = this.tools.find((x) => x.name === step.name)
     if (!t) {
-      this.log('warn', `Mock script calls unknown harness tool ${step.name} for a ${this.isSetup ? 'setup' : 'work'} run`)
+      this.log('warn', `Mock script calls unknown harness tool ${step.name} for a ${this.ctx.run.kind} run`)
       return
     }
     for (let attempt = 0; attempt < 3; attempt++) {

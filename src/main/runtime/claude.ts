@@ -8,6 +8,8 @@ import {
   type AgentDefinition,
   type HookCallback,
   type McpSdkServerConfigWithInstance,
+  type McpServerConfig,
+  type SdkPluginConfig,
   type ModelUsage,
   type Options,
   type PermissionResult,
@@ -20,16 +22,16 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, ImageAttachment, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
-import { newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { mcpServersForRole, newId } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
 import { PartialText } from './claudePartial'
-import { SETUP_TOOLS_INSTRUCTIONS, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -146,20 +148,114 @@ class PushStream<T> implements AsyncIterable<T> {
   }
 }
 
-function buildAgents(ctx: RuntimeContext, rootExtraTools: string[], isolation: boolean): Record<string, AgentDefinition> {
-  const isSetup = ctx.run.kind === 'setup'
+/** Server-level tool rule for an MCP server. UNVERIFIED inside an AgentDefinition.tools whitelist (documented for permission rules). */
+export function mcpToolRule(serverName: string): string {
+  return `mcp__${serverName}`
+}
+
+/** Names of the MCP servers a role may use (mcpServersForRole), root included. */
+export function agentMcpServerNames(project: Pick<Project, 'mcpServers'>, role: Pick<Role, 'slug' | 'mcpServers'>): string[] {
+  return mcpServersForRole(project, role).map((s) => s.name)
+}
+
+/** SDK server configs for the resolved MCP servers, keyed by spec.name. Entries missing their command or url are skipped. */
+export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {}
+  for (const r of resolved) {
+    const { spec } = r
+    if (spec.transport === 'stdio') {
+      if (!spec.command) continue
+      out[spec.name] = {
+        type: 'stdio',
+        command: spec.command,
+        ...(spec.args?.length ? { args: [...spec.args] } : {}),
+        ...(Object.keys(r.env).length ? { env: { ...r.env } } : {})
+      }
+    } else {
+      if (!spec.url) continue
+      out[spec.name] = {
+        type: spec.transport,
+        url: spec.url,
+        ...(Object.keys(r.headers).length ? { headers: { ...r.headers } } : {})
+      }
+    }
+  }
+  return out
+}
+
+/** Enabled project plugins as SDK plugin configs. Note: strictMcpConfig also stops plugin-declared MCP servers from loading. */
+export function toClaudePlugins(plugins: PluginSpec[] | undefined): SdkPluginConfig[] {
+  return (plugins ?? []).filter((p) => p.enabled).map((p) => ({ type: 'local' as const, path: p.path }))
+}
+
+/** Secret values to keep out of logs: resolved MCP secrets plus the connection's tokens and key. */
+export function collectSecrets(resolved: ResolvedMcpServer[], connection: RuntimeContext['connection']): string[] {
+  const out = new Set<string>()
+  for (const r of resolved) {
+    for (const n of r.spec.secretEnv ?? []) if (r.env[n]) out.add(r.env[n])
+    for (const n of r.spec.secretHeaders ?? []) if (r.headers[n]) out.add(r.headers[n])
+  }
+  for (const [k, v] of Object.entries(connection?.env ?? {})) if (v && /TOKEN|KEY|SECRET|PASSWORD/i.test(k)) out.add(v)
+  if (connection?.apiKey) out.add(connection.apiKey)
+  return [...out].filter((v) => v.length >= 4)
+}
+
+/** Replace every secret value in a log line. Longest first so a secret containing another is fully hidden. */
+export function redactSecrets(text: string, secrets: Iterable<string>): string {
+  let out = text
+  for (const v of [...secrets].sort((a, b) => b.length - a.length)) if (v) out = out.split(v).join('***')
+  return out
+}
+
+/** True when the run reaches its models through a non-anthropic connection (LiteLLM). */
+export function usesProxy(ctx: Pick<RuntimeContext, 'connection'>): boolean {
+  return !!ctx.connection && ctx.connection.connection !== 'anthropic'
+}
+
+/** Child-process environment. A non-anthropic connection authenticates with its own token, never ANTHROPIC_API_KEY. */
+export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+  const { project } = ctx
+  const env: Record<string, string | undefined> = {
+    ...base,
+    CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(project.maxSubagentDepth),
+    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(project.maxConcurrentSubagents),
+    // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
+    CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
+  }
+  if (usesProxy(ctx)) delete env.ANTHROPIC_API_KEY
+  else if (project.provider.auth.kind === 'apiKey') env.ANTHROPIC_API_KEY = base[project.provider.auth.envVar]
+  Object.assign(env, ctx.connection?.env)
+  return env
+}
+
+/**
+ * The AgentDefinitions for a run. The root gets every harness tool, a canSpawn role the 'spawners' ones; each
+ * role gets a server-level rule and an mcpServers entry for every MCP server granted to it.
+ */
+export function buildAgents(
+  ctx: RuntimeContext,
+  harness: Pick<HarnessTool, 'name' | 'audience'>[],
+  isolation: boolean,
+  mcpSpecs: Pick<Project, 'mcpServers'> = ctx.project
+): Record<string, AgentDefinition> {
+  const isSetup = isSetupLikeRun(ctx.run.kind)
   const agents: Record<string, AgentDefinition> = {}
   for (const role of ctx.roles) {
-    const tools: string[] = [...role.tools, ...(role.reportsTo === null ? rootExtraTools : [])]
+    const tools: string[] = [...role.tools]
+    const isRoot = role.reportsTo === null
+    for (const t of harness) if (isRoot || (role.canSpawn && t.audience === 'spawners')) tools.push(`${ORGAI_TOOL_PREFIX}${t.name}`)
     if (role.canSpawn) tools.push(SPAWN_TOOL)
     // A lead addresses its running reports by handle, so it always gets the messaging tools on work runs.
     if (role.canSpawn && !isSetup) for (const t of [MESSAGE_TOOL, LIST_AGENTS_TOOL]) if (!tools.includes(t)) tools.push(t)
+    const mcp = agentMcpServerNames(mcpSpecs, role)
+    for (const name of mcp) if (!tools.includes(mcpToolRule(name))) tools.push(mcpToolRule(name))
     const def: AgentDefinition = {
       description: role.description,
       prompt: buildRolePrompt(role, ctx.roles, ctx.project, { isSetup, isolation }),
       tools,
       model: role.model || 'inherit'
     }
+    if (mcp.length) def.mcpServers = mcp
     if (role.effort) def.effort = role.effort
     agents[role.slug] = def
   }
@@ -225,6 +321,10 @@ class ClaudeSession implements RuntimeSession {
   /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
   private integrator: WorktreeIntegrator
   private sessionLogged = false
+  /** The in-process harness MCP server; kept so setMcpServers can send it again. */
+  private harnessServer?: McpSdkServerConfigWithInstance
+  /** Secret values (MCP env/headers, connection tokens) redacted from logged lines. Never emitted. */
+  private secrets = new Set<string>()
   /** Generates report handles (implementer-1, implementer-2) for spawns that did not name themselves. */
   private handles = new HandleNamer()
   /** Agent tool_use id -> the handle the report was spawned with; stored on the agent at task_started. */
@@ -261,10 +361,11 @@ class ClaudeSession implements RuntimeSession {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
     if (!root) throw new Error('Project has no roles')
     this.root = root
-    this.isSetup = ctx.run.kind === 'setup'
+    this.isSetup = isSetupLikeRun(ctx.run.kind)
     this.isolation = !this.isSetup && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
-    this.authMode = ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
+    // A proxy connection (LiteLLM) has no subscription plan windows: treat it like an API key.
+    this.authMode = usesProxy(ctx) || ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
     this.integrator = new WorktreeIntegrator(ctx, {
       agent: (id) => this.agents.get(id),
       setWorktree: (id, info) => {
@@ -524,7 +625,7 @@ class ClaudeSession implements RuntimeSession {
 
   /** Spawn a report on Sonnet instead of Opus while the Opus weekly window is near its limit? */
   private steerToSonnet(target: Role | undefined, toolInput: Record<string, unknown>): boolean {
-    if (this.isSetup || !this.ctx.project.preferSonnetNearLimit || this.authMode === 'apiKey') return false
+    if (this.isSetup || usesProxy(this.ctx) || !this.ctx.project.preferSonnetNearLimit || this.authMode === 'apiKey') return false
     const explicit = typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : undefined
     let model = explicit ?? target?.model ?? 'inherit'
     if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
@@ -682,51 +783,64 @@ class ClaudeSession implements RuntimeSession {
     return Math.max(0, sdkTotal - this.resumeCostBase)
   }
 
-  private buildOptions(): Options {
-    const { project } = this.ctx
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(project.maxSubagentDepth),
-      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(project.maxConcurrentSubagents),
-      // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
-      CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
-    }
-    if (project.provider.auth.kind === 'apiKey') {
-      env.ANTHROPIC_API_KEY = process.env[project.provider.auth.envVar]
-    }
+  private noteSecrets(resolved: ResolvedMcpServer[]): void {
+    for (const s of collectSecrets(resolved, this.ctx.connection)) this.secrets.add(s)
+  }
 
-    // Setup runs get the harness's proposal tools; work runs with isolation get the merge-retry tool.
-    let harnessServer: McpSdkServerConfigWithInstance | undefined
-    let extraTools: string[] = []
-    if (this.isSetup) {
-      const tools = setupTools(this.ctx, {
-        onDecided: () => {
-          const a = this.agents.get(ROOT_ID)
-          if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
-        }
-      })
-      harnessServer = buildHarnessServer(tools, SETUP_TOOLS_INSTRUCTIONS)
-      extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
-    } else {
-      const tools = workTools(this.ctx, {
-        integratePending: (wt) => this.integrator.integratePending(wt),
-        onPlanUpdated: (plan) => {
-          const root = this.agents.get(ROOT_ID)
-          const activity = stepActivity(plan)
-          if (root && activity && root.state !== 'done' && root.state !== 'error') this.setState(ROOT_ID, root.state, activity)
-        },
-        onDecided: () => {
-          const a = this.agents.get(ROOT_ID)
-          if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
-        }
-      })
-      harnessServer = buildHarnessServer(tools)
-      extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
+  /** Every server of the session: the harness's own plus the resolved MCP servers. */
+  private mcpRecord(resolved: ResolvedMcpServer[]): Record<string, McpServerConfig> {
+    const record: Record<string, McpServerConfig> = toClaudeMcpServers(resolved)
+    if (this.harnessServer) record[ORGAI_MCP] = this.harnessServer
+    return record
+  }
+
+  /**
+   * An install was approved mid-run: attach the server to the live session. setMcpServers replaces the
+   * dynamic set, so the whole record is sent again. Resolves with the prefix the agent calls the tools by.
+   */
+  private async addMcpServer(spec: McpServerSpec): Promise<string> {
+    const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []
+    this.noteSecrets(resolved)
+    if (!resolved.some((r) => r.spec.name === spec.name)) throw new Error(`MCP server "${spec.name}" is not configured for this run.`)
+    if (!this.q) throw new Error('The session is not running yet.')
+    let result
+    try {
+      result = await this.q.setMcpServers(this.mcpRecord(resolved))
+    } catch (e) {
+      throw new Error(redactSecrets((e as Error).message ?? String(e), this.secrets))
     }
+    const error = result.errors?.[spec.name]
+    if (error) throw new Error(redactSecrets(error, this.secrets))
+    return `mcp__${spec.name}__`
+  }
+
+  private async buildOptions(): Promise<Options> {
+    const { project } = this.ctx
+    const env = buildEnv(this.ctx)
+
+    // The harness tools for this kind of run (setup / mcp-assist / work); the audience decides who sees which.
+    const tools = harnessToolsFor(this.ctx, {
+      integratePending: (wt) => this.integrator.integratePending(wt),
+      onPlanUpdated: (plan) => {
+        const root = this.agents.get(ROOT_ID)
+        const activity = stepActivity(plan)
+        if (root && activity && root.state !== 'done' && root.state !== 'error') this.setState(ROOT_ID, root.state, activity)
+      },
+      onDecided: () => {
+        const a = this.agents.get(ROOT_ID)
+        if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
+      },
+      addMcpServer: (spec) => this.addMcpServer(spec)
+    })
+    this.harnessServer = buildHarnessServer(tools, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
+
+    // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
+    const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []
+    this.noteSecrets(resolved)
 
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, extraTools, this.isolation),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
@@ -741,7 +855,7 @@ class ClaudeSession implements RuntimeSession {
       abortController: this.abort,
       env,
       stderr: (data) => {
-        const line = data.trim()
+        const line = redactSecrets(data.trim(), this.secrets)
         if (line) this.log('warn', line)
       },
       canUseTool: async (toolName, input, permOptions) => {
@@ -770,7 +884,10 @@ class ClaudeSession implements RuntimeSession {
       }
     }
     if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
-    if (harnessServer) options.mcpServers = { [ORGAI_MCP]: harnessServer }
+    options.mcpServers = this.mcpRecord(resolved)
+    options.strictMcpConfig = true
+    const plugins = toClaudePlugins(this.ctx.plugins?.())
+    if (plugins.length) options.plugins = plugins
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     const savedRules = listRules(project.path)
     if (savedRules.length) options.allowedTools = savedRules
@@ -823,14 +940,14 @@ class ClaudeSession implements RuntimeSession {
         message: { role: 'user', content: userContent(firstMessage, this.ctx.images) },
         parent_tool_use_id: null
       })
-      this.q = query({ prompt: this.input, options: this.buildOptions() })
+      this.q = query({ prompt: this.input, options: await this.buildOptions() })
       for await (const msg of this.q) this.handle(msg)
       this.emit({ type: 'run.status', runId, status: 'finished' })
     } catch (e) {
       if (this.abort.signal.aborted) {
         this.emit({ type: 'run.status', runId, status: 'finished' })
       } else {
-        const message = (e as Error).message ?? String(e)
+        const message = redactSecrets((e as Error).message ?? String(e), this.secrets)
         this.log('error', message)
         this.setState(ROOT_ID, 'error', message.slice(0, 80))
         this.emit({ type: 'run.status', runId, status: 'error', error: message })
