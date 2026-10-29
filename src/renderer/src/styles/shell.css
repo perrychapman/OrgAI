@@ -1,0 +1,199 @@
+/* ---------- App shell ---------- */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  height: 100%;
+}
+
+.sidebar {
+  background: var(--surface-1);
+  border-right: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 16px 12px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.3px;
+  font-size: var(--text-title-sm);
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+  display: grid;
+  place-items: center;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-on-brand);
+}
+
+.sidebar-section {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-label {
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+  padding: 10px 8px 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-item.active {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+.nav-item .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+  flex: none;
+}
+.nav-item .dot.live {
+  background: var(--success);
+  box-shadow: var(--halo-dot-live);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.nav-item .dot.warn {
+  background: var(--warning);
+  box-shadow: var(--halo-dot-warning);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+.notify-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  background: var(--surface-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.pill.ok .dot {
+  background: var(--success);
+}
+.pill.warn .dot {
+  background: var(--warning);
+}
+.pill.danger .dot {
+  background: var(--danger);
+}
+.pill.live .dot {
+  background: var(--success);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-1);
+  min-height: var(--topbar-h);
+}
+.topbar h1 {
+  font-size: var(--text-title-sm);
+  margin: 0;
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.topbar .pill {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+.topbar .pill.live,
+.topbar .pill.ok,
+.topbar .pill.danger {
+  flex-shrink: 0;
+}
+.topbar .spacer {
+  flex: 1;
+}
+
+.tabs {
+  display: inline-flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 3px;
+  gap: 2px;
+}
+.tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.tabs button.active {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  box-shadow: var(--inset-border-strong);
+}

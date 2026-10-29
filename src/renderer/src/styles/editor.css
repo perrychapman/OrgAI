@@ -1,0 +1,129 @@
+/* ---------- Editor layout (also the base for the live view canvas and side panel) ---------- */
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+}
+.canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background:
+    radial-gradient(
+      1200px 600px at 50% -10%,
+      color-mix(in oklab, var(--accent) calc(var(--canvas-wash-opacity) * 100%), transparent),
+      transparent 60%
+    ),
+    var(--canvas-bg);
+}
+.canvas-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: var(--z-canvas-overlay);
+  display: flex;
+  gap: 8px;
+}
+.side {
+  border-left: 1px solid var(--border-default);
+  background: var(--surface-1);
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
+  z-index: var(--z-sticky);
+}
+.side-header h2 {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.side-body {
+  padding: 14px;
+}
+.side-section-title {
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+  margin: 14px 0 8px;
+}
+
+/* ---------- Role node (settings) ---------- */
+
+.role-node {
+  width: 220px;
+  background: var(--node-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  box-shadow: var(--elev-1);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.role-node.selected {
+  border-color: var(--role);
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+  box-shadow: var(--elev-2);
+}
+.role-node .head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--role);
+  color: var(--text-on-role);
+  display: grid;
+  place-items: center;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  flex: none;
+  letter-spacing: 0.3px;
+}
+.role-node .name {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-body);
+  line-height: 1.2;
+}
+.role-node .slug {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.role-node .meta {
+  display: flex;
+  gap: 5px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Draft box ---------- */
+
+.draft-box {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  margin-top: 8px;
+  background: var(--accent-faint);
+}
+.rationale {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  margin: 8px 0 10px;
+}

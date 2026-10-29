@@ -1,0 +1,83 @@
+/* Subscription usage meter under the auth pill in the sidebar. */
+.usage-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 10px 0 4px;
+}
+.usage-empty {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+.usage-hint {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.usage-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.usage-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.usage-pct {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+.usage-bar {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.usage-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--info);
+  transition: width var(--dur-slow) var(--ease-out);
+}
+.usage-row.warn .usage-bar i {
+  background: var(--warning);
+}
+.usage-row.warn .usage-pct {
+  color: var(--warning-text);
+}
+.usage-row.danger .usage-bar i {
+  background: var(--danger);
+}
+.usage-row.danger .usage-pct {
+  color: var(--danger-text);
+}
+.usage-reset {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+
+/* Usage meter footer (as-of time and refresh). */
+.usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.usage-refresh {
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  cursor: pointer;
+  padding: 0;
+}
+.usage-refresh:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.usage-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
