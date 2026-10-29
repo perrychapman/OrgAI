@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AgentInstance,
+  AgentMessage,
   AuthStatusResult,
   DraftRequest,
   DraftResult,
@@ -45,10 +46,14 @@ export interface RunState {
   logs: LogLine[]
   /** agent id -> text it is streaming right now. Live only, never persisted. */
   partial: Record<string, string>
+  /** Latest agent-to-agent messages (at most MAX_MESSAGES), drawn as edges for a few seconds. Live only. */
+  messages: AgentMessage[]
 }
 
+const MAX_MESSAGES = 100
+
 function emptyRun(summary: RunSummary): RunState {
-  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], mergeReviews: [], logs: [], partial: {} }
+  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], mergeReviews: [], logs: [], partial: {}, messages: [] }
 }
 
 interface AppState {
@@ -287,7 +292,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId)
       if (!record) return
       set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], mergeReviews: [], logs: record.logs, partial: {} } }
+        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [] } }
       }))
     }
     set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run', composerMode: 'reply' }))
@@ -471,6 +476,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'log':
           run.logs = [...run.logs.slice(-300), { at: Date.now(), level: e.level, message: e.message }]
           break
+        case 'agent.message': {
+          const { type: _type, runId: _runId, ...message } = e
+          run.messages = [...(run.messages ?? []).slice(-(MAX_MESSAGES - 1)), message]
+          break
+        }
       }
       return { runs: { ...s.runs, [e.runId]: run } }
     })

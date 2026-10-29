@@ -10,7 +10,7 @@ import type { SetupService } from '../setup/service'
 import { project as makeProject } from './testHelpers'
 
 // The real logger writes under Electron's userData; tests have no Electron.
-vi.mock('../log', () => ({ logRunEvent: () => {} }))
+vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {} }))
 
 let dir: string
 let events: RunEvent[]
@@ -69,6 +69,33 @@ afterEach(() => {
 })
 
 describe('RunManager with the mock adapter', () => {
+  it('names reports by handle and turns agent messages into events and transcript lines', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, {
+      work: [
+        { type: 'spawn', id: 'e1', role: 'engineer', description: 'Build the API' },
+        { type: 'spawn', id: 'e2', role: 'engineer', description: 'Build the client' },
+        { type: 'message', from: 'e1', to: 'engineer-2', text: 'The API lives in src/api.ts' },
+        { type: 'message', from: 'e2', to: 'lead', text: 'Got it' },
+        { type: 'finish', id: 'e1', result: 'ok' },
+        { type: 'finish', id: 'e2', result: 'ok' }
+      ]
+    })
+    const run = await m.start({ project: p, prompt: 'Build it' })
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    const handles = events.filter(isType('agent.upsert')).map((e) => [e.agent.id, e.agent.handle])
+    expect(handles).toContainEqual(['e1', 'engineer-1'])
+    expect(handles).toContainEqual(['e2', 'engineer-2'])
+    const messages = events.filter(isType('agent.message'))
+    expect(messages.map((e) => [e.from, e.to, e.toHandle, e.text])).toEqual([
+      ['e1', 'e2', 'engineer-2', 'The API lives in src/api.ts'],
+      ['e2', 'root', 'lead', 'Got it']
+    ])
+    const record = m.get(run.id)!
+    expect(record.transcript.some((t) => t.agentId === 'e1' && t.block.kind === 'system' && t.block.text === '→ engineer-2: The API lives in src/api.ts')).toBe(true)
+    await m.stop(run.id)
+  })
+
   it('runs a scripted work session end to end', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p)

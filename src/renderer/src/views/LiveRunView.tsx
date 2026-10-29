@@ -14,7 +14,7 @@ import {
 import type { AgentInstance, Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { activeRun, useAppStore } from '../store/useAppStore'
-import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
+import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
 import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
@@ -35,6 +35,9 @@ const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'wait
 const COLLAPSE_GRACE_MS = 6000
 const SETTLED_WORKTREE = new Set(['merged', 'empty', 'removed', 'held', 'conflict'])
 const COLLAPSE_KEY = 'orgai.collapseFinished'
+/** An agent-to-agent message stays drawn this long. */
+const MESSAGE_EDGE_MS = 12_000
+const MESSAGE_COLOR = '#e879f9'
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
 
@@ -90,6 +93,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(() => Date.now())
+  const [msgNow, setMsgNow] = useState(() => Date.now())
 
   const toggleCollapse = (): void => {
     setCollapseFinished((v) => {
@@ -116,7 +120,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     }
   }
 
-  const agents = useMemo(() => (run ? Object.values(run.agents) : []), [run])
+  const agentsById = run?.agents
+  const agents = useMemo(() => (agentsById ? Object.values(agentsById) : []), [agentsById])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
       project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? '#646d84',
@@ -131,6 +136,20 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     const t = setInterval(() => setNow(Date.now()), 1500)
     return () => clearInterval(t)
   }, [agents, collapseFinished])
+
+  // Message edges fade after MESSAGE_EDGE_MS; tick while the newest one is still showing.
+  const messages = run?.messages
+  useEffect(() => {
+    const latest = messages?.length ? messages[messages.length - 1].at : 0
+    if (!latest || Date.now() - latest > MESSAGE_EDGE_MS) return undefined
+    setMsgNow(Date.now())
+    const t = setInterval(() => {
+      const n = Date.now()
+      setMsgNow(n)
+      if (n - latest > MESSAGE_EDGE_MS) clearInterval(t)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [messages])
 
   const { visibleAgents, groups } = useMemo(() => {
     if (!collapseFinished) return { visibleAgents: agents, groups: new Map<string, AgentInstance[]>() }
@@ -233,8 +252,49 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         target: groupId(p),
         style: { stroke: 'var(--border-strong)', strokeWidth: 1.2, strokeDasharray: '4 4' }
       }))
-    return [...agentEdges, ...groupEdges]
-  }, [visibleAgents, groups, roleColor])
+    // Recent messages: a dashed, animated side-to-side edge. A folded agent's end attaches to its group node;
+    // a message whose ends are not on the canvas (or land on the same node) is skipped.
+    const groupOf = new Map<string, string>()
+    for (const [parentId, members] of groups) for (const m of members) groupOf.set(m.id, parentId)
+    const onCanvas = (id: string | null): string | null => {
+      if (!id) return null
+      if (shown.has(id)) return id
+      const seen = new Set<string>()
+      let cur: string | null = id
+      while (cur && !seen.has(cur)) {
+        seen.add(cur)
+        const g = groupOf.get(cur)
+        if (g !== undefined) return groupId(g)
+        if (cur !== id && shown.has(cur)) return null
+        cur = agentsById?.[cur]?.parentId ?? null
+      }
+      return null
+    }
+    const messageEdges = new Map<string, Edge>()
+    for (const m of messages ?? []) {
+      if (msgNow - m.at > MESSAGE_EDGE_MS) continue
+      const source = onCanvas(m.from)
+      const target = onCanvas(m.to)
+      if (!source || !target || source === target) continue
+      const id = `msg-${source}-${target}`
+      messageEdges.set(id, {
+        id,
+        source,
+        target,
+        sourceHandle: MSG_OUT,
+        targetHandle: MSG_IN,
+        animated: true,
+        className: 'msg-edge',
+        label: 'msg',
+        labelStyle: { fill: MESSAGE_COLOR, fontSize: 10 },
+        labelBgStyle: { fill: '#11141c' },
+        style: { stroke: MESSAGE_COLOR, strokeWidth: 1.8, strokeDasharray: '6 4' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: MESSAGE_COLOR },
+        zIndex: 10
+      })
+    }
+    return [...agentEdges, ...groupEdges, ...messageEdges.values()]
+  }, [visibleAgents, groups, roleColor, messages, msgNow, agentsById])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
 
@@ -301,6 +361,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         {run && (
           <div className="canvas-toolbar" style={showStrip ? { top: 52 } : undefined}>
             {isSetupRun && <span className="pill warn"><span className="dot" /> Setup session</span>}
+            {project.permissionMode === 'auto' && (
+              <span className="pill unattended" title="Permission mode is auto: Claude approves or denies each call and asks only when unsure. Saved rules never ask.">
+                unattended
+              </span>
+            )}
             {run.summary.resumedFrom && (
               <span className="pill" title={`Continued from run ${run.summary.resumedFrom}`}>
                 continued
@@ -451,7 +516,12 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                   <div style={{ marginTop: 18 }}>
                     <p style={{ margin: '0 auto 10px' }}>
                       Setup is complete and the folder is still empty. The org chart can build the initial structure from the approved
-                      architecture document. Edits are auto-accepted; shell commands still ask.
+                      architecture document.{' '}
+                      {project.permissionMode === 'auto'
+                        ? 'It runs unattended: Claude approves each call and asks only when unsure.'
+                        : project.permissionMode === 'acceptEdits'
+                          ? 'Edits are auto-accepted; shell commands still ask.'
+                          : 'Approvals follow the project permission mode.'}
                     </p>
                     <button className="btn primary" disabled={busy} onClick={() => void scaffold()}>
                       {busy ? (
@@ -503,6 +573,10 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           <span>
             <i style={{ background: 'var(--danger)' }} />
             error
+          </span>
+          <span>
+            <i style={{ background: MESSAGE_COLOR }} />
+            message
           </span>
         </div>
       </div>

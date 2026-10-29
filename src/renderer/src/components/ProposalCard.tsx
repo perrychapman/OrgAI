@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import type { Proposal, ProposalDecision } from '@shared/types'
+import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
 
 interface Props {
@@ -17,7 +18,7 @@ const KIND_LABEL: Record<Proposal['kind'], string> = {
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
-  settings: 'Approving updates the project settings and brief.'
+  settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.'
 }
 
 export default function ProposalCard({ proposal, onDecide }: Props): ReactElement {
@@ -193,7 +194,9 @@ function OrgChartBody({ payload }: { payload: Extract<Proposal, { kind: 'orgChar
 
 function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'settings' }>['payload'] }): ReactElement {
   const rows: [string, string][] = []
-  if (payload.permissionMode) rows.push(['Permission mode', payload.permissionMode])
+  if (payload.permissionMode) {
+    rows.push(['Permission mode', PERMISSION_MODE_OPTIONS.find((o) => o.value === payload.permissionMode)?.label ?? payload.permissionMode])
+  }
   if (payload.maxBudgetUsd !== undefined) rows.push(['Spend cap per run', payload.maxBudgetUsd === null ? 'No cap' : `$${payload.maxBudgetUsd}`])
   if (payload.maxSubagentDepth !== undefined) rows.push(['Max subagent depth', String(payload.maxSubagentDepth)])
   if (payload.maxConcurrentSubagents !== undefined) rows.push(['Max concurrent subagents', String(payload.maxConcurrentSubagents)])
@@ -211,6 +214,15 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
             </span>
           ))}
         </div>
+      )}
+      {payload.allowRules && payload.allowRules.length > 0 && (
+        <Section title="Commands that never ask">
+          <div className="proposal-rules">
+            {payload.allowRules.map((r) => (
+              <code key={r}>{r}</code>
+            ))}
+          </div>
+        </Section>
       )}
       {payload.brief && (
         <Section title="Project brief">

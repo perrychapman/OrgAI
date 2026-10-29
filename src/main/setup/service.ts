@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ArchitectureSpec, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
 import { setupKindLabel } from '@shared/setup'
+import { isPermissionMode } from '@shared/types'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { addRules, isUnsafeAllowRule } from '../runtime/permissionRules'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
 
@@ -114,13 +117,16 @@ export class SetupService {
         const p = proposal.payload
         const next: Project = { ...project, setup }
         if (typeof p.brief === 'string' && p.brief.trim()) next.brief = p.brief.trim()
-        if (p.permissionMode) next.permissionMode = p.permissionMode
+        if (isPermissionMode(p.permissionMode)) next.permissionMode = p.permissionMode
         if (p.maxBudgetUsd === null) delete next.maxBudgetUsd
         else if (typeof p.maxBudgetUsd === 'number' && p.maxBudgetUsd > 0) next.maxBudgetUsd = p.maxBudgetUsd
-        if (p.maxSubagentDepth) next.maxSubagentDepth = clamp(p.maxSubagentDepth, 1, 5)
-        if (p.maxConcurrentSubagents) next.maxConcurrentSubagents = clamp(p.maxConcurrentSubagents, 1, 20)
+        if (p.maxSubagentDepth) next.maxSubagentDepth = clamp(p.maxSubagentDepth, 1, MAX_SUBAGENT_DEPTH_LIMIT)
+        if (p.maxConcurrentSubagents) next.maxConcurrentSubagents = clamp(p.maxConcurrentSubagents, 1, MAX_CONCURRENT_SUBAGENTS_LIMIT)
         if (typeof p.isolateWriters === 'boolean') next.isolateWriters = p.isolateWriters
         if (typeof p.reviewMerges === 'boolean') next.reviewMerges = p.reviewMerges
+        // The safe-command allowlist lives with the other saved rules in .claude/settings.local.json.
+        const rules = cleanAllowRules(p.allowRules)
+        if (rules.length) addRules(project.path, rules)
         return this.projects.save(next)
       }
     }
@@ -152,6 +158,16 @@ export class SetupService {
     }
     return this.projects.save({ ...project, setup })
   }
+}
+
+/**
+ * Trimmed, non-empty, de-duplicated rule strings. Non-strings and rules the harness never saves from a
+ * proposal (bare shell access, destructive commands such as rm, git push or sudo) are dropped.
+ */
+export function cleanAllowRules(rules: unknown): string[] {
+  if (!Array.isArray(rules)) return []
+  const strings = rules.filter((r): r is string => typeof r === 'string').map((r) => r.trim())
+  return [...new Set(strings.filter((r) => r && !isUnsafeAllowRule(r)))]
 }
 
 function clamp(n: number, lo: number, hi: number): number {

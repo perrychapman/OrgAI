@@ -44,9 +44,17 @@ export const TOOL_CATALOG = [
   'WebSearch',
   'WebFetch',
   'TodoWrite',
-  'NotebookEdit'
+  'NotebookEdit',
+  'SendMessage',
+  'ListAgents'
 ] as const
 export type ToolName = (typeof TOOL_CATALOG)[number]
+
+/** One-line hints for tools whose purpose is not obvious from the name (role editor tooltips). */
+export const TOOL_HINTS: Partial<Record<ToolName, string>> = {
+  SendMessage: 'Message another running agent by its handle (or its lead) for hand-offs and questions',
+  ListAgents: 'List the agents running right now and their handles'
+}
 
 /** The tool name that spawns subagents in the Claude Agent SDK. Granted implicitly by `canSpawn`. */
 export const SPAWN_TOOL = 'Agent'
@@ -78,7 +86,27 @@ export interface Role {
   color: string
 }
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+/**
+ * How tool calls are approved. 'auto': a provider-side classifier approves or denies each call and asks
+ * (an approval card) only when it cannot decide. 'dontAsk': anything not pre-approved by a saved rule is denied.
+ */
+export type PermissionMode = 'auto' | 'acceptEdits' | 'default' | 'dontAsk' | 'plan' | 'bypassPermissions'
+
+/** Every permission mode, recommended first, with the label settings selects show. */
+export const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
+  { value: 'auto', label: 'Unattended: Claude decides each call, asks only when unsure' },
+  { value: 'acceptEdits', label: 'Auto-accept file edits, ask for commands' },
+  { value: 'default', label: 'Ask for everything risky' },
+  { value: 'dontAsk', label: 'Never ask: deny anything that would need approval' },
+  { value: 'plan', label: 'Plan only (no changes)' },
+  { value: 'bypassPermissions', label: 'Bypass all permission prompts (dangerous)' }
+]
+
+export const PERMISSION_MODES: PermissionMode[] = PERMISSION_MODE_OPTIONS.map((o) => o.value)
+
+export function isPermissionMode(v: unknown): v is PermissionMode {
+  return typeof v === 'string' && (PERMISSION_MODES as string[]).includes(v)
+}
 
 export interface Project {
   id: string
@@ -213,6 +241,8 @@ export interface SettingsProposalPayload {
   maxConcurrentSubagents?: number
   isolateWriters?: boolean
   reviewMerges?: boolean
+  /** Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Merged into .claude/settings.local.json. */
+  allowRules?: string[]
   rationale: string
 }
 
@@ -286,6 +316,21 @@ export interface AgentInstance {
   result?: string
   /** Present when the agent works in an isolated git worktree. */
   worktree?: WorktreeInfo
+  /** Name other agents use to address it (SendMessage), e.g. "implementer-2". */
+  handle?: string
+}
+
+/** One agent-to-agent message (SendMessage), as drawn on the live canvas. */
+export interface AgentMessage {
+  /** Sending agent's harness id. */
+  from: string
+  /** Recipient's harness id; null when it is not an agent on the chart (the user, or an unknown handle). */
+  to: string | null
+  /** The address the sender used. */
+  toHandle: string
+  /** First 200 characters of the message. */
+  text: string
+  at: number
 }
 
 export type WorktreeStatus =
@@ -431,6 +476,11 @@ export interface PermissionRuleSpec {
   ruleContent?: string
 }
 
+/** True for a bare tool-name rule such as "WebSearch": it approves every call of that tool before any prompt. */
+export function isWholeToolRule(rule: string): boolean {
+  return /^[A-Za-z_][\w-]*$/.test(rule.trim())
+}
+
 /** Structured-clone-safe copy of a provider permission update (the Claude SDK's PermissionUpdate). */
 export type PermissionSuggestion =
   | {
@@ -517,6 +567,8 @@ export type RunEvent =
   | { type: 'project.updated'; runId: string; project: Project }
   /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
   | { type: 'usage.status'; runId: string; usage: UsageStatus }
+  /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
+  | ({ type: 'agent.message'; runId: string } & AgentMessage)
 
 /** Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked. */
 export interface FocusRunTarget {

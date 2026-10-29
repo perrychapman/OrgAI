@@ -51,6 +51,10 @@ export function describeTool(name: string, input: unknown, opts: { harness?: boo
       return `Delegating to ${str('subagent_type') || 'a subagent'}`
     case 'TodoWrite':
       return 'Updating task list'
+    case 'SendMessage':
+      return `Messaging ${str('to') || 'an agent'}`
+    case 'ListAgents':
+      return 'Checking who is running'
     default:
       return `Using ${name}`
   }

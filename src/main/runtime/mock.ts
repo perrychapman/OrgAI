@@ -7,6 +7,7 @@ import { setupTools, workTools, type HarnessTool } from './harnessTools'
 import { describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { composeFirstMessage } from './prompts'
+import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -22,7 +23,9 @@ export type MockStep =
   /** A tool call. With `ask`, it first needs the user's approval through ctx.requestPermission. */
   | { type: 'tool'; agent?: string; name: string; input?: Record<string, unknown>; result?: string; ask?: boolean }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string }
+  /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
+  | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
   | { type: 'finish'; id: string; result: string }
   /** Call one of the harness's own tools by bare name (propose_architecture, ask_user, complete_setup, ...). */
@@ -160,6 +163,7 @@ class MockSession implements RuntimeSession {
   private spawnToolUse = new Map<string, string>()
   /** Allow rules granted for the rest of this session. */
   private sessionRules = new Set<string>()
+  private handles = new HandleNamer()
 
   constructor(
     private ctx: RuntimeContext,
@@ -401,6 +405,17 @@ class MockSession implements RuntimeSession {
       }
       case 'harness':
         return this.harnessStep(step)
+      case 'message': {
+        const from = step.from ?? ROOT_AGENT_ID
+        const input = { to: step.to, message: step.text }
+        this.transcript(from, { kind: 'tool_use', id: newId('tu'), name: 'SendMessage', input })
+        const m = mapSendMessage(from, input, this.agents.values())
+        if (!m) return
+        this.emit({ type: 'agent.message', runId: this.ctx.run.id, ...m })
+        this.transcript(from, { kind: 'system', text: messageTranscriptText(m) })
+        if (m.to) this.transcript(m.to, { kind: 'user', text: step.text })
+        return
+      }
       case 'rateLimit': {
         const until = step.untilInMs !== undefined ? Date.now() + step.untilInMs : undefined
         const window = step.window ?? 'five_hour'
@@ -472,7 +487,8 @@ class MockSession implements RuntimeSession {
     const parentRole = this.rolesBySlug.get(parent.roleSlug)
     const allowed = parentRole ? this.ctx.roles.filter((r) => parentRole.spawnable.includes(r.id)) : []
     const slug = step.role ?? allowed[0]?.slug ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
-    const input = { subagent_type: slug, description: step.description, prompt: step.description }
+    const { handle } = spawnHandle(this.handles, slug, step.name)
+    const input = { subagent_type: slug, description: step.description, prompt: step.description, name: handle }
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
@@ -485,6 +501,7 @@ class MockSession implements RuntimeSession {
       name: role?.name ?? slug,
       parentId,
       spawnToolUseId: toolUseId,
+      handle,
       state: 'thinking',
       activity: step.description.slice(0, 90) || 'Reading the brief…'
     })

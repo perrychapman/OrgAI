@@ -9,6 +9,10 @@ export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: 
 
 const WORKING = new Set(['starting', 'thinking', 'tool', 'delegating'])
 
+/** Handle ids message edges use (see LiveRunView). */
+export const MSG_OUT = 'msg-out'
+export const MSG_IN = 'msg-in'
+
 const WORKTREE_LABEL: Record<NonNullable<AgentInstance['worktree']>['status'], string> = {
   active: 'isolated worktree',
   merging: 'merging…',
@@ -61,7 +65,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
             {agent.name}
           </div>
           <div className="sub">
-            <span>{agent.roleSlug}</span>
+            <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
             {shortModel && <span>· {shortModel}</span>}
           </div>
         </div>
@@ -80,6 +84,9 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
         <span title={agent.costUsd > 0 ? cost.title : undefined}>{agent.costUsd > 0 ? cost.text : formatElapsed(agent.startedAt, agent.endedAt)}</span>
       </div>
       <Handle type="source" position={Position.Bottom} />
+      {/* Agent-to-agent messages attach at the sides, after the reporting-line handles so those stay the defaults. */}
+      <Handle id={MSG_OUT} type="source" position={Position.Right} className="msg-handle" isConnectable={false} />
+      <Handle id={MSG_IN} type="target" position={Position.Left} className="msg-handle" isConnectable={false} />
     </div>
   )
 }

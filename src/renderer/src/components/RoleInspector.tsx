@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import type { Effort, Project, Role, ToolName } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, TOOL_CATALOG } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 
@@ -134,7 +134,7 @@ export default function RoleInspector({ project, role }: Props): ReactElement {
         <div className="side-section-title">Tools</div>
         <div className="row wrap">
           {TOOL_CATALOG.map((t) => (
-            <label key={t} className={`check ${role.tools.includes(t) ? 'on' : ''}`}>
+            <label key={t} className={`check ${role.tools.includes(t) ? 'on' : ''}`} title={TOOL_HINTS[t]}>
               <input type="checkbox" checked={role.tools.includes(t)} onChange={() => toggleTool(t)} />
               {t}
             </label>

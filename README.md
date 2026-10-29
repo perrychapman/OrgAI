@@ -34,7 +34,7 @@ src/main/           Electron main process
   runtime/types.ts  RuntimeAdapter / RuntimeSession interfaces
   runtime/claude.ts Claude adapter over @anthropic-ai/claude-agent-sdk
   runtime/mock.ts   scripted, token-free adapter for tests and UI work (ORGAI_MOCK=1)
-  runtime/harnessTools.ts, prompts.ts, activity.ts, integration.ts  provider-neutral session core
+  runtime/harnessTools.ts, prompts.ts, activity.ts, integration.ts, network.ts  provider-neutral session core
   runtime/runManager.ts  active runs, permission and proposal round-trips, event broadcast
   setup/profile.ts  token-free repository profile (tree, manifests, docs, git log)
   setup/service.ts  setup prompts, applying approved proposals, writing .orgai/ARCHITECTURE.md
@@ -114,8 +114,41 @@ scripts/            SDK smoke tests (cost well under a cent each)
 - Each role becomes a programmatic subagent definition; the root role runs the main thread.
 - A role gets the `Agent` tool only if it may spawn. A `PreToolUse` hook denies any spawn whose
   `subagent_type` is not in the parent's `spawnable` list, so the model cannot work around the chart.
-- Depth and concurrency caps come from project settings; an optional per-run spend cap ends the session.
+- Depth and concurrency caps come from project settings (new projects: 8 concurrent reports, depth 3; up to 32
+  and 5); an optional per-run spend cap ends the session.
 - Permission prompts (`canUseTool`) surface as approval cards in the live view.
+
+## Permission modes
+
+| Mode | What happens |
+| --- | --- |
+| `auto` (default, **unattended**) | A model classifier approves or denies each tool call; only calls it cannot decide become approval cards. The live toolbar shows an *unattended* pill. |
+| `acceptEdits` | File edits are approved; every shell command asks. |
+| `default` | Anything risky asks. |
+| `dontAsk` | Never asks: anything a saved rule does not pre-approve is denied. |
+| `plan` | Plan only, no changes. |
+| `bypassPermissions` | No permission checks at all (dangerous). |
+
+- **Saved rules never ask.** "Always allow (project)" on an approval card, and the safe-command allowlist the Architect
+  proposes during setup (`allowRules` on the settings proposal: the project's build/test/lint/dev commands, read-only
+  git, and the git operations the harness uses; never `rm`, `git push`, `git reset --hard` or `sudo`), are merged into
+  `<project>/.claude/settings.local.json` under `permissions.allow` and passed to every run as `allowedTools`. The
+  harness drops bare shell rules and destructive commands from a proposal before saving. A bare tool name such as
+  `WebSearch` approves the whole tool before any prompt; the rules panel labels such rules *whole tool*.
+- Setup sessions run the Architect in `acceptEdits`, or in `auto` when the project is unattended.
+- Every permission request and its outcome (tool, summary, decision, scope) is written to the main log at info level.
+
+## Agent network
+
+- Every report gets a **handle**: the spawn hook names it `<role slug>-<n>` in spawn order (`implementer-1`,
+  `implementer-2`) unless the Agent call passed `name`. Nodes show the handle under the name.
+- Roles with the `SendMessage` and `ListAgents` tools can message other running agents by handle and see who is
+  running; every role that may spawn gets both automatically, so leads can send follow-ups to a running report instead
+  of re-spawning it. The orchestrator's prompt explains this; the Architect gives the tools to roles that must
+  coordinate (peers handing off an interface, an implementer and its reviewer) and may let spawnable lists cross teams.
+- Each message is an `agent.message` event (sender, recipient resolved by handle, role slug or `user`, first 200
+  characters) and a line on the sender's transcript (`→ implementer-2: …`). The live view draws it as a dashed,
+  animated pink edge labelled *msg* for 12 seconds; a message to or from a folded report attaches to its *done* group.
 
 ## Adding a provider
 

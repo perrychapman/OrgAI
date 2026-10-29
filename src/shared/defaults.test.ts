@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { defaultRoles, newId, newProject, rootRole, slugify } from './defaults'
+import { DEFAULT_APP_SETTINGS, defaultRoles, newId, newProject, rootRole, slugify } from './defaults'
+import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
 
 describe('slugify', () => {
   it('lowercases and hyphenates', () => {
@@ -76,5 +77,41 @@ describe('rootRole', () => {
     const noRoot = { ...p, roles: p.roles.slice(1) }
     expect(rootRole(noRoot)?.id).toBe(noRoot.roles[0].id)
     expect(rootRole({ ...p, roles: [] })).toBeUndefined()
+  })
+})
+
+describe('run defaults', () => {
+  it('starts new projects unattended with room for parallel, layered work', () => {
+    const bare = newProject({ name: 'X', path: '/x', brief: '' })
+    expect(bare.permissionMode).toBe('auto')
+    expect(bare.maxConcurrentSubagents).toBe(8)
+    expect(bare.maxSubagentDepth).toBe(3)
+    const fromSettings = newProject({ name: 'X', path: '/x', brief: '' }, DEFAULT_APP_SETTINGS)
+    expect(DEFAULT_APP_SETTINGS.defaultPermissionMode).toBe('auto')
+    expect(fromSettings.permissionMode).toBe('auto')
+    expect(fromSettings.maxConcurrentSubagents).toBe(8)
+    expect(fromSettings.maxSubagentDepth).toBe(3)
+    expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'dontAsk' }).permissionMode).toBe('dontAsk')
+  })
+})
+
+describe('permission modes', () => {
+  it('lists every mode once, unattended first', () => {
+    expect(PERMISSION_MODES[0]).toBe('auto')
+    expect([...PERMISSION_MODES].sort()).toEqual(['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'])
+    expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'auto')?.label).toBe('Unattended: Claude decides each call, asks only when unsure')
+    expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'dontAsk')?.label).toBe('Never ask: deny anything that would need approval')
+  })
+
+  it('recognizes modes', () => {
+    expect(isPermissionMode('auto')).toBe(true)
+    expect(isPermissionMode('dontAsk')).toBe(true)
+    expect(isPermissionMode('yolo')).toBe(false)
+    expect(isPermissionMode(undefined)).toBe(false)
+  })
+
+  it('offers the messaging tools in the catalog', () => {
+    expect(TOOL_CATALOG).toContain('SendMessage')
+    expect(TOOL_CATALOG).toContain('ListAgents')
   })
 })

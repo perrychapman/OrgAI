@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import type { Project } from '@shared/types'
+import { isWholeToolRule } from '@shared/types'
 
 /** "Always allow (project)" rules saved in the project's .claude/settings.local.json. */
 export default function PermissionRulesPanel({ project }: { project: Project }): ReactElement {
@@ -39,13 +40,21 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
       {rules === null ? (
         <span className="hint">Loading…</span>
       ) : rules.length === 0 ? (
-        <span className="hint">None. Choose “Always allow (project)” on an approval card to stop being asked for similar calls.</span>
+        <span className="hint">
+          None. Choose “Always allow (project)” on an approval card to stop being asked for similar calls, or approve the commands the Architect
+          proposes during setup.
+        </span>
       ) : (
         <div className="maint-list">
           {rules.map((rule) => (
             <div key={rule} className="maint-row">
               <div className="row" style={{ gap: 8 }}>
                 <code style={{ wordBreak: 'break-all' }}>{rule}</code>
+                {isWholeToolRule(rule) && (
+                  <span className="chip" title={`Approves every ${rule} call before any prompt, whatever its input`}>
+                    whole tool
+                  </span>
+                )}
                 <button className="btn sm danger" style={{ marginLeft: 'auto' }} disabled={busy !== null} onClick={() => void remove(rule)}>
                   {busy === rule ? 'Removing…' : 'Remove'}
                 </button>

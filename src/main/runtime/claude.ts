@@ -30,7 +30,8 @@ import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
 import { PartialText } from './claudePartial'
 import { SETUP_TOOLS_INSTRUCTIONS, setupTools, workTools, type HarnessTool } from './harnessTools'
-import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import {
@@ -129,6 +130,8 @@ function buildAgents(ctx: RuntimeContext, rootExtraTools: string[], isolation: b
   for (const role of ctx.roles) {
     const tools: string[] = [...role.tools, ...(role.reportsTo === null ? rootExtraTools : [])]
     if (role.canSpawn) tools.push(SPAWN_TOOL)
+    // A lead addresses its running reports by handle, so it always gets the messaging tools on work runs.
+    if (role.canSpawn && !isSetup) for (const t of [MESSAGE_TOOL, LIST_AGENTS_TOOL]) if (!tools.includes(t)) tools.push(t)
     const def: AgentDefinition = {
       description: role.description,
       prompt: buildRolePrompt(role, ctx.roles, ctx.project, { isSetup, isolation }),
@@ -200,6 +203,10 @@ class ClaudeSession implements RuntimeSession {
   /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
   private integrator: WorktreeIntegrator
   private sessionLogged = false
+  /** Generates report handles (implementer-1, implementer-2) for spawns that did not name themselves. */
+  private handles = new HandleNamer()
+  /** Agent tool_use id -> the handle the report was spawned with; stored on the agent at task_started. */
+  private spawnHandles = new Map<string, string>()
   /** agent id -> message id -> latest usage, so streamed and re-sent messages are counted once. */
   private usageByMessage = new Map<string, Map<string, { input: number; output: number; model?: string; mix: TokenMix }>>()
   /** Per-model USD rates from the latest result message; applied to new tokens until the next result. */
@@ -363,6 +370,14 @@ class ClaudeSession implements RuntimeSession {
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', 'Integrating a report…')
   }
 
+  /** An agent called SendMessage: draw it on the canvas and keep a copy in the sender's transcript. */
+  private onAgentMessage(fromId: string, toolInput: Record<string, unknown>): void {
+    const m = mapSendMessage(fromId, toolInput, this.agents.values())
+    if (!m) return
+    this.emit({ type: 'agent.message', runId: this.ctx.run.id, ...m })
+    this.transcript(fromId, { kind: 'system', text: messageTranscriptText(m) })
+  }
+
   /** Pop the issuer of a pending call. With an agent id, removes that agent's entry; otherwise the oldest. */
   private takeIssuer(key: string, agentId?: string): string | undefined {
     const queue = this.pendingPermissionIssuers.get(key)
@@ -502,6 +517,10 @@ class ClaudeSession implements RuntimeSession {
         const target = this.rolesBySlug.get(requested)
         const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
         const updates: Record<string, unknown> = {}
+        // Every report gets a handle so peers and its lead can reach it with SendMessage({to: handle}).
+        const { handle, generated } = spawnHandle(this.handles, requested, toolInput.name)
+        this.spawnHandles.set(input.tool_use_id, handle)
+        if (generated) updates.name = handle
         if (this.isolation && parentIsolated && target && canWrite(target) && !toolInput.isolation) {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
           updates.isolation = 'worktree'
@@ -522,6 +541,8 @@ class ClaudeSession implements RuntimeSession {
 
       // The first tool call from an isolated agent reveals its real worktree path.
       this.integrator.reportCwd(agentId, input.cwd)
+
+      if (input.tool_name === MESSAGE_TOOL) this.onAgentMessage(agentId, toolInput)
 
       // Proposal tools block on the user, so the node shows "waiting" until they decide.
       const state = input.tool_name.startsWith(ORGAI_TOOL_PREFIX) ? 'waiting' : 'tool'
@@ -642,7 +663,8 @@ class ClaudeSession implements RuntimeSession {
       agents: buildAgents(this.ctx, extraTools, this.isolation),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
-      permissionMode: this.isSetup ? 'acceptEdits' : project.permissionMode,
+      // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
+      permissionMode: this.isSetup ? (project.permissionMode === 'auto' ? 'auto' : 'acceptEdits') : project.permissionMode,
       allowDangerouslySkipPermissions: !this.isSetup && project.permissionMode === 'bypassPermissions',
       settingSources: ['project'],
       hooks: this.buildHooks(),
@@ -788,6 +810,7 @@ class ClaudeSession implements RuntimeSession {
           const role = this.rolesBySlug.get(slug)
           const existing = this.agents.get(msg.task_id)
           if (msg.description) this.integrator.noteBrief(msg.task_id, msg.description)
+          const handle = (msg.tool_use_id ? this.spawnHandles.get(msg.tool_use_id) : undefined) ?? existing?.handle
           // Claude Code creates the worktree itself at a known path; the first tool call confirms the real cwd.
           // A nested spawn's worktree lands inside its parent's worktree; integration re-locates it with git either way.
           const spawner = msg.tool_use_id ? this.isolatedSpawns.get(msg.tool_use_id) : undefined
@@ -812,7 +835,8 @@ class ClaudeSession implements RuntimeSession {
             parentId,
             spawnToolUseId: msg.tool_use_id ?? null,
             activity: msg.description?.slice(0, 90) || existing?.activity || 'Starting…',
-            ...(worktree ? { worktree } : {})
+            ...(worktree ? { worktree } : {}),
+            ...(handle ? { handle } : {})
           })
         } else if (msg.subtype === 'task_notification') {
           const a = this.agents.get(msg.task_id)

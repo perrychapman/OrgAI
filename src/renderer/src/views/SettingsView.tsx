@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { MaintenanceResult, PendingWorktree, WorktreeDiff } from '@shared/types'
-import { DEFAULT_KEEP_RUNS } from '@shared/types'
+import { DEFAULT_KEEP_RUNS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import {
   ReactFlow,
   Background,
@@ -14,7 +14,7 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { PermissionMode, Project, Role } from '@shared/types'
-import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, newId, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
@@ -414,12 +414,17 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
         <div className="field">
           <label>Permission mode</label>
           <select className="select" value={project.permissionMode} onChange={(e) => patch({ permissionMode: e.target.value as PermissionMode })}>
-            <option value="default">Ask for everything risky</option>
-            <option value="acceptEdits">Auto-accept file edits, ask for commands</option>
-            <option value="plan">Plan only (no changes)</option>
-            <option value="bypassPermissions">Bypass all permission prompts</option>
+            {PERMISSION_MODE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </select>
-          <span className="hint">Prompts appear as approval cards in the live view.</span>
+          <span className="hint">
+            {project.permissionMode === 'auto'
+              ? 'Unattended mode still asks when the classifier is unsure; saved rules below never ask.'
+              : 'Prompts appear as approval cards in the live view.'}
+          </span>
         </div>
         <div className="field">
           <label>Estimated-cost cap per run (API-equivalent USD)</label>
@@ -436,12 +441,27 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
         </div>
         <div className="field">
           <label>Max subagent depth</label>
-          <input className="input" type="number" min={1} max={5} value={project.maxSubagentDepth} onChange={(e) => patch({ maxSubagentDepth: Number(e.target.value) || 1 })} />
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={MAX_SUBAGENT_DEPTH_LIMIT}
+            value={project.maxSubagentDepth}
+            onChange={(e) => patch({ maxSubagentDepth: Math.min(MAX_SUBAGENT_DEPTH_LIMIT, Number(e.target.value) || 1) })}
+          />
           <span className="hint">1 means reports cannot spawn their own subagents.</span>
         </div>
         <div className="field">
           <label>Max concurrent subagents</label>
-          <input className="input" type="number" min={1} max={20} value={project.maxConcurrentSubagents} onChange={(e) => patch({ maxConcurrentSubagents: Number(e.target.value) || 1 })} />
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={MAX_CONCURRENT_SUBAGENTS_LIMIT}
+            value={project.maxConcurrentSubagents}
+            onChange={(e) => patch({ maxConcurrentSubagents: Math.min(MAX_CONCURRENT_SUBAGENTS_LIMIT, Number(e.target.value) || 1) })}
+          />
+          <span className="hint">Reports that may run at the same time across the whole org.</span>
         </div>
       </div>
       <div className="field">

@@ -26,6 +26,12 @@ describe('describeTool', () => {
     expect(text).toBe(`$ ${'x'.repeat(70)}`)
   })
 
+  it('labels agent messaging tools', () => {
+    expect(describeTool('SendMessage', { to: 'implementer-2', message: 'hi' })).toBe('Messaging implementer-2')
+    expect(describeTool('SendMessage', {})).toBe('Messaging an agent')
+    expect(describeTool('ListAgents', {})).toBe('Checking who is running')
+  })
+
   it('tolerates missing input', () => {
     expect(describeTool('Read', undefined)).toBe('Reading ')
     expect(describeTool('Bash', null)).toBe('$ ')

@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import type { ProposalDecision, QuestionAnswer } from '@shared/types'
+import { PERMISSION_MODES, TOOL_CATALOG } from '@shared/types'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { toRoles } from '../ai/draft'
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
@@ -11,6 +13,8 @@ import { pendingWorktrees } from './worktrees'
  * them however their SDK takes custom tools (Claude: an in-process MCP server named "orgai") and keep
  * their own namespacing out of these names.
  */
+
+type PermissionModeValue = (typeof PERMISSION_MODES)[number]
 
 /** Work-run tool: retry merging report branches after a conflict or hold. */
 export const INTEGRATE_TOOL = 'integrate_worktrees'
@@ -71,7 +75,9 @@ export const draftRoleSchema = z.object({
   description: z.string().describe('One sentence telling a manager when to delegate to this role'),
   responsibilities: z.array(z.string()),
   prompt: z.string().describe('System prompt, second person, 60 to 160 words'),
-  tools: z.array(z.string()).describe('Subset of: Read, Glob, Grep, Edit, Write, Bash, WebSearch, WebFetch, TodoWrite, NotebookEdit'),
+  tools: z
+    .array(z.string())
+    .describe(`Subset of: ${TOOL_CATALOG.join(', ')}. SendMessage and ListAgents let a role message other running agents and see who is running`),
   model: z.string().describe('One of: inherit, fable, opus, sonnet, haiku'),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
@@ -125,10 +131,19 @@ export const proposeSettings = defineTool({
     title: z.string(),
     rationale: z.string(),
     brief: z.string().describe('Concise project brief every agent will read, 40 to 120 words'),
-    permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan']).optional(),
+    permissionMode: z
+      .enum(PERMISSION_MODES as [PermissionModeValue, ...PermissionModeValue[]])
+      .optional()
+      .describe("'auto' (unattended: a classifier approves each call and asks only when unsure) is recommended; 'acceptEdits' asks for every command"),
     maxBudgetUsd: z.number().nullable().optional().describe('Spend cap per run in USD; null for no cap'),
-    maxSubagentDepth: z.number().int().min(1).max(5).optional(),
-    maxConcurrentSubagents: z.number().int().min(1).max(20).optional(),
+    maxSubagentDepth: z.number().int().min(1).max(MAX_SUBAGENT_DEPTH_LIMIT).optional(),
+    maxConcurrentSubagents: z.number().int().min(1).max(MAX_CONCURRENT_SUBAGENTS_LIMIT).optional(),
+    allowRules: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Claude Code permission rules saved as project allow rules so these calls never ask, e.g. "Bash(npm:*)", "Bash(git status:*)". Only safe commands the workflow needs; never rm, git push, git reset --hard or sudo'
+      ),
     isolateWriters: z
       .boolean()
       .optional()

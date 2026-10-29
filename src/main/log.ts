@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } f
 import { join } from 'node:path'
 import { format } from 'node:util'
 import { app } from 'electron'
-import type { RunEvent, RunSummary } from '@shared/types'
+import type { PermissionDecision, PermissionRequest, RunEvent, RunSummary } from '@shared/types'
 
 /**
  * Main-process log at <userData>/logs/main.log. Rotates to main.1.log at 2 MB (two files kept).
@@ -133,4 +133,22 @@ export function logRunEvent(summary: RunSummary, e: RunEvent): void {
   } else if (e.type === 'log' && (e.level === 'warn' || e.level === 'error')) {
     write(e.level, [`run ${e.runId}: ${e.message}`])
   }
+}
+
+/**
+ * One line per permission request and one per outcome, so an unattended run can be audited afterwards:
+ * which tool asked, what for, and how it was decided (allow with its scope, or deny with the reason).
+ */
+export function logPermission(summary: RunSummary, req: PermissionRequest, decision?: PermissionDecision): void {
+  const what = req.summary.replace(/\s+/g, ' ').slice(0, 160)
+  const tag = `run ${summary.id} permission ${req.id} agent=${req.agentId} tool=${req.toolName}`
+  if (!decision) {
+    log.info(`${tag} requested: ${what}`)
+    return
+  }
+  const outcome =
+    decision.behavior === 'allow'
+      ? `decision=allow scope=${decision.scope ?? 'once'}`
+      : `decision=deny reason="${decision.message.replace(/\s+/g, ' ').slice(0, 120)}"`
+  log.info(`${tag} ${outcome}: ${what}`)
 }

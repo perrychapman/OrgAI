@@ -20,7 +20,7 @@ import { architectRole } from '@shared/setup'
 import type { RuntimeAdapter, RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { logRunEvent } from '../log'
+import { logPermission, logRunEvent } from '../log'
 
 const FLUSH_INTERVAL_MS = 1500
 /** When a usage limit gives no reset time, try again after this long. */
@@ -293,8 +293,12 @@ export class RunManager {
     req: Omit<PermissionRequest, 'id' | 'runId'>
   ): Promise<PermissionDecision> {
     const request: PermissionRequest = { ...req, id: newId('perm'), runId: active.summary.id }
+    logPermission(active.summary, request)
     return new Promise((resolve) => {
-      active.pending.set(request.id, resolve)
+      active.pending.set(request.id, (decision) => {
+        logPermission(active.summary, request, decision)
+        resolve(decision)
+      })
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
     })
   }

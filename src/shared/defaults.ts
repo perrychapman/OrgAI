@@ -1,10 +1,17 @@
 import type { AppSettings, Project, Role, SetupKind, ToolName } from './types'
 import { DEFAULT_KEEP_RUNS } from './types'
 
+/** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
+export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
+export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
+/** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
+export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
+export const MAX_SUBAGENT_DEPTH_LIMIT = 5
+
 export const ROLE_COLORS = ['#7c5cff', '#2bb0ff', '#22c58b', '#f5a524', '#ff6b6b', '#e879f9', '#38bdf8', '#a3e635']
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  defaultPermissionMode: 'acceptEdits',
+  defaultPermissionMode: 'auto',
   defaultMaxBudgetUsd: undefined,
   defaultKeepRuns: DEFAULT_KEEP_RUNS,
   defaultIsolateWriters: true,
@@ -146,8 +153,8 @@ export function newProject(input: { name: string; path: string; brief: string; s
       provider: { id: 'claude', label: claudeProviderLabel(auth), auth },
       permissionMode: settings.defaultPermissionMode,
       maxBudgetUsd: settings.defaultMaxBudgetUsd,
-      maxSubagentDepth: 2,
-      maxConcurrentSubagents: 6,
+      maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
+      maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
       preferSonnetNearLimit: settings.defaultPreferSonnetNearLimit,
@@ -163,9 +170,9 @@ export function newProject(input: { name: string; path: string; brief: string; s
     path: input.path,
     brief: input.brief,
     provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' } },
-    permissionMode: 'acceptEdits',
-    maxSubagentDepth: 2,
-    maxConcurrentSubagents: 6,
+    permissionMode: 'auto',
+    maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
+    maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
     isolateWriters: true,
     roles: defaultRoles(),
     setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,

@@ -27,6 +27,17 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - In-process MCP tools (`createSdkMcpServer` + `tool` with zod shapes) surface as `mcp__<server>__<tool>` in
     `PreToolUse`, `canUseTool` and `tools` lists. Under `acceptEdits` they still hit `canUseTool`, so the Claude
     adapter auto-allows `mcp__orgai__*`. A handler may block indefinitely; the model receives its returned text.
+  - `PermissionMode` includes `'auto'` (a model classifier approves or denies each call and prompts through
+    `canUseTool` only when it cannot decide) and `'dontAsk'` (deny anything not pre-approved). Bare `allowedTools`
+    entries (e.g. `"WebSearch"`) approve the whole tool before `canUseTool` is consulted (warning
+    `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`). Verified in `scripts/smoke-network.mjs` on haiku with a Max login: a whole
+    spawn + ListAgents + SendMessage exchange ran under `auto` with zero `canUseTool` calls.
+  - `AgentInput.name` injected from `PreToolUse` (`updatedInput`) makes a spawned agent addressable: `ListAgents` lists
+    it as `worker-1 [ref] · worker · running`. The SendMessage input seen by hooks is
+    `{ to, message, summary, type: 'message', recipient, recipient_kind: 'name' | 'main', content }`. A subagent
+    cannot address the root by its role name: the main conversation's address is `"main"` ("No agent named
+    'orchestrator' is reachable"). Messages to a report are queued for its next tool round; if it already finished it
+    is resumed with the message. `network.ts` maps `main`/`orchestrator` to the root for the canvas.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
 - Worktree isolation (verified with `scripts/smoke-worktree.mjs`): `isolation: "worktree"` on an Agent call can be

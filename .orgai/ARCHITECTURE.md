@@ -25,7 +25,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, AppearanceSettings, IPC na
 
 ### Runtime core (provider-neutral)
 
-Adapter interfaces, harness MCP tools, role prompts, activity strings, permission scopes, WorktreeIntegrator, git worktree commit/merge, run manager, vendor-neutral usage mapping
+Adapter interfaces, harness MCP tools, role prompts, activity strings, permission scopes, agent handles and messages, WorktreeIntegrator, git worktree commit/merge, run manager, vendor-neutral usage mapping
 
 - `src/main/runtime/types.ts`
 - `src/main/runtime/harnessTools.ts`
@@ -33,6 +33,7 @@ Adapter interfaces, harness MCP tools, role prompts, activity strings, permissio
 - `src/main/runtime/activity.ts`
 - `src/main/runtime/integration.ts`
 - `src/main/runtime/permissionRules.ts`
+- `src/main/runtime/network.ts`
 - `src/main/runtime/runManager.ts`
 - `src/main/runtime/worktrees.ts`
 - `src/main/runtime/usage.ts`
@@ -107,7 +108,7 @@ SDK smoke tests (spend tokens), icon generation, Electron e2e flows run against 
 - Keep `npm run typecheck` clean for both tsconfigs. Paths are ./-relative with aliases @shared and @renderer. Never add baseUrl.
 - Every type that crosses IPC is defined in src/shared/types.ts and must be structured-clone safe. Wire new IPC through shared types, then main/ipc.ts, then preload/index.ts and index.d.ts, then the renderer.
 - The renderer only consumes normalized RunEvents. Vendor SDK details never leave runtime/<provider>.ts.
-- Adapters contain only event mapping and hook mechanics. Shared behaviour goes in harnessTools.ts, prompts.ts, activity.ts, integration.ts, permissionRules.ts or usage.ts, and mock.ts is updated to match.
+- Adapters contain only event mapping and hook mechanics. Shared behaviour goes in harnessTools.ts, prompts.ts, activity.ts, integration.ts, permissionRules.ts, network.ts or usage.ts, and mock.ts is updated to match.
 - usage.ts stays vendor-neutral and never imports the SDK. Mind the unit mismatch: usage responses give 0-100 percent and ISO resets, while rate_limit_event gives a 0-1 fraction and epoch seconds.
 - SDK spawns go through the adapter's EXECUTABLE_OPTION, and the native CLI stays in asarUnpack.
 - Styling uses design tokens only. Components reference CSS custom properties from tokens.css and never hardcode hex colors, shadows or radii. Every token must be defined for both the dark and light themes.

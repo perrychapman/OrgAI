@@ -72,6 +72,21 @@ describe('setupTools', () => {
     expect(ctx.requestProposal).not.toHaveBeenCalled()
   })
 
+  it('propose_settings accepts every permission mode, the new limits and allow rules', async () => {
+    const ctx = fakeCtx()
+    const tool = byName(setupTools(ctx), PROPOSAL_TOOLS.settings)
+    for (const permissionMode of ['auto', 'acceptEdits', 'default', 'dontAsk', 'plan', 'bypassPermissions']) {
+      await tool.call({ title: 'S', rationale: 'r', brief: 'b', permissionMode })
+    }
+    await expect(tool.call({ title: 'S', rationale: 'r', brief: 'b', permissionMode: 'yolo' })).rejects.toThrow()
+    await expect(tool.call({ title: 'S', rationale: 'r', brief: 'b', maxConcurrentSubagents: 33 })).rejects.toThrow()
+    await tool.call({ title: 'S', rationale: 'r', brief: 'b', maxConcurrentSubagents: 32, maxSubagentDepth: 5, allowRules: ['Bash(npm:*)'] })
+    const calls = vi.mocked(ctx.requestProposal).mock.calls
+    const last = calls[calls.length - 1][0] as Omit<Extract<Proposal, { kind: 'settings' }>, 'id' | 'runId' | 'createdAt'>
+    expect(last.payload).toMatchObject({ maxConcurrentSubagents: 32, maxSubagentDepth: 5, allowRules: ['Bash(npm:*)'] })
+    expect(calls).toHaveLength(7)
+  })
+
   it('propose_org_chart converts drafts to roles before proposing', async () => {
     const ctx = fakeCtx()
     const text = await byName(setupTools(ctx), PROPOSAL_TOOLS.orgChart).call({

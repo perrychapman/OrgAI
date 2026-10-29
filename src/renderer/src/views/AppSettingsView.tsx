@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, AppSettingsInfo, PermissionMode } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import ProviderAuthPicker from '../components/ProviderAuthPicker'
 
@@ -121,10 +121,11 @@ export default function AppSettingsView(): ReactElement {
                 value={info.defaultPermissionMode}
                 onChange={(e) => patch({ defaultPermissionMode: e.target.value as PermissionMode })}
               >
-                <option value="default">Ask for everything risky</option>
-                <option value="acceptEdits">Auto-accept file edits, ask for commands</option>
-                <option value="plan">Plan only (no changes)</option>
-                <option value="bypassPermissions">Bypass all permission prompts</option>
+                {PERMISSION_MODE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="field">

@@ -63,6 +63,34 @@ export function reportIsolationText(leads = false): string {
   )
 }
 
+/** Tools that let running agents talk to each other (Claude Agent SDK names, also in TOOL_CATALOG). */
+export const MESSAGE_TOOL = 'SendMessage'
+export const LIST_AGENTS_TOOL = 'ListAgents'
+
+/** For a role that spawns reports: every report has a handle and can be messaged instead of re-spawned. */
+export function networkLeadText(reports: Role[]): string {
+  const example = reports[0]?.slug ?? 'implementer'
+  const talkers = reports.filter((r) => r.tools.includes(MESSAGE_TOOL)).map((r) => r.slug)
+  return (
+    `Every report you spawn gets a handle: the harness names them by role in spawn order (${example}-1, ${example}-2) unless you pass name on the Agent call. ` +
+    `A running report is addressable by its handle with ${MESSAGE_TOOL}({to: handle, ...}); ${LIST_AGENTS_TOOL} lists the agents running now. ` +
+    (talkers.length
+      ? `Reports with ${MESSAGE_TOOL} (${talkers.join(', ')}) can message each other, and reach you by sending to "main" (your address is "main", not your role name). `
+      : '') +
+    `Use messages for hand-offs, follow-up instructions and questions to a report that is still running, rather than spawning a new one for the same work.`
+  )
+}
+
+/** For a report with SendMessage: coordinate with peers and the lead directly. */
+export function networkPeerText(): string {
+  return (
+    `You can talk to other running agents. ${LIST_AGENTS_TOOL} shows who is running and their handles (such as implementer-2); ` +
+    `${MESSAGE_TOOL}({to: handle, ...}) sends one a message. Use it for hand-offs (an interface you finished that a peer consumes), ` +
+    `short questions to your lead or a peer, and to say when something they depend on is ready. The orchestrator at the top is addressed as "main" ` +
+    `(not by its role name); a lead is addressed by its handle. Keep messages brief and specific; your final report still goes back to whoever spawned you.`
+  )
+}
+
 export function architectureText(architecturePath: string): string {
   return `The agreed architecture and conventions live in ${architecturePath}. Read it before changing code and follow it.`
 }
@@ -95,9 +123,11 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   if (reports.length) {
     parts.push(reportsText(reports))
     if (isolation && role.reportsTo === null) parts.push(orchestratorIsolationText())
+    if (!isSetup) parts.push(networkLeadText(reports))
   } else if (!isSetup) {
     parts.push('You have no reports. Do the assigned work yourself and report back concisely when finished.')
   }
+  if (!isSetup && role.reportsTo !== null && role.tools.includes(MESSAGE_TOOL)) parts.push(networkPeerText())
   if (isolation && role.reportsTo !== null && canWrite(role)) parts.push(reportIsolationText(reports.some(canWrite)))
   if (!isSetup) {
     const archPath = project.setup?.architecturePath

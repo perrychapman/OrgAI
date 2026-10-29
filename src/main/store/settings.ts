@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AppSettings, PermissionMode, ProviderAuth } from '@shared/types'
+import type { AppSettings, ProviderAuth } from '@shared/types'
+import { isPermissionMode } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
-
-const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan']
 
 /** Merge whatever is on disk (or sent by the renderer) over the defaults, dropping anything malformed. */
 export function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSettings {
@@ -20,9 +19,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
   const keep = Number(r.defaultKeepRuns)
   const threshold = Number(r.opusGuardThreshold)
   return {
-    defaultPermissionMode: PERMISSION_MODES.includes(r.defaultPermissionMode as PermissionMode)
-      ? (r.defaultPermissionMode as PermissionMode)
-      : d.defaultPermissionMode,
+    defaultPermissionMode: isPermissionMode(r.defaultPermissionMode) ? r.defaultPermissionMode : d.defaultPermissionMode,
     defaultMaxBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : d.defaultMaxBudgetUsd,
     defaultKeepRuns: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : d.defaultKeepRuns,
     defaultIsolateWriters: typeof r.defaultIsolateWriters === 'boolean' ? r.defaultIsolateWriters : d.defaultIsolateWriters,

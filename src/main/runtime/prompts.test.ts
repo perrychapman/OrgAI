@@ -66,8 +66,26 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, architecture, drift, org-change guidance, brief
-    expect(parts).toHaveLength(7)
+    // prompt, reports, isolation, network, architecture, drift, org-change guidance, brief
+    expect(parts).toHaveLength(8)
+  })
+
+  it('tells a lead its reports have handles it can message', () => {
+    const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
+    expect(text).toContain('engineer-1, engineer-2')
+    expect(text).toContain('SendMessage({to: handle')
+    expect(text).toContain('ListAgents lists the agents running now')
+    expect(text).not.toContain('can message each other and you')
+    const talkers = roles.map((r) => (r.id === 'r-eng' ? { ...r, tools: [...r.tools, 'SendMessage' as const] } : r))
+    expect(buildRolePrompt(talkers[0], talkers, project(), { isSetup: false, isolation: false })).toContain('Reports with SendMessage (engineer) can message each other and you.')
+  })
+
+  it('tells a report with SendMessage how to coordinate, and leaves others and setup alone', () => {
+    const talker = { ...eng, tools: [...eng.tools, 'SendMessage' as const, 'ListAgents' as const] }
+    expect(buildRolePrompt(talker, roles, project(), { isSetup: false, isolation: false })).toContain('You can talk to other running agents.')
+    expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).not.toContain('You can talk to other running agents.')
+    const architect = architectRole()
+    expect(buildRolePrompt(architect, [architect], project(), { isSetup: true, isolation: false })).not.toContain('SendMessage({to')
   })
 })
 

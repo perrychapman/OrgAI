@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
+import { isWholeToolRule } from '@shared/types'
 
 /**
  * Saved "always allow in this project" rules. They live where Claude Code keeps per-user project
@@ -67,6 +68,26 @@ export function removeRule(projectPath: string, rule: string): string[] {
   writeLocalSettings(projectPath, settings)
   return next
 }
+
+/** Shell rules that must never be saved as a blanket allow: destructive or privilege-raising commands. */
+const DESTRUCTIVE_SHELL = /^(rm|rmdir|del|rd|sudo|su|chmod|chown|mkfs|dd|shutdown|reboot|git\s+push|git\s+reset|git\s+clean|git\s+checkout|git\s+rebase|git\s+branch\s+-D|Remove-Item)(?![\w-])/i
+
+/**
+ * True for a rule the harness refuses to save from a proposal: a bare shell tool (every command), a
+ * wildcard-only shell rule, or one whose command starts with a destructive verb (rm, sudo, git push, git reset, ...).
+ */
+export function isUnsafeAllowRule(rule: string): boolean {
+  const m = /^([\w-]+)(?:\((.*)\))?$/.exec(rule.trim())
+  if (!m) return true
+  const [, tool, content] = m
+  if (!SHELL_TOOLS.has(tool)) return false
+  if (content === undefined) return true
+  const command = content.replace(/:\*$/, '').trim()
+  return !command || command === '*' || DESTRUCTIVE_SHELL.test(command)
+}
+
+/** Re-exported for main-process callers; the renderer imports it from @shared/types. */
+export { isWholeToolRule }
 
 /** `Bash(npm test:*)` style string for a rule. */
 export function ruleToString(rule: PermissionRuleSpec): string {

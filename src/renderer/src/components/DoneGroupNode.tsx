@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { memo } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
+import { MSG_IN, MSG_OUT } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
 import { formatCost } from '../lib/layout'
 
@@ -34,6 +35,8 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
   return (
     <div className={`done-group ${selected ? 'selected' : ''}`} style={{ ['--role' as string]: color }} title={names + (agents.length > 4 ? ', …' : '')}>
       <Handle type="target" position={Position.Top} />
+      <Handle id={MSG_OUT} type="source" position={Position.Right} className="msg-handle" isConnectable={false} />
+      <Handle id={MSG_IN} type="target" position={Position.Left} className="msg-handle" isConnectable={false} />
       <div className="done-group-main">
         <span className="done-count">
           <i /> {done} done
