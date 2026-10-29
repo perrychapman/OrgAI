@@ -41,6 +41,10 @@ const api: OrgAIApi = {
   },
   auth: {
     status: () => ipcRenderer.invoke(IPC.authStatus)
+  },
+  app: {
+    openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
+    logPath: () => ipcRenderer.invoke(IPC.appLogPath)
   }
 }
 

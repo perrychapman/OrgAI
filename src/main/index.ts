@@ -10,6 +10,10 @@ import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
 import { registerIpc } from './ipc'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
+import { installLogging } from './log'
+
+installLogging()
+if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 let runManager: RunManager | undefined
 
@@ -29,6 +33,8 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#0b0d12',
     title: 'OrgAI',
+    // Packaged builds take the icon from the executable; in development use the generated PNG.
+    ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', 'icon.png') }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       sandbox: false,

@@ -4,6 +4,7 @@ import { activeRun, selectedProject, useAppStore } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import LiveRunView from './views/LiveRunView'
+import LogsLink from './components/LogsLink'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -63,6 +64,7 @@ export default function App(): ReactElement {
             <span className="dot" />
             {auth == null ? 'Checking Claude login…' : auth.loggedIn ? `Claude · ${auth.method ?? 'logged in'}` : 'Claude not logged in'}
           </span>
+          <LogsLink />
         </div>
       </aside>
 

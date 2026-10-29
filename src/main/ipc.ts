@@ -1,5 +1,5 @@
 import { exec } from 'node:child_process'
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { DraftRequest, PermissionDecision, Project, ProposalDecision, SetupKind } from '@shared/types'
 import { IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
@@ -7,6 +7,7 @@ import type { RunManager } from './runtime/runManager'
 import type { SetupService } from './setup/service'
 import type { MaintenanceService } from './maintenance'
 import { draftOrgChart } from './ai/draft'
+import { log, logPath, logsDir } from './log'
 
 export function registerIpc(projects: ProjectStore, runs: RunManager, setup: SetupService, maintenance: MaintenanceService): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
@@ -72,6 +73,12 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
   ipcMain.handle(IPC.maintUninstall, (_e, projectId: string) => maintenance.uninstallRepo(projectId))
 
   ipcMain.handle(IPC.authStatus, () => authStatus())
+  ipcMain.handle(IPC.appLogPath, () => logPath())
+  ipcMain.handle(IPC.appOpenLogs, async () => {
+    logPath() // creates the folder if nothing has been logged yet
+    const error = await shell.openPath(logsDir())
+    if (error) log.warn(`Could not open logs folder: ${error}`)
+  })
 }
 
 type AuthStatus = { loggedIn: boolean; method?: string; detail?: string }

@@ -385,6 +385,12 @@ export interface OrgAIApi {
   auth: {
     status(): Promise<{ loggedIn: boolean; method?: string; detail?: string }>
   }
+  app: {
+    /** Open the main-process logs folder in the system file manager. */
+    openLogs(): Promise<void>
+    /** Absolute path of the current main-process log file. */
+    logPath(): Promise<string>
+  }
 }
 
 export const IPC = {
@@ -409,5 +415,7 @@ export const IPC = {
   maintIntegrate: 'maintenance:integrateWorktree',
   maintDiscard: 'maintenance:discardWorktree',
   maintUninstall: 'maintenance:uninstallRepo',
-  authStatus: 'auth:status'
+  authStatus: 'auth:status',
+  appOpenLogs: 'app:openLogs',
+  appLogPath: 'app:logPath'
 } as const

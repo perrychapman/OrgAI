@@ -16,6 +16,7 @@ import { architectRole } from '@shared/setup'
 import type { RuntimeAdapter, RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
+import { logRunEvent } from '../log'
 
 const FLUSH_INTERVAL_MS = 1500
 
@@ -99,6 +100,7 @@ export class RunManager {
         this.store.upsert(summary)
       }
       this.recordEvent(active, e)
+      logRunEvent(summary, e)
       this.broadcast(e)
     }
 
@@ -212,6 +214,7 @@ export class RunManager {
             this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
           } catch (e) {
             const message = (e as Error).message
+            logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             resolve({ behavior: 'revise', feedback: `The harness could not apply this proposal: ${message}` })
             return
