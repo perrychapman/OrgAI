@@ -10,6 +10,8 @@ asar: true
 # The SDK's native CLI must live outside the archive to be spawned; the adapter points the SDK at it.
 asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk-*/**
+  # The Codex app-server binary (resolveCodexBinary rewrites app.asar to app.asar.unpacked).
+  - node_modules/@openai/codex-*/**
 npmRebuild: false
 # build/icon.png (512x512, from `npm run icon`) is converted to ICO/ICNS by electron-builder.
 icon: build/icon.png
@@ -27,10 +29,27 @@ nsis:
   artifactName: ${productName}-Setup-${version}.${ext}
 portable:
   artifactName: ${productName}-Portable-${version}.${ext}
-# mac and linux are configured but untested.
+# mac is configured but untested (see docs/macos-testing.md); linux likewise.
+# Separate arm64 and x64 builds rather than a universal binary: the native claude and codex CLIs are per-arch
+# optional dependencies (@anthropic-ai/claude-agent-sdk-darwin-<arch>, @openai/codex-darwin-<arch>), so a universal
+# build would need both architectures installed and merged. Build each arch on a machine with its optional deps
+# (`npm ci` on that arch, or `npm install --os=darwin --cpu=x64`).
 mac:
-  target: dmg
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
   category: public.app-category.developer-tools
+  icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Unsigned local test build: run with CSC_IDENTITY_AUTO_DISCOVERY=false (or uncomment `identity: null`).
+  # The app then needs right-click > Open the first time. For a distributable build set CSC_LINK/CSC_KEY_PASSWORD
+  # and the notarization variables (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID).
+  # identity: null
 dmg:
   artifactName: ${productName}-${version}.${ext}
 linux:

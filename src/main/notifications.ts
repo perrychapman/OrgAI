@@ -78,6 +78,10 @@ export class Notifier {
     if (isRequest && process.platform === 'win32') {
       for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.flashFrame(true)
     }
+    // macOS: bounce the Dock icon until the user returns (no-op when the app is frontmost, which we ruled out above).
+    if (isRequest && process.platform === 'darwin') app.dock?.bounce('critical')
+    // macOS shows notifications only after the user allows them (System Settings > Notifications > OrgAI). An
+    // unsigned or ad-hoc build may be listed under Electron or not at all; a signed build is reliable.
     if (!this.enabled || !Notification.isSupported()) return
 
     const notification = new Notification({

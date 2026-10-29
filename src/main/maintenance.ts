@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
 import type { ProjectStore } from './store/projects'
@@ -70,7 +70,10 @@ export class MaintenanceService {
       removed.push(ARCHITECTURE_PATH)
       const dir = join(root, '.orgai')
       try {
-        if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir)
+        if (existsSync(dir) && readdirSync(dir).filter((n) => n !== '.DS_Store').length === 0) {
+          rmSync(join(dir, '.DS_Store'), { force: true }) // Finder litter on macOS
+          rmdirSync(dir)
+        }
       } catch {
         /* leave it */
       }
