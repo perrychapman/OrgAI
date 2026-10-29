@@ -826,6 +826,8 @@ class ClaudeSession implements RuntimeSession {
       hooks: this.buildHooks(),
       // stream_event messages drive the live "agent.partial" text; transcripts still come from complete messages.
       includePartialMessages: true,
+      // Subagent text and thinking are not forwarded by default; the nested transcripts need them.
+      forwardSubagentText: true,
       abortController: this.abort,
       env,
       stderr: (data) => {
