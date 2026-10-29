@@ -48,6 +48,7 @@ export default function ProposalCard({ proposal, onDecide }: Props): ReactElemen
         {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
         {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} />}
         {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
+        {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} />}
       </div>
       <div className="proposal-note">{APPLY_NOTE[proposal.kind]}</div>
       {revising && (
@@ -234,5 +235,66 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
         </Section>
       )}
     </>
+  )
+}
+
+/** Agent text is untrusted: plain text, clamped, never a link or Markdown. */
+function ClampText({ text }: { text: string }): ReactElement {
+  const [open, setOpen] = useState(false)
+  const long = text.length > 240 || text.split('\n').length > 4
+  return (
+    <>
+      <p className={`mcp-prop-text${long && !open ? ' clamped' : ''}`}>{text}</p>
+      {long && (
+        <button type="button" className="mcp-link" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </>
+  )
+}
+
+function McpServersBody({ payload }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload'] }): ReactElement {
+  const remove = payload.remove ?? []
+  const secrets = payload.secrets ?? []
+  return (
+    <div className="mcp-prop">
+      <ClampText text={payload.rationale} />
+      {payload.upsert.map((s) => {
+        const target = s.transport === 'stdio' ? [s.command ?? '', ...(s.args ?? [])].join(' ').trim() : (s.url ?? '')
+        const slots = secrets.filter((x) => x.serverId === s.id).map((x) => x.name)
+        const secretNames = slots.length > 0 ? slots : [...(s.secretEnv ?? []), ...(s.secretHeaders ?? [])]
+        return (
+          <div key={s.id} className="mcp-prop-server" data-server={s.name}>
+            <div className="mcp-prop-head">
+              <strong>{s.name}</strong>
+              <span className="chip">{s.transport}</span>
+              {s.registry && <span className="chip">{`${s.registry.registryType} ${s.registry.identifier}@${s.registry.version}`}</span>}
+            </div>
+            {s.description && <ClampText text={s.description} />}
+            <div className="code-block">{target}</div>
+            <div className="mono-dim">roles: {s.roles === undefined ? 'every role' : s.roles.length > 0 ? s.roles.join(', ') : 'none'}</div>
+            {s.env && Object.keys(s.env).length > 0 && (
+              <div className="mono-dim">
+                env:{' '}
+                {Object.entries(s.env)
+                  .map(([k, v]) => `${k}=${v}`)
+                  .join(', ')}
+              </div>
+            )}
+            {secretNames.length > 0 && <div className="mono-dim">secrets to set after approving: {secretNames.join(', ')}</div>}
+          </div>
+        )
+      })}
+      {remove.length > 0 && (
+        <Section title="Remove">
+          <div className="proposal-rules">
+            {remove.map((id) => (
+              <code key={id}>{id}</code>
+            ))}
+          </div>
+        </Section>
+      )}
+    </div>
   )
 }
