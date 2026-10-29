@@ -8,3 +8,4 @@ scripts/*.log
 *.tsbuildinfo
 .claude/worktrees/
 .claude/settings.local.json
+e2e/shots/
