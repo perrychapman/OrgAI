@@ -15,7 +15,6 @@
     "icon": "node scripts/make-icon.mjs",
     "dist": "npm run build && electron-builder --win",
     "dist:dir": "npm run build && electron-builder --dir",
-    "test": "vitest run",
     "test:watch": "vitest",
     "e2e:free": "node e2e/layout.mjs && node e2e/maintenance.mjs"
   },
