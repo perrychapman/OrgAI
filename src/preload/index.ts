@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppSettings, DraftRequest, FocusRunTarget, OrgAIApi, PermissionDecision, Project, RunEvent } from '../shared/types'
+import type {
+  AppSettings,
+  ContinueRunInput,
+  DraftRequest,
+  FocusRunTarget,
+  OrgAIApi,
+  PermissionDecision,
+  Project,
+  RunEvent,
+  SendRunInput,
+  StartRunInput
+} from '../shared/types'
 import { IPC } from '../shared/types'
 
 const api: OrgAIApi = {
@@ -15,15 +26,15 @@ const api: OrgAIApi = {
     orgChart: (req: DraftRequest) => ipcRenderer.invoke(IPC.draftOrgChart, req)
   },
   runs: {
-    start: (input) => ipcRenderer.invoke(IPC.runsStart, input),
-    send: (input) => ipcRenderer.invoke(IPC.runsSend, input),
+    start: (input: StartRunInput) => ipcRenderer.invoke(IPC.runsStart, input),
+    send: (input: SendRunInput) => ipcRenderer.invoke(IPC.runsSend, input),
     interrupt: (runId: string) => ipcRenderer.invoke(IPC.runsInterrupt, runId),
     stop: (runId: string) => ipcRenderer.invoke(IPC.runsStop, runId),
     list: (projectId: string) => ipcRenderer.invoke(IPC.runsList, projectId),
     get: (runId: string) => ipcRenderer.invoke(IPC.runsGet, runId),
     decide: (input: { runId: string; requestId: string; decision: PermissionDecision }) =>
       ipcRenderer.invoke(IPC.runsDecide, input),
-    continue: (input) => ipcRenderer.invoke(IPC.runsContinue, input),
+    continue: (input: ContinueRunInput) => ipcRenderer.invoke(IPC.runsContinue, input),
     decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId)
