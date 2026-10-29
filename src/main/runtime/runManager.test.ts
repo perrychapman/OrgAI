@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Project, Proposal, RunEvent } from '@shared/types'
+import type { ImageAttachment, Project, Proposal, RunEvent } from '@shared/types'
+import type { RuntimeAdapter, RuntimeContext } from './types'
 import { RESUME_TEXT, RunManager, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript } from './mock'
 import { RunStore } from '../store/runs'
@@ -11,7 +12,7 @@ import { project as makeProject } from './testHelpers'
 import { SET_PLAN_NUDGE, limitReachedText } from './continuation'
 
 // The real logger writes under Electron's userData; tests have no Electron.
-vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {} }))
+vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
 
 let dir: string
 let events: RunEvent[]
@@ -70,6 +71,74 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('RunManager image attachments', () => {
+  const PNG = 'iVBORw0KGgo='
+  const good: ImageAttachment = { mediaType: 'image/png', data: PNG, name: 'a.png' }
+  const bad = { mediaType: 'image/svg+xml', data: PNG } as unknown as ImageAttachment
+
+  function fake(live = false) {
+    const ctxs: RuntimeContext[] = []
+    const sends: Array<[string, ImageAttachment[] | undefined]> = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: `s-${ctxs.length}` })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return {
+          send: async (text, images) => void sends.push([text, images]),
+          interrupt: async () => {},
+          stop: async () => {},
+          finished: live ? new Promise<void>(() => {}) : Promise.resolve()
+        }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+    return { m, p, ctxs, sends }
+  }
+
+  it('sanitizes images on start and passes only valid ones', async () => {
+    const { m, p, ctxs } = fake()
+    await m.start({ project: p, prompt: 'look', images: [good, bad] })
+    expect(ctxs[0].images).toEqual([good])
+    await m.start({ project: p, prompt: 'none', images: [bad] })
+    expect(ctxs[1].images).toBeUndefined()
+    await m.start({ project: p, prompt: 'plain' })
+    expect(ctxs[2].images).toBeUndefined()
+  })
+
+  it('threads images through send and rejects empty sends', async () => {
+    const { m, p, sends } = fake(true)
+    const run = await m.start({ project: p, prompt: 'go' })
+    await m.send(run.id, 'hi', [good, bad])
+    await m.send(run.id, '', [good])
+    await m.send(run.id, 'text only')
+    expect(sends).toEqual([
+      ['hi', [good]],
+      ['', [good]],
+      ['text only', undefined]
+    ])
+    await expect(m.send(run.id, '  ', [bad])).rejects.toThrow('Nothing to send')
+    await expect(m.send(run.id, '')).rejects.toThrow('Nothing to send')
+    expect(sends).toHaveLength(3)
+  })
+
+  it('continueRun accepts image-only input and rejects empty', async () => {
+    const { m, p, ctxs } = fake()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const next = await m.continueRun(p, run.id, '', [good, bad])
+    expect(ctxs[1].images).toEqual([good])
+    expect(ctxs[1].resumeSessionId).toBe('s-1')
+    expect(next.prompt).toBe('')
+    await expect(m.continueRun(p, run.id, '   ', [bad])).rejects.toThrow('Nothing to send')
+    await expect(m.continueRun(p, run.id, '')).rejects.toThrow('Nothing to send')
+    await m.continueRun(p, run.id, 'again')
+    expect(ctxs[2].images).toBeUndefined()
+  })
 })
 
 describe('RunManager with the mock adapter', () => {
