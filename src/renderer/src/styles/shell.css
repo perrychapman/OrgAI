@@ -140,6 +140,7 @@
 }
 
 .main {
+  container-type: inline-size;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -160,8 +161,10 @@
   margin: 0;
   font-weight: var(--weight-semibold);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .topbar .pill {
+  white-space: nowrap;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -183,6 +186,8 @@
   border-radius: var(--radius-md);
   padding: 3px;
   gap: 2px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .tabs button {
   border: 0;
