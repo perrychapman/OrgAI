@@ -17,6 +17,7 @@ import { activeRun, useAppStore } from '../store/useAppStore'
 import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
+import QuestionCard from '../components/QuestionCard'
 import { formatCost, treeLayout } from '../lib/layout'
 
 const SCAFFOLD_PROMPT =
@@ -49,6 +50,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const continueRun = useAppStore((s) => s.continueRun)
   const composerFocusToken = useAppStore((s) => s.composerFocusToken)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const answerQuestion = useAppStore((s) => s.answerQuestion)
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -200,8 +202,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           </div>
         )}
 
-        {run && run.proposals.length > 0 && (
+        {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0) && (
           <div className="proposals">
+            {(run.questions ?? []).map((q) => (
+              <QuestionCard key={q.id} question={q} onAnswer={(a) => void answerQuestion(q.id, a)} />
+            ))}
             {run.proposals.map((p) => (
               <ProposalCard key={p.id} proposal={p} onDecide={(d) => void decideProposal(p.id, d)} />
             ))}
@@ -209,7 +214,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length ? { right: 'auto', left: 12, top: 56 } : undefined}>
+          <div className="permissions" style={run.proposals.length || run.questions?.length ? { right: 'auto', left: 12, top: 56 } : undefined}>
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>

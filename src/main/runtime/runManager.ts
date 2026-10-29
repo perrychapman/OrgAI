@@ -6,10 +6,12 @@ import type {
   Proposal,
   ProposalDecision,
   ProviderId,
+  QuestionAnswer,
   RunEvent,
   RunKind,
   RunRecord,
-  RunSummary
+  RunSummary,
+  UserQuestion
 } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { architectRole } from '@shared/setup'
@@ -24,6 +26,7 @@ interface ActiveRun {
   session?: RuntimeSession
   pending: Map<string, (d: PermissionDecision) => void>
   pendingProposals: Map<string, (d: ProposalDecision) => void>
+  pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
   record: RunRecord
   flushTimer?: ReturnType<typeof setTimeout>
@@ -98,6 +101,7 @@ export class RunManager {
       summary,
       pending: new Map(),
       pendingProposals: new Map(),
+      pendingQuestions: new Map(),
       record: { summary, agents: {}, transcript: [], logs: [] }
     }
     this.runs.set(summary.id, active)
@@ -139,6 +143,11 @@ export class RunManager {
         emit,
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) => this.requestProposal(active, req),
+        requestQuestion: (req) => this.requestQuestion(active, req),
+        noteArchitectureUpdated: async () => {
+          const updated = this.setup.markArchitectureUpdated(project.id)
+          this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
+        },
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
@@ -149,6 +158,11 @@ export class RunManager {
         active.pending.clear()
         for (const resolve of active.pendingProposals.values()) resolve({ behavior: 'revise', feedback: 'Run ended' })
         active.pendingProposals.clear()
+        for (const [questionId, q] of active.pendingQuestions) {
+          q.resolve({ selected: [] })
+          this.broadcast({ type: 'question.resolved', runId: summary.id, questionId, answer: { selected: [] } })
+        }
+        active.pendingQuestions.clear()
         this.flush(active)
         this.runs.delete(summary.id)
         this.store.prune(this.keepRunsFor)
@@ -248,6 +262,32 @@ export class RunManager {
     active.pendingProposals.delete(proposalId)
     resolve(decision)
     this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
+  }
+
+  private requestQuestion(
+    active: ActiveRun,
+    req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>
+  ): Promise<QuestionAnswer> {
+    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now() }
+    return new Promise((resolve) => {
+      active.pendingQuestions.set(question.id, { question, resolve })
+      this.broadcast({ type: 'question.request', runId: active.summary.id, question })
+    })
+  }
+
+  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer): void {
+    const active = this.runs.get(runId)
+    const pending = active?.pendingQuestions.get(questionId)
+    if (!active || !pending) return
+    active.pendingQuestions.delete(questionId)
+    // Only labels that were offered count; a single-choice question keeps the first.
+    const labels = new Set(pending.question.options.map((o) => o.label))
+    let selected = (Array.isArray(answer?.selected) ? answer.selected : []).filter((l) => typeof l === 'string' && labels.has(l))
+    if (!pending.question.allowMultiple) selected = selected.slice(0, 1)
+    const text = pending.question.allowFreeText && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
+    const clean: QuestionAnswer = text ? { selected, text } : { selected }
+    pending.resolve(clean)
+    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
   }
 
   async send(runId: string, text: string): Promise<void> {

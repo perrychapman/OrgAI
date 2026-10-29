@@ -5,9 +5,11 @@ import type {
   Proposal,
   ProposalDecision,
   ProviderId,
+  QuestionAnswer,
   Role,
   RunEvent,
-  RunSummary
+  RunSummary,
+  UserQuestion
 } from '@shared/types'
 
 /**
@@ -36,6 +38,10 @@ export interface RuntimeContext {
   requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>): Promise<ProposalDecision>
   /** Setup runs only: the Architect declares setup finished. */
   completeSetup(summary: string): Promise<void>
+  /** Setup runs only: ask the user a multiple-choice question. Resolves with their answer (empty if the run ends first). */
+  requestQuestion(req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>): Promise<QuestionAnswer>
+  /** Work runs: an agent edited the architecture document; record the time on the project. */
+  noteArchitectureUpdated(): Promise<void>
 }
 
 export interface RuntimeSession {

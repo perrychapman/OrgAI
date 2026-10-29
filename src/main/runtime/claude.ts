@@ -40,7 +40,8 @@ const PROPOSAL_ACTIVITY: Record<string, string> = {
   [PROPOSAL_TOOLS.architecture]: 'Proposing the architecture…',
   [PROPOSAL_TOOLS.orgChart]: 'Proposing the org chart…',
   [PROPOSAL_TOOLS.settings]: 'Proposing run settings…',
-  [PROPOSAL_TOOLS.complete]: 'Wrapping up setup…'
+  [PROPOSAL_TOOLS.complete]: 'Wrapping up setup…',
+  [PROPOSAL_TOOLS.question]: 'Asking you a question…'
 }
 
 /** A push-based async iterable used as the SDK's streaming prompt input. */
@@ -140,6 +141,11 @@ function buildRolePrompt(role: Role, roles: Role[], project: Project, isSetup: b
   if (!isSetup) {
     if (project.setup?.architecturePath) {
       parts.push(`The agreed architecture and conventions live in ${project.setup.architecturePath}. Read it before changing code and follow it.`)
+      if (role.reportsTo === null) {
+        parts.push(
+          `When a task changes the stack, module layout, conventions or commands, update ${project.setup.architecturePath} in the same run so it stays true, and mention the update in your report.`
+        )
+      }
     }
     if (project.brief.trim()) parts.push(`About this project:\n${project.brief.trim()}`)
   }
@@ -270,6 +276,30 @@ function buildSetupServer(ctx: RuntimeContext, onDecided: () => void): McpSdkSer
         }
       ),
       tool(
+        PROPOSAL_TOOLS.question,
+        'Ask the user to choose between options. Blocks until they answer and returns the chosen labels plus any note they typed. Use prose for open-ended questions.',
+        {
+          question: z.string().describe('The question, one or two sentences'),
+          options: z
+            .array(z.object({ label: z.string().describe('Short option label'), description: z.string().optional().describe('One line on what this option means') }))
+            .min(2)
+            .max(6),
+          allowMultiple: z.boolean().optional().describe('Let the user pick more than one option; default false'),
+          allowFreeText: z.boolean().optional().describe('Offer a free-text box for notes or another answer; default true')
+        },
+        async ({ question, options, allowMultiple, allowFreeText }) => {
+          const answer = await ctx.requestQuestion({
+            agentId: ROOT_ID,
+            question,
+            options,
+            allowMultiple: allowMultiple ?? false,
+            allowFreeText: allowFreeText ?? true
+          })
+          onDecided()
+          return reply(answerText(answer))
+        }
+      ),
+      tool(
         PROPOSAL_TOOLS.complete,
         'Mark setup complete once the architecture, org chart and settings are all approved.',
         { summary: z.string().describe('What was decided and what the user should do next, under 120 words') },
@@ -285,6 +315,22 @@ function buildSetupServer(ctx: RuntimeContext, onDecided: () => void): McpSdkSer
       )
     ]
   })
+}
+
+function answerText(answer: { selected: string[]; text?: string }): string {
+  const parts: string[] = []
+  if (answer.selected.length) parts.push(answer.selected.join(', '))
+  if (answer.text?.trim()) parts.push(answer.selected.length ? `Note from the user: ${answer.text.trim()}` : answer.text.trim())
+  return parts.length ? parts.join('\n') : 'The user did not answer (the session may be ending). Ask again in prose if it still matters.'
+}
+
+/** True when a tool's file_path points at the project's architecture document (in the main checkout or a worktree). */
+function isArchitectureFile(filePath: unknown, architecturePath: string): boolean {
+  if (typeof filePath !== 'string' || !filePath) return false
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()
+  const file = norm(filePath)
+  const target = norm(architecturePath)
+  return file === target || file.endsWith(`/${target}`)
 }
 
 function permissionKey(toolName: string, input: unknown): string {
@@ -596,6 +642,14 @@ class ClaudeSession implements RuntimeSession {
       const agentId = input.agent_id ?? ROOT_ID
       // Calls that never needed a permission prompt still leave an issuer queued; drop it now.
       this.takeIssuer(permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>), agentId)
+      const archPath = this.ctx.project.setup?.architecturePath
+      if (!this.isSetup && archPath && (input.tool_name === 'Edit' || input.tool_name === 'Write')) {
+        const filePath = ((input.tool_input ?? {}) as Record<string, unknown>).file_path
+        if (isArchitectureFile(filePath, archPath)) {
+          this.log('info', `${this.agents.get(agentId)?.name ?? agentId} updated ${archPath}`)
+          void this.ctx.noteArchitectureUpdated().catch((e) => this.log('warn', `Could not record the architecture update: ${(e as Error).message}`))
+        }
+      }
       const a = this.agents.get(agentId)
       if (a && a.state !== 'done' && a.state !== 'error') this.setState(agentId, 'thinking', 'Thinking…')
       return {}

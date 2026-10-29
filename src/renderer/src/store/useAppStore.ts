@@ -9,11 +9,13 @@ import type {
   Project,
   Proposal,
   ProposalDecision,
+  QuestionAnswer,
   Role,
   RunEvent,
   RunSummary,
   SetupKind,
-  TranscriptEntry
+  TranscriptEntry,
+  UserQuestion
 } from '@shared/types'
 
 export type View = 'projects' | 'settings' | 'run' | 'appSettings'
@@ -31,11 +33,13 @@ export interface RunState {
   transcript: TranscriptEntry[]
   permissions: PermissionRequest[]
   proposals: Proposal[]
+  /** Open ask_user questions from the Architect. */
+  questions: UserQuestion[]
   logs: LogLine[]
 }
 
 function emptyRun(summary: RunSummary): RunState {
-  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], logs: [] }
+  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], logs: [] }
 }
 
 interface AppState {
@@ -82,6 +86,7 @@ interface AppState {
   stopRun(): Promise<void>
   decide(requestId: string, decision: PermissionDecision): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
+  answerQuestion(questionId: string, answer: QuestionAnswer): Promise<void>
   handleEvent(e: RunEvent): void
 
   draftOrgChart(req: Omit<DraftRequest, 'projectId'>): Promise<void>
@@ -211,7 +216,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId)
       if (!record) return
       set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], logs: record.logs } }
+        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], logs: record.logs } }
       }))
     }
     set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run' }))
@@ -291,6 +296,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (run) await window.orgai.setup.decide({ runId: run.summary.id, proposalId, decision })
   },
 
+  async answerQuestion(questionId, answer) {
+    const run = activeRun(get())
+    if (run) await window.orgai.setup.answer({ runId: run.summary.id, questionId, answer })
+  },
+
   handleEvent(e) {
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
@@ -336,6 +346,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'proposal.resolved':
           run.proposals = run.proposals.filter((p) => p.id !== e.proposalId)
+          break
+        case 'question.request':
+          run.questions = [...(run.questions ?? []), e.question]
+          break
+        case 'question.resolved':
+          run.questions = (run.questions ?? []).filter((q) => q.id !== e.questionId)
           break
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
