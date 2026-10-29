@@ -11,10 +11,23 @@ export function decodedLength(b64: string): number {
   return Math.floor((chars * 3) / 4)
 }
 
+/** Detect a supported image type from the leading magic bytes of base64 data; null when unrecognised. */
+export function sniffImageType(b64: string): ImageMediaType | null {
+  const b = Buffer.from(b64.slice(0, 16), 'base64')
+  let type: ImageMediaType | null = null
+  if (b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) type = 'image/png'
+  else if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) type = 'image/jpeg'
+  else if (b.length >= 4 && b.toString('latin1', 0, 4) === 'GIF8') type = 'image/gif'
+  else if (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') type = 'image/webp'
+  return type && (SUPPORTED_IMAGE_TYPES as readonly string[]).includes(type) ? type : null
+}
+
 /**
  * Validate images from the renderer (untrusted IPC input) before they reach a provider or the store.
  * Never throws. Each dropped image produces one `warn` naming the reason. A stray `data:<type>;base64,`
- * prefix is stripped and accepted (the declared mediaType still decides support). Returns fresh plain
+ * prefix is stripped and accepted. The bytes decide the type: the magic bytes (PNG, JPEG, GIF, WebP) are sniffed,
+ * and a declared mediaType that differs (even a different or unknown string) is corrected with a warning.
+ * Data that is not a supported image is dropped. Returns fresh plain
  * objects so nothing unexpected is persisted.
  */
 export function sanitizeImages(images: unknown, warn: (message: string) => void = () => {}): ImageAttachment[] {
@@ -36,7 +49,7 @@ export function sanitizeImages(images: unknown, warn: (message: string) => void 
       warn(`Dropped ${label(name)}: more than ${MAX_IMAGES_PER_MESSAGE} images in one message`)
       return
     }
-    if (typeof r.mediaType !== 'string' || !(SUPPORTED_IMAGE_TYPES as readonly string[]).includes(r.mediaType)) {
+    if (typeof r.mediaType !== 'string') {
       warn(`Dropped ${label(name)}: unsupported media type ${String(r.mediaType)}`)
       return
     }
@@ -53,7 +66,15 @@ export function sanitizeImages(images: unknown, warn: (message: string) => void 
       warn(`Dropped ${label(name)}: larger than ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB`)
       return
     }
-    const image: ImageAttachment = { mediaType: r.mediaType as ImageMediaType, data }
+    const sniffed = sniffImageType(data)
+    if (!sniffed) {
+      warn(`Dropped ${label(name)}: data is not a supported image`)
+      return
+    }
+    if (sniffed !== r.mediaType) {
+      warn(`Corrected ${label(name)}: declared ${r.mediaType} but data is ${sniffed}`)
+    }
+    const image: ImageAttachment = { mediaType: sniffed, data }
     if (name) image.name = name
     out.push(image)
   })

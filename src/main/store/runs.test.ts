@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { RunRecord, RunSummary } from '@shared/types'
+import { createHash } from 'node:crypto'
+import type { ImageAttachment, RunRecord, RunSummary, TranscriptEntry } from '@shared/types'
 import { RunStore } from './runs'
 
 let dataDir: string
@@ -144,5 +145,92 @@ describe('RunStore', () => {
     writeFileSync(join(dataDir, 'runs', 'notes.txt'), 'not a record', 'utf8')
     expect(s.sweepOrphans()).toBe(1)
     expect(recordFiles()).toEqual(['kept.json', 'notes.txt'])
+  })
+})
+
+describe('RunStore image store', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString('base64')
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]).toString('base64')
+  const sha = (b64: string): string => createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex')
+  const imagesDir = (id: string): string => join(dataDir, 'runs', id, 'images')
+  const userEntry = (id: string, images: ImageAttachment[]): TranscriptEntry => ({ id, agentId: 'root', at: 1, block: { kind: 'user', text: 'look', images } })
+  const imagesOf = (r: RunRecord, i = 0): ImageAttachment[] => {
+    const b = r.transcript[i].block
+    return b.kind === 'user' ? (b.images ?? []) : []
+  }
+
+  it('writes images to disk once and persists refs without data, leaving the input untouched', () => {
+    const s = new RunStore(dataDir)
+    const png: ImageAttachment = { mediaType: 'image/png', data: PNG, name: 'a.png' }
+    const rec = record(run('r1'), { transcript: [userEntry('e1', [png, { mediaType: 'image/jpeg', data: JPEG }]), userEntry('e2', [{ ...png }])] })
+    s.saveRecord(rec)
+    s.saveRecord(rec)
+    expect(png.data).toBe(PNG)
+    expect(png.ref).toBeUndefined()
+    expect(readdirSync(imagesDir('r1')).sort()).toEqual([`${sha(PNG)}.png`, `${sha(JPEG)}.jpg`].sort())
+    expect(readFileSync(join(imagesDir('r1'), `${sha(PNG)}.png`)).toString('base64')).toBe(PNG)
+    const raw = readFileSync(join(dataDir, 'runs', 'r1.json'), 'utf8')
+    expect(raw).not.toContain(PNG)
+    expect(imagesOf(JSON.parse(raw) as RunRecord)).toEqual([
+      { mediaType: 'image/png', data: '', name: 'a.png', ref: `${sha(PNG)}.png` },
+      { mediaType: 'image/jpeg', data: '', ref: `${sha(JPEG)}.jpg` }
+    ])
+  })
+
+  it('rehydrates data on load and drops refs; re-saving a loaded record keeps one file', () => {
+    const s = new RunStore(dataDir)
+    s.saveRecord(record(run('r1'), { transcript: [userEntry('e1', [{ mediaType: 'image/png', data: PNG, name: 'a.png' }])] }))
+    const got = new RunStore(dataDir).getRecord('r1')!
+    expect(imagesOf(got)).toEqual([{ mediaType: 'image/png', data: PNG, name: 'a.png' }])
+    s.saveRecord(got)
+    expect(readdirSync(imagesDir('r1'))).toEqual([`${sha(PNG)}.png`])
+  })
+
+  it('leaves data empty for a missing file or a ref that escapes the store', () => {
+    const s = new RunStore(dataDir)
+    s.saveRecord(record(run('r1'), { transcript: [userEntry('e1', [{ mediaType: 'image/png', data: PNG }])] }))
+    rmSync(imagesDir('r1'), { recursive: true })
+    writeFileSync(join(dataDir, 'secret.png'), 'x')
+    const file = join(dataDir, 'runs', 'r1.json')
+    const onDisk = JSON.parse(readFileSync(file, 'utf8')) as RunRecord
+    imagesOf(onDisk).push({ mediaType: 'image/png', data: '', ref: '../../secret.png' })
+    writeFileSync(file, JSON.stringify(onDisk))
+    expect(imagesOf(s.getRecord('r1')!)).toEqual([
+      { mediaType: 'image/png', data: '' },
+      { mediaType: 'image/png', data: '' }
+    ])
+  })
+
+  it('loads legacy records with inline data unchanged', () => {
+    const legacy = record(run('old'), { transcript: [userEntry('e1', [{ mediaType: 'image/png', data: PNG }])] })
+    mkdirSync(join(dataDir, 'runs'), { recursive: true })
+    writeFileSync(join(dataDir, 'runs', 'old.json'), JSON.stringify(legacy))
+    expect(imagesOf(new RunStore(dataDir).getRecord('old')!)).toEqual([{ mediaType: 'image/png', data: PNG }])
+  })
+
+  it('deletes the images directory with the run (remove, prune, project removal, orphan sweep)', () => {
+    const s = new RunStore(dataDir)
+    const withImage = (id: string, over: Partial<RunSummary> = {}): void => {
+      const r = run(id, over)
+      s.upsert(r)
+      s.saveRecord(record(r, { transcript: [userEntry('e1', [{ mediaType: 'image/png', data: PNG }])] }))
+    }
+    withImage('gone')
+    s.removeRecord('gone')
+    expect(existsSync(join(dataDir, 'runs', 'gone'))).toBe(false)
+
+    withImage('old', { startedAt: 1 })
+    withImage('new', { startedAt: 5000 })
+    expect(s.prune(() => 1)).toBe(2) // drops 'gone' (still indexed) and 'old'
+    expect(existsSync(join(dataDir, 'runs', 'old'))).toBe(false)
+    expect(existsSync(imagesDir('new'))).toBe(true)
+
+    withImage('other', { projectId: 'p2' })
+    s.removeProject('p2')
+    expect(existsSync(join(dataDir, 'runs', 'other'))).toBe(false)
+
+    s.saveRecord(record(run('orphan'), { transcript: [userEntry('e1', [{ mediaType: 'image/png', data: PNG }])] }))
+    expect(s.sweepOrphans()).toBe(2) // orphan.json and orphan/
+    expect(recordFiles()).toEqual(['new', 'new.json'])
   })
 })

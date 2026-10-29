@@ -3,6 +3,10 @@ import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES } from '@shared/defaults'
 import { decodedLength, hasContent, sanitizeImages } from './attachments'
 
 const PNG = 'iVBORw0KGgo='
+const b64 = (b: Buffer | string): string => Buffer.from(b).toString('base64')
+const JPEG = b64(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46]))
+const GIF = b64(Buffer.concat([Buffer.from('GIF89a'), Buffer.from([1, 0, 1, 0])]))
+const WEBP = b64(Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x1a, 0, 0, 0]), Buffer.from('WEBPVP8 ')]))
 
 function collect() {
   const warnings: string[] = []
@@ -20,7 +24,7 @@ describe('sanitizeImages', () => {
   })
 
   it('omits name when absent or not a string', () => {
-    const out = sanitizeImages([{ mediaType: 'image/gif', data: PNG }, { mediaType: 'image/webp', data: PNG, name: 5 }])
+    const out = sanitizeImages([{ mediaType: 'image/gif', data: GIF }, { mediaType: 'image/webp', data: WEBP, name: 5 }])
     expect(out.map((i) => 'name' in i)).toEqual([false, false])
   })
 
@@ -41,7 +45,7 @@ describe('sanitizeImages', () => {
         null,
         'str',
         [],
-        { mediaType: 'image/svg+xml', data: PNG, name: 'x.svg' },
+        { mediaType: 'image/svg+xml', data: b64('<svg></svg>'), name: 'x.svg' },
         { mediaType: 'image/png' },
         { mediaType: 'image/png', data: '' },
         { mediaType: 'image/png', data: 42 },
@@ -55,8 +59,38 @@ describe('sanitizeImages', () => {
     expect(out).toEqual([{ mediaType: 'image/png', data: PNG, name: 'ok' }])
     expect(warnings).toHaveLength(10)
     expect(warnings[3]).toContain('x.svg')
-    expect(warnings[3]).toContain('unsupported')
+    expect(warnings[3]).toContain('not a supported image')
     expect(warnings[0]).toContain('image 1')
+  })
+
+  it('accepts all four signatures', () => {
+    const { warnings, warn } = collect()
+    const out = sanitizeImages(
+      [
+        { mediaType: 'image/png', data: PNG },
+        { mediaType: 'image/jpeg', data: JPEG },
+        { mediaType: 'image/gif', data: GIF },
+        { mediaType: 'image/webp', data: WEBP }
+      ],
+      warn
+    )
+    expect(out.map((i) => i.mediaType)).toEqual(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+    expect(warnings).toEqual([])
+  })
+
+  it('corrects a mismatched declared type with a warning', () => {
+    const { warnings, warn } = collect()
+    const out = sanitizeImages([{ mediaType: 'image/png', data: JPEG, name: 'x.png' }, { mediaType: 'image/bmp', data: PNG }], warn)
+    expect(out.map((i) => i.mediaType)).toEqual(['image/jpeg', 'image/png'])
+    expect(warnings[0]).toBe('Corrected image 1 (x.png): declared image/png but data is image/jpeg')
+    expect(warnings).toHaveLength(2)
+  })
+
+  it('drops non-image bytes with a warning', () => {
+    const { warnings, warn } = collect()
+    expect(sanitizeImages([{ mediaType: 'image/png', data: 'AAAA' }, { mediaType: 'image/webp', data: b64('RIFFxxxxWAVEfmt ') }], warn)).toEqual([])
+    expect(warnings).toHaveLength(2)
+    expect(warnings[0]).toContain('not a supported image')
   })
 
   it('strips a data URL prefix and whitespace', () => {
@@ -65,7 +99,7 @@ describe('sanitizeImages', () => {
   })
 
   it('enforces the decoded size limit without allocating', () => {
-    const atLimit = 'A'.repeat((MAX_IMAGE_BYTES / 3) * 4)
+    const atLimit = PNG.slice(0, 8) + 'A'.repeat((MAX_IMAGE_BYTES / 3) * 4 - 8)
     const over = 'A'.repeat((MAX_IMAGE_BYTES / 3) * 4 + 4)
     const { warnings, warn } = collect()
     const out = sanitizeImages([{ mediaType: 'image/png', data: atLimit }, { mediaType: 'image/png', data: over, name: 'big' }], warn)

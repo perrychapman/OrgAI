@@ -43,6 +43,10 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     cannot address the root by its role name: the main conversation's address is `"main"` ("No agent named
     'orchestrator' is reachable"). Messages to a report are queued for its next tool round; if it already finished it
     is resumed with the message. `network.ts` maps `main`/`orchestrator` to the root for the canvas.
+  - Images (`scripts/smoke-images.mjs`, haiku, Max login): a streaming-input session that starts with a text prompt
+    accepts a later user message whose `content` is `[{ type: 'image', source: { type: 'base64', media_type:
+    'image/png', data } }, { type: 'text', text }]`, exactly what `claude.ts` `send()` pushes via `userContent()`.
+    A 16x16 solid red PNG sent mid-session was answered "Red". Each turn emits its own `init` and `result`.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
 - Worktree isolation (verified with `scripts/smoke-worktree.mjs`): `isolation: "worktree"` on an Agent call can be
