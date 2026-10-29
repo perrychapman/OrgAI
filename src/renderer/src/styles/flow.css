@@ -1,0 +1,67 @@
+/* ---------- React Flow overrides (spec 6.2): variables first, then the few structural rules ---------- */
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-node-background-color: var(--node-bg);
+  --xy-node-border: 1px solid var(--border-default);
+  --xy-node-border-radius: var(--radius-lg);
+  --xy-node-color: var(--text-primary);
+  --xy-edge-stroke: var(--edge);
+  --xy-edge-stroke-width: 1.6;
+  --xy-edge-stroke-selected: var(--accent-text);
+  --xy-edge-label-color: var(--text-secondary);
+  --xy-edge-label-background-color: var(--surface-0);
+  --xy-connectionline-stroke: var(--accent-text);
+  --xy-handle-background-color: var(--surface-3);
+  --xy-handle-border-color: var(--border-strong);
+  --xy-background-pattern-color: var(--canvas-pattern);
+  --xy-background-pattern-dots-color-default: var(--canvas-pattern);
+  --xy-background-pattern-lines-color-default: var(--canvas-pattern);
+  --xy-controls-box-shadow: var(--elev-0);
+  --xy-controls-button-background-color: var(--surface-2);
+  --xy-controls-button-background-color-hover: var(--surface-3);
+  --xy-controls-button-color: var(--text-secondary);
+  --xy-controls-button-color-hover: var(--text-primary);
+  --xy-controls-button-border-color: var(--border-default);
+  --xy-minimap-background-color: var(--surface-2);
+  --xy-minimap-mask-background-color: color-mix(in oklab, var(--surface-0) 70%, transparent);
+  --xy-minimap-node-background-color: var(--surface-3);
+  --xy-attribution-background-color: transparent;
+  background: transparent;
+}
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__controls {
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--elev-0);
+}
+.react-flow__controls button {
+  background: var(--xy-controls-button-background-color);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  fill: var(--text-secondary);
+}
+.react-flow__controls button:hover {
+  background: var(--xy-controls-button-background-color-hover);
+}
+.react-flow__minimap {
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.react-flow__edge-path {
+  stroke-width: var(--xy-edge-stroke-width);
+}
+.react-flow__handle {
+  width: 9px;
+  height: 9px;
+  background: var(--xy-handle-background-color);
+  border: 2px solid var(--xy-handle-border-color);
+}
+.react-flow__node {
+  cursor: pointer;
+}

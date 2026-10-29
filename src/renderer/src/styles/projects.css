@@ -1,0 +1,72 @@
+/* ---------- Projects view ---------- */
+
+.projects {
+  padding: 24px;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 20px;
+  align-items: start;
+}
+.project-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.project-card {
+  cursor: pointer;
+  transition: border-color var(--dur-fast), transform var(--dur-fast);
+}
+.project-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.project-card h3 {
+  margin: 0 0 4px;
+  font-size: var(--text-title-sm);
+}
+.project-card .path {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-card .roles {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.project-card .roles span {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  display: inline-grid;
+  place-items: center;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-on-role);
+}
+
+/* ---------- Maintenance panel ---------- */
+
+.maint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.maint-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--text-small);
+}
+.maint-row code {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}

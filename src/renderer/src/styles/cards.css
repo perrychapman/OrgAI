@@ -1,0 +1,263 @@
+/* ---------- Permission cards ---------- */
+
+.permissions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: var(--z-tray);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 360px;
+}
+.permission {
+  background: var(--surface-3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  box-shadow: var(--elev-2);
+  animation: pop-in var(--dur-base) var(--ease-out) both;
+}
+.permission .who {
+  font-size: var(--text-caption);
+  color: var(--warning-text);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: var(--weight-semibold);
+}
+.permission .what {
+  margin: 4px 0 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  word-break: break-all;
+  max-height: 90px;
+  overflow: auto;
+}
+.permission .rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -4px 0 8px;
+  font-size: var(--text-caption);
+}
+.permission .rules code {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+
+/* ---------- Proposals (setup sessions) ---------- */
+
+.proposals {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: var(--z-sheet);
+  width: 520px;
+  max-width: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  pointer-events: none;
+}
+.proposal {
+  pointer-events: auto;
+  background: var(--surface-3);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  box-shadow: var(--elev-2);
+  animation: pop-in var(--dur-base) var(--ease-out) both;
+  font-size: var(--text-small);
+}
+.proposal.kind-architecture {
+  border-color: var(--info-border);
+}
+.proposal.kind-settings {
+  border-color: var(--success-border);
+}
+.proposal.kind-question {
+  border-color: var(--warning-border);
+}
+.proposal.merge-review {
+  border-color: var(--warning-border);
+}
+.proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: var(--text-body);
+}
+.proposal-body {
+  max-height: 46vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+.proposal-note {
+  margin-top: 10px;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.proposal-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.proposal-list code,
+.mono-dim {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.proposal-prompt {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  border: 1px solid var(--border-default);
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.proposal-role {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.proposal-role summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.proposal-role summary::-webkit-details-marker {
+  display: none;
+}
+.proposal-role-body {
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---------- Questions (ask_user during setup) ---------- */
+
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.question-option.selected {
+  border-color: var(--accent);
+}
+.question-option input {
+  margin-top: 2px;
+}
+.question-label {
+  display: block;
+  font-weight: var(--weight-semibold);
+}
+.question-desc {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+
+/* ---------- Merge review and diff view (review-before-merge) ---------- */
+
+.diff-view {
+  margin-top: 6px;
+}
+.diff-stat,
+.diff-patch {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+}
+.diff-patch {
+  max-height: 40vh;
+}
+.diff-patch .diff-add {
+  color: var(--success-text);
+  background: var(--diff-add-bg);
+}
+.diff-patch .diff-del {
+  color: var(--danger-text);
+  background: var(--diff-del-bg);
+}
+.diff-patch .diff-hunk {
+  color: var(--accent-text);
+}
+.diff-patch .diff-meta,
+.diff-patch .diff-file {
+  color: var(--text-secondary);
+}
+
+/* ---------- Usage-limit pause banner: bottom of the canvas, just above the composer ---------- */
+
+.pause-banner {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: var(--z-sheet);
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  box-shadow: var(--elev-2);
+  font-size: var(--text-small);
+}
+.pause-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.pause-title .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--warning);
+}
+.pause-reason {
+  color: var(--text-secondary);
+}
+.pause-when {
+  color: var(--warning-text);
+}
+.pause-error {
+  color: var(--danger-text);
+}
