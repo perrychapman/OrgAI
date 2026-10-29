@@ -352,7 +352,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         {run && status === 'paused' && <PauseBanner runId={run.summary.id} />}
 
         {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0) && (
-          <div className="proposals">
+          <div className="proposals" style={{ top: showStrip ? 96 : 56 }}>
             {(run.questions ?? []).map((q) => (
               <QuestionCard key={q.id} question={q} onAnswer={(a) => void answerQuestion(q.id, a)} />
             ))}
@@ -363,7 +363,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.mergeReviews?.length > 0 && (
-          <div className="proposals merge-reviews">
+          <div className="proposals merge-reviews" style={{ top: showStrip ? 96 : 56 }}>
             {run.mergeReviews.map((m) => (
               <MergeReviewCard key={m.id} review={m} onDecide={(d) => void decideMerge(m.id, d)} />
             ))}
@@ -371,7 +371,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length || run.questions?.length || run.mergeReviews?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : showStrip ? { top: 52 } : undefined}>
+          <div className="permissions" style={run.proposals.length || run.questions?.length || run.mergeReviews?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : { top: showStrip ? 96 : 56 }}>
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>
