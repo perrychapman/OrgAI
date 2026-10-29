@@ -1,4 +1,4 @@
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import {
   createSdkMcpServer,
   query,
@@ -18,37 +18,36 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import { z } from 'zod'
-import type { AgentInstance, MergeDecision, Project, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
-import { PROPOSAL_TOOLS } from '@shared/setup'
-import { toRoles } from '../ai/draft'
-import type { CompletionInput, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
-import { addRules, allowRuleStrings, deriveSuggestions, listRules, suggestionLabels } from './permissionRules'
-import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, isGitRepo, pendingWorktrees, prepareRepo } from './worktrees'
+import { ROOT_AGENT_ID, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
 import { PartialText } from './claudePartial'
+import { SETUP_TOOLS_INSTRUCTIONS, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { describeTool } from './activity'
+import { WorktreeIntegrator } from './integration'
 
-const INTEGRATE_TOOL = 'integrate_worktrees'
-const WRITE_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit'])
+/**
+ * The Claude adapter: maps Claude Agent SDK messages and hooks onto normalized RunEvents. Everything
+ * that is not SDK mechanics lives in the shared runtime modules: harness tools (harnessTools.ts),
+ * role prompts (prompts.ts), activity strings (activity.ts), worktree integration (integration.ts)
+ * and permission scopes (permissionRules.ts).
+ */
 
-function canWrite(role: Role): boolean {
-  return role.tools.some((t) => WRITE_TOOLS.has(t))
-}
-
-const ROOT_ID = 'root'
+const ROOT_ID = ROOT_AGENT_ID
 /** MCP server name for the harness's own tools; tool names surface as mcp__orgai__<name>. */
 const ORGAI_MCP = 'orgai'
 const ORGAI_TOOL_PREFIX = `mcp__${ORGAI_MCP}__`
 
-const PROPOSAL_ACTIVITY: Record<string, string> = {
-  [PROPOSAL_TOOLS.architecture]: 'Proposing the architecture…',
-  [PROPOSAL_TOOLS.orgChart]: 'Proposing the org chart…',
-  [PROPOSAL_TOOLS.settings]: 'Proposing run settings…',
-  [PROPOSAL_TOOLS.complete]: 'Wrapping up setup…',
-  [PROPOSAL_TOOLS.question]: 'Asking you a question…'
+/** Activity string for an SDK tool name; harness tools lose their MCP prefix first. */
+function describe(name: string, input: unknown): string {
+  if (name.startsWith(ORGAI_TOOL_PREFIX)) return describeTool(name.slice(ORGAI_TOOL_PREFIX.length), input, { harness: true })
+  return describeTool(name, input)
 }
 
 /** A push-based async iterable used as the SDK's streaming prompt input. */
@@ -80,85 +79,6 @@ class PushStream<T> implements AsyncIterable<T> {
   }
 }
 
-function describeTool(name: string, input: unknown): string {
-  const i = (input ?? {}) as Record<string, unknown>
-  const str = (k: string): string => (typeof i[k] === 'string' ? (i[k] as string) : '')
-  const file = (): string => basename(str('file_path') || str('path') || str('notebook_path') || '')
-  switch (name) {
-    case 'Read':
-      return `Reading ${file()}`
-    case 'Edit':
-      return `Editing ${file()}`
-    case 'Write':
-      return `Writing ${file()}`
-    case 'NotebookEdit':
-      return `Editing notebook ${file()}`
-    case 'Bash':
-      return `$ ${str('command').replace(/\s+/g, ' ').slice(0, 70)}`
-    case 'Grep':
-      return `Searching for "${str('pattern').slice(0, 40)}"`
-    case 'Glob':
-      return `Finding ${str('pattern').slice(0, 50)}`
-    case 'WebSearch':
-      return `Searching the web: ${str('query').slice(0, 50)}`
-    case 'WebFetch':
-      return `Fetching ${str('url').slice(0, 60)}`
-    case 'Agent':
-    case 'Task':
-      return `Delegating to ${str('subagent_type') || 'a subagent'}`
-    case 'TodoWrite':
-      return 'Updating task list'
-    default:
-      if (name.startsWith(ORGAI_TOOL_PREFIX)) return PROPOSAL_ACTIVITY[name.slice(ORGAI_TOOL_PREFIX.length)] ?? 'Talking to the harness'
-      return `Using ${name}`
-  }
-}
-
-function buildRolePrompt(role: Role, roles: Role[], project: Project, isSetup: boolean, isolation: boolean): string {
-  const parts: string[] = [role.prompt.trim()]
-  if (role.responsibilities.length) {
-    parts.push(`Your responsibilities:\n${role.responsibilities.map((r) => `- ${r}`).join('\n')}`)
-  }
-  const reports = roles.filter((r) => role.canSpawn && role.spawnable.includes(r.id))
-  if (reports.length) {
-    parts.push(
-      `You lead the following specialists. Delegate to them with the Agent tool, passing subagent_type exactly as written:\n` +
-        reports.map((r) => `- ${r.slug}: ${r.description}`).join('\n') +
-        `\nYou may only delegate to these roles. Give each delegate a complete, self-contained brief.`
-    )
-    if (isolation && role.reportsTo === null) {
-      parts.push(
-        `Parallel work is safe: every report that can edit files runs in its own git worktree, so you may delegate several tasks at once. ` +
-          `When a report finishes, the harness commits its branch and merges it into the main checkout, then tells you the result in a message. ` +
-          `If a merge conflicts, the branch is kept and you integrate it yourself: in the main checkout run git merge <branch>, resolve the conflicts, ` +
-          `then git worktree remove --force <path> and git branch -d <branch>; or commit your own changes and call ${INTEGRATE_TOOL} to retry. ` +
-          `Keep your own edits in the main checkout small while reports are running, commit them before retrying a merge, and verify the merged result (build, tests) before reporting to the user.`
-      )
-    }
-  } else if (!isSetup) {
-    parts.push('You have no reports. Do the assigned work yourself and report back concisely when finished.')
-  }
-  if (isolation && role.reportsTo !== null && canWrite(role)) {
-    parts.push(
-      `You work in an isolated git worktree of the repository, on your own branch. Edit only files inside your current working directory; ` +
-        `the main checkout is off limits and other reports cannot see your changes until they are merged. Do not run git merge, checkout, rebase or push. ` +
-        `You may commit as you go; the harness commits anything left over and merges your branch when you report back. List every file you changed in your report.`
-    )
-  }
-  if (!isSetup) {
-    if (project.setup?.architecturePath) {
-      parts.push(`The agreed architecture and conventions live in ${project.setup.architecturePath}. Read it before changing code and follow it.`)
-      if (role.reportsTo === null) {
-        parts.push(
-          `When a task changes the stack, module layout, conventions or commands, update ${project.setup.architecturePath} in the same run so it stays true, and mention the update in your report.`
-        )
-      }
-    }
-    if (project.brief.trim()) parts.push(`About this project:\n${project.brief.trim()}`)
-  }
-  return parts.join('\n\n')
-}
-
 function buildAgents(ctx: RuntimeContext, rootExtraTools: string[], isolation: boolean): Record<string, AgentDefinition> {
   const isSetup = ctx.run.kind === 'setup'
   const agents: Record<string, AgentDefinition> = {}
@@ -167,7 +87,7 @@ function buildAgents(ctx: RuntimeContext, rootExtraTools: string[], isolation: b
     if (role.canSpawn) tools.push(SPAWN_TOOL)
     const def: AgentDefinition = {
       description: role.description,
-      prompt: buildRolePrompt(role, ctx.roles, ctx.project, isSetup, isolation),
+      prompt: buildRolePrompt(role, ctx.roles, ctx.project, { isSetup, isolation }),
       tools,
       model: role.model || 'inherit'
     }
@@ -177,168 +97,16 @@ function buildAgents(ctx: RuntimeContext, rootExtraTools: string[], isolation: b
   return agents
 }
 
-/** Work-run harness tools: lets the orchestrator retry merging report branches after a conflict. */
-function buildWorkServer(root: string, integrate: (wt: { path: string; branch: string }) => Promise<string>): McpSdkServerConfigWithInstance {
+/** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
+function buildHarnessServer(tools: HarnessTool[], instructions?: string): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: ORGAI_MCP,
     version: '1.0.0',
-    tools: [
-      tool(
-        INTEGRATE_TOOL,
-        'Merge every report branch that is still waiting (left by a merge conflict or refusal) into the main checkout. Commit your own changes first. Returns the result per branch.',
-        {},
-        async () => {
-          const pending = await pendingWorktrees(root)
-          if (!pending.length) return { content: [{ type: 'text', text: 'No report branches are waiting.' }] }
-          const lines: string[] = []
-          for (const wt of pending) lines.push(await integrate(wt))
-          return { content: [{ type: 'text', text: lines.join('\n') }] }
-        }
-      )
-    ]
+    ...(instructions ? { instructions } : {}),
+    tools: tools.map((t) =>
+      tool(t.name, t.description, t.inputSchema.shape, async (args) => ({ content: [{ type: 'text' as const, text: await t.call(args) }] }))
+    )
   })
-}
-
-const draftRoleSchema = z.object({
-  name: z.string().describe('Human-readable role name'),
-  description: z.string().describe('One sentence telling a manager when to delegate to this role'),
-  responsibilities: z.array(z.string()),
-  prompt: z.string().describe('System prompt, second person, 60 to 160 words'),
-  tools: z.array(z.string()).describe('Subset of: Read, Glob, Grep, Edit, Write, Bash, WebSearch, WebFetch, TodoWrite, NotebookEdit'),
-  model: z.string().describe('One of: inherit, fable, opus, sonnet, haiku'),
-  canSpawn: z.boolean(),
-  spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
-  reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
-})
-
-/**
- * The harness's own tools, offered only to setup runs. Each proposal tool blocks until
- * the user decides and returns APPROVED or REVISE plus feedback so the Architect can iterate.
- */
-function buildSetupServer(ctx: RuntimeContext, onDecided: () => void): McpSdkServerConfigWithInstance {
-  const reply = (text: string): { content: { type: 'text'; text: string }[] } => ({ content: [{ type: 'text', text }] })
-  const decisionText = (d: { behavior: 'approve' } | { behavior: 'revise'; feedback: string }, applied: string): string =>
-    d.behavior === 'approve' ? `APPROVED. ${applied}` : `REVISE. The user asked for changes:\n${d.feedback}`
-
-  return createSdkMcpServer({
-    name: ORGAI_MCP,
-    version: '1.0.0',
-    instructions: 'Proposal tools for OrgAI setup. Each call blocks until the user decides; the result begins with APPROVED or REVISE.',
-    tools: [
-      tool(
-        PROPOSAL_TOOLS.architecture,
-        'Propose the project architecture: stack, modules, conventions, commands and risks. Blocks until the user approves or asks for changes.',
-        {
-          title: z.string().describe('Short title for the proposal card'),
-          summary: z.string().describe('Two to five sentences describing the architecture'),
-          stack: z.array(z.string()).describe('Languages, frameworks, services, one per entry'),
-          modules: z.array(z.object({ name: z.string(), purpose: z.string(), paths: z.array(z.string()) })),
-          conventions: z.array(z.string()).describe('Coding, testing, naming and workflow conventions'),
-          commands: z.array(z.object({ name: z.string(), command: z.string() })).describe('Build, test, lint, dev commands'),
-          risks: z.array(z.string()).describe('Gaps or risks the user should know about')
-        },
-        async ({ title, ...payload }) => {
-          const d = await ctx.requestProposal({ kind: 'architecture', agentId: ROOT_ID, title, payload })
-          onDecided()
-          return reply(decisionText(d, 'The architecture was saved and written to .orgai/ARCHITECTURE.md. Continue with the org chart.'))
-        }
-      ),
-      tool(
-        PROPOSAL_TOOLS.orgChart,
-        'Propose the org chart of agent roles. Blocks until the user approves or asks for changes.',
-        {
-          title: z.string(),
-          rationale: z.string().describe('Two or three sentences on why this structure fits the project'),
-          roles: z.array(draftRoleSchema)
-        },
-        async ({ title, rationale, roles }) => {
-          let converted
-          try {
-            converted = toRoles({ rationale, roles })
-          } catch (e) {
-            return reply(`REVISE. The org chart could not be validated: ${(e as Error).message}`)
-          }
-          const d = await ctx.requestProposal({ kind: 'orgChart', agentId: ROOT_ID, title, payload: { roles: converted, rationale } })
-          onDecided()
-          return reply(decisionText(d, 'The org chart was applied to the project. Continue with the settings.'))
-        }
-      ),
-      tool(
-        PROPOSAL_TOOLS.settings,
-        'Propose run settings and the project brief. Blocks until the user approves or asks for changes.',
-        {
-          title: z.string(),
-          rationale: z.string(),
-          brief: z.string().describe('Concise project brief every agent will read, 40 to 120 words'),
-          permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan']).optional(),
-          maxBudgetUsd: z.number().nullable().optional().describe('Spend cap per run in USD; null for no cap'),
-          maxSubagentDepth: z.number().int().min(1).max(5).optional(),
-          maxConcurrentSubagents: z.number().int().min(1).max(20).optional(),
-          isolateWriters: z.boolean().optional().describe('Run writing reports in their own git worktrees and merge them back; true for git repositories with more than one writing role'),
-          reviewMerges: z.boolean().optional().describe('Show the user each report\'s diff and wait for approval before merging it; only when the user wants to review changes')
-        },
-        async ({ title, ...payload }) => {
-          const d = await ctx.requestProposal({ kind: 'settings', agentId: ROOT_ID, title, payload })
-          onDecided()
-          return reply(decisionText(d, 'The settings were applied. If everything is approved, call complete_setup.'))
-        }
-      ),
-      tool(
-        PROPOSAL_TOOLS.question,
-        'Ask the user to choose between options. Blocks until they answer and returns the chosen labels plus any note they typed. Use prose for open-ended questions.',
-        {
-          question: z.string().describe('The question, one or two sentences'),
-          options: z
-            .array(z.object({ label: z.string().describe('Short option label'), description: z.string().optional().describe('One line on what this option means') }))
-            .min(2)
-            .max(6),
-          allowMultiple: z.boolean().optional().describe('Let the user pick more than one option; default false'),
-          allowFreeText: z.boolean().optional().describe('Offer a free-text box for notes or another answer; default true')
-        },
-        async ({ question, options, allowMultiple, allowFreeText }) => {
-          const answer = await ctx.requestQuestion({
-            agentId: ROOT_ID,
-            question,
-            options,
-            allowMultiple: allowMultiple ?? false,
-            allowFreeText: allowFreeText ?? true
-          })
-          onDecided()
-          return reply(answerText(answer))
-        }
-      ),
-      tool(
-        PROPOSAL_TOOLS.complete,
-        'Mark setup complete once the architecture, org chart and settings are all approved.',
-        { summary: z.string().describe('What was decided and what the user should do next, under 120 words') },
-        async ({ summary }) => {
-          await ctx.completeSetup(summary)
-          onDecided()
-          const next =
-            ctx.project.setup?.kind === 'new'
-              ? ' This is a new project: tell the user to press "Scaffold the project" on the live view so the approved org chart builds the initial structure from the architecture document.'
-              : ''
-          return reply(`Setup is marked complete. Give the user a brief closing message.${next}`)
-        }
-      )
-    ]
-  })
-}
-
-function answerText(answer: { selected: string[]; text?: string }): string {
-  const parts: string[] = []
-  if (answer.selected.length) parts.push(answer.selected.join(', '))
-  if (answer.text?.trim()) parts.push(answer.selected.length ? `Note from the user: ${answer.text.trim()}` : answer.text.trim())
-  return parts.length ? parts.join('\n') : 'The user did not answer (the session may be ending). Ask again in prose if it still matters.'
-}
-
-/** True when a tool's file_path points at the project's architecture document (in the main checkout or a worktree). */
-function isArchitectureFile(filePath: unknown, architecturePath: string): boolean {
-  if (typeof filePath !== 'string' || !filePath) return false
-  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()
-  const file = norm(filePath)
-  const target = norm(architecturePath)
-  return file === target || file.endsWith(`/${target}`)
 }
 
 function permissionKey(toolName: string, input: unknown): string {
@@ -385,8 +153,8 @@ class ClaudeSession implements RuntimeSession {
   private isolation: boolean
   /** Agent tool_use ids that were given isolation:"worktree". */
   private isolatedSpawns = new Set<string>()
-  /** agent id -> the brief it was spawned with, for commit messages. */
-  private spawnDescription = new Map<string, string>()
+  /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
+  private integrator: WorktreeIntegrator
   private sessionLogged = false
   /** agent id -> message id -> latest usage, so streamed and re-sent messages are counted once. */
   private usageByMessage = new Map<string, Map<string, { input: number; output: number; model?: string; mix: TokenMix }>>()
@@ -408,6 +176,16 @@ class ClaudeSession implements RuntimeSession {
     this.isSetup = ctx.run.kind === 'setup'
     this.isolation = !this.isSetup && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
+    this.integrator = new WorktreeIntegrator(ctx, {
+      agent: (id) => this.agents.get(id),
+      setWorktree: (id, info) => {
+        const a = this.agents.get(id)
+        if (!a) return
+        a.worktree = info
+        this.upsert(a)
+      },
+      notify: (text) => this.notifyOrchestrator(text)
+    })
     this.finished = this.run()
   }
 
@@ -510,127 +288,6 @@ class ClaudeSession implements RuntimeSession {
     }
   }
 
-  // ---------- worktree integration ----------
-
-  /**
-   * Report branches left by earlier runs (conflicts, crashes) must not be forgotten: commit any
-   * uncommitted work so it is safe, then tell the orchestrator they exist.
-   */
-  private async reconcileLeftovers(): Promise<string | null> {
-    const root = this.ctx.project.path
-    const pending = await inspectPending(root)
-    if (!pending.length) return null
-    const lines: string[] = []
-    for (const wt of pending) {
-      let note = ''
-      if (wt.exists && wt.uncommittedFiles > 0) {
-        const c = await commitLeftovers(wt.path, 'OrgAI: uncommitted work left by an earlier run')
-        note = c.committed ? ' (uncommitted work was just committed to keep it safe)' : c.error ? ` (could not commit leftovers: ${c.error})` : ''
-      }
-      const files = wt.changedFiles.length ? `, touches ${wt.changedFiles.slice(0, 8).join(', ')}${wt.changedFiles.length > 8 ? ', …' : ''}` : ''
-      lines.push(`- ${wt.branch}: ${wt.commitsAhead} commit(s) ahead${files}${wt.lastSubject ? `, last: "${wt.lastSubject}"` : ''}${note}`)
-      this.log('warn', `Leftover report branch from an earlier run: ${wt.branch}${note}`)
-    }
-    return (
-      `Harness: ${pending.length} report branch${pending.length === 1 ? '' : 'es'} from earlier runs ${pending.length === 1 ? 'is' : 'are'} still waiting in this repository:\n${lines.join('\n')}\n` +
-      `Before new work, decide what to do with them: inspect with git log and git diff, then call ${INTEGRATE_TOOL} to merge the ones worth keeping, or tell the user which ones you recommend discarding. The user can also handle them from the project's maintenance panel.`
-    )
-  }
-
-  /** A finished isolated report gets its branch committed and merged exactly once. */
-  private integrateIfIsolated(agent: AgentInstance): void {
-    if (!agent.worktree || agent.worktree.status !== 'active') return
-    agent.worktree = { ...agent.worktree, status: 'merging' }
-    this.upsert(agent)
-    void this.integrate(agent)
-  }
-
-  private async integrate(agent: AgentInstance): Promise<void> {
-    const root = this.ctx.project.path
-    const located = await findWorktree(root, agent.id)
-    const info: WorktreeInfo = { ...agent.worktree!, ...(located ?? {}), status: 'merging' }
-    const brief = this.spawnDescription.get(agent.id) ?? agent.activity
-    const result = await integrateWorktree(root, info, `${agent.name}: ${brief}`.slice(0, 120), this.reviewGate(agent, info))
-    const current = this.agents.get(agent.id) ?? agent
-    current.worktree = result.info
-    this.upsert(current)
-    const level = result.info.status === 'conflict' ? 'warn' : 'info'
-    this.log(level, `${agent.name}: ${result.message}`)
-    if (result.info.status === 'held') {
-      this.notifyOrchestrator(
-        `Harness: the user reviewed ${agent.name}'s report and chose to hold it for later instead of merging. Its changes are NOT in the main checkout; ` +
-          `they stay on branch ${result.info.branch} (worktree "${result.info.path}"). Do not build on them and do not merge the branch yourself; ` +
-          `if you need them now, ask the user, or call ${INTEGRATE_TOOL}, which asks the user to review the branch again.`
-      )
-    } else if (result.info.status === 'removed' && result.info.changedFiles?.length) {
-      this.notifyOrchestrator(
-        `Harness: the user reviewed ${agent.name}'s report and discarded it. None of its changes were merged and its branch was deleted. Redo or reassign that work if it is still needed.`
-      )
-    }
-    if (result.info.status === 'merged' || result.info.status === 'conflict') {
-      this.notifyOrchestrator(
-        result.info.status === 'merged'
-          ? `Harness: ${agent.name}'s report was merged into the main checkout. ${result.message} Verify the merged result before relying on it.`
-          : `Harness: ${agent.name}'s report could not be merged automatically. ${result.message} Integrate branch ${result.info.branch} yourself (git merge in the main checkout, resolve conflicts, then git worktree remove --force "${result.info.path}" and git branch -d ${result.info.branch}), or commit your own changes and call ${INTEGRATE_TOOL}.`
-      )
-    }
-  }
-
-  /** Retry from the orchestrator's integrate tool: find the agent that owns the branch, or integrate anonymously. */
-  private async integratePending(wt: { path: string; branch: string }): Promise<string> {
-    const owner = [...this.agents.values()].find((a) => a.worktree?.branch === wt.branch)
-    const info: WorktreeInfo = { path: wt.path, branch: wt.branch, status: 'merging', changedFiles: owner?.worktree?.changedFiles }
-    if (owner) {
-      owner.worktree = info
-      this.upsert(owner)
-    }
-    const brief = owner ? this.spawnDescription.get(owner.id) ?? owner.activity : wt.branch
-    const result = await integrateWorktree(
-      this.ctx.project.path,
-      info,
-      `${owner?.name ?? 'report'}: ${brief}`.slice(0, 120),
-      this.reviewGate(owner ?? null, info)
-    )
-    if (owner) {
-      owner.worktree = result.info
-      this.upsert(owner)
-    }
-    this.log(result.info.status === 'conflict' ? 'warn' : 'info', `${owner?.name ?? wt.branch}: ${result.message}`)
-    return `${wt.branch}: ${result.message}`
-  }
-
-  /**
-   * With reviewMerges on, the gate integrateWorktree calls before merging: mark the worktree as
-   * under review, show the diff to the user and wait for merge, discard or hold.
-   */
-  private reviewGate(agent: AgentInstance | null, info: WorktreeInfo): ((changedFiles: string[]) => Promise<MergeDecision>) | undefined {
-    if (!this.ctx.project.reviewMerges) return undefined
-    return async (changedFiles) => {
-      const root = this.ctx.project.path
-      const owner = agent ? this.agents.get(agent.id) ?? agent : null
-      if (owner) {
-        owner.worktree = { ...info, status: 'review', changedFiles }
-        this.upsert(owner)
-      }
-      const diff = await diffWorktree(root, info.branch)
-      this.log('info', `${owner?.name ?? info.branch}: waiting for the user to review ${info.branch} before merging.`)
-      const decision = await this.ctx.requestMergeReview({
-        agentId: owner?.id ?? ROOT_ID,
-        agentName: owner?.name ?? info.branch,
-        branch: info.branch,
-        path: info.path,
-        changedFiles: diff.changedFiles.length ? diff.changedFiles : changedFiles,
-        stat: diff.stat,
-        patch: diff.patch
-      })
-      if (owner && decision.behavior === 'merge') {
-        owner.worktree = { ...info, status: 'merging', changedFiles }
-        this.upsert(owner)
-      }
-      return decision
-    }
-  }
-
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
   private notifyOrchestrator(text: string): void {
     this.input.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
@@ -686,7 +343,7 @@ class ClaudeSession implements RuntimeSession {
             }
           }
         }
-        this.setState(agentId, 'delegating', describeTool(input.tool_name, toolInput))
+        this.setState(agentId, 'delegating', describe(input.tool_name, toolInput))
         // Writing reports spawned by the orchestrator get their own worktree. Nested spawns stay in
         // their parent's checkout; merging worktrees into worktrees is not worth the complexity.
         const target = this.rolesBySlug.get(requested)
@@ -703,15 +360,11 @@ class ClaudeSession implements RuntimeSession {
       }
 
       // The first tool call from an isolated agent reveals its real worktree path.
-      const agent = this.agents.get(agentId)
-      if (agent?.worktree && agent.worktree.status === 'active' && input.cwd && input.cwd !== this.ctx.project.path && agent.worktree.path !== input.cwd) {
-        agent.worktree = { ...agent.worktree, path: input.cwd }
-        this.upsert(agent)
-      }
+      this.integrator.reportCwd(agentId, input.cwd)
 
       // Proposal tools block on the user, so the node shows "waiting" until they decide.
       const state = input.tool_name.startsWith(ORGAI_TOOL_PREFIX) ? 'waiting' : 'tool'
-      this.setState(agentId, state, describeTool(input.tool_name, toolInput))
+      this.setState(agentId, state, describe(input.tool_name, toolInput))
       return {}
     }
 
@@ -760,7 +413,7 @@ class ClaudeSession implements RuntimeSession {
       a.endedAt = Date.now()
       this.partial.clear(a.id, true)
       this.upsert(a)
-      this.integrateIfIsolated(a)
+      void this.integrator.onSubagentFinished(a.id)
       return {}
     }
 
@@ -809,14 +462,18 @@ class ClaudeSession implements RuntimeSession {
     let harnessServer: McpSdkServerConfigWithInstance | undefined
     let extraTools: string[] = []
     if (this.isSetup) {
-      harnessServer = buildSetupServer(this.ctx, () => {
-        const a = this.agents.get(ROOT_ID)
-        if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
+      const tools = setupTools(this.ctx, {
+        onDecided: () => {
+          const a = this.agents.get(ROOT_ID)
+          if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
+        }
       })
-      extraTools = Object.values(PROPOSAL_TOOLS).map((t) => `${ORGAI_TOOL_PREFIX}${t}`)
+      harnessServer = buildHarnessServer(tools, SETUP_TOOLS_INSTRUCTIONS)
+      extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
     } else if (this.isolation) {
-      harnessServer = buildWorkServer(project.path, (wt) => this.integratePending(wt))
-      extraTools = [`${ORGAI_TOOL_PREFIX}${INTEGRATE_TOOL}`]
+      const tools = workTools(this.ctx, { integratePending: (wt) => this.integrator.integratePending(wt) })
+      harnessServer = buildHarnessServer(tools)
+      extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
     }
 
     const options: Options = {
@@ -842,22 +499,23 @@ class ClaudeSession implements RuntimeSession {
         // The harness's own tools carry their approval inside the proposal round-trip.
         if (toolName.startsWith(ORGAI_TOOL_PREFIX)) return { behavior: 'allow', updatedInput: input }
         const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
-        this.setState(agentId, 'waiting', `Needs approval: ${describeTool(toolName, input)}`)
+        this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
-        const suggestions = permOptions.suppressAlwaysAllowRule
-          ? []
-          : permOptions.suggestions?.length
-            ? fromSdkSuggestions(permOptions.suggestions)
-            : deriveSuggestions(toolName, input)
+        const suggestions = chooseSuggestions(
+          toolName,
+          input,
+          permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
+          !!permOptions.suppressAlwaysAllowRule
+        )
         const decision = await this.ctx.requestPermission({
           agentId,
           toolName,
           input,
-          summary: describeTool(toolName, input),
+          summary: describe(toolName, input),
           ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
         })
         const a = this.agents.get(agentId)
-        if (a && a.state === 'waiting') this.setState(agentId, 'tool', describeTool(toolName, input))
+        if (a && a.state === 'waiting') this.setState(agentId, 'tool', describe(toolName, input))
         if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input)
         return { behavior: 'deny', message: decision.message }
       }
@@ -878,23 +536,12 @@ class ClaudeSession implements RuntimeSession {
     suggestions: PermissionSuggestion[],
     input: Record<string, unknown>
   ): PermissionResult {
-    const scope = decision.scope ?? 'once'
-    if (scope === 'once' || suggestions.length === 0) return { behavior: 'allow', updatedInput: input }
-    if (scope === 'project') {
-      const rules = allowRuleStrings(suggestions)
-      try {
-        if (rules.length) {
-          addRules(this.ctx.project.path, rules)
-          this.log('info', `Saved permission rule${rules.length === 1 ? '' : 's'} for this project: ${rules.join(', ')}`)
-        }
-      } catch (e) {
-        this.log('warn', `Could not save permission rules: ${(e as Error).message}`)
-      }
-    }
+    const granted = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+    if (!granted) return { behavior: 'allow', updatedInput: input }
     return {
       behavior: 'allow',
       updatedInput: input,
-      updatedPermissions: toSdkSessionUpdates(suggestions),
+      updatedPermissions: toSdkSessionUpdates(granted),
       decisionClassification: 'user_permanent'
     }
   }
@@ -914,15 +561,11 @@ class ClaudeSession implements RuntimeSession {
     }
     this.transcript(ROOT_ID, { kind: 'user', text: this.ctx.prompt })
 
-    let firstMessage = this.ctx.hiddenContext
-      ? `${this.ctx.prompt}\n\n---\nContext from the harness (not visible to the user):\n${this.ctx.hiddenContext}`
-      : this.ctx.prompt
+    let firstMessage = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
 
     try {
       if (this.isolation) {
-        await prepareRepo(this.ctx.project.path)
-        this.log('info', 'Writing reports run in isolated git worktrees; the harness merges each one back when it reports.')
-        const leftover = await this.reconcileLeftovers()
+        const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       this.input.push({
@@ -979,16 +622,17 @@ class ClaudeSession implements RuntimeSession {
           const slug = msg.subagent_type ?? 'general-purpose'
           const role = this.rolesBySlug.get(slug)
           const existing = this.agents.get(msg.task_id)
-          if (msg.description) this.spawnDescription.set(msg.task_id, msg.description)
+          if (msg.description) this.integrator.noteBrief(msg.task_id, msg.description)
+          // Claude Code creates the worktree itself at a known path; the first tool call confirms the real cwd.
           const isolated = !!msg.tool_use_id && this.isolatedSpawns.has(msg.tool_use_id)
           const worktree: WorktreeInfo | undefined =
-            existing?.worktree ??
+            this.integrator.worktreeOf(msg.task_id) ??
             (isolated
-              ? {
+              ? this.integrator.track(msg.task_id, {
                   path: join(this.ctx.project.path, '.claude', 'worktrees', `agent-${msg.task_id}`),
                   branch: `worktree-agent-${msg.task_id}`,
                   status: 'active'
-                }
+                })
               : undefined)
           this.upsert({
             ...(existing ?? this.ensureAgent(msg.task_id, { roleSlug: slug, parentId })),
@@ -1008,7 +652,7 @@ class ClaudeSession implements RuntimeSession {
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
             this.upsert(a)
-            this.integrateIfIsolated(a)
+            void this.integrator.onSubagentFinished(a.id)
           }
         }
         break

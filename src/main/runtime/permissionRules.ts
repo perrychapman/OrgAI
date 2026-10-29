@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
+import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
 
 /**
  * Saved "always allow in this project" rules. They live where Claude Code keeps per-user project
@@ -110,4 +110,44 @@ export function deriveSuggestions(toolName: string, input: unknown): PermissionS
     rule = { toolName, ruleContent: `${first}:*` }
   }
   return [{ type: 'addRules', rules: [rule], behavior: 'allow', destination: 'session' }]
+}
+
+/**
+ * Suggestions to offer on an approval card: none when the provider forbids a "don't ask again" choice
+ * for this ask, otherwise the provider's own suggestions, otherwise ones derived by the harness.
+ */
+export function chooseSuggestions(
+  toolName: string,
+  input: unknown,
+  provided: PermissionSuggestion[] | undefined,
+  suppressed = false
+): PermissionSuggestion[] {
+  if (suppressed) return []
+  return provided?.length ? provided : deriveSuggestions(toolName, input)
+}
+
+/**
+ * Apply an allow decision's scope. Returns the suggestions to grant for the rest of the session, or
+ * null when the allow covers this call only. Project scope also saves the allow rules to the project.
+ */
+export function applyAllowScope(
+  projectPath: string,
+  decision: Extract<PermissionDecision, { behavior: 'allow' }>,
+  suggestions: PermissionSuggestion[],
+  log: (level: 'info' | 'warn', message: string) => void
+): PermissionSuggestion[] | null {
+  const scope = decision.scope ?? 'once'
+  if (scope === 'once' || suggestions.length === 0) return null
+  if (scope === 'project') {
+    const rules = allowRuleStrings(suggestions)
+    try {
+      if (rules.length) {
+        addRules(projectPath, rules)
+        log('info', `Saved permission rule${rules.length === 1 ? '' : 's'} for this project: ${rules.join(', ')}`)
+      }
+    } catch (e) {
+      log('warn', `Could not save permission rules: ${(e as Error).message}`)
+    }
+  }
+  return suggestions
 }

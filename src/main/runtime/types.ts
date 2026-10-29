@@ -14,6 +14,9 @@ import type {
   UserQuestion
 } from '@shared/types'
 
+/** Harness id of the root orchestrator's AgentInstance, shared by every adapter. */
+export const ROOT_AGENT_ID = 'root'
+
 /**
  * Everything a runtime adapter needs to run one project session.
  * The adapter turns vendor-specific output into normalized RunEvents.
