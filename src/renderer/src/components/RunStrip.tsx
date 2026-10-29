@@ -42,7 +42,7 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
           <div
             key={r.summary.id}
             className={`run-chip ${active ? 'active' : ''}`}
-            title={`${r.summary.prompt || r.summary.id} · ${r.summary.status}`}
+            title={`${r.summary.prompt || 'Image prompt'} · ${r.summary.status}`}
             onClick={() => void openRun(r.summary.id)}
             role="button"
             tabIndex={0}
@@ -52,7 +52,7 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
           >
             <span className={`run-dot ${waiting ? 'warn' : dotClass(r.summary.status)}`} />
             <span className="run-kind">{r.summary.kind === 'setup' ? 'Setup' : 'Work'}</span>
-            <span className="run-prompt">{r.summary.prompt || 'run'}</span>
+            <span className="run-prompt">{r.summary.prompt || 'Image prompt'}</span>
             {r.plan && (
               <span className={`run-plan ${r.plan.status}`} title={`Plan ${r.plan.status === 'active' ? 'in progress' : r.plan.status}`}>
                 {planProgress(r.plan).done}/{planProgress(r.plan).total}

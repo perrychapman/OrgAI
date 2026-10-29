@@ -11,7 +11,9 @@ import {
   type Edge,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentInstance, Project } from '@shared/types'
+import type { AgentInstance, ImageAttachment, Project } from '@shared/types'
+import { MAX_IMAGES_PER_MESSAGE } from '@shared/defaults'
+import { ComposerImages, filesToImages } from '../components/ImageAttachments'
 import { setupPending } from '@shared/setup'
 import { activeRun, useAppStore } from '../store/useAppStore'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
@@ -89,6 +91,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
+  const [images, setImages] = useState<ImageAttachment[]>([])
+  const [imageNotice, setImageNotice] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
@@ -318,7 +323,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
   // "+ New run" starts another run even while this session stays open.
   const replying = sessionOpen && composerMode !== 'new'
-  const canSend = text.trim().length > 0 && !busy
+  const canSend = (text.trim().length > 0 || images.length > 0) && !busy
   // A finished run with a provider session can be continued with its memory intact.
   const canContinue = !!run && (status === 'finished' || status === 'error' || status === 'paused') && !!run.summary.sessionId
 
@@ -326,15 +331,31 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     if (composerFocusToken) composerRef.current?.focus()
   }, [composerFocusToken])
 
+  const addImages = async (files: File[]): Promise<void> => {
+    const { images: added, notice } = await filesToImages(files, images.length)
+    if (added.length > 0) setImages((cur) => [...cur, ...added].slice(0, MAX_IMAGES_PER_MESSAGE))
+    setImageNotice(notice)
+  }
+
   const submit = async (fresh = false): Promise<void> => {
     if (!canSend) return
     const prompt = text.trim()
+    const sending = images
+    const imgs = sending.length > 0 ? sending : undefined
+    const previousText = text
     setText('')
+    setImages([])
+    setImageNotice(null)
     setBusy(true)
     try {
-      if (replying) await sendMessage(prompt)
-      else if (canContinue && !fresh && run && composerMode !== 'new') await continueRun(run.summary.id, prompt)
-      else await startRun(prompt)
+      if (replying) await sendMessage(prompt, imgs)
+      else if (canContinue && !fresh && run && composerMode !== 'new') await continueRun(run.summary.id, prompt, imgs)
+      else await startRun(prompt, imgs ? { images: imgs } : undefined)
+    } catch (err) {
+      // Keep the draft and attachments so nothing is lost on failure.
+      setText((cur) => cur || previousText)
+      setImages((cur) => (cur.length > 0 ? cur : sending))
+      setImageNotice(err instanceof Error ? err.message : 'Could not send the message.')
     } finally {
       setBusy(false)
     }
@@ -614,12 +635,46 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         </div>
       </div>
 
-      <div className="composer">
+      <div
+        className={`composer ${dragOver ? 'drag' : ''}`}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault()
+            setDragOver(true)
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false)
+        }}
+        onDrop={(e) => {
+          setDragOver(false)
+          const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
+          if (files.length === 0) return
+          e.preventDefault()
+          void addImages(files)
+        }}
+      >
+        <div className="composer-field">
+        {imageNotice && (
+          <div className="composer-notice" role="status">
+            {imageNotice}
+          </div>
+        )}
+        <ComposerImages images={images} onRemove={(i) => setImages((cur) => cur.filter((_, j) => j !== i))} />
         <textarea
           ref={composerRef}
           className="textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.items)
+              .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+              .map((it) => it.getAsFile())
+              .filter((f): f is File => !!f)
+            if (files.length === 0) return
+            if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+            void addImages(files)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
@@ -640,6 +695,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                   : 'Describe the task for this project…'
           }
         />
+        </div>
         {canContinue && !sessionOpen && (
           <button className="btn" disabled={!canSend} onClick={() => void submit(true)} title="Start a fresh run with no memory of this one">
             New run

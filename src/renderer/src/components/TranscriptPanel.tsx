@@ -5,6 +5,7 @@ import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, type LogLine } from '../store/useAppStore'
 import { COST_ESTIMATE_HINT, costLabel, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Markdown } from './Markdown'
+import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 
 interface Props {
@@ -91,7 +92,7 @@ function RunHistory(): ReactElement {
               </span>
             )}
           </div>
-          <div className="prompt">{r.prompt || '(no prompt)'}</div>
+          <div className="prompt">{r.prompt || 'Image prompt'}</div>
           <div className="when">{new Date(r.startedAt).toLocaleString()}</div>
         </button>
       ))}
@@ -275,7 +276,8 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
                       <span>You</span>
                       <span>{new Date(e.at).toLocaleTimeString()}</span>
                     </div>
-                    <Markdown text={b.text} />
+                    {b.text.trim() && <Markdown text={b.text} />}
+                    {b.images && b.images.length > 0 && <TranscriptImages images={b.images} />}
                   </div>
                 )
               case 'text':
