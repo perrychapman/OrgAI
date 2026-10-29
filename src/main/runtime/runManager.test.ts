@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ImageAttachment, Project, Proposal, RunEvent } from '@shared/types'
+import type { ImageAttachment, McpServerSpec, Project, Proposal, RunEvent } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext } from './types'
 import { RESUME_TEXT, RunManager, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript } from './mock'
@@ -503,6 +503,263 @@ describe('RunManager with the mock adapter', () => {
       await m.stop(run.id)
       await waitFor(isType('run.status', (e) => e.status === 'finished'))
       expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
+    })
+  })
+})
+
+describe('RunManager adapter selection, connections and MCP', () => {
+  /** A recording adapter whose session stays open until `end()`. */
+  function recorder(id: 'claude' | 'codex' | 'mock') {
+    const ctxs: RuntimeContext[] = []
+    let end = (): void => {}
+    const adapter: RuntimeAdapter = {
+      id,
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: async () => end(),
+          finished: new Promise<void>((r) => (end = r))
+        }
+      }
+    }
+    return { adapter, ctxs, end: () => end() }
+  }
+
+  const litellm = (rootModel: string, others: Record<string, string> = {}): Project => {
+    const base = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' }, connection: 'litellm' } })
+    const roles = base.roles.map((r) => ({ ...r, model: r.reportsTo === null ? rootModel : (others[r.slug] ?? rootModel) }))
+    return { ...base, roles }
+  }
+
+  function setupManager(p: Project, adapters: ConstructorParameters<typeof RunManager>[0], options: RunManagerOptions = {}) {
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager(adapters, (e) => events.push(e), store, fakeSetup(p).service, () => 100, options)
+    return { m, store }
+  }
+
+  describe('adapter selection', () => {
+    it('picks the adapter by the root role family on LiteLLM', async () => {
+      const claude = recorder('claude')
+      const codex = recorder('codex')
+      const { m } = setupManager(litellm('gpt-5'), { claude: claude.adapter, codex: codex.adapter })
+      await m.start({ project: litellm('gpt-5'), prompt: 'go' })
+      expect(codex.ctxs).toHaveLength(1)
+      expect(claude.ctxs).toHaveLength(0)
+      await m.start({ project: litellm('sonnet'), prompt: 'go' })
+      expect(claude.ctxs).toHaveLength(1)
+      expect(m.adapterFor(litellm('gpt-5'))).toBe(codex.adapter)
+      await m.stopAll()
+    })
+
+    it('refuses a work run whose roles mix families, before creating the run', async () => {
+      const claude = recorder('claude')
+      const codex = recorder('codex')
+      const p = litellm('sonnet', { engineer: 'gpt-5', reviewer: 'gpt-5' })
+      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
+        "Roles Engineer, Reviewer use OpenAI-family models, but this LiteLLM project's orchestrator runs on Claude. Pick models of one family."
+      )
+      expect(store.list(p.id)).toEqual([])
+      expect(events).toEqual([])
+      expect(claude.ctxs.length + codex.ctxs.length).toBe(0)
+    })
+
+    it('lets setup and mcp-assist runs start with mismatched roles on the root adapter', async () => {
+      const claude = recorder('claude')
+      const p = litellm('sonnet', { engineer: 'gpt-5' })
+      const { m } = setupManager(p, { claude: claude.adapter })
+      await m.start({ project: p, prompt: 'set up', kind: 'setup' })
+      await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
+      expect(claude.ctxs.map((c) => c.run.kind)).toEqual(['setup', 'mcp-assist'])
+      await m.stopAll()
+    })
+
+    it('reports a missing adapter and passes the catalog to the choice', async () => {
+      const codex = recorder('codex')
+      const p = litellm('gpt-5')
+      const catalog = vi.fn(() => [{ id: 'gpt-5', label: 'g', connection: 'litellm' as const, family: 'claude' as const, adapter: 'claude' as const, source: 'builtin' as const }])
+      const { m } = setupManager(p, { codex: codex.adapter }, { catalog })
+      // the catalog says gpt-5 is a Claude-family model here, so the Claude adapter is needed and absent
+      await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow('No runtime adapter for provider "claude"')
+      expect(catalog).toHaveBeenCalled()
+    })
+
+    it('hands the resolved connection to the adapter, and a failure refuses the start', async () => {
+      const claude = recorder('claude')
+      const p = litellm('sonnet')
+      const connection = { connection: 'litellm' as const, adapter: 'claude' as const, env: { ANTHROPIC_BASE_URL: 'http://proxy' } }
+      const resolveConnection = vi.fn(() => connection)
+      const { m } = setupManager(p, { claude: claude.adapter }, { resolveConnection })
+      await m.start({ project: p, prompt: 'go' })
+      expect(claude.ctxs[0].connection).toBe(connection)
+      expect(resolveConnection).toHaveBeenCalledWith(p, expect.objectContaining({ adapter: 'claude', connection: 'litellm', mismatched: [] }))
+      const before = m['store'].list(p.id).length
+      const failing = setupManager(p, { claude: claude.adapter }, { resolveConnection: () => { throw new Error('LiteLLM is not connected') } })
+      await expect(failing.m.start({ project: p, prompt: 'go' })).rejects.toThrow('LiteLLM is not connected')
+      expect(failing.store.list(p.id)).toHaveLength(before)
+      await m.stopAll()
+    })
+  })
+
+  describe('mcp-assist runs', () => {
+    it('use the built-in assistant role and its context, never the project roles', async () => {
+      const rec = recorder('mock')
+      const p = makeProject({ path: join(dir, 'repo'), brief: 'Orders API', mcpServers: [{ id: 'mcp-1', name: 'github', transport: 'http', url: 'https://x.test', enabled: true, source: 'user', addedAt: '' }] })
+      const { m } = setupManager(p, { mock: rec.adapter })
+      const run = await m.start({ project: p, prompt: 'Connect GitHub', kind: 'mcp-assist' })
+      const ctx = rec.ctxs[0]
+      expect(run.kind).toBe('mcp-assist')
+      expect(ctx.roles.map((r) => r.slug)).toEqual(['mcp-assistant'])
+      expect(ctx.hiddenContext).toContain('Orders API')
+      expect(ctx.hiddenContext).toContain('name=github')
+      // the assistant manages servers, it does not run them
+      expect(ctx.mcpServers!()).toEqual([])
+      expect(ctx.plugins!()).toEqual([])
+      await m.stopAll()
+    })
+  })
+
+  describe('request_mcp_install flow', () => {
+    const spec = (over: Partial<McpServerSpec> = {}): McpServerSpec => ({
+      id: 'mcp-new',
+      name: 'github',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'pkg@1.2.3'],
+      secretEnv: ['GITHUB_TOKEN'],
+      enabled: true,
+      source: 'agent',
+      addedAt: '',
+      ...over
+    })
+    const SECRET = 'ghp_super_secret_value'
+
+    function withMcp(p: Project) {
+      const rec = recorder('mock')
+      const mcp = {
+        enabledServers: vi.fn((proj: Project) => (proj.mcpServers ?? []).filter((s) => s.enabled)),
+        resolve: vi.fn((_pid: string, s: McpServerSpec, extra?: Record<string, string>) => ({ spec: s, env: { ...(s.env ?? {}), ...(extra ?? {}) }, headers: {} })),
+        persistInstall: vi.fn((_pid: string, s: McpServerSpec, _secrets: Record<string, string>): Project => ({ ...p, mcpServers: [...(p.mcpServers ?? []), s] })),
+        searchRegistry: vi.fn(async () => ({ entries: [] }))
+      }
+      const { m } = setupManager(p, { mock: rec.adapter }, { mcp })
+      return { ...rec, m, mcp }
+    }
+
+    async function ask(ctx: RuntimeContext, s: McpServerSpec = spec()) {
+      const after = events.length
+      const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'triage issues', spec: s, requiredSecrets: ['GITHUB_TOKEN'] })
+      const req = await waitFor(isType('mcpInstall.request'), after)
+      return { pending, req: req.request }
+    }
+
+    it('scope run: keeps the server and its secrets in memory only, events carry no secrets', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      const { pending, req } = await ask(ctx)
+      expect(req).toMatchObject({ runId: run.id, reason: 'triage issues', spec: { name: 'github' } })
+      expect(ctx.pendingInteractions()).toBe(1)
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'run', secrets: { GITHUB_TOKEN: SECRET, STRAY: 'x' }, note: 'ok' })
+      const decision = await pending
+      expect(decision).toEqual({ approved: true, scope: 'run', note: 'ok' })
+      expect(ctx.pendingInteractions()).toBe(0)
+      expect(ctx.mcpServers!().map((s) => s.name)).toEqual(['github'])
+      expect(mcp.persistInstall).not.toHaveBeenCalled()
+      const resolved = await ctx.resolvedMcpServers!()
+      expect(resolved[0].env.GITHUB_TOKEN).toBe(SECRET)
+      expect(await ctx.resolveMcpSecrets!('mcp-new')).toEqual({ env: { GITHUB_TOKEN: SECRET }, headers: {} })
+      const out = events.find(isType('mcpInstall.resolved'))!
+      expect(out.outcome).toEqual({ approved: true, scope: 'run', note: 'ok' })
+      expect(JSON.stringify(events)).not.toContain(SECRET)
+      expect(JSON.stringify(m.get(run.id))).not.toContain(SECRET)
+      await m.stopAll()
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    })
+
+    it('scope project: persists through the MCP service and broadcasts the project', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      const { pending, req } = await ask(ctx)
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', secrets: { GITHUB_TOKEN: SECRET } })
+      expect(await pending).toMatchObject({ approved: true, scope: 'project' })
+      expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET })
+      expect(events.find(isType('project.updated', (e) => (e.project.mcpServers?.length ?? 0) === 1))).toBeTruthy()
+      // the project's server is served through enabledServers, not duplicated as a run server
+      expect(ctx.mcpServers!().map((s) => s.id)).toEqual(['mcp-new'])
+      expect(JSON.stringify(events)).not.toContain(SECRET)
+      await m.stopAll()
+    })
+
+    it('uses the spec the user edited and denies an invalid edit with a note', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      const first = await ask(ctx)
+      m.answerMcpInstall(run.id, first.req.id, { approved: true, scope: 'run', spec: spec({ args: ['-y', 'pkg@9.9.9'] }) })
+      expect((await first.pending).spec?.args).toEqual(['-y', 'pkg@9.9.9'])
+      expect(ctx.mcpServers!()[0].args).toEqual(['-y', 'pkg@9.9.9'])
+
+      const second = await ask(ctx, spec({ id: 'mcp-other', name: 'docs' }))
+      m.answerMcpInstall(run.id, second.req.id, { approved: true, scope: 'run', spec: spec({ id: 'mcp-other', name: 'docs', args: ['-y', 'pkg@latest'] }) })
+      const denied = await second.pending
+      expect(denied.approved).toBe(false)
+      expect(denied.note).toMatch(/not pinned/)
+      expect(ctx.mcpServers!().map((s) => s.name)).toEqual(['github'])
+      await m.stopAll()
+    })
+
+    it('a deny passes the note through; unknown or repeated answers are ignored', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      m.answerMcpInstall(run.id, 'nope', { approved: true, scope: 'run' })
+      m.answerMcpInstall(run.id, req.id, { approved: false, scope: 'run', note: 'use GitLab' })
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'run' })
+      expect(await pending).toEqual({ approved: false, scope: 'run', note: 'use GitLab' })
+      expect(ctxs[0].mcpServers!()).toEqual([])
+      await m.stopAll()
+    })
+
+    it('a run that ends resolves pending installs as denied', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, end } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      end()
+      expect(await pending).toEqual({ approved: false, scope: 'run' })
+      const resolved = events.find(isType('mcpInstall.resolved', (e) => e.requestId === req.id))
+      expect(resolved?.outcome).toEqual({ approved: false, scope: 'run' })
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    })
+
+    it('exposes project servers and enabled plugins, and the registry search', async () => {
+      const server = spec({ id: 'mcp-p', name: 'docs', secretEnv: [] })
+      const p = makeProject({
+        path: join(dir, 'repo'),
+        mcpServers: [server, { ...server, id: 'mcp-off', name: 'off', enabled: false }],
+        plugins: [
+          { id: 'pl1', name: 'on', path: '/x', enabled: true },
+          { id: 'pl2', name: 'off', path: '/y', enabled: false }
+        ]
+      })
+      const { m, ctxs, mcp } = withMcp(p)
+      await m.start({ project: p, prompt: 'go' })
+      expect(ctxs[0].mcpServers!().map((s) => s.id)).toEqual(['mcp-p'])
+      expect(ctxs[0].plugins!().map((x) => x.id)).toEqual(['pl1'])
+      await ctxs[0].searchMcpRegistry!({ query: 'x' })
+      expect(mcp.searchRegistry).toHaveBeenCalledWith({ query: 'x' })
+      expect((await ctxs[0].resolvedMcpServers!()).map((r) => r.spec.id)).toEqual(['mcp-p'])
+      await m.stopAll()
     })
   })
 })

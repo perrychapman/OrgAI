@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { newProject } from './defaults'
-import { ARCHITECT_SLUG, architectRole, setupKindLabel, setupPending } from './setup'
+import { ARCHITECT_SLUG, MCP_ASSISTANT_SLUG, MCP_ASSIST_TOOLS, architectRole, mcpAssistantRole, setupKindLabel, setupPending } from './setup'
 import type { SetupState } from './types'
 
 describe('setupPending', () => {
@@ -35,5 +35,19 @@ describe('architectRole', () => {
   it('labels setup kinds', () => {
     expect(setupKindLabel('new')).toBe('new project')
     expect(setupKindLabel('existing')).toBe('existing project')
+  })
+})
+
+describe('mcpAssistantRole', () => {
+  it('is a read-only deep root role that never asks for secrets', () => {
+    const r = mcpAssistantRole()
+    expect(r.slug).toBe(MCP_ASSISTANT_SLUG)
+    expect(r.model).toBe('opus')
+    expect(r.tier).toBe('deep')
+    expect(r.canSpawn).toBe(false)
+    expect(r.reportsTo).toBeNull()
+    expect(r.tools).toEqual(['Read', 'Glob', 'Grep', 'WebFetch'])
+    for (const t of Object.values(MCP_ASSIST_TOOLS)) expect(r.prompt).toContain(t)
+    expect(r.prompt).toMatch(/Never ask the user to paste a secret/)
   })
 })

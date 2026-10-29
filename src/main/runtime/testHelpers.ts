@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { Project, Role, RunEvent, RunPlan, RunSummary } from '@shared/types'
+import type { McpServerSpec, Project, Role, RunEvent, RunPlan, RunSummary } from '@shared/types'
 import type { RuntimeContext } from './types'
 
 /** Test-only fixtures for the runtime modules. Not imported by app code. */
@@ -51,6 +51,22 @@ export function runSummary(over: Partial<RunSummary> = {}): RunSummary {
   return { id: 'run-1', projectId: 'p1', kind: 'work', prompt: 'Do it', status: 'starting', startedAt: 0, totalCostUsd: 0, ...over }
 }
 
+/** A valid, pinned stdio MCP server spec. */
+export function mcpSpec(over: Partial<McpServerSpec> = {}): McpServerSpec {
+  return {
+    id: 'mcp-1',
+    name: 'github',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github@1.4.2'],
+    secretEnv: ['GITHUB_TOKEN'],
+    enabled: true,
+    source: 'agent',
+    addedAt: '2026-01-01T00:00:00.000Z',
+    ...over
+  }
+}
+
 /** A RuntimeContext whose round-trips are vi.fn()s; events land in `events`. */
 export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { events: RunEvent[] } {
   const events: RunEvent[] = []
@@ -74,6 +90,11 @@ export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { 
       plan = next
     }),
     pendingInteractions: () => 0,
+    mcpServers: () => [],
+    resolvedMcpServers: async () => [],
+    plugins: () => [],
+    searchMcpRegistry: vi.fn(async () => ({ entries: [] })),
+    requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'run' as const })),
     ...over,
     events
   }

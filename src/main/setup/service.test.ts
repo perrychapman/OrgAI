@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ArchitectureSpec, Proposal, SettingsProposalPayload } from '@shared/types'
+import type { ArchitectureSpec, McpServerSpec, McpServersProposalPayload, Proposal, SettingsProposalPayload } from '@shared/types'
 import { ProjectStore } from '../store/projects'
 import { listRules, settingsLocalPath } from '../runtime/permissionRules'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER, SetupService, cleanAllowRules, renderArchitecture } from './service'
@@ -146,6 +146,74 @@ describe('applyProposal (settings)', () => {
     service.applyProposal(p.id, settings(p.id, { brief: 'New brief' }))
     expect(listRules(repo)).toEqual([])
     expect(store.get(p.id)?.brief).toBe('New brief')
+  })
+})
+
+describe('applyProposal (mcpServers)', () => {
+  let dir: string
+  let store: ProjectStore
+  let removedSecrets: string[]
+  let service: SetupService
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-setup-mcp-'))
+    mkdirSync(join(dir, 'repo'))
+    store = new ProjectStore(join(dir, 'data'))
+    removedSecrets = []
+    service = new SetupService(store, { removeMcpSecrets: (pid, sid) => removedSecrets.push(`${pid}:${sid}`) })
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const spec = (over: Partial<McpServerSpec> = {}): McpServerSpec => ({
+    id: 'mcp-1',
+    name: 'github',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'pkg@1.2.3'],
+    secretEnv: ['TOKEN'],
+    enabled: true,
+    source: 'registry',
+    addedAt: '2026-01-01T00:00:00.000Z',
+    ...over
+  })
+  const proposal = (payload: Omit<McpServersProposalPayload, 'rationale'>): Proposal => ({
+    id: 'prop-1',
+    runId: 'run-1',
+    agentId: 'root',
+    title: 'MCP',
+    createdAt: 0,
+    kind: 'mcpServers',
+    payload: { rationale: 'r', ...payload }
+  })
+
+  it('adds and replaces servers, keeping the project otherwise intact', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: 'keep me' })
+    const added = service.applyProposal(p.id, proposal({ upsert: [spec()] }))
+    expect(added.mcpServers).toHaveLength(1)
+    expect(added.brief).toBe('keep me')
+    const replaced = service.applyProposal(p.id, proposal({ upsert: [spec({ args: ['-y', 'pkg@2.0.0'] }), spec({ id: 'mcp-2', name: 'docs', secretEnv: [] })] }))
+    expect(replaced.mcpServers?.map((s) => [s.name, s.args?.[1]])).toEqual([
+      ['github', 'pkg@2.0.0'],
+      ['docs', 'pkg@1.2.3']
+    ])
+  })
+
+  it('removes servers, their role grants, and reports each removal for secret cleanup', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    service.applyProposal(p.id, proposal({ upsert: [spec()] }))
+    const withGrant = store.get(p.id)!
+    store.save({ ...withGrant, roles: withGrant.roles.map((r, i) => (i === 0 ? { ...r, mcpServers: ['mcp-1'] } : r)) })
+    const next = service.applyProposal(p.id, proposal({ upsert: [], remove: ['mcp-1'] }))
+    expect(next.mcpServers).toEqual([])
+    expect(next.roles.every((r) => !r.mcpServers?.length)).toBe(true)
+    expect(removedSecrets).toEqual([`${p.id}:mcp-1`])
+  })
+
+  it('rejects the whole proposal when any spec is invalid, saving nothing', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    expect(() => service.applyProposal(p.id, proposal({ upsert: [spec(), spec({ id: 'mcp-2', name: 'bad', args: ['-y', 'pkg@latest'] })] }))).toThrow(/not pinned/)
+    expect(store.get(p.id)?.mcpServers ?? []).toEqual([])
+    expect(() => service.applyProposal(p.id, proposal({ upsert: [spec(), spec({ id: 'mcp-3' })] }))).toThrow(/already exists/)
   })
 })
 
