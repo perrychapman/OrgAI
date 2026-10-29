@@ -421,13 +421,22 @@ export const DEFAULT_KEEP_RUNS = 100
 /** Image formats the provider accepts as image content (pasted into the run composer). */
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
 
-/** An image sent with a user message. Structured-clone safe; persisted inline in the transcript. */
+/**
+ * An image sent with a user message. Structured-clone safe. Live RunEvents and records returned to the
+ * renderer always carry `data`; on disk the run record stores `ref` with `data: ''` and the bytes live in
+ * the run's content-addressed image store (see src/main/store/runs.ts).
+ */
 export interface ImageAttachment {
   mediaType: ImageMediaType
-  /** Base64 of the image bytes, without a `data:` URL prefix. */
+  /** Base64 of the image bytes, without a `data:` URL prefix. Empty if a persisted image file is missing. */
   data: string
   /** Original file name, when the paste or drop carried one. */
   name?: string
+  /**
+   * Main-process storage reference: the image's file name (`<sha256>.<ext>`) under the run's
+   * `images/` directory. Set only on persisted records; the renderer never needs it.
+   */
+  ref?: string
 }
 
 export type TranscriptBlock =
