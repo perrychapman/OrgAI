@@ -29,7 +29,8 @@ import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from 
 import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
 import { PartialText } from './claudePartial'
-import { SETUP_TOOLS_INSTRUCTIONS, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { describeTool } from './activity'
@@ -232,6 +233,8 @@ class ClaudeSession implements RuntimeSession {
   /** Set once the provider rejected a request on a usage limit. */
   private limited = false
   private ending = false
+  /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
+  private continuation: ContinuationDriver
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -251,12 +254,36 @@ class ClaudeSession implements RuntimeSession {
       },
       notify: (text) => this.notifyOrchestrator(text)
     })
+    this.continuation = new ContinuationDriver({
+      kind: ctx.run.kind,
+      autoContinue: ctx.autoContinue,
+      maxAutoContinues: ctx.maxAutoContinues,
+      delayMs: ctx.continuationDelayMs,
+      getPlan: () => ctx.getPlan(),
+      updatePlan: (plan) => ctx.updatePlan(plan),
+      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length,
+      pendingInteractions: () => ctx.pendingInteractions(),
+      rateLimited: () => this.limited,
+      // A window-cap stop waits for the user like an interrupt does.
+      stopping: () => this.ending || this.capTripped || this.abort.signal.aborted,
+      orchestratorBusy: () => {
+        const root = this.agents.get(ROOT_ID)
+        return !!root && root.state !== 'idle' && root.state !== 'done'
+      },
+      nudge: (text, activity) => {
+        this.notifyOrchestrator(text, activity)
+        this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
+      },
+      log: (level, message) => this.log(level, message),
+      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text })
+    })
     this.finished = this.run()
   }
 
   // ---------- public API ----------
 
   async send(text: string): Promise<void> {
+    this.continuation.userMessage()
     // After a window-cap stop, the orchestrator learns why with the user's next message, and the cap
     // measures afresh from here.
     const note = this.pendingCapNote
@@ -275,6 +302,8 @@ class ClaudeSession implements RuntimeSession {
   }
 
   async interrupt(): Promise<void> {
+    // An interrupted turn waits for the user; no automatic continue until they reply.
+    this.continuation.hold()
     try {
       await this.q?.interrupt()
     } catch (e) {
@@ -283,6 +312,7 @@ class ClaudeSession implements RuntimeSession {
   }
 
   async stop(): Promise<void> {
+    this.continuation.dispose()
     this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
@@ -363,11 +393,11 @@ class ClaudeSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string): void {
+  private notifyOrchestrator(text: string, activity = 'Integrating a report…'): void {
     this.input.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
     this.transcript(ROOT_ID, { kind: 'system', text })
     const root = this.agents.get(ROOT_ID)
-    if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', 'Integrating a report…')
+    if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
   }
 
   /** An agent called SendMessage: draw it on the canvas and keep a copy in the sender's transcript. */
@@ -544,8 +574,9 @@ class ClaudeSession implements RuntimeSession {
 
       if (input.tool_name === MESSAGE_TOOL) this.onAgentMessage(agentId, toolInput)
 
-      // Proposal tools block on the user, so the node shows "waiting" until they decide.
-      const state = input.tool_name.startsWith(ORGAI_TOOL_PREFIX) ? 'waiting' : 'tool'
+      // Proposal tools block on the user, so the node shows "waiting" until they decide; plan tools return at once.
+      const harness = input.tool_name.startsWith(ORGAI_TOOL_PREFIX)
+      const state = harness && isBlockingHarnessTool(input.tool_name.slice(ORGAI_TOOL_PREFIX.length)) ? 'waiting' : 'tool'
       this.setState(agentId, state, describe(input.tool_name, toolInput))
       return {}
     }
@@ -564,7 +595,9 @@ class ClaudeSession implements RuntimeSession {
         }
       }
       const a = this.agents.get(agentId)
-      if (a && a.state !== 'done' && a.state !== 'error') this.setState(agentId, 'thinking', 'Thinking…')
+      // Between tool calls the orchestrator's node shows the plan step it is on.
+      const activity = (agentId === ROOT_ID && !this.isSetup ? stepActivity(this.ctx.getPlan()) : undefined) ?? 'Thinking…'
+      if (a && a.state !== 'done' && a.state !== 'error') this.setState(agentId, 'thinking', activity)
       return {}
     }
 
@@ -653,7 +686,18 @@ class ClaudeSession implements RuntimeSession {
       harnessServer = buildHarnessServer(tools, SETUP_TOOLS_INSTRUCTIONS)
       extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
     } else {
-      const tools = workTools(this.ctx, { integratePending: (wt) => this.integrator.integratePending(wt) })
+      const tools = workTools(this.ctx, {
+        integratePending: (wt) => this.integrator.integratePending(wt),
+        onPlanUpdated: (plan) => {
+          const root = this.agents.get(ROOT_ID)
+          const activity = stepActivity(plan)
+          if (root && activity && root.state !== 'done' && root.state !== 'error') this.setState(ROOT_ID, root.state, activity)
+        },
+        onDecided: () => {
+          const a = this.agents.get(ROOT_ID)
+          if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
+        }
+      })
       harnessServer = buildHarnessServer(tools)
       extraTools = tools.map((t) => `${ORGAI_TOOL_PREFIX}${t.name}`)
     }
@@ -771,6 +815,7 @@ class ClaudeSession implements RuntimeSession {
       }
     } finally {
       this.ending = true
+      this.continuation.dispose()
       this.stopUsagePolling()
       this.partial.clearAll()
       for (const a of this.agents.values()) {
@@ -967,6 +1012,9 @@ class ClaudeSession implements RuntimeSession {
         }
         this.upsert(root)
         this.emit({ type: 'run.status', runId, status: 'idle' })
+        // Unattended execution: after a short delay (a report that just landed wakes the orchestrator
+        // first), remind it of the plan's remaining steps. The driver re-checks every condition then.
+        if (msg.subtype === 'success' && !this.isSetup) this.continuation.turnEnded()
         if (this.limited && !this.ending) {
           // Every further request would be rejected too. End the session; the run manager pauses the
           // run and continues it when the window resets.

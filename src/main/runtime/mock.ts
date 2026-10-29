@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, Role, RunEvent, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { setupTools, workTools, type HarnessTool } from './harnessTools'
+import { isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { composeFirstMessage } from './prompts'
@@ -20,8 +21,12 @@ export type MockStep =
   /** Assistant text from an agent (default: the root). */
   | { type: 'text'; agent?: string; text: string }
   | { type: 'thinking'; agent?: string; text: string }
-  /** A tool call. With `ask`, it first needs the user's approval through ctx.requestPermission. */
-  | { type: 'tool'; agent?: string; name: string; input?: Record<string, unknown>; result?: string; ask?: boolean }
+  /**
+   * A tool call. With `ask`, it first needs the user's approval through ctx.requestPermission. With
+   * `background` too, the turn goes on without waiting for the answer (a report's call still pending
+   * while the orchestrator's turn ends).
+   */
+  | { type: 'tool'; agent?: string; name: string; input?: Record<string, unknown>; result?: string; ask?: boolean; background?: boolean }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
   | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
@@ -35,6 +40,12 @@ export type MockStep =
    * when given) and ends the session, like the Claude adapter does at the next result.
    */
   | { type: 'rateLimit'; window?: string; untilInMs?: number }
+  /** The orchestrator sets its plan (set_plan). Steps are titles or { title, owner }. */
+  | { type: 'plan'; goal: string; steps: (string | { title: string; owner?: string })[] }
+  /** The orchestrator updates plan steps (update_plan). */
+  | { type: 'planUpdate'; steps: { id: string; status: 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'; note?: string }[] }
+  /** The orchestrator completes the plan (complete_plan). */
+  | { type: 'planComplete'; summary: string }
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -45,6 +56,11 @@ export interface MockScript {
   setup?: MockStep[]
   /** Reply to follow-up messages; "{text}" is replaced with the user's message. */
   reply?: string
+  /**
+   * Turns played for successive harness nudges (automatic continues), in order. Once used up, a nudge
+   * gets a one-line text reply that changes nothing.
+   */
+  continue?: MockStep[][]
 }
 
 const DEFAULT_WORK: MockStep[] = [
@@ -127,7 +143,8 @@ export const DEFAULT_MOCK_SCRIPT: Required<MockScript> = {
   delayMs: 400,
   work: DEFAULT_WORK,
   setup: DEFAULT_SETUP,
-  reply: 'Mock reply to: {text}'
+  reply: 'Mock reply to: {text}',
+  continue: []
 }
 
 /** The script from ORGAI_MOCK_SCRIPT (a JSON file), filled in from the default; the default when unset. */
@@ -146,14 +163,18 @@ const STOPPED = Symbol('stopped')
 /** Synthetic price per token so the canvas shows moving numbers. */
 const USD_PER_TOKEN = 0.000003
 
-class MockSession implements RuntimeSession {
+export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
+  /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
+  readonly harnessMessages: string[] = []
   private agents = new Map<string, AgentInstance>()
   private rolesBySlug: Map<string, Role>
   private root: Role
   private isSetup: boolean
   private tools: HarnessTool[]
-  private inbox: string[] = []
+  private inbox: { text: string; harness: boolean }[] = []
+  private continueTurns: MockStep[][]
+  private continuation: ContinuationDriver
   private wake: (() => void) | null = null
   private stopped = false
   private interrupted = false
@@ -179,7 +200,32 @@ class MockSession implements RuntimeSession {
       const a = this.agents.get(ROOT_AGENT_ID)
       if (a && a.state === 'waiting') this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     }
-    this.tools = this.isSetup ? setupTools(ctx, { onDecided }) : workTools(ctx, { onDecided })
+    const onPlanUpdated = (plan: RunPlan): void => {
+      const a = this.agents.get(ROOT_AGENT_ID)
+      const activity = stepActivity(plan)
+      if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
+    }
+    this.tools = this.isSetup ? setupTools(ctx, { onDecided }) : workTools(ctx, { onDecided, onPlanUpdated })
+    this.continueTurns = [...(script.continue ?? [])]
+    this.continuation = new ContinuationDriver({
+      kind: ctx.run.kind,
+      autoContinue: ctx.autoContinue,
+      maxAutoContinues: ctx.maxAutoContinues,
+      delayMs: ctx.continuationDelayMs,
+      getPlan: () => ctx.getPlan(),
+      updatePlan: (plan) => ctx.updatePlan(plan),
+      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length,
+      pendingInteractions: () => ctx.pendingInteractions(),
+      rateLimited: () => false,
+      stopping: () => this.stopped,
+      orchestratorBusy: () => {
+        const root = this.agents.get(ROOT_AGENT_ID)
+        return !!root && root.state !== 'idle' && root.state !== 'done'
+      },
+      nudge: (text, activity) => this.deliverHarness(text, activity),
+      log: (level, message) => this.log(level, message),
+      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+    })
     this.stopSignal = new Promise((resolve) => (this.signalStop = () => resolve(STOPPED)))
     if (loadError) this.log('warn', loadError)
     this.finished = this.run()
@@ -188,19 +234,22 @@ class MockSession implements RuntimeSession {
   // ---------- public API ----------
 
   async send(text: string): Promise<void> {
+    this.continuation.userMessage()
     this.transcript(ROOT_AGENT_ID, { kind: 'user', text })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
-    this.inbox.push(text)
+    this.inbox.push({ text, harness: false })
     this.poke()
   }
 
   /** Ends the current turn before its next step; a blocking request in flight still waits for its answer. */
   async interrupt(): Promise<void> {
+    this.continuation.hold()
     this.interrupted = true
     this.poke()
   }
 
   async stop(): Promise<void> {
+    this.continuation.dispose()
     this.stopped = true
     this.signalStop()
     this.poke()
@@ -299,12 +348,23 @@ class MockSession implements RuntimeSession {
     return Promise.race([p, this.stopSignal])
   }
 
-  private nextMessage(): Promise<string | null> {
+  private nextMessage(): Promise<{ text: string; harness: boolean } | null> {
     if (this.inbox.length) return Promise.resolve(this.inbox.shift()!)
     if (this.stopped) return Promise.resolve(null)
     return new Promise((resolve) => {
-      this.wake = () => resolve(this.stopped ? null : this.inbox.shift() ?? '')
+      this.wake = () => resolve(this.stopped ? null : this.inbox.shift() ?? { text: '', harness: false })
     })
+  }
+
+  /** A harness message for the orchestrator (the Claude adapter's notifyOrchestrator path). */
+  private deliverHarness(text: string, activity: string): void {
+    this.harnessMessages.push(text)
+    this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+    const root = this.agents.get(ROOT_AGENT_ID)
+    if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_AGENT_ID, 'thinking', activity)
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
+    this.inbox.push({ text, harness: true })
+    this.poke()
   }
 
   private async run(): Promise<void> {
@@ -328,11 +388,12 @@ class MockSession implements RuntimeSession {
       this.log('info', `Mock session ${sessionId} started (${this.isSetup ? 'setup' : 'work'} script, first message ${first.length} chars)`)
       await this.turn(this.isSetup ? this.script.setup : this.script.work)
       while (!this.stopped) {
-        const text = await this.nextMessage()
-        if (text === null) break
-        if (!text) continue
+        const next = await this.nextMessage()
+        if (next === null) break
+        if (!next.text) continue
         this.emit({ type: 'run.status', runId, status: 'running' })
-        await this.turn([{ type: 'text', text: this.script.reply.replace('{text}', text) }])
+        if (next.harness) await this.turn(this.continueTurns.shift() ?? [{ type: 'text', text: 'Mock: continuing with the plan.' }])
+        else await this.turn([{ type: 'text', text: this.script.reply.replace('{text}', next.text) }])
       }
       this.emit({ type: 'run.status', runId, status: 'finished' })
     } catch (e) {
@@ -341,6 +402,7 @@ class MockSession implements RuntimeSession {
       this.setState(ROOT_AGENT_ID, 'error', message.slice(0, 80))
       this.emit({ type: 'run.status', runId, status: 'error', error: message })
     } finally {
+      this.continuation.dispose()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
           a.state = 'done'
@@ -368,6 +430,7 @@ class MockSession implements RuntimeSession {
     root.activity = reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
     this.upsert(root)
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
+    if (!this.interrupted && !this.isSetup) this.continuation.turnEnded()
   }
 
   private async step(step: MockStep): Promise<void> {
@@ -405,6 +468,16 @@ class MockSession implements RuntimeSession {
       }
       case 'harness':
         return this.harnessStep(step)
+      case 'plan':
+        return this.harnessStep({
+          type: 'harness',
+          name: PLAN_TOOLS.set,
+          args: { goal: step.goal, steps: step.steps.map((s) => (typeof s === 'string' ? { title: s } : s)) }
+        })
+      case 'planUpdate':
+        return this.harnessStep({ type: 'harness', name: PLAN_TOOLS.update, args: { steps: step.steps } })
+      case 'planComplete':
+        return this.harnessStep({ type: 'harness', name: PLAN_TOOLS.complete, args: { summary: step.summary } })
       case 'message': {
         const from = step.from ?? ROOT_AGENT_ID
         const input = { to: step.to, message: step.text }
@@ -449,6 +522,18 @@ class MockSession implements RuntimeSession {
     this.transcript(agentId, { kind: 'tool_use', id, name: step.name, input })
     this.charge(agentId, JSON.stringify(input))
     this.setState(agentId, 'tool', describeTool(step.name, input))
+    if (step.ask && step.background) {
+      // Leave the request pending and carry on; the result lands whenever the user answers.
+      this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
+      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input) }).then((decision) => {
+        if (this.stopped) return
+        const denied = decision.behavior === 'deny'
+        this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: denied ? decision.message : step.result ?? 'ok', isError: denied })
+        const a = this.agents.get(agentId)
+        if (a && a.state === 'waiting') this.setState(agentId, 'thinking', 'Thinking…')
+      })
+      return
+    }
     if (step.ask) {
       const suggestions = chooseSuggestions(step.name, input, undefined)
       const rules = allowRuleStrings(suggestions)
@@ -517,7 +602,7 @@ class MockSession implements RuntimeSession {
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = newId('tu')
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_use', id, name: step.name, input: step.args ?? {} })
-      this.setState(ROOT_AGENT_ID, 'waiting', harnessToolActivity(step.name))
+      this.setState(ROOT_AGENT_ID, isBlockingHarnessTool(step.name) ? 'waiting' : 'tool', harnessToolActivity(step.name))
       let text: string
       let isError = false
       try {
@@ -530,7 +615,7 @@ class MockSession implements RuntimeSession {
       }
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_result', toolUseId: id, content: text, isError })
       const a = this.agents.get(ROOT_AGENT_ID)
-      if (a && a.state === 'waiting') this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
+      if (a && (a.state === 'waiting' || a.state === 'tool')) this.setState(ROOT_AGENT_ID, 'thinking', stepActivity(this.ctx.getPlan()) ?? 'Thinking…')
       if (isError || !text.startsWith('REVISE') || step.retryOnRevise === false || this.stopped || this.interrupted) return
       this.transcript(ROOT_AGENT_ID, { kind: 'text', text: 'Revising the proposal with your feedback.' })
     }
@@ -544,13 +629,17 @@ export interface MockAdapterOptions {
 
 export class MockAdapter implements RuntimeAdapter {
   readonly id = 'mock' as const
+  /** Every session this adapter started, oldest first. For tests. */
+  readonly sessions: MockSession[] = []
 
   constructor(private options: MockAdapterOptions = {}) {}
 
   async start(ctx: RuntimeContext): Promise<RuntimeSession> {
     // Read the script per run so edits to the JSON file apply without a restart.
     const loaded = this.options.script ? { script: { ...DEFAULT_MOCK_SCRIPT, ...this.options.script } } : loadMockScript()
-    return new MockSession(ctx, loaded.script, 'error' in loaded ? loaded.error : undefined)
+    const session = new MockSession(ctx, loaded.script, 'error' in loaded ? loaded.error : undefined)
+    this.sessions.push(session)
+    return session
   }
 
   /** A fixed org chart draft, in the JSON shape the drafter expects. */

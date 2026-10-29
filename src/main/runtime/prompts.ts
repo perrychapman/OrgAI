@@ -105,6 +105,16 @@ export function orgChangeText(): string {
   )
 }
 
+/** Work-run orchestrators work unattended: plan first, keep going, stop only for genuine decisions. */
+export function unattendedText(): string {
+  return (
+    'Work unattended. Start every task by calling set_plan with the goal and the concrete steps (the last step is always verification: build and tests, then the final report). ' +
+    'Mark steps with update_plan as you go. Do not stop to ask whether to continue; continue until every step is done, then call complete_plan with a summary. ' +
+    'Stop only for a genuine decision the user must make: ask_user (waits for the answer) or mark_blocked (ends the run\'s automatic continuation with the reason). ' +
+    'The harness will remind you of remaining steps whenever a turn ends with work left.'
+  )
+}
+
 export function architectureDriftText(architecturePath: string): string {
   return `When a task changes the stack, module layout, conventions or commands, update ${architecturePath} in the same run so it stays true, and mention the update in your report.`
 }
@@ -135,6 +145,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
       parts.push(architectureText(archPath))
       if (role.reportsTo === null) parts.push(architectureDriftText(archPath))
     }
+    if (role.reportsTo === null) parts.push(unattendedText())
     if (role.reportsTo === null) parts.push(orgChangeText())
     const brief = briefText(project.brief)
     if (brief) parts.push(brief)

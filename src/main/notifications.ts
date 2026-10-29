@@ -1,10 +1,20 @@
 import { app, BrowserWindow, Notification } from 'electron'
-import type { FocusRunTarget, RunEvent, RunKind } from '@shared/types'
-import { IPC } from '@shared/types'
+import type { FocusRunTarget, RunEvent, RunKind, RunPlan } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, IPC } from '@shared/types'
+
+/** What the notifier knows about a run. */
+export interface NotifierRun {
+  projectId: string
+  kind: RunKind
+  /** The project keeps the orchestrator going while its plan is active (no "turn finished" noise then). */
+  autoContinue?: boolean
+  /** The project's automatic-continue limit; at the limit a finished turn notifies again. */
+  maxAutoContinues?: number
+}
 
 export interface NotifierDeps {
   /** Project of a run, while the main process still knows the run. */
-  projectOfRun(runId: string): { projectId: string; kind: RunKind } | undefined
+  projectOfRun(runId: string): NotifierRun | undefined
   /** Display name of a project. */
   projectName(projectId: string): string | undefined
 }
@@ -17,7 +27,9 @@ export interface NotifierDeps {
 export class Notifier {
   private enabled = true
   /** runId -> project, cached because the run manager forgets runs once they end. */
-  private runs = new Map<string, { projectId: string; kind: RunKind }>()
+  private runs = new Map<string, NotifierRun>()
+  /** runId -> latest plan, from plan.updated events. */
+  private plans = new Map<string, RunPlan>()
   /** runId -> agentId -> display name, learned from agent.upsert events. */
   private agentNames = new Map<string, Map<string, string>>()
   /** Electron drops click handlers of notifications that get garbage collected; keep them alive. */
@@ -49,10 +61,17 @@ export class Notifier {
     }
     if (event.type === 'run.status' && (event.status === 'finished' || event.status === 'error')) {
       this.agentNames.delete(event.runId)
+      this.plans.delete(event.runId)
+    }
+    let planChange: RunPlan['status'] | null = null
+    if (event.type === 'plan.updated') {
+      const before = this.plans.get(event.runId)?.status
+      this.plans.set(event.runId, event.plan)
+      if (before !== event.plan.status && event.plan.status !== 'active') planChange = event.plan.status
     }
 
-    const isRequest = event.type.endsWith('.request')
-    const body = this.describe(event, run?.kind)
+    const isRequest = event.type.endsWith('.request') || planChange === 'blocked'
+    const body = event.type === 'plan.updated' ? this.describePlan(event.plan, planChange) : this.describe(event, run)
     if (!body || !run) return
     if (BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isFocused())) return
 
@@ -79,7 +98,7 @@ export class Notifier {
     notification.show()
   }
 
-  private lookup(runId: string): { projectId: string; kind: RunKind } | undefined {
+  private lookup(runId: string): NotifierRun | undefined {
     let run = this.runs.get(runId)
     if (!run) {
       run = this.deps.projectOfRun(runId)
@@ -92,8 +111,16 @@ export class Notifier {
     return this.agentNames.get(runId)?.get(agentId) ?? (agentId === 'root' ? 'The orchestrator' : 'An agent')
   }
 
+  /** A plan that just finished or got blocked, like a finished run; null otherwise. */
+  private describePlan(plan: RunPlan, change: RunPlan['status'] | null): string | null {
+    if (change === 'done') return `Plan complete: ${plan.summary ?? plan.goal}`.slice(0, 240)
+    if (change === 'blocked') return `The orchestrator needs you: ${plan.blockedReason ?? 'the plan is blocked'}`.slice(0, 240)
+    return null
+  }
+
   /** Notification body for events that need the user, or null for everything else. */
-  private describe(event: RunEvent, kind: RunKind | undefined): string | null {
+  private describe(event: RunEvent, run: NotifierRun | undefined): string | null {
+    const kind = run?.kind
     const label = kind === 'setup' ? 'Setup session' : 'Run'
     switch (event.type) {
       case 'permission.request':
@@ -104,7 +131,13 @@ export class Notifier {
         return `Setup proposal: ${what}${title && title.toLowerCase() !== what.toLowerCase() ? ` - ${title}` : ''}`.slice(0, 240)
       }
       case 'run.status':
-        if (event.status === 'idle') return kind === 'setup' ? 'The Architect is waiting for your answer' : 'Turn finished, waiting for your reply'
+        if (event.status === 'idle') {
+          // An active plan keeps going on its own; the user hears about it when it completes or blocks.
+          const plan = this.plans.get(event.runId)
+          const continues = kind === 'work' && run?.autoContinue !== false && plan?.status === 'active'
+          if (continues && plan.autoContinues < (run?.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES)) return null
+          return kind === 'setup' ? 'The Architect is waiting for your answer' : 'Turn finished, waiting for your reply'
+        }
         if (event.status === 'paused')
           return event.autoResume
             ? `${label} paused at a usage limit; it continues at ${event.pausedUntil ? new Date(event.pausedUntil).toLocaleTimeString() : 'the reset'}`

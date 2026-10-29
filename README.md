@@ -35,6 +35,7 @@ src/main/           Electron main process
   runtime/claude.ts Claude adapter over @anthropic-ai/claude-agent-sdk
   runtime/mock.ts   scripted, token-free adapter for tests and UI work (ORGAI_MOCK=1)
   runtime/harnessTools.ts, prompts.ts, activity.ts, integration.ts, network.ts  provider-neutral session core
+  runtime/continuation.ts  unattended execution: when to remind the orchestrator of its plan
   runtime/runManager.ts  active runs, permission and proposal round-trips, event broadcast
   setup/profile.ts  token-free repository profile (tree, manifests, docs, git log)
   setup/service.ts  setup prompts, applying approved proposals, writing .orgai/ARCHITECTURE.md
@@ -150,6 +151,33 @@ scripts/            SDK smoke tests (cost well under a cent each)
   characters) and a line on the sender's transcript (`→ implementer-2: …`). The live view draws it as a dashed,
   animated pink edge labelled *msg* for 12 seconds; a message to or from a folded report attaches to its *done* group.
 
+## Unattended execution
+
+Work runs keep going until the job is done instead of stopping after each turn to ask "shall I continue?".
+
+- **Plan tools.** The orchestrator gets four harness tools: `set_plan({ goal, steps: [{ title, owner? }] })` creates
+  or replaces the plan (steps `p1..pn`, all pending), `update_plan({ steps: [{ id, status, note? }], add? })` marks
+  steps `in_progress`, `done`, `skipped` or `blocked` (and reactivates a blocked plan), `complete_plan({ summary })`
+  finishes it, and `mark_blocked({ reason })` stops it for a decision only the user can make. `ask_user` (the
+  multiple-choice card setup uses) is available too. Its prompt tells it to plan first, keep the last step for
+  verification (build and tests), and stop only for genuine decisions.
+- **The feedback loop** (`src/main/runtime/continuation.ts`, used by every adapter). When a turn ends, the harness
+  waits about 1.5 s (a report that just landed wakes the orchestrator first), re-checks, and if the plan is active with
+  steps left it sends the orchestrator a reminder: progress, the remaining steps by id, and "continue with the next
+  step now". The root node shows *Continuing: <next step>*. Without a plan after the first turn it asks once for one.
+  It never nudges while reports are still running, while a permission, proposal, question or merge card waits for
+  you, at a usage limit, or while the run is stopping. Each reminder counts as one automatic continue.
+- **Seeing it.** The side panel's **Plan** tab lists the goal and steps (○ pending, ● in progress, ✓ done,
+  ! blocked, – skipped) with notes and the automatic-continue count; the toolbar shows *3/7 steps* (click it for the
+  Plan tab) and the run strip shows the progress. A blocked plan shows its reason in an amber banner above the
+  composer; your reply goes to the orchestrator, which resumes the plan with `update_plan`. A plan that completes or
+  blocks raises an OS notification like a finished run.
+- **Stopping it.** *Interrupt turn* pauses the loop until you send a message; *End session* stops the run. Turn
+  it off per project with **Keep the orchestrator going until the plan is complete** (project settings, *Unattended
+  execution*), and bound it with **Max automatic continues per run** (default 40). At the limit the orchestrator
+  waits for you, and the transcript and logs say why. App settings hold the defaults for new projects, and the
+  Architect proposes both in its settings card. Continuing a finished run carries its plan over with a fresh count.
+
 ## Adding a provider
 
 Implement `RuntimeAdapter` in `src/main/runtime/`, register it in `src/main/index.ts`, and add its id to
@@ -159,7 +187,9 @@ An adapter only maps its SDK's events and hooks onto normalized `RunEvent`s. The
 `src/main/runtime/`: `harnessTools.ts` (proposal, `ask_user`, `complete_setup` and `integrate_worktrees` tools as
 zod schemas plus handlers; expose them through your SDK's custom-tool mechanism), `prompts.ts` (role system prompts),
 `activity.ts` (node activity strings), `integration.ts` (`WorktreeIntegrator`: commit, review, merge and orchestrator
-notifications for isolated reports; you supply `notify`), and `permissionRules.ts` (suggestions and allow scopes).
+notifications for isolated reports; you supply `notify`), `continuation.ts` (`ContinuationDriver`: call `turnEnded`,
+`userMessage`, `hold` and `dispose`, and deliver its `nudge` like a harness message), and `permissionRules.ts`
+(suggestions and allow scopes).
 `mock.ts` is a reference adapter that uses all of them without an SDK.
 
 For UI work without spending tokens, start the app with `ORGAI_MOCK=1` and set a project's `provider.id` to `"mock"`

@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import type { RunStatus } from '@shared/types'
 import { isRunLive, projectRuns, useAppStore, type RunState } from '../store/useAppStore'
-import { costLabel } from '../lib/layout'
+import { costLabel, planProgress } from '../lib/layout'
 
 function dotClass(status: RunStatus): string {
   if (status === 'running' || status === 'starting') return 'live'
@@ -35,7 +35,7 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
     <div className="run-strip">
       {runs.map((r) => {
         const live = isRunLive(r)
-        const waiting = r.permissions.length + r.proposals.length > 0
+        const waiting = r.permissions.length + r.proposals.length > 0 || r.plan?.status === 'blocked'
         const active = r.summary.id === viewedRunId && composerMode === 'reply'
         const cost = costLabel(r.summary.totalCostUsd, authMode)
         return (
@@ -53,6 +53,11 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
             <span className={`run-dot ${waiting ? 'warn' : dotClass(r.summary.status)}`} />
             <span className="run-kind">{r.summary.kind === 'setup' ? 'Setup' : 'Work'}</span>
             <span className="run-prompt">{r.summary.prompt || 'run'}</span>
+            {r.plan && (
+              <span className={`run-plan ${r.plan.status}`} title={`Plan ${r.plan.status === 'active' ? 'in progress' : r.plan.status}`}>
+                {planProgress(r.plan).done}/{planProgress(r.plan).total}
+              </span>
+            )}
             <span className="run-cost" title={cost.title}>
               {cost.text}
             </span>

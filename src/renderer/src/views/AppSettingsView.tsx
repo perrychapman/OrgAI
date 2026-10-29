@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, AppSettingsInfo, PermissionMode } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import ProviderAuthPicker from '../components/ProviderAuthPicker'
 
@@ -158,6 +159,28 @@ export default function AppSettingsView(): ReactElement {
               <input type="checkbox" checked={info.defaultIsolateWriters} onChange={(e) => patch({ defaultIsolateWriters: e.target.checked })} /> Isolate
               writing reports in git worktrees
             </label>
+          </div>
+          <div className="field">
+            <label>Unattended execution</label>
+            <label className={`check ${info.defaultAutoContinue ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
+              <input type="checkbox" checked={info.defaultAutoContinue} onChange={(e) => patch({ defaultAutoContinue: e.target.checked })} /> Keep the
+              orchestrator going until the plan is complete
+            </label>
+            <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+              <span>Max automatic continues per run</span>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                max={MAX_AUTO_CONTINUES_LIMIT}
+                style={{ width: 90 }}
+                value={info.defaultMaxAutoContinues}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  patch({ defaultMaxAutoContinues: Number.isFinite(v) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(v))) : DEFAULT_MAX_AUTO_CONTINUES })
+                }}
+              />
+            </div>
           </div>
           <div className="field">
             <label>Subscription limits</label>

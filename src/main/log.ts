@@ -132,6 +132,9 @@ export function logRunEvent(summary: RunSummary, e: RunEvent): void {
     else if (e.status === 'error') log.info(`${tag} error cost=$${summary.totalCostUsd.toFixed(4)}: ${e.error ?? 'unknown error'}`)
   } else if (e.type === 'log' && (e.level === 'warn' || e.level === 'error')) {
     write(e.level, [`run ${e.runId}: ${e.message}`])
+  } else if (e.type === 'plan.updated') {
+    const done = e.plan.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
+    log.info(`run ${e.runId} plan ${e.plan.status} steps=${done}/${e.plan.steps.length} autoContinues=${e.plan.autoContinues}`)
   }
 }
 

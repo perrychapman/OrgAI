@@ -1,8 +1,9 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import type { AgentInstance, RunSummary, TranscriptEntry } from '@shared/types'
-import { activeRun, useAppStore, type LogLine } from '../store/useAppStore'
-import { COST_ESTIMATE_HINT, costLabel, formatCost, formatElapsed, formatTokens } from '../lib/layout'
+import type { AgentInstance, PlanStep, RunPlan, RunSummary, TranscriptEntry } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
+import { activeRun, selectedProject, useAppStore, type LogLine } from '../store/useAppStore'
+import { COST_ESTIMATE_HINT, costLabel, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Markdown } from './Markdown'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 
@@ -98,6 +99,79 @@ function RunHistory(): ReactElement {
   )
 }
 
+const STEP_ICONS: Record<PlanStep['status'], string> = {
+  pending: '○',
+  in_progress: '●',
+  done: '✓',
+  blocked: '!',
+  skipped: '–'
+}
+
+const STEP_LABELS: Record<PlanStep['status'], string> = {
+  pending: 'pending',
+  in_progress: 'in progress',
+  done: 'done',
+  blocked: 'blocked',
+  skipped: 'skipped'
+}
+
+/** The orchestrator's plan: goal, steps with status, and how the automatic continuation stands. */
+function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
+  const project = useAppStore(selectedProject)
+  if (!plan) {
+    return (
+      <div className="plan-view">
+        <div className="entry system">
+          No plan yet. On work runs the orchestrator starts by calling set_plan; the harness then keeps it going until every step is done.
+        </div>
+      </div>
+    )
+  }
+  const { done, total } = planProgress(plan)
+  const max = project?.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
+  const auto = project?.autoContinue !== false
+  return (
+    <div className="plan-view">
+      <div className="plan-head">
+        <div className="plan-goal">{plan.goal}</div>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'live'}`}>
+            <span className="dot" /> {plan.status === 'active' ? 'in progress' : plan.status}
+          </span>
+          <span className="pill">
+            {done}/{total} steps
+          </span>
+          <span className="pill" title={auto ? 'Times the harness re-engaged the orchestrator automatically in this run' : 'Automatic continue is off for this project'}>
+            {auto ? `auto-continued ${plan.autoContinues} of ${max}` : 'auto-continue off'}
+          </span>
+        </div>
+      </div>
+      {plan.status === 'blocked' && plan.blockedReason && <div className="plan-blocked">Blocked: {plan.blockedReason}</div>}
+      <ol className="plan-steps">
+        {plan.steps.map((s) => (
+          <li key={s.id} className={`plan-step ${s.status}`}>
+            <span className="plan-icon" title={STEP_LABELS[s.status]} aria-label={STEP_LABELS[s.status]}>
+              {STEP_ICONS[s.status]}
+            </span>
+            <div className="plan-body">
+              <div className="plan-title">
+                <span className="plan-id">{s.id}</span> {s.title}
+                {s.owner && <span className="plan-owner">{s.owner}</span>}
+              </div>
+              {s.note && <div className="plan-note">{s.note}</div>}
+            </div>
+          </li>
+        ))}
+      </ol>
+      {plan.summary && (
+        <div className="plan-summary">
+          <Markdown text={plan.summary} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function describeInput(input: unknown): string {
   if (input && typeof input === 'object') {
     const i = input as Record<string, unknown>
@@ -109,10 +183,15 @@ function describeInput(input: unknown): string {
 }
 
 export default function TranscriptPanel({ agent, entries, logs, finished }: Props): ReactElement {
-  const [tab, setTab] = useState<'transcript' | 'logs' | 'runs'>('transcript')
+  const selectedTab = useAppStore((s) => s.sideTab)
+  const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
   const partial = useAppStore((s) => (agent ? activeRun(s)?.partial[agent.id] : undefined))
+  const plan = useAppStore((s) => activeRun(s)?.plan)
+  const isWork = useAppStore((s) => activeRun(s)?.summary.kind === 'work')
+  // Setup runs have no plan tab; fall back to the transcript there.
+  const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' })
@@ -129,6 +208,11 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
           <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>
             Transcript
           </button>
+          {(isWork || plan) && (
+            <button className={tab === 'plan' ? 'active' : ''} onClick={() => setTab('plan')} title={plan ? `Plan: ${plan.status}` : 'No plan yet'}>
+              Plan {plan?.status === 'blocked' ? '!' : ''}
+            </button>
+          )}
           <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>
             Logs {logs.some((l) => l.level === 'error') ? '!' : ''}
           </button>
@@ -138,6 +222,7 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
         </div>
       </div>
       {tab === 'runs' && <RunHistory />}
+      {tab === 'plan' && <PlanView plan={plan} />}
       {tab === 'transcript' && finished && !agent && <FinishedList group={finished} />}
       {agent && tab === 'transcript' && (
         <div className="agent-summary">
@@ -171,7 +256,7 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
           )}
         </div>
       )}
-      {tab === 'runs' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'runs' || tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <div className="transcript">
           {!agent && <div className="entry system">Select an agent on the chart to read its transcript.</div>}
           {agent && (

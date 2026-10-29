@@ -113,6 +113,17 @@ describe('applyProposal (settings)', () => {
     expect(bogus.permissionMode).toBe('dontAsk')
   })
 
+  it('applies the unattended-execution settings, clamping the continue limit', () => {
+    const p = store.create({ name: 'X', path: repo, brief: '' })
+    const next = service.applyProposal(p.id, settings(p.id, { autoContinue: false, maxAutoContinues: 12.7 }))
+    expect(next.autoContinue).toBe(false)
+    expect(next.maxAutoContinues).toBe(12)
+    const big = service.applyProposal(p.id, settings(p.id, { autoContinue: true, maxAutoContinues: 100000 }))
+    expect(big.autoContinue).toBe(true)
+    expect(big.maxAutoContinues).toBe(500)
+    expect(service.applyProposal(p.id, settings(p.id, { brief: 'b' })).maxAutoContinues).toBe(500)
+  })
+
   it('merges proposed allow rules into .claude/settings.local.json without duplicates or other keys lost', () => {
     const p = store.create({ name: 'X', path: repo, brief: '' })
     mkdirSync(join(repo, '.claude'))

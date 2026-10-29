@@ -11,6 +11,7 @@ import type {
   QuestionAnswer,
   Role,
   RunEvent,
+  RunPlan,
   RunSummary,
   UsageStatus,
   UserQuestion
@@ -47,7 +48,7 @@ export interface RuntimeContext {
   requestMergeReview(req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>): Promise<MergeDecision>
   /** Setup runs only: the Architect declares setup finished. */
   completeSetup(summary: string): Promise<void>
-  /** Setup runs only: ask the user a multiple-choice question. Resolves with their answer (empty if the run ends first). */
+  /** Ask the user a multiple-choice question (ask_user). Resolves with their answer (empty if the run ends first). */
   requestQuestion(req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>): Promise<QuestionAnswer>
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
@@ -59,6 +60,18 @@ export interface RuntimeContext {
   rateLimited(info: { until?: number; window?: string }): void
   /** Weekly-window percent at or above which projects with preferSonnetNearLimit spawn Opus reports on Sonnet. */
   opusGuardThreshold?: number
+  /** Work runs: the orchestrator's plan, if it set one (plan tools, continuation). */
+  getPlan(): RunPlan | undefined
+  /** Store the plan on the run, persist it and tell the renderer (plan.updated). */
+  updatePlan(plan: RunPlan): Promise<void>
+  /** Cards waiting for the user: pending permissions, proposals, questions and merge reviews. */
+  pendingInteractions(): number
+  /** Work runs: keep the orchestrator going until the plan is complete (project.autoContinue). Default true. */
+  autoContinue?: boolean
+  /** Automatic continues allowed in this run (project.maxAutoContinues). */
+  maxAutoContinues?: number
+  /** Delay between a turn ending and the continuation check, in ms. Tests shorten it. */
+  continuationDelayMs?: number
 }
 
 export interface RuntimeSession {

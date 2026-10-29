@@ -57,6 +57,11 @@ export function costLabel(usd: number, authMode: CostAuthMode): { text: string; 
 }
 
 /** "3h 12m", "12m", "<1m" until `at` (epoch ms). */
+/** Plan progress: steps done or skipped, out of all steps. */
+export function planProgress(plan: { steps: { status: string }[] }): { done: number; total: number } {
+  return { done: plan.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length, total: plan.steps.length }
+}
+
 export function formatUntil(at: number, now = Date.now()): string {
   const mins = Math.max(0, Math.round((at - now) / 60000))
   if (mins < 1) return '<1m'

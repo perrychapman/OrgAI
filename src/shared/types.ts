@@ -143,6 +143,13 @@ export interface Project {
    * seven-day window when the plan has no per-model one) is at or above the app's opusGuardThreshold.
    */
   preferSonnetNearLimit?: boolean
+  /**
+   * Work runs: once the orchestrator has a plan, the harness reminds it of the remaining steps whenever a
+   * turn ends with work left, until the plan is complete or blocked. Default true.
+   */
+  autoContinue?: boolean
+  /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
+  maxAutoContinues?: number
   roles: Role[]
   /** AI-driven setup state. Missing on projects created before setup existed. */
   setup?: ProjectSetup
@@ -167,6 +174,10 @@ export interface AppSettings {
   opusGuardThreshold: number
   /** preferSonnetNearLimit for new projects. */
   defaultPreferSonnetNearLimit: boolean
+  /** autoContinue for new projects. */
+  defaultAutoContinue: boolean
+  /** maxAutoContinues for new projects. */
+  defaultMaxAutoContinues: number
 }
 
 /** What settings:get returns: the settings plus read-only facts about the install. */
@@ -241,6 +252,10 @@ export interface SettingsProposalPayload {
   maxConcurrentSubagents?: number
   isolateWriters?: boolean
   reviewMerges?: boolean
+  /** Keep the orchestrator going until its plan is complete (work runs). */
+  autoContinue?: boolean
+  /** Automatic continues allowed per run. */
+  maxAutoContinues?: number
   /** Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Merged into .claude/settings.local.json. */
   allowRules?: string[]
   rationale: string
@@ -263,7 +278,7 @@ export type Proposal =
 
 export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
 
-/** A multiple-choice question the Architect puts to the user during setup (ask_user tool). */
+/** A multiple-choice question the Architect (setup) or the orchestrator (work runs) puts to the user (ask_user tool). */
 export interface UserQuestion {
   id: string
   runId: string
@@ -445,12 +460,47 @@ export interface RunSummary {
   autoResume?: boolean
 }
 
+export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'
+
+/** One step of the orchestrator's plan (set_plan / update_plan). */
+export interface PlanStep {
+  /** p1, p2, ... in plan order. */
+  id: string
+  title: string
+  status: PlanStepStatus
+  note?: string
+  /** Role or handle expected to do the step. */
+  owner?: string
+}
+
+/**
+ * A work run's plan. The orchestrator writes it with the harness's plan tools; the harness uses it to
+ * keep the run going unattended until every step is done ('done') or a decision is needed ('blocked').
+ */
+export interface RunPlan {
+  goal: string
+  steps: PlanStep[]
+  status: 'active' | 'done' | 'blocked'
+  /** complete_plan: the orchestrator's closing summary. */
+  summary?: string
+  /** mark_blocked: what the user must decide. */
+  blockedReason?: string
+  /** How many times the harness re-engaged the orchestrator automatically in this run. */
+  autoContinues: number
+  updatedAt: number
+}
+
+/** Automatic continues per run when a project sets none. */
+export const DEFAULT_MAX_AUTO_CONTINUES = 40
+
 /** A finished or live run as persisted on disk: everything needed to redraw it later. */
 export interface RunRecord {
   summary: RunSummary
   agents: Record<string, AgentInstance>
   transcript: TranscriptEntry[]
   logs: { at: number; level: 'info' | 'warn' | 'error'; message: string }[]
+  /** Work runs: the orchestrator's plan, once it set one. */
+  plan?: RunPlan
 }
 
 export interface PermissionRequest {
@@ -567,6 +617,8 @@ export type RunEvent =
   | { type: 'project.updated'; runId: string; project: Project }
   /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
   | { type: 'usage.status'; runId: string; usage: UsageStatus }
+  /** The orchestrator's plan changed (plan tools, or the harness counting an automatic continue). */
+  | { type: 'plan.updated'; runId: string; plan: RunPlan }
   /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
   | ({ type: 'agent.message'; runId: string } & AgentMessage)
 

@@ -1,11 +1,12 @@
 import { z } from 'zod'
-import type { ProposalDecision, QuestionAnswer } from '@shared/types'
+import type { PlanStep, ProposalDecision, QuestionAnswer, RunPlan } from '@shared/types'
 import { PERMISSION_MODES, TOOL_CATALOG } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { toRoles } from '../ai/draft'
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { pendingWorktrees } from './worktrees'
+import { PLAN_TOOLS, finishedCount, remainingSteps } from './continuation'
 
 /**
  * The harness's own tools, defined once for every provider. Each definition is a name, a description,
@@ -25,6 +26,16 @@ export interface HarnessToolHooks {
   onDecided?(): void
   /** Work runs: merge one waiting report branch; returns a one-line result. */
   integratePending?(wt: { path: string; branch: string }): Promise<string>
+  /** Work runs: a plan tool changed the plan (the adapter shows the step in progress on the root node). */
+  onPlanUpdated?(plan: RunPlan): void
+}
+
+/** Harness tools that return at once; every other harness tool waits on the user (the node shows "waiting"). */
+const NON_BLOCKING_TOOLS = new Set<string>([PLAN_TOOLS.set, PLAN_TOOLS.update, PLAN_TOOLS.complete, PLAN_TOOLS.blocked, INTEGRATE_TOOL])
+
+/** True when a harness tool (bare name) blocks until the user answers. */
+export function isBlockingHarnessTool(name: string): boolean {
+  return !NON_BLOCKING_TOOLS.has(name)
 }
 
 export interface HarnessToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
@@ -151,7 +162,18 @@ export const proposeSettings = defineTool({
     reviewMerges: z
       .boolean()
       .optional()
-      .describe("Show the user each report's diff and wait for approval before merging it; only when the user wants to review changes")
+      .describe("Show the user each report's diff and wait for approval before merging it; only when the user wants to review changes"),
+    autoContinue: z
+      .boolean()
+      .optional()
+      .describe('Keep the orchestrator going until its plan is complete, stopping only for genuine decisions; true unless the user wants to steer every turn'),
+    maxAutoContinues: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_AUTO_CONTINUES_LIMIT)
+      .optional()
+      .describe('Automatic continues allowed per run (default 40); lower it for small projects or tight budgets')
   }),
   async handler(ctx, { title, ...payload }, hooks) {
     const d = await ctx.requestProposal({ kind: 'settings', agentId: ROOT_AGENT_ID, title, payload })
@@ -240,9 +262,145 @@ export const proposeOrgChange = defineTool({
   }
 })
 
+// ---------- plan tools (work runs) ----------
+
+const STEP_STATUSES = ['pending', 'in_progress', 'done', 'blocked', 'skipped'] as const
+
+function stepLine(s: PlanStep): string {
+  return `${s.id} ${s.title}${s.owner ? ` [${s.owner}]` : ''}`
+}
+
+function progressLine(plan: RunPlan): string {
+  const remaining = remainingSteps(plan)
+  return (
+    `Progress: ${finishedCount(plan)} of ${plan.steps.length} done.` +
+    (remaining.length ? ` Remaining: ${remaining.map((s) => `${s.id} ${s.title} (${s.status})`).join('; ')}.` : ' Every step is done or skipped.')
+  )
+}
+
+const stepInput = z.object({
+  title: z.string().min(1).describe('One concrete, checkable step'),
+  owner: z.string().optional().describe('Role slug or report handle expected to do it')
+})
+
+export const setPlan = defineTool({
+  name: PLAN_TOOLS.set,
+  description:
+    'Create or replace the plan for this run: the goal and the concrete steps in order (the last step is verification: build and tests, then the final report). Every step starts pending; ids are p1..pn. The harness uses the plan to keep the run going until it is complete.',
+  inputSchema: z.object({
+    goal: z.string().min(1).describe("The user's goal in one or two sentences"),
+    steps: z.array(stepInput).min(1).max(40)
+  }),
+  async handler(ctx, { goal, steps }, hooks) {
+    const previous = ctx.getPlan()
+    const plan: RunPlan = {
+      goal: goal.trim(),
+      steps: steps.map((s, i) => ({ id: `p${i + 1}`, title: s.title.trim(), status: 'pending' as const, ...(s.owner?.trim() ? { owner: s.owner.trim() } : {}) })),
+      status: 'active',
+      // Re-planning keeps the run's automatic-continue count, so the limit still holds.
+      autoContinues: previous?.autoContinues ?? 0,
+      updatedAt: Date.now()
+    }
+    await ctx.updatePlan(plan)
+    hooks.onPlanUpdated?.(plan)
+    return (
+      `Plan saved with ${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}: ${plan.steps.map(stepLine).join('; ')}. ` +
+      'Mark each step with update_plan as you go (in_progress when you start it, done when it is finished) and call complete_plan when every step is done. Start on p1 now.'
+    )
+  }
+})
+
+export const updatePlan = defineTool({
+  name: PLAN_TOOLS.update,
+  description:
+    'Update plan steps by id: in_progress when you start one, done when it is finished, skipped when it turned out unnecessary, blocked when it cannot proceed (say why in note). Optionally append new steps with add. Updating a blocked plan makes it active again.',
+  inputSchema: z.object({
+    steps: z
+      .array(
+        z.object({
+          id: z.string().describe('Step id, e.g. p2'),
+          status: z.enum(STEP_STATUSES),
+          note: z.string().optional().describe('Short note, e.g. what was done or why it is blocked')
+        })
+      )
+      .optional(),
+    add: z.array(stepInput).optional().describe('New steps to append to the plan, in order')
+  }),
+  async handler(ctx, { steps, add }, hooks) {
+    const current = ctx.getPlan()
+    if (!current) return 'There is no plan yet. Call set_plan with the goal and the steps first.'
+    const byId = new Map(current.steps.map((s) => [s.id, { ...s }]))
+    const unknown: string[] = []
+    const changed: string[] = []
+    for (const u of steps ?? []) {
+      const step = byId.get(u.id.trim())
+      if (!step) {
+        unknown.push(u.id)
+        continue
+      }
+      step.status = u.status
+      if (u.note?.trim()) step.note = u.note.trim()
+      changed.push(`${step.id} ${u.status}`)
+    }
+    const next: PlanStep[] = current.steps.map((s) => byId.get(s.id) ?? s)
+    let n = current.steps.reduce((max, s) => Math.max(max, Number(/^p(\d+)$/.exec(s.id)?.[1] ?? 0)), 0)
+    for (const a of add ?? []) {
+      n++
+      next.push({ id: `p${n}`, title: a.title.trim(), status: 'pending', ...(a.owner?.trim() ? { owner: a.owner.trim() } : {}) })
+      changed.push(`p${n} added`)
+    }
+    const reopened = current.status !== 'active'
+    const plan: RunPlan = { ...current, steps: next, status: 'active', updatedAt: Date.now() }
+    delete plan.blockedReason
+    if (reopened) delete plan.summary
+    await ctx.updatePlan(plan)
+    hooks.onPlanUpdated?.(plan)
+    const parts = [changed.length ? `Updated: ${changed.join(', ')}.` : 'Nothing changed.']
+    if (unknown.length) parts.push(`Unknown step ids: ${unknown.join(', ')}. The plan has ${current.steps.map((s) => s.id).join(', ')}.`)
+    if (reopened) parts.push('The plan is active again.')
+    parts.push(progressLine(plan))
+    return parts.join(' ')
+  }
+})
+
+export const completePlan = defineTool({
+  name: PLAN_TOOLS.complete,
+  description: 'Mark the plan complete once every step is done and verified (build and tests pass). Ends the automatic continuation.',
+  inputSchema: z.object({ summary: z.string().min(1).describe('What was done and verified, under 150 words') }),
+  async handler(ctx, { summary }, hooks) {
+    const current = ctx.getPlan()
+    if (!current) return 'There is no plan to complete. Give the user your final report.'
+    const plan: RunPlan = { ...current, status: 'done', summary: summary.trim(), updatedAt: Date.now() }
+    delete plan.blockedReason
+    await ctx.updatePlan(plan)
+    hooks.onPlanUpdated?.(plan)
+    const open = remainingSteps(plan)
+    return (
+      'Plan marked complete. Give the user your final report now.' +
+      (open.length ? ` Note: ${open.map((s) => s.id).join(', ')} ${open.length === 1 ? 'was' : 'were'} not marked done; say why in the report.` : '')
+    )
+  }
+})
+
+export const markBlocked = defineTool({
+  name: PLAN_TOOLS.blocked,
+  description:
+    'Stop the automatic continuation because the run needs a decision or something only the user can provide. The harness tells the user the reason. Use ask_user instead when the choice fits a few options.',
+  inputSchema: z.object({ reason: z.string().min(1).describe('What the user must decide or provide, and why the work cannot continue without it') }),
+  async handler(ctx, { reason }, hooks) {
+    const current = ctx.getPlan()
+    const plan: RunPlan = current
+      ? { ...current, status: 'blocked', blockedReason: reason.trim(), updatedAt: Date.now() }
+      : { goal: ctx.prompt.trim().slice(0, 300), steps: [], status: 'blocked', blockedReason: reason.trim(), autoContinues: 0, updatedAt: Date.now() }
+    await ctx.updatePlan(plan)
+    hooks.onPlanUpdated?.(plan)
+    return 'The plan is marked blocked; the harness stopped the automatic continues and told the user. End your turn with a short message saying what you need. When the user answers, call update_plan to resume the plan.'
+  }
+})
+
 export const SETUP_TOOL_DEFS: HarnessToolDef[] = [proposeArchitecture, proposeOrgChart, proposeSettings, askUser, completeSetup]
-/** Work runs with isolation: the merge-retry tool. */
-export const WORK_TOOL_DEFS: HarnessToolDef[] = [integrateWorktrees, proposeOrgChange]
+/** Work runs: plan tools, ask_user, the merge-retry tool and org chart revisions. */
+export const WORK_TOOL_DEFS: HarnessToolDef[] = [setPlan, updatePlan, completePlan, markBlocked, askUser, integrateWorktrees, proposeOrgChange]
 
 export function setupTools(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): HarnessTool[] {
   return bind(SETUP_TOOL_DEFS, ctx, hooks)

@@ -1,5 +1,6 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
+import { PLAN_TOOLS } from './continuation'
 
 /**
  * One-line activity strings for agent nodes, keyed by bare tool name. Vendor-neutral: an adapter that
@@ -14,7 +15,11 @@ export const HARNESS_TOOL_ACTIVITY: Record<string, string> = {
   [PROPOSAL_TOOLS.settings]: 'Proposing run settings…',
   [PROPOSAL_TOOLS.complete]: 'Wrapping up setup…',
   [PROPOSAL_TOOLS.question]: 'Asking you a question…',
-  [PROPOSAL_TOOLS.orgChange]: 'Proposing an org chart change…'
+  [PROPOSAL_TOOLS.orgChange]: 'Proposing an org chart change…',
+  [PLAN_TOOLS.set]: 'Writing the plan…',
+  [PLAN_TOOLS.update]: 'Updating the plan…',
+  [PLAN_TOOLS.complete]: 'Completing the plan…',
+  [PLAN_TOOLS.blocked]: 'Marking the plan blocked…'
 }
 
 /** Label for one of the harness's own tools (bare name). */

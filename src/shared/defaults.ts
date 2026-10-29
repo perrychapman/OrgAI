@@ -1,5 +1,5 @@
 import type { AppSettings, Project, Role, SetupKind, ToolName } from './types'
-import { DEFAULT_KEEP_RUNS } from './types'
+import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -7,6 +7,8 @@ export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
 /** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
 export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
 export const MAX_SUBAGENT_DEPTH_LIMIT = 5
+/** Upper bound of maxAutoContinues (settings inputs, proposal schema, applying proposals). */
+export const MAX_AUTO_CONTINUES_LIMIT = 500
 
 export const ROLE_COLORS = ['#7c5cff', '#2bb0ff', '#22c58b', '#f5a524', '#ff6b6b', '#e879f9', '#38bdf8', '#a3e635']
 
@@ -20,7 +22,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   providerAuth: { kind: 'subscription' },
   notifications: true,
   opusGuardThreshold: 80,
-  defaultPreferSonnetNearLimit: false
+  defaultPreferSonnetNearLimit: false,
+  defaultAutoContinue: true,
+  defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES
 }
 
 /** Provider label matching an auth choice. */
@@ -158,6 +162,8 @@ export function newProject(input: { name: string; path: string; brief: string; s
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
       preferSonnetNearLimit: settings.defaultPreferSonnetNearLimit,
+      autoContinue: settings.defaultAutoContinue,
+      maxAutoContinues: settings.defaultMaxAutoContinues,
       roles,
       setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
       createdAt: now,

@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { Project, Role, RunEvent, RunSummary } from '@shared/types'
+import type { Project, Role, RunEvent, RunPlan, RunSummary } from '@shared/types'
 import type { RuntimeContext } from './types'
 
 /** Test-only fixtures for the runtime modules. Not imported by app code. */
@@ -55,6 +55,7 @@ export function runSummary(over: Partial<RunSummary> = {}): RunSummary {
 export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { events: RunEvent[] } {
   const events: RunEvent[] = []
   const p = over.project ?? project()
+  let plan: RunPlan | undefined
   return {
     run: runSummary(),
     project: p,
@@ -68,6 +69,11 @@ export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { 
     requestQuestion: vi.fn(async () => ({ selected: [] })),
     noteArchitectureUpdated: vi.fn(async () => {}),
     rateLimited: vi.fn(),
+    getPlan: () => plan,
+    updatePlan: vi.fn(async (next: RunPlan) => {
+      plan = next
+    }),
+    pendingInteractions: () => 0,
     ...over,
     events
   }

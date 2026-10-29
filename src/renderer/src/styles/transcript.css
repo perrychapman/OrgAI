@@ -274,3 +274,106 @@
   text-align: right;
   flex: none;
 }
+
+/* ---------- Plan tab: the orchestrator's plan and the automatic continuation ---------- */
+
+.plan-view {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: var(--text-small);
+  overflow: auto;
+}
+.plan-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-goal {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.plan-blocked {
+  border: 1px solid var(--warning-border);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+}
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-step {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+.plan-step.in_progress {
+  border-color: var(--accent-soft-border);
+  background: var(--accent-soft);
+}
+.plan-step.done .plan-title,
+.plan-step.skipped .plan-title {
+  color: var(--text-tertiary);
+}
+.plan-step.skipped .plan-title {
+  text-decoration: line-through;
+}
+.plan-step.blocked {
+  border-color: var(--warning-border);
+}
+.plan-icon {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.plan-step.in_progress .plan-icon {
+  color: var(--accent-text);
+}
+.plan-step.done .plan-icon {
+  color: var(--success-text);
+}
+.plan-step.blocked .plan-icon {
+  color: var(--warning-text);
+}
+.plan-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan-title {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.plan-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.plan-owner {
+  margin-left: 6px;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.plan-note {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.plan-summary {
+  border-top: 1px solid var(--border-default);
+  padding-top: 8px;
+  color: var(--text-secondary);
+}

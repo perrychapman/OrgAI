@@ -11,16 +11,19 @@ import type {
   QuestionAnswer,
   RunEvent,
   RunKind,
+  RunPlan,
   RunRecord,
   RunSummary,
   UserQuestion
 } from '@shared/types'
 import { newId } from '@shared/defaults'
+import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { architectRole } from '@shared/setup'
-import type { RuntimeAdapter, RuntimeSession } from './types'
+import { ROOT_AGENT_ID, type RuntimeAdapter, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { logPermission, logRunEvent } from '../log'
+import { describePlanChange } from './continuation'
 
 const FLUSH_INTERVAL_MS = 1500
 /** When a usage limit gives no reset time, try again after this long. */
@@ -66,6 +69,8 @@ export interface RunManagerOptions {
   resolveProject?: (projectId: string) => Project | null | undefined
   /** App setting passed to adapters (see RuntimeContext.opusGuardThreshold). */
   opusGuardThreshold?: () => number
+  /** Delay between a turn ending and the automatic-continue check (RuntimeContext.continuationDelayMs). */
+  continuationDelayMs?: number
 }
 
 export interface StartInput {
@@ -81,6 +86,8 @@ export interface StartInput {
   resumedFrom?: string
   /** Cost already recorded on the run being continued. */
   resumeBaseCostUsd?: number
+  /** The continued run's plan; it carries over with a fresh automatic-continue count. */
+  plan?: RunPlan
 }
 
 export class RunManager {
@@ -126,7 +133,8 @@ export class RunManager {
     scaffold,
     resumeSessionId,
     resumedFrom,
-    resumeBaseCostUsd
+    resumeBaseCostUsd,
+    plan: carriedPlan
   }: StartInput): Promise<RunSummary> {
     const summary: RunSummary = {
       id: newId('run'),
@@ -179,6 +187,19 @@ export class RunManager {
     }
 
     emit({ type: 'run.status', runId: summary.id, status: 'starting' })
+    if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
+
+    const updatePlan = async (plan: RunPlan): Promise<void> => {
+      const previous = active.record.plan
+      const next = structuredClone(plan)
+      emit({ type: 'plan.updated', runId: summary.id, plan: next })
+      const change = describePlanChange(previous, next)
+      if (change) emit({ type: 'log', runId: summary.id, level: 'info', message: change })
+      if (next.status === 'blocked' && previous?.status !== 'blocked') {
+        const text = `The orchestrator needs you: ${next.blockedReason ?? 'it marked the plan blocked.'} Reply below to continue.`
+        emit({ type: 'transcript', runId: summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at: Date.now(), block: { kind: 'system', text } } })
+      }
+    }
 
     const adapter = this.adapterFor(project)
     try {
@@ -209,6 +230,12 @@ export class RunManager {
           active.limited = { ...active.limited, ...info }
         },
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
+        getPlan: () => active.record.plan,
+        updatePlan,
+        pendingInteractions: () => active.pending.size + active.pendingProposals.size + active.pendingQuestions.size + active.pendingMerges.size,
+        autoContinue: project.autoContinue !== false,
+        maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
@@ -255,6 +282,9 @@ export class RunManager {
         break
       case 'log':
         r.logs.push({ at: Date.now(), level: e.level, message: e.message })
+        break
+      case 'plan.updated':
+        r.plan = e.plan
         break
       default:
         return
@@ -454,7 +484,8 @@ export class RunManager {
       hiddenContext: from.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
       resumeSessionId: from.sessionId,
       resumedFrom: from.id,
-      resumeBaseCostUsd: from.totalCostUsd
+      resumeBaseCostUsd: from.totalCostUsd,
+      plan: from.kind === 'work' ? this.get(from.id)?.plan : undefined
     })
   }
 

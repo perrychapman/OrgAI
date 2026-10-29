@@ -11,6 +11,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   prompts in `prompts.ts`, activity strings in `activity.ts`, the worktree state machine in `integration.ts`
   (`WorktreeIntegrator`, adapter supplies `notify`), permission scopes in `permissionRules.ts`. `mock.ts` is the
   reference adapter; `npm test` runs vitest (`*.test.ts` beside the modules) and never spends tokens.
+- Unattended execution: the work-run plan (`RunPlan` on `RunRecord`, `plan.updated` events) is written by the plan
+  tools in `harnessTools.ts` through `RuntimeContext.updatePlan` (RunManager stores, persists and broadcasts it).
+  `continuation.ts` holds the pure `nextNudge` decision and the `ContinuationDriver` every adapter calls at turn end
+  (`turnEnded`), on user messages, on interrupt (`hold`) and at session end; the adapter only delivers the nudge
+  through its harness-message path (Claude: `notifyOrchestrator`). Never nudge setup runs.
 - Claude Agent SDK facts verified against v0.3.312 (see `scripts/smoke-*.mjs`):
   - `task_started` (system message) arrives before the `SubagentStart` hook and carries `task_id` (= `agent_id`),
     `tool_use_id` of the spawning Agent call, `subagent_type`, `description`, optional `parent_task_id`.

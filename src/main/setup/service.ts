@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { ArchitectureSpec, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
 import { setupKindLabel } from '@shared/setup'
 import { isPermissionMode } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { addRules, isUnsafeAllowRule } from '../runtime/permissionRules'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
@@ -124,6 +124,10 @@ export class SetupService {
         if (p.maxConcurrentSubagents) next.maxConcurrentSubagents = clamp(p.maxConcurrentSubagents, 1, MAX_CONCURRENT_SUBAGENTS_LIMIT)
         if (typeof p.isolateWriters === 'boolean') next.isolateWriters = p.isolateWriters
         if (typeof p.reviewMerges === 'boolean') next.reviewMerges = p.reviewMerges
+        if (typeof p.autoContinue === 'boolean') next.autoContinue = p.autoContinue
+        if (typeof p.maxAutoContinues === 'number' && Number.isFinite(p.maxAutoContinues)) {
+          next.maxAutoContinues = clamp(Math.floor(p.maxAutoContinues), 0, MAX_AUTO_CONTINUES_LIMIT)
+        }
         // The safe-command allowlist lives with the other saved rules in .claude/settings.local.json.
         const rules = cleanAllowRules(p.allowRules)
         if (rules.length) addRules(project.path, rules)

@@ -83,7 +83,9 @@ app.whenReady().then(() => {
   notifier = new Notifier({
     projectOfRun: (runId) => {
       const summary = runManager?.summaryOf(runId)
-      return summary ? { projectId: summary.projectId, kind: summary.kind } : undefined
+      if (!summary) return undefined
+      const project = projects.get(summary.projectId)
+      return { projectId: summary.projectId, kind: summary.kind, autoContinue: project?.autoContinue !== false, maxAutoContinues: project?.maxAutoContinues }
     },
     projectName: (projectId) => projects.get(projectId)?.name
   })

@@ -8,6 +8,7 @@ import { MockAdapter, type MockScript } from './mock'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject } from './testHelpers'
+import { SET_PLAN_NUDGE, limitReachedText } from './continuation'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {} }))
@@ -55,9 +56,12 @@ function fakeSetup(p: Project) {
 function manager(p: Project, script: MockScript = {}, options: RunManagerOptions = {}) {
   const setup = fakeSetup(p)
   const store = new RunStore(join(dir, 'data'))
-  const m = new RunManager({ mock: new MockAdapter({ script: { delayMs: 0, ...script } }) }, (e) => events.push(e), store, setup.service, () => 100, options)
-  return { m, store, setup }
+  const adapter = new MockAdapter({ script: { delayMs: 0, ...script } })
+  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, options)
+  return { m, store, setup, adapter }
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orgai-rm-'))
@@ -240,6 +244,117 @@ describe('RunManager with the mock adapter', () => {
     const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } } })
     const { m } = manager(p)
     expect(() => m.adapterFor(p)).toThrow('No runtime adapter for provider "claude"')
+  })
+
+  describe('unattended execution', () => {
+    const fast: RunManagerOptions = { continuationDelayMs: 5 }
+
+    it('reminds the orchestrator of remaining steps until the plan is complete', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, adapter } = manager(
+        p,
+        {
+          work: [
+            { type: 'plan', goal: 'Ship it', steps: ['Build', 'Verify'] },
+            { type: 'planUpdate', steps: [{ id: 'p1', status: 'done' }] },
+            { type: 'text', text: 'Step 1 is done. Shall I continue?' }
+          ],
+          continue: [[{ type: 'planUpdate', steps: [{ id: 'p2', status: 'done' }] }, { type: 'planComplete', summary: 'Built and verified' }]]
+        },
+        fast
+      )
+      const run = await m.start({ project: p, prompt: 'Ship it' })
+      const done = await waitFor(isType('plan.updated', (e) => e.plan.status === 'done'))
+      expect(done.plan.autoContinues).toBe(1)
+      await waitFor(isType('run.status', (e) => e.status === 'idle'), events.indexOf(done))
+      await sleep(60)
+      const session = adapter.sessions[0]
+      expect(session.harnessMessages).toHaveLength(1)
+      expect(session.harnessMessages[0]).toBe(
+        'Harness: plan progress 1 of 2 done. Remaining: p2 Verify. Continue with the next step now; mark steps with update_plan as you go. ' +
+          "When every step is done, run the project's verification (build/tests) and call complete_plan. " +
+          'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+      )
+      expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === session.harnessMessages[0])).toBe(true)
+      expect(events.some((e) => e.type === 'agent.upsert' && e.agent.id === 'root' && e.agent.activity === 'Continuing: Verify')).toBe(true)
+      expect(m.get(run.id)?.plan).toMatchObject({ status: 'done', summary: 'Built and verified', autoContinues: 1 })
+      expect(events.some((e) => e.type === 'log' && e.message === 'Plan set: Ship it (2 steps).')).toBe(true)
+      await m.stop(run.id)
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+      expect(m.get(run.id)?.plan?.status).toBe('done')
+    })
+
+    it('stops at the automatic-continue limit with a warning', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), maxAutoContinues: 2 })
+      const { m, adapter } = manager(p, { work: [{ type: 'plan', goal: 'G', steps: ['Never finished'] }] }, fast)
+      const run = await m.start({ project: p, prompt: 'Go' })
+      await waitFor(isType('log', (e) => e.level === 'warn' && e.message.startsWith('Automatic-continue limit reached (2)')))
+      await sleep(40)
+      expect(adapter.sessions[0].harnessMessages).toHaveLength(2)
+      expect(m.get(run.id)?.plan?.autoContinues).toBe(2)
+      expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === limitReachedText(2))).toBe(true)
+      await m.stop(run.id)
+    })
+
+    it('does not nudge while a permission card is pending', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, adapter } = manager(
+        p,
+        { work: [{ type: 'plan', goal: 'G', steps: ['A', 'B'] }, { type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true, background: true }] },
+        fast
+      )
+      const run = await m.start({ project: p, prompt: 'Go' })
+      const req = await waitFor(isType('permission.request'))
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      await sleep(60)
+      expect(adapter.sessions[0].harnessMessages).toHaveLength(0)
+      expect(m.get(run.id)?.plan?.autoContinues).toBe(0)
+      m.decide(run.id, req.request.id, { behavior: 'allow' })
+      await m.stop(run.id)
+    })
+
+    it('asks once for a plan when a turn ends without one', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, adapter } = manager(p, { work: [{ type: 'text', text: 'Done with the first part.' }] }, fast)
+      const run = await m.start({ project: p, prompt: 'Go' })
+      await waitFor(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.block.text === SET_PLAN_NUDGE))
+      await sleep(60)
+      expect(adapter.sessions[0].harnessMessages).toEqual([SET_PLAN_NUDGE])
+      await m.stop(run.id)
+    })
+
+    it('stays quiet when the project turns automatic continue off, and for setup runs', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), autoContinue: false, setup: { kind: 'existing', state: 'in_progress' } })
+      const { m, adapter } = manager(p, { work: [{ type: 'plan', goal: 'G', steps: ['A'] }], setup: [{ type: 'text', text: 'Hello' }] }, fast)
+      const work = await m.start({ project: p, prompt: 'Go' })
+      const setupRun = await m.start({ project: { ...p, autoContinue: true }, prompt: 'Set up', kind: 'setup' })
+      await sleep(80)
+      expect(adapter.sessions.map((s) => s.harnessMessages.length)).toEqual([0, 0])
+      await m.stop(work.id)
+      await m.stop(setupRun.id)
+    })
+
+    it('tells the user when the orchestrator marks the plan blocked, and carries the plan into a continued run', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, adapter } = manager(
+        p,
+        { work: [{ type: 'plan', goal: 'G', steps: ['A', 'B'] }, { type: 'harness', name: 'mark_blocked', args: { reason: 'Pick a database' } }] },
+        fast
+      )
+      const run = await m.start({ project: p, prompt: 'Go' })
+      await waitFor(isType('plan.updated', (e) => e.plan.status === 'blocked'))
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      await sleep(40)
+      expect(adapter.sessions[0].harnessMessages).toHaveLength(0)
+      expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text.includes('Pick a database'))).toBe(true)
+      await m.stop(run.id)
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+      const seen = events.length
+      const next = await m.continueRun(p, run.id, 'Use Postgres')
+      const carried = await waitFor(isType('plan.updated', (e) => e.runId === next.id), seen)
+      expect(carried.plan).toMatchObject({ status: 'blocked', blockedReason: 'Pick a database', autoContinues: 0 })
+      await m.stopAll()
+    })
   })
 
   describe('usage limits', () => {

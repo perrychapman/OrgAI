@@ -42,6 +42,9 @@ describe('describeTool', () => {
     expect(describeTool(PROPOSAL_TOOLS.question, {}, { harness: true })).toBe('Asking you a question…')
     expect(describeTool('integrate_worktrees', {}, { harness: true })).toBe('Talking to the harness')
     expect(harnessToolActivity(PROPOSAL_TOOLS.complete)).toBe('Wrapping up setup…')
+    expect(harnessToolActivity('set_plan')).toBe('Writing the plan…')
+    expect(harnessToolActivity('update_plan')).toBe('Updating the plan…')
+    expect(harnessToolActivity('mark_blocked')).toBe('Marking the plan blocked…')
   })
 
   it('does not treat a bare non-harness call as a harness tool', () => {

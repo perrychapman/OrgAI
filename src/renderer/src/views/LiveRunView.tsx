@@ -22,7 +22,7 @@ import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RunStrip, { useStripRuns } from '../components/RunStrip'
 import MergeReviewCard from '../components/MergeReviewCard'
-import { costLabel, formatUntil, treeLayout } from '../lib/layout'
+import { costLabel, formatUntil, planProgress, treeLayout } from '../lib/layout'
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
@@ -85,6 +85,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const showStrip = stripRuns.length > 0
   const decideMerge = useAppStore((s) => s.decideMerge)
   const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
+  const setSideTab = useAppStore((s) => s.setSideTab)
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -377,6 +378,16 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             <span className="pill">
               {agents.length} agent{agents.length === 1 ? '' : 's'}
             </span>
+            {run.plan && (
+              <button
+                className={`pill plan-pill ${run.plan.status}`}
+                title={`Plan ${run.plan.status === 'active' ? 'in progress' : run.plan.status}: ${run.plan.goal}. Click to open the plan.`}
+                onClick={() => setSideTab('plan')}
+              >
+                {planProgress(run.plan).done}/{planProgress(run.plan).total} steps
+                {run.plan.status === 'done' ? ' ✓' : run.plan.status === 'blocked' ? ' !' : ''}
+              </button>
+            )}
             {agents.length > 1 && (
               <button
                 className={`btn sm ${collapseFinished ? '' : 'ghost'}`}
@@ -415,6 +426,28 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && status === 'paused' && <PauseBanner runId={run.summary.id} />}
+
+        {run && status !== 'paused' && run.plan?.status === 'blocked' && (
+          <div className="pause-banner plan-blocked-banner">
+            <div className="pause-title">
+              <span className="dot" /> The orchestrator needs your decision
+            </div>
+            <div className="pause-reason">{run.plan.blockedReason ?? 'It marked the plan blocked.'}</div>
+            <div className="pause-when">
+              Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
+            </div>
+            {(sessionOpen || canContinue) && (
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn primary sm" onClick={() => composerRef.current?.focus()}>
+                  Answer
+                </button>
+                <button className="btn sm" onClick={() => setSideTab('plan')}>
+                  Show the plan
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0) && (
           <div className="proposals" style={{ top: showStrip ? 96 : 56 }}>

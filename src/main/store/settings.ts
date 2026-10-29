@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path'
 import type { AppSettings, ProviderAuth } from '@shared/types'
 import { isPermissionMode } from '@shared/types'
-import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
+import { DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 
 /** Merge whatever is on disk (or sent by the renderer) over the defaults, dropping anything malformed. */
 export function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSettings {
@@ -18,6 +18,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
   const budget = r.defaultMaxBudgetUsd
   const keep = Number(r.defaultKeepRuns)
   const threshold = Number(r.opusGuardThreshold)
+  const maxContinues = Number(r.defaultMaxAutoContinues)
   return {
     defaultPermissionMode: isPermissionMode(r.defaultPermissionMode) ? r.defaultPermissionMode : d.defaultPermissionMode,
     defaultMaxBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : d.defaultMaxBudgetUsd,
@@ -30,7 +31,12 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     opusGuardThreshold:
       r.opusGuardThreshold != null && Number.isFinite(threshold) && threshold >= 1 && threshold <= 100 ? threshold : d.opusGuardThreshold,
     defaultPreferSonnetNearLimit:
-      typeof r.defaultPreferSonnetNearLimit === 'boolean' ? r.defaultPreferSonnetNearLimit : d.defaultPreferSonnetNearLimit
+      typeof r.defaultPreferSonnetNearLimit === 'boolean' ? r.defaultPreferSonnetNearLimit : d.defaultPreferSonnetNearLimit,
+    defaultAutoContinue: typeof r.defaultAutoContinue === 'boolean' ? r.defaultAutoContinue : d.defaultAutoContinue,
+    defaultMaxAutoContinues:
+      r.defaultMaxAutoContinues != null && Number.isFinite(maxContinues) && maxContinues >= 0
+        ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.floor(maxContinues))
+        : d.defaultMaxAutoContinues
   }
 }
 

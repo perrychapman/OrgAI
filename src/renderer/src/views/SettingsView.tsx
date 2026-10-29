@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { MaintenanceResult, PendingWorktree, WorktreeDiff } from '@shared/types'
-import { DEFAULT_KEEP_RUNS, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import {
   ReactFlow,
   Background,
@@ -14,7 +14,7 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { PermissionMode, Project, Role } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, newId, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
@@ -463,6 +463,35 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
           />
           <span className="hint">Reports that may run at the same time across the whole org.</span>
         </div>
+      </div>
+      <div className="field">
+        <label>Unattended execution</label>
+        <label className={`check ${project.autoContinue !== false ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
+          <input type="checkbox" checked={project.autoContinue !== false} onChange={(e) => patch({ autoContinue: e.target.checked })} /> Keep the
+          orchestrator going until the plan is complete
+        </label>
+        <span className="hint">
+          The orchestrator plans each task with set_plan. Whenever a turn ends with steps left, the harness reminds it what remains, unless reports are
+          still running, a card waits for you, or the run is stopping. It stops for genuine decisions (ask_user, mark_blocked); interrupting a turn
+          also pauses it until you reply.
+        </span>
+        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+          <span>Max automatic continues per run</span>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            max={MAX_AUTO_CONTINUES_LIMIT}
+            style={{ width: 90 }}
+            disabled={project.autoContinue === false}
+            value={project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES}
+            onChange={(e) => {
+              const v = Number(e.target.value)
+              patch({ maxAutoContinues: Number.isFinite(v) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(v))) : DEFAULT_MAX_AUTO_CONTINUES })
+            }}
+          />
+        </div>
+        <span className="hint">When the limit is reached the orchestrator waits for you and the transcript says why.</span>
       </div>
       <div className="field">
         <label>Subscription limits</label>

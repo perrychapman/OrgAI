@@ -423,3 +423,34 @@
   color: var(--text-primary);
   border-color: var(--border-strong);
 }
+
+/* ---------- Plan progress: toolbar pill and run-strip chip ---------- */
+
+.pill.plan-pill {
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.pill.plan-pill:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.pill.plan-pill.done {
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+.pill.plan-pill.blocked {
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+.run-chip .run-plan {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.run-chip .run-plan.done {
+  color: var(--success-text);
+}
+.run-chip .run-plan.blocked {
+  color: var(--warning-text);
+}

@@ -66,8 +66,18 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, org-change guidance, brief
-    expect(parts).toHaveLength(8)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, brief
+    expect(parts).toHaveLength(9)
+  })
+
+  it('tells only the work-run orchestrator to plan and work unattended', () => {
+    const root = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
+    expect(root).toContain('Work unattended. Start every task by calling set_plan')
+    expect(root).toContain('call complete_plan with a summary')
+    expect(root).toContain('ask_user (waits for the answer) or mark_blocked')
+    expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).not.toContain('set_plan')
+    const architect = architectRole()
+    expect(buildRolePrompt(architect, [architect], project(), { isSetup: true, isolation: false })).not.toContain('set_plan')
   })
 
   it('tells a lead its reports have handles it can message', () => {

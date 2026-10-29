@@ -15,6 +15,7 @@ import type {
   QuestionAnswer,
   Role,
   RunEvent,
+  RunPlan,
   RunSummary,
   SetupKind,
   TranscriptEntry,
@@ -26,6 +27,8 @@ export type View = 'projects' | 'settings' | 'run' | 'appSettings'
 /** 'reply' sends to the viewed session; 'new' starts another run even while one is open. */
 export type ComposerMode = 'reply' | 'new'
 export type SettingsTab = 'org' | 'project'
+/** Tabs of the live view's side panel. */
+export type SideTab = 'transcript' | 'plan' | 'logs' | 'runs'
 
 export interface LogLine {
   at: number
@@ -48,6 +51,8 @@ export interface RunState {
   partial: Record<string, string>
   /** Latest agent-to-agent messages (at most MAX_MESSAGES), drawn as edges for a few seconds. Live only. */
   messages: AgentMessage[]
+  /** Work runs: the orchestrator's plan, once it set one. */
+  plan?: RunPlan
 }
 
 const MAX_MESSAGES = 100
@@ -72,6 +77,9 @@ interface AppState {
   /** Runs hidden from the run strip (finished runs the user closed). */
   dismissedRuns: Record<string, true>
   composerMode: ComposerMode
+  /** Selected tab of the live view's side panel. */
+  sideTab: SideTab
+  setSideTab(tab: SideTab): void
   /** Latest plan usage reported by any live session. */
   usage: UsageStatus | null
   /** Ask the main process to read plan usage now (no run needed). */
@@ -195,7 +203,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftError: null,
   dismissedRuns: {},
   composerMode: 'reply',
+  sideTab: 'transcript',
   usage: null,
+
+  setSideTab(tab) {
+    set({ sideTab: tab })
+  },
 
   async refreshUsage() {
     try {
@@ -472,6 +485,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
+          break
+        case 'plan.updated':
+          run.plan = e.plan
           break
         case 'log':
           run.logs = [...run.logs.slice(-300), { at: Date.now(), level: e.level, message: e.message }]
