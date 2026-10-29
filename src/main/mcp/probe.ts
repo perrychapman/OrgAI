@@ -69,6 +69,8 @@ class StdioClient implements RpcClient {
   private buffer = ''
   private stderr = ''
   private dead?: Error
+  /** Set when the process exited: its code, or null on a signal. */
+  exitCode?: number | null
 
   constructor(
     private resolved: ResolvedMcpServer,
@@ -94,6 +96,7 @@ class StdioClient implements RpcClient {
     this.child.stdin!.on('error', () => {})
     this.child.on('error', (e) => this.fail(new Error(`Could not start "${command}": ${e.message}`)))
     this.child.on('exit', (code, signal) => {
+      this.exitCode = code
       this.fail(new Error(`The server exited ${code !== null ? `with code ${code}` : `on signal ${signal}`} before answering.`))
     })
   }
@@ -255,14 +258,20 @@ class HttpClient implements RpcClient {
   }
 }
 
-async function handshake(client: RpcClient): Promise<string[]> {
+const MAX_DESCRIPTION = 300
+
+async function handshake(client: RpcClient): Promise<{ name: string; description?: string }[]> {
   await client.request('initialize', { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO })
   await client.notify('notifications/initialized')
-  const tools: string[] = []
+  const tools: { name: string; description?: string }[] = []
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
-    const res = (await client.request('tools/list', cursor ? { cursor } : {})) as { tools?: { name?: unknown }[]; nextCursor?: unknown } | undefined
-    for (const t of res?.tools ?? []) if (typeof t?.name === 'string') tools.push(t.name)
+    const res = (await client.request('tools/list', cursor ? { cursor } : {})) as { tools?: { name?: unknown; description?: unknown }[]; nextCursor?: unknown } | undefined
+    for (const t of res?.tools ?? []) {
+      if (typeof t?.name !== 'string') continue
+      const description = typeof t.description === 'string' ? t.description.trim().slice(0, MAX_DESCRIPTION) : ''
+      tools.push(description ? { name: t.name, description } : { name: t.name })
+    }
     if (typeof res?.nextCursor === 'string' && res.nextCursor) cursor = res.nextCursor
     else break
   }
@@ -291,13 +300,19 @@ export async function testServer(resolved: ResolvedMcpServer, timeoutMs = 20_000
       if (!spec.url) throw new Error('The server has no URL.')
       client = new HttpClient(resolved, AbortSignal.timeout(timeoutMs), fetchImpl)
     }
-    const tools = await Promise.race([handshake(client), timeout])
-    return { ok: true, tools, durationMs: Date.now() - started }
+    const details = await Promise.race([handshake(client), timeout])
+    return { ok: true, tools: details.map((t) => t.name), toolDetails: details, durationMs: Date.now() - started }
   } catch (e) {
     let message = redact((e as Error).message, secrets)
     const tail = stdio?.stderrTail()
     if (tail) message += `\n${tail}`
-    return { ok: false, error: message, durationMs: Date.now() - started }
+    return {
+      ok: false,
+      error: message,
+      ...(tail ? { stderr: tail } : {}),
+      ...(stdio && stdio.exitCode !== undefined ? { exitCode: stdio.exitCode } : {}),
+      durationMs: Date.now() - started
+    }
   } finally {
     if (timer) clearTimeout(timer)
     await client?.close().catch(() => {})

@@ -150,7 +150,15 @@ export interface ConnectionSecretInput {
  */
 export type ConnectionLoginStart =
   | { loginId: string; connection: 'openai'; method: 'browser'; authUrl: string }
-  | { loginId: string; connection: 'openai'; method: 'deviceCode'; verificationUrl: string; userCode: string }
+  | {
+      loginId: string
+      connection: 'openai'
+      method: 'deviceCode'
+      verificationUrl: string
+      userCode: string
+      /** When the code stops working (epoch ms), if Codex said so. */
+      expiresAt?: number
+    }
 
 /** connections:login method for the OpenAI ChatGPT login. Default 'browser'. */
 export type ConnectionLoginMethod = 'browser' | 'deviceCode'
@@ -504,7 +512,13 @@ export interface McpTestResult {
   ok: boolean
   /** Tool names the server reported (without the mcp__<name>__ prefix). */
   tools?: string[]
+  /** The same tools with their descriptions (first 300 characters), in the server's order. */
+  toolDetails?: { name: string; description?: string }[]
   error?: string
+  /** Last lines the stdio server wrote to stderr (secret values redacted), on failure. */
+  stderr?: string
+  /** Exit code of a stdio server that exited before answering; null when it was killed by a signal. */
+  exitCode?: number | null
   /** How long the check took, ms. */
   durationMs?: number
 }
@@ -1244,6 +1258,8 @@ export interface OrgAIApi {
      * project to that connection first and remap every tiered role. Returns the change list and the saved project.
      */
     remapModels(input: RemapModelsInput): Promise<RemapModelsOutput>
+    /** Dry run of remapModels: the RemapResult it would produce, computed by the main process. Saves nothing. */
+    previewRemap(input: RemapModelsInput): Promise<RemapResult>
   }
   connections: {
     /** Every connection record (CONNECTION_IDS order) with its live status. */
@@ -1419,6 +1435,7 @@ export const IPC = {
   permissionsList: 'permissions:list',
   permissionsRemove: 'permissions:remove',
   projectsRemapModels: 'projects:remapModels',
+  projectsPreviewRemap: 'projects:previewRemap',
   connectionsList: 'connections:list',
   connectionsUpdate: 'connections:update',
   connectionsSetSecret: 'connections:setSecret',

@@ -450,7 +450,14 @@ export class ConnectionService {
       }
       return { loginId: started.loginId, connection: 'openai', method: 'browser', authUrl: started.authUrl }
     }
-    return { loginId: started.loginId, connection: 'openai', method: 'deviceCode', verificationUrl: started.verificationUrl, userCode: started.userCode }
+    return {
+      loginId: started.loginId,
+      connection: 'openai',
+      method: 'deviceCode',
+      verificationUrl: started.verificationUrl,
+      userCode: started.userCode,
+      ...(started.expiresAt ? { expiresAt: started.expiresAt } : {})
+    }
   }
 
   private onLoginCompleted(lease: CodexLease, r: { loginId: string | null; success: boolean; error: string | null }): void {
@@ -524,7 +531,8 @@ export class ConnectionService {
     return results
   }
 
-  remapModels(input: RemapModelsInput): RemapModelsOutput {
+  /** The remap projects:remapModels would apply, without saving anything. */
+  private computeRemap(input: RemapModelsInput): { project: Project; result: RemapResult } {
     const stored = this.deps.projects.get(input.projectId)
     if (!stored) throw new Error('Project not found')
     const connection = input.connection
@@ -535,14 +543,23 @@ export class ConnectionService {
       project = { ...stored, provider: { ...stored.provider, connection, label: PROVIDER_LABEL[connection] } }
     }
     const tierModels = this.deps.settings.get().connections[id].tierModels
-    const out = this.remapOne(project, id, tierModels, undefined, connection ? 'switched' : 'manual')
+    return this.remapOne(project, id, tierModels, undefined, connection ? 'switched' : 'manual')
+  }
+
+  remapModels(input: RemapModelsInput): RemapModelsOutput {
+    const out = this.computeRemap(input)
     const saved = this.deps.projects.save(out.project)
     return { result: out.result, project: saved }
   }
 
+  /** projects:previewRemap: the same RemapResult as remapModels, with nothing saved or broadcast. */
+  previewRemap(input: RemapModelsInput): RemapResult {
+    return this.computeRemap(input).result
+  }
+
   // ---------- per-run model access ----------
 
-  runConnection(_project: Project, choice: AdapterChoice): RunConnection {
+  runConnection(_project: Project | undefined, choice: AdapterChoice): RunConnection {
     const id = choice.connection
     const base: RunConnection = { connection: id, adapter: choice.adapter }
     if (choice.adapter === 'mock') return base

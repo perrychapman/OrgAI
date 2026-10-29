@@ -1,4 +1,7 @@
 import { exec } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { ConnectionStatus, ProviderAuth } from '@shared/types'
 
 export type ClaudeAuthStatus = { loggedIn: boolean; method?: string; detail?: string }
@@ -32,12 +35,33 @@ export async function anthropicStatus(auth: ProviderAuth, env: NodeJS.ProcessEnv
     : { state: 'disconnected', detail: s.detail ?? 'Not logged in to Claude Code', checkedAt }
 }
 
+/**
+ * Where the Claude Code CLI usually lives on macOS and Linux when it is not on the PATH a GUI app inherits:
+ * the native installer (~/.claude/local, ~/.local/bin) and Homebrew (Apple silicon, Intel). Existing files only.
+ */
+export function claudeCandidatePaths(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  exists: (p: string) => boolean = existsSync
+): string[] {
+  if (platform === 'win32') return []
+  const paths = [join(home, '.claude', 'local', 'claude'), join(home, '.local', 'bin', 'claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']
+  return paths.filter((p) => {
+    try {
+      return exists(p)
+    } catch {
+      return false
+    }
+  })
+}
+
 export function listClaudeBinaries(): Promise<string[]> {
   const cmd = process.platform === 'win32' ? 'where claude' : 'which -a claude'
   return new Promise((resolve) => {
     exec(cmd, { timeout: 8000, windowsHide: true }, (err, stdout) => {
       const found = err ? [] : stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-      resolve(found.length ? [...new Set(found)] : ['claude'])
+      const all = [...new Set([...found, ...claudeCandidatePaths()])]
+      resolve(all.length ? all : ['claude'])
     })
   })
 }

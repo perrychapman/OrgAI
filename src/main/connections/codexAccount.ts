@@ -23,7 +23,7 @@ export interface CodexAccountState {
 
 export type CodexLoginStart =
   | { method: 'browser'; loginId: string; authUrl: string }
-  | { method: 'deviceCode'; loginId: string; verificationUrl: string; userCode: string }
+  | { method: 'deviceCode'; loginId: string; verificationUrl: string; userCode: string; expiresAt?: number }
 
 export interface CodexLoginResult {
   loginId: string | null
@@ -56,12 +56,29 @@ export function parseAccountState(raw: unknown): CodexAccountState {
   return { account, requiresOpenaiAuth: r.requiresOpenaiAuth === true }
 }
 
+/**
+ * Device-code expiry, epoch ms. Unverified: the app-server docs do not show an expiry field, so this accepts
+ * `expiresAt` (ISO string, epoch seconds or ms) or `expiresIn` / `expiresInSecs` (seconds) and ignores anything else.
+ */
+export function expiryOf(r: Record<string, unknown>, now: number): number | undefined {
+  const at = r.expiresAt
+  if (typeof at === 'string') {
+    const t = Date.parse(at)
+    if (Number.isFinite(t)) return t
+  }
+  if (typeof at === 'number' && Number.isFinite(at) && at > 0) return at < 1e12 ? at * 1000 : at
+  const inSecs = typeof r.expiresIn === 'number' ? r.expiresIn : typeof r.expiresInSecs === 'number' ? r.expiresInSecs : undefined
+  if (inSecs !== undefined && Number.isFinite(inSecs) && inSecs > 0) return now + inSecs * 1000
+  return undefined
+}
+
 export function parseLoginStart(raw: unknown): CodexLoginStart {
   const r = obj(raw)
   const loginId = str(r.loginId)
   if (r.type === 'chatgpt' && loginId && str(r.authUrl)) return { method: 'browser', loginId, authUrl: str(r.authUrl)! }
   if (r.type === 'chatgptDeviceCode' && loginId && str(r.verificationUrl) && str(r.userCode)) {
-    return { method: 'deviceCode', loginId, verificationUrl: str(r.verificationUrl)!, userCode: str(r.userCode)! }
+    const expiresAt = expiryOf(r, Date.now())
+    return { method: 'deviceCode', loginId, verificationUrl: str(r.verificationUrl)!, userCode: str(r.userCode)!, ...(expiresAt ? { expiresAt } : {}) }
   }
   throw new Error('Codex did not return a login URL')
 }

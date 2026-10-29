@@ -763,3 +763,58 @@ describe('RunManager adapter selection, connections and MCP', () => {
     })
   })
 })
+
+describe('request_mcp_install through RunManager and the mock adapter', () => {
+  const SECRET = 'ghp_mock_secret_value'
+  const installStep = {
+    type: 'harness' as const,
+    name: 'request_mcp_install',
+    args: { reason: 'Triage the issues', manual: { name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], secretEnv: ['GITHUB_TOKEN'] } }
+  }
+  const script: MockScript = { work: [installStep, { type: 'text', text: 'Done.' }] }
+
+  function withMcp(p: Project) {
+    const mcp = {
+      enabledServers: vi.fn((proj: Project) => (proj.mcpServers ?? []).filter((s) => s.enabled)),
+      resolve: vi.fn((_pid: string, s: McpServerSpec, extra?: Record<string, string>) => ({ spec: s, env: { ...(s.env ?? {}), ...(extra ?? {}) }, headers: {} })),
+      persistInstall: vi.fn((_pid: string, s: McpServerSpec, _secrets: Record<string, string>): Project => ({ ...p, mcpServers: [...(p.mcpServers ?? []), s] })),
+      searchRegistry: vi.fn(async () => ({ entries: [] }))
+    }
+    return { ...manager(p, script, { mcp }), mcp }
+  }
+
+  async function toolResult(): Promise<string> {
+    const hit = await waitFor(isType('transcript', (e) => e.entry.block.kind === 'tool_result'))
+    return (hit.entry.block as { kind: 'tool_result'; content: string }).content
+  }
+
+  it('approve with scope project: emits the request, persists the server and tells the agent its tool prefix', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, mcp } = withMcp(p)
+    const run = await m.start({ project: p, prompt: 'go' })
+    const { request } = await waitFor(isType('mcpInstall.request'))
+    expect(request).toMatchObject({ runId: run.id, agentId: 'root', reason: 'Triage the issues', requiredSecrets: ['GITHUB_TOKEN'], spec: { name: 'github', source: 'agent' } })
+    m.answerMcpInstall(run.id, request.id, { approved: true, scope: 'project', secrets: { GITHUB_TOKEN: SECRET } })
+    const text = await toolResult()
+    expect(text).toMatch(/approved installing github for this project/)
+    expect(text).toContain('mcp__github__')
+    expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET })
+    expect(events.find(isType('mcpInstall.resolved'))?.outcome).toMatchObject({ approved: true, scope: 'project' })
+    expect(JSON.stringify(events)).not.toContain(SECRET)
+    await m.stopAll()
+  })
+
+  it('deny: nothing is saved and the agent is told to find another route', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, mcp } = withMcp(p)
+    const run = await m.start({ project: p, prompt: 'go' })
+    const { request } = await waitFor(isType('mcpInstall.request'))
+    m.answerMcpInstall(run.id, request.id, { approved: false, scope: 'run', note: 'Use the gh CLI instead.' })
+    const text = await toolResult()
+    expect(text).toMatch(/denied installing this server/)
+    expect(text).toContain('Use the gh CLI instead.')
+    expect(text).toMatch(/Find another way/)
+    expect(mcp.persistInstall).not.toHaveBeenCalled()
+    await m.stopAll()
+  })
+})
