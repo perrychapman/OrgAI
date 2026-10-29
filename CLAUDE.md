@@ -18,6 +18,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - Subagent assistant/user messages carry `agent_id` and `parent_tool_use_id`.
   - Subagents run in the background by default; the orchestrator's turn may end (`result`) and auto-resume when a report lands.
   - `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1` removes Explore/Plan/general-purpose so only org-chart roles exist.
+  - Plan usage (`scripts/smoke-usage.mjs`, Max login): `q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true })`
+    answers right after init. `rate_limits.five_hour` / `.seven_day` are `{ utilization: 0-100, resets_at: ISO string }`;
+    `seven_day_opus` / `seven_day_sonnet` were null and the per-model weekly window came as
+    `rate_limits.model_scoped: [{ display_name: 'Fable', utilization, resets_at }]`. A `rate_limit_event` arrives on every
+    normal request (status `allowed`); its `resetsAt` is epoch **seconds** and `utilization` a 0-1 **fraction**, and it
+    carries an undocumented `unifiedWindows` map. Mapping lives in `src/main/runtime/usage.ts`.
   - In-process MCP tools (`createSdkMcpServer` + `tool` with zod shapes) surface as `mcp__<server>__<tool>` in
     `PreToolUse`, `canUseTool` and `tools` lists. Under `acceptEdits` they still hit `canUseTool`, so the Claude
     adapter auto-allows `mcp__orgai__*`. A handler may block indefinitely; the model receives its returned text.

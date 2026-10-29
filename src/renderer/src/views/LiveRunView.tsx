@@ -20,7 +20,7 @@ import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RunStrip, { useStripRuns } from '../components/RunStrip'
 import MergeReviewCard from '../components/MergeReviewCard'
-import { formatCost, treeLayout } from '../lib/layout'
+import { costLabel, formatUntil, treeLayout } from '../lib/layout'
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
@@ -57,6 +57,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const stripRuns = useStripRuns()
   const showStrip = stripRuns.length > 0
   const decideMerge = useAppStore((s) => s.decideMerge)
+  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
   const { fitView } = useReactFlow()
 
   const [text, setText] = useState('')
@@ -141,7 +142,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const replying = sessionOpen && composerMode !== 'new'
   const canSend = text.trim().length > 0 && !busy
   // A finished run with a provider session can be continued with its memory intact.
-  const canContinue = !!run && (status === 'finished' || status === 'error') && !!run.summary.sessionId
+  const canContinue = !!run && (status === 'finished' || status === 'error' || status === 'paused') && !!run.summary.sessionId
 
   useEffect(() => {
     if (composerFocusToken) composerRef.current?.focus()
@@ -188,7 +189,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                 continued
               </span>
             )}
-            <span className="pill">{formatCost(run.summary.totalCostUsd)}</span>
+            <span className="pill" title={costLabel(run.summary.totalCostUsd, authMode).title}>
+              {costLabel(run.summary.totalCostUsd, authMode).text}
+            </span>
             <span className="pill">
               {agents.length} agent{agents.length === 1 ? '' : 's'}
             </span>
@@ -210,6 +213,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             )}
           </div>
         )}
+
+        {run && status === 'paused' && <PauseBanner runId={run.summary.id} />}
 
         {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0) && (
           <div className="proposals">
@@ -405,6 +410,60 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
       <div className="side">
         <TranscriptPanel agent={selectedAgent} entries={entries} logs={run?.logs ?? []} />
+      </div>
+    </div>
+  )
+}
+
+/** A run paused at a usage limit: why, when it continues, and the controls for that. */
+function PauseBanner({ runId }: { runId: string }): ReactElement | null {
+  const summary = useAppStore((s) => s.runs[runId]?.summary)
+  const resumeNow = useAppStore((s) => s.resumeNow)
+  const cancelAutoResume = useAppStore((s) => s.cancelAutoResume)
+  const [now, setNow] = useState(() => Date.now())
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (!summary) return null
+  const until = summary.pausedUntil
+  const act = async (fn: () => Promise<void>): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="pause-banner">
+      <div className="pause-title">
+        <span className="dot" /> Paused at a usage limit
+      </div>
+      <div className="pause-reason">{summary.pauseReason ?? 'The plan usage limit was reached.'}</div>
+      <div className="pause-when">
+        {summary.autoResume && until
+          ? `Auto-resume at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (in ${formatUntil(until, now)})`
+          : `Auto-resume is off.${until ? ` The window resets at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` : ''} Continue it from the composer when you are ready.`}
+      </div>
+      {error && <div className="pause-error">{error}</div>}
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn primary sm" disabled={busy} onClick={() => void act(() => resumeNow(runId))}>
+          Resume now
+        </button>
+        {summary.autoResume && (
+          <button className="btn sm" disabled={busy} onClick={() => void act(() => cancelAutoResume(runId))}>
+            Cancel auto-resume
+          </button>
+        )}
       </div>
     </div>
   )

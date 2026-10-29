@@ -74,7 +74,10 @@ app.whenReady().then(() => {
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // The scripted mock adapter (no tokens) is opt-in; a project uses it only when its provider.id is "mock".
   const adapters = { claude: new ClaudeAdapter(), ...(process.env.ORGAI_MOCK === '1' ? { mock: new MockAdapter() } : {}) }
-  runManager = new RunManager(adapters, broadcast, runStore, setup, keepRunsFor)
+  runManager = new RunManager(adapters, broadcast, runStore, setup, keepRunsFor, {
+    resolveProject: (projectId) => projects.get(projectId),
+    opusGuardThreshold: () => settings.get().opusGuardThreshold
+  })
   registerIpc(projects, runManager, setup, new MaintenanceService(projects), settings)
   notifier = new Notifier({
     projectOfRun: (runId) => {

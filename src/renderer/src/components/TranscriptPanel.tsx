@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { AgentInstance, RunSummary, TranscriptEntry } from '@shared/types'
 import { activeRun, useAppStore, type LogLine } from '../store/useAppStore'
-import { formatCost, formatElapsed, formatTokens } from '../lib/layout'
+import { COST_ESTIMATE_HINT, costLabel, formatCost, formatElapsed, formatTokens } from '../lib/layout'
 import { Markdown } from './Markdown'
 
 interface Props {
@@ -16,6 +16,7 @@ function RunHistory(): ReactElement {
   const openRun = useAppStore((s) => s.openRun)
   const focusComposer = useAppStore((s) => s.focusComposer)
   const current = useAppStore(activeRun)
+  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
   if (history.length === 0) return <div className="entry system">No runs yet for this project.</div>
   return (
     <div className="run-history">
@@ -28,11 +29,22 @@ function RunHistory(): ReactElement {
                 continued
               </span>
             )}
-            <span className={`pill ${r.status === 'error' ? 'danger' : r.status === 'finished' ? '' : 'live'}`} style={{ padding: '1px 7px' }}>
+            <span
+              className={`pill ${r.status === 'error' ? 'danger' : r.status === 'paused' ? 'warn' : r.status === 'finished' ? '' : 'live'}`}
+              style={{ padding: '1px 7px' }}
+              title={r.pauseReason}
+            >
               <span className="dot" /> {r.status}
             </span>
-            <span style={{ marginLeft: 'auto', color: 'var(--text-faint)', fontSize: 11 }}>{formatCost(r.totalCostUsd)}</span>
-            {(r.status === 'finished' || r.status === 'error') && r.sessionId && (
+            {r.pausedUntil !== undefined && r.status === 'finished' && (
+              <span className="chip" title={r.pauseReason ?? 'Stopped at a usage limit'}>
+                usage limit
+              </span>
+            )}
+            <span style={{ marginLeft: 'auto', color: 'var(--text-faint)', fontSize: 11 }} title={costLabel(r.totalCostUsd, authMode).title}>
+              {costLabel(r.totalCostUsd, authMode).text}
+            </span>
+            {(r.status === 'finished' || r.status === 'error' || r.status === 'paused') && r.sessionId && (
               // The row itself is a button, so this is a span acting as one.
               <span
                 role="button"
@@ -119,7 +131,9 @@ export default function TranscriptPanel({ agent, entries, logs }: Props): ReactE
           {agent.costUsd > 0 && (
             <>
               <span className="k">Cost</span>
-              <span className="v">{formatCost(agent.costUsd)}</span>
+              <span className="v" title={COST_ESTIMATE_HINT}>
+                {formatCost(agent.costUsd)} (API-equivalent estimate)
+              </span>
             </>
           )}
           {agent.worktree && (

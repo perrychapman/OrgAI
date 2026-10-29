@@ -24,7 +24,9 @@ const api: OrgAIApi = {
     decide: (input: { runId: string; requestId: string; decision: PermissionDecision }) =>
       ipcRenderer.invoke(IPC.runsDecide, input),
     continue: (input) => ipcRenderer.invoke(IPC.runsContinue, input),
-    decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input)
+    decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
+    resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
+    cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId)
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),

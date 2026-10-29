@@ -18,7 +18,7 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { newId } from '@shared/defaults'
@@ -31,6 +31,28 @@ import { SETUP_TOOLS_INSTRUCTIONS, setupTools, workTools, type HarnessTool } fro
 import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
+import {
+  mapRateLimitEvent,
+  mapUsageResponse,
+  mergeUsage,
+  shareUsed,
+  shouldSteerToSonnet,
+  trackShare,
+  windowShareExceeded,
+  type AuthMode,
+  type RateLimitInfoLike,
+  type ShareTracker,
+  type UsageResponseLike
+} from './usage'
+
+/** How often a live session asks for plan usage. */
+const USAGE_POLL_MS = 60_000
+const USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET'
+const DEFAULT_OPUS_GUARD = 80
+
+function isOpusModel(model: string | undefined): boolean {
+  return !!model && /opus/i.test(model)
+}
 
 /**
  * The Claude adapter: maps Claude Agent SDK messages and hooks onto normalized RunEvents. Everything
@@ -168,6 +190,19 @@ class ClaudeSession implements RuntimeSession {
   private seenToolResults = new Set<string>()
   /** Resumed sessions only: subtracted from the SDK's cumulative cost; null until the first result. */
   private resumeCostBase: number | null = null
+  // ---------- subscription usage ----------
+  private authMode: AuthMode
+  private usage: UsageStatus | null = null
+  private usageTimer: ReturnType<typeof setInterval> | null = null
+  private usageUnavailableLogged = false
+  /** This run's share of the five-hour window, for project.maxWindowShare. */
+  private share: ShareTracker | null = null
+  private capTripped = false
+  /** Why the window cap stopped the run; sent to the orchestrator with the user's next message. */
+  private pendingCapNote: string | null = null
+  /** Set once the provider rejected a request on a usage limit. */
+  private limited = false
+  private ending = false
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -176,6 +211,7 @@ class ClaudeSession implements RuntimeSession {
     this.isSetup = ctx.run.kind === 'setup'
     this.isolation = !this.isSetup && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
+    this.authMode = ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
     this.integrator = new WorktreeIntegrator(ctx, {
       agent: (id) => this.agents.get(id),
       setWorktree: (id, info) => {
@@ -192,9 +228,17 @@ class ClaudeSession implements RuntimeSession {
   // ---------- public API ----------
 
   async send(text: string): Promise<void> {
+    // After a window-cap stop, the orchestrator learns why with the user's next message, and the cap
+    // measures afresh from here.
+    const note = this.pendingCapNote
+    this.pendingCapNote = null
+    if (this.capTripped) {
+      this.capTripped = false
+      this.share = null
+    }
     this.input.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: { role: 'user', content: note ? `${note}\n\n---\n${text}` : text },
       parent_tool_use_id: null
     })
     this.transcript(ROOT_ID, { kind: 'user', text })
@@ -210,6 +254,7 @@ class ClaudeSession implements RuntimeSession {
   }
 
   async stop(): Promise<void> {
+    this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
   }
@@ -313,6 +358,90 @@ class ClaudeSession implements RuntimeSession {
     return ROOT_ID
   }
 
+  // ---------- subscription usage ----------
+
+  private startUsagePolling(): void {
+    if (this.usageTimer) return
+    if (this.authMode === 'apiKey') {
+      // API keys have no plan windows; say so once so the meter can show it.
+      if (!this.usage) this.applyUsage(mapUsageResponse(null, 'apiKey'))
+      return
+    }
+    void this.pollUsage()
+    this.usageTimer = setInterval(() => void this.pollUsage(), USAGE_POLL_MS)
+  }
+
+  private stopUsagePolling(): void {
+    if (this.usageTimer) clearInterval(this.usageTimer)
+    this.usageTimer = null
+  }
+
+  /** Ask the SDK for plan usage. The method is experimental: missing or failing means "unavailable", never a run error. */
+  private async pollUsage(): Promise<void> {
+    let resp: UsageResponseLike | null = null
+    try {
+      const fn = (this.q as unknown as Record<string, unknown> | undefined)?.[USAGE_METHOD]
+      if (typeof fn !== 'function') throw new Error('this SDK has no usage method')
+      resp = (await (fn as (o: { skipBehaviors: boolean }) => Promise<unknown>).call(this.q, { skipBehaviors: true })) as UsageResponseLike
+    } catch (e) {
+      if (!this.usageUnavailableLogged) {
+        this.usageUnavailableLogged = true
+        this.log('info', `Plan usage is unavailable: ${(e as Error).message}`)
+      }
+    }
+    if (this.ending && !this.usageTimer) return
+    const report = mapUsageResponse(resp, this.authMode)
+    if (report.available && this.authMode === 'unknown') this.authMode = 'subscription'
+    this.applyUsage(mergeUsage(this.usage, report))
+  }
+
+  private applyUsage(usage: UsageStatus): void {
+    this.usage = usage
+    this.emit({ type: 'usage.status', runId: this.ctx.run.id, usage })
+    this.checkWindowShare()
+  }
+
+  /** project.maxWindowShare: interrupt the run once it has used that many points of the five-hour window. */
+  private checkWindowShare(): void {
+    const cap = this.ctx.project.maxWindowShare
+    const util = this.usage?.windows.fiveHour?.utilization
+    if (this.isSetup || !cap || typeof util !== 'number') return
+    this.share = trackShare(this.share, util)
+    if (this.capTripped || !windowShareExceeded(0, shareUsed(this.share), cap)) return
+    this.capTripped = true
+    const used = Math.round(shareUsed(this.share))
+    this.log('warn', `This run used ${used}% of the five-hour usage window (cap ${cap}%); interrupting it.`)
+    void this.interrupt()
+    const note =
+      `[OrgAI harness] The run was interrupted because it used ${used}% of the plan's five-hour usage window, ` +
+      `above the project's cap of ${cap}%. Reports in flight may have been cut off. Pick up from where things stand, ` +
+      'and keep the remaining work lean.'
+    this.pendingCapNote = note
+    this.transcript(ROOT_ID, { kind: 'system', text: note })
+    this.setState(ROOT_ID, 'idle', `Stopped: used ${used}% of the five-hour window`)
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
+  }
+
+  /** The provider rejected a request on a usage limit. The session ends at the next result and the run pauses. */
+  private onRateLimited(until: number | undefined, window: string | undefined): void {
+    if (this.authMode === 'apiKey') return
+    if (!this.limited) {
+      this.limited = true
+      const when = until ? new Date(until).toLocaleString() : 'unknown'
+      this.log('warn', `Usage limit reached${window ? ` (${window.replace(/_/g, ' ')} window)` : ''}; resets ${when}. The run pauses and continues then.`)
+    }
+    this.ctx.rateLimited({ ...(until ? { until } : {}), ...(window ? { window } : {}) })
+  }
+
+  /** Spawn a report on Sonnet instead of Opus while the Opus weekly window is near its limit? */
+  private steerToSonnet(target: Role | undefined, toolInput: Record<string, unknown>): boolean {
+    if (this.isSetup || !this.ctx.project.preferSonnetNearLimit || this.authMode === 'apiKey') return false
+    const explicit = typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : undefined
+    let model = explicit ?? target?.model ?? 'inherit'
+    if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
+    return isOpusModel(model) && shouldSteerToSonnet(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)
+  }
+
   private buildHooks(): Options['hooks'] {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
@@ -350,16 +479,23 @@ class ClaudeSession implements RuntimeSession {
         // parent's worktree (see worktrees.ts). Writers under a non-isolated parent share its checkout.
         const target = this.rolesBySlug.get(requested)
         const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
+        const updates: Record<string, unknown> = {}
         if (this.isolation && parentIsolated && target && canWrite(target) && !toolInput.isolation) {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
-          return {
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              updatedInput: { ...toolInput, isolation: 'worktree' }
-            }
+          updates.isolation = 'worktree'
+        }
+        // Near the Opus weekly limit, new Opus reports run on Sonnet (project.preferSonnetNearLimit).
+        if (this.steerToSonnet(target, toolInput)) {
+          updates.model = 'sonnet'
+          this.log('info', `Spawning ${target?.name ?? requested} on Sonnet instead of Opus: the weekly usage window is near its limit.`)
+        }
+        if (!Object.keys(updates).length) return {}
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            updatedInput: { ...toolInput, ...updates }
           }
         }
-        return {}
       }
 
       // The first tool call from an isolated agent reveals its real worktree path.
@@ -589,6 +725,8 @@ class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId, status: 'error', error: message })
       }
     } finally {
+      this.ending = true
+      this.stopUsagePolling()
       this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
@@ -614,6 +752,7 @@ class ClaudeSession implements RuntimeSession {
             this.sessionLogged = true
             this.log('info', `Session ${msg.session_id} started with Claude Code ${msg.claude_code_version} (${msg.model})`)
           }
+          this.startUsagePolling()
         } else if (msg.subtype === 'task_started') {
           // Background shell commands and MCP calls are tasks too; only subagents belong on the chart.
           if (msg.task_type && msg.task_type !== 'local_agent') break
@@ -725,6 +864,12 @@ class ClaudeSession implements RuntimeSession {
           }
         }
         if (msg.error) this.log('warn', `Assistant message error: ${JSON.stringify(msg.error)}`)
+        if (msg.error === 'rate_limit' && !this.limited) {
+          // No rejected rate_limit_event came first; fall back to the last known reset of the limiting window.
+          const w = this.usage?.windows.fiveHour
+          const until = this.usage?.limitedUntil ?? (w && w.utilization !== null && w.utilization >= 100 ? w.resetsAt ?? undefined : undefined)
+          this.onRateLimited(until, this.usage?.limitedWindow)
+        }
         // The completed text block replaces whatever was streamed for it.
         if (msg.message.content.some((b) => b.type === 'text')) this.partial.clear(agentId)
         this.upsert(a)
@@ -775,6 +920,22 @@ class ClaudeSession implements RuntimeSession {
         }
         this.upsert(root)
         this.emit({ type: 'run.status', runId, status: 'idle' })
+        if (this.limited && !this.ending) {
+          // Every further request would be rejected too. End the session; the run manager pauses the
+          // run and continues it when the window resets.
+          this.ending = true
+          this.log('info', 'Ending the session at the usage limit; it continues when the window resets.')
+          void this.stop()
+        }
+        break
+      }
+      case 'rate_limit_event': {
+        const info = msg.rate_limit_info as RateLimitInfoLike
+        const next = mapRateLimitEvent(info, this.usage)
+        if (this.authMode === 'apiKey') next.authMode = 'apiKey'
+        else this.authMode = 'subscription'
+        this.applyUsage(next)
+        if (info.status === 'rejected') this.onRateLimited(next.limitedUntil, next.limitedWindow)
         break
       }
       default:

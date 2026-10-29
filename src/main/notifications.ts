@@ -105,6 +105,12 @@ export class Notifier {
       }
       case 'run.status':
         if (event.status === 'idle') return kind === 'setup' ? 'The Architect is waiting for your answer' : 'Turn finished, waiting for your reply'
+        if (event.status === 'paused')
+          return event.autoResume
+            ? `${label} paused at a usage limit; it continues at ${event.pausedUntil ? new Date(event.pausedUntil).toLocaleTimeString() : 'the reset'}`
+            : null
+        // A paused run handed over to its continuation is not news.
+        if (event.status === 'finished' && event.pausedUntil) return null
         if (event.status === 'finished') return `${label} finished`
         if (event.status === 'error') return `${label} failed${event.error ? `: ${event.error}` : ''}`.slice(0, 240)
         return null

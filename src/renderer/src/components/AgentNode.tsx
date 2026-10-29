@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import type { AgentInstance } from '@shared/types'
-import { formatCost, formatElapsed, formatTokens, initials } from '../lib/layout'
+import { costLabel, formatElapsed, formatTokens, initials } from '../lib/layout'
 import { activeRun, useAppStore } from '../store/useAppStore'
 
 export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
@@ -42,6 +42,8 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   // While the agent streams text, its first words stand in for the activity line.
   const partial = useAppStore((s) => activeRun(s)?.partial[agent.id])
   const streaming = partial !== undefined
+  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
+  const cost = costLabel(agent.costUsd, authMode)
   const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : agent.activity
 
   return (
@@ -75,7 +77,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
       )}
       <div className="foot">
         <span>{formatTokens(agent.inputTokens + agent.outputTokens)} tok</span>
-        <span>{agent.costUsd > 0 ? formatCost(agent.costUsd) : formatElapsed(agent.startedAt, agent.endedAt)}</span>
+        <span title={agent.costUsd > 0 ? cost.title : undefined}>{agent.costUsd > 0 ? cost.text : formatElapsed(agent.startedAt, agent.endedAt)}</span>
       </div>
       <Handle type="source" position={Position.Bottom} />
     </div>

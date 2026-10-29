@@ -49,6 +49,14 @@ export interface RuntimeContext {
   requestQuestion(req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>): Promise<QuestionAnswer>
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
+  /**
+   * The provider rejected a request on a subscription usage limit. `until` is when the window resets
+   * (epoch ms), `window` the provider's name for it. If the session then ends, the run is paused and
+   * continues automatically at `until`.
+   */
+  rateLimited(info: { until?: number; window?: string }): void
+  /** Weekly-window percent at or above which projects with preferSonnetNearLimit spawn Opus reports on Sonnet. */
+  opusGuardThreshold?: number
 }
 
 export interface RuntimeSession {

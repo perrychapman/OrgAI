@@ -68,6 +68,8 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
     return runs.continueRun(project, input.runId, input.text)
   })
+  ipcMain.handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
+  ipcMain.handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
   ipcMain.handle(
     IPC.setupAnswer,
     (_e, input: { runId: string; questionId: string; answer: QuestionAnswer }) =>

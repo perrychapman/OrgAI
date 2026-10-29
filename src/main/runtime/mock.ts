@@ -27,6 +27,11 @@ export type MockStep =
   | { type: 'finish'; id: string; result: string }
   /** Call one of the harness's own tools by bare name (propose_architecture, ask_user, complete_setup, ...). */
   | { type: 'harness'; name: string; args?: Record<string, unknown>; /** Re-run the call when the user asks for changes. Default true. */ retryOnRevise?: boolean }
+  /**
+   * The plan's usage limit rejects the next request: reports ctx.rateLimited (with `until` ms from now,
+   * when given) and ends the session, like the Claude adapter does at the next result.
+   */
+  | { type: 'rateLimit'; window?: string; untilInMs?: number }
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -396,6 +401,29 @@ class MockSession implements RuntimeSession {
       }
       case 'harness':
         return this.harnessStep(step)
+      case 'rateLimit': {
+        const until = step.untilInMs !== undefined ? Date.now() + step.untilInMs : undefined
+        const window = step.window ?? 'five_hour'
+        this.emit({
+          type: 'usage.status',
+          runId: this.ctx.run.id,
+          usage: {
+            authMode: 'subscription',
+            subscriptionType: 'mock',
+            available: true,
+            windows: { fiveHour: { utilization: 100, resetsAt: until ?? null } },
+            status: 'rejected',
+            limitedWindow: window,
+            ...(until ? { limitedUntil: until } : {}),
+            updatedAt: Date.now()
+          }
+        })
+        this.log('warn', 'Mock usage limit reached; ending the session.')
+        this.ctx.rateLimited({ window, ...(until ? { until } : {}) })
+        this.stopped = true
+        this.signalStop()
+        return
+      }
     }
   }
 

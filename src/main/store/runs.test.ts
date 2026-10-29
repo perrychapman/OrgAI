@@ -59,6 +59,14 @@ describe('RunStore', () => {
     expect(reloaded.find((r) => r.id === 'bad')!.status).toBe('error')
   })
 
+  it('finishes a paused run on load but keeps when it could continue', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('paused', { status: 'paused', pausedUntil: 5000, pauseReason: 'limit', autoResume: true }))
+    const reloaded = new RunStore(dataDir).get('paused')!
+    expect(reloaded).toMatchObject({ status: 'finished', pausedUntil: 5000, pauseReason: 'limit' })
+    expect(reloaded.autoResume).toBeUndefined()
+  })
+
   it('defaults a missing kind to work and survives a corrupt index', () => {
     writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ runs: [{ ...run('old'), kind: undefined }] }), 'utf8')
     expect(new RunStore(dataDir).list('p1')[0].kind).toBe('work')

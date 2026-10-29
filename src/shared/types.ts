@@ -105,6 +105,16 @@ export interface Project {
   reviewMerges?: boolean
   /** Runs to keep on disk for this project; older ones are deleted. Default DEFAULT_KEEP_RUNS. */
   keepRuns?: number
+  /**
+   * Subscription plans: percent of the five-hour usage window one run may consume before the harness
+   * interrupts it (a soft stop the user can continue from). undefined = off.
+   */
+  maxWindowShare?: number
+  /**
+   * Subscription plans: spawn new Opus reports on Sonnet while the Opus weekly window (or the
+   * seven-day window when the plan has no per-model one) is at or above the app's opusGuardThreshold.
+   */
+  preferSonnetNearLimit?: boolean
   roles: Role[]
   /** AI-driven setup state. Missing on projects created before setup existed. */
   setup?: ProjectSetup
@@ -125,6 +135,10 @@ export interface AppSettings {
   defaultReportModel: ModelRef
   providerAuth: ProviderAuth
   notifications?: boolean
+  /** Weekly-window utilization (percent) above which projects that prefer Sonnet steer Opus spawns to Sonnet. */
+  opusGuardThreshold: number
+  /** preferSonnetNearLimit for new projects. */
+  defaultPreferSonnetNearLimit: boolean
 }
 
 /** What settings:get returns: the settings plus read-only facts about the install. */
@@ -359,7 +373,8 @@ export interface TranscriptEntry {
   block: TranscriptBlock
 }
 
-export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished' | 'error'
+/** 'paused': the session ended on a subscription usage limit; it can resume when the window resets. */
+export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished' | 'error' | 'paused'
 
 /** 'work' runs the project's org chart; 'setup' runs the built-in Architect that designs it. */
 export type RunKind = 'work' | 'setup'
@@ -377,6 +392,12 @@ export interface RunSummary {
   error?: string
   /** Set when this run continues an earlier run's SDK session; the earlier run's id. */
   resumedFrom?: string
+  /** Paused runs: when the usage window resets (epoch ms) and the run may continue. */
+  pausedUntil?: number
+  /** Paused runs: why, in words shown to the user. */
+  pauseReason?: string
+  /** Paused runs: the harness continues the run at pausedUntil unless the user cancels. */
+  autoResume?: boolean
 }
 
 /** A finished or live run as persisted on disk: everything needed to redraw it later. */
@@ -423,10 +444,60 @@ export type PermissionSuggestion =
 
 export type PermissionDecision = { behavior: 'allow'; scope?: PermissionScope } | { behavior: 'deny'; message: string }
 
+// ---------- Subscription usage ----------
+
+/** One plan usage window. */
+export interface RateLimitWindow {
+  /** Percent of the window used, 0-100. null when the provider did not say. */
+  utilization: number | null
+  /** When the window resets, epoch ms. */
+  resetsAt: number | null
+}
+
+/** A per-model weekly window the plan reports by display name (e.g. "Fable"). */
+export interface ModelRateLimitWindow extends RateLimitWindow {
+  model: string
+}
+
+/** The plan limits that constrain a subscription login, as last reported by the provider. */
+export interface UsageStatus {
+  authMode: 'subscription' | 'apiKey' | 'unknown'
+  /** e.g. 'pro', 'max'; null for API keys or when unknown. */
+  subscriptionType: string | null
+  /** Plan windows were reported. False for API keys and before the first report. */
+  available: boolean
+  windows: {
+    fiveHour?: RateLimitWindow
+    sevenDay?: RateLimitWindow
+    sevenDayOpus?: RateLimitWindow
+    sevenDaySonnet?: RateLimitWindow
+  }
+  /** Other per-model weekly windows reported by name. */
+  modelWindows?: ModelRateLimitWindow[]
+  /** Latest rate-limit status from a live request. */
+  status?: 'allowed' | 'allowed_warning' | 'rejected'
+  /** The window that is limiting (provider name, e.g. 'five_hour'). */
+  limitedWindow?: string
+  /** While rejected: when requests are allowed again, epoch ms. */
+  limitedUntil?: number
+  overageInUse?: boolean
+  updatedAt: number
+}
+
 // ---------- Run events (main -> renderer) ----------
 
 export type RunEvent =
-  | { type: 'run.status'; runId: string; status: RunStatus; sessionId?: string; error?: string }
+  | {
+      type: 'run.status'
+      runId: string
+      status: RunStatus
+      sessionId?: string
+      error?: string
+      /** status 'paused' (and later updates to a paused run). */
+      pausedUntil?: number
+      pauseReason?: string
+      autoResume?: boolean
+    }
   | { type: 'agent.upsert'; runId: string; agent: AgentInstance }
   | { type: 'agent.remove'; runId: string; agentId: string }
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
@@ -444,6 +515,8 @@ export type RunEvent =
   | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
+  /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
+  | { type: 'usage.status'; runId: string; usage: UsageStatus }
 
 /** Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked. */
 export interface FocusRunTarget {
@@ -514,6 +587,10 @@ export interface OrgAIApi {
     continue(input: { runId: string; text: string }): Promise<RunSummary>
     /** Answer a merge review: merge, discard or hold the report's branch. */
     decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
+    /** A paused run: continue it now instead of waiting for the usage window to reset. */
+    resumeNow(runId: string): Promise<RunSummary>
+    /** A paused run: keep it paused; the user continues it by hand. */
+    cancelAutoResume(runId: string): Promise<void>
   }
   permissions: {
     /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
@@ -561,6 +638,8 @@ export const IPC = {
   runsGet: 'runs:get',
   runsDecide: 'runs:decide',
   runsContinue: 'runs:continue',
+  runsResumeNow: 'runs:resumeNow',
+  runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',
   setupDecide: 'setup:decide',
