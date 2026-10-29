@@ -204,7 +204,8 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 400px;
+  /* Side column narrows with the main area (cqi of .main), capped at 400px. */
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 32cqi, 400px);
   grid-template-rows: 1fr auto;
 }
 .live .canvas {

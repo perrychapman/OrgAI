@@ -227,6 +227,12 @@
   --space-12: 48px;
   --space-16: 64px;
 
+  /* Icon sizes. */
+  --icon-xs: 12px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+
   /* Radius (spec 4.3). */
   --radius-xs: 4px;
   --radius-sm: 6px;
