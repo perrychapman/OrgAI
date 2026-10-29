@@ -29,7 +29,7 @@ IPC-safe types (Project, Role including the new skills: string[] field, RunEvent
 
 ### Runtime core (provider-neutral)
 
-Adapter interfaces, harness MCP tools, role prompts, activity strings, permission scopes, agent handles and messages, WorktreeIntegrator, git worktree commit and merge, run manager, vendor-neutral usage mapping
+Adapter interfaces, harness MCP tools, role prompts, activity strings, permission scopes, agent handles and messages, WorktreeIntegrator, git worktree commit and merge, run manager, vendor-neutral usage mapping, image attachments (attachments.ts sanitizes untrusted pasted images from IPC: count and size limits, base64 checks, and magic-byte sniffing of PNG, JPEG, GIF and WebP that corrects a wrong declared media type and drops non-images; the bytes live in the on-disk image store of store/runs.ts)
 
 - `src/main/runtime/types.ts`
 - `src/main/runtime/harnessTools.ts`
@@ -38,6 +38,7 @@ Adapter interfaces, harness MCP tools, role prompts, activity strings, permissio
 - `src/main/runtime/integration.ts`
 - `src/main/runtime/permissionRules.ts`
 - `src/main/runtime/network.ts`
+- `src/main/runtime/attachments.ts`
 - `src/main/runtime/runManager.ts`
 - `src/main/runtime/worktrees.ts`
 - `src/main/runtime/usage.ts`
@@ -61,7 +62,7 @@ Token-free repo profiler (now also lists .claude/skills), applying approved prop
 
 ### Main shell, stores and maintenance
 
-App entry (window icon from brand assets, minimum window size), IPC handlers, logging, notifications, idle usage monitor, JSON stores including appearance and persisted panel sizes, leftover-branch maintenance
+App entry (window icon from brand assets, minimum window size), IPC handlers, logging, notifications, idle usage monitor, JSON stores including appearance and persisted panel sizes, leftover-branch maintenance. Run store layout under the data dir: runs.json (index), runs/<runId>.json (record) and runs/<runId>/images/<sha256>.<ext> (content-addressed image bytes). Records on disk keep ImageAttachment.ref with empty data; loading a record for the renderer rehydrates data, and deleting, pruning or sweeping a run removes its directory
 
 - `src/main/index.ts`
 - `src/main/ipc.ts`
