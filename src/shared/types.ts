@@ -500,6 +500,10 @@ export interface OrgAIApi {
   app: {
     /** Open a file or folder with the OS default handler. Resolves to an error message, or '' on success. */
     openPath(path: string): Promise<string>
+    /** Open the main-process logs folder in the system file manager. */
+    openLogs(): Promise<void>
+    /** Absolute path of the current main-process log file. */
+    logPath(): Promise<string>
   }
 }
 
@@ -534,5 +538,7 @@ export const IPC = {
   settingsSet: 'settings:set',
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
-  appSetNotifications: 'app:setNotifications'
+  appSetNotifications: 'app:setNotifications',
+  appOpenLogs: 'app:openLogs',
+  appLogPath: 'app:logPath'
 } as const

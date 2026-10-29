@@ -8,6 +8,7 @@ import type { SetupService } from './setup/service'
 import type { MaintenanceService } from './maintenance'
 import type { SettingsStore } from './store/settings'
 import { draftOrgChart } from './ai/draft'
+import { log, logPath, logsDir } from './log'
 
 export function registerIpc(projects: ProjectStore, runs: RunManager, setup: SetupService, maintenance: MaintenanceService, settings: SettingsStore): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
@@ -115,6 +116,12 @@ export function registerIpc(projects: ProjectStore, runs: RunManager, setup: Set
     return settingsInfo()
   })
   ipcMain.handle(IPC.appOpenPath, (_e, path: string) => shell.openPath(path))
+  ipcMain.handle(IPC.appLogPath, () => logPath())
+  ipcMain.handle(IPC.appOpenLogs, async () => {
+    logPath() // creates the folder if nothing has been logged yet
+    const error = await shell.openPath(logsDir())
+    if (error) log.warn(`Could not open logs folder: ${error}`)
+  })
 }
 
 type AuthStatus = { loggedIn: boolean; method?: string; detail?: string }

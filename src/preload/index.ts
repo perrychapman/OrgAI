@@ -51,7 +51,9 @@ const api: OrgAIApi = {
     set: (s: AppSettings) => ipcRenderer.invoke(IPC.settingsSet, s)
   },
   app: {
-    openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path)
+    openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path),
+    openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
+    logPath: () => ipcRenderer.invoke(IPC.appLogPath)
   },
   onFocusRun: (cb) => {
     const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)

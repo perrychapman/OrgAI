@@ -6,6 +6,7 @@ import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
+import LogsLink from './components/LogsLink'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -84,6 +85,7 @@ export default function App(): ReactElement {
                   : 'Claude not logged in'}
           </span>
           <NotificationsToggle />
+          <LogsLink />
         </div>
       </aside>
 
