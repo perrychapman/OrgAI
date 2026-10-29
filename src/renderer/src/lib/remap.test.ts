@@ -26,7 +26,7 @@ describe('remap preview', () => {
   })
 
   it('keeps explicit catalog picks when only the tier mapping changes', () => {
-    const p = project({ a: 'gpt-5', b: 'gpt-5-mini' })
+    const p = project({ a: 'gpt-5', b: 'gpt-5-mini', c: 'gpt-5-mini', d: 'gpt-5' })
     const res = previewRemap({
       project: p,
       connection: 'openai',

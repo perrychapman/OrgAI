@@ -20,8 +20,10 @@ import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
 import DiffView from '../components/DiffView'
 import DraftPanel from '../components/DraftPanel'
-import ProviderAuthPicker from '../components/ProviderAuthPicker'
-import { claudeProviderLabel } from '@shared/defaults'
+import ProjectConnection from '../components/connections/ProjectConnection'
+import RemapNotices from '../components/RemapNotices'
+import McpSection from '../components/mcp/McpSection'
+import PluginsSection from '../components/mcp/PluginsSection'
 import { treeLayout } from '../lib/layout'
 import PermissionRulesPanel from '../components/PermissionRulesPanel'
 
@@ -385,7 +387,8 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
       .catch(() => setOpusGuard(null))
   }, [])
   return (
-    <div style={{ maxWidth: 640 }}>
+    <div className="settings-col flow">
+      <RemapNotices projectId={project.id} />
       <div className="field">
         <label>Name</label>
         <input className="input" value={project.name} onChange={(e) => patch({ name: e.target.value })} />
@@ -557,24 +560,10 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
         />
         <span className="hint">Older finished runs and their transcripts are deleted from disk when a run ends.</span>
       </div>
-      <div className="field">
-        <label>Provider</label>
-        <div className="row">
-          <span className="pill ok">
-            <span className="dot" /> {project.provider.label}
-          </span>
-          <span className="hint">More providers plug in as runtime adapters. Claude is the only one wired up so far.</span>
-        </div>
-      </div>
-      <div className="field">
-        <label>Authentication for this project</label>
-        <ProviderAuthPicker
-          name={`project-auth-${project.id}`}
-          value={project.provider.auth}
-          onChange={(auth) => patch({ provider: { ...project.provider, auth, label: claudeProviderLabel(auth) } })}
-        />
-      </div>
+      <ProjectConnection project={project} />
       <PermissionRulesPanel project={project} />
+      <McpSection project={project} />
+      <PluginsSection project={project} />
     </div>
   )
 }

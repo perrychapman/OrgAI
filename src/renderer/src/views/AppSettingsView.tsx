@@ -4,7 +4,7 @@ import type { AppSettings, AppSettingsInfo, PermissionMode } from '@shared/types
 import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
-import ProviderAuthPicker from '../components/ProviderAuthPicker'
+import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -93,15 +93,9 @@ export default function AppSettingsView(): ReactElement {
           {error ? `Save failed: ${error}` : saved ? 'Saved' : ''}
         </span>
       </div>
-      <div style={{ padding: 24, overflow: 'auto' }}>
-        <div style={{ maxWidth: 640 }}>
-          <div className="side-section-title" style={{ margin: '0 0 10px' }}>
-            Claude authentication
-          </div>
-          <ProviderAuthPicker name="app-provider-auth" value={info.providerAuth} onChange={(providerAuth) => patch({ providerAuth })} />
-          <span className="hint" style={{ display: 'block', fontSize: 11, color: 'var(--text-faint)', marginTop: -6, marginBottom: 18 }}>
-            Used for the sidebar status and as the default for new projects. Each project can override it in its project settings.
-          </span>
+      <div style={{ padding: 'var(--space-6)', overflow: 'auto', flex: 1, minHeight: 0 }}>
+        <div className="settings-col">
+          <ConnectionsPanel />
 
           <div className="side-section-title" style={{ margin: '0 0 10px' }}>
             Defaults for new projects
