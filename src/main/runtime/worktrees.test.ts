@@ -227,6 +227,79 @@ describe('inspectPending', () => {
   })
 })
 
+describe('nested worktrees', () => {
+  /** Mimic Claude Code spawning from inside a parent's worktree: cwd = the parent worktree. */
+  function addNested(parentPath: string, id: string): { path: string; branch: string } {
+    const rel = `.claude/worktrees/agent-${id}`
+    const branch = `worktree-agent-${id}`
+    git(parentPath, `worktree add -q -b ${branch} ${rel}`)
+    return { path: join(parentPath, rel), branch }
+  }
+
+  it('merges a child into its parent worktree, then the parent into main with both changes', async () => {
+    await prepareRepo(root)
+    const parent = addWorktree('lead1')
+    put(parent.path, 'src/lead.js', 'export const lead = 1\n')
+    // The parent finished first: its own work is committed before its reports merge.
+    expect(await commitLeftovers(parent.path, 'Lead: own work')).toEqual({ committed: true })
+
+    const kid = addNested(parent.path, 'kid1')
+    // The child lives inside the parent's checkout, on a branch cut from the parent's branch.
+    expect(norm(kid.path)).toBe(norm(join(root, '.claude/worktrees/agent-lead1/.claude/worktrees/agent-kid1')))
+    expect(git(kid.path, 'rev-parse HEAD')).toBe(git(parent.path, 'rev-parse HEAD'))
+    expect(existsSync(join(kid.path, 'src/lead.js'))).toBe(true)
+    // The shared exclude line keeps the nested worktree out of the parent's status.
+    expect(git(parent.path, 'status --porcelain')).toBe('')
+    // Worktrees are repository-wide: the main checkout finds the nested one by agent id.
+    expect(norm((await findWorktree(root, 'kid1'))!.path)).toBe(norm(kid.path))
+
+    put(kid.path, 'src/kid.js', 'export const kid = 2\n')
+    const child = await integrateWorktree(parent.path, { ...kid, status: 'merging' }, 'Dev: add kid')
+    expect(child.info.status).toBe('merged')
+    expect(child.message).toMatch(/Merged worktree-agent-kid1 into branch worktree-agent-lead1 \(1 file: src\/kid\.js\)/)
+    expect(existsSync(kid.path)).toBe(false)
+    expect(branches()).not.toContain(kid.branch)
+    expect(git(parent.path, 'log -1 --format=%s')).toBe('Merge worktree-agent-kid1: Dev: add kid')
+    // Nothing reached main yet.
+    expect(existsSync(join(root, 'src/kid.js'))).toBe(false)
+
+    const lead = await integrateWorktree(root, { ...parent, status: 'merging' }, 'Lead: feature')
+    expect(lead.info.status).toBe('merged')
+    expect(lead.info.changedFiles).toEqual(['src/kid.js', 'src/lead.js'])
+    expect(lead.message).toMatch(/into the main checkout/)
+    expect(existsSync(parent.path)).toBe(false)
+    expect(branches()).toEqual(['main'])
+    expect(readFileSync(join(root, 'src/kid.js'), 'utf8')).toContain('kid = 2')
+    expect(readFileSync(join(root, 'src/lead.js'), 'utf8')).toContain('lead = 1')
+    const subjects = git(root, 'log --format=%s main').split(/\r?\n/)
+    expect(subjects).toEqual(expect.arrayContaining(['Merge worktree-agent-lead1: Lead: feature', 'Merge worktree-agent-kid1: Dev: add kid', 'Lead: own work', 'Dev: add kid']))
+  })
+
+  it('keeps a child that conflicted with its parent pending when the parent leaves', async () => {
+    await prepareRepo(root)
+    const parent = addWorktree('lead2')
+    const kid = addNested(parent.path, 'kid2')
+    put(kid.path, 'src/app.js', 'export const a = "from kid"\n')
+    put(parent.path, 'src/app.js', 'export const a = "from lead"\n')
+    await commitLeftovers(parent.path, 'Lead: change a')
+
+    const child = await integrateWorktree(parent.path, { ...kid, status: 'merging' }, 'Dev: change a')
+    expect(child.info.status).toBe('conflict')
+    expect(git(parent.path, 'status --porcelain')).toBe('')
+
+    const lead = await integrateWorktree(root, { ...parent, status: 'merging' }, 'Lead: feature')
+    expect(lead.info.status).toBe('merged')
+    expect(existsSync(parent.path)).toBe(false)
+    // The child's worktree was moved out of the parent's directory before it was removed.
+    const moved = join(root, '.claude/worktrees/agent-kid2')
+    expect(existsSync(moved)).toBe(true)
+    const pending = await pendingWorktrees(root)
+    expect(pending.map((p) => [p.branch, norm(p.path)])).toEqual([[kid.branch, norm(moved)]])
+    expect(git(root, `log -1 --format=%s ${kid.branch}`)).toBe('Dev: change a')
+    expect(readFileSync(join(moved, 'src/app.js'), 'utf8')).toContain('from kid')
+  })
+})
+
 describe('discardWorktree', () => {
   it('removes the worktree and deletes the branch, even with unmerged work', async () => {
     await prepareRepo(root)

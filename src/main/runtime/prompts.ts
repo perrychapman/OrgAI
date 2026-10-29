@@ -45,12 +45,21 @@ export function orchestratorIsolationText(): string {
   )
 }
 
-/** For a writing report when isolation is on: stay inside the worktree. */
-export function reportIsolationText(): string {
-  return (
+/**
+ * For a writing report when isolation is on: stay inside the worktree. A report that leads its own
+ * reports (`leads`) also learns that their branches merge into its worktree automatically.
+ */
+export function reportIsolationText(leads = false): string {
+  const base =
     `You work in an isolated git worktree of the repository, on your own branch. Edit only files inside your current working directory; ` +
     `the main checkout is off limits and other reports cannot see your changes until they are merged. Do not run git merge, checkout, rebase or push. ` +
     `You may commit as you go; the harness commits anything left over and merges your branch when you report back. List every file you changed in your report.`
+  if (!leads) return base
+  return (
+    `${base} ` +
+    `Your writing reports work in their own worktrees, branched from yours. When each of them finishes, the harness merges its branch into your worktree automatically; ` +
+    `do not merge or copy their changes yourself. Before you report back, wait for the reports you depend on, then verify the combined result in your worktree ` +
+    `(read the changed files, build, run the tests). Your branch goes to the main checkout once all of your reports' branches are integrated into it.`
   )
 }
 
@@ -80,7 +89,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   } else if (!isSetup) {
     parts.push('You have no reports. Do the assigned work yourself and report back concisely when finished.')
   }
-  if (isolation && role.reportsTo !== null && canWrite(role)) parts.push(reportIsolationText())
+  if (isolation && role.reportsTo !== null && canWrite(role)) parts.push(reportIsolationText(reports.some(canWrite)))
   if (!isSetup) {
     const archPath = project.setup?.architecturePath
     if (archPath) {

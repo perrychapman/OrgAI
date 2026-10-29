@@ -17,7 +17,14 @@ const WORKTREE_LABEL: Record<NonNullable<AgentInstance['worktree']>['status'], s
   conflict: 'merge conflict',
   removed: 'worktree removed',
   review: 'awaiting your review',
-  held: 'held for later'
+  held: 'held for later',
+  'waiting-children': 'waiting for its reports'
+}
+
+/** Nested reports merge into their parent's branch, not the main checkout. */
+function worktreeLabel(wt: NonNullable<AgentInstance['worktree']>): string {
+  if (wt.mergeTarget === 'parent' && wt.status === 'merged') return 'merged into parent'
+  return WORKTREE_LABEL[wt.status]
 }
 
 function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactElement {
@@ -62,7 +69,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
       </div>
       {agent.worktree && (
         <div className={`worktree wt-${agent.worktree.status}`} title={`${agent.worktree.branch} · ${agent.worktree.path}`}>
-          {WORKTREE_LABEL[agent.worktree.status]}
+          {worktreeLabel(agent.worktree)}
           {agent.worktree.changedFiles?.length ? ` · ${agent.worktree.changedFiles.length} file${agent.worktree.changedFiles.length === 1 ? '' : 's'}` : ''}
         </div>
       )}

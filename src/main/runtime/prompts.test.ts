@@ -30,6 +30,17 @@ describe('buildRolePrompt', () => {
     expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).not.toContain('isolated git worktree')
   })
 
+  it('tells an isolated lead that its reports merge into its worktree and to verify', () => {
+    const mid = { ...eng, id: 'r-mid', slug: 'midlead', canSpawn: true, spawnable: ['r-eng', 'r-rev'] }
+    const chart = [lead, mid, eng, rev]
+    const text = buildRolePrompt(mid, chart, project(), { isSetup: false, isolation: true })
+    expect(text).toContain('You work in an isolated git worktree')
+    expect(text).toContain('the harness merges its branch into your worktree automatically')
+    expect(text).toContain('verify the combined result in your worktree')
+    expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: true })).not.toContain('into your worktree automatically')
+    expect(buildRolePrompt(mid, chart, project(), { isSetup: false, isolation: false })).not.toContain('into your worktree automatically')
+  })
+
   it('gives leaf roles the no-reports instruction on work runs', () => {
     expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).toContain('You have no reports.')
   })
