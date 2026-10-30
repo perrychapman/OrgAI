@@ -293,6 +293,8 @@ try {
   const needsN = Number(/Needs you · (\d+)/.exec(needs)?.[1] ?? 0)
   await page.locator('[data-testid=needs-you-row]').click()
   const items = page.locator('[data-testid=needs-you-list] .needs-item')
+  await items.first().waitFor({ timeout: 5000 }).catch(() => {})
+  await sleep(300)
   check((await items.count()) === needsN && needsN >= 3, 'the Needs you row counts decisions: its number equals the list length', `${needs} / ${await items.count()}`)
   const q = items.filter({ hasText: 'Question: Which limiter' })
   const qText = ((await q.first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
