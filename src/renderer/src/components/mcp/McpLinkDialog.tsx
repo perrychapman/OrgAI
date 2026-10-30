@@ -63,8 +63,8 @@ export default function McpLinkDialog({
     <Dialog
       open
       onClose={busy ? () => undefined : onClose}
-      title="Add MCP server from your library"
-      description="The project uses the library's definition, credentials and sign-in. Edits in the library reach every project that links it."
+      title="Add from your custom servers"
+      description="This project uses the custom server as you set it up in App settings, with its credentials and sign-in. Changes there reach every project that uses it."
       size="lg"
       testId="mcp-link-dialog"
       footer={
@@ -86,19 +86,19 @@ export default function McpLinkDialog({
       {available.length === 0 ? (
         <div className="stack-2">
           <p className="muted">
-            {library.length === 0 ? 'Your library is empty.' : 'Every library server is already in this project.'} Add servers to the library in app
-            settings.
+            {library.length === 0 ? 'You have no custom servers yet.' : 'Every custom server is already in this project.'} Define custom servers in
+            App settings.
           </p>
           <div>
             <Button size="sm" onClick={onOpenLibrary}>
-              Open the MCP library
+              Open App settings
             </Button>
           </div>
         </div>
       ) : (
         <>
           <fieldset className="mcp-vars">
-            <legend>Library server</legend>
+            <legend>Custom server</legend>
             <ul className="mcp-pick-list">
               {available.map((l) => {
                 const clash = taken.has(l.entry.name)
@@ -133,7 +133,7 @@ export default function McpLinkDialog({
             <>
               <p className="muted">{securityPhrase(picked.entry.transport)}</p>
               {(picked.auth.state === 'notAuthorized' || picked.auth.state === 'expired') && (
-                <Banner tone="warning">Authorize this server in the library before runs can use it.</Banner>
+                <Banner tone="warning">Authorize this server in App settings before runs can use it.</Banner>
               )}
               <fieldset className="mcp-vars">
                 <legend>Who can use it?</legend>
