@@ -159,3 +159,25 @@ export function clampText(s: string, n: number): string {
   if (chars.length <= n) return s
   return `${chars.slice(0, n - 1).join('')}…`
 }
+
+/**
+ * The notes worth showing a person. Developer caveats ("Unverified: ...") and implementation details (headers, storage,
+ * token shapes) are dropped; a redirect or admin-approval caveat becomes one plain sentence and goes first.
+ */
+export function noteForUser(notes: readonly string[] | undefined, serviceName: string): string[] {
+  const caveat: string[] = []
+  const rest: string[] = []
+  for (const raw of notes ?? []) {
+    const n = raw.trim()
+    if (!n) continue
+    if (/^unverified/i.test(n)) continue
+    if (/redirect|admin(?:'s)? approval/i.test(n)) {
+      const line = `${serviceName} may refuse OrgAI's sign-in address or need an admin's approval.`
+      if (!caveat.includes(line)) caveat.push(line)
+      continue
+    }
+    if (/header|safeStorage|token response|authorization:|bearer/i.test(n)) continue
+    rest.push(n)
+  }
+  return [...caveat, ...rest]
+}

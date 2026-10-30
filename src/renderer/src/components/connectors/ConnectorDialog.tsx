@@ -9,7 +9,7 @@ import { CopyButton } from '../ui/CopyButton'
 import { ConfirmDialog, Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
-import { accessWords, clampText, connectMissing, defaultVariantId, honestyNote, missingSentence, plainToolName, removeConsequence, variantExplain } from '../../lib/connectors'
+import { accessWords, clampText, connectMissing, defaultVariantId, honestyNote, missingSentence, noteForUser, plainToolName, removeConsequence, variantExplain } from '../../lib/connectors'
 import { authFailure, disconnectKind, httpsUrl, testFailure } from '../../lib/connectorFlow'
 import { errMessage } from '../mcp/mcpHelpers'
 import { ConnectorLogo } from './ConnectorLogo'
@@ -170,8 +170,8 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const multi = def.variants.length > 1
   const secretOptional = auth.kind === 'oauthClient' && auth.clientSecret === 'optional'
   const missingId = `${ids}-missing`
-  const firstFocus = multi && !entry
-  const inputFocus = !firstFocus
+  const formId = `${ids}-form`
+  const notes = connected ? [] : noteForUser(def.notes, def.name)
 
   return (
     <Dialog
@@ -181,9 +181,40 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
       size="md"
       testId="connector-dialog"
       footer={
-        <Button autoFocusDialog={connected} onClick={requestClose} disabled={phase === 'working'}>
-          Close
-        </Button>
+        <>
+          {form && phase === 'waiting' && (
+            <>
+              <span className="muted connector-foot-status" role="status" data-testid="connector-waiting">
+                Waiting for your browser…
+              </span>
+              <Button onClick={cancel}>Cancel</Button>
+            </>
+          )}
+          {form && phase !== 'waiting' && (
+            <>
+              <Button onClick={requestClose} disabled={phase === 'working'}>
+                Close
+              </Button>
+              <button
+                type="submit"
+                form={formId}
+                className="btn primary"
+                data-testid="connector-connect"
+                disabled={missing.length > 0 || busy}
+                aria-describedby={sentence ? missingId : undefined}
+                aria-busy={phase === 'working' || undefined}
+              >
+                <Icon icon={PlugZap} size="sm" />
+                {error || priorError ? 'Try again' : 'Connect'}
+              </button>
+            </>
+          )}
+          {!form && (
+            <Button autoFocusDialog onClick={requestClose} disabled={phase === 'working'}>
+              Close
+            </Button>
+          )}
+        </>
       }
     >
       <div className="connector-dlg">
@@ -210,7 +241,6 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                   name={`${ids}-variant`}
                   value={v.id}
                   checked={v.id === variant.id}
-                  data-autofocus={firstFocus && v.id === variant.id ? '' : undefined}
                   onChange={() => setVariantId(v.id)}
                 />
                 <span className="connector-variant-text">
@@ -230,9 +260,9 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
           </p>
         )}
 
-        {def.notes && def.notes.length > 0 && (
+        {notes.length > 0 && (
           <ul className="muted connector-notes" aria-label="Good to know">
-            {def.notes.map((n) => (
+            {notes.map((n) => (
               <li key={n}>{n}</li>
             ))}
           </ul>
@@ -240,6 +270,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
 
         {form && (
           <form
+            id={formId}
             className="connector-connect"
             onSubmit={(e) => {
               e.preventDefault()
@@ -266,7 +297,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 </div>
                 <div className="field">
                   <label htmlFor={`${ids}-cid`}>Client ID</label>
-                  <Input id={`${ids}-cid`} mono value={clientId} autoComplete="off" spellCheck={false} disabled={busy} onChange={setClientId} {...(inputFocus ? { 'data-autofocus': '' } : {})} />
+                  <Input id={`${ids}-cid`} mono value={clientId} autoComplete="off" spellCheck={false} disabled={busy} onChange={setClientId} />
                 </div>
                 <div className="field">
                   <label htmlFor={`${ids}-sec`}>Client secret{secretOptional ? ' (optional)' : ''}</label>
@@ -278,7 +309,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
             {auth.kind === 'token' && (
               <div className="field">
                 <label htmlFor={`${ids}-tok`}>{auth.label}</label>
-                <Input id={`${ids}-tok`} mono type="password" value={token} autoComplete="off" spellCheck={false} disabled={busy} onChange={setToken} {...(inputFocus ? { 'data-autofocus': '' } : {})} />
+                <Input id={`${ids}-tok`} mono type="password" value={token} autoComplete="off" spellCheck={false} disabled={busy} onChange={setToken} />
                 <span className="hint">{auth.help}</span>
                 {auth.link && <ExtLink href={auth.link}>Create one</ExtLink>}
                 <span className="hint">Stored encrypted on this computer and never shown again.</span>
@@ -306,29 +337,6 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 {sentence}
               </p>
             )}
-            <div className="connector-actions">
-              {phase === 'waiting' ? (
-                <>
-                  <span className="muted" role="status" data-testid="connector-waiting">
-                    Waiting for your browser…
-                  </span>
-                  <Button onClick={cancel}>Cancel</Button>
-                </>
-              ) : (
-                <button
-                  type="submit"
-                  className="btn primary"
-                  data-testid="connector-connect"
-                  data-autofocus={auth.kind === 'oauth' && inputFocus ? '' : undefined}
-                  disabled={missing.length > 0 || busy}
-                  aria-describedby={sentence ? missingId : undefined}
-                  aria-busy={phase === 'working' || undefined}
-                >
-                  <Icon icon={PlugZap} size="sm" />
-                  {error || priorError ? 'Try again' : 'Connect'}
-                </button>
-              )}
-            </div>
           </form>
         )}
 

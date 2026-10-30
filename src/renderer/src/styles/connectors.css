@@ -368,3 +368,8 @@
   flex: 1 1 24ch;
   font-size: var(--text-small);
 }
+
+.connector-foot-status {
+  margin-right: auto;
+  align-self: center;
+}
