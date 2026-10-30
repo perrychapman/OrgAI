@@ -6,6 +6,25 @@ How to read the evidence. File references are `path:line` at the worktree base. 
 
 Ids used below: `P#` and `B#` are Researcher findings; `AU#` are findings from this code audit (section B.0).
 
+
+## Status after Phases 1-2 (4b8b7a1)
+
+Landed on dev: Phase 1 (1A tokens, brand, primitives; 1B shell) and Phase 2 (2A run workspace, 2B decision cards, 2C transcript and History), plus two follow-up rounds after the UX re-walk (`ux-review-placement-2.md`, Q1-Q15). Phases 3 and 4 are open. Where the follow-ups changed a decision below, this block wins; the original rows are kept as history and marked "superseded, see status block".
+
+Amended decisions:
+- **Tray placement.** The tray sits beside the stage only in a frame of at least 1500 x 560 px, 420 to 480 px wide; under the stage otherwise. Supersedes B.1 decision 2 (1100 x 560) and the B.2 canvas-size targets.
+- **Stage budget.** 55 percent of the frame with a permission open; it may drop to 36 percent while a question card with inline options is open at 1024x640 (the Q1/Q4 trade-off). Fit-to-view keeps a minimum zoom of 0.8 when the stage is under 300 px tall, and the chart pans.
+- **Question options** are always inline, in compact mode too. The compact Details toggle covers helper text only.
+- **Decision chips** never shrink. Under 700 px of tray width they become numbered chips (label in tooltip and aria-label) and form one roving Tab stop; the tray never scrolls horizontally.
+- **Needs-you unit is decisions**, counted at every level ("3 decisions · 1 run").
+- **End session** is always labelled (never icon-only).
+- **Stopped tone.** `stopped` is its own neutral tone, distinct from failed.
+- **Permission cards** never clip a Bash command silently: multi-line and clipped markers, the full command scrollable, and in compact mode Details takes focus.
+- **Markdown links** show a host suffix.
+- **Light status text tokens darkened** (`tokens.css`, light block and its prefers-color-scheme mirror): `--success-text #096a48` (was #0b7a53), `--warning-text #7d4a00` (was #8f5400), `--danger-text #b3242f` (was #c62f3b), `--info-text #0a5fa2` (was #0b6bb5).
+
+Commits: 487e864 (1A), 3f9f517 (1B), 9ee86a9 (2A), 4d545f6 (2B), e4734fb (2C); follow-ups 544a7de and 4b8b7a1.
+
 ---
 
 ## A. Summary
@@ -48,7 +67,7 @@ The fix is a small, strict system (section C): three surface steps with visible 
 | # | Question | Decision | Why |
 | --- | --- | --- | --- |
 | 1 | Merge run tabs and run header? | **Yes, into one 40 px run strip.** Tabs on the left (the active tab already carries `R1`, status dot and the clipped prompt, full text in its tooltip); the active run's actions on the trailing edge (Interrupt turn, End session, Org retrospective). The 44 px run header row is deleted. Its metadata (cost, agents, steps, "unattended", "Continues R1") moves to a quiet 12 px text line at the left of the canvas toolbar (`FrameToolbar`), together with the Hide-finished switch, zoom buttons and the legend `?`. | P2, P6. The strip becomes the single "which run" carrier; the toolbar is canvas-owned chrome and replaces the controls that float over the canvas today. Chrome above the canvas drops from 139 to 88 px (topbar 48 + strip 40). Rules 1, 2, 11. |
-| 2 | Tray under the canvas or beside it? | **Under the canvas by default; beside only when the frame is at least 1100 px wide and 560 px tall.** Delete the `or (max-height: 420px)` clause (`layout.css:79`). Below 480 px frame height the card renders compact (header and footer visible, body behind a "Details" toggle) so the stage keeps at least 55 percent. This overrides the 900 px threshold in spec 12.1 and 12.7 (superseded in the spec note). | AU1, P1, P7. Beside-docking only pays on large monitors; on the supported 1024 to 1600 range the canvas width is the scarce resource. A tray under the canvas also sits next to the composer, which is where a user answers. Rules 1, 23. |
+| 2 | Tray under the canvas or beside it? (superseded, see status block: beside only at 1500 x 560, 420-480 px wide) | **Under the canvas by default; beside only when the frame is at least 1100 px wide and 560 px tall.** Delete the `or (max-height: 420px)` clause (`layout.css:79`). Below 480 px frame height the card renders compact (header and footer visible, body behind a "Details" toggle) so the stage keeps at least 55 percent. This overrides the 900 px threshold in spec 12.1 and 12.7 (superseded in the spec note). | AU1, P1, P7. Beside-docking only pays on large monitors; on the supported 1024 to 1600 range the canvas width is the scarce resource. A tray under the canvas also sits next to the composer, which is where a user answers. Rules 1, 23. |
 | 3 | Sidebar footer? | **One 52 px account row** and a gear: `[dot] Claude · Max   [bar 29%]   [gear]`. Clicking the row opens a `Popover` with all plan windows, reset times, "Updated" and Refresh and a link to Settings > Connections. The Needs-you block and the usage meter stop competing for height. In mock mode the row says "Mock adapter" with no bar. | P4, P9, P10. Rule 4: usage is non-critical status, the gear is an entry point. Footer height 237 to 52 px. |
 | 4 | One tab idiom? | **Underline tabs for all navigation** (project sections, side-panel sections): 40 px row, 2 px bottom indicator in the brand gradient, label in `--text-secondary` and `--text-primary` when active. **Run tabs keep a distinct chip-tab shape** (flat, 6 px radius, `--surface-2` fill when selected) because they are documents, not sections (NN/g: file-tab look for documents). **Segmented control only for value choices** (theme, filters, mode), never navigation. | P6, rule 8. Today there are three idioms for navigation: boxed segmented tabs (`shell.css:334-358`), file tabs (`run-tabs.css:21-41`) and a segmented control for the side-panel tabs (`transcript.css`). |
 | 5 | Path display? | **Folder name only** (last path segment), `--font-mono` 12 px, `--text-tertiary`, folder icon, full path in the tooltip and in Settings > General with a copy button. If the project name equals the folder name, hide the folder. Never render a full path in a pill. Helper `lib/paths.ts` (`folderName`, `abbreviatePath`). | P5, P11. The recognisable part of a path is its end, and truncating the end loses it. |
@@ -59,7 +78,7 @@ The fix is a small, strict system (section C): three surface steps with visible 
 
 ### B.2 Vertical and horizontal budget (targets)
 
-| Measure | Now (walkthrough) | Target |
+| Measure | Now (walkthrough) | Target (canvas-size rows superseded, see status block) |
 | --- | --- | --- |
 | Chrome above the canvas on Live | 139 px (22% of 641) | 88 px (14% of 641): topbar 48, run strip 40 |
 | Composer height with label, mode toggle, hint | about 150 px at 1024x640 (shot `layout-12-live-run-1024x640-dark.png`) | 96 px: textarea two rows, mode toggle on the label line, hint moves to placeholder and the `?` tooltip |
@@ -386,7 +405,7 @@ Phase 3 (parallel after Phase 2 merges):  3A org chart  |  3B projects and new p
 Phase 4 (serial after Phase 3):  4A nodes  -->  4B polish and cleanup
 ```
 
-### Phase 1: Brand and shell (serialized)
+### Phase 1: Brand and shell (serialized) - LANDED (1A 487e864, 1B 3f9f517)
 
 **Brief 1A: Tokens, brand assets and primitives** (L). Goal: the system in section C exists as tokens and components, with no view restyled yet.
 - Closes: B1 (part), B2 (tokens), B3 (Badge), B5, B6 (type floor), B7, AU4, AU10, AU12 (spacing helpers); rules 10, 12-16, 18-20.
@@ -402,7 +421,7 @@ Phase 4 (serial after Phase 3):  4A nodes  -->  4B polish and cleanup
 - e2e selector changes: `.sidebar .nav-item` with text `Settings` becomes `getByRole('button', { name: 'App settings' })` (add `openAppSettings(page)` in `e2e/lib.mjs` and use it in `layout.mjs` and `connections.mjs`); `.sidebar-footer .pill` (`layout.mjs:23`) becomes `[data-testid=auth-pill]` (testid kept on the account row); `.topbar .tabs` becomes `[role=tablist][aria-label="Project sections"]` and its buttons become `role=tab`; `.topbar .pill` (path, `layout.mjs:37`) becomes `[data-testid=project-folder]`; run status reads (`lib.mjs:379`, `worktree.mjs:43`) switch from `.topbar .pill .dot` to the selected run tab (`.run-tab[aria-selected=true]` plus its sr-only word) so the topbar badge can disappear on Live; sidebar footer height and brand block assertions added in `layout.mjs` (footer under 80 px, brand 48 px).
 - Estimate L. Depends on 1A.
 
-### Phase 2: Run workspace (three parallel briefs, disjoint files)
+### Phase 2: Run workspace (three parallel briefs, disjoint files) - LANDED (2A 9ee86a9, 2B 4d545f6, 2C e4734fb; follow-ups 544a7de, 4b8b7a1)
 
 **Brief 2A: Run strip, toolbar, tray placement, composer, side panel** (L; one engineer, two sequential passes allowed: strip and toolbar first, then tray, composer and panel). Goal: B.5 to B.9, decisions 1 and 2.
 - Closes: P1, P2, P3 (run level), P7 (tray layout), P13, B3 (run header chips), B6 (legend, hints), B9, AU1, AU3 (node ring colour is in 4A; the legend here), AU11; rules 1-3, 9, 23, 24.
@@ -427,13 +446,14 @@ Phase 4 (serial after Phase 3):  4A nodes  -->  4B polish and cleanup
 - e2e selector changes: `.side .tabs` (`setup.mjs:56,68`, `worktree.mjs:68`) becomes `[role=tablist]` within `.side`; `.entry.user`, `.entry-thumb`, `.run-row` and `.run-open` are unchanged. `setup.mjs` and `worktree.mjs` are syntax-checked only.
 - Estimate M. Concurrent with 2A, 2B.
 
-### Phase 3: Views (three parallel briefs, disjoint files, start after Phase 2 merges and the Reviewer and UX passes)
+### Phase 3: Views (three parallel briefs, disjoint files, start after Phase 2 merges and the Reviewer and UX passes) - OPEN
 
 **Brief 3A: Org chart tab** (M). Goal: B.10, decision 7.
 - Closes: P8, B8 (org nodes: avatar, name, handle), rule 1.
 - Files (exclusive): `views/OrgChartView.tsx`, `components/DraftPanel.tsx`, `components/RoleInspector.tsx`, `components/RoleNode.tsx`, `components/RoleModelPicker.tsx`, `styles/editor.css`.
 - Work: toolbar primary "Add role"; one heading; conditional primary on the panel action; panel 320 and collapsed below 1100 unless a role is selected; fit zoom; role node lines; `EmptyState` for an empty chart.
 - e2e selector changes: `.draft-box` (`layout.mjs`) kept; `.canvas-toolbar` (one use) updated if renamed. Edits only the org-chart hunk of `e2e/layout.mjs` (lines about 40-66); 2A edited the Live hunk earlier, so the merge is textual only.
+- Added after the Phase 1-2 re-walk: Org chart canvas toolbar and zoom parity with Live (the React Flow zoom buttons still float; move them into the toolbar, Q10) and graph edges not focusable (Q13).
 - Estimate M.
 
 **Brief 3B: Projects page and New project form** (M). Goal: B.12 and B.13 (projects empty state), decision 5.
@@ -441,6 +461,7 @@ Phase 4 (serial after Phase 3):  4A nodes  -->  4B polish and cleanup
 - Files (exclusive): `views/ProjectsView.tsx`, `styles/projects.css`, `lib/projectsForm.ts` (+ test).
 - Work: cards with folder, last-run line (from `lib/projectStatus.ts`), at most four tonal avatars, `⋯` overflow menu replacing the permanent Delete; grid and centred max width; form 560 px two-column at 1100+, sticky submit, collapsed Options, one-line intro; `EmptyState` on a project-free Projects page.
 - e2e selector changes: `[data-testid=new-project]` and `use-mock` are kept; `lib.mjs` project-delete helpers update to the overflow menu (`lib.mjs` is 1B's, so 3B adds a small `deleteProject(page, name)` helper in a new `e2e/lib-projects.mjs` if one is needed and imports it, keeping `lib.mjs` untouched).
+- Added after the re-walk: remove the orange "Mock mode" topbar badge on Projects (Q15); the neutral MOCK tag by the wordmark is the one marker.
 - Estimate M.
 
 **Brief 3C: Settings pages** (M). Goal: B.11.
@@ -450,7 +471,7 @@ Phase 4 (serial after Phase 3):  4A nodes  -->  4B polish and cleanup
 - e2e selector changes: `#settings-section-*` ids are kept; `.editor .tabs, .tabs` with `Project settings` (`maintenance.mjs:73`) becomes the `Tabs` role selector; `connections.mjs` selectors for `[data-testid=connection-card]` are unchanged. Edits `e2e/connections.mjs` and `e2e/maintenance.mjs` only.
 - Estimate M. MCP components (`components/mcp/*`, `styles/mcp*.css`) are intentionally out of scope; they adopt `Badge` and the surface steps in 4B only where a class is deleted.
 
-### Phase 4: Polish and cleanup (serial, small)
+### Phase 4: Polish and cleanup (serial, small) - OPEN
 
 **Brief 4A: Nodes and canvas states** (M). Goal: B8 and AU3, AU14.
 - Files (exclusive): `components/AgentNode.tsx`, `components/DoneGroupNode.tsx`, `styles/run.css` (agent-node rules, `run.css:1-200`), `styles/tokens.css` (delete `--glow-working` composites, `tokens.css:325-345`), `styles/flow.css` (edges: message dashed neutral).
@@ -462,6 +483,8 @@ Phase 4 (serial after Phase 3):  4A nodes  -->  4B polish and cleanup
 - Files (exclusive): `styles/shell.css` (delete `.pill`), `styles/controls.css` (delete `.chip`), `styles/global.css`, `styles/tokens.css` (legacy alias block only if a grep finds no use; otherwise leave), `styles/run.css` (`.pill.plan-pill`, `run.css:442-481`), `styles/tokens.test.ts`, `App.tsx` (keyboard order test hooks only), `e2e/layout.mjs` (a Tab-order assertion: skip link, skip to sidebar, collapse toggle, Projects).
 - Work: sweep for text under 12 px and raw-px `padding`/`gap` in files edited by Phases 1 to 4 (convert to `--space-*`); delete dead selectors; confirm the guard test finds no hex or shadow literal outside `tokens.css`.
 - Estimate S. Depends on 4A (shares `run.css`, `tokens.css`).
+
+Open contract: the `ROLE_COLORS` brand-tonal palette request to the Runtime Lead (`src/shared/defaults.ts`) is still open and non-blocking.
 
 ### D.1 File exclusivity matrix (check before parallel starts)
 
