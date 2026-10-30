@@ -181,19 +181,16 @@ function HistoryRow({
       </td>
       <td>
         <div className="run-row-actions">
-          {viewed ? (
-            <span className="run-open">
-              <Badge tone="info" title="You are viewing this run">
-                Viewing
-              </Badge>
-            </span>
-          ) : (
-            <Button size="sm" className="run-open" onClick={onOpen} title={open ? 'Open this live run' : 'Open this run'}>
-              Open
-            </Button>
+          <Button size="sm" className="run-open" onClick={onOpen} title={open ? 'Open this live run' : 'Open this run'}>
+            Open
+          </Button>
+          {viewed && (
+            <Badge tone="info" title="You are viewing this run">
+              Viewing
+            </Badge>
           )}
           {canContinue(summaries, r.id) && (
-            <Button size="sm" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
+            <Button size="sm" variant="secondary" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
               Continue
             </Button>
           )}

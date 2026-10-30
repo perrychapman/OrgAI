@@ -156,3 +156,41 @@ export function autoContinueLine(auto: boolean, used: number, max: number): { pi
     explain: `When the orchestrator stops with steps left, OrgAI nudges it to carry on, up to ${max} times per run.`
   }
 }
+
+export interface ResultRow {
+  label: string
+  /** The full text for the "Show output" disclosure; null when the label says it all. */
+  full: string | null
+}
+
+const PLAN_TOOLS = new Set(['set_plan', 'update_plan', 'orgai_update_plan'])
+
+/** Whether a tool belongs to the harness (its result is written for the agent, not for the user). */
+export function isHarnessTool(name: string | undefined): boolean {
+  return !!name && name.startsWith('mcp__orgai__')
+}
+
+/**
+ * One transcript row for a tool result, or null when there is nothing to show (empty output). Harness tools answer
+ * the agent in imperative prose ("APPROVED. Continue with..."); the user gets a short outcome and the full text
+ * behind "Show output". `toolName` is the name of the matching tool_use when known.
+ */
+export function humanizeToolResult(toolName: string | undefined, content: string, isError: boolean): ResultRow | null {
+  const text = content.trim()
+  if (!text && !isError) return null
+  const multi = text.length > 100 || text.includes('
+')
+  if (isError) return { label: `Failed: ${resultSummary(text, true)}`, full: multi ? text : null }
+  if (isHarnessTool(toolName)) {
+    const bare = bareToolName(toolName!)
+    let label: string | undefined
+    if (/^(approved|granted)/i.test(text)) label = 'Approved'
+    else if (/^(denied|rejected|declined)/i.test(text)) label = 'Denied'
+    else if (bare === 'ask_user') label = 'Answered'
+    else if (bare === 'complete_plan') label = 'Plan marked complete'
+    else if (bare === 'mark_blocked') label = 'Blocker reported'
+    else if (PLAN_TOOLS.has(bare)) label = 'Plan saved'
+    if (label) return { label, full: text === label ? null : text }
+  }
+  return { label: resultSummary(text, false), full: multi ? text : null }
+}

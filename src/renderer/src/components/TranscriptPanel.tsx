@@ -31,7 +31,7 @@ import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
-import { autoContinueLine, humanizeToolUse, resultSummary, type ToolKind } from '../lib/transcriptRows'
+import { autoContinueLine, humanizeToolResult, humanizeToolUse, type ToolKind } from '../lib/transcriptRows'
 
 interface Props {
   /** The run this panel shows. */
@@ -169,18 +169,18 @@ function ToolUseRow({ name, input }: { name: string; input: unknown }): ReactEle
   )
 }
 
-function ToolResultRow({ content, isError }: { content: string; isError: boolean }): ReactElement {
-  const text = content || '(empty)'
-  const multi = text.length > 100 || text.includes('\n')
+function ToolResultRow({ toolName, content, isError }: { toolName?: string; content: string; isError: boolean }): ReactElement | null {
+  const row = humanizeToolResult(toolName, content, isError)
+  if (!row) return null
   return (
     <div className={`entry tool_result${isError ? ' error' : ''}`}>
       <Icon icon={isError ? XCircle : CheckCircle2} size="sm" />
       <div className="tool-main">
-        <div className="tool-label">{isError ? `Failed: ${resultSummary(text, true)}` : resultSummary(text, false)}</div>
-        {multi && (
+        <div className="tool-label">{row.label}</div>
+        {row.full && (
           <details className="entry-detail">
             <summary>Show output</summary>
-            <pre>{text}</pre>
+            <pre>{row.full}</pre>
           </details>
         )}
       </div>
@@ -204,6 +204,11 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
     bottom.current?.scrollIntoView({ block: 'end' })
   }, [entries.length, logs.length, tab, partial])
 
+  const toolNames = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const e of entries) if (e.block.kind === 'tool_use') m.set(e.block.id, e.block.name)
+    return m
+  }, [entries])
   const visible = showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')
 
   const headerTitle = tab === 'transcript' ? (agent ? agent.name : finished ? 'Finished reports' : 'Transcript') : tab === 'plan' ? 'Plan' : 'Logs'
@@ -287,7 +292,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
               case 'tool_use':
                 return <ToolUseRow key={e.id} name={b.name} input={b.input} />
               case 'tool_result':
-                return <ToolResultRow key={e.id} content={b.content} isError={b.isError} />
+                return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
               case 'system': {
                 const peer = parsePeerNote(b.text)
                 if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
