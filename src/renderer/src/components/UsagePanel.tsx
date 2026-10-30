@@ -4,7 +4,8 @@ import { ArrowLeft, Info } from 'lucide-react'
 import type { AgentInstance, RunUsage } from '@shared/types'
 import { totalTokens } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
-import { formatTokens, sumCosts, type CostInput } from '../lib/cost'
+import { formatTokens, sumCosts, unpricedModels, type CostInput } from '../lib/cost'
+import { requestModelPrice } from '../lib/settingsTarget'
 import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
@@ -35,34 +36,76 @@ function Signals({ lines }: { lines: string[] }): ReactElement | null {
   )
 }
 
-/** Token, cost and activity totals for either a run or one agent. */
-function Totals({ row, run }: { row?: AgentRow; run?: RunUsage }): ReactElement {
+/** Where an unknown or partial cost can be fixed: names each unpriced model and opens its price form. */
+function UnpricedNote({ models, partial }: { models: CostInput['models']; partial: boolean }): ReactElement | null {
+  const setView = useAppStore((s) => s.setView)
+  const ids = unpricedModels(models)
+  if (ids.length === 0) return null
+  return (
+    <div className="usage-unpriced" data-testid="usage-unpriced">
+      <p>{partial ? 'The cost is a minimum: no price is known for' : 'Cost unknown: no price is known for'}:</p>
+      <ul>
+        {ids.slice(0, 4).map((id) => (
+          <li key={id}>
+            <code className="mono" title={id}>{id}</code>
+            <button
+              type="button"
+              className="link-btn"
+              data-testid="usage-set-price"
+              onClick={() => {
+                requestModelPrice(id)
+                setView('appSettings')
+              }}
+            >
+              Set a price
+            </button>
+          </li>
+        ))}
+      </ul>
+      {ids.length > 4 && <p className="muted">and {ids.length - 4} more.</p>}
+    </div>
+  )
+}
+
+/** Cost, tokens, time and cache hit up front; every other number folds into "More numbers". */
+function Totals({ row, run, part }: { row?: AgentRow; run?: RunUsage; part: 'summary' | 'more' }): ReactElement {
   const tokens = row ? row.tokens : run!.tokens
   const cost: CostInput = row ? row.cost : run!
   const turns = row ? row.turns : run!.turns
   const toolCalls = row ? row.toolCalls : run!.toolCalls
   const retries = row ? row.retries : run!.retries
-  return (
-    <>
+  const times = run ? timeRows(run) : []
+  const wall = times.find((t) => t.id === 'wall')
+  if (part === 'summary')
+    return (
       <dl className="usage-grid" data-testid="usage-totals">
-        <Stat label="Cost">
+        <Stat label="Cost" testId="usage-stat-cost">
           <Cost value={cost} />
         </Stat>
         <Stat label="Tokens">{formatTokens(totalTokens(tokens))}</Stat>
-        {tokenRows(tokens).map((t) => (
-          <Stat key={t.kind} label={t.label} testId={`usage-tokens-${t.kind}`}>
-            <span title={`${t.value.toLocaleString()} tokens`}>{t.text}</span>
-          </Stat>
-        ))}
-        <Stat label="Cache hit rate">
+        {wall ? <Stat label={wall.label}>{wall.text}</Stat> : <Stat label="Turns">{turns}</Stat>}
+        <Stat label="Cache hit">
           <span title="Share of prompt tokens served from the cache">{formatHitRate(tokens)}</span>
         </Stat>
-        <Stat label="Turns">{turns}</Stat>
-        <Stat label="Tool calls">{toolCalls}</Stat>
-        <Stat label="Retries">{retries}</Stat>
-        {run && <Stat label="Auto-continues">{run.nudges}</Stat>}
-        {run && timeRows(run).map((t) => <Stat key={t.id} label={t.label}>{t.text}</Stat>)}
       </dl>
+    )
+  return (
+    <>
+      <details className="usage-more" data-testid="usage-more">
+        <summary>More numbers</summary>
+        <dl className="usage-list">
+          {tokenRows(tokens).map((t) => (
+            <Stat key={t.kind} label={t.label} testId={`usage-tokens-${t.kind}`}>
+              <span title={`${t.value.toLocaleString()} tokens`}>{t.text}</span>
+            </Stat>
+          ))}
+          {wall && <Stat label="Turns">{turns}</Stat>}
+          <Stat label="Tool calls">{toolCalls}</Stat>
+          <Stat label="Retries">{retries}</Stat>
+          {run && <Stat label="Auto-continues">{run.nudges}</Stat>}
+          {times.filter((t) => t !== wall).map((t) => <Stat key={t.id} label={t.label}>{t.text}</Stat>)}
+        </dl>
+      </details>
     </>
   )
 }
@@ -85,10 +128,10 @@ function AgentTable({ rows, selectedId, onSelect }: { rows: AgentRow[]; selected
         {rows.map((r) => (
           <tr key={r.id} className={`${r.producedNothing ? 'dim' : ''}${r.id === selectedId ? ' current' : ''}`} data-testid="usage-agent-row" data-agent-id={r.id} data-dim={r.producedNothing || undefined}>
             <th scope="row">
-              <button type="button" className="usage-link" onClick={() => onSelect(r.id)} title={r.producedNothing ? `${r.name}: ended without a result` : `Show ${r.name}`}>
-                {r.name}
+              <button type="button" className="usage-link" onClick={() => onSelect(r.id)} title={r.producedNothing ? `${r.label}: ended without a result` : `Show ${r.label}`} aria-current={r.id === selectedId ? 'true' : undefined}>
+                {r.label}
               </button>
-              <span className="usage-sub">{r.roleSlug}</span>
+              {r.sub && <span className="usage-sub">{r.sub}</span>}
             </th>
             <td className="num" title={r.approximate ? LEGACY_NOTE : undefined}>
               {r.approximate ? '~' : ''}
@@ -107,8 +150,8 @@ function AgentTable({ rows, selectedId, onSelect }: { rows: AgentRow[]; selected
   )
 }
 
-function RoleTable({ run }: { run: RunUsage }): ReactElement | null {
-  const rows = roleRows(run)
+function RoleTable({ run, rows: agentRowsList }: { run: RunUsage; rows: AgentRow[] }): ReactElement | null {
+  const rows = roleRows(run, agentRowsList)
   if (rows.length === 0) return null
   return (
     <table className="usage-table" data-testid="usage-roles">
@@ -172,18 +215,20 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
               Whole run
             </Button>
             <span className="usage-scope-name" title={scoped.name}>
-              {scoped.name}
+              {scopedRow.label}
             </span>
           </div>
           {scopedRow.approximate && <p className="panel-note" data-testid="usage-legacy">{LEGACY_NOTE}</p>}
-          <Totals row={scopedRow} />
+          <Totals row={scopedRow} part="summary" />
           <Signals lines={agentSignals(scopedRow)} />
+          <UnpricedNote models={scopedRow.cost.models} partial={scopedRow.cost.costUsd !== null} />
         </>
       ) : usage ? (
         <>
           {legacy && <p className="panel-note" data-testid="usage-legacy">{LEGACY_NOTE}</p>}
-          <Totals run={usage} />
-          <Signals lines={runSignals(usage)} />
+          <Totals run={usage} part="summary" />
+          <Signals lines={runSignals(usage, rows)} />
+          <UnpricedNote models={usage.models} partial={usage.costUsd !== null} />
         </>
       ) : (
         <>
@@ -198,7 +243,8 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
         </>
       )}
       {rows.length > 0 && <AgentTable rows={rows} selectedId={scoped?.id} onSelect={selectAgent} />}
-      {usage && !scoped && <RoleTable run={usage} />}
+      {usage && !scoped && <RoleTable run={usage} rows={rows} />}
+      {scoped && scopedRow ? <Totals row={scopedRow} part="more" /> : usage ? <Totals run={usage} part="more" /> : null}
     </div>
   )
 }

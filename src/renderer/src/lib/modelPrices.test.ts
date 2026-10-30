@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MODEL_PRICE_OVERRIDES_MAX } from '@shared/defaults'
-import { displayPerMTok, EMPTY_DRAFT, formatPerMTok, fromPerMTok, removeOverride, toPerMTok, upsertOverride, validateDraft } from './modelPrices'
+import { visiblePriceRows, displayPerMTok, EMPTY_DRAFT, formatPerMTok, fromPerMTok, removeOverride, toPerMTok, upsertOverride, validateDraft } from './modelPrices'
 
 const draft = (p: Partial<typeof EMPTY_DRAFT>): typeof EMPTY_DRAFT => ({ ...EMPTY_DRAFT, model: 'gpt-5', input: '1.25', output: '10', ...p })
 
@@ -14,8 +14,11 @@ describe('modelPrices conversion', () => {
     expect(formatPerMTok(undefined)).toBe('')
   })
   it('displays', () => {
-    expect(displayPerMTok(3e-6)).toBe('$3')
-    expect(displayPerMTok(0.3e-6)).toBe('$0.3')
+    expect(displayPerMTok(3e-6)).toBe('$3.00')
+    expect(displayPerMTok(12.5e-6)).toBe('$12.50')
+    expect(displayPerMTok(0.3e-6)).toBe('$0.30')
+    expect(displayPerMTok(0.125e-6)).toBe('$0.125')
+    expect(displayPerMTok(0.1e-6)).toBe('$0.10')
     expect(displayPerMTok(undefined)).toBe('—')
   })
 })
@@ -56,5 +59,17 @@ describe('override list', () => {
     const many = Array.from({ length: MODEL_PRICE_OVERRIDES_MAX }, (_, i) => ({ ...a, model: `m${i}` }))
     expect('error' in upsertOverride(many, a)).toBe(true)
     expect(removeOverride([a], 'GPT-5')).toEqual([])
+  })
+})
+
+describe('visiblePriceRows', () => {
+  const rows = [
+    { model: 'a', source: 'builtin' },
+    { model: 'b', source: 'override' },
+    { model: 'c', source: 'builtin' }
+  ]
+  it('defaults to overrides and models in use', () => {
+    expect(visiblePriceRows(rows, new Set(['c']), false).map((r) => r.model)).toEqual(['b', 'c'])
+    expect(visiblePriceRows(rows, new Set(), true)).toHaveLength(3)
   })
 })

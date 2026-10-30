@@ -20,11 +20,20 @@ export function formatPerMTok(perToken: number | undefined): string {
   return String(toPerMTok(perToken))
 }
 
-/** Display text for a table cell: "$3" / "$0.3", or an em dash for a missing price. */
+/** Display text for a table cell: "$3.00", "$12.50", "$0.30", "$0.125", or an em dash for a missing price. Two decimals at least. */
 export function displayPerMTok(perToken: number | undefined): string {
   if (perToken === undefined) return '—'
   const n = toPerMTok(perToken)
-  return `$${n >= 1 ? String(Number(n.toFixed(2))) : String(Number(n.toPrecision(3)))}`
+  if (n >= 1) return `$${n.toFixed(2)}`
+  let t = String(Number(n.toPrecision(3)))
+  if (!t.includes('.')) t += '.'
+  const decimals = t.length - t.indexOf('.') - 1
+  return `$${t}${'0'.repeat(Math.max(0, 2 - decimals))}`
+}
+
+/** Rows to show by default: overrides plus models in use (or all rows). `inUse` holds model ids. */
+export function visiblePriceRows<T extends { model: string; source: string }>(rows: readonly T[], inUse: ReadonlySet<string>, showAll: boolean): T[] {
+  return showAll ? [...rows] : rows.filter((r) => r.source === 'override' || inUse.has(r.model))
 }
 
 export interface PriceDraft {

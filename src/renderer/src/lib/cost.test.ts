@@ -1,11 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { agentCostInput, costView, formatDuration, formatUsd, runCostInput, sumCosts } from './cost'
+import { agentCostInput, costView, formatDuration, formatUsd, runCostInput, sumCosts, unpricedModels } from './cost'
 
 describe('cost', () => {
   it('formats amounts', () => {
     expect(formatUsd(0)).toBe('$0.00')
     expect(formatUsd(0.0042)).toBe('$0.0042')
     expect(formatUsd(12.5)).toBe('$12.50')
+  })
+  it('uses one precision rule so totals agree with their rows', () => {
+    expect(formatUsd(0.42)).toBe('$0.42')
+    expect(formatUsd(0.0057)).toBe('$0.0057')
+    expect(formatUsd(0.0114)).toBe('$0.0114')
+    expect(formatUsd(0.0057 + 0.0043 + 0.0014)).toBe('$0.0114')
+    expect(formatUsd(0.1257)).toBe('$0.1257')
+    expect(formatUsd(0.03)).toBe('$0.03')
+    expect(formatUsd(0.00001)).toBe('<$0.0001')
+    expect(formatUsd(0.99999)).toBe('$1.00')
+    expect(formatUsd(3)).toBe('$3.00')
+  })
+  it('names unpriced models in the tooltip', () => {
+    const models = [
+      { model: 'a', costUsd: 1, priceSource: 'builtin' as const },
+      { model: 'mock-unpriced', costUsd: null, priceSource: 'unknown' as const }
+    ]
+    expect(unpricedModels(models)).toEqual(['mock-unpriced'])
+    expect(costView({ costUsd: null, costSource: 'unknown', models }).title).toContain('mock-unpriced')
+    expect(costView({ costUsd: 1, costSource: 'computed', costPartial: true, models }).title).toContain('mock-unpriced')
+    expect(costView({ costUsd: 1, costSource: 'provider', models }).title).not.toContain('No price')
+  })
+  it('says reported or computed for mixed aggregates', () => {
+    expect(costView({ costUsd: 1, costSource: 'provider', sourceMixed: true }).title).toContain('or computed')
   })
   it('never shows unknown as $0', () => {
     const v = costView({ costUsd: null, costSource: 'unknown' })

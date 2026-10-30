@@ -7,7 +7,7 @@ import { Banner } from './ui/Banner'
 import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import { SegmentedControl } from './ui/SegmentedControl'
-import { formatDuration, formatTokens, type CostInput } from '../lib/cost'
+import { costView, formatDuration, formatTokens, type CostInput } from '../lib/cost'
 import { cleanIpcError } from '../lib/ipcError'
 import {
   barFractions,
@@ -28,7 +28,8 @@ type Days = '7' | '30' | '90'
 function pointCost(p: UsageTrendPoint): CostInput {
   if (p.runs === 0) return { costUsd: 0, costSource: 'none' }
   if (p.costUsd === null) return { costUsd: null, costSource: 'unknown' }
-  return { costUsd: p.costUsd, costSource: 'provider', ...(p.costUnknownRuns > 0 ? { costPartial: true } : {}) }
+  // The bucket sums runs of different sources, so the tooltip says "reported or computed", never just one.
+  return { costUsd: p.costUsd, costSource: 'provider', sourceMixed: true, ...(p.costUnknownRuns > 0 ? { costPartial: true } : {}) }
 }
 
 /**
@@ -146,7 +147,7 @@ function TrendsBody({
   const fractions = useMemo(() => barFractions(points.map((p) => pointValue(p, metric))), [points, metric])
   const roles = useMemo(() => [...stats.roles].sort((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens)), [stats.roles])
   const roleShares = useMemo(() => shares(roles.map((r) => totalTokens(r.tokens))), [roles])
-  const totalCost: CostInput = totals
+  const totalCost: CostInput = { ...totals, sourceMixed: true }
 
   const unit = bucket === 'week' ? 'week' : 'day'
   const summary =
@@ -201,7 +202,11 @@ function TrendsBody({
               <div
                 key={p.bucket}
                 className="trends-col"
-                title={`${bucketLabel(p, bucket)}: ${p.runs} runs, ${formatTokens(totalTokens(p.tokens))} tokens`}
+                title={
+                  metric === 'cost'
+                    ? `${bucketLabel(p, bucket)}: ${p.runs} runs, ${costView(pointCost(p)).text}`
+                    : `${bucketLabel(p, bucket)}: ${p.runs} runs, ${formatTokens(totalTokens(p.tokens))} tokens`
+                }
               >
                 <div className="trends-bar-slot">
                   <div
@@ -214,8 +219,10 @@ function TrendsBody({
             )
           })}
         </div>
-        {metric === 'cost' && points.some((p) => p.runs > 0 && p.costUsd === null) && (
-          <p className="trends-note">Hatched bars are {unit}s whose cost is unknown: no price is known for the model used.</p>
+        {metric === 'cost' && points.some((p) => p.runs > 0 && p.costUnknownRuns > 0) && (
+          <p className="trends-note" data-testid="trends-hatch-note">
+            Hatched: some runs have no known price, so the cost of that {unit} is a minimum (or unknown).
+          </p>
         )}
         <details className="trends-details">
           <summary>Show as table</summary>
@@ -285,7 +292,7 @@ function TrendsBody({
                   </th>
                   <td className="num">{formatTokens(totalTokens(r.tokens))}</td>
                   <td className="num col-cost">
-                    <Cost value={r} />
+                    <Cost value={{ ...r, sourceMixed: true }} />
                   </td>
                   <td className="num col-runs">{r.runs}</td>
                   <td className="col-share">

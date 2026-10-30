@@ -28,7 +28,7 @@ function usage(over: Partial<RunUsage> = {}): RunUsage {
 }
 
 function agent(over: Partial<AgentInstance> = {}): AgentInstance {
-  return { id: 'a', name: 'Dev', roleSlug: 'dev', state: 'working', inputTokens: 10, outputTokens: 5, costUsd: 0, ...over } as AgentInstance
+  return { id: 'a', name: 'Dev', roleSlug: 'dev', parentId: 'root', state: 'working', inputTokens: 10, outputTokens: 5, costUsd: 0, ...over } as AgentInstance
 }
 
 describe('usageView', () => {
@@ -55,6 +55,26 @@ describe('usageView', () => {
   it('marks agents that ended without a result', () => {
     expect(agentRow(agent({ state: 'done' })).producedNothing).toBe(true)
     expect(agentRow(agent({ state: 'done', result: 'ok' })).producedNothing).toBe(false)
+  })
+
+  it('never flags the root as producing nothing', () => {
+    const root = agentRow(agent({ id: 'root', parentId: null, state: 'done' }))
+    expect(root.isRoot).toBe(true)
+    expect(root.producedNothing).toBe(false)
+    const rows = agentRows([agent({ id: 'root', parentId: null, state: 'done' }), agent({ id: 'x', state: 'done' })])
+    expect(runSignals(usage({ agentsWithoutResult: 2, noResultTokens: 30 }), rows)[0]).toBe('1 agent spent 15 tokens and produced no result.')
+  })
+
+  it('names same-role agents by handle or index', () => {
+    const rows = agentRows([
+      agent({ id: 'a', name: 'Implementer', roleSlug: 'implementer', startedAt: 2, inputTokens: 5 }),
+      agent({ id: 'b', name: 'Implementer', roleSlug: 'implementer', startedAt: 1, inputTokens: 9 }),
+      agent({ id: 'c', name: 'Implementer', roleSlug: 'implementer', handle: 'implementer-9', startedAt: 3, inputTokens: 1 })
+    ])
+    const label = (id: string): string | undefined => rows.find((r) => r.id === id)?.label
+    expect(label('b')).toBe('implementer-1')
+    expect(label('a')).toBe('implementer-2')
+    expect(label('c')).toBe('implementer-9')
   })
 
   it('sorts agents by tokens', () => {
