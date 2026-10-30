@@ -270,6 +270,7 @@ describe('convertImport: review follow-ups', () => {
     const out = run({ existing, agents: [agent({ name: 'implementer' })], choices: [{ key, include: true, action: 'replace' }] })
     expect(bySlug(out.roles, 'implementer').mcpServers).toEqual(['mcp_github', 'mcp_db'])
     expect(out.items[0].notes).toContain('Keeps MCP access: mcp_github, mcp_db.')
+    expect(out.items[0].elevatedTools).toContain('mcp')
   })
 
   it('refuses more than 200 choices', () => {

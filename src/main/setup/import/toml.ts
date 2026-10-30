@@ -201,9 +201,13 @@ function setPath(obj: Record<string, unknown>, path: string[], value: unknown): 
   cur[last] = value
 }
 
+/** Bad lines tolerated before parsing stops (each costs a thrown error). */
+const MAX_TOML_ERRORS = 100
+
 export function parseToml(text: string): { data: Record<string, unknown>; error?: string } {
   const data: Record<string, unknown> = {}
   let error: string | undefined
+  let bad = 0
   try {
     const r = new Reader(text.replace(/^﻿/, '').replace(/\r\n?/g, '\n'))
     let table: Record<string, unknown> = data
@@ -249,6 +253,8 @@ export function parseToml(text: string): { data: Record<string, unknown>; error?
       } catch (err) {
         // Count lines only for the first error: doing it for every bad line is quadratic on a large file.
         if (!error) error = `line ${r.s.slice(0, lineStart).split('\n').length}: ${err instanceof Error ? err.message : 'invalid TOML'}`
+        // A file that is mostly errors is not a definition: stop instead of throwing once per line.
+        if (++bad >= MAX_TOML_ERRORS) break
         r.pos = lineStart
         r.skipLine()
       }

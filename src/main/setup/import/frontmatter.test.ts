@@ -76,6 +76,12 @@ describe('frontmatter: hostile input', () => {
     expect(f.error).toBeUndefined()
     expect((f.data as { n: unknown[] }).n).toHaveLength(60)
   })
+  it('a long run of blank lines inside a plain scalar parses fast', () => {
+    const start = Date.now()
+    const r = parseYamlDoc('a: x\n' + '\n'.repeat(200_000) + '  y')
+    expect(Date.now() - start).toBeLessThan(1000)
+    expect(r.data).toEqual({ a: 'x y' })
+  })
   it('still reads ordinary numbers and leaves long digit strings as strings', () => {
     const r = parseYamlDoc(`a: 3\nb: -1.5e3\nc: .5\nd: 2.\ne: ${'7'.repeat(80)}`)
     expect(r.data).toEqual({ a: 3, b: -1500, c: 0.5, d: 2, e: '7'.repeat(80) })

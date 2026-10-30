@@ -36,6 +36,8 @@ function cleanResponsibilities(list: unknown): string[] {
 function elevatedOf(role: Role): string[] {
   const out: string[] = role.tools.filter((t) => AGENT_IMPORT_ELEVATED_TOOLS.includes(t))
   if (role.canSpawn) out.push('canSpawn')
+  // MCP grants kept from a replaced role now run under the imported prompt.
+  if (role.mcpServers?.length) out.push('mcp')
   return out
 }
 

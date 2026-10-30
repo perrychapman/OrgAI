@@ -268,9 +268,10 @@ class Parser {
             const n = this.lines[i]
             if (n.indent <= indent && n.indent >= 0) break
             if (n.indent < 0) {
+              // Skip the whole blank run at once: stepping one line and rescanning would be quadratic in its length.
               const after = this.skip(i)
               if (after >= this.lines.length || this.lines[after].indent <= indent) break
-              i++
+              i = after
               continue
             }
             value += ' ' + n.text

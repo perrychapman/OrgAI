@@ -1669,7 +1669,8 @@ export const AGENT_IMPORT_MAX_CHOICES = 200
 /**
  * projects:applyImport input. `digest` is required: the AgentImportPreview.digest of the preview the user reviewed.
  * When the folder's definitions changed since (another prompt, tool list, model, responsibilities or color under the
- * same name), apply refuses, and it refuses outright without a digest.
+ * same name), apply refuses, and it refuses outright without a digest. The digest covers the folder only: apply
+ * recomputes against the project's current roles, mode and choices, so the UI should re-preview after an org chart edit.
  */
 export interface AgentImportApplyInput extends AgentImportInput {
   digest: string
@@ -1718,7 +1719,8 @@ export interface AgentImportItem {
   prompt: string
   /**
    * The role's elevated grants, for the UI to flag: its tools among AGENT_IMPORT_ELEVATED_TOOLS (Bash, Edit, Write,
-   * NotebookEdit), plus 'canSpawn' when it may spawn agents. Empty for a read-only role.
+   * NotebookEdit), plus 'canSpawn' when it may spawn agents and 'mcp' when it keeps a replaced role's MCP grants.
+   * Empty for a read-only role.
    */
   elevatedTools: string[]
   action: AgentImportAction

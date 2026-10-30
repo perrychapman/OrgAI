@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { agentDefinitionLocations, importKey, scanAgentSources } from './scan'
+import { agentDefinitionLocations, importKey, inGitDir, scanAgentSources } from './scan'
 
 let base: string
 let root: string
@@ -129,6 +129,14 @@ describe('scanAgentSources', () => {
     const r = scanAgentSources(root)
     expect(r.agents).toEqual([])
     expect(r.scan.warnings.some((w) => /into \.git/.test(w))).toBe(true)
+  })
+
+  it('treats Windows aliases of .git as .git', () => {
+    expect(inGitDir('.git/hooks/a.md')).toBe(true)
+    expect(inGitDir('sub\\.GIT. \\a.md')).toBe(true)
+    expect(inGitDir('GIT~1/a.md')).toBe(true)
+    expect(inGitDir('.github/agents/a.md')).toBe(false)
+    expect(inGitDir('.gitignore')).toBe(false)
   })
 
   it('refuses a relative root', () => {

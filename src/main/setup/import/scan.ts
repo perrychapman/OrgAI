@@ -55,6 +55,19 @@ export function agentDefinitionLocations(root: string): string[] {
   }
 }
 
+/**
+ * Whether a path relative to the root goes through a .git folder. Windows ignores trailing dots and spaces
+ * (`.git.`, `.git `) and may answer to the 8.3 short name (`GIT~1`), so those count too.
+ */
+export function inGitDir(rel: string): boolean {
+  return rel.split(/[\\/]/).some((seg) => {
+    let end = seg.length
+    while (end > 0 && (seg[end - 1] === '.' || seg[end - 1] === ' ')) end--
+    const s = seg.slice(0, end).toLowerCase()
+    return s === '.git' || s === 'git~1'
+  })
+}
+
 /** Whether `target` (a real path) lies inside `rootReal`. */
 function isInside(rootReal: string, target: string): boolean {
   const rel = relative(rootReal, target)
@@ -89,7 +102,7 @@ class Scanner {
       return null
     }
     // Never read git internals, even through a link that lands in .git.
-    if (relative(this.rootReal, real).split(sep).some((seg) => seg.toLowerCase() === '.git')) {
+    if (inGitDir(relative(this.rootReal, real))) {
       if (warn) this.warnings.push(`${rel}: points into .git, skipped`)
       return null
     }
@@ -237,9 +250,9 @@ class Scanner {
       if (!isInside(this.rootReal, abs)) return null
       const real = this.resolveInside(abs, p, false)
       if (!real) return null
-      const inRoot = relative(this.rootReal, real).split(sep)
-      // Prompt files often live in .opencode/ or .kiro/, so dot folders are allowed, but never git internals.
-      if (inRoot.some((seg) => seg.toLowerCase() === '.git')) return null
+      // Prompt files often live in .opencode/ or .kiro/, so dot folders are allowed, but never git internals
+      // (resolveInside checks the real path; the path as written is checked too).
+      if (inGitDir(relative(this.rootReal, abs)) || inGitDir(relative(this.rootReal, real))) return null
       if (this.relativeCache.has(real)) return this.relativeCache.get(real) ?? null
       if (!this.take(p)) return null
       // Regular files only, checked before open: opening a FIFO or device would block.
