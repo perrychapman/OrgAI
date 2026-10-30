@@ -5,7 +5,7 @@ import type { RunSummary } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { costLabel } from '../lib/layout'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { promptLine, runName, runTag } from '../lib/runLabels'
 import { statusOfRun, statusText } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
@@ -136,9 +136,20 @@ function HistoryRow({
   return (
     <tr className={`run-row ${viewed ? 'active' : ''}`}>
       <td className="col-prompt">
-        <div className="prompt" title={promptLine(r.prompt)}>
-          <span className="run-index">{runTag(index)}</span> {promptLine(r.prompt)}
-        </div>
+        {r.title ? (
+          <>
+            <div className="run-name" title={r.title}>
+              <span className="run-index">{runTag(index)}</span> {r.title}
+            </div>
+            <div className="prompt muted" title={promptLine(r.prompt)}>
+              {promptLine(r.prompt)}
+            </div>
+          </>
+        ) : (
+          <div className="prompt" title={promptLine(r.prompt)}>
+            <span className="run-index">{runTag(index)}</span> {promptLine(r.prompt)}
+          </div>
+        )}
         {(predecessor || r.resumedFrom || successor || chainLength > 1) && (
           <div className="run-chain">
             {r.resumedFrom && (
@@ -146,7 +157,7 @@ function HistoryRow({
                 Continues{' '}
                 {predecessor ? (
                   <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openRun(predecessor.id)} title={promptLine(predecessor.prompt)}>
-                    {runTag(indexes.get(predecessor.id))}: {shortPrompt(predecessor.prompt, 32)}
+                    {runTag(indexes.get(predecessor.id))}: {runName(predecessor)}
                   </button>
                 ) : (
                   'an earlier run'
@@ -158,7 +169,7 @@ function HistoryRow({
               <>
                 Continued by{' '}
                 <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openRun(successor.id)} title={promptLine(successor.prompt)}>
-                  {runTag(indexes.get(successor.id))}: {shortPrompt(successor.prompt, 32)}
+                  {runTag(indexes.get(successor.id))}: {runName(successor)}
                 </button>
               </>
             )}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { promptLine, runIndexMap, runTag, runTitle, shortPrompt } from './runLabels'
+import { promptLine, runIndexMap, runName, runTag, runTitle, shortPrompt } from './runLabels'
 import { autoContinueState, isStoppedRun, runStatus } from './runStatus'
 
 describe('runIndexMap', () => {
@@ -37,7 +37,16 @@ describe('labels', () => {
   it('formats tags and titles', () => {
     expect(runTag(2)).toBe('R2')
     expect(runTag(undefined)).toBe('R?')
-    expect(runTitle(2, 'Add caching')).toBe('R2: Add caching')
+    expect(runTitle(2, { prompt: 'Add caching' })).toBe('R2: Add caching')
+  })
+  it('names a run by its title, else a prompt excerpt', () => {
+    expect(runName({ title: 'Add caching layer', prompt: 'Please add a caching layer to the API' })).toBe('Add caching layer')
+    expect(runName({ prompt: 'Fix\n the   bug' })).toBe('Fix the bug')
+    expect(runName({ prompt: 'x'.repeat(80) })).toBe(`${'x'.repeat(39)}…`)
+    expect(runName({ title: '  ', prompt: 'Real prompt' })).toBe('Real prompt')
+    expect(runName({ prompt: '  ' })).toBe('Image prompt')
+    expect(runName(undefined)).toBe('Image prompt')
+    expect(runTitle(undefined, { title: 'Hi', prompt: 'x' })).toBe('R?: Hi')
   })
   it('collapses whitespace and cuts long prompts', () => {
     expect(promptLine('  a\n\n b ')).toBe('a b')

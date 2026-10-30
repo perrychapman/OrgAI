@@ -1,11 +1,11 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useId, useRef } from 'react'
-import { Check, ClipboardList, Pause, RotateCcw, Square, TriangleAlert } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, ClipboardList, Pause, RotateCcw, Square, TriangleAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { costLabel, planProgress } from '../lib/layout'
 import { needsYou, predecessorOf, relativeTime } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { promptLine, runName, runTag } from '../lib/runLabels'
 import { autoContinueState, isStoppedRun, runStatus, statusText } from '../lib/runStatus'
 import { Button } from './ui/Button'
 import { Icon } from './ui/Icon'
@@ -72,11 +72,17 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
   const cost = costLabel(summary.totalCostUsd, authMode)
   const tag = runTag(indexes.get(summary.id))
   const full = promptLine(summary.prompt)
+  const name = runName(summary)
+  const promptId = useId()
+  // The full prompt reads in a wrapping line on demand (a title or an excerpt can hide most of it). Reset per run.
+  const [shownFor, setShownFor] = useState<string | null>(null)
+  const canShowPrompt = full !== name
+  const promptShown = canShowPrompt && shownFor === summary.id
   const before = predecessorOf(summaries, summary.id)
   const progress = run.plan ? planProgress(run.plan) : undefined
 
   return (
-    <header className="run-header" aria-label={`${tag}: ${shortPrompt(summary.prompt, 60)}`}>
+    <header className="run-header" aria-label={`${tag}: ${name}`}>
       <div className="run-header-id">
         <span className="run-index">{tag}</span>
         <span className={`pill run-status ${status.tone}`} title={status.note}>
@@ -87,7 +93,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
             Continues{' '}
             {before ? (
               <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={promptLine(before.prompt)}>
-                {runTag(indexes.get(before.id))}: {shortPrompt(before.prompt, 48)}
+                {runTag(indexes.get(before.id))}: {runName(before)}
               </button>
             ) : (
               'an earlier run'
@@ -95,8 +101,21 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
           </span>
         )}
         <span className="run-header-prompt" title={full}>
-          {full}
+          {name}
         </span>
+        {canShowPrompt && (
+          <button
+            type="button"
+            className="run-header-prompt-toggle"
+            aria-expanded={promptShown}
+            aria-controls={promptId}
+            title={promptShown ? 'Hide the full prompt' : 'Show the full prompt'}
+            onClick={() => setShownFor(promptShown ? null : summary.id)}
+          >
+            <Icon icon={promptShown ? ChevronDown : ChevronRight} size="xs" />
+            <span className="sr-only">{promptShown ? 'Hide prompt' : 'Show prompt'}</span>
+          </button>
+        )}
         {auto.active && auto.count > 0 && (
           <span className="run-header-auto">
             {auto.count} of {auto.max} auto-continues
@@ -176,6 +195,11 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
           </Described>
         )}
       </div>
+      {promptShown && (
+        <p id={promptId} className="run-header-fullprompt">
+          {full}
+        </p>
+      )}
     </header>
   )
 }

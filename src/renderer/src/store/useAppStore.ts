@@ -1017,6 +1017,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
           break
+        case 'run.title':
+          run.summary = { ...run.summary, title: e.title }
+          break
         case 'plan.updated':
           run.plan = e.plan
           break
@@ -1040,6 +1043,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       const next: Partial<AppState> = { runs: { ...s.runs, [e.runId]: run } }
+      // A title can land after the run ended: the history rows carry it too.
+      if (e.type === 'run.title') {
+        const withTitle = (list: RunSummary[]): RunSummary[] => (list.some((h) => h.id === e.runId) ? list.map((h) => (h.id === e.runId ? { ...h, title: e.title } : h)) : list)
+        next.history = withTitle(s.history)
+        next.historyByProject = Object.fromEntries(Object.entries(s.historyByProject).map(([id, list]) => [id, withTitle(list)]))
+      }
       // Terminal run: its tab no longer has anything unread to show.
       if ((e.type === 'run.status' && (e.status === 'finished' || e.status === 'error')) && s.unreadByRun[e.runId]) {
         const { [e.runId]: _u, ...rest } = s.unreadByRun
@@ -1110,7 +1119,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!run) return {}
         const { projectId, kind, prompt, startedAt, resumedFrom } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}) }
+        const title = run.summary.title ?? record.summary.title
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]

@@ -14,7 +14,7 @@ import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
 import { useRunTabShortcuts } from './components/RunTabs'
 import { needsYou } from './lib/runChains'
-import { runTag, shortPrompt } from './lib/runLabels'
+import { runName, runTag } from './lib/runLabels'
 import { statusOfRun, statusText } from './lib/runStatus'
 
 export default function App(): ReactElement {
@@ -38,7 +38,7 @@ export default function App(): ReactElement {
   // The window title names the viewed run, so the OS task switcher and notifications show which run is on screen.
   const runIndex = run ? indexes.get(run.summary.id) : undefined
   useEffect(() => {
-    document.title = run && view === 'run' ? `OrgAI · ${runTag(runIndex)} · ${shortPrompt(run.summary.prompt, 40)}` : 'OrgAI'
+    document.title = run && view === 'run' ? `OrgAI · ${runTag(runIndex)} · ${runName(run.summary)}` : 'OrgAI'
   }, [run, runIndex, view])
 
   const badge = run ? statusOfRun(run, project, waitingHere || needsYou(run)) : waitingHere ? statusOfRun({ summary: { status: 'idle', kind: 'work' } }, project, true) : undefined

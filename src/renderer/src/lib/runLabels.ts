@@ -30,5 +30,19 @@ export function shortPrompt(prompt: string | undefined, max = 32): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text
 }
 
-/** "R2: Add caching", the name decision cards and menus use for a run. */
-export const runTitle = (index: number | undefined, prompt: string | undefined, max = 40): string => `${runTag(index)}: ${shortPrompt(prompt, max)}`
+/** Longest prompt excerpt used as a run's name while it has no AI title. CSS cuts it shorter where the room is small. */
+export const RUN_NAME_EXCERPT_CHARS = 40
+
+interface Named {
+  title?: string
+  prompt: string
+}
+
+/** The one name a run goes by: its short AI title, else an excerpt of the prompt ("Image prompt" for image-only). */
+export function runName(summary: Named | undefined): string {
+  const title = summary?.title?.replace(/\s+/g, ' ').trim()
+  return title || shortPrompt(summary?.prompt, RUN_NAME_EXCERPT_CHARS)
+}
+
+/** "R2: Add caching", the name decision cards, links and menus use for a run. */
+export const runTitle = (index: number | undefined, summary: Named | undefined): string => `${runTag(index)}: ${runName(summary)}`

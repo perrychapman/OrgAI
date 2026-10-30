@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Project } from '@shared/types'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
 import { needsYou } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { promptLine, runName, runTag } from '../lib/runLabels'
 import { autoContinueState, isStoppedRun, runStatus, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 
@@ -129,9 +129,9 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const unread = unreadByRun[run.summary.id] ?? 0
     return {
       tag,
-      title: shortPrompt(run.summary.prompt, 60),
+      title: runName(run.summary),
       tooltip: `${tag}: ${full}\n${st.word}${st.note ? ` (${st.note})` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
-      label: `${tag}: ${shortPrompt(run.summary.prompt, 60)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
+      label: `${tag}: ${runName(run.summary)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
       tone: st.tone,
       waiting,
       hasDraft,
@@ -416,6 +416,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                     type="button"
                     role="menuitem"
                     className="run-tab-menuitem"
+                    title={v.tooltip}
                     onClick={() => {
                       setMenuOpen(false)
                       activate(item)
@@ -442,7 +443,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
             <div
               className="run-tab-menu run-tab-ctx"
               role="menu"
-              aria-label={`${v.tag || 'New run'} actions`}
+              aria-label={`${v.tag ? `${v.tag}: ${v.title}` : 'New run'} actions`}
               ref={ctxRef}
               style={{ left: ctx.left, top: ctx.top }}
               onKeyDown={(e) => onMenuKey(e, ctxRef.current, closeCtx)}
