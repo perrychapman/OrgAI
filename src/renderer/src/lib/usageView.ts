@@ -163,3 +163,21 @@ export function roleRows(u: RunUsage, rows?: readonly AgentRow[]): Array<{ key: 
     }))
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
 }
+
+export interface SkillRow {
+  skillId: string
+  name: string
+  loads: number
+  /** "3 loads" / "1 load". */
+  loadsText: string
+  /** Role slugs as plain text, "" when unknown. */
+  roles: string
+}
+
+/** RunUsage.skills as rows, most loaded first. Empty when the run loaded none. */
+export function skillRows(u: Pick<RunUsage, 'skills'>): SkillRow[] {
+  return [...(u.skills ?? [])]
+    .filter((s) => s.loads > 0)
+    .sort((a, b) => b.loads - a.loads || a.name.localeCompare(b.name))
+    .map((s) => ({ skillId: s.skillId, name: s.name, loads: s.loads, loadsText: `${s.loads} ${s.loads === 1 ? 'load' : 'loads'}`, roles: s.roles.join(', ') }))
+}
