@@ -1,0 +1,360 @@
+/* ---------- Settings pages (App settings and project Settings): page frame, pane nav, sections, cards, rows ---------- */
+/* The page is a container (settings-page): the nav is a left rail from 640px, a tab strip above the content below that. */
+.settings-scroll {
+  flex: 1;
+  container-type: inline-size;
+  container-name: settings-page;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-5) var(--space-6);
+}
+.settings-loading {
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+}
+.settings-loading.is-error {
+  color: var(--danger-text);
+}
+.settings-page-title {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/* Pane nav (role=tablist). Narrow: a scrolling strip with an underline on the active tab. */
+.settings-nav {
+  display: flex;
+  gap: var(--space-1);
+  position: sticky;
+  top: calc(var(--space-5) * -1);
+  z-index: var(--z-sticky);
+  padding: var(--space-1) 0 0;
+  margin-inline: calc(var(--space-6) * -1);
+  padding-inline: var(--space-6);
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.settings-nav::-webkit-scrollbar {
+  display: none;
+}
+.settings-nav-item {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-body);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.settings-nav-item:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+.settings-nav-item.active {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  border-bottom-color: var(--accent);
+}
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+@container settings-page (min-width: 640px) {
+  .settings-layout {
+    grid-template-columns: 168px minmax(0, 1fr);
+    gap: var(--space-8);
+  }
+  .settings-nav {
+    flex-direction: column;
+    top: 0;
+    margin-inline: 0;
+    padding: 0;
+    overflow: visible;
+    background: transparent;
+    border-bottom: 0;
+  }
+  .settings-nav-item {
+    border-bottom: 0;
+    margin-bottom: 0;
+    border-radius: var(--radius-md);
+    padding: var(--space-1) var(--space-3);
+  }
+  .settings-nav-item.active {
+    background: var(--accent-faint);
+  }
+  .settings-nav-item:focus-visible {
+    outline-offset: 2px;
+  }
+}
+
+/* Content column (the tabpanel): a container for the sections' own container queries. */
+.settings-col {
+  container-type: inline-size;
+  container-name: settings-col;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: 100%;
+  max-width: 720px;
+  min-width: 0;
+}
+/* Sections that bring their own markup (connections, MCP, plugins) are still separated by a rule. */
+.settings-col > section + section {
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---------- Section: title tier, lead, actions ---------- */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.settings-section-head,
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.settings-section-title,
+.settings-col .section-head h2,
+.settings-col .section-head h3 {
+  margin: 0;
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.settings-section-lead,
+.section-head p {
+  margin: var(--space-0h) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.settings-section-actions,
+.section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.settings-section > .field,
+.settings-card .field {
+  margin-bottom: 0;
+}
+
+/* Lower tier inside a section: caption, secondary, sentence case. */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.settings-group-title {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+
+/* ---------- Card of rows ---------- */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.settings-card > * {
+  padding: var(--space-3) var(--space-4);
+  min-width: 0;
+}
+.settings-card > * + * {
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---------- Setting row: text left, control right ---------- */
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-height: 56px;
+}
+.setting-row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.setting-row-title {
+  color: var(--text-primary);
+}
+.setting-row-desc {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.setting-row-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+  max-width: 100%;
+}
+.setting-row-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+}
+.setting-row-hint {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  text-align: right;
+}
+.setting-row.w-number .setting-row-control {
+  width: 120px;
+}
+.setting-row.w-select .setting-row-control {
+  width: 240px;
+}
+.setting-row.w-number .setting-row-control > .input,
+.setting-row.w-number .setting-row-control > .select,
+.setting-row.w-select .setting-row-control > .input,
+.setting-row.w-select .setting-row-control > .select,
+.setting-row.w-full .setting-row-control > .input,
+.setting-row.w-full .setting-row-control > .select,
+.setting-row.w-full .setting-row-control > .textarea {
+  width: 100%;
+  max-width: none;
+}
+.setting-row.w-full .setting-row-side {
+  flex: 1 1 100%;
+  align-items: stretch;
+}
+.setting-row.w-full .setting-row-control {
+  width: 100%;
+}
+.setting-row.w-full .setting-row-hint {
+  text-align: left;
+}
+@container settings-col (max-width: 479px) {
+  .setting-row-side {
+    flex: 1 1 100%;
+    align-items: flex-start;
+  }
+  .setting-row-hint {
+    text-align: left;
+  }
+  .setting-row.w-number .setting-row-control,
+  .setting-row.w-select .setting-row-control {
+    max-width: 100%;
+  }
+}
+
+/* "Learn more": native disclosure under the description. */
+.setting-row-more {
+  margin-top: var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.setting-row-more > summary {
+  display: inline-block;
+  cursor: pointer;
+  color: var(--accent-text);
+  border-radius: var(--radius-xs);
+}
+.setting-row-more > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.setting-row-more-body {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+}
+
+/* ---------- Legacy block helpers still used by sections not yet on SettingsCard ---------- */
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+@container settings-col (min-width: 560px) {
+  .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---------- Accent swatches (App settings > Appearance) ---------- */
+.setting-row-control .accent-swatches + .input {
+  flex: none;
+  width: 96px;
+}
+.accent-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.accent-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border-default);
+  background: var(--swatch);
+  cursor: pointer;
+  padding: 0;
+}
+.accent-swatch:hover {
+  border-color: var(--border-strong);
+}
+.accent-swatch[aria-pressed='true'] {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--surface-0);
+}
+.accent-swatch:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---------- About ---------- */
+.about-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  align-items: center;
+}
+.about-list dt {
+  color: var(--text-faint);
+}
+.about-list dd {
+  margin: 0;
+  min-width: 0;
+}
+.about-path {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}

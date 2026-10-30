@@ -27,7 +27,8 @@ try {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
 
       // App settings > Connections
-      await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+      await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+      await page.getByRole('tab', { name: 'Connections', exact: true }).click()
       await page.waitForSelector('#connections-title', { timeout: 10_000 })
       await sleep(800)
       const cards = await page.locator('[data-testid=connection-card]').count()
@@ -38,6 +39,7 @@ try {
       await shot(`connections-${w}x${h}-${theme}`)
 
       // About block
+      await page.getByRole('tab', { name: 'About', exact: true }).click()
       const about = page.locator('[data-testid=about-block]')
       check((await about.count()) === 1, `about block present at ${w}x${h} ${theme}`)
       await about.scrollIntoViewIfNeeded()
@@ -55,11 +57,18 @@ try {
       await page.locator('.nav-item', { hasText: NAME }).first().click()
       await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
       await page.getByRole('button', { name: 'Project settings', exact: true }).click()
-      await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
+      await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+      await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
       await sleep(600)
       check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
       check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
       check((await page.getByRole('button', { name: 'Add from registry' }).count()) === 1, 'Add from registry button present')
+      const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+      check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on project tools at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
+      await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
+      await shot(`project-mcp-${w}x${h}-${theme}`)
+      await page.getByRole('tab', { name: 'Connection', exact: true }).click()
+      await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
       const toggle = page.locator('[data-testid=mock-adapter-toggle]')
       check((await toggle.count()) === 1, `mock toggle present at ${w}x${h} ${theme}`)
@@ -81,8 +90,6 @@ try {
         check(!(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled)), 'connection fieldset enabled again')
       }
       await shot(`project-connection-${w}x${h}-${theme}`)
-      await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
-      await shot(`project-mcp-${w}x${h}-${theme}`)
 
       // Role inspector model picker
       await page.getByRole('button', { name: 'Org chart', exact: true }).first().click()
@@ -95,7 +102,8 @@ try {
 
   // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
   try {
-    await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+    await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+    await page.getByRole('tab', { name: 'MCP library', exact: true }).click()
     const libSec = page.locator('[data-testid=mcp-library-section]')
     await libSec.waitFor({ timeout: 10_000 })
     await libSec.scrollIntoViewIfNeeded()
@@ -116,6 +124,7 @@ try {
     await page.locator('.nav-item', { hasText: NAME }).first().click()
     await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
     await page.getByRole('button', { name: 'Project settings', exact: true }).click()
+    await page.getByRole('tab', { name: 'Tools', exact: true }).click()
     await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
     await page.locator('[data-testid=mcp-add-library]').click()
     const dlg = page.locator('[data-testid=mcp-link-dialog]')
@@ -135,7 +144,8 @@ try {
 
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
   const CANARY = 'sk-e2e-canary-9f3a7c1d'
-  await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+  await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
   const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
   if ((await lite.count()) === 1) {

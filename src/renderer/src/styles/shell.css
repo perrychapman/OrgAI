@@ -387,8 +387,3 @@ html,
 #root {
   overflow: hidden;
 }
-.settings-block-stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
