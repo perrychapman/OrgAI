@@ -214,6 +214,14 @@ try {
       await page.keyboard.press('Tab') // keyboard modality so :focus-visible matches
       const ring = await tab.evaluate((el) => { const s = getComputedStyle(el); return { o: s.outlineStyle, ow: s.outlineWidth, bs: s.boxShadow } })
       check((ring.o !== 'none' && parseFloat(ring.ow) > 0) || ring.bs !== 'none', `run tab shows a focus ring at ${w}x${h} ${theme}`, JSON.stringify(ring))
+      // A pointer click must not paint the keyboard focus ring.
+      const tb = await tab.boundingBox()
+      await page.evaluate(() => document.activeElement?.blur())
+      await page.mouse.move(5, 5)
+      await page.mouse.click(tb.x + tb.width / 2, tb.y + tb.height / 2)
+      await sleep(150)
+      const mring = await page.evaluate(() => { const el = document.activeElement; if (!el || !el.matches('.run-tab')) return { skipped: true }; const s = getComputedStyle(el); return { o: s.outlineStyle, ow: s.outlineWidth, fv: el.matches(':focus-visible') } })
+      check(!!mring.skipped || (!mring.fv && (mring.o === 'none' || parseFloat(mring.ow) === 0)), `a mouse click on a run tab shows no focus ring at ${w}x${h} ${theme}`, JSON.stringify(mring))
       await shot(`live-run-${w}x${h}-${theme}`)
       await projectTab(page, 'History').click()
       await sleep(300)
