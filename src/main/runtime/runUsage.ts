@@ -1,5 +1,6 @@
 import type { AgentInstance, AgentUsage, CostSource, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
 import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
+import { USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
 /**
  * Vendor-neutral usage metrics: the adapter-facing tally helpers (below, used by claude.ts, codex.ts and mock.ts),
@@ -16,7 +17,9 @@ export function emptyAgentUsage(): AgentUsage {
 
 /** a + b, field by field (a new object). */
 export function addTokens(a: TokenUsage, b: TokenUsage): TokenUsage {
-  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite }
+  // Persisted usage is untrusted file data: a NaN, negative or non-number field counts as 0.
+  const f = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0)
+  return { input: f(a.input) + f(b.input), output: f(a.output) + f(b.output), cacheRead: f(a.cacheRead) + f(b.cacheRead), cacheWrite: f(a.cacheWrite) + f(b.cacheWrite) }
 }
 
 /** The agent's usage, created (empty) when missing. */
@@ -119,12 +122,13 @@ export function mergeCosts(parts: readonly CostPart[]): CostResult {
     active++
     if (p.costPartial) partial = true
     if (p.costUsd === null) continue
+    if (!Number.isFinite(p.costUsd)) continue
     priced++
     sum += p.costUsd
     if (p.costSource !== 'provider') allProvider = false
   }
   if (active === 0) return { costUsd: 0, costSource: 'none' }
-  if (priced === 0) return { costUsd: null, costSource: 'unknown' }
+  if (priced === 0 || !Number.isFinite(sum)) return { costUsd: null, costSource: 'unknown' }
   const out: CostResult = { costUsd: sum, costSource: allProvider ? 'provider' : 'computed' }
   if (partial || priced < active) out.costPartial = true
   return out
@@ -143,7 +147,10 @@ function mergeModelEntries(lists: readonly (readonly ModelUsageEntry[])[]): Mode
       }
       cur.tokens = addTokens(cur.tokens, m.tokens)
       if (m.providerCostUsd) cur.providerCostUsd = (cur.providerCostUsd ?? 0) + m.providerCostUsd
-      if (m.costUsd !== null) cur.costUsd = (cur.costUsd ?? 0) + m.costUsd
+      if (m.costUsd !== null && Number.isFinite(m.costUsd)) {
+        const next = (cur.costUsd ?? 0) + m.costUsd
+        cur.costUsd = Number.isFinite(next) ? next : null
+      }
       if (SOURCE_RANK[m.priceSource] < SOURCE_RANK[cur.priceSource]) cur.priceSource = m.priceSource
     }
   }
@@ -425,7 +432,7 @@ export function sumRunUsage(list: readonly RunUsage[], now: number): RunUsage {
   if (cost.costPartial) total.costPartial = true
   if (list.some((u) => u.legacy)) total.legacy = true
   const pc = sum((u) => u.providerCostUsd ?? 0)
-  if (pc > 0) total.providerCostUsd = pc
+  if (pc > 0 && Number.isFinite(pc)) total.providerCostUsd = pc
   return total
 }
 
@@ -438,7 +445,10 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
     .filter((s) => (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until))
     .sort((a, b) => b.startedAt - a.startedAt)
 
-  const runs = picked.map((s) => {
+  // The newest runs win; roles, trend and totals cover only the returned rows.
+  const limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, Math.floor(Number.isFinite(query.limit) ? (query.limit as number) : USAGE_STATS_DEFAULT_LIMIT)))
+  const truncated = picked.length > limit
+  const runs = picked.slice(0, limit).map((s) => {
     const row: UsageStats['runs'][number] = { runId: s.id, kind: s.kind, status: s.status, prompt: oneLine(s.prompt, 120), startedAt: s.startedAt, usage: s.usage ?? legacySummaryUsage(s, now) }
     if (s.title) row.title = s.title
     if (s.endedAt !== undefined) row.endedAt = s.endedAt
@@ -466,7 +476,7 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
         start,
         runs: g.runs.length,
         tokens: g.runs.reduce((acc, u) => addTokens(acc, u.tokens), emptyTokens()),
-        costUsd: known.length > 0 ? known.reduce((n, u) => n + (u.costUsd ?? 0), 0) : null,
+        costUsd: known.length > 0 ? known.reduce((n, u) => n + (Number.isFinite(u.costUsd) ? (u.costUsd ?? 0) : 0), 0) : null,
         costUnknownRuns: g.runs.filter((u) => u.costSource === 'unknown' || u.costPartial).length,
         turns: sum((u) => u.turns),
         toolCalls: sum((u) => u.toolCalls),
@@ -479,5 +489,7 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
     })
 
   const totals = sumRunUsage(runs.map((r) => r.usage), now)
-  return { projectId: query.projectId, runs, roles: totals.roles as UsageStats['roles'], trend, totals, generatedAt: now }
+  const stats: UsageStats = { projectId: query.projectId, runs, roles: totals.roles as UsageStats['roles'], trend, totals, generatedAt: now }
+  if (truncated) stats.truncated = true
+  return stats
 }

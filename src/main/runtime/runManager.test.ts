@@ -225,11 +225,41 @@ describe('RunManager usage and pricing', () => {
     const run = await m.start({ project: p, prompt: 'go' })
     ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
     const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
-    expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'computed' })
+    expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'none' })
     expect(up.agent.usage!.legacy).toBeUndefined()
     ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', state: 'done', result: 'fine' }) })
     const again = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
     expect(again.agent.usage!.producedNothing).toBeUndefined()
+  })
+
+  it('does not label a live agent adapter estimate as provider cost', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'mystery', inputTokens: 10, costUsd: 0.5 }) })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent.usage!.costSource).not.toBe('provider')
+    expect(up.agent.usage!.models.some((x) => x.priceSource === 'provider')).toBe(false)
+  })
+
+  it('ignores the adapter run.cost on a priced (LiteLLM) connection but keeps it elsewhere', async () => {
+    const proxy = setup({ resolveConnection: () => ({ connection: 'litellm', env: {}, pricing: { m: { inputPerToken: 0.000001, outputPerToken: 0.000002 } } }) as never })
+    const r1 = await proxy.m.start({ project: proxy.p, prompt: 'go' })
+    proxy.ctxs[0]!.emit({ type: 'run.cost', runId: r1.id, totalCostUsd: 7 })
+    expect(proxy.m.summaryOf(r1.id)!.usage!.providerCostUsd).toBeUndefined()
+    expect(proxy.m.summaryOf(r1.id)!.usage!.costSource).not.toBe('provider')
+    const plain = setup()
+    const r2 = await plain.m.start({ project: plain.p, prompt: 'go' })
+    plain.ctxs[0]!.emit({ type: 'run.cost', runId: r2.id, totalCostUsd: 7 })
+    expect(plain.m.summaryOf(r2.id)!.usage!.providerCostUsd).toBe(7)
+  })
+
+  it('caps runs:usageStats rows at the requested limit and flags truncation', async () => {
+    const { m, p, store } = setup()
+    for (let i = 0; i < 3; i++) store.upsert(runSummary({ id: `r${i}`, projectId: p.id, startedAt: 1000 + i }))
+    const stats = m.usageStats({ projectId: p.id, limit: 2 })
+    expect(stats.runs.map((r) => r.runId)).toEqual(['r2', 'r1'])
+    expect(stats.truncated).toBe(true)
+    expect(m.usageStats({ projectId: p.id }).truncated).toBeUndefined()
   })
 
   it('reports an unpriced model as unknown with a legacy cost of 0', async () => {

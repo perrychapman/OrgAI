@@ -1,5 +1,6 @@
 import { adapterForFamily, defaultTierModels } from '@shared/defaults'
 import { MODEL_TIERS } from '@shared/types'
+import { sanitizeModelPrice } from '../runtime/pricing'
 import type { ConnectionId, ModelFamily, ModelPrice, ModelRef, ModelTier, ProviderModel } from '@shared/types'
 
 /** Pure helpers that turn discovered model ids into catalog entries. */
@@ -69,6 +70,11 @@ export interface DiscoveredModelInput {
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
+  // Proxy text is untrusted: bounded here, prices must be within range or they are dropped.
+  const cap = (v: string | undefined): string | undefined => v?.slice(0, 200)
+  const price = sanitizeModelPrice(m.price)
+  const upstream = cap(m.upstream)
+  m = { ...m, label: cap(m.label), litellmProvider: cap(m.litellmProvider ?? undefined) ?? null }
   const family = m.family ?? classifyFamily(m.id, m.litellmProvider)
   const tier = m.tier ?? inferTier(m.id, family)
   return {
@@ -81,8 +87,8 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     ...(m.contextWindow && m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
     ...(m.hint ? { hint: m.hint } : {}),
     source: 'discovered',
-    ...(m.price ? { price: { ...m.price } } : {}),
-    ...(m.upstream ? { upstream: m.upstream } : {})
+    ...(price ? { price } : {}),
+    ...(upstream ? { upstream } : {})
   }
 }
 
