@@ -1,5 +1,6 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type {
+  AppInfo,
   AppSettings,
   AppSettingsInfo,
   AuthStatusResult,
@@ -50,6 +51,7 @@ import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { log, logPath, logsDir } from './log'
 import { listRules, removeRule } from './runtime/permissionRules'
+import { buildAppInfo } from './appInfo'
 
 export interface IpcServices {
   projects: ProjectStore
@@ -59,9 +61,11 @@ export interface IpcServices {
   settings: SettingsStore
   connections: ConnectionService
   mcp: McpService
+  /** Ids of the adapters handed to RunManager; `app:info` reports `mockAdapter` from it. */
+  adapterIds: readonly string[]
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds }: IpcServices): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projects.get(id))
   ipcMain.handle(IPC.projectsCreate, (_e, input: { name: string; path: string; brief: string; setupKind?: SetupKind }) =>
@@ -185,6 +189,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   })
   ipcMain.handle(IPC.appOpenPath, (_e, path: string) => shell.openPath(path))
   ipcMain.handle(IPC.appLogPath, () => logPath())
+  ipcMain.handle(IPC.appInfo, (): AppInfo => buildAppInfo(app, { platform: process.platform, logsDir: logsDir(), adapterIds }))
   ipcMain.handle(IPC.appOpenLogs, async () => {
     logPath() // creates the folder if nothing has been logged yet
     const error = await shell.openPath(logsDir())

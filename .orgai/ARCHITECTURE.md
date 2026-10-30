@@ -111,6 +111,7 @@ McpService covers:
 - The app entry. Startup order: ORGAI_DATA_DIR override (app.setPath('userData') + app.setAppLogsPath(<dir>/logs)), app.setName('OrgAI') when unpackaged, installLogging, applyShellPath, stores, SecretStore(safeStorage), ConnectionService, McpService, SetupService, adapters, RunManager, IPC, connections.init(). Then installAppMenu, and createWindow last.
 - ORGAI_DATA_DIR is how e2e and CI keep off the real profile. package.json productName ("OrgAI") names the packaged app.
 - IPC handlers, logging and notifications. log.ts pickLogsDir falls back from the app logs dir to <userData>/logs, then to temp.
+- app:info (IPC.appInfo) returns AppInfo: version, platform, dataDir, logsDir, packaged, and mockAdapter, derived from the adapters map RunManager received (registerIpc gets its keys as adapterIds). The pure builder is appInfo.ts. ORGAI_MOCK=1 registers the mock adapter; a renderer toggle to pick it in project settings lands in the UI brief.
 - The idle usage monitor (the Claude plan, plus Codex through extraProbes).
 - JSON stores.
 - shellEnv.ts gives macOS and Linux GUI launches the login shell's PATH, per shell: POSIX shells print $PATH, fish uses `string join`, and csh/tcsh/nushell/unknown shells fall back to /bin/zsh on macOS or /bin/bash on Linux. appMenu.ts is the macOS application menu.
@@ -121,6 +122,7 @@ McpService covers:
 - `src/main/index.ts`
 - `src/main/ipc.ts`
 - `src/main/log.ts`
+- `src/main/appInfo.ts`
 - `src/main/notifications.ts`
 - `src/main/usageMonitor.ts`
 - `src/main/maintenance.ts`
@@ -130,7 +132,7 @@ McpService covers:
 
 ### Preload bridge
 
-The contextBridge API window.orgai and its typings.
+The contextBridge API window.orgai and its typings. window.orgai.app.info() returns AppInfo.
 
 - `src/preload/`
 
@@ -191,6 +193,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - `electron-builder.yml`
 - `build/entitlements.mac.plist`
 - `docs/macos-testing.md`
+- `docs/testing.md` (local, token-free testing guide)
 - `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
 - `.github/dependabot.yml`
@@ -255,6 +258,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Install: `npm install`
 - Dev (hot reload): `npm run dev`
 - Dev without tokens: `ORGAI_MOCK=1 npm run dev`
+- Free local gate (typecheck, unit tests, build, e2e:free): `npm run check`
 - Typecheck: `npm run typecheck`
 - Unit tests: `npm test`
 - Build: `npm run build`

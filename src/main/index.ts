@@ -140,7 +140,16 @@ app.whenReady().then(() => {
       searchRegistry: (input) => mcp.registrySearch(input)
     }
   })
-  registerIpc({ projects, runs: runManager, setup, maintenance: new MaintenanceService(projects), settings, connections, mcp })
+  registerIpc({
+    projects,
+    runs: runManager,
+    setup,
+    maintenance: new MaintenanceService(projects),
+    settings,
+    connections,
+    mcp,
+    adapterIds: Object.keys(adapters)
+  })
   connections.init()
   app.on('before-quit', () => connections.dispose())
   notifier = new Notifier({

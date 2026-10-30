@@ -1396,7 +1396,25 @@ export interface OrgAIApi {
     openLogs(): Promise<void>
     /** Absolute path of the current main-process log file. */
     logPath(): Promise<string>
+    /** Version, platform, data and logs folders, and whether the token-free mock adapter is available. */
+    info(): Promise<AppInfo>
   }
+}
+
+/** Read-only facts about the running app (`app:info`). Structured-clone safe. */
+export interface AppInfo {
+  /** app.getVersion() */
+  version: string
+  /** process.platform as a plain string ('win32', 'darwin', 'linux', ...). */
+  platform: string
+  /** app.getPath('userData'), or ORGAI_DATA_DIR when set. */
+  dataDir: string
+  /** The resolved folder main.log is written to. */
+  logsDir: string
+  /** True when the scripted mock adapter is registered (the app was started with ORGAI_MOCK=1). */
+  mockAdapter: boolean
+  /** app.isPackaged */
+  packaged: boolean
 }
 
 export const IPC = {
@@ -1437,6 +1455,7 @@ export const IPC = {
   usageRefresh: 'usage:refresh',
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
+  appInfo: 'app:info',
   permissionsList: 'permissions:list',
   permissionsRemove: 'permissions:remove',
   projectsRemapModels: 'projects:remapModels',

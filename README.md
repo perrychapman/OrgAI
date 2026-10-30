@@ -26,6 +26,10 @@ npm run typecheck
 
 Requires Node 22+ and a logged-in Claude Code CLI (`claude auth status`) or `ANTHROPIC_API_KEY`.
 
+To verify locally without spending tokens, run `npm run check` (typecheck, unit tests, build and the free e2e
+flows). `ORGAI_MOCK=1 npm run dev` starts the app with the scripted mock adapter for token-free runs. See
+[docs/testing.md](docs/testing.md) for the full local testing guide.
+
 ## Platforms
 
 - **Windows**: tested.
@@ -211,5 +215,6 @@ notifications for isolated reports; you supply `notify`), `continuation.ts` (`Co
 (suggestions and allow scopes).
 `mock.ts` is a reference adapter that uses all of them without an SDK.
 
-For UI work without spending tokens, start the app with `ORGAI_MOCK=1` and set a project's `provider.id` to `"mock"`
-in `projects.json` under the data folder; `ORGAI_MOCK_SCRIPT=<file.json>` swaps in your own `MockScript`.
+For UI work without spending tokens, start the app with `ORGAI_MOCK=1`; the mock adapter then becomes selectable in
+a project's settings (until that toggle lands, set the project's `provider.id` to `"mock"` in `projects.json` under the
+data folder). `ORGAI_MOCK_SCRIPT=<file.json>` swaps in your own `MockScript`.
