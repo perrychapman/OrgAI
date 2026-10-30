@@ -1,7 +1,11 @@
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { MockAdapter, type MockSession } from './mock'
-import { ROOT_AGENT_ID, type PeerMessage } from './types'
+import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
+import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
@@ -371,5 +375,61 @@ describe('mock adapter complete', () => {
       const out = JSON.parse(await adapter.complete({ system: sys, prompt: 'x', kind }))
       expect(Array.isArray(out.roles)).toBe(true)
     }
+  })
+})
+
+describe('mock adapter skills', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-skill-'))
+  writeFileSync(join(dir, 'SKILL.md'), '---\nname: pdf-fill\ndescription: Fill forms\n---\nDo the steps.')
+  const skill = (roleIds: string[]): RunSkill => ({ id: 'sk1', name: 'pdf-fill', description: 'Fill forms', dir, files: [{ path: 'SKILL.md' }] as RunSkill['files'], roleIds })
+  const play = async (ctx: ReturnType<typeof fakeCtx>, script: object = {}) => {
+    const session = await new MockAdapter({ script: { delayMs: 0, ...script } }).start(ctx)
+    for (let i = 0; i < 200 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+  }
+  const rootOnly = { work: [{ type: 'text', text: 'Working.' }] }
+  const toolUses = (ctx: ReturnType<typeof fakeCtx>, agentId: string): string[] =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === agentId && e.entry.block.kind === 'tool_use' ? [e.entry.block.name] : []))
+
+  it('loads the first granted skill for the root and emits skill.used with transcript blocks', async () => {
+    const ctx = fakeCtx({ skills: () => [skill(['r-lead'])] })
+    await play(ctx)
+    const used = ctx.events.filter((e) => e.type === 'skill.used')
+    expect(used).toHaveLength(1)
+    expect(used[0]).toMatchObject({ agentId: ROOT_AGENT_ID, skillId: 'sk1', name: 'pdf-fill' })
+    expect(toolUses(ctx, ROOT_AGENT_ID)).toContain('load_skill')
+    const result = ctx.events.find((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && /Do the steps/.test(e.entry.block.content))
+    expect(result).toBeTruthy()
+  })
+
+  it('does not load for a role without a grant, and a spawned granted agent loads for itself', async () => {
+    const none = fakeCtx({ skills: () => [skill(['r-eng'])] })
+    await play(none, rootOnly)
+    expect(none.events.some((e) => e.type === 'skill.used')).toBe(false)
+    expect(toolUses(none, ROOT_AGENT_ID)).not.toContain('load_skill')
+    expect(toolUses(none, ROOT_AGENT_ID)).not.toContain('list_skills')
+
+    const spawned = fakeCtx({ skills: () => [skill(['r-eng'])] })
+    await play(spawned, { work: [{ type: 'spawn', id: 'a1', role: 'engineer', description: 'Do it' }] })
+    expect(spawned.events.filter((e) => e.type === 'skill.used')).toMatchObject([{ agentId: 'a1' }])
+    expect(toolUses(spawned, 'a1')).toEqual(['load_skill'])
+  })
+
+  it('[mock:skill] without a grant calls list_skills', async () => {
+    const ctx = fakeCtx({ prompt: 'go [mock:skill]', skills: () => [skill(['r-eng'])] })
+    await play(ctx, rootOnly)
+    expect(toolUses(ctx, ROOT_AGENT_ID)).toContain('list_skills')
+    expect(ctx.events.some((e) => e.type === 'skill.used')).toBe(false)
+  })
+
+  it("complete kind 'skills' returns suggestions parseSuggestions accepts and reports usage", async () => {
+    const onUsage = vi.fn()
+    const text = await new MockAdapter().complete({ system: 's', prompt: 'p', kind: 'skills', onUsage } as never)
+    const list = parseSuggestions(text, [])
+    expect(list).toHaveLength(1)
+    expect(list[0]!.draft.name).toBe('mock-suggested-skill')
+    expect(onUsage).toHaveBeenCalledWith({ tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, model: 'mock' })
+    rmSync(dir, { recursive: true, force: true })
   })
 })

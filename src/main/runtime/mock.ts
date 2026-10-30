@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
@@ -202,6 +202,9 @@ const USD_PER_TOKEN = 0.000003
 
 /** Trigger token: the mock behaves as if the provider refused the credentials. */
 const AUTH_FAIL_TOKEN = '[mock:auth-fail]'
+
+/** Trigger token: the root calls list_skills (or loads its first granted skill). */
+const SKILL_TOKEN = '[mock:skill]'
 
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
@@ -487,6 +490,7 @@ export class MockSession implements RuntimeSession {
       const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
+      await this.skillStep(ROOT_AGENT_ID, this.root)
       await this.turn(this.firstTurnSteps())
       while (!this.stopped) {
         const next = await this.nextMessage()
@@ -744,6 +748,45 @@ export class MockSession implements RuntimeSession {
       activity: step.description.slice(0, 90) || 'Reading the brief…'
     })
     this.transcript(step.id, { kind: 'user', text: step.description })
+    if (role) await this.skillStep(step.id, role)
+  }
+
+  /** Skill ids already loaded by an agent (once per agent). */
+  private skillLoaded = new Set<string>()
+
+  /**
+   * Skills: an agent whose role has a granted run skill loads the first one through the bound load_skill tool (which
+   * emits skill.used). With [mock:skill] and no grant the root calls list_skills instead. Work runs only.
+   */
+  private async skillStep(agentId: string, role: Role): Promise<void> {
+    if (this.isSetup || this.skillLoaded.has(agentId)) return
+    const granted = (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id))
+    let name: string
+    let args: Record<string, unknown>
+    if (granted.length) {
+      name = SKILL_HARNESS_TOOLS.load
+      args = { name: granted[0]!.name }
+    } else if (agentId === ROOT_AGENT_ID && this.ctx.prompt.includes(SKILL_TOKEN)) {
+      name = SKILL_HARNESS_TOOLS.list
+      args = {}
+    } else return
+    this.skillLoaded.add(agentId)
+    const t = this.tools.find((x) => x.name === name)
+    if (!t) return
+    const id = newId('tu')
+    this.transcript(agentId, { kind: 'tool_use', id, name, input: args })
+    countUsage(this.ensureAgent(agentId), 'toolCalls')
+    let text: string
+    let isError = false
+    try {
+      const res = await this.untilStopped(t.call(args, { agentId, roleId: role.id }))
+      if (res === STOPPED) return
+      text = res
+    } catch (e) {
+      text = (e as Error).message
+      isError = true
+    }
+    this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: text, isError })
   }
 
   private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<void> {
@@ -760,7 +803,7 @@ export class MockSession implements RuntimeSession {
       let text: string
       let isError = false
       try {
-        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID }))
+        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID, roleId: this.root.id }))
         if (res === STOPPED) return
         text = res
       } catch (e) {
@@ -796,6 +839,10 @@ export class MockAdapter implements RuntimeAdapter {
     return session
   }
 
+  private usage(input: CompletionInput): void {
+    input.onUsage?.({ tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, model: input.model ?? 'mock' })
+  }
+
   /** A fixed org chart draft, in the JSON shape the drafter expects. */
   async complete(input: CompletionInput): Promise<string> {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
@@ -810,7 +857,22 @@ export class MockAdapter implements RuntimeAdapter {
         .filter(Boolean)
         .slice(0, 4)
       const title = words.join(' ')
+      this.usage(input)
       return title.charAt(0).toUpperCase() + title.slice(1)
+    }
+    this.usage(input)
+    if (input.kind === 'skills') {
+      return JSON.stringify({
+        suggestions: [
+          {
+            name: 'mock-suggested-skill',
+            description: 'Use when the mock run repeats the same steps; a deterministic suggestion from the mock adapter.',
+            body: '# Mock skill\n\nSteps the mock suggests.',
+            rationale: 'Deterministic mock suggestion.',
+            findingIds: []
+          }
+        ]
+      })
     }
     const setupStep = DEFAULT_SETUP.find((s): s is Extract<MockStep, { type: 'harness' }> => s.type === 'harness' && s.name === 'propose_org_chart')
     const args = setupStep?.args ?? { rationale: '', roles: [] }
