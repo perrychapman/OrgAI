@@ -1235,7 +1235,12 @@ describe('cross-run messaging', () => {
     expect(adapter.bySession.get(b.id)!.peerMessages).toEqual([])
     expect(events.filter(isType('run.message'))).toEqual([])
     // list_runs still shows the run, with its messaging flag.
-    expect((await tool(a.id, 'list_runs')).split('\n').find((l) => l.startsWith(b.id))).toContain('| off |')
+    const row = (await tool(a.id, 'list_runs')).split('\n').find((l) => l.startsWith(b.id))
+    expect(row).toContain('| off |')
+    // A project that did not opt in does not reveal its prompt, and does not read others' either.
+    expect(row).toContain('(hidden: messaging is off)')
+    expect(row).not.toContain('Build the UI')
+    expect(adapter.ctxs.get(b.id)!.listRuns!().map((p) => p.prompt)).toEqual([''])
     // Turning it on in the saved project applies to the live runs at once.
     projects.set(pb.id, { ...pb, runMessaging: true })
     expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^DELIVERED/)
@@ -1243,6 +1248,11 @@ describe('cross-run messaging', () => {
     projects.set(pa.id, { ...pa, runMessaging: false })
     projects.set(pb.id, { ...pb, runMessaging: false })
     expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'hi')).toEqual({ result: 'refused', refusal: 'messaging-off', offProjects: ['Alpha', 'Beta'] })
+    // An ended run answers not-live without naming its project.
+    projects.set(pa.id, { ...pa, runMessaging: true })
+    await m.stop(b.id)
+    await vi.waitFor(() => expect(m.summaryOf(b.id)).toBeUndefined())
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'hi')).toEqual({ result: 'not-live' })
     await m.stopAll()
   })
 

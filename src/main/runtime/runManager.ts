@@ -536,7 +536,6 @@ export class RunManager {
     }
   }
 
-  /** Summary of a live run, without copying its record. Undefined once the run has ended. */
   /** Runs whose session is still open. */
   liveRunCount(): number {
     return this.runs.size
@@ -552,9 +551,14 @@ export class RunManager {
 
   // ---------- cross-run messaging ----------
 
-  /** list_runs: every other live work run, across projects, oldest first. A setup-like caller sees none. */
+  /**
+   * list_runs: every other live work run, across projects, oldest first. A setup-like caller sees none. A peer's
+   * prompt is shown only when both the caller's and the peer's projects have runMessaging on (else ''), so a project
+   * that did not opt in neither reads nor reveals what other runs are doing beyond project, status and orchestrator.
+   */
   private listRunsFor(self: ActiveRun): RunPeer[] {
     if (isSetupLikeRun(self.summary.kind)) return []
+    const selfOn = this.messagingOn(self)
     return [...this.runs.values()]
       .filter((a) => a !== self && a.summary.kind === 'work' && isOpenStatus(a.summary.status))
       .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
@@ -564,7 +568,7 @@ export class RunManager {
         projectName: a.projectName,
         kind: a.summary.kind,
         status: a.summary.status,
-        prompt: excerpt(a.summary.prompt, RUN_PEER_PROMPT_CHARS),
+        prompt: selfOn && this.messagingOn(a) ? excerpt(a.summary.prompt, RUN_PEER_PROMPT_CHARS) : '',
         startedAt: a.summary.startedAt,
         rootRole: a.rootRole,
         live: true,
@@ -583,13 +587,12 @@ export class RunManager {
     if (!target && !stored) return { result: 'not-found' }
     const targetSummary = target?.summary ?? stored!
     if (isSetupLikeRun(targetSummary.kind)) return { result: 'refused', refusal: 'not-work' }
+    // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
+    if (!target) return { result: 'not-live' }
     // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
     const off: string[] = []
     if (!this.messagingOn(sender)) off.push(sender.projectName)
-    if (targetSummary.projectId !== sender.summary.projectId) {
-      const targetOn = target ? this.messagingOn(target) : runMessagingOn(this.options.resolveProject?.(targetSummary.projectId))
-      if (!targetOn) off.push(target?.projectName ?? this.options.resolveProject?.(targetSummary.projectId)?.name ?? targetSummary.projectId)
-    }
+    if (target.summary.projectId !== sender.summary.projectId && !this.messagingOn(target)) off.push(target.projectName)
     if (off.length) return { result: 'refused', refusal: 'messaging-off', offProjects: off }
     const sent = sender.messagesSent.get(targetId) ?? 0
     if (sent >= RUN_MESSAGE_LIMIT) return { result: 'refused', refusal: 'cap' }

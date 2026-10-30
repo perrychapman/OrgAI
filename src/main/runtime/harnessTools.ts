@@ -763,7 +763,7 @@ export const listRunsTool = defineTool({
       'runId | project | status | orchestrator | started | messaging | prompt',
       ...peers.map(
         (p) =>
-          `${datum(p.runId, 80)} | ${datum(p.projectName, 60)} | ${p.status} | ${datum(p.rootRole, 60)} | ${new Date(p.startedAt).toISOString()} | ${p.messaging ? 'on' : 'off'} | ${datum(p.prompt, 120)}`
+          `${datum(p.runId, 80)} | ${datum(p.projectName, 60)} | ${p.status} | ${datum(p.rootRole, 60)} | ${new Date(p.startedAt).toISOString()} | ${p.messaging ? 'on' : 'off'} | ${p.prompt ? datum(p.prompt, 120) : '(hidden: messaging is off)'}`
       ),
       '</runs>'
     ].join('\n')
