@@ -135,3 +135,140 @@
   color: var(--text-secondary);
   margin: 8px 0 10px;
 }
+
+/* ---------- Inspector sections and editor controls ---------- */
+
+/* transcript.css wraps every .side-header at <=360px for the live view; the editor header stays on one row. */
+.editor .side-header {
+  flex-wrap: nowrap;
+}
+.editor .side-header h2 {
+  flex: 0 1 auto;
+}
+.side-header .grow {
+  flex: 1;
+  min-width: 0;
+}
+.side-body section > .side-section-title {
+  margin: 0;
+}
+.side-body section + section {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
+}
+.side-body .field {
+  margin-bottom: 0;
+}
+.field-label {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: var(--space-2);
+}
+.avatar.sm {
+  width: 26px;
+  height: 26px;
+  font-size: var(--text-caption);
+}
+.avatar.xs {
+  width: 14px;
+  height: 14px;
+}
+.head-text {
+  min-width: 0;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: var(--role);
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+.swatch:hover {
+  border-color: var(--border-strong);
+}
+.swatch[aria-pressed='true'] {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+
+/* A focused node (keyboard) shows a ring like a selected one. */
+.react-flow__node:focus-visible {
+  outline: none;
+}
+.react-flow__node:focus-visible .role-node {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.react-flow__edge:focus-visible {
+  outline: none;
+}
+.react-flow__edge:focus-visible .react-flow__edge-path,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3px;
+}
+
+/* Toolbar notes: what Add role will do, and the short-lived undo row. */
+.toolbar-note {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+.toolbar-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+/* ---------- AI draft panel ---------- */
+
+.disclosure > summary {
+  cursor: pointer;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  padding: var(--space-1) 0;
+  border-radius: var(--radius-sm);
+}
+.disclosure > summary:hover {
+  color: var(--text-primary);
+}
+.disclosure-body {
+  padding-top: var(--space-2);
+}
+.draft-box.is-error {
+  border-style: solid;
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+  background: transparent;
+}
+.side-body .draft-box {
+  margin-top: 0;
+}
+.draft-box .rationale {
+  margin: 0;
+}
+.draft-role {
+  font-size: var(--text-small);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.draft-role-name {
+  font-weight: var(--weight-semibold);
+}
+.draft-role-parent {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  margin-left: auto;
+}
