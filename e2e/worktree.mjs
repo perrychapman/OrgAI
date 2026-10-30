@@ -48,11 +48,11 @@ try {
       await shot('progress')
     }
     const nodes = await page.locator('.agent-node').count()
-    if (/idle/.test(status) && /Waiting for you/.test(rootActivity) && nodes >= 3 && !badges.some((b) => /isolated|merging/.test(b))) {
+    if (/idle/i.test(status) && /Waiting for you/.test(rootActivity) && nodes >= 3 && !badges.some((b) => /isolated|merging/.test(b))) {
       log('orchestrator idle with reports done')
       break
     }
-    if (/finished|error/.test(status)) {
+    if (/finished|failed/i.test(status)) {
       log('run ended:', status)
       break
     }

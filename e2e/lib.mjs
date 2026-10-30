@@ -222,7 +222,7 @@ export async function launch({ shotPrefix = 'shot' } = {}) {
   })
   page.on('pageerror', (e) => log('pageerror:', e.message.slice(0, 200)))
   await page.waitForSelector('.sidebar', { timeout: 60_000 })
-  await page.waitForSelector('form.card, .live, .editor', { timeout: 60_000 })
+  await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
@@ -377,7 +377,7 @@ export async function driveSetup(page, name, { deadlineMs = 12 * 60_000, decide 
       log('nudged')
     }
     const status = await page.locator('.topbar .pill .dot').first().locator('..').innerText().catch(() => '')
-    if (/finished|error/.test(status) && !(await page.locator('.proposal').count())) {
+    if (/finished|failed/i.test(status) && !(await page.locator('.proposal').count())) {
       log('run ended early, status:', status)
       break
     }
