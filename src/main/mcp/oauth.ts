@@ -157,33 +157,118 @@ export function canonicalResource(url: string): string {
   return `${u.protocol}//${u.host}${path}${u.search}`
 }
 
-function isLoopbackHost(h: string): boolean {
-  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]'
+function bareHost(h: string): string {
+  return h.toLowerCase().replace(/^\[|\]$/g, '')
 }
 
-/** https, or http for loopback hosts only. */
-function secureUrl(value: unknown): string | undefined {
+/** localhost, 127/8 and ::1. */
+function isLoopbackHost(hostname: string): boolean {
+  const h = bareHost(hostname)
+  if (h === 'localhost' || h.endsWith('.localhost') || h === '::1') return true
+  return /^127\.\d+\.\d+\.\d+$/.test(h)
+}
+
+function privateV4(a: number, b: number): boolean {
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  )
+}
+
+/** A loopback, private, link-local, unique-local or unspecified IP literal (or localhost). No DNS is resolved. */
+export function isPrivateHost(hostname: string): boolean {
+  const h = bareHost(hostname)
+  if (isLoopbackHost(h)) return true
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h)
+  if (v4) return privateV4(Number(v4[1]), Number(v4[2]))
+  if (!h.includes(':')) return false
+  if (h === '::') return true
+  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(?:(\d+)\.(\d+)\.\d+\.\d+|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(h)
+  if (mapped) {
+    if (mapped[1] !== undefined) return privateV4(Number(mapped[1]), Number(mapped[2]))
+    const hi = parseInt(mapped[3], 16)
+    return privateV4(hi >> 8, hi & 0xff)
+  }
+  const first = parseInt(h.split(':')[0] || '0', 16)
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80
+}
+
+/** True when the MCP server URL itself is a loopback address (then, and only then, server-named URLs may be local). */
+export function isLoopbackUrl(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    return isLoopbackHost(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * An acceptable server-named URL: https, or http on a loopback host. Private / loopback / link-local IP literals
+ * are refused unless `allowLocal` (the MCP server is loopback) or the URL is on the server's own origin.
+ */
+function secureUrl(value: unknown, allowLocal = false, trustedOrigin?: string): string | undefined {
   if (typeof value !== 'string') return undefined
   try {
     const u = new URL(value)
-    if (u.protocol === 'https:' || (u.protocol === 'http:' && isLoopbackHost(u.hostname))) return u.href
+    const trusted = trustedOrigin !== undefined && u.origin === trustedOrigin
+    if (u.protocol === 'https:') return allowLocal || trusted || !isPrivateHost(u.hostname) ? u.href : undefined
+    if (u.protocol === 'http:' && isLoopbackHost(u.hostname) && (allowLocal || trusted)) return u.href
   } catch {
     /* invalid */
   }
   return undefined
 }
 
-function requireSecure(value: unknown, what: string): string {
-  if (!secureUrl(value)) throw new OAuthError('discovery', `Discovery failed: ${what} is missing or not an https URL.`)
+function requireSecure(value: unknown, what: string, allowLocal: boolean): string {
+  if (!secureUrl(value, allowLocal)) throw new OAuthError('discovery', `Discovery failed: ${what} is missing or not an acceptable https URL.`)
   return value as string
 }
 
-async function fetchJson(fetchImpl: FetchLike, url: string): Promise<Record<string, unknown> | undefined> {
-  if (!secureUrl(url)) return undefined
+const MAX_BODY_BYTES = 64 * 1024
+
+/** Read a response body as text, aborting once it passes the cap. Throws Error('response too large'). */
+async function readCapped(res: Response, max = MAX_BODY_BYTES): Promise<string> {
+  const len = Number(res.headers.get('content-length'))
+  if (Number.isFinite(len) && len > max) {
+    await res.body?.cancel().catch(() => {})
+    throw new Error('response too large')
+  }
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > max) {
+      await reader.cancel().catch(() => {})
+      throw new Error('response too large')
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** The OAuth `error` code of a response body, sanitized; never error_description or raw text. */
+function errorCode(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const c = v.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64)
+  return c || undefined
+}
+
+async function fetchJson(fetchImpl: FetchLike, url: string, allowLocal: boolean, trustedOrigin?: string): Promise<Record<string, unknown> | undefined> {
+  if (!secureUrl(url, allowLocal, trustedOrigin)) return undefined
   try {
-    const res = await fetchImpl(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
+    const res = await fetchImpl(url, { headers: { Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
     if (!res.ok) return undefined
-    const body: unknown = await res.json()
+    const body: unknown = JSON.parse(await readCapped(res))
     return body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined
   } catch {
     return undefined
@@ -208,18 +293,21 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
   } catch {
     throw new OAuthError('discovery', 'Discovery failed: the server URL is not valid.')
   }
-  if (!secureUrl(target.href)) throw new OAuthError('discovery', 'Discovery failed: the server URL must be https.')
+  const loopback = isLoopbackHost(target.hostname)
+  if (target.protocol !== 'https:' && !(target.protocol === 'http:' && loopback)) {
+    throw new OAuthError('discovery', 'Discovery failed: the server URL must be https.')
+  }
   const resource = canonicalResource(resourceUrl)
 
   let metadataUrl: string | undefined
   let challengeScopes: string[] | undefined
   try {
-    const res = await fetchImpl(target.href, { method: 'GET', headers: { Accept: 'application/json, text/event-stream' }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
+    const res = await fetchImpl(target.href, { method: 'GET', headers: { Accept: 'application/json, text/event-stream' }, redirect: 'error', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
     await res.body?.cancel().catch(() => {})
     if (res.status === 401) {
       const challenges = parseWwwAuthenticate(res.headers.get('www-authenticate') ?? '')
       for (const c of challenges) {
-        metadataUrl ??= secureUrl(c.params.resource_metadata)
+        metadataUrl ??= secureUrl(c.params.resource_metadata, loopback, target.origin)
         if (!challengeScopes && c.params.scope) challengeScopes = c.params.scope.split(/\s+/).filter(Boolean)
       }
     }
@@ -234,14 +322,14 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
   candidates.push(`${target.origin}/.well-known/oauth-protected-resource`)
   let prm: Record<string, unknown> | undefined
   for (const c of candidates) {
-    prm = await fetchJson(fetchImpl, c)
+    prm = await fetchJson(fetchImpl, c, loopback, target.origin)
     if (prm) break
   }
   if (!prm) throw new OAuthError('discovery', 'Discovery failed: the server does not publish protected resource metadata.')
   const servers = Array.isArray(prm.authorization_servers) ? prm.authorization_servers : []
   const issuer = typeof servers[0] === 'string' ? servers[0] : undefined
   if (!issuer) throw new OAuthError('discovery', 'Discovery failed: the resource metadata names no authorization server.')
-  requireSecure(issuer, 'the authorization server')
+  requireSecure(issuer, 'the authorization server', loopback)
 
   const iu = new URL(issuer)
   const ipath = iu.pathname.replace(/\/+$/, '')
@@ -249,14 +337,14 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
   if (ipath) asCandidates.push(`${iu.origin}${ipath}/.well-known/openid-configuration`)
   let meta: Record<string, unknown> | undefined
   for (const c of asCandidates) {
-    meta = await fetchJson(fetchImpl, c)
+    meta = await fetchJson(fetchImpl, c, loopback)
     if (meta) break
   }
   if (!meta) throw new OAuthError('discovery', 'Discovery failed: the authorization server publishes no metadata.')
 
-  const authorizationEndpoint = requireSecure(meta.authorization_endpoint, 'authorization_endpoint')
-  const tokenEndpoint = requireSecure(meta.token_endpoint, 'token_endpoint')
-  const registrationEndpoint = meta.registration_endpoint === undefined ? undefined : requireSecure(meta.registration_endpoint, 'registration_endpoint')
+  const authorizationEndpoint = requireSecure(meta.authorization_endpoint, 'authorization_endpoint', loopback)
+  const tokenEndpoint = requireSecure(meta.token_endpoint, 'token_endpoint', loopback)
+  const registrationEndpoint = meta.registration_endpoint === undefined ? undefined : requireSecure(meta.registration_endpoint, 'registration_endpoint', loopback)
   const scopes = challengeScopes?.length ? challengeScopes : (stringList(prm.scopes_supported) ?? stringList(meta.scopes_supported))
   const codeChallengeMethods = stringList(meta.code_challenge_methods_supported)
   return {
@@ -276,6 +364,9 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
 /** RFC 7591 dynamic client registration (public client, PKCE, the loopback redirect). Throws OAuthError('registration'). */
 export async function registerClient(d: OAuthDiscovery, redirectUri: string, fetchImpl: FetchLike): Promise<OAuthClient> {
   if (!d.registrationEndpoint) throw new OAuthError('registration', NEEDS_CLIENT_ID_MESSAGE, true)
+  if (!secureUrl(d.registrationEndpoint, isLoopbackUrl(d.resource))) {
+    throw new OAuthError('registration', 'Registration failed: the registration endpoint is not an acceptable https URL.')
+  }
   let res: Response
   try {
     res = await fetchImpl(d.registrationEndpoint, {
@@ -288,12 +379,18 @@ export async function registerClient(d: OAuthDiscovery, redirectUri: string, fet
         response_types: ['code'],
         token_endpoint_auth_method: 'none'
       }),
+      redirect: 'error',
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
     })
   } catch (e) {
     throw new OAuthError('registration', `Registration failed: ${excerpt((e as Error).message)}`)
   }
-  const text = await res.text().catch(() => '')
+  let text: string
+  try {
+    text = await readCapped(res)
+  } catch (e) {
+    throw new OAuthError('registration', `Registration failed: ${excerpt((e as Error).message)}`)
+  }
   let body: Record<string, unknown> | undefined
   try {
     body = JSON.parse(text)
@@ -301,7 +398,8 @@ export async function registerClient(d: OAuthDiscovery, redirectUri: string, fet
     /* handled below */
   }
   if (!res.ok || !body || typeof body.client_id !== 'string' || !body.client_id) {
-    throw new OAuthError('registration', `Registration failed (HTTP ${res.status}): ${excerpt(text)}`)
+    const code = errorCode(body?.error)
+    throw new OAuthError('registration', `Registration failed (HTTP ${res.status})${code ? ` ${code}` : ''}`)
   }
   const secret = typeof body.client_secret === 'string' && body.client_secret ? body.client_secret : undefined
   return { clientId: body.client_id, ...(secret ? { clientSecret: secret } : {}), source: 'dcr', redirectUri }
@@ -342,8 +440,10 @@ export interface LoopbackServer {
   redirectUri: string
   /**
    * Resolve with the code of the first /callback request whose state matches exactly; reject (OAuthError
-   * 'callback') on an error response, a state mismatch, timeout or abort. The page served is plain static HTML
-   * without scripts and never echoes query parameters.
+   * 'callback') on an error response carrying the matching state, timeout or abort. A /callback request with a
+   * missing or different state gets HTTP 400 and is ignored (the flow keeps waiting), so a local process cannot
+   * cancel the flow by probing the port. The page served is plain static HTML without scripts and never echoes
+   * query parameters.
    */
   waitForCode(state: string, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<string>
   close(): void
@@ -392,7 +492,18 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
       error: url.searchParams.get('error') ?? undefined,
       description: url.searchParams.get('error_description') ?? undefined
     }
-    const ok = !cb.error && !!cb.code && (!waiter || sameString(cb.state ?? '', waiter.state))
+    const stateOk = !!cb.state && (!waiter || sameString(cb.state, waiter.state))
+    if (!stateOk) {
+      res.writeHead(400, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': "default-src 'none'",
+        'Cache-Control': 'no-store',
+        Connection: 'close'
+      })
+      res.end(page(PAGE_ERR))
+      return
+    }
+    const ok = !cb.error && !!cb.code
     res.writeHead(ok ? 200 : 400, {
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Security-Policy': "default-src 'none'",
@@ -401,7 +512,7 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
     })
     res.end(page(ok ? PAGE_OK : PAGE_ERR), () => {
       if (waiter) waiter.settle(cb)
-      else received ??= cb
+      else if (!received) received = cb
     })
   })
 
@@ -461,7 +572,8 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
         signal?.addEventListener('abort', onAbort, { once: true })
         timer = setTimeout(() => finish(() => reject(new OAuthError('callback', 'Authorization timed out.'))), timeoutMs)
         waiter = { state, settle }
-        if (received) settle(received)
+        if (received && received.state && sameString(received.state, state)) settle(received)
+        received = undefined
       })
     }
   }
@@ -476,23 +588,31 @@ async function postToken(
   form: Record<string, string | undefined>,
   secrets: string[],
   fetchImpl: FetchLike,
-  now: () => number
+  now: () => number,
+  allowLocal: boolean
 ): Promise<OAuthTokens> {
   const body = new URLSearchParams()
   for (const [k, v] of Object.entries(form)) if (v) body.set(k, v)
   const label = step === 'token' ? 'Token request' : 'Token refresh'
+  if (!secureUrl(endpoint, allowLocal)) throw new OAuthError(step, `${label} failed: the token endpoint is not an acceptable https URL.`)
   let res: Response
   try {
     res = await fetchImpl(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: body.toString(),
+      redirect: 'error',
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
     })
   } catch (e) {
     throw new OAuthError(step, `${label} failed: ${excerpt((e as Error).message, secrets)}`)
   }
-  const text = await res.text().catch(() => '')
+  let text: string
+  try {
+    text = await readCapped(res)
+  } catch (e) {
+    throw new OAuthError(step, `${label} failed: ${excerpt((e as Error).message, secrets)}`)
+  }
   let parsed: Record<string, unknown> = {}
   try {
     const j: unknown = JSON.parse(text)
@@ -503,11 +623,7 @@ async function postToken(
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
   const access = str(parsed.access_token)
   if (!res.ok || parsed.error || !access) {
-    const err = str(parsed.error)
-    const desc = str(parsed.error_description)
-    const detail = err
-      ? `${err.replace(/[^\w.-]/g, '').slice(0, 40)}${desc ? `: ${excerpt(desc, secrets)}` : ''}`
-      : excerpt(text, secrets) || 'no access token in the response'
+    const detail = errorCode(parsed.error) ?? 'no access token in the response'
     throw new OAuthError(step, `${label} failed (HTTP ${res.status}): ${detail}`)
   }
   const expiresIn = Number(parsed.expires_in)
@@ -542,7 +658,8 @@ export async function exchangeCode(
     },
     [p.code, p.verifier, client.clientSecret ?? ''],
     fetchImpl,
-    now
+    now,
+    isLoopbackUrl(d.resource)
   )
 }
 
@@ -569,7 +686,8 @@ export async function refreshTokens(
     },
     [p.refreshToken, p.clientSecret ?? ''],
     fetchImpl,
-    now
+    now,
+    isLoopbackUrl(config.resource)
   )
   return { ...t, refreshToken: t.refreshToken ?? p.refreshToken }
 }
@@ -584,8 +702,14 @@ export interface AuthorizeFlowInput {
   config?: McpOAuthConfig
   /** A newly entered client id (wins over the stored one; source 'manual'). */
   clientId?: string
-  /** The client secret to use: newly entered, else the stored one. */
+  /**
+   * The client secret to use: newly entered, else (legacy callers) the stored one. A secret that is not tied to a
+   * newly entered clientId is treated as stored and is only used when the stored client belongs to the discovered
+   * authorization server.
+   */
   clientSecret?: string
+  /** The stored client secret, kept apart from a newly entered one. Used only with a stored client of the same authorization server. */
+  storedClientSecret?: string
   fetch: FetchLike
   /** Opens the authorization URL in the system browser (shell.openExternal in index.ts). */
   openExternal(url: string): Promise<void>
@@ -618,8 +742,9 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
   }
 
   const entered = input.clientId?.trim()
-  const stored =
-    input.config?.clientId && (!input.config.authorizationServer || input.config.authorizationServer === d.authorizationServer) ? input.config : undefined
+  // A stored client (and its secret) belongs to one authorization server: never reuse it for another.
+  const stored = input.config?.clientId && input.config.authorizationServer === d.authorizationServer ? input.config : undefined
+  const storedSecret = input.storedClientSecret ?? input.clientSecret
   let listener: LoopbackServer | undefined
   try {
     let client: OAuthClient
@@ -632,8 +757,8 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
       hasClientSecret = !!input.clientSecret
     } else if (stored && stored.clientSource !== 'dcr') {
       listener = await listen({})
-      client = { clientId: stored.clientId!, ...(input.clientSecret ? { clientSecret: input.clientSecret } : {}), source: 'manual' }
-      hasClientSecret = !!input.clientSecret || !!stored.hasClientSecret
+      client = { clientId: stored.clientId!, ...(storedSecret ? { clientSecret: storedSecret } : {}), source: 'manual' }
+      hasClientSecret = !!storedSecret || !!stored.hasClientSecret
     } else if (stored && stored.redirectUri) {
       let port: number | undefined
       try {
@@ -643,8 +768,8 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
       }
       listener = await listen({ port })
       if (listener.redirectUri === stored.redirectUri) {
-        client = { clientId: stored.clientId!, ...(input.clientSecret ? { clientSecret: input.clientSecret } : {}), source: 'dcr', redirectUri: stored.redirectUri }
-        hasClientSecret = !!input.clientSecret || !!stored.hasClientSecret
+        client = { clientId: stored.clientId!, ...(storedSecret ? { clientSecret: storedSecret } : {}), source: 'dcr', redirectUri: stored.redirectUri }
+        hasClientSecret = !!storedSecret || !!stored.hasClientSecret
       } else {
         client = await registerClient(d, listener.redirectUri, input.fetch)
         secretToStore = client.clientSecret
