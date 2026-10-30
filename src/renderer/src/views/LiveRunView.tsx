@@ -12,10 +12,9 @@ import {
   type Edge,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project } from '@shared/types'
+import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
 import McpInstallCard from '../components/McpInstallCard'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { Badge } from '../components/ui/Badge'
 import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
@@ -184,6 +183,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedDecision, setPickedDecision] = useState<string | null>(null)
   const [dismissedInstalls, setDismissedInstalls] = useState<Record<string, boolean>>({})
+  const [approvedKinds, setApprovedKinds] = useState<ProposalKind[]>([])
   const bodyRef = useRef<HTMLDivElement>(null)
 
   const toggleCollapse = (): void => {
@@ -438,15 +438,36 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
 
+  // Focus the first decision button (the primary one when there is one); the tray itself is the fallback (tabIndex -1).
+  const focusDecision = useCallback((): void => {
+    const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
+    if (!region) return
+    const target =
+      region.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
+      region.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ??
+      region
+    target.focus()
+    target.scrollIntoView?.({ block: 'nearest' })
+  }, [])
+
   // A jump from the sidebar's "Needs you" list asks the first decision of this run to take focus.
   useEffect(() => {
     if (!pendingFocus) return
-    const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
-    const target = region?.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ?? region
-    target?.focus()
-    target?.scrollIntoView?.({ block: 'nearest' })
+    focusDecision()
     clearDecisionFocus()
-  }, [pendingFocus, clearDecisionFocus])
+  }, [pendingFocus, clearDecisionFocus, focusDecision])
+
+  // Ctrl+. or Alt+D jumps to the pending decision from anywhere on this run (spec 12.1, N4).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const jump = (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key === '.') || (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'd')
+      if (!jump || !bodyRef.current?.querySelector('.frame-tray')) return
+      e.preventDefault()
+      focusDecision()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [focusDecision])
 
   // Re-fit when the canvas container itself changes size (window resize, side panel, decisions region).
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -484,23 +505,23 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const decisionItems: { key: string; node: ReactNode }[] = [
     ...(run.ruleRequests ?? []).map((r) => ({
       key: r.id,
-      node: <RuleRequestCard runId={runId} request={r} who={who(r.agentId)} onDecide={(d) => void decideRules(r.id, d)} />
+      node: <RuleRequestCard runId={runId} request={r} who={who(r.agentId)} onDecide={(d) => decideRules(r.id, d)} />
     })),
     ...(run.questions ?? []).map((q) => ({
       key: q.id,
-      node: <QuestionCard runId={runId} question={q} who={isSetupRun ? 'The Architect' : who(q.agentId)} onAnswer={(a) => void answerQuestion(q.id, a)} />
+      node: <QuestionCard runId={runId} question={q} who={isSetupRun ? 'The Architect' : who(q.agentId)} onAnswer={(a) => answerQuestion(q.id, a)} />
     })),
     ...run.proposals.map((p) => ({
       key: p.id,
-      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : undefined} proposal={p} currentRoles={project.roles} onDecide={(d) => void decideProposal(p.id, d)} />
+      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : undefined} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
     })),
     ...(run.mergeReviews ?? []).map((m) => ({
       key: m.id,
-      node: <MergeReviewCard runId={runId} review={m} onDecide={(d) => void decideMerge(m.id, d)} />
+      node: <MergeReviewCard runId={runId} review={m} onDecide={(d) => decideMerge(m.id, d)} />
     })),
     ...run.permissions.map((p) => ({
       key: p.id,
-      node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => void decide(p.id, d)} />
+      node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => decide(p.id, d)} />
     })),
     ...cardItems.filter((it) => it.outcome).map((it) => ({
       key: it.request.id,
@@ -510,8 +531,6 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           request={it.request}
           agentName={who(it.request.agentId)}
           resolved={it.outcome}
-          collapsed={false}
-          onExpand={() => undefined}
           onDismiss={() => setDismissedInstalls((d) => ({ ...d, [it.request.id]: true }))}
         />
       )
@@ -533,6 +552,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     setPickedDecision(decisionItems[to].key)
   }
 
+  // What the user approved in this view; the setup banner only claims what was actually applied.
+  const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
+    await decideProposal(p.id, d)
+    if (d.behavior === 'approve') setApprovedKinds((k) => (k.includes(p.kind) ? k : [...k, p.kind]))
+  }
+
   const setupDone = isSetupRun && project.setup?.state === 'complete' && status === 'finished'
 
   return (
@@ -542,7 +567,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         <Banner
           tone="success"
           testId="setup-complete"
-          title={`Setup complete: ${project.setup?.architecturePath ? 'architecture, ' : ''}${project.roles.length} role${project.roles.length === 1 ? '' : 's'}, settings applied`}
+          title={`Setup complete: ${[project.setup?.architecturePath ? 'architecture' : '', `${project.roles.length} role${project.roles.length === 1 ? '' : 's'}`, approvedKinds.includes('settings') ? 'settings applied' : ''].filter(Boolean).join(', ')}`}
           actions={
             <Button size="sm" onClick={() => setView('org')}>
               View org chart
@@ -575,7 +600,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               {showMinimap && <MiniMap pannable zoomable ariaLabel="Run minimap" nodeColor={neutralRoleColor} />}
             </ReactFlow>
           </FrameStage>
-          <FrameTray label="Decisions">
+          <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
           {status === 'paused' && <PauseBanner runId={runId} />}
 
           {status !== 'paused' && run.plan?.status === 'blocked' && (
@@ -610,11 +635,6 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   </span>
                   <IconButton icon={ChevronRight} label="Next decision" size="sm" disabled={selectedDecision === decisionItems.length - 1} onClick={() => step(selectedDecision + 1)} />
                 </div>
-              )}
-              {openInstalls.length > 1 && (
-                <Badge tone="warning" testId="mcp-install-count">
-                  {openInstalls.length} install requests waiting
-                </Badge>
               )}
               <div key={decisionItems[selectedDecision].key} className="decision">
                 {decisionItems[selectedDecision].node}

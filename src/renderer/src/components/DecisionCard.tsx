@@ -28,7 +28,7 @@ interface Props {
   headerExtra?: ReactNode
   /** Body: detail, capped in height with its own scroll. */
   children?: ReactNode
-  /** Helper text under the body, always visible (scope explanations). */
+  /** Helper text after the body detail, in the same scroll region (scope explanations, never a tooltip). */
   helper?: ReactNode
   /** Footer, leftmost: the one primary action (a Button variant primary). */
   primary?: ReactNode
@@ -120,8 +120,12 @@ export default function DecisionCard({ kind, runId, who, title, headerExtra, chi
         </span>
         {headerExtra}
       </header>
-      {children !== undefined && children !== null && <div className="decision-body">{children}</div>}
-      {helper && <div className="decision-helper">{helper}</div>}
+      {((children !== undefined && children !== null) || helper) && (
+        <div className="decision-body">
+          {children}
+          {helper && <div className="decision-helper">{helper}</div>}
+        </div>
+      )}
       {error && (
         <div className="decision-error">
           <Banner tone="danger" title="The answer was not delivered">

@@ -217,7 +217,7 @@ function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement 
     <div className="org-diff-row is-changed">
       <div className="org-diff-line">
         <Badge tone="warning" icon={Pencil}>
-          Changed
+          {item.renamed ? 'Renamed' : 'Changed'}
         </Badge>
         <RoleAvatar role={item.role} />
         <span className="org-diff-name">{item.role.name}</span>

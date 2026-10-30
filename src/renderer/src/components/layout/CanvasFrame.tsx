@@ -41,10 +41,23 @@ export function FrameStage({ children }: { children?: ReactNode }): ReactElement
 }
 
 /** Decision tray. `label` names the region for assistive tech; content is announced politely. */
-export function FrameTray({ children, label = 'Decisions' }: { children?: ReactNode; label?: string }): ReactElement | null {
+export function FrameTray({
+  children,
+  label = 'Decisions',
+  shortcutHint,
+  shortcutKeys
+}: {
+  children?: ReactNode
+  label?: string
+  /** Tooltip naming the keyboard shortcut that moves focus into the tray. */
+  shortcutHint?: string
+  /** `aria-keyshortcuts` value for that shortcut. */
+  shortcutKeys?: string
+}): ReactElement | null {
   if (!hasContent(children)) return null
   return (
-    <section className="frame-tray" aria-label={label} aria-live="polite">
+    // tabIndex -1: a programmatic jump can land on the region itself when it holds no button.
+    <section className="frame-tray" aria-label={label} aria-live="polite" tabIndex={-1} title={shortcutHint} aria-keyshortcuts={shortcutKeys}>
       {children}
     </section>
   )
