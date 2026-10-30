@@ -500,6 +500,7 @@ button.run-chip.new {
 }
 .run-close:focus-visible {
   outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* ---------- Folded "done" groups ---------- */

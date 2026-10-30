@@ -733,7 +733,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const activeRunByProject = { ...s.activeRunByProject }
       if (projectId && activeRunByProject[projectId] === runId) {
         // Never leave the canvas empty while the project has another run: prefer an open one, else the newest.
-        const rest = runsOfProject(s, projectId).filter((r) => r.summary.id !== runId && !dismissedRuns[r.summary.id])
+        const all = runsOfProject(s, projectId)
+        const continued = new Set(all.map((r) => r.summary.resumedFrom).filter(Boolean))
+        const rest = all.filter((r) => r.summary.id !== runId && !dismissedRuns[r.summary.id] && !continued.has(r.summary.id))
         const next = rest.find((r) => isOpenStatus(r.summary.status)) ?? rest[0]
         if (next) activeRunByProject[projectId] = next.summary.id
         else delete activeRunByProject[projectId]

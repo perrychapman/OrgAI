@@ -340,7 +340,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         ? 'Answering the Architect'
         : `Replying to ${rootName}`
       : sendMode === 'continue'
-        ? `Continuing this session (run from ${run ? relativeTime(run.summary.startedAt) : 'earlier'})`
+        ? run?.summary.endedWithApp
+          ? 'Continuing this session (it ended when OrgAI closed)'
+          : `Continuing this session (run from ${run ? relativeTime(run.summary.startedAt) : 'earlier'})`
         : openRunCount > 0
           ? `New run: ${openRunCount} open run${openRunCount === 1 ? '' : 's'} keep${openRunCount === 1 ? 's' : ''} going`
           : 'New run'
@@ -784,7 +786,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
               void addImages(files)
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 void submit()
               }
@@ -795,7 +797,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                   ? 'Your answer'
                   : 'Your reply'
                 : sendMode === 'continue'
-                  ? 'What next?'
+                  ? run?.summary.endedWithApp
+                  ? 'Pick up where it was cut off'
+                  : 'What next?'
                   : needsSetup
                     ? 'Describe the task (setup is not finished)'
                     : 'Describe the task'
@@ -803,7 +807,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           />
           <div className="composer-help">Enter to send · Shift+Enter for a new line</div>
         </div>
-        <button className="btn primary" disabled={!canSend} onClick={() => void submit()}>
+        <button type="button" className="btn primary" disabled={!canSend} onClick={() => void submit()}>
           {primaryLabel}
         </button>
       </div>

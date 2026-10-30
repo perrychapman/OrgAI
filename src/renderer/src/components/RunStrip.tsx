@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { RunStatus } from '@shared/types'
 import { isRunLive, projectRuns, useAppStore, type RunState } from '../store/useAppStore'
 import { costLabel, planProgress } from '../lib/layout'
-import { continuedBy, needsYou, statusLabel } from '../lib/runChains'
+import { needsYou, statusLabel } from '../lib/runChains'
 import { Icon } from './ui/Icon'
 
 function dotClass(status: RunStatus): string {
@@ -24,11 +24,21 @@ export function useStripRuns(): RunState[] {
     useShallow((s) => {
       const viewed = s.selectedProjectId ? s.activeRunByProject[s.selectedProjectId] : undefined
       const all = projectRuns(s)
-      const summaries = all.map((r) => r.summary)
+      // One pass: runs that a later run continues hide behind that continuation.
+      const continued = new Set<string>()
+      for (const r of all) if (r.summary.resumedFrom) continued.add(r.summary.resumedFrom)
+      const bySession = new Map<string, RunState>()
+      for (const r of [...all].sort((a, b) => a.summary.startedAt - b.summary.startedAt)) {
+        const sid = r.summary.sessionId
+        if (!sid) continue
+        const prev = bySession.get(sid)
+        if (prev) continued.add(prev.summary.id)
+        bySession.set(sid, r)
+      }
       return all.filter((r) => {
-        if (r.summary.id === viewed) return true
+        if (r.summary.id === viewed || isRunLive(r)) return true
         if (s.dismissedRuns[r.summary.id]) return false
-        return !continuedBy(summaries, r.summary.id)
+        return !continued.has(r.summary.id)
       })
     })
   )
@@ -52,7 +62,7 @@ export default function RunStrip({ runs }: { runs: RunState[] }): ReactElement {
         const viewed = r.summary.id === viewedRunId
         const active = viewed && composerMode === 'reply'
         const cost = costLabel(r.summary.totalCostUsd, authMode)
-        const status = statusLabel(r.summary.status, waiting)
+        const status = statusLabel(r.summary.status, waiting, !!r.summary.endedWithApp)
         const prompt = r.summary.prompt || 'Image prompt'
         return (
           <div key={r.summary.id} className={`run-chip ${active ? 'active' : ''} ${waiting ? 'waiting' : ''}`}>

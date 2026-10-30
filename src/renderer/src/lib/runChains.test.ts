@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { RunStatus } from '@shared/types'
-import { canContinue, chainOf, continuedBy, newestOf, projectCounts, relativeTime, sessionOpenRunId } from './runChains'
+import { canContinue, chainOf, continuedBy, newestOf, projectCounts, relativeTime, sessionOpenRunId, statusLabel } from './runChains'
 
 const r = (id: string, startedAt: number, extra: { sessionId?: string; resumedFrom?: string; status?: RunStatus; projectId?: string } = {}) => ({
   id,
@@ -54,6 +54,8 @@ describe('runChains', () => {
     expect(relativeTime(0, 5 * 60_000)).toBe('5 min ago')
     expect(relativeTime(0, 3 * 3_600_000)).toBe('3 h ago')
     expect(sessionOpenRunId('Session already open: it is live in run run_ab-12 now')).toBe('run_ab-12')
+    expect(sessionOpenRunId('Session already open: run run_x1 ("hi…") is continuing it; reply there instead.')).toBe('run_x1')
     expect(sessionOpenRunId('other')).toBeNull()
+    expect(statusLabel('finished', false, true)).toBe('Ended when OrgAI closed')
   })
 })

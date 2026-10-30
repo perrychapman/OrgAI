@@ -109,7 +109,7 @@ export default function App(): ReactElement {
               {run && (
                 <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'live' : run.summary.status === 'error' ? 'danger' : run.summary.status === 'paused' ? 'warn' : 'ok'}`}>
                   <span className="dot" /> {run.summary.kind === 'setup' ? 'setup · ' : ''}
-                  {run.summary.status}
+                  {run.summary.endedWithApp && run.summary.status === 'finished' ? 'ended when OrgAI closed' : run.summary.status}
                 </span>
               )}
               <div className="tabs">
