@@ -197,6 +197,8 @@ export function collectSecrets(resolved: ResolvedMcpServer[], connection: Runtim
   for (const r of resolved) {
     for (const n of r.spec.secretEnv ?? []) if (r.env[n]) out.add(r.env[n])
     for (const n of r.spec.secretHeaders ?? []) if (r.headers[n]) out.add(r.headers[n])
+    // Headers resolve() added (the OAuth bearer) are secrets too, though no secretHeaders entry names them.
+    for (const [n, v] of Object.entries(r.headers)) if (v && r.spec.headers?.[n] !== v) out.add(v)
   }
   for (const [k, v] of Object.entries(connection?.env ?? {})) if (v && /TOKEN|KEY|SECRET|PASSWORD/i.test(k)) out.add(v)
   if (connection?.apiKey) out.add(connection.apiKey)
