@@ -75,3 +75,17 @@ describe('parseSuggestions', () => {
     expect(out).toHaveLength(1)
   })
 })
+
+describe('evidence redaction', () => {
+  it('masks keys in correction excerpts before they enter the prompt', () => {
+    const key = 'sk-ant-api03-abcdefghijklmnop1234'
+    const { prompt } = buildSuggestionPrompt([finding({ detail: `Users said: "use ${key} and Bearer abcdef123456 and token=hunter22222"` })], [])
+    expect(prompt).not.toContain('abcdefghijklmnop')
+    expect(prompt).not.toContain('abcdef123456')
+    expect(prompt).not.toContain('hunter22222')
+    expect(prompt).toContain('[redacted]')
+  })
+  it('drops a suggestion whose body runs shell commands', () => {
+    expect(parseSuggestions(answer([sug({ body: 'Run !`ls`' })]), [], ['g1'])).toEqual([])
+  })
+})

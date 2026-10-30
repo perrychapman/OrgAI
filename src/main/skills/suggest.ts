@@ -1,5 +1,7 @@
 import { SKILL_MAX_SUGGESTIONS, skillDescriptionProblem, skillNameProblem } from '@shared/defaults'
 import { SKILL_BODY_MAX_CHARS, type SkillFinding, type SkillSuggestion } from '@shared/types'
+import { maskKeyLike } from '../runtime/codexAppServer'
+import { shellInjectionProblem } from './skillMd'
 
 /** Prompt building and answer parsing for the model-assisted step of skills:evaluate. Pure. */
 
@@ -22,8 +24,15 @@ Answer with ONLY a JSON object, no prose and no code fence:
 /** Rough token count of a text of `chars` characters. */
 export const estimateTokens = (chars: number): number => Math.ceil(Math.max(0, chars) / 4)
 
+/** Secret-masks run-derived text: key-like tokens (the shared maskKeyLike) and any long opaque token. */
+export function redactEvidence(s: string): string {
+  return maskKeyLike(String(s))
+    .replace(/\b(?:ghp|gho|ghs|xox[a-z])[-_][A-Za-z0-9_-]{8,}/gi, '[redacted]')
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[redacted]')
+}
+
 const clean = (s: string, n: number): string => {
-  const t = s
+  const t = redactEvidence(s)
     .replace(/[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/g, ' ')
     .replace(/[<>]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -95,7 +104,7 @@ export function parseSuggestions(text: string, existingNames: Iterable<string>, 
       const description = typeof r.description === 'string' ? r.description.trim() : ''
       const body = typeof r.body === 'string' ? r.body.trim() : ''
       if (skillNameProblem(name) || skillDescriptionProblem(description)) continue
-      if (!body || body.length > SKILL_BODY_MAX_CHARS) continue
+      if (!body || body.length > SKILL_BODY_MAX_CHARS || shellInjectionProblem(body)) continue
       if (names.has(name.toLowerCase())) continue
       names.add(name.toLowerCase())
       const ids = Array.isArray(r.findingIds) ? [...new Set(r.findingIds.filter((x): x is string => typeof x === 'string' && known.has(x)))] : []

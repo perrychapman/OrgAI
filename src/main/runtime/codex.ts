@@ -788,7 +788,9 @@ class CodexSession implements RuntimeSession {
     if (!tool || !(agentId === ROOT_AGENT_ID || tool.audience === 'all' || (role.canSpawn && tool.audience === 'spawners'))) return toolResponse(`Unknown tool ${call.tool}.`, false)
     if (isBlockingHarnessTool(tool.name)) this.setState(agentId, 'waiting', describeTool(tool.name, call.arguments, { harness: true }))
     try {
-      const text = await tool.call(call.arguments, { agentId, roleId: role.id })
+      // The role id is passed only when the thread resolves to a role (or is the root): skills never fall back to the root's.
+      const resolved = agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(agentId)
+      const text = await tool.call(call.arguments, resolved ? { agentId, roleId: resolved.id } : { agentId })
       return toolResponse(text, true)
     } catch (e) {
       return toolResponse(`${tool.name} failed: ${(e as Error).message}`, false)

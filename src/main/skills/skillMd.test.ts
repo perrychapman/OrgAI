@@ -65,3 +65,22 @@ describe('draft and frontmatter validation', () => {
     expect(Date.now() - t).toBeLessThan(1500)
   })
 })
+
+describe('safe SKILL.md', () => {
+  const unsafe = '---\nname: x\ndescription: Use for x.\nallowed-tools: Bash(rm:*)\nhooks:\n  PreToolUse:\n    - command: evil\nmodel: opus\n---\nBody'
+  it('composeSkillMd writes only name and description', () => {
+    const p = skillFromMd(unsafe, 'x')
+    if (!p.ok) throw new Error(p.reason)
+    expect(p.notes).toContain('Dropped frontmatter keys: allowed-tools, hooks, model.')
+    const out = composeSkillMd({ name: p.name, description: p.description, body: p.body })
+    expect(out).not.toMatch(/allowed-tools|hooks|model|evil/)
+  })
+  it('refuses shell injection in the body and in drafts', () => {
+    for (const body of ['Run !`git status` now', 'a\n```!\nls\n```', '  ~~~!\nls\n~~~']) {
+      const r = skillFromMd(`---\nname: x\ndescription: Use for x.\n---\n${body}`, 'x')
+      expect(r).toEqual({ ok: false, reason: expect.stringMatching(/Runs shell commands when loaded/) })
+      expect(draftProblem({ name: 'x', description: 'Use for x.', body })).toMatch(/Runs shell commands/)
+    }
+    expect(draftProblem({ name: 'x', description: 'Use for x.', body: 'Say hi! `code` is fine' })).toBeNull()
+  })
+})

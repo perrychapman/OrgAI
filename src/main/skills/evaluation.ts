@@ -1,10 +1,10 @@
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { SKILL_EVALUATION_RUNS, SKILL_MAX_SUGGESTIONS, isSafeId, skillEvaluationOf } from '@shared/defaults'
-import type { Project, RunRecord, RunSummary, SkillEvaluationReport, SkillSuggestion } from '@shared/types'
+import type { Project, RunRecord, RunSummary, SkillEvaluationReport, SkillFinding, SkillSuggestion } from '@shared/types'
 import type { ProjectCompletionInput } from '../runtime/runManager'
 import { evaluateSkills, type EvalRun, type EvalSkill } from './evaluate'
-import { buildSuggestionPrompt, estimateTokens, parseSuggestions } from './suggest'
+import { buildSuggestionPrompt, estimateTokens, parseSuggestions, redactEvidence } from './suggest'
 import type { SkillEvaluationApi, SkillServiceApi } from './types'
 
 /** What SkillEvaluationService needs. The constructor signature is the contract index.ts wires; keep it. */
@@ -119,7 +119,16 @@ export class SkillEvaluationService implements SkillEvaluationApi {
       return { info, skillMd }
     })
 
-    const { quality, gaps } = evaluateSkills({ roles: project.roles, skills, runs, pathExists: confinedPathExists(project.path) })
+    const evaluated = evaluateSkills({ roles: project.roles, skills, runs, pathExists: confinedPathExists(project.path) })
+    // Run-derived text (correction excerpts, paths) is secret-masked before the prompt and the saved report.
+    const redactFinding = (f: SkillFinding): SkillFinding => ({
+      ...f,
+      title: redactEvidence(f.title),
+      detail: redactEvidence(f.detail),
+      ...(f.evidence ? { evidence: { ...f.evidence, ...(f.evidence.paths ? { paths: f.evidence.paths.map(redactEvidence) } : {}), ...(f.evidence.sequence ? { sequence: f.evidence.sequence.map(redactEvidence) } : {}) } } : {})
+    })
+    const quality = evaluated.quality.map(redactFinding)
+    const gaps = evaluated.gaps.map(redactFinding)
     const report: SkillEvaluationReport = {
       projectId,
       at: Date.now(),
