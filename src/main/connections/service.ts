@@ -533,7 +533,13 @@ export class ConnectionService {
     return this.remapOne({ ...project, provider }, id, tierModels, undefined, 'switched').project
   }
 
-  private withAdapter(project: Project): Project {
+  /** The agent importer's view of a connection: its catalog and tier mapping (src/main/setup/import/model.ts). */
+  importModelContext(id: ConnectionId): { connection: ConnectionId; catalog: ProviderModel[]; tierModels: Tiers } {
+    return { connection: id, catalog: this.catalogFor(id), tierModels: { ...this.deps.settings.get().connections[id].tierModels } }
+  }
+
+  /** Keep provider.id on the adapter the project's models need (mock projects are left alone). Pure. */
+  withAdapter(project: Project): Project {
     if (project.provider.id === 'mock') return project
     const adapter = adapterForProject(project, this.catalog()).adapter
     return adapter === project.provider.id ? project : { ...project, provider: { ...project.provider, id: adapter } }

@@ -89,9 +89,12 @@ export function defaultTierModels(models: readonly ProviderModel[]): Partial<Rec
 
 const CLAUDE_ALIAS_TIERS: Record<string, ModelTier> = { fable: 'top', opus: 'deep', sonnet: 'everyday', haiku: 'fast' }
 
-/** Lowercase a model id and strip a gateway prefix such as "anthropic/" or "openai/". */
+/**
+ * Lowercase a model id, strip a gateway prefix such as "anthropic/" or "openai/", and a Claude Code context
+ * suffix such as "[1m]" ("sonnet[1m]", "claude-sonnet-4-5[1m]").
+ */
 function bareModelId(model: string): string {
-  const id = model.trim().toLowerCase()
+  const id = model.trim().toLowerCase().replace(/\[[^\]]*\]$/, '')
   const slash = id.lastIndexOf('/')
   return slash >= 0 ? id.slice(slash + 1) : id
 }
@@ -106,6 +109,41 @@ export function tierForModel(model: ModelRef): ModelTier | undefined {
   if (Object.hasOwn(CLAUDE_ALIAS_TIERS, id)) return CLAUDE_ALIAS_TIERS[id]
   if (id.includes('claude')) {
     for (const [alias, tier] of Object.entries(CLAUDE_ALIAS_TIERS)) if (id.includes(alias)) return tier
+  }
+  return undefined
+}
+
+/** Extra Claude Code aliases an imported agent may name (opusplan plans with Opus; best = the strongest model). */
+const IMPORT_ALIAS_TIERS: Record<string, ModelTier> = { best: 'top', opusplan: 'deep' }
+
+/**
+ * The tier a foreign model id expresses, for importing agent definitions from other harnesses
+ * (src/main/setup/import). Wider than tierForModel, which it never changes:
+ * - Claude aliases and full ids, with any provider prefix ("anthropic/", "bedrock/...") and "[1m]" suffix
+ *   stripped, map like tierForModel; also "best" -> top and "opusplan" -> deep.
+ * - HEURISTIC (OpenAI naming, not a published contract): "nano" -> fast, "mini" -> everyday, "pro" or
+ *   "codex-max" -> top, any other gpt-* / o-series / codex / chatgpt id -> deep.
+ * - HEURISTIC (Gemini naming): "flash-lite" -> fast, "flash" -> everyday, "pro" or "ultra" -> deep.
+ * Anything else ('inherit', empty, other families) gives undefined.
+ */
+export function importTierForModel(model: unknown): ModelTier | undefined {
+  if (typeof model !== 'string') return undefined
+  const known = tierForModel(model)
+  if (known) return known
+  const id = bareModelId(model)
+  if (!id || id === 'inherit') return undefined
+  if (Object.hasOwn(IMPORT_ALIAS_TIERS, id)) return IMPORT_ALIAS_TIERS[id]
+  if (/^(gpt|o\d|codex|chatgpt)/.test(id)) {
+    if (/nano/.test(id)) return 'fast'
+    if (/mini/.test(id)) return 'everyday'
+    if (/(^|-)pro($|-)/.test(id) || /codex-max/.test(id)) return 'top'
+    return 'deep'
+  }
+  if (id.startsWith('gemini')) {
+    if (/flash-lite/.test(id)) return 'fast'
+    if (/flash/.test(id)) return 'everyday'
+    if (/(^|-)(pro|ultra)($|-)/.test(id)) return 'deep'
+    return undefined
   }
   return undefined
 }

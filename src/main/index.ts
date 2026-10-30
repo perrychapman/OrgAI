@@ -24,6 +24,7 @@ import { MockAdapter } from './runtime/mock'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
 import { registerIpc } from './ipc'
+import { AgentImportService } from './setup/import/importer'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging } from './log'
@@ -273,7 +274,13 @@ app.whenReady().then(() => {
     mcp,
     adapterIds: Object.keys(adapters),
     harnessProject: harness,
-    openRunWindow
+    openRunWindow,
+    importer: new AgentImportService({
+      projects,
+      modelContext: (id) => connections.importModelContext(id),
+      withAdapter: (project) => connections.withAdapter(project),
+      onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
+    })
   })
   connections.init()
   app.on('before-quit', () => connections.dispose())
