@@ -146,8 +146,8 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
-  background: transparent;
+  width: 1px;
+  background: var(--border-default);
   transition: background-color var(--dur-fast, 120ms) ease;
 }
 .resize-handle[data-edge='end']::after {
@@ -178,11 +178,10 @@
 .resize-handle:focus-visible::before {
   opacity: 1;
 }
-.resize-handle:hover::after {
-  background: var(--focus-ring);
-}
+.resize-handle:hover::after,
 .resize-handle:active::after,
 .resize-handle:focus-visible::after {
+  width: 3px;
   background: var(--focus-ring);
 }
 html[data-resizing] {

@@ -179,6 +179,12 @@
 .entry.text .md {
   font-size: var(--text-body);
 }
+/* Very wide panels: keep reading lines short, left aligned. Tool rows and the composer stay full width. */
+.entry.text,
+.entry.user,
+.entry.thinking {
+  max-width: 90ch;
+}
 .md > :first-child {
   margin-top: 0;
 }
