@@ -446,12 +446,12 @@ class ClaudeSession implements RuntimeSession {
         const root = this.agents.get(ROOT_ID)
         return !!root && root.state !== 'idle' && root.state !== 'done'
       },
-      nudge: (text, activity) => {
-        this.notifyOrchestrator(text, activity)
+      nudge: (text, activity, summary) => {
+        this.notifyOrchestrator(text, activity, summary)
         this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text })
+      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' })
     })
     this.finished = this.run()
   }
@@ -505,11 +505,11 @@ class ClaudeSession implements RuntimeSession {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
   }
 
-  private transcript(agentId: string, block: TranscriptBlock): void {
+  private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
     this.emit({
       type: 'transcript',
       runId: this.ctx.run.id,
-      entry: { id: newId('t'), agentId, at: Date.now(), block }
+      entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) }
     })
   }
 
@@ -570,9 +570,9 @@ class ClaudeSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…'): void {
+  private notifyOrchestrator(text: string, activity = 'Integrating a report…', summary?: string): void {
     this.input.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
-    this.transcript(ROOT_ID, { kind: 'system', text })
+    this.transcript(ROOT_ID, { kind: 'system', text: summary ?? text, ...(summary ? { detail: text } : {}) }, { source: 'harness' })
     const root = this.agents.get(ROOT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
   }
@@ -661,7 +661,7 @@ class ClaudeSession implements RuntimeSession {
       `above the project's cap of ${cap}%. Reports in flight may have been cut off. Pick up from where things stand, ` +
       'and keep the remaining work lean.'
     this.pendingCapNote = note
-    this.transcript(ROOT_ID, { kind: 'system', text: note })
+    this.transcript(ROOT_ID, { kind: 'system', text: note }, { source: 'harness' })
     this.setState(ROOT_ID, 'idle', `Stopped: used ${used}% of the five-hour window`)
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
   }
@@ -991,7 +991,7 @@ class ClaudeSession implements RuntimeSession {
       activity: 'Reading your request…'
     })
     if (this.ctx.resumeSessionId) {
-      this.transcript(ROOT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` })
+      this.transcript(ROOT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` }, { source: 'harness' })
     }
     this.transcript(ROOT_ID, userBlock(this.ctx.prompt, this.ctx.images))
 
