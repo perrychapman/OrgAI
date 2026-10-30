@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { promises as fsp } from 'node:fs'
+import { constants as fsConstants, promises as fsp } from 'node:fs'
 import path from 'node:path'
 import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProposalDecision, QuestionAnswer, RunPlan } from '@shared/types'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_MODES, RUN_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, TOOL_CATALOG } from '@shared/types'
@@ -952,8 +952,8 @@ export const messageRunTool = defineTool({
 
 /** Most bytes of a skill resource file load_skill returns. */
 export const SKILL_FILE_RETURN_MAX_BYTES = 64 * 1024
-/** Most bytes of SKILL.md load_skill reads (the stored limit for one skill file). */
-const SKILL_MD_RETURN_MAX_BYTES = 256 * 1024
+/** Most bytes of SKILL.md load_skill returns (a longer file is truncated with a note). */
+export const SKILL_MD_RETURN_MAX_BYTES = 64 * 1024
 
 /** The role whose grants apply to a call: the caller's, else the root. */
 function callerRoleId(ctx: RuntimeContext, caller: HarnessToolCaller): string | undefined {
@@ -973,19 +973,31 @@ function cleanSkillPath(raw: string): string | null {
 }
 
 /**
- * Read one regular file of a skill folder: lstat says regular file (no symlink) and the realpath stays inside the
- * realpath of the skill folder. Returns at most `max` bytes, or a refusal reason.
+ * True when `child` is strictly inside `parent` (both already resolved). A first segment that merely starts with
+ * ".." (a file named "..notes") is inside; only ".." itself or "../..." is outside.
  */
-async function readSkillFile(dir: string, rel: string, max: number): Promise<{ text: string; truncated: boolean } | { refused: string }> {
+export function isInsideDir(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child)
+  if (!rel || path.isAbsolute(rel)) return false
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`)
+}
+
+/**
+ * Read one regular file of a skill folder: lstat says regular file (no symlink) and the realpath stays inside the
+ * realpath of the skill folder. The open uses O_NOFOLLOW where the platform has it (not Windows) and re-checks the
+ * handle is a regular file, so a symlink swapped in after the checks is not followed. Returns at most `max` bytes,
+ * or a refusal reason.
+ */
+export async function readSkillFile(dir: string, rel: string, max: number): Promise<{ text: string; truncated: boolean } | { refused: string }> {
   try {
     const abs = path.join(dir, ...rel.split('/'))
     const st = await fsp.lstat(abs)
     if (!st.isFile()) return { refused: 'not a regular file' }
     const [realDir, realFile] = await Promise.all([fsp.realpath(dir), fsp.realpath(abs)])
-    const inside = path.relative(realDir, realFile)
-    if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) return { refused: 'outside the skill folder' }
-    const fh = await fsp.open(realFile, 'r')
+    if (!isInsideDir(realDir, realFile)) return { refused: 'outside the skill folder' }
+    const fh = await fsp.open(realFile, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
     try {
+      if (!(await fh.stat()).isFile()) return { refused: 'not a regular file' }
       const buf = Buffer.alloc(max + 1)
       const { bytesRead } = await fh.read(buf, 0, max + 1, 0)
       const truncated = bytesRead > max

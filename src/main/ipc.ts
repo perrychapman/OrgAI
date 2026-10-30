@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
 import type {
   AgentImportApplyInput,
   AgentImportApplyResult,
@@ -166,7 +166,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     const picked = result.canceled ? null : result.filePaths[0] ?? null
-    if (picked) rememberPickedFolder(picked)
+    if (picked) rememberPickedFolder(e.sender, picked)
     return picked
   })
 
@@ -331,20 +331,45 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
 }
 
 /**
- * Folders the user chose in the main-process folder dialog (projects:pickDirectory), newest last, at most 20.
- * skillLibrary:addFromFolder accepts only these, so a compromised renderer cannot copy an arbitrary folder (or a UNC
- * share) into the library and read it back.
+ * Folders the user chose in the main-process folder dialog (projects:pickDirectory), per renderer (`WebContents.id`),
+ * newest last, at most PICKED_FOLDERS_PER_SENDER each. skillLibrary:addFromFolder accepts only a folder the same
+ * renderer picked, and only once (`take` removes it), so a compromised renderer cannot copy an arbitrary folder (or a
+ * UNC share) into the library and read it back, nor reuse a folder another window picked. Pure; exported for tests.
  */
-const pickedFolders: string[] = []
-function rememberPickedFolder(path: string): void {
-  const i = pickedFolders.indexOf(path)
-  if (i !== -1) pickedFolders.splice(i, 1)
-  pickedFolders.push(path)
-  if (pickedFolders.length > 20) pickedFolders.shift()
+export const PICKED_FOLDERS_PER_SENDER = 20
+export class PickedFolders {
+  private bySender = new Map<number, string[]>()
+  remember(senderId: number, path: string): void {
+    const list = (this.bySender.get(senderId) ?? []).filter((p) => p !== path)
+    list.push(path)
+    if (list.length > PICKED_FOLDERS_PER_SENDER) list.shift()
+    this.bySender.set(senderId, list)
+  }
+  /** True (and forgotten) when `senderId` picked `path`; false otherwise. One-shot. */
+  take(senderId: number, path: string): boolean {
+    const list = this.bySender.get(senderId)
+    const i = list ? list.indexOf(path) : -1
+    if (!list || i === -1) return false
+    list.splice(i, 1)
+    if (list.length === 0) this.bySender.delete(senderId)
+    return true
+  }
+  /** Drop everything a renderer picked (its WebContents was destroyed). */
+  forget(senderId: number): void {
+    this.bySender.delete(senderId)
+  }
 }
-/** For tests. */
-export function wasPickedFolder(path: string): boolean {
-  return pickedFolders.includes(path)
+const pickedFolders = new PickedFolders()
+const trackedSenders = new Set<number>()
+function rememberPickedFolder(sender: WebContents, path: string): void {
+  pickedFolders.remember(sender.id, path)
+  if (trackedSenders.has(sender.id)) return
+  trackedSenders.add(sender.id)
+  const id = sender.id
+  sender.once('destroyed', () => {
+    pickedFolders.forget(id)
+    trackedSenders.delete(id)
+  })
 }
 
 /** A plain object argument, or {} (handlers validate the fields; services re-check ids against the stores). */
@@ -408,10 +433,10 @@ function registerSkillIpc(skills: SkillServiceApi, evaluation: SkillEvaluationAp
   ipcMain.handle(IPC.skillLibraryList, (): SkillLibraryInfo[] => skills.libraryList())
   ipcMain.handle(IPC.skillLibraryRead, (_e, input: unknown): SkillContent => skills.libraryRead(libraryArg(input)))
   ipcMain.handle(IPC.skillLibraryCreate, (_e, draft: unknown): SkillLibraryInfo[] => skills.libraryCreate(obj<SkillDraft>(draft)))
-  ipcMain.handle(IPC.skillLibraryAddFromFolder, (_e, input: unknown): SkillLibraryInfo[] => {
+  ipcMain.handle(IPC.skillLibraryAddFromFolder, (e, input: unknown): SkillLibraryInfo[] => {
     const i = obj<SkillLibraryFolderInput>(input)
     if (typeof i.path !== 'string' || !i.path) throw new Error('Choose a skill folder.')
-    if (!wasPickedFolder(i.path)) throw new Error('Choose the skill folder with the folder picker first.')
+    if (!pickedFolders.take(e.sender.id, i.path)) throw new Error('Choose the skill folder with the folder picker first.')
     return skills.libraryAddFromFolder({ path: i.path })
   })
   ipcMain.handle(IPC.skillLibraryUpdate, (_e, input: unknown): SkillLibraryInfo[] => {
