@@ -344,6 +344,7 @@
 /* ---------- Run strip (several runs per project) ---------- */
 
 .run-strip {
+  container-type: inline-size;
   position: absolute;
   top: 12px;
   left: 12px;
@@ -360,16 +361,13 @@
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  max-width: 260px;
-  padding: 4px 6px 4px 9px;
+  max-width: min(280px, 70cqw);
   border-radius: var(--radius-full);
   border: 1px solid var(--border-default);
   background: var(--surface-2);
   color: var(--text-secondary);
   font: inherit;
   font-size: var(--text-caption);
-  cursor: pointer;
   white-space: nowrap;
 }
 .run-chip:hover {
@@ -381,12 +379,45 @@
   color: var(--text-primary);
   background: var(--surface-3);
 }
-.run-chip.new {
-  padding-right: 9px;
+.run-chip.waiting {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--text-primary);
+}
+.run-chip:has(:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.run-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.run-chip-main:focus-visible {
+  outline: none;
+}
+button.run-chip.new {
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
   border-style: dashed;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-caption);
+}
+.run-chip .run-status {
+  font-weight: var(--weight-semibold);
 }
 .run-chip .run-kind {
   font-weight: var(--weight-semibold);
+  color: var(--warning-text);
 }
 .run-chip .run-prompt {
   overflow: hidden;
@@ -397,6 +428,12 @@
 .run-chip .run-cost {
   font-family: var(--font-mono);
   font-size: var(--text-caption);
+}
+@container (max-width: 700px) {
+  .run-chip .run-cost,
+  .run-chip .run-plan {
+    display: none;
+  }
 }
 .run-dot {
   width: 7px;
@@ -422,18 +459,23 @@
   background: var(--warning);
 }
 .run-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: var(--space-1);
+  padding: var(--space-0h);
   border: none;
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
-  font-size: var(--text-body);
-  line-height: 1;
-  padding: 0 3px;
   border-radius: var(--radius-full);
 }
 .run-close:hover {
   color: var(--text-primary);
   background: var(--border-default);
+}
+.run-close:focus-visible {
+  outline: 2px solid var(--focus-ring);
 }
 
 /* ---------- Folded "done" groups ---------- */
