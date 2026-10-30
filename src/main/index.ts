@@ -25,6 +25,7 @@ import { SkillEvaluationService } from './skills/evaluation'
 import { applyShellPath } from './shellEnv'
 import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
+import { sweepStaleSkillDirs } from './runtime/claudeSkills'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
 import { registerIpc } from './ipc'
@@ -379,6 +380,7 @@ app.whenReady().then(() => {
   for (const projectId of new Set(runStore.allProjectIds())) if (!knownProjects.has(projectId)) dropped += runStore.removeProject(projectId)
   dropped += runStore.prune(keepRunsFor)
   dropped += runStore.sweepOrphans()
+  sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
   installAppMenu()
   createWindow()
