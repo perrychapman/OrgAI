@@ -3,6 +3,7 @@ import { useEffect, useId, useRef } from 'react'
 import { Pause, RotateCcw, Square } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { Button } from './ui/Button'
+import { modelDisplayName, useAssistantModel } from '../lib/assistantModels'
 
 /** Wraps one control and points its aria-describedby at a helper text; the primitives take no such prop. */
 function Described({ text, children }: { text: string; children: ReactNode }): ReactElement {
@@ -32,13 +33,14 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   const stopRun = useAppStore((s) => s.stopRun)
   const startRetro = useAppStore((s) => s.startRetro)
   const mock = useAppStore((s) => !!s.appInfo?.mockAdapter)
+  const setupModel = useAssistantModel('setupModel')
   if (!summary) return null
   const sessionOpen = summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting'
   const canRetro = !sessionOpen && summary.kind === 'work' && (summary.status === 'finished' || summary.status === 'error')
   if (!sessionOpen && !canRetro) return null
   const interruptHelp = 'Stops the current turn. The session stays open.'
   const endHelp = 'Ends the session and stops all of its agents.'
-  const retroHelp = `Have the Architect review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
+  const retroHelp = `Have the Architect (${modelDisplayName(setupModel)}, set in App settings > Defaults) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
   return (
     <div className="run-actions" role="group" aria-label="Run actions">
       {sessionOpen && (
