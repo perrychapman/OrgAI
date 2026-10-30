@@ -43,6 +43,10 @@
   gap: 2px;
 }
 
+.sidebar-mock {
+  padding: 0 var(--space-4) var(--space-2);
+}
+
 .sidebar-label {
   font-size: var(--text-small);
   color: var(--text-secondary);
@@ -240,15 +244,6 @@
   color: var(--text-secondary);
 }
 
-.notify-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-
 .pill {
   display: inline-flex;
   align-items: center;
@@ -298,6 +293,10 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.main:focus {
+  outline: none;
 }
 
 .topbar {

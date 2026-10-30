@@ -30,6 +30,7 @@ export default function App(): ReactElement {
 
   useEffect(() => {
     void init()
+    void useAppStore.getState().loadAppInfo()
   }, [init])
 
   // The window title names the viewed run, so the OS task switcher and notifications show which run is on screen.
@@ -42,9 +43,19 @@ export default function App(): ReactElement {
 
   return (
     <div className="app">
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main-content')?.focus()
+        }}
+      >
+        Skip to content
+      </a>
       <Sidebar />
 
-      <main className="main">
+      <main className="main" id="main-content" tabIndex={-1}>
         <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ''}`} onReset={() => setView('projects')}>
           {view === 'appSettings' ? (
             <AppSettingsView />
