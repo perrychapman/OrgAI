@@ -195,9 +195,7 @@ export default function AppSettingsView(): ReactElement {
               Prefer Sonnet for new reports when the Opus weekly window is above the threshold
             </label>
           </div>
-          <span className="hint" style={{ display: 'block', fontSize: 11, color: 'var(--text-faint)', marginBottom: 18 }}>
-            These apply when a project is created. Existing projects keep their own settings.
-          </span>
+          <p className="muted">These apply when a project is created. Existing projects keep their own settings.</p>
 
           <div className="side-section-title" style={{ margin: '0 0 10px' }}>
             Usage
@@ -231,23 +229,6 @@ export default function AppSettingsView(): ReactElement {
               when a run needs attention or finishes
             </label>
           </div>
-          <div className="field">
-            <label>Data directory</label>
-            <div className="row">
-              <input className="input" value={info.dataDir} readOnly />
-              <button
-                className="btn"
-                onClick={async () => {
-                  const err = await window.orgai.app.openPath(info.dataDir)
-                  if (err) setError(err)
-                }}
-              >
-                Open folder
-              </button>
-            </div>
-            <span className="hint">Projects, settings and run history are stored here.</span>
-          </div>
-
           {appInfo && (
             <section data-testid="about-block" aria-labelledby="about-title">
               <div className="side-section-title" id="about-title" style={{ margin: '18px 0 10px' }}>
@@ -285,6 +266,7 @@ export default function AppSettingsView(): ReactElement {
                   </Fragment>
                 ))}
               </dl>
+              <p className="muted">Projects, settings and run history are stored in the data folder.</p>
             </section>
           )}
         </div>

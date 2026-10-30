@@ -119,16 +119,19 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           </p>
         </div>
       </div>
-      {appInfo?.mockAdapter && (
-        <div className="pconn-mock">
-          <Switch checked={mock} onChange={(on) => void toggleMock(on)} label="Run on the scripted mock adapter (no tokens)" testId="mock-adapter-toggle" />
+      {(appInfo?.mockAdapter || mock) && (
+        <label className="pconn-mock">
+          <Switch checked={mock} onChange={(on) => void toggleMock(on)} label="" testId="mock-adapter-toggle" />
           <div>
             <span>Run on the scripted mock adapter (no tokens)</span>
             <p className="muted">Plays scripted runs, approvals and proposals so you can test the app without a connection.</p>
           </div>
-        </div>
+        </label>
       )}
       {mock && appInfo?.mockAdapter && <p className="muted">The mock adapter is on, so the connection below does not apply to runs.</p>}
+      {mock && !appInfo?.mockAdapter && (
+        <p className="pconn-mock-warn">The mock adapter is not loaded in this app. Turn this off to run on your connection.</p>
+      )}
       {error && !preview && <Banner tone="danger">{error}</Banner>}
       {!connections ? (
         <div className="pconn-cards" aria-busy="true">
