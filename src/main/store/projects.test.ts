@@ -38,10 +38,12 @@ describe('ProjectStore.saveFromRenderer', () => {
     expect(saved.mcpServers).toBeUndefined()
   })
 
-  it('keeps what a new project sent', () => {
+  it('refuses unknown ids, unsafe ids and the harness id', () => {
     const store = new ProjectStore(dataDir())
-    const saved = store.saveFromRenderer(project({ id: 'new', mcpServers: [server] }))
-    expect(saved.mcpServers).toEqual([server])
+    expect(() => store.saveFromRenderer(project({ id: 'new', mcpServers: [server] }))).toThrow('Project not found')
+    expect(store.get('new')).toBeFalsy()
+    expect(() => store.saveFromRenderer(project({ id: '../x' }))).toThrow('Invalid project id')
+    expect(() => store.saveFromRenderer(project({ id: 'harness' }))).toThrow(/harness/)
   })
 })
 

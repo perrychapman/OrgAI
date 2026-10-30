@@ -202,6 +202,14 @@ describe('buildLaunchConfig', () => {
     expect(l.config.join('\n')).not.toMatch(/sk-super|kkk-secret/)
   })
 
+  it('never prints a header value in the summary, config or argv', () => {
+    const s = spec({ name: 'remote', transport: 'http', url: 'https://x.test/mcp', headers: {}, secretHeaders: ['Authorization'] })
+    const l = buildLaunchConfig(conn(), [resolved(s, {}, { Authorization: 'Bearer secret123' })])
+    expect(l.summary.join('\n')).not.toContain('secret123')
+    expect(l.config.join('\n')).not.toContain('secret123')
+    expect(l.env.ORGAI_MCP_0_H0).toBe('secret123')
+  })
+
   it('hands an OAuth access token to Codex through the environment only', () => {
     const s = spec({ name: 'oauthy', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Team': 'a' }, oauth: { resource: 'https://x.test/mcp' } as McpServerSpec['oauth'] })
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: 'Bearer tok-oauth-123' })])
