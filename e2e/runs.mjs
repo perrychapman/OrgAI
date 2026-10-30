@@ -237,8 +237,30 @@ try {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
     await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
     await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+    // Establish the state the later checks assert: the sidebar is a rail below 1180 px and full above. A throttled CI
+    // renderer can render late, so wait for it (re-dispatching resize) rather than a fixed sleep.
+    const want = w < 1180 ? 'rail' : 'full'
+    for (let i = 0; i < 40; i++) {
+      if ((await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-sidebar'))) === want) break
+      await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+      await sleep(250)
+    }
     await sleep(800)
   }
+  // Put the run side panel in a known state (open or collapsed) whatever the width left it in.
+  const setPanel = async (open) => {
+    for (let i = 0; i < 3; i++) {
+      const isOpen = (await page.locator('.side-panel').first().getAttribute('data-collapsed')) === 'false'
+      if (isOpen === open) break
+      await panelToggle().click().catch(() => {})
+      await sleep(500)
+    }
+  }
+  const envDiag = () => page.evaluate(() => ({
+    inner: window.innerWidth, outer: window.outerWidth, availW: screen.availWidth, dpr: window.devicePixelRatio,
+    ls: Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith('orgai.')).map((k) => [k, localStorage.getItem(k)])),
+    dataSidebar: document.querySelector('.app')?.getAttribute('data-sidebar')
+  }))
   const panelToggle = () => page.locator('.side-panel').getByRole('button').first()
   const trayState = () => page.evaluate(() => {
     const box = (sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom } }
@@ -274,8 +296,8 @@ try {
   check(ts.composerH <= 100, 'the composer is at most 100 px tall', String(ts.composerH))
   await shot('three-decisions-1024')
   // Side panel open: a narrower tray (numbered chips), options still visible, End session still labelled.
-  await panelToggle().click().catch(() => {})
-  await sleep(600)
+  await setPanel(true)
+  await sleep(100)
   ts = await trayState()
   check(ts.overflow <= 0 && !ts.overlap && ts.tabbable === 1, 'chips do not overflow or overlap with the side panel open at 1024', JSON.stringify(ts))
   check(ts.radiosInside && ts.submitInside, 'the question options and Submit stay visible with the side panel open at 1024x640', JSON.stringify(ts))
@@ -289,11 +311,11 @@ try {
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
-    check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify(await geo()))
+    check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ ...(await geo()), ...(await envDiag()) }))
     const g0 = await geo()
     await handle.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     const hb = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
-    check(!!hb, 'the run view side panel has a resize handle with a live run')
+    check(!!hb, 'the run view side panel has a resize handle with a live run', JSON.stringify({ ...(await geo()), ...(await envDiag()) }))
     if (hb) {
       const y = hb.y + hb.height / 2
       await page.mouse.move(hb.x + hb.width / 2, y)
@@ -327,11 +349,9 @@ try {
       const gr = await geo()
       check(Math.abs(gr.panel - g0.panel) <= 1 && gr.stage >= 359, 'Enter on the focused side panel handle resets to the default width', `${g0.panel} -> ${gk.panel} -> ${gr.panel}`)
     }
-    await panelToggle().click().catch(() => {})
-    await sleep(500)
-    check((await page.locator('[data-testid=side-panel-resize]:visible').count()) === 0, 'no side panel handle while the panel is collapsed')
-    await panelToggle().click().catch(() => {})
-    await sleep(500)
+    await setPanel(false)
+    check((await page.locator('[data-testid=side-panel-resize]:visible').count()) === 0, 'no side panel handle while the panel is collapsed', JSON.stringify(await envDiag()))
+    await setPanel(true)
   }
   // ArrowRight moves focus along the chips without a second Tab stop.
   await page.locator('.decision-chip[tabindex="0"]').focus()
