@@ -9,11 +9,14 @@ import { Button } from '../ui/Button'
 import { CopyButton } from '../ui/CopyButton'
 import { Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
+import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
 import { RoleChecklist } from './RoleAccess'
 import {
+  REGISTRY_SUGGESTIONS,
   SECURITY_SECRETS,
   allRoleSlugs,
+  dedupeRegistryEntries,
   errMessage,
   launchTarget,
   newServerBase,
@@ -51,7 +54,7 @@ export default function RegistryDialog({
     window.orgai.mcp
       .registrySearch({ query: q.trim(), limit: 20 })
       .then((r) => {
-        if (mine === seq.current) setLoad({ state: 'done', entries: r.entries.filter((e) => e.status !== 'deleted'), query: q.trim() })
+        if (mine === seq.current) setLoad({ state: 'done', entries: dedupeRegistryEntries(r.entries), query: q.trim() })
       })
       .catch((e) => {
         if (mine === seq.current) setLoad({ state: 'error', message: errMessage(e) })
@@ -72,15 +75,14 @@ export default function RegistryDialog({
             <label htmlFor={searchId}>Search registry</label>
             <div className="mcp-search">
               <Icon icon={Search} size="sm" />
-              <input
+              <Input
                 id={searchId}
-                className="input"
                 type="search"
                 value={query}
                 autoComplete="off"
                 data-autofocus
                 placeholder="Name or capability"
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={setQuery}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault()
@@ -90,7 +92,12 @@ export default function RegistryDialog({
               />
             </div>
           </div>
-          <Results load={load} picked={picked} onPick={setPicked} onRetry={() => search(query)} onAddManually={onAddManually} />
+          <Results
+            load={load}
+            onSuggest={(q) => {
+              setQuery(q)
+              search(q)
+            }} picked={picked} onPick={setPicked} onRetry={() => search(query)} onAddManually={onAddManually} />
         </div>
         {picked && (
           <Detail
@@ -112,10 +119,12 @@ function Results({
   load,
   picked,
   onPick,
+  onSuggest,
   onRetry,
   onAddManually
 }: {
   load: Load
+  onSuggest: (query: string) => void
   picked: McpRegistryEntry | null
   onPick: (e: McpRegistryEntry) => void
   onRetry: () => void
@@ -124,7 +133,19 @@ function Results({
   const list = useRef<HTMLUListElement>(null)
   const [active, setActive] = useState(0)
   useEffect(() => setActive(0), [load])
-  if (load.state === 'idle') return <p className="muted">Search the registry for servers by name or capability.</p>
+  if (load.state === 'idle')
+    return (
+      <div className="stack-2">
+        <p className="muted">Type a name or capability to search the registry, or start with one of these.</p>
+        <div className="row gap-2 mcp-suggest">
+          {REGISTRY_SUGGESTIONS.map((q) => (
+            <Button key={q} size="sm" onClick={() => onSuggest(q)}>
+              {q}
+            </Button>
+          ))}
+        </div>
+      </div>
+    )
   if (load.state === 'loading')
     return (
       <div className="mcp-skeletons" aria-busy="true" aria-label="Searching the registry">
@@ -156,9 +177,9 @@ function Results({
     return (
       <p className="muted">
         No servers match “{load.query}”.{' '}
-        <button type="button" className="mcp-link" onClick={onAddManually}>
+        <Button size="sm" variant="ghost" onClick={onAddManually}>
           Add manually
-        </button>
+        </Button>
       </p>
     )
   const move = (to: number): void => {
@@ -179,11 +200,17 @@ function Results({
         } else if (e.key === 'ArrowUp') {
           e.preventDefault()
           move(active - 1)
+        } else if (e.key === 'Home') {
+          e.preventDefault()
+          move(0)
+        } else if (e.key === 'End') {
+          e.preventDefault()
+          move(load.entries.length - 1)
         }
       }}
     >
       {load.entries.map((entry, i) => (
-        <ResultRow key={entry.name} entry={entry} selected={picked?.name === entry.name} tabbable={i === active} onFocus={() => setActive(i)} onPick={() => onPick(entry)} />
+        <ResultRow key={`${entry.name}@${entry.version}`} entry={entry} selected={picked?.name === entry.name && picked.version === entry.version} tabbable={i === active} onFocus={() => setActive(i)} onPick={() => onPick(entry)} />
       ))}
     </ul>
   )
@@ -216,7 +243,7 @@ function ResultRow({
       onFocus={onFocus}
       onClick={() => installable && onPick()}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' && installable) {
+        if ((e.key === 'Enter' || e.key === ' ') && installable) {
           e.preventDefault()
           onPick()
         }
@@ -244,7 +271,7 @@ function ResultRow({
           ))}
         </span>
       )}
-      {blockedReason && <span className="hint invalid-text">Cannot select: {blockedReason}.</span>}
+      {blockedReason && <span className="mcp-reason">Cannot select: {blockedReason}.</span>}
     </li>
   )
 }
@@ -356,14 +383,14 @@ function Detail({
       </div>
       <div className="field mcp-field">
         <label htmlFor={nameId}>Name</label>
-        <input
+        <Input
           id={nameId}
-          className={`input mono-input${touched && nameError ? ' invalid' : ''}`}
+          mono
+          invalid={touched && !!nameError}
           value={name}
           autoComplete="off"
           spellCheck={false}
-          aria-invalid={touched && !!nameError}
-          onChange={(e) => setName(e.target.value)}
+          onChange={setName}
           onBlur={() => setTouched(true)}
         />
         {touched && nameError && <span className="hint invalid-text">{nameError}</span>}
@@ -393,13 +420,13 @@ function Detail({
                 />
               ) : (
                 <>
-                  <input
-                    className="input mono-input"
+                  <Input
+                    mono
                     aria-label={v.name}
                     value={values[v.name] ?? v.default ?? ''}
                     autoComplete="off"
                     spellCheck={false}
-                    onChange={(e) => setValues((s) => ({ ...s, [v.name]: e.target.value }))}
+                    onChange={(value) => setValues((s) => ({ ...s, [v.name]: value }))}
                   />
                   {v.description && <span className="hint">{v.description}</span>}
                 </>
