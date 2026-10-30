@@ -325,6 +325,19 @@ try {
   check(ts.radiosInside && ts.submitInside, 'the question options and Submit stay visible with the side panel open at 1024x640', JSON.stringify(ts))
   check(ts.endLabelW > 20, 'End session keeps its text label with the side panel open at 1024', String(ts.endLabelW))
   await shot('three-decisions-1024-panel')
+  {
+    const hint = await page.evaluate(() => {
+      const h = document.querySelector('.composer .composer-hint')
+      const l = document.querySelector('.composer .composer-mode-label')
+      const c = document.querySelector('.composer')
+      const cs = c ? getComputedStyle(c) : null
+      const inner = c ? Math.round(c.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) : 0
+      return { inner, hintShown: !!h && getComputedStyle(h).display !== 'none' && h.getBoundingClientRect().width > 0, label: l?.textContent ?? '', labelW: l ? Math.round(l.getBoundingClientRect().width) : 0, scroll: l ? l.scrollWidth - l.clientWidth : 0 }
+    })
+    // The composer container query hides the hint at 560 px and under; at 1024 with the panel open the composer is ~584 px.
+    check(hint.hintShown === (hint.inner > 560), 'the composer hint is hidden exactly when the composer is 560 px or narrower (1024x640, panel open)', JSON.stringify(hint))
+    check(/^Replying to /.test(hint.label.trim()) && hint.scroll <= 1, '"Replying to" is shown whole next to the hidden hint', JSON.stringify(hint))
+  }
   // Side panel resize on a live run at 1024 (sidebar is a rail here): pointer drag to the max keeps the canvas >= 360 px.
   {
     const handle = page.locator('[data-testid=side-panel-resize]').first()
@@ -382,6 +395,28 @@ try {
         await handle.dblclick()
         await sleep(200)
         check(!(await geo()).composerInPanel, 'back at the default width the composer sits under the canvas')
+        // Crossing 480 px by one arrow step moves the composer into the panel column without re-zooming the canvas.
+        const scaleOf = () => page.evaluate(() => { const m = /scale\(([\d.]+)\)/.exec(document.querySelector('.react-flow__viewport')?.style.transform ?? ''); return m ? Number(m[1]) : 0 })
+        await handle.focus()
+        let gx = await geo()
+        for (let n = 0; n < 40 && !(gx.panel < 480 && gx.panel + 16 >= 480); n++) {
+          await page.keyboard.press('ArrowLeft')
+          await sleep(60)
+          gx = await geo()
+        }
+        await sleep(600)
+        gx = await geo()
+        const z0 = await scaleOf()
+        if (gx.panel < 480 && gx.panel + 16 >= 480) {
+          await page.keyboard.press('ArrowLeft')
+          await sleep(700)
+          const gy = await geo()
+          const z1 = await scaleOf()
+          check(!gx.composerInPanel && gy.composerInPanel, 'one arrow step across 480 px moves the composer into the panel column', JSON.stringify({ gx, gy }))
+          check(z0 > 0 && Math.abs(z1 - z0) < 0.005, 'the canvas keeps the same zoom (no refit) when the composer moves into the panel', `${z0} -> ${z1}`)
+        } else check(false, 'could not stop the panel just under 480 px with arrow keys', JSON.stringify(gx))
+        await handle.dblclick()
+        await sleep(200)
       }
       await setSize(1024, 640)
       await sleep(300)
