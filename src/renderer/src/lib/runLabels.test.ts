@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { promptLine, runIndexMap, runTag, runTitle, shortPrompt } from './runLabels'
-import { runStatus } from './runStatus'
+import { autoContinueState, isStoppedRun, runStatus } from './runStatus'
 
 describe('runIndexMap', () => {
   it('numbers runs by start order, oldest first, regardless of input order', () => {
@@ -48,21 +48,31 @@ describe('labels', () => {
 
 describe('runStatus', () => {
   it('uses one vocabulary', () => {
-    expect(runStatus('running').word).toBe('Working')
-    expect(runStatus('starting').word).toBe('Working')
-    expect(runStatus('stopping').word).toBe('Working')
+    expect(runStatus('running').word).toBe('Running')
+    expect(runStatus('starting').word).toBe('Running')
+    expect(runStatus('stopping').word).toBe('Running')
     expect(runStatus('idle').word).toBe('Idle')
     expect(runStatus('paused').word).toBe('Paused')
     expect(runStatus('finished').word).toBe('Finished')
     expect(runStatus('error').word).toBe('Failed')
   })
   it('lets waiting win and keeps the app-exit detail in the note', () => {
-    expect(runStatus('running', { waiting: true })).toEqual({ word: 'Waiting for you', tone: 'warn' })
+    expect(runStatus('running', { waiting: true })).toEqual({ word: 'Needs you', tone: 'warn' })
     expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Finished', note: 'Ended when OrgAI closed' })
   })
   it('maps words to tones', () => {
     expect(runStatus('running').tone).toBe('is-running')
     expect(runStatus('error').tone).toBe('danger')
     expect(runStatus('finished').tone).toBe('ok')
+  })
+  it('reads Stopped when the user ended the session, and Running while auto-continuing', () => {
+    expect(runStatus('finished', { stopped: true }).word).toBe('Stopped')
+    expect(runStatus('error', { stopped: true }).word).toBe('Failed')
+    expect(runStatus('idle', { autoContinuing: true }).word).toBe('Running')
+    expect(isStoppedRun({ a: { parentId: null, activity: 'Stopped' } })).toBe(true)
+    expect(isStoppedRun({ a: { parentId: null, activity: 'Finished' } })).toBe(false)
+    expect(autoContinueState({ status: 'idle', plan: { status: 'active', autoContinues: 3 } })).toEqual({ active: true, count: 3, max: 40 })
+    expect(autoContinueState({ status: 'idle', plan: { status: 'active', autoContinues: 40 } }).active).toBe(false)
+    expect(autoContinueState({ status: 'finished', plan: { status: 'active', autoContinues: 1 } }).active).toBe(false)
   })
 })
