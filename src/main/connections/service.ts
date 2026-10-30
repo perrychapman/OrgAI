@@ -36,7 +36,8 @@ import { anthropicStatus } from './anthropicAuth'
 import { autoFillTierModels, makeDiscoveredModel } from './catalog'
 import { cancelLogin, listModels, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
-import { fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
+import { fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
+import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
 
 export interface ConnectionServiceDeps {
@@ -622,8 +623,11 @@ export class ConnectionService {
     if (!conn.baseUrl) throw new Error('LiteLLM has no base URL. Set it in Settings > Connections.')
     if (!key) throw new Error('LiteLLM has no API key. Set it in Settings > Connections.')
     const baseUrl = normalizeBaseUrl(conn.baseUrl)
+    // Prices from /model/info (catalog); runs on models without one get no estimate.
+    const pricing = pricingFromCatalog(this.catalogFor('litellm'))
+    const priced = pricing ? { pricing } : {}
     if (choice.adapter === 'codex') {
-      return { ...base, codexAuth: 'apiKey', apiKey: key, openaiBaseUrl: `${baseUrl}/v1`, env: codexHome() }
+      return { ...base, codexAuth: 'apiKey', apiKey: key, openaiBaseUrl: `${baseUrl}/v1`, env: codexHome(), ...priced }
     }
     const env: Record<string, string> = { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: key }
     const t = conn.tierModels
@@ -631,7 +635,7 @@ export class ConnectionService {
     if (t.deep) env.ANTHROPIC_DEFAULT_OPUS_MODEL = t.deep
     if (t.everyday) env.ANTHROPIC_DEFAULT_SONNET_MODEL = t.everyday
     if (t.fast) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = t.fast
-    return { ...base, env }
+    return { ...base, env, ...priced }
   }
 
   /**
@@ -655,6 +659,24 @@ export class ConnectionService {
     try {
       const raw = await this.withCodex(async (rpc) => ((await readAccount(rpc)).account ? readRateLimits(rpc) : null))
       return raw ? mapCodexRateLimits(raw, this.now()) : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The LiteLLM virtual key's spend and budget (GET /key/info), or null when LiteLLM is off, has no base URL or key,
+   * or the proxy did not answer with a spend (no DB, refused, timeout, junk). Never throws; the key is never logged.
+   */
+  async probeLiteLLMUsage(): Promise<UsageStatus | null> {
+    const conn = this.deps.settings.get().connections.litellm
+    if (!conn.enabled || !conn.baseUrl) return null
+    const key = this.deps.secrets.get(LITELLM_KEY)
+    if (!key) return null
+    try {
+      const spend = await fetchLiteLLMKeyInfo(conn.baseUrl, key, this.deps.fetch ?? fetch)
+      if (!spend) return null
+      return { connection: 'litellm', authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend, updatedAt: this.now() }
     } catch {
       return null
     }

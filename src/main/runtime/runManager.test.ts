@@ -283,7 +283,7 @@ describe('RunManager usage and pricing', () => {
     setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000))
     ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
     expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3, 9)
-    prices.push({ model: 'claude-sonnet-4-5', price: { inputPerMTok: 100, outputPerMTok: 100 } })
+    prices.push({ model: 'claude-sonnet-4-5', price: { inputPerToken: 1e-4, outputPerToken: 1e-4 } })
     ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
     expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(100, 9)
     expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('override')
@@ -1131,8 +1131,11 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const connection = { connection: 'litellm' as const, adapter: 'claude' as const, env: { ANTHROPIC_BASE_URL: 'http://proxy' } }
       const resolveConnection = vi.fn(() => connection)
       const { m } = setupManager(p, { claude: claude.adapter }, { resolveConnection })
-      await m.start({ project: p, prompt: 'go' })
+      const summary = await m.start({ project: p, prompt: 'go' })
       expect(claude.ctxs[0].connection).toBe(connection)
+      // The run records its connection so the UI can label its cost.
+      expect(summary.connection).toBe('litellm')
+      expect(m['store'].list(p.id).find((r) => r.id === summary.id)?.connection).toBe('litellm')
       expect(resolveConnection).toHaveBeenCalledWith(p, expect.objectContaining({ adapter: 'claude', connection: 'litellm', mismatched: [] }))
       const before = m['store'].list(p.id).length
       const failing = setupManager(p, { claude: claude.adapter }, { resolveConnection: () => { throw new Error('LiteLLM is not connected') } })

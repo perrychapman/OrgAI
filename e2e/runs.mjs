@@ -181,6 +181,24 @@ try {
       const sel = await page.locator('[data-testid=side-tab-plan]').getAttribute('aria-selected')
       check(sel === 'true', 'ArrowRight on the Transcript tab selects Plan', String(sel))
       await tTab.click()
+      await sleep(200)
+      // The side header stays pinned: overflow the transcript body, scroll it, and the tab must not move.
+      const pin = await page.evaluate(async () => {
+        const tab = document.querySelector('[data-testid=side-tab-transcript]')
+        const body = document.querySelector('.side-run > [role=tabpanel]')
+        if (!tab || !body) return null
+        for (let i = 0; i < 80; i++) {
+          const p = document.createElement('p')
+          p.textContent = 'filler line ' + i
+          body.insertBefore(p, body.lastElementChild)
+        }
+        const y0 = tab.getBoundingClientRect().top
+        body.scrollTop = body.scrollHeight
+        await new Promise((r) => setTimeout(r, 100))
+        const aside = body.closest('aside')
+        return { y0, y1: tab.getBoundingClientRect().top, scrolled: body.scrollTop > 0, asideScroll: aside ? aside.scrollTop : 0 }
+      })
+      check(!!pin && pin.scrolled && Math.abs(pin.y1 - pin.y0) < 0.5 && pin.asideScroll === 0, 'the side panel header stays fixed while the transcript body scrolls', JSON.stringify(pin))
     } else {
       check(false, 'the side panel tabs are reachable on the Live view')
     }

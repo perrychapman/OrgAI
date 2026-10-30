@@ -104,15 +104,15 @@ describe('ConnectionService litellm', () => {
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
     const again = setup({}, ctx.dataDir)
-    expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')?.price).toEqual({ inputPerMTok: 5, outputPerMTok: 25 })
+    expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')?.price).toEqual({ inputPerToken: 5e-6, outputPerToken: 2.5e-5 })
     expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'gpt-5')).not.toHaveProperty('price')
     expect(again.service.prices({ connection: 'litellm' }).filter((r) => r.source === 'proxy')).toEqual([
-      { model: 'claude-opus-4-5', connection: 'litellm', price: { inputPerMTok: 5, outputPerMTok: 25 }, source: 'proxy' }
+      { model: 'claude-opus-4-5', connection: 'litellm', price: { inputPerToken: 5e-6, outputPerToken: 2.5e-5 }, source: 'proxy' }
     ])
 
     const file = join(ctx.dataDir, 'models.json')
     const stored = JSON.parse(readFileSync(file, 'utf8'))
-    stored.models.litellm[0].price = { inputPerMTok: -4, outputPerMTok: 1e9 }
+    stored.models.litellm[0].price = { inputPerToken: -4, outputPerToken: 1e9 }
     writeFileSync(file, JSON.stringify(stored))
     const bad = setup({}, ctx.dataDir)
     expect(bad.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')).not.toHaveProperty('price')
@@ -437,5 +437,77 @@ describe('openai ChatGPT login', () => {
     const info = await ctx.service.logout('openai')
     expect(rpc.calls.some(([m]) => m === 'account/logout')).toBe(true)
     expect(info.status).toMatchObject({ state: 'disconnected', detail: 'Signed out' })
+  })
+})
+
+describe('LiteLLM spend and pricing', () => {
+  const pricedFetch = (keyInfo: () => Response) =>
+    (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.endsWith('/v1/models')) return json({ data: [{ id: 'claude-sonnet-4-5' }, { id: 'gpt-5' }] })
+      if (u.endsWith('/model/info'))
+        return json({
+          data: [
+            { model_name: 'claude-sonnet-4-5', litellm_params: { model: 'anthropic/claude-sonnet-4-5-20250929' }, model_info: { mode: 'chat', input_cost_per_token: 3e-6, output_cost_per_token: 1.5e-5, cache_read_input_token_cost: 3e-7 } },
+            { model_name: 'gpt-5', litellm_params: { model: 'openai/gpt-5' }, model_info: { mode: 'chat' } }
+          ]
+        })
+      if (u.endsWith('/key/info')) return keyInfo()
+      return json({}, 404)
+    }) as unknown as typeof fetch
+
+  it('probeLiteLLMUsage is gated on enabled, base URL and key, and maps /key/info', async () => {
+    const fetchImpl = vi.fn(pricedFetch(() => json({ key: 'hashed', info: { spend: 1.25, max_budget: 10, budget_duration: '30d', budget_reset_at: '2026-11-01T00:00:00Z', key_alias: 'team-a' } })))
+    const ctx = setup({ fetch: fetchImpl })
+    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // nothing configured
+    await configureLiteLLM(ctx)
+    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not enabled
+    expect(fetchImpl).not.toHaveBeenCalled()
+    await ctx.service.connect('litellm')
+    const usage = await ctx.service.probeLiteLLMUsage()
+    expect(usage).toEqual({
+      connection: 'litellm',
+      authMode: 'apiKey',
+      subscriptionType: null,
+      available: true,
+      windows: {},
+      spend: { usd: 1.25, budgetUsd: 10, resetsAt: Date.parse('2026-11-01T00:00:00Z'), budgetDuration: '30d', keyAlias: 'team-a' },
+      updatedAt: 1000
+    })
+    expect(JSON.stringify(usage)).not.toContain(KEY)
+    expect(structuredClone(usage)).toEqual(usage)
+    const call = fetchImpl.mock.calls.find(([u]) => String(u).endsWith('/key/info'))!
+    expect(String(call[0])).toBe('http://localhost:4000/key/info') // no key in the URL
+  })
+
+  it('probeLiteLLMUsage returns null on 500 (no DB), 403, junk and network errors', async () => {
+    const answers: (() => Response)[] = [
+      () => json({ error: 'no db' }, 500),
+      () => json({}, 403),
+      () => json({ info: { spend: 'lots' } }),
+      () => {
+        throw new TypeError(`down ${KEY}`)
+      }
+    ]
+    for (const answer of answers) {
+      const ctx = setup({ fetch: pricedFetch(answer) })
+      await configureLiteLLM(ctx)
+      await ctx.service.connect('litellm')
+      expect(await ctx.service.probeLiteLLMUsage()).toBeNull()
+    }
+  })
+
+  it('persists /model/info prices and passes them on litellm run connections only', async () => {
+    const ctx = setup({ fetch: pricedFetch(() => json({}, 404)) })
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const again = setup({}, ctx.dataDir)
+    const sonnet = again.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-sonnet-4-5')
+    const price = { inputPerToken: 3e-6, outputPerToken: 1.5e-5, cacheReadPerToken: 3e-7 }
+    expect(sonnet).toMatchObject({ price, upstream: 'anthropic/claude-sonnet-4-5-20250929' })
+    const p = litellmProject([['claude-sonnet-4-5', 'everyday']])
+    const rc = ctx.service.runConnection(p, adapterForProject(p, ctx.service.catalog()))
+    expect(rc.pricing).toEqual({ 'claude-sonnet-4-5': price, 'claude-sonnet-4-5-20250929': price })
+    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] }).pricing).toBeUndefined()
   })
 })

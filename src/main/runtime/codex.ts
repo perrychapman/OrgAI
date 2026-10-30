@@ -26,8 +26,8 @@ import {
   type LaunchConfig,
   type PolicyChoice
 } from './codexProtocol'
-import { countUsage, setModelTokens } from './runUsage'
 import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChanges, type CodexUpdate } from './codexEvents'
+import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
   CodexAgentNetwork,
   callNetworkTool,
@@ -269,9 +269,27 @@ class CodexSession implements RuntimeSession {
     this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
   }
 
+  /**
+   * LiteLLM only: the agent's cost from the thread's cumulative token totals at its model's /model/info price
+   * (RunConnection.pricing). undefined = no estimate (other connections, no pricing, or an unpriced model), so the
+   * cost stays 0 as on a ChatGPT plan.
+   */
+  private estimateCost(agent: AgentInstance, u: { input: number; output: number; cachedInput: number }): number | undefined {
+    const conn = this.ctx.connection
+    if (conn?.connection !== 'litellm' || !conn.pricing) return undefined
+    const price = priceFor(conn.pricing, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model)
+    return price ? costFromPrice(openAiMix(u.input, u.cachedInput, u.output), price) : undefined
+  }
+
+  private totalCost(): number {
+    let usd = 0
+    for (const a of this.agents.values()) usd += a.costUsd
+    return usd
+  }
+
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
   }
 
   private setState(id: string, state: AgentInstance['state'], activity?: string): void {
@@ -570,7 +588,6 @@ class CodexSession implements RuntimeSession {
         return
       case 'toolUse':
         this.transcript(agentId, { kind: 'tool_use', id: u.id, name: u.name, input: u.input })
-        if (agent) countUsage(agent, 'toolCalls')
         this.setState(agentId, u.state, u.activity)
         return
       case 'toolResult': {
@@ -584,13 +601,13 @@ class CodexSession implements RuntimeSession {
       }
       case 'tokens':
         if (agent) {
-          setModelTokens(agent, agent.model ?? 'unknown', {
-            input: Math.max(0, u.input - u.cachedInput),
-            output: u.output,
-            cacheRead: Math.min(u.cachedInput, u.input),
-            cacheWrite: 0
-          })
+          agent.inputTokens = u.input
+          agent.outputTokens = u.output
+          const cost = this.estimateCost(agent, u)
+          const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
+          if (moved) agent.costUsd = cost
           this.upsert(agent)
+          if (moved) this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: this.totalCost() })
         }
         return
       case 'turnStarted':
@@ -604,17 +621,12 @@ class CodexSession implements RuntimeSession {
         if (u.turnId) this.completedTurns.add(u.turnId)
         if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
         this.partial.clear(agentId)
-        if (agent) countUsage(agent, 'turns')
         if (agentId === ROOT_AGENT_ID) this.rootTurnCompleted(u)
         else this.childTurnCompleted(agentId, u)
         void this.maybeRestartForMcp()
         return
       case 'error':
         this.log(u.willRetry ? 'info' : 'warn', `Codex: ${u.message}${u.willRetry ? ' (retrying)' : ''}`)
-        if (u.willRetry && agent) {
-          countUsage(agent, 'retries')
-          this.upsert(agent)
-        }
         if (u.usageLimit && !u.willRetry) void this.onUsageLimit()
         return
     }

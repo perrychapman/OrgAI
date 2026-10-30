@@ -197,6 +197,8 @@ interface AppState {
   jumpToDecision(projectId: string, runId: string, requestId?: string): Promise<void>
   /** Latest plan usage reported by any live session. */
   usage: UsageStatus | null
+  /** Latest report per connection (missing connection = anthropic). `usage` is the anthropic entry. */
+  usageByConnection: Partial<Record<ConnectionId, UsageStatus>>
   /** Ask the main process to read plan usage now (no run needed). */
   refreshUsage(): Promise<void>
 
@@ -417,6 +419,12 @@ function showContinuation(summary: RunSummary): void {
   void getState().loadHistory()
 }
 
+/** Store a usage report under its connection, so one provider's probe never replaces another's. */
+function putUsage(st: { usageByConnection: Partial<Record<ConnectionId, UsageStatus>>; usage: UsageStatus | null }, u: UsageStatus): { usageByConnection: Partial<Record<ConnectionId, UsageStatus>>; usage: UsageStatus | null } {
+  const key: ConnectionId = u.connection ?? 'anthropic'
+  return { usageByConnection: { ...st.usageByConnection, [key]: u }, usage: key === 'anthropic' ? u : st.usage }
+}
+
 let defaultConnectionWatch: (() => void) | null = null
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -446,6 +454,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   continueIntent: null,
   historyByProject: {},
   usage: null,
+  usageByConnection: {},
   appInfo: null,
   connections: null,
   connectionsError: null,
@@ -668,7 +677,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async refreshUsage() {
     try {
       const usage = await window.orgai.usage.refresh()
-      if (usage) set({ usage })
+      if (usage) set((st) => putUsage(st, usage))
     } catch {
       /* provider could not report usage */
     }
@@ -1009,7 +1018,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     // Plan usage is account-wide: keep the latest, whichever run reported it.
     if (e.type === 'usage.status') {
-      set({ usage: e.usage })
+      set((st) => putUsage(st, e.usage))
       return
     }
     // A note from another run: the transcript already carries it (a persisted system row); here it only marks the tab unread.

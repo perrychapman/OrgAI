@@ -25,7 +25,8 @@ import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
-import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { useCostLabel } from '../lib/useCostLabel'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
@@ -187,6 +188,7 @@ function ToolResultRow({ toolName, content, isError }: { toolName?: string; cont
 }
 
 export default function TranscriptPanel({ runId, agent, entries, logs, finished }: Props): ReactElement {
+  const labelCost = useCostLabel()
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -199,7 +201,9 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' })
+    // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
+    const body = bottom.current?.parentElement
+    if (body) body.scrollTop = body.scrollHeight
   }, [entries.length, logs.length, tab, partial])
 
   const toolNames = useMemo(() => {
@@ -219,7 +223,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   ]
   const idPrefix = `side-${runId}`
   return (
-    <>
+    <div className="side-run">
       <div className="side-header side-header-col">
         <div className="side-title">
           <span className="run-index" title="The run this panel belongs to">
@@ -250,7 +254,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>
-          {agent.costUsd > 0 && <span title={COST_ESTIMATE_HINT}>{formatCost(agent.costUsd)} est.</span>}
+          {!labelCost(agent.costUsd).hidden && <span title={labelCost(agent.costUsd).title}>{labelCost(agent.costUsd).text}</span>}
           <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>
           <span>{agent.state}</span>
           {agent.worktree && (
@@ -340,6 +344,6 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <div ref={bottom} />
         </TabPanel>
       )}
-    </>
+    </div>
   )
 }

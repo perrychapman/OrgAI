@@ -490,8 +490,8 @@ export function isSafeId(x: unknown): x is string {
 export const MODEL_PRICE_OVERRIDES_MAX = 200
 /** Longest model id in a price override. */
 export const MODEL_PRICE_ID_MAX_CHARS = 200
-/** Highest accepted price, USD per million tokens (a sanity bound for overrides and proxy prices). */
-export const MODEL_PRICE_MAX_PER_MTOK = 10_000
+/** Highest accepted price, USD per token (0.01 = $10,000 per million tokens; a sanity bound for overrides). */
+export const MODEL_PRICE_MAX_PER_TOKEN = 0.01
 
 /** A zeroed TokenUsage (a fresh object each call). */
 export function emptyTokens(): TokenUsage {

@@ -509,7 +509,9 @@ export class RunManager {
       prompt,
       status: 'starting',
       startedAt: Date.now(),
-      totalCostUsd: 0
+      totalCostUsd: 0,
+      // Labels the run's cost in the UI (CLI estimate, LiteLLM prices, or none on a ChatGPT plan).
+      connection: connection?.connection ?? choice.connection
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
     if (carriedTitle && kind === 'work') summary.title = carriedTitle
@@ -549,6 +551,7 @@ export class RunManager {
       return {
         connection: choice.connection,
         overrides: s?.modelPrices ?? [],
+        ...(connection?.pricing ? { pricing: connection.pricing } : {}),
         catalog: this.options.catalog?.() ?? [],
         aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels)
       }

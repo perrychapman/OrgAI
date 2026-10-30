@@ -254,6 +254,20 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL`. The Codex adapter reaches it with an `orgai` model provider at
   `<base>/v1`. Both routes are unverified at runtime: `scripts/smoke-litellm.mjs` is free without `--yes` and spends
   tokens with it.
+  - Key spend: `ConnectionService.probeLiteLLMUsage` reads `GET {base}/key/info` (the key only as Bearer/x-api-key,
+    no `key` param, `redirect: 'error'`, 10 s) through `litellm.ts` `parseKeyInfo` into `UsageStatus.spend`
+    (`connection: 'litellm'`, `authMode: 'apiKey'`, no provider). Gated on enabled + base URL + stored key; any failure
+    (500 without the proxy DB, 403, junk) is null. It is a keyed `UsageMonitor` extra probe ('litellm', boot / idle /
+    usage:refresh), and index.ts re-reads it 15 s after a LiteLLM run ends (`RunSummary.connection`). Only the key's own
+    budget is read, never a team budget. The renderer must keep the latest usage report per `connection`.
+  - Run cost: `/model/info` `model_info.{input,output}_cost_per_token`, `cache_read_input_token_cost` and
+    `cache_creation_input_token_cost` become `ProviderModel.price` (+ `upstream` = litellm_params.model) in models.json;
+    `runConnection` passes them as `RunConnection.pricing` (`pricing.ts` `pricingFromCatalog`, `priceFor` matches
+    exact, normalized, then version-suffix-only). Claude prices each message from it (falls back to the CLI's rates for
+    an unpriced model; `run.cost` = sum of agent costs) and Codex prices thread totals (`openAiMix`: input includes
+    cached). Unpriced models cost 0. The `/key/info` shape and the price fields are unverified against a live proxy
+    (source-read only), as is which model name the proxy reports on messages and whether a resumed Codex thread's
+    token totals include the earlier run. Prices appear only after the next discovery (connect or models refresh).
 - MCP:
   - Claude runs set `strictMcpConfig`, so only the project's enabled servers plus run-scoped installs load (this
     also stops plugin-declared MCP servers). An approved mid-run install is attached with `Query.setMcpServers`.

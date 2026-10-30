@@ -492,6 +492,27 @@
   gap: var(--space-1);
   padding-bottom: 0;
 }
+/* The run panel is a bounded column: header and meta stay put, only the tab panel body scrolls. */
+.side-run {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-run > .side-header,
+.side-run > .agent-meta,
+.side-run > .transcript-bar {
+  flex: none;
+}
+.side-run > .side-header {
+  position: static;
+}
+.side-run > [role='tabpanel'] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .side-title {
   display: flex;
   align-items: baseline;

@@ -1,23 +1,147 @@
 import type { AgentUsage, ConnectionId, ModelPrice, ModelPriceInfo, ModelPriceOverride, ModelPricesQuery, ModelTier, ModelUsageEntry, PriceSource, ProviderModel, TokenUsage } from '@shared/types'
-import { MODEL_PRICE_MAX_PER_MTOK, emptyTokens, totalTokens } from '@shared/defaults'
+import { MODEL_PRICE_MAX_PER_TOKEN, emptyTokens, totalTokens } from '@shared/defaults'
 import type { RunConnection } from './types'
 
 /**
- * Host-side pricing (vendor-neutral, pure). Resolution per model: user override (AppSettings.modelPrices) >
- * provider-reported cost > 0 (ModelUsageEntry.providerCostUsd) > LiteLLM proxy price (ProviderModel.price in the
- * catalog) > built-in table > unknown.
+ * Host-side pricing (vendor-neutral, pure). Prices are USD per token (ModelPrice).
  *
- * The LiteLLM proxy's per-request cost header (x-litellm-response-cost) is deliberately not used: the SDK route
- * exposes no response headers, so proxy prices come only from /model/info (ProviderModel.price).
+ * One resolution path per model, applied by RunManager to every agent (priceAgentUsage): user override
+ * (AppSettings.modelPrices) > provider-reported cost > 0 (ModelUsageEntry.providerCostUsd) > LiteLLM proxy price
+ * (RunConnection.pricing from /model/info, looked up with priceFor) > built-in table (BUILTIN_PRICES) > unknown (null).
+ * The adapters' own LiteLLM estimates (costFromPrice / priceFor on RunConnection.pricing) only feed the legacy
+ * AgentInstance.costUsd and run.cost fields; RunManager overwrites AgentInstance.costUsd with the priced result.
+ *
+ * The LiteLLM per-request cost header (x-litellm-response-cost) is not used: the SDK route exposes no response
+ * headers, so proxy prices come only from /model/info.
  */
+
+/**
+ * Token counts priced separately. `input` is UNCACHED input only (Anthropic usage semantics). An adapter whose
+ * provider reports input including cached tokens (OpenAI / Codex) subtracts the cached count first
+ * (see `openAiMix`).
+ */
+export interface PricedTokens {
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+}
+
+const finite = (n: number): number => (Number.isFinite(n) && n > 0 ? n : 0)
+
+/** USD for a token mix at one price. Missing cache prices fall back to the input price. */
+export function costFromPrice(mix: PricedTokens, price: ModelPrice): number {
+  const input = price.inputPerToken
+  const usd =
+    finite(mix.input) * input +
+    finite(mix.output) * price.outputPerToken +
+    finite(mix.cacheRead) * (price.cacheReadPerToken ?? input) +
+    finite(mix.cacheCreation) * (price.cacheCreationPerToken ?? input)
+  return Number.isFinite(usd) && usd > 0 ? usd : 0
+}
+
+/** A Codex / OpenAI style total (input includes cached input) as PricedTokens. */
+export function openAiMix(input: number, cachedInput: number, output: number): PricedTokens {
+  const cached = Math.min(finite(cachedInput), finite(input))
+  return { input: finite(input) - cached, output: finite(output), cacheRead: cached, cacheCreation: 0 }
+}
+
+/** Lower-case, no "provider/" prefix, no "-YYYYMMDD" date or "[1m]"-style suffix. */
+export function normalizeModelKey(model: string): string {
+  let m = model.trim().toLowerCase()
+  m = m.slice(m.lastIndexOf('/') + 1)
+  return m.replace(/\[.*\]$/, '').replace(/-\d{8}$/, '').replace(/@\d{8}$/, '')
+}
+
+/**
+ * A suffix that only versions a model ("-v2", "-2024-08-06", "-20250929", "-001", ":0", "-latest"), never one that
+ * names another model ("-mini", "-5" in "claude-sonnet-4-5" against "claude-sonnet-4", ":8b", "-405").
+ */
+const VERSION_SUFFIX = /^(?:[-@](?:\d{8}|\d{4}-\d{2}-\d{2}|00\d|latest|v\d+(?:[.:]\d+)*)|:\d+)$/
+
+/** True when one key is the other plus a version suffix. */
+function sameModelVersioned(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a]
+  return long.startsWith(short) && VERSION_SUFFIX.test(long.slice(short.length))
+}
+
+/**
+ * The price of `model`: an exact key first, then keys equal after normalizeModelKey, then the longest key that
+ * differs from the model only by a version suffix (e.g. "claude-sonnet-4-5" vs "claude-sonnet-4-5-v2"; never
+ * "gpt-5" for "gpt-5-mini"). undefined when nothing matches or there is no pricing.
+ */
+export function priceFor(pricing: Record<string, ModelPrice> | undefined, model: string | undefined): ModelPrice | undefined {
+  if (!pricing || !model) return undefined
+  if (Object.prototype.hasOwnProperty.call(pricing, model)) return pricing[model]
+  const want = normalizeModelKey(model)
+  if (!want) return undefined
+  let best: { len: number; price: ModelPrice } | undefined
+  for (const [key, price] of Object.entries(pricing)) {
+    const k = normalizeModelKey(key)
+    if (!k) continue
+    if (k === want) return price
+    if (sameModelVersioned(k, want)) {
+      const len = Math.min(k.length, want.length)
+      if (!best || len > best.len) best = { len, price }
+    }
+  }
+  return best?.price
+}
+
+/**
+ * The pricing map for a connection's catalog: every model with a price under its id. Models are given as
+ * { id, price, upstream? }; `upstream` (litellm_params.model) adds a second key, its bare name, unless a model id
+ * already uses that key. Returns undefined when no model has a price.
+ */
+export function pricingFromCatalog(
+  models: readonly { id: string; price?: ModelPrice; upstream?: string }[]
+): Record<string, ModelPrice> | undefined {
+  const out: Record<string, ModelPrice> = Object.create(null) as Record<string, ModelPrice>
+  const priced = models.flatMap((m) => {
+    const price = cleanPrice(m.price)
+    return price && typeof m.id === 'string' ? [{ id: m.id, price, upstream: m.upstream }] : []
+  })
+  for (const m of priced) out[m.id] = { ...m.price }
+  for (const m of priced) {
+    if (typeof m.upstream !== 'string') continue
+    const bare = m.upstream.slice(m.upstream.lastIndexOf('/') + 1).trim()
+    if (bare && !Object.prototype.hasOwnProperty.call(out, bare)) out[bare] = { ...m.price }
+  }
+  return Object.keys(out).length ? { ...out } : undefined
+}
+
+const rate = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined)
+
+/** A price with only finite, non-negative numbers (models.json is re-read from disk); undefined when unusable. */
+export function cleanPrice(p: ModelPrice | undefined): ModelPrice | undefined {
+  if (!p || typeof p !== 'object') return undefined
+  const input = rate(p.inputPerToken)
+  const output = rate(p.outputPerToken)
+  if (input === undefined || output === undefined) return undefined
+  const cacheRead = rate(p.cacheReadPerToken)
+  const cacheCreation = rate(p.cacheCreationPerToken)
+  return {
+    inputPerToken: input,
+    outputPerToken: output,
+    ...(cacheRead !== undefined ? { cacheReadPerToken: cacheRead } : {}),
+    ...(cacheCreation !== undefined ? { cacheCreationPerToken: cacheCreation } : {})
+  }
+}
+
+// ---------- host-side resolution (RunManager, models:prices, settings) ----------
 
 /** Everything pricing needs for one run. */
 export interface PricingContext {
   /** The run's connection; scopes overrides and proxy prices. */
   connection?: ConnectionId
   overrides: readonly ModelPriceOverride[]
-  /** Catalog models (ProviderModel.price carries proxy prices). */
-  catalog: readonly ProviderModel[]
+  /**
+   * The run's proxy prices (RunConnection.pricing, LiteLLM only). When absent, proxy prices are read from `catalog`
+   * (models of `connection` with ProviderModel.price).
+   */
+  pricing?: Record<string, ModelPrice>
+  /** Catalog models (ProviderModel.price carries proxy prices). Used when `pricing` is absent. */
+  catalog?: readonly ProviderModel[]
   /**
    * Alias -> model id actually served (from RunConnection.env ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL,
    * else the connection's tierModels), so an agent reported only as 'opus' is priced as the remapped id.
@@ -27,8 +151,10 @@ export interface PricingContext {
 
 type ResolvedSource = Exclude<PriceSource, 'provider' | 'unknown'>
 
-function p(inputPerMTok: number, outputPerMTok: number, cacheReadPerMTok: number, cacheWritePerMTok: number): ModelPrice {
-  return { inputPerMTok, outputPerMTok, cacheReadPerMTok, cacheWritePerMTok }
+/** Table rows are written per million tokens and stored per token. */
+const perToken = (perMTok: number): number => Math.round(perMTok * 1e6) / 1e12
+function p(input: number, output: number, cacheRead: number, cacheWrite: number): ModelPrice {
+  return { inputPerToken: perToken(input), outputPerToken: perToken(output), cacheReadPerToken: perToken(cacheRead), cacheCreationPerToken: perToken(cacheWrite) }
 }
 /** OpenAI lists input / cached input / output and no cache write: cache writes are priced at the input rate. */
 function oa(input: number, cached: number, output: number): ModelPrice {
@@ -36,7 +162,7 @@ function oa(input: number, cached: number, output: number): ModelPrice {
 }
 
 /**
- * Built-in prices, USD per million tokens (cacheWrite = the 5-minute cache write rate).
+ * Built-in prices, written in USD per million tokens and stored per token (cache write = the 5-minute rate).
  * Sources: platform.claude.com/docs/en/about-claude/pricing and developers.openai.com/api/docs/pricing, read 2026-10-30.
  * API id strings for 5.x models are unverified guesses. claude-haiku-5-5 is the price for prompts up to 100k tokens;
  * the above-100k tier (0.5 / 2.5 / 0.05 / 0.625) is not modelled. gpt-5-codex and codex-mini have no official price
@@ -111,12 +237,9 @@ export function builtinPrice(model: string): ModelPrice | null {
   return null
 }
 
-/** USD for these tokens at this price. Missing cacheRead / cacheWrite price at input. */
+/** USD for these tokens at this price (costFromPrice with TokenUsage). */
 export function costFor(tokens: TokenUsage, price: ModelPrice): number {
-  const cr = price.cacheReadPerMTok ?? price.inputPerMTok
-  const cw = price.cacheWritePerMTok ?? price.inputPerMTok
-  const usd = (tokens.input * price.inputPerMTok + tokens.output * price.outputPerMTok + tokens.cacheRead * cr + tokens.cacheWrite * cw) / 1_000_000
-  return Number.isFinite(usd) && usd > 0 ? usd : 0
+  return costFromPrice({ input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheCreation: tokens.cacheWrite }, price)
 }
 
 function applyAlias(model: string, ctx: PricingContext): string {
@@ -137,8 +260,9 @@ function overrideFor(id: string, ctx: PricingContext): ModelPrice | null {
   return scoped ?? global
 }
 
-function proxyFor(id: string, ctx: PricingContext): ModelPrice | null {
-  if (!ctx.connection) return null
+function proxyFor(served: string, id: string, ctx: PricingContext): ModelPrice | null {
+  if (ctx.pricing) return priceFor(ctx.pricing, served) ?? null
+  if (!ctx.connection || !ctx.catalog) return null
   for (const m of ctx.catalog) {
     if (m.connection === ctx.connection && m.price && normalizeModelId(m.id) === id) return m.price
   }
@@ -152,7 +276,7 @@ export function resolvePrice(model: string, ctx: PricingContext): { price: Model
   if (!id) return null
   const override = overrideFor(id, ctx)
   if (override) return { price: override, source: 'override' }
-  const proxy = proxyFor(id, ctx)
+  const proxy = proxyFor(served, id, ctx)
   if (proxy) return { price: proxy, source: 'proxy' }
   const builtin = builtinPrice(served)
   if (builtin) return { price: builtin, source: 'builtin' }
@@ -245,7 +369,7 @@ export function aliasesFor(connection: RunConnection | undefined, tierModels?: P
 }
 
 function validPrice(v: unknown): v is number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MODEL_PRICE_MAX_PER_MTOK
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MODEL_PRICE_MAX_PER_TOKEN
 }
 
 /**
@@ -255,10 +379,10 @@ function validPrice(v: unknown): v is number {
 export function sanitizeModelPrice(raw: unknown): ModelPrice | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const r = raw as Record<string, unknown>
-  if (!validPrice(r.inputPerMTok) || !validPrice(r.outputPerMTok)) return undefined
-  const out: ModelPrice = { inputPerMTok: r.inputPerMTok, outputPerMTok: r.outputPerMTok }
-  if (validPrice(r.cacheReadPerMTok)) out.cacheReadPerMTok = r.cacheReadPerMTok
-  if (validPrice(r.cacheWritePerMTok)) out.cacheWritePerMTok = r.cacheWritePerMTok
+  if (!validPrice(r.inputPerToken) || !validPrice(r.outputPerToken)) return undefined
+  const out: ModelPrice = { inputPerToken: r.inputPerToken, outputPerToken: r.outputPerToken }
+  if (validPrice(r.cacheReadPerToken)) out.cacheReadPerToken = r.cacheReadPerToken
+  if (validPrice(r.cacheCreationPerToken)) out.cacheCreationPerToken = r.cacheCreationPerToken
   return out
 }
 

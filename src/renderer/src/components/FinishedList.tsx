@@ -2,7 +2,8 @@ import type { ReactElement } from 'react'
 import type { AgentInstance } from '@shared/types'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
-import { formatCost, formatElapsed, initials } from '../lib/layout'
+import { formatElapsed, initials } from '../lib/layout'
+import { useCostLabel } from '../lib/useCostLabel'
 
 export interface FinishedGroup {
   parentName: string
@@ -22,6 +23,7 @@ const WT_LABEL: Record<string, string> = {
 
 /** Side-panel list of the finished reports a collapsed group stands for. Click one to read its transcript. */
 export default function FinishedList({ group }: { group: FinishedGroup }): ReactElement {
+  const labelCost = useCostLabel()
   const sorted = [...group.agents].sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
   return (
     <div className="finished-list">
@@ -47,7 +49,7 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
             <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
           </span>
           <span className="finished-meta">
-            {a.costUsd > 0 ? formatCost(a.costUsd) : ''}
+            {(() => { const c = labelCost(a.costUsd); return c.hidden ? '' : <span title={c.title}>{c.text}</span> })()}
             <br />
             {formatElapsed(a.startedAt, a.endedAt)}
           </span>

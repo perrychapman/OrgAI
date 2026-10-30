@@ -38,7 +38,6 @@ export type CodexUpdate =
   | { type: 'thinking'; threadId: string; text: string }
   | { type: 'toolUse'; threadId: string; id: string; name: string; input: unknown; activity: string; state: 'tool' | 'waiting' }
   | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; isError: boolean }
-  /** The thread's cumulative totals. input includes the cached part (OpenAI counting); output includes reasoning. */
   | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number }
   | { type: 'turnStarted'; threadId: string; turnId: string }
   | { type: 'turnCompleted'; threadId: string; turnId: string; status: TurnStatus; result?: string; error?: CodexTurnError }

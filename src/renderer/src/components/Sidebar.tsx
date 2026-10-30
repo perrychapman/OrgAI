@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import type { AuthStatusResult, ConnectionStatus } from '@shared/types'
+import type { AuthStatusResult, ConnectionId, ConnectionStatus, UsageStatus } from '@shared/types'
+import { projectConnection } from '@shared/defaults'
 import { BellRing, ChevronDown, ChevronRight, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
@@ -14,7 +15,8 @@ import { initials } from '../lib/layout'
 import { currentPlatform, isMacPlatform, modKeyLabel } from '../lib/platform'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
-import UsageMeter, { tightestWindow, UsageBar } from './UsageMeter'
+import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
+import { CONNECTION_LABEL, currentConnection, spendAria, spendLabel, spendLevel } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -49,6 +51,24 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
+type Pill = { tone: string; label: string; title?: string }
+
+/** Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend. */
+function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | undefined, usage: UsageStatus | undefined): Pill {
+  const name = CONNECTION_LABEL[id]
+  const detail = status?.detail
+  if (status?.state === 'error') return { tone: 'danger', label: `${name} · error`, title: detail }
+  if (status?.state === 'connecting') return { tone: 'warn', label: `${name} · connecting…`, title: detail }
+  if (!status || status.state === 'disconnected') return { tone: 'warn', label: `${name} · not connected`, title: detail }
+  if (id === 'litellm') {
+    const spend = usage?.spend
+    if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
+    const level = spendLevel(spend)
+    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendLabel(spend), title: spendAria(spend) }
+  }
+  return { tone: 'ok', label: `${name} · ${status.account ?? 'connected'}`, title: detail }
+}
+
 export default function Sidebar({
   resize
 }: {
@@ -64,13 +84,24 @@ export default function Sidebar({
   const selectProject = useAppStore((s) => s.selectProject)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const auth = useAppStore((s) => s.auth)
-  const usage = useAppStore((s) => s.usage)
+  const usageByConnection = useAppStore((s) => s.usageByConnection)
+  const defaultConnection = useAppStore((s) => s.defaultConnection)
+  const loadDefaultConnection = useAppStore((s) => s.loadDefaultConnection)
   const connections = useAppStore((s) => s.connections)
   const loadConnections = useAppStore((s) => s.loadConnections)
   useEffect(() => {
     if (!connections) void loadConnections()
   }, [connections, loadConnections])
-  const pill = claudePill(auth, connections?.find((c) => c.connection.id === 'anthropic')?.status)
+  useEffect(() => {
+    void loadDefaultConnection()
+  }, [loadDefaultConnection])
+  const openProjectRecord = projects.find((p) => p.id === selectedId)
+  const current: ConnectionId = currentConnection(openProjectRecord && view !== 'projects' && view !== 'appSettings' ? projectConnection(openProjectRecord) : null, defaultConnection)
+  const litellmOn = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
+  const currentUsage = current === 'litellm' && !litellmOn ? undefined : usageByConnection[current]
+  const currentStatus = connections?.find((c) => c.connection.id === current)?.status
+  const litellmEnabled = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
+  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage)
   const mockAdapter = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const runs = useAppStore((s) => s.runs)
   const history = useAppStore((s) => s.historyByProject)
@@ -88,7 +119,7 @@ export default function Sidebar({
   const names = projects.map((p) => p.name)
 
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
-  const tight = mockAdapter ? null : tightestWindow(usage)
+  const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
   const needsLabel = `Needs you · ${items.length}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
@@ -269,14 +300,14 @@ export default function Sidebar({
               <span className={`dot ${account.tone}`} aria-hidden="true" />
               <span className="account-label">{account.label}</span>
               {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
-              {!rail && <UsageBar usage={mockAdapter ? null : usage} />}
+              {!rail && !mockAdapter && (current === 'litellm' ? <SpendBar spend={currentUsage?.spend} /> : <UsageBar usage={currentUsage} />)}
             </>
           }
           triggerLabel={rail ? account.label : undefined}
           triggerTitle={rail ? account.label : undefined}
           triggerClassName="account-row"
           triggerTestId="auth-pill"
-          label="Account and plan usage"
+          label="Account, plan usage and spend"
           placement="top-start"
           className="account-popover"
           testId="account-popover"
@@ -285,7 +316,7 @@ export default function Sidebar({
             <div className="account-pop">
               <div className="account-pop-title">{account.label}</div>
               {account.title && <p className="account-pop-note">{account.title}</p>}
-              {mockAdapter ? <p className="account-pop-note">Runs use scripted data. No plan limits apply.</p> : <UsageMeter />}
+              {mockAdapter ? <p className="account-pop-note">Runs use scripted data. No plan limits apply. No spend is tracked.</p> : <UsageMeter current={current} litellmEnabled={litellmEnabled} />}
               <Button
                 size="sm"
                 variant="ghost"

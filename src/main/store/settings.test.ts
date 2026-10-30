@@ -6,7 +6,7 @@ import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth } from './settings'
 
 describe('modelPrices', () => {
-  const price = { inputPerMTok: 1, outputPerMTok: 2 }
+  const price = { inputPerToken: 1e-6, outputPerToken: 2e-6 }
 
   it('defaults to an empty list and ignores non-arrays', () => {
     expect(normalizeSettings({}).modelPrices).toEqual([])
@@ -15,9 +15,9 @@ describe('modelPrices', () => {
   })
 
   it('keeps valid entries as fresh plain objects and trims the model', () => {
-    const input = [{ model: '  gpt-5 ', connection: 'litellm', price: { ...price, cacheReadPerMTok: 0.1, evil: 1 }, extra: true }]
+    const input = [{ model: '  gpt-5 ', connection: 'litellm', price: { ...price, cacheReadPerToken: 1e-7, evil: 1 }, extra: true }]
     const out = normalizeSettings({ modelPrices: input as never }).modelPrices!
-    expect(out).toEqual([{ model: 'gpt-5', connection: 'litellm', price: { inputPerMTok: 1, outputPerMTok: 2, cacheReadPerMTok: 0.1 } }])
+    expect(out).toEqual([{ model: 'gpt-5', connection: 'litellm', price: { inputPerToken: 1e-6, outputPerToken: 2e-6, cacheReadPerToken: 1e-7 } }])
     expect(out[0]).not.toBe(input[0])
     expect(out[0]!.price).not.toBe(input[0]!.price)
   })
@@ -26,19 +26,19 @@ describe('modelPrices', () => {
     const bad = [
       null, 'x', 4, [], { price },
       { model: '', price }, { model: '   ', price }, { model: 'x'.repeat(201), price }, { model: 5, price },
-      { model: 'a', price: { inputPerMTok: -1, outputPerMTok: 1 } },
-      { model: 'b', price: { inputPerMTok: 1, outputPerMTok: Number.NaN } },
-      { model: 'c', price: { inputPerMTok: 1, outputPerMTok: 10_001 } },
-      { model: 'd', price: { inputPerMTok: 1 } },
+      { model: 'a', price: { inputPerToken: -1, outputPerToken: 1e-6 } },
+      { model: 'b', price: { inputPerToken: 1e-6, outputPerToken: Number.NaN } },
+      { model: 'c', price: { inputPerToken: 1e-6, outputPerToken: 0.010001 } },
+      { model: 'd', price: { inputPerToken: 1e-6 } },
       { model: 'e', price: null },
       { model: 'f', connection: 'nope', price }
     ]
     expect(normalizeSettings({ modelPrices: bad as never }).modelPrices).toEqual([])
-    expect(normalizeSettings({ modelPrices: [{ model: 'ok', price: { ...price, cacheWritePerMTok: -1 } }] as never }).modelPrices).toEqual([{ model: 'ok', price }])
+    expect(normalizeSettings({ modelPrices: [{ model: 'ok', price: { ...price, cacheCreationPerToken: -1 } }] as never }).modelPrices).toEqual([{ model: 'ok', price }])
   })
 
   it('dedupes by normalized model and connection, the last one winning', () => {
-    const p = (n: number) => ({ inputPerMTok: n, outputPerMTok: n })
+    const p = (n: number) => ({ inputPerToken: n * 1e-6, outputPerToken: n * 1e-6 })
     const out = normalizeSettings({
       modelPrices: [
         { model: 'Claude-Sonnet-4-5', price: p(1) },
@@ -58,10 +58,10 @@ describe('modelPrices', () => {
   })
 
   it('does not copy prototype keys', () => {
-    const polluted = JSON.parse('{"model":"x","price":{"inputPerMTok":1,"outputPerMTok":2,"__proto__":{"polluted":1}},"__proto__":{"polluted":1}}')
+    const polluted = JSON.parse('{"model":"x","price":{"inputPerToken":1e-6,"outputPerToken":2e-6,"__proto__":{"polluted":1}},"__proto__":{"polluted":1}}')
     const out = normalizeSettings({ modelPrices: [polluted] as never }).modelPrices!
     expect(out).toHaveLength(1)
-    expect(Object.keys(out[0]!.price)).toEqual(['inputPerMTok', 'outputPerMTok'])
+    expect(Object.keys(out[0]!.price)).toEqual(['inputPerToken', 'outputPerToken'])
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
   })
 
@@ -69,7 +69,7 @@ describe('modelPrices', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-set-'))
     try {
       const store = new SettingsStore(dir)
-      store.set({ modelPrices: [{ model: 'gpt-5', price }, { model: 'bad', price: { inputPerMTok: -1, outputPerMTok: 1 } }] })
+      store.set({ modelPrices: [{ model: 'gpt-5', price }, { model: 'bad', price: { inputPerToken: -1, outputPerToken: 1e-6 } }] })
       expect(store.get().modelPrices).toEqual([{ model: 'gpt-5', price }])
       expect(new SettingsStore(dir).get().modelPrices).toEqual([{ model: 'gpt-5', price }])
       store.set({ notifications: false })

@@ -62,8 +62,10 @@ export interface DiscoveredModelInput {
   /** Force a family (Codex model/list is always openai). */
   family?: ModelFamily
   tier?: ModelTier
-  /** The connection's own price (already per MTok and validated by the caller). */
+  /** LiteLLM /model/info prices. */
   price?: ModelPrice
+  /** LiteLLM litellm_params.model. */
+  upstream?: string
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
@@ -77,9 +79,10 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     adapter: adapterForFamily(family),
     ...(tier ? { tier } : {}),
     ...(m.contextWindow && m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
-    ...(m.price ? { price: { ...m.price } } : {}),
     ...(m.hint ? { hint: m.hint } : {}),
-    source: 'discovered'
+    source: 'discovered',
+    ...(m.price ? { price: { ...m.price } } : {}),
+    ...(m.upstream ? { upstream: m.upstream } : {})
   }
 }
 

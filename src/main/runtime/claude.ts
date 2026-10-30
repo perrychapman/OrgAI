@@ -30,8 +30,8 @@ import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
-import { costOf, ratesFromModelUsage, sumByModel, type CostRates, type TokenMix } from './claudeCost'
-import { countUsage, setModelTokens } from './runUsage'
+import { costOf, rateFor, ratesFromModelUsage, weighted, type CostRates, type TokenMix } from './claudeCost'
+import { costFromPrice, priceFor } from './pricing'
 import { PartialText } from './claudePartial'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
@@ -405,7 +405,7 @@ function textOf(content: unknown): string {
   return ''
 }
 
-class ClaudeSession implements RuntimeSession {
+export class ClaudeSession implements RuntimeSession {
   readonly finished: Promise<void>
   private input = new PushStream<SDKUserMessage>()
   private abort = new AbortController()
@@ -446,12 +446,11 @@ class ClaudeSession implements RuntimeSession {
   private usageByMessage = new Map<string, Map<string, { input: number; output: number; model?: string; mix: TokenMix }>>()
   /** Per-model USD rates from the latest result message; applied to new tokens until the next result. */
   private costRates: CostRates | null = null
+  private lastPricedTotal = -1
   /** Streamed text per agent, throttled into agent.partial events. */
   private partial = new PartialText((agentId, text) => this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text }))
   private seenBlocks = new Set<string>()
   private seenToolUses = new Set<string>()
-  /** `agentId:messageId` pairs already counted as a turn. */
-  private turnIds = new Set<string>()
   /** Resumed sessions only: tool results already shown, in case the SDK replays history. */
   private seenToolResults = new Set<string>()
   /** Resumed sessions only: subtracted from the SDK's cumulative cost; null until the first result. */
@@ -584,7 +583,7 @@ class ClaudeSession implements RuntimeSession {
 
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
   }
 
   private ensureAgent(id: string, init?: Partial<AgentInstance>): AgentInstance {
@@ -631,25 +630,44 @@ class ClaudeSession implements RuntimeSession {
     for (const [agentId, perAgent] of this.usageByMessage) {
       const a = this.agents.get(agentId)
       if (!a) continue
-      const cost = costOf(perAgent.values(), rates)
-      const before = JSON.stringify(a.usage?.models.map((m) => m.providerCostUsd))
-      this.syncModelUsage(a, perAgent)
-      if (Math.abs(cost - a.costUsd) < 1e-9 && before === JSON.stringify(a.usage?.models.map((m) => m.providerCostUsd))) continue
+      const cost = this.agentCost(perAgent.values())
+      if (Math.abs(cost - a.costUsd) < 1e-9) continue
       a.costUsd = cost
       this.upsert(a)
     }
   }
 
-  /** Report the agent's per-model token sums (and the SDK-derived provider cost when rates exist). */
-  private syncModelUsage(a: AgentInstance, perAgent: Map<string, { model?: string; mix: TokenMix }>): void {
-    for (const [model, e] of sumByModel(perAgent.values(), this.costRates, a.model)) {
-      setModelTokens(
-        a,
-        model,
-        { input: e.mix.input, output: e.mix.output, cacheRead: e.mix.cacheRead, cacheWrite: e.mix.cacheCreation },
-        e.costUsd ?? undefined
-      )
+  /** Per-token prices when this run goes through LiteLLM with a priced catalog, else undefined. */
+  private litellmPricing() {
+    const c = this.ctx.connection
+    return c?.connection === 'litellm' ? c.pricing : undefined
+  }
+
+  /**
+   * Cost of an agent's messages. With LiteLLM pricing each message is priced from its model's per-token price;
+   * a model without a price falls back to the CLI-derived rates, else 0. Otherwise the CLI rates apply.
+   */
+  private agentCost(messages: Iterable<{ model?: string; mix: TokenMix }>): number {
+    const pricing = this.litellmPricing()
+    if (!pricing) return this.costRates ? costOf(messages, this.costRates) : 0
+    let usd = 0
+    for (const m of messages) {
+      const price = priceFor(pricing, m.model)
+      if (price) usd += costFromPrice(m.mix, price)
+      else if (this.costRates) usd += weighted(m.mix) * rateFor(this.costRates, m.model)
     }
+    return usd
+  }
+
+  /** LiteLLM with pricing: the run total is the sum of this run's agent costs. Emits run.cost when it moves. */
+  private emitPricedTotal(): number {
+    let total = 0
+    for (const perAgent of this.usageByMessage.values()) total += this.agentCost(perAgent.values())
+    if (Math.abs(total - this.lastPricedTotal) > 1e-12) {
+      this.lastPricedTotal = total
+      this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: total })
+    }
+    return total
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
@@ -1196,11 +1214,6 @@ class ClaudeSession implements RuntimeSession {
             ...(worktree ? { worktree } : {}),
             ...(handle ? { handle } : {})
           })
-        } else if (msg.subtype === 'api_retry') {
-          // SDKAPIRetryMessage carries no agent fields, so a retry counts against the root.
-          const root = this.ensureAgent(ROOT_ID)
-          countUsage(root, 'retries')
-          this.upsert(root)
         } else if (msg.subtype === 'task_notification') {
           const a = this.agents.get(msg.task_id)
           if (a) {
@@ -1224,10 +1237,6 @@ class ClaudeSession implements RuntimeSession {
         const a = this.ensureAgent(agentId)
         const usage = msg.message.usage
         const messageId = msg.message.id || msg.uuid
-        if (!this.turnIds.has(`${agentId}:${messageId}`)) {
-          this.turnIds.add(`${agentId}:${messageId}`)
-          countUsage(a, 'turns')
-        }
         if (usage) {
           // Streaming emits one message per content block and the CLI may re-send a message after a
           // permission answer, all sharing message.id. Count each message id once, using its latest usage.
@@ -1253,9 +1262,11 @@ class ClaudeSession implements RuntimeSession {
           }
           a.inputTokens = input
           a.outputTokens = output
-          this.syncModelUsage(a, perAgent)
           // Live estimate at the last known per-model rates; the next result message reconciles it.
-          if (this.costRates) a.costUsd = costOf(perAgent.values(), this.costRates)
+          if (this.litellmPricing()) {
+            a.costUsd = this.agentCost(perAgent.values())
+            this.emitPricedTotal()
+          } else if (this.costRates) a.costUsd = costOf(perAgent.values(), this.costRates)
         }
         if (msg.message.model) a.model = msg.message.model
         // A background report can wake an idle orchestrator into a new turn.
@@ -1278,7 +1289,6 @@ class ClaudeSession implements RuntimeSession {
           } else if (block.type === 'tool_use') {
             if (this.seenToolUses.has(block.id)) continue
             this.seenToolUses.add(block.id)
-            countUsage(a, 'toolCalls')
             this.seenBlocks.add(blockKey)
             this.toolUseIssuer.set(block.id, agentId)
             this.transcript(agentId, { kind: 'tool_use', id: block.id, name: block.name, input: block.input })
@@ -1322,9 +1332,19 @@ class ClaudeSession implements RuntimeSession {
         break
       }
       case 'result': {
-        const totalCostUsd = this.runCost(msg.total_cost_usd)
-        this.emit({ type: 'run.cost', runId, totalCostUsd })
-        this.apportionCost(msg.modelUsage)
+        const cliCost = this.runCost(msg.total_cost_usd)
+        if (this.litellmPricing()) {
+          // Pricing-derived total; the CLI total only stands in when pricing priced nothing.
+          this.apportionCost(msg.modelUsage)
+          const priced = this.emitPricedTotal()
+          if (!(priced > 0) && cliCost > 0) {
+            this.lastPricedTotal = cliCost
+            this.emit({ type: 'run.cost', runId, totalCostUsd: cliCost })
+          }
+        } else {
+          this.emit({ type: 'run.cost', runId, totalCostUsd: cliCost })
+          this.apportionCost(msg.modelUsage)
+        }
         this.partial.clear(ROOT_ID, true)
         const authRaw = authFailureFrom(msg)
         if (authRaw !== null) {
