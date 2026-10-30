@@ -85,6 +85,27 @@
   box-shadow: var(--halo-dot-live);
   animation: breathe 1.6s ease-in-out infinite;
 }
+.nav-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.nav-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-counts {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.nav-counts.warn {
+  color: var(--warning-text);
+}
 .nav-item .dot.warn {
   background: var(--warning);
   box-shadow: var(--halo-dot-warning);

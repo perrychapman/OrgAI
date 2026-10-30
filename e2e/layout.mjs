@@ -118,7 +118,7 @@ try {
   await page.getByRole('button', { name: 'Runs', exact: true }).click()
   await sleep(500)
   check((await page.locator('.run-row').count()) >= 1, 'run appears in history after reload')
-  await page.locator('.run-row').first().click()
+  await page.locator('.run-row .run-open').first().click()
   await sleep(1500)
   await page.getByRole('button', { name: 'Transcript', exact: true }).click()
   await sleep(500)

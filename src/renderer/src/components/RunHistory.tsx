@@ -78,7 +78,6 @@ export default function RunHistory(): ReactElement {
               <button
                 type="button"
                 className="btn sm run-open"
-                disabled={viewed}
                 title={viewed ? 'You are viewing this run' : open ? 'Open this live run' : 'Open this run'}
                 onClick={() => void openRun(r.id)}
               >

@@ -135,6 +135,14 @@ Settings that exist in both scopes (permission mode, cost cap, runs to keep, iso
 
 A table: Status (badge) · Prompt (truncated, 2 lines max) · Kind · Started (relative with absolute tooltip) · Cost · actions (`Open`, `Continue` where possible, `⋯` with `Org retrospective`). Rows are real table rows with one primary `Open` link; buttons are not nested in buttons. Empty state: "No runs yet. Start one from the Run tab." Filter: segmented `All / Work / Setup`.
 
+#### Session chains and concurrent runs (rules the overhaul keeps)
+
+- A **session chain** is the runs of one project that share a `sessionId` (fallback: linked by `resumedFrom`). Helpers live in `lib/runChains.ts`. Only the chain's newest member may offer `Continue`; older members say "Continued by <run>" with a button that opens it, and a continuation says "Continued from <run>".
+- The composer always states what Send does in a mode row above the field: "Replying to <root role>" / "Answering the Architect" / "Continuing this session (run from <time>)" / "New run: N open runs keep going". When both a primary mode and New run apply, a two-item segmented control switches them and the primary button reads Send / Continue / Start. Helper text "Enter to send · Shift+Enter for a new line" is persistent.
+- Several runs may be open at once. Run chips are buttons with status words (Working, Waiting for you, Paused, Finished, Failed, Idle), open sessions first, one chip per chain. Starting a run while another is open switches the view to the new run; the others keep running. Dismissing the viewed chip switches to another open run rather than leaving the canvas empty.
+- If the runtime refuses a Continue because the session is open in another run (`Session already open: ... run <id>`), the composer keeps the draft and offers "Open that run".
+- Sidebar project rows show text counts ("2 open", "1 needs you") beside the colour dot, and the Runs tab shows the open-run count. Paused banners say that only that run is paused.
+
 ### 2.7 Org chart tab
 
 ```

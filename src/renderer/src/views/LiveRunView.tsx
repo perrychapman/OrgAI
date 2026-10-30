@@ -17,7 +17,9 @@ import { Badge } from '../components/ui/Badge'
 import { MAX_IMAGES_PER_MESSAGE } from '@shared/defaults'
 import { ComposerImages, filesToImages } from '../components/ImageAttachments'
 import { setupPending } from '@shared/setup'
-import { activeRun, useAppStore } from '../store/useAppStore'
+import { activeRun, isRunLive, useAppStore, useProjectSummaries } from '../store/useAppStore'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { canContinue as chainCanContinue, continuedBy, relativeTime, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
 import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
@@ -86,6 +88,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const answerQuestion = useAppStore((s) => s.answerQuestion)
   const composerMode = useAppStore((s) => s.composerMode)
+  const setComposerMode = useAppStore((s) => s.setComposerMode)
   const stripRuns = useStripRuns()
   const showStrip = stripRuns.length > 0
   const decideMerge = useAppStore((s) => s.decideMerge)
@@ -96,6 +99,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const [text, setText] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const [imageNotice, setImageNotice] = useState<string | null>(null)
+  /** The runtime refused a Continue because the session is open in another live run. */
+  const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
+  const openRun = useAppStore((s) => s.openRun)
+  const summaries = useProjectSummaries()
+  const openRunCount = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === s.selectedProjectId && isRunLive(r)).length)
   const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)
@@ -318,11 +326,29 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
   const status = run?.summary.status
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
-  // "+ New run" starts another run even while this session stays open.
-  const replying = sessionOpen && composerMode !== 'new'
   const canSend = (text.trim().length > 0 || images.length > 0) && !busy
-  // A finished run with a provider session can be continued with its memory intact.
-  const canContinue = !!run && (status === 'finished' || status === 'error' || status === 'paused') && !!run.summary.sessionId
+  // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
+  // session chain: an older member says who continued it.
+  const canContinue = !!run && chainCanContinue(summaries, run.summary.id)
+  const successor = run && !sessionOpen ? continuedBy(summaries, run.summary.id) : undefined
+  // What Send does. "New run" starts another run even while this session stays open.
+  const primaryMode: 'reply' | 'continue' | null = sessionOpen ? 'reply' : canContinue ? 'continue' : null
+  const sendMode: 'reply' | 'continue' | 'new' = primaryMode && composerMode !== 'new' ? primaryMode : 'new'
+  const modeLabel =
+    sendMode === 'reply'
+      ? isSetupRun
+        ? 'Answering the Architect'
+        : `Replying to ${rootName}`
+      : sendMode === 'continue'
+        ? `Continuing this session (run from ${run ? relativeTime(run.summary.startedAt) : 'earlier'})`
+        : openRunCount > 0
+          ? `New run: ${openRunCount} open run${openRunCount === 1 ? '' : 's'} keep${openRunCount === 1 ? 's' : ''} going`
+          : 'New run'
+  const primaryLabel = sendMode === 'reply' ? 'Send' : sendMode === 'continue' ? 'Continue' : 'Start'
+
+  useEffect(() => {
+    setSessionBlock(null)
+  }, [run?.summary.id])
 
   useEffect(() => {
     if (composerFocusToken) composerRef.current?.focus()
@@ -334,7 +360,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     setImageNotice(notice)
   }
 
-  const submit = async (fresh = false): Promise<void> => {
+  const submit = async (): Promise<void> => {
     if (!canSend) return
     const prompt = text.trim()
     const sending = images
@@ -345,14 +371,18 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     setImageNotice(null)
     setBusy(true)
     try {
-      if (replying) await sendMessage(prompt, imgs)
-      else if (canContinue && !fresh && run && composerMode !== 'new') await continueRun(run.summary.id, prompt, imgs)
+      setSessionBlock(null)
+      if (sendMode === 'reply') await sendMessage(prompt, imgs)
+      else if (sendMode === 'continue' && run) await continueRun(run.summary.id, prompt, imgs)
       else await startRun(prompt, imgs ? { images: imgs } : undefined)
     } catch (err) {
       // Keep the draft and attachments so nothing is lost on failure.
       setText((cur) => cur || previousText)
       setImages((cur) => (cur.length > 0 ? cur : sending))
-      setImageNotice(err instanceof Error ? err.message : 'Could not send the message.')
+      const message = err instanceof Error ? err.message : 'Could not send the message.'
+      const liveId = sessionOpenRunId(message)
+      if (liveId) setSessionBlock({ message: message.replace(/^(Error invoking remote method '[^']*': )?(Error: )?/, ''), runId: liveId })
+      else setImageNotice(message)
     } finally {
       setBusy(false)
     }
@@ -696,54 +726,85 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         }}
       >
         <div className="composer-field">
-        {imageNotice && (
-          <div className="composer-notice" role="status">
-            {imageNotice}
+          <div className="composer-mode">
+            <span className="composer-mode-label" id="composer-mode-label">
+              {modeLabel}
+            </span>
+            {primaryMode && (
+              <SegmentedControl
+                label="What Send does"
+                value={sendMode === 'new' ? 'new' : 'primary'}
+                options={[
+                  {
+                    value: 'primary',
+                    label: primaryMode === 'reply' ? (isSetupRun ? 'Answer' : 'Reply') : 'Continue',
+                    title: primaryMode === 'reply' ? 'Message the open session' : 'Resume this session with its memory'
+                  },
+                  { value: 'new', label: 'New run', title: 'Start a fresh run; open sessions keep running' }
+                ]}
+                onChange={(v) => setComposerMode(v === 'new' ? 'new' : 'reply')}
+              />
+            )}
           </div>
-        )}
-        <ComposerImages images={images} onRemove={(i) => setImages((cur) => cur.filter((_, j) => j !== i))} />
-        <textarea
-          ref={composerRef}
-          className="textarea"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onPaste={(e) => {
-            const files = Array.from(e.clipboardData.items)
-              .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-              .map((it) => it.getAsFile())
-              .filter((f): f is File => !!f)
-            if (files.length === 0) return
-            if (!e.clipboardData.getData('text/plain')) e.preventDefault()
-            void addImages(files)
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              void submit()
+          {successor && (
+            <div className="composer-notice info" role="status">
+              This run was continued by a later run.
+              <button type="button" className="link-btn" onClick={() => void openRun(successor.id)}>
+                Open it
+              </button>
+            </div>
+          )}
+          {sessionBlock && (
+            <div className="composer-notice" role="alert">
+              {sessionBlock.message}
+              <button type="button" className="link-btn" onClick={() => void openRun(sessionBlock.runId)}>
+                Open that run
+              </button>
+            </div>
+          )}
+          {imageNotice && (
+            <div className="composer-notice" role="status">
+              {imageNotice}
+            </div>
+          )}
+          <ComposerImages images={images} onRemove={(i) => setImages((cur) => cur.filter((_, j) => j !== i))} />
+          <textarea
+            ref={composerRef}
+            className="textarea"
+            aria-labelledby="composer-mode-label"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData.items)
+                .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+                .map((it) => it.getAsFile())
+                .filter((f): f is File => !!f)
+              if (files.length === 0) return
+              if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+              void addImages(files)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                void submit()
+              }
+            }}
+            placeholder={
+              sendMode === 'reply'
+                ? isSetupRun
+                  ? 'Your answer'
+                  : 'Your reply'
+                : sendMode === 'continue'
+                  ? 'What next?'
+                  : needsSetup
+                    ? 'Describe the task (setup is not finished)'
+                    : 'Describe the task'
             }
-          }}
-          placeholder={
-            sessionOpen && composerMode === 'new'
-              ? 'Describe the task for a new run. The open session keeps running… (Enter to start)'
-              : sessionOpen
-              ? isSetupRun
-                ? 'Answer the Architect… (Enter to send, Shift+Enter for a new line)'
-                : 'Reply to the orchestrator… (Enter to send, Shift+Enter for a new line)'
-              : canContinue
-                ? 'Continue this session with its memory… (Enter to continue, or New run for a fresh start)'
-                : needsSetup
-                  ? 'Setup is not finished. You can still start a work run with the current roles…'
-                  : 'Describe the task for this project…'
-          }
-        />
+          />
+          <div className="composer-help">Enter to send · Shift+Enter for a new line</div>
         </div>
-        {canContinue && !sessionOpen && (
-          <button className="btn" disabled={!canSend} onClick={() => void submit(true)} title="Start a fresh run with no memory of this one">
-            New run
-          </button>
-        )}
         <button className="btn primary" disabled={!canSend} onClick={() => void submit()}>
-          {replying ? 'Send' : canContinue && composerMode !== 'new' ? 'Continue' : 'Start'}
+          {primaryLabel}
         </button>
       </div>
 
@@ -787,7 +848,7 @@ function PauseBanner({ runId }: { runId: string }): ReactElement | null {
       <div className="pause-title">
         <span className="dot" /> Paused at a usage limit
       </div>
-      <div className="pause-reason">{summary.pauseReason ?? 'The plan usage limit was reached.'}</div>
+      <div className="pause-reason">{summary.pauseReason ?? 'The plan usage limit was reached.'} Only this run is paused; your other runs keep running unaffected.</div>
       <div className="pause-when">
         {summary.autoResume && until
           ? `Auto-resume at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (in ${formatUntil(until, now)})`
