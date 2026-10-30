@@ -88,6 +88,16 @@ export function parseLoginCompleted(params: unknown): CodexLoginResult {
   return { loginId: str(p.loginId) ?? null, success: p.success === true, error: str(p.error) ?? null }
 }
 
+export const MODEL_ID_MAX = 200
+export const MODEL_TEXT_MAX = 300
+export const MODEL_LIST_MAX = 2000
+const MODEL_ID_RE = /^[!-~]+$/
+
+/** True for an id that is printable ASCII without spaces and at most 200 chars (untrusted provider/file data). */
+export function validModelId(id: string): boolean {
+  return id.length <= MODEL_ID_MAX && MODEL_ID_RE.test(id)
+}
+
 export function parseModelPage(raw: unknown): { models: CodexModelInfo[]; nextCursor: string | null } {
   const r = obj(raw)
   const data = Array.isArray(r.data) ? r.data : []
@@ -95,11 +105,12 @@ export function parseModelPage(raw: unknown): { models: CodexModelInfo[]; nextCu
   for (const item of data) {
     const m = obj(item)
     const id = str(m.model) ?? str(m.id)
-    if (!id) continue
+    if (!id || !validModelId(id)) continue
+    const description = str(m.description)?.slice(0, MODEL_TEXT_MAX)
     models.push({
       id,
-      label: str(m.displayName) ?? id,
-      ...(str(m.description) ? { description: str(m.description) } : {}),
+      label: (str(m.displayName) ?? id).slice(0, MODEL_TEXT_MAX),
+      ...(description ? { description } : {}),
       hidden: m.hidden === true,
       isDefault: m.isDefault === true
     })
@@ -138,8 +149,8 @@ export async function listModels(rpc: CodexRpc): Promise<CodexModelInfo[]> {
   for (let page = 0; page < 20; page++) {
     const raw: unknown = await rpc.request('model/list', cursor ? { cursor } : {})
     const parsed = parseModelPage(raw)
-    out.push(...parsed.models)
-    if (!parsed.nextCursor) break
+    for (const m of parsed.models) if (out.length < MODEL_LIST_MAX) out.push(m)
+    if (out.length >= MODEL_LIST_MAX || !parsed.nextCursor) break
     cursor = parsed.nextCursor
   }
   return out.filter((m) => !m.hidden)

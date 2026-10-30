@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -113,6 +113,44 @@ describe('anthropic discovery', () => {
     expect(file).toMatchObject({ version: 1, refreshedAt: { anthropic: 1000 } })
     const again = setup({}, ctx.dataDir)
     expect((await again.service.list())[0].modelsRefreshedAt).toBe(1000)
+  })
+
+  it('drops stored models with a bad id and caps stored label and hint', async () => {
+    const ctx = setup()
+    const m = (id: string, extra: object = {}) => ({ id, label: id, connection: 'anthropic', family: 'claude', ...extra })
+    writeFileSync(
+      join(ctx.dataDir, 'models.json'),
+      JSON.stringify({ version: 1, models: { anthropic: [m('ok', { label: 'L'.repeat(900), hint: 'h'.repeat(900) }), m('has space'), m('x'.repeat(201)), m('café')] } })
+    )
+    const again = setup({}, ctx.dataDir)
+    const models = again.service.models({ connection: 'anthropic' }).filter((x) => ['ok', 'has space', 'café'].includes(x.id) || x.id.length > 200)
+    expect(models.map((x) => x.id)).toEqual(['ok'])
+    expect(models[0].label).toHaveLength(300)
+    expect(models[0].hint).toHaveLength(300)
+  })
+
+  it('records "No models returned" for an empty scheduled result and clears it on success', async () => {
+    let list: Listed[] | null = null
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = setup({ anthropicModels: async () => list })
+    await ctx.service.discoverStale(100)
+    expect((await ctx.service.list())[0].modelsError).toBe('No models returned')
+    expect((await ctx.service.list())[0].modelsRefreshedAt).toBeUndefined()
+    list = MODEL_LIST
+    await ctx.service.discoverStale(100)
+    expect((await ctx.service.list())[0].modelsError).toBeUndefined()
+  })
+
+  it('treats a refreshedAt in the future as stale', async () => {
+    const ctx = setup({ anthropicModels: async () => MODEL_LIST })
+    await ctx.service.refresh({ connection: 'anthropic' })
+    const file = JSON.parse(readFileSync(join(ctx.dataDir, 'models.json'), 'utf8'))
+    file.refreshedAt.anthropic = 9_000_000
+    writeFileSync(join(ctx.dataDir, 'models.json'), JSON.stringify(file))
+    const calls: number[] = []
+    const again = setup({ anthropicModels: async () => (calls.push(1), MODEL_LIST) }, ctx.dataDir)
+    await again.service.discoverStale(100)
+    expect(calls).toHaveLength(1)
   })
 
   it('ignores an autoTiers value sent by the renderer', async () => {

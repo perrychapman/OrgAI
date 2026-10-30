@@ -35,7 +35,7 @@ import type { SettingsStore } from '../store/settings'
 import type { AdapterModelInfo, RunConnection } from '../runtime/types'
 import { anthropicStatus } from './anthropicAuth'
 import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
-import { cancelLogin, listModels, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
+import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
 import { fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
@@ -131,12 +131,17 @@ export class ConnectionService {
         const list = parsed.models?.[id]
         if (Array.isArray(list)) {
           this.discovered[id] = list
-            .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && (m as ProviderModel).connection === id)
+            .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && validModelId((m as ProviderModel).id) && (m as ProviderModel).connection === id)
             .map((m) => {
               // A stored price is untrusted file data: keep it only when it is valid, as a fresh object.
               const { price: stored, ...rest } = m
               const price = sanitizeModelPrice(stored)
-              return price ? { ...rest, price } : rest
+              const capped: ProviderModel = {
+                ...rest,
+                ...(typeof rest.label === 'string' ? { label: rest.label.slice(0, MODEL_TEXT_MAX) } : {}),
+                ...(typeof rest.hint === 'string' ? { hint: rest.hint.slice(0, MODEL_TEXT_MAX) } : {})
+              }
+              return price ? { ...capped, price } : capped
             })
         }
       }
@@ -788,10 +793,14 @@ export class ConnectionService {
         if (this.disposed) break
         if (!this.configured(id)) continue
         const at = this.refreshedAt[id]
-        if (at && this.now() - at < staleAfterMs) continue
+        // A timestamp in the future (clock skew, a tampered file) counts as never refreshed.
+        const now = this.now()
+        if (at && at <= now && now - at < staleAfterMs) continue
         try {
           const found = await this.discover(id)
-          if (found && !this.disposed) results.push(...this.applyCatalog(id, found, ['catalog']))
+          if (this.disposed) continue
+          if (found?.length) results.push(...this.applyCatalog(id, found, ['catalog']))
+          else this.modelsErrors[id] = 'No models returned'
         } catch (e) {
           const message = this.safeMessage(e)
           if (this.modelsErrors[id] !== message) console.warn(`Model discovery for ${id} failed: ${message}`)

@@ -84,6 +84,15 @@ describe('CommunityPrices', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2)
   })
 
+  it('treats a fetchedAt in the future as stale', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'model-prices.json'), JSON.stringify({ version: 1, fetchedAt: 9_000_000, prices: { 'gpt-6': { input: 1, output: 1 } } }))
+    const fetchFn = vi.fn(okFetch(LIST))
+    const cp = new CommunityPrices({ dataDir: dir, enabled: () => true, fetch: fetchFn as unknown as typeof fetch, now: () => 1000 })
+    expect(await cp.refresh()).toBe(true)
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
   it('does nothing when the setting is off, and hides cached prices', async () => {
     const dir = tmp()
     const on = new CommunityPrices({ dataDir: dir, enabled: () => true, fetch: okFetch(LIST) })

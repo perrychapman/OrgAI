@@ -313,7 +313,7 @@ app.whenReady().then(() => {
   })
   connections.init()
   connections.startDiscovery()
-  communityPrices.start()
+  if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
   app.on('before-quit', () => {
     connections.dispose()
     communityPrices.dispose()
