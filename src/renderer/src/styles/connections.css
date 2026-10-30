@@ -472,6 +472,10 @@
 .pconn-mock p {
   margin: 0;
 }
+.pconn-mock-warn {
+  margin: 0;
+  color: var(--danger-text);
+}
 .pconn-cards:disabled {
   opacity: 0.5;
 }
@@ -494,6 +498,9 @@
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+}
+.about-path > :not(.mono) {
+  flex-shrink: 0;
 }
 .about-path .mono {
   overflow: hidden;
