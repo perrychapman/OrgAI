@@ -147,6 +147,8 @@ export interface PricingContext {
    * else the connection's tierModels), so an agent reported only as 'opus' is priced as the remapped id.
    */
   aliases?: Record<string, string>
+  /** Community prices (communityPrices.ts, untrusted but sanitized), tried after the builtin table. */
+  community?: Record<string, ModelPrice>
 }
 
 type ResolvedSource = Exclude<PriceSource, 'provider' | 'unknown'>
@@ -269,7 +271,7 @@ function proxyFor(served: string, id: string, ctx: PricingContext): ModelPrice |
   return null
 }
 
-/** The non-provider price for a model (override > proxy > builtin), or null. */
+/** The non-provider price for a model (override > proxy > builtin > community), or null. */
 export function resolvePrice(model: string, ctx: PricingContext): { price: ModelPrice; source: ResolvedSource } | null {
   const served = applyAlias(model, ctx)
   const id = normalizeModelId(served)
@@ -280,6 +282,8 @@ export function resolvePrice(model: string, ctx: PricingContext): { price: Model
   if (proxy) return { price: proxy, source: 'proxy' }
   const builtin = builtinPrice(served)
   if (builtin) return { price: builtin, source: 'builtin' }
+  const community = ctx.community ? priceFor(ctx.community, served) : undefined
+  if (community) return { price: community, source: 'community' }
   return null
 }
 

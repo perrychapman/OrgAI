@@ -32,9 +32,9 @@ const liteClaude: BuiltinModelContext = {
 const liteCodex: BuiltinModelContext = { ...liteClaude, adapter: 'codex', root: { model: 'us.openai.gpt-5' } }
 
 describe('resolveBuiltinModel', () => {
-  it('keeps the default opus on anthropic, silently', () => {
+  it('keeps the default deep tier on anthropic, silently', () => {
     expect(resolveBuiltinModel(undefined, 'Setup model', anthropic)).toEqual({ model: 'opus', tier: 'deep' })
-    expect(resolveBuiltinModel('opus', 'Setup model', anthropic)).toEqual({ model: 'opus', tier: 'deep' })
+    expect(resolveBuiltinModel('deep', 'Setup model', anthropic)).toEqual({ model: 'opus', tier: 'deep' })
   })
 
   it('uses a valid choice on anthropic: an alias or a full Claude id', () => {
@@ -71,17 +71,27 @@ describe('resolveBuiltinModel', () => {
 
   it("uses the orchestrator's model when the deep tier is on the other family", () => {
     // LiteLLM project whose root is a GPT model: the deep tier is a Claude model, so the default resolves to the root.
-    expect(resolveBuiltinModel('opus', 'Setup model', liteCodex)).toEqual({ model: 'us.openai.gpt-5' })
+    expect(resolveBuiltinModel('deep', 'Setup model', liteCodex)).toEqual({ model: 'us.openai.gpt-5' })
     const r = resolveBuiltinModel('us.anthropic.claude-haiku-4-5', 'Setup model', liteCodex)
     expect(r.model).toBe('us.openai.gpt-5')
     expect(r.warning).toMatch(/using the orchestrator's model \(us\.openai\.gpt-5\)/)
-    expect(resolveBuiltinModel('opus', 'Setup model', { ...liteCodex, root: undefined })).toEqual({ model: 'inherit' })
+    expect(resolveBuiltinModel(undefined, 'Setup model', { ...liteCodex, root: undefined })).toEqual({ model: 'inherit' })
   })
 
   it('maps tiers on the OpenAI connection', () => {
     const openai: BuiltinModelContext = { connection: 'openai', adapter: 'codex', catalog, tierModels: { deep: 'gpt-5', fast: 'gpt-5-nano' } }
     expect(resolveBuiltinModel('opus', 'Setup model', openai)).toEqual({ model: 'gpt-5', tier: 'deep' })
     expect(resolveBuiltinModel('gpt-5-mini', 'Setup model', openai)).toEqual({ model: 'gpt-5-mini', tier: 'everyday' })
+  })
+
+  it('maps a tier name through tierModels (anthropic included) and uses the builtin alias only when unmapped', () => {
+    expect(resolveBuiltinModel('everyday', 'Setup model', { ...anthropic, tierModels: { everyday: 'claude-sonnet-9' } })).toEqual({ model: 'claude-sonnet-9', tier: 'everyday' })
+    expect(resolveBuiltinModel('fast', 'Setup model', { ...anthropic, tierModels: {} })).toEqual({ model: 'haiku', tier: 'fast' })
+  })
+
+  it('falls back to inherit, never opus, when nothing maps; the default never warns', () => {
+    expect(resolveBuiltinModel('deep', 'Setup model', { connection: 'litellm', adapter: 'claude', catalog: [], tierModels: {} })).toEqual({ model: 'inherit' })
+    expect(resolveBuiltinModel('deep', 'Setup model', liteCodex).warning).toBeUndefined()
   })
 
   it('passes the setting through on the mock adapter', () => {

@@ -1,4 +1,4 @@
-import { ANTHROPIC_BUILTIN_MODELS, adapterForFamily, modelFamily, tierForModel } from '@shared/defaults'
+import { adapterForFamily, builtinModels, modelFamily, modelForTier, settingTier, tierForModel } from '@shared/defaults'
 import type { BuiltinRoleModel } from '@shared/setup'
 import type { ConnectionId, ModelRef, ModelTier, ProviderId, ProviderModel, Role } from '@shared/types'
 
@@ -6,13 +6,14 @@ import type { ConnectionId, ModelRef, ModelTier, ProviderId, ProviderModel, Role
  * Resolve AppSettings.setupModel / mcpAssistModel for one run of a built-in role (Architect, MCP assistant).
  * Pure: RunManager supplies the run's connection, adapter, catalog and the connection's tier mapping.
  *
- * - A Claude alias (fable, opus, sonnet, haiku) stands for its tier: the alias itself on anthropic, the
- *   connection's tierModels entry elsewhere.
+ * - A tier name (top, deep, everyday, fast) or a legacy Claude alias (fable, opus, sonnet, haiku) stands for its tier:
+ *   the connection's tierModels entry (anthropic included), else the catalog's suggestion for it (the builtin aliases
+ *   on anthropic when nothing is discovered), nearest tier first; it must run on the run's adapter.
  * - A full model id is used when the connection can serve it (anthropic: any Claude id; openai and litellm: it is
  *   in that connection's catalog or tier mapping) and its family runs on the run's adapter.
  * - Otherwise the deep tier of the connection, then the project's root role model (same adapter by construction),
- *   then the adapter's default ('opus' on Claude, 'inherit' elsewhere). A non-default setting that falls back gets
- *   a one-line `warning` naming the setting; the default never warns.
+ *   then the adapter's default ('inherit'). A non-default setting that falls back gets a one-line `warning` naming
+ *   the setting; the default ('deep') never warns.
  * - The mock adapter takes the setting as it is.
  */
 export interface BuiltinModelContext {
@@ -32,38 +33,32 @@ export interface ResolvedBuiltinModel extends BuiltinRoleModel {
   warning?: string
 }
 
-const DEFAULT_MODEL = 'opus'
 /** Setting names used in fallback warnings; the App settings selects use the same labels. */
 export const SETUP_MODEL_LABEL = 'Setup model'
 export const MCP_ASSIST_MODEL_LABEL = 'MCP assistant model'
-const CLAUDE_ALIASES = new Set(ANTHROPIC_BUILTIN_MODELS.map((m) => m.id))
 const CONNECTION_LABEL: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
 export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel: string, ctx: BuiltinModelContext): ResolvedBuiltinModel {
-  const value = setting?.trim() || DEFAULT_MODEL
+  const value = setting?.trim() || 'deep'
   if (ctx.adapter === 'mock') {
-    const tier = tierForModel(value)
+    const tier = settingTier(value) ?? tierForModel(value)
     return { model: value, ...(tier ? { tier } : {}) }
   }
   const own = ctx.catalog.filter((m) => m.connection === ctx.connection)
   const familyOf = (model: ModelRef) => own.find((m) => m.id === model)?.family ?? modelFamily(model)
   const runsHere = (model: ModelRef): boolean => adapterForFamily(familyOf(model)) === ctx.adapter
 
-  /** The model for a tier on this connection, if one runs on the run's adapter. */
-  const forTier = (tier: ModelTier): ModelRef | undefined => {
-    if (ctx.connection === 'anthropic') return ctx.adapter === 'claude' ? ANTHROPIC_BUILTIN_MODELS.find((m) => m.tier === tier)?.id : undefined
-    const mapped = ctx.tierModels[tier]?.trim()
-    return mapped && runsHere(mapped) ? mapped : undefined
+  /** The model for a tier on this connection (nearest mapped tier), if it runs on the run's adapter. */
+  const forTier = (tier: ModelTier): { model: ModelRef; tier: ModelTier } | undefined => {
+    const hit = modelForTier(tier, { connection: ctx.connection, tierModels: ctx.tierModels, catalog: own.length > 0 ? own : builtinModels(ctx.connection) })
+    return hit && runsHere(hit.model) ? hit : undefined
   }
 
   /** The setting as a usable model, or undefined. */
   const direct = (): BuiltinRoleModel | undefined => {
     if (value === 'inherit') return undefined
-    if (CLAUDE_ALIASES.has(value.toLowerCase())) {
-      const tier = tierForModel(value) as ModelTier
-      const model = forTier(tier)
-      return model ? { model, tier } : undefined
-    }
+    const asTier = settingTier(value)
+    if (asTier) return forTier(asTier)
     if (!runsHere(value)) return undefined
     const known =
       ctx.connection === 'anthropic' ? familyOf(value) === 'claude' : own.some((m) => m.id === value) || Object.values(ctx.tierModels).some((m) => m?.trim() === value)
@@ -75,16 +70,15 @@ export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel:
   const hit = direct()
   if (hit) return hit
 
-  const deep = forTier('deep')
+  const deepHit = forTier('deep')
+  const deep = deepHit?.model
   const root = ctx.root && ctx.root.model !== 'inherit' && runsHere(ctx.root.model) ? ctx.root : undefined
-  const fallback: BuiltinRoleModel = deep
-    ? { model: deep, tier: 'deep' }
+  const fallback: BuiltinRoleModel = deepHit
+    ? { model: deepHit.model, tier: deepHit.tier }
     : root
       ? { model: root.model, ...(root.tier ? { tier: root.tier } : {}) }
-      : ctx.adapter === 'claude'
-        ? { model: DEFAULT_MODEL, tier: 'deep' }
-        : { model: 'inherit' }
-  if (value === DEFAULT_MODEL) return fallback
+      : { model: 'inherit' }
+  if (value.toLowerCase() === 'deep') return fallback
   const used = deep ? `the deep tier (${deep})` : root ? `the orchestrator's model (${root.model})` : "the connection's default model"
   const adapter = ctx.adapter === 'claude' ? 'Claude' : 'Codex'
   return {
