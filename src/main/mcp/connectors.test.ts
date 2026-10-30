@@ -79,6 +79,14 @@ describe('tokenHeaderValue', () => {
     expect(() => tokenHeaderValue(auth, 'a\nb')).toThrow(/single line/)
     expect(() => tokenHeaderValue(auth, '   ')).toThrow(/Enter/)
   })
+
+  it('accepts printable ASCII with internal spaces only', () => {
+    expect(tokenHeaderValue(auth, 'ghp_a-b.c~d+e/f=')).toBe('Bearer ghp_a-b.c~d+e/f=')
+    expect(tokenHeaderValue(auth, 'tok with space')).toBe('Bearer tok with space')
+    for (const bad of ['tokén', 'tok​x', 'tok x', 'tok\u{1F600}']) {
+      expect(() => tokenHeaderValue(auth, bad), JSON.stringify(bad)).toThrow(/printable ASCII/)
+    }
+  })
 })
 
 describe('connectorState and the mock test', () => {
@@ -138,8 +146,35 @@ describe('OAuth presets in oauth.ts', () => {
       if (url === `${AS}/.well-known/oauth-authorization-server`) return json({ issuer: AS, authorization_endpoint: `${AS}/authorize`, token_endpoint: `${AS}/token` })
       return undefined
     })
-    const found = await discoverWithPreset('https://mcp.slack.com/mcp', working.fetch, preset)
-    expect(found.authorizationEndpoint).toBe(`${AS}/authorize`)
+    // A discovered server off slack.com would receive the client secret: the preset's endpoints win.
+    const offDomain = await discoverWithPreset('https://mcp.slack.com/mcp', working.fetch, preset)
+    expect(offDomain.authorizationEndpoint).toBe('https://slack.com/oauth/v2_user/authorize')
+    expect(offDomain.tokenEndpoint).toBe('https://slack.com/api/oauth.v2.user.access')
+  })
+
+  it("'fallback' keeps discovered endpoints on the preset's registrable domain only", async () => {
+    const preset = oauthPresetFor({ connectorId: 'slack' })!
+    const routes = (as: string, tokenEndpoint: string, authorizationEndpoint = `${as}/authorize`): FetchLike =>
+      recordingFetch((url) => {
+        if (url === 'https://mcp.slack.com/.well-known/oauth-protected-resource/mcp') return json({ resource: 'https://mcp.slack.com/mcp', authorization_servers: [as] })
+        if (url === `${as}/.well-known/oauth-authorization-server`) return json({ issuer: as, authorization_endpoint: authorizationEndpoint, token_endpoint: tokenEndpoint })
+        return undefined
+      }).fetch
+    const sub = await discoverWithPreset('https://mcp.slack.com/mcp', routes('https://auth.slack.com', 'https://api.slack.com/token'), preset)
+    expect(sub).toMatchObject({ authorizationEndpoint: 'https://auth.slack.com/authorize', tokenEndpoint: 'https://api.slack.com/token' })
+    const same = await discoverWithPreset('https://mcp.slack.com/mcp', routes('https://slack.com', 'https://slack.com/t'), preset)
+    expect(same.tokenEndpoint).toBe('https://slack.com/t')
+    const bad: [string, string?][] = [
+      ['https://evil.example/token'],
+      ['https://slack.com.evil.example/token'],
+      ['https://evilslack.com/token'],
+      ['https://slack.com/token', 'https://evil.example/authorize']
+    ]
+    for (const [token, authz] of bad) {
+      const d = await discoverWithPreset('https://mcp.slack.com/mcp', routes('https://slack.com', token, authz), preset)
+      expect(d.tokenEndpoint, token).toBe('https://slack.com/api/oauth.v2.user.access')
+      expect(d.authorizationEndpoint, token).toBe('https://slack.com/oauth/v2_user/authorize')
+    }
   })
 
   it('refuses preset endpoints that are not https or are private', async () => {
@@ -230,6 +265,18 @@ describe('OAuth presets in oauth.ts', () => {
       expect(err.message).toContain(`127.0.0.1:${port}`)
     } finally {
       busy.close()
+    }
+  })
+
+  it('a strict loopback takes the port once a just-closed listener releases it', async () => {
+    const first = await startLoopback()
+    const port = Number(new URL(first.redirectUri).port)
+    first.close()
+    const again = await startLoopback({ port, strict: true })
+    try {
+      expect(again.redirectUri).toBe(`http://127.0.0.1:${port}/callback`)
+    } finally {
+      again.close()
     }
   })
 

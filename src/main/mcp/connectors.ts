@@ -74,6 +74,8 @@ export function tokenHeaderValue(auth: Extract<ConnectorAuth, { kind: 'token' }>
   if (!t) throw new Error(`Enter the ${auth.label.toLowerCase()}.`)
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(t)) throw new Error('The token must be a single line without control characters.')
+  // Header values: printable ASCII only, spaces allowed inside (trimmed at the ends above).
+  if (!/^[\x21-\x7e ]+$/.test(t)) throw new Error('The token may contain only printable ASCII characters (letters, digits, punctuation and spaces).')
   if (t.length > 4000) throw new Error('The token is too long.')
   const prefix = auth.prefix ?? ''
   return prefix && t.toLowerCase().startsWith(prefix.toLowerCase()) ? `${prefix}${t.slice(prefix.length).trim()}` : `${prefix}${t}`
