@@ -34,7 +34,7 @@ import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRa
 import { costFromPrice, priceFor } from './pricing'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
-import { buildSkillPlugin, qualifiedSkillName, skillGate, type SkillPlugin } from './claudeSkills'
+import { buildSkillPlugin, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
@@ -336,8 +336,8 @@ export function buildAgents(
   harness: Pick<HarnessTool, 'name' | 'audience'>[],
   isolation: boolean,
   mcpSpecs: Pick<Project, 'mcpServers'> = ctx.project,
-  /** Run skills actually loaded as the orgai plugin (empty = none). */
-  skills: RunSkill[] = []
+  /** Run skills actually loaded in the run plugin, keyed by qualified name ("<plugin>:<name>"; empty = none). */
+  skills: Map<string, RunSkill> = new Map()
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
   const agents: Record<string, AgentDefinition> = {}
@@ -352,14 +352,14 @@ export function buildAgents(
     for (const name of mcp) if (!tools.includes(mcpToolRule(name))) tools.push(mcpToolRule(name))
     // Roles with a grant get the native Skill tool; the PreToolUse gate limits it to their own orgai:<name> skills.
     // AgentDefinition.skills is deliberately not set: it preloads full skill content on every spawn and grants nothing.
-    const granted = isSetup ? [] : skills.filter((s) => s.roleIds.includes(role.id))
+    const granted = isSetup ? [] : [...skills.entries()].filter(([, s]) => s.roleIds.includes(role.id))
     if (granted.length && !tools.includes('Skill')) tools.push('Skill')
     const def: AgentDefinition = {
       description: role.description,
       prompt: buildRolePrompt(role, ctx.roles, ctx.project, {
         isSetup,
         isolation,
-        ...(granted.length ? { skills: granted.map((s) => ({ name: qualifiedSkillName(s.name), description: s.description })), skillTool: 'Skill' as const } : {})
+        ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
       model: role.model || 'inherit'
@@ -523,6 +523,8 @@ export class ClaudeSession implements RuntimeSession {
   private continuation: ContinuationDriver
   /** The run-scoped orgai skills plugin (work runs with granted skills); removed at stop and teardown. */
   private skillPlugin?: SkillPlugin
+  /** Skill tool_use ids the gate allowed, until PostToolUse confirms the call ran (then skill.used is emitted). */
+  private gatedSkillCalls = new Map<string, { agentId: string; skill: RunSkill }>()
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -875,7 +877,8 @@ export class ClaudeSession implements RuntimeSession {
           this.log('warn', `Blocked Skill call by ${this.agents.get(agentId)?.name ?? agentId}: ${verdict.reason}`)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }
         }
-        this.emit({ type: 'skill.used', runId: this.ctx.run.id, agentId, skillId: verdict.skill.id, name: verdict.skill.name, at: Date.now() })
+        // skill.used is emitted from PostToolUse for this tool_use id, i.e. only once the call actually ran.
+        this.gatedSkillCalls.set(input.tool_use_id, { agentId, skill: verdict.skill })
       }
       this.lastToolAgent.set(input.tool_name, agentId)
       if (input.tool_name.startsWith(ORGAI_TOOL_PREFIX)) this.harnessCallers.record(input.tool_name, input.tool_use_id, input.agent_id)
@@ -959,6 +962,11 @@ export class ClaudeSession implements RuntimeSession {
     const postToolUse: HookCallback = async (raw) => {
       const input = raw as PostToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      const gated = this.gatedSkillCalls.get(input.tool_use_id)
+      if (gated) {
+        this.gatedSkillCalls.delete(input.tool_use_id)
+        this.emit({ type: 'skill.used', runId: this.ctx.run.id, agentId: gated.agentId, skillId: gated.skill.id, name: gated.skill.name, at: Date.now() })
+      }
       // Calls that never needed a permission prompt still leave an issuer queued; drop it now.
       this.takeIssuer(permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>), agentId)
       const archPath = this.ctx.project.setup?.architecturePath
@@ -1105,7 +1113,7 @@ export class ClaudeSession implements RuntimeSession {
 
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }, this.skillPlugin ? [...this.skillPlugin.names.values()] : []),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }, this.skillPlugin?.names),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
@@ -1158,6 +1166,9 @@ export class ClaudeSession implements RuntimeSession {
       options.skills = skillNames
       options.settings = { disableBundledSkills: true }
     }
+    // Repo skills load under settingSources ['project']; never run their inline !`cmd` shell injection
+    // (Settings.disableSkillShellExecution, present in sdk.d.ts and the bundled claude.exe).
+    options.settings = { ...(options.settings as object | undefined), disableSkillShellExecution: true }
     if (plugins.length) options.plugins = plugins
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     const savedRules = listRules(project.path)
