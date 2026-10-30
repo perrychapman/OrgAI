@@ -46,7 +46,32 @@ try {
       for (const name of ['Setup model', 'MCP assistant model']) {
         check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select on the Defaults pane at ${w}x${h} ${theme}`)
       }
+      const note = page.getByText("On other connections a Claude model stands for its tier.", { exact: false })
+      check((await note.count()) === 1, `Assistants note present at ${w}x${h} ${theme}`)
+      await note.scrollIntoViewIfNeeded()
+      const defOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+      check(defOv.sw <= defOv.cw, `no horizontal scroll on Defaults at ${w}x${h} ${theme}`, JSON.stringify(defOv))
+      const nb = await note.boundingBox()
+      check(!!nb && nb.x >= 0 && nb.x + nb.width <= w + 0.5, `Assistants note inside the viewport at ${w}x${h} ${theme}`, JSON.stringify(nb))
+      await shot(`defaults-${w}x${h}-${theme}`)
       if (w === 1024 && theme === 'dark') {
+        // Setup model persists across reopening App settings
+        const sm = () => page.getByRole('combobox', { name: 'Setup model', exact: true })
+        const smOpts = await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))
+        const smBefore = await sm().inputValue()
+        const smWant = smOpts.find((v) => v !== smBefore)
+        if (smWant) {
+          await sm().selectOption(smWant)
+          await sleep(600)
+          await page.reload()
+          await page.waitForSelector('.nav-item', { timeout: 15_000 })
+          await openAppSettings(page)
+          await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+          check((await sm().inputValue()) === smWant, 'Setup model persists after reopening App settings', smWant)
+          await sm().selectOption(smBefore)
+          await sleep(600)
+          await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+        }
         // A connection that is not set up is a disabled option; persistence is checked on a usable one.
         const opts = await defConn.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, d: o.disabled, t: o.textContent })))
         const pick = opts.find((o) => o.v !== 'anthropic' && !o.d)
