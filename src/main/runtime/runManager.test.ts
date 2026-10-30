@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ImageAttachment, McpServerSpec, Project, Proposal, RunEvent } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext } from './types'
 import { RESUME_TEXT, RunManager, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript } from './mock'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { project as makeProject } from './testHelpers'
+import { project as makeProject, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, limitReachedText } from './continuation'
 
 // The real logger writes under Electron's userData; tests have no Electron.
@@ -71,6 +71,34 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('RunManager stored records', () => {
+  it('breaks a parent cycle in a record read from the store', () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p)
+    const agent = (id: string, parentId: string | null, startedAt: number): AgentInstance => ({
+      id, roleId: null, roleSlug: id, name: id, parentId, spawnToolUseId: null, state: 'done', activity: '',
+      inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt
+    })
+    // The shape of run_mvu37llxrwm72owl: a resumed lead re-parented under the report it spawned.
+    store.saveRecord({
+      summary: runSummary({ id: 'run-cycle', projectId: p.id, status: 'finished' }),
+      agents: {
+        root: agent('root', null, 0),
+        lead: agent('lead', 'report', 1),
+        report: agent('report', 'lead', 3),
+        other: agent('other', 'lead', 2)
+      },
+      transcript: [],
+      logs: []
+    })
+    const agents = m.get('run-cycle')!.agents
+    expect(agents.lead.parentId).toBe('root')
+    expect(agents.report.parentId).toBe('lead')
+    expect(agents.other.parentId).toBe('lead')
+    expect(store.getRecord('run-cycle')!.agents.lead.parentId).toBe('report')
+  })
 })
 
 describe('RunManager image attachments', () => {

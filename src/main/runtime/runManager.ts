@@ -34,6 +34,7 @@ import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
+import { breakParentCycles } from './agentTree'
 import { describePlanChange } from './continuation'
 import { validateSpec } from '../mcp/validate'
 import { assistContext } from '../mcp/assist'
@@ -441,7 +442,11 @@ export class RunManager {
   get(runId: string): RunRecord | null {
     const active = this.runs.get(runId)
     if (active) return { ...active.record, summary: { ...active.summary } }
-    return this.store.getRecord(runId)
+    const stored = this.store.getRecord(runId)
+    if (!stored) return null
+    // Records written before agentTree.resolveParent existed can hold a parent cycle; repair them on read.
+    const agents = breakParentCycles(stored.agents ?? {}, ROOT_AGENT_ID)
+    return agents === stored.agents ? stored : { ...stored, agents }
   }
 
   private requestPermission(

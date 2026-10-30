@@ -35,6 +35,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Role prompts, activity strings, permission scopes, agent handles and messages, the continuation driver, WorktreeIntegrator and git worktree commit/merge.
 - Vendor-neutral usage mapping.
 - Image attachments. attachments.ts sanitizes untrusted pasted images: count and size limits, base64 checks, and magic-byte sniffing.
+- Agent tree rules. agentTree.ts resolves a reported agent's parent without creating cycles and repairs cyclic stored records.
 
 - `src/main/runtime/types.ts`
 - `src/main/runtime/harnessTools.ts`
@@ -45,6 +46,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - `src/main/runtime/permissionRules.ts`
 - `src/main/runtime/network.ts`
 - `src/main/runtime/attachments.ts`
+- `src/main/runtime/agentTree.ts`
 - `src/main/runtime/runManager.ts`
 - `src/main/runtime/worktrees.ts`
 - `src/main/runtime/usage.ts`
@@ -149,7 +151,7 @@ The contextBridge API window.orgai and its typings.
 
 ### UI primitives
 
-components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice and Icon. PLANNED: Radix-based versions, and a components/layout panel shell over react-resizable-panels. Neither exists yet.
+components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). PLANNED: Radix-based versions, and a components/layout panel shell over react-resizable-panels. Neither exists yet.
 
 - `src/renderer/src/components/ui/`
 
@@ -203,6 +205,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Setup-like runs (setup, mcp-assist) use built-in roles (the Architect, the MCP assistant) and are never nudged by the continuation driver.
 - Harness tool audiences: 'root' tools go to the root role only. 'spawners' tools (list_mcp_servers, search_mcp_registry, request_mcp_install) go to the root and every canSpawn role.
 - usage.ts stays vendor-neutral and never imports the SDK. Mind the unit mismatch: usage responses give 0-100 percent and ISO resets, while rate_limit_event gives a 0-1 fraction and epoch seconds.
+- Agent parent chains are trees. Adapters resolve parents through agentTree.resolveParent, RunManager.get sanitizes stored records, and every renderer walk over parentId is cycle-safe.
 - SDK spawns go through the adapter's EXECUTABLE_OPTION, and the native CLIs stay in asarUnpack.
 - PLANNED, with the UI overhaul (not in force for code that does not use them yet):
   - Radix-based components/ui and a components/layout panel shell.
