@@ -49,6 +49,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const [error, setError] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [announce, setAnnounce] = useState('')
   const state = info.status.state
   const connected = state === 'connected'
   const defaultId = useAppStore((s) => s.defaultConnection)
@@ -60,6 +61,8 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const makeDefault = async (): Promise<void> => {
     try {
       await useAppStore.getState().setDefaultConnection(id)
+      setAnnounce(`${meta.name} is now the default for new projects`)
+      requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h3')?.focus())
     } catch (e) {
       setError(errText(e))
     }
@@ -163,7 +166,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           <Icon icon={meta.icon} size="lg" />
         </span>
         <div className="conn-title">
-          <h3>{meta.name}</h3>
+          <h3 tabIndex={-1}>{meta.name}</h3>
           <p className={state === 'error' ? 'conn-detail invalid-text' : 'conn-detail'} role="status" aria-live="polite" data-testid="connection-status">
             {detail}
           </p>
@@ -175,7 +178,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           </Badge>
         )}
         {connected && defaultId !== null && !isDefault && (
-          <Button size="sm" variant="ghost" ariaLabel={`Use ${meta.name} for new projects`} onClick={() => void makeDefault()}>
+          <Button size="sm" variant="secondary" ariaLabel={`Use ${meta.name} for new projects`} onClick={() => void makeDefault()}>
             Use for new projects
           </Button>
         )}
@@ -192,6 +195,9 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
             Connect
           </Button>
         )}
+        <span className="sr-only" role="status" aria-live="polite">
+          {announce}
+        </span>
         <IconButton
           icon={RefreshCw}
           label={`Refresh ${meta.name} status and models`}

@@ -10,11 +10,14 @@ describe('newProjectConnectionLine', () => {
     expect(newProjectConnectionLine('litellm', [lite('http://x', true)])).toContain('Runs on LiteLLM.')
     expect(newProjectConnectionLine('openai', [oai(true)])).toContain('Runs on OpenAI.')
   })
+  it('says the mock adapter when it is ticked', () => {
+    expect(newProjectConnectionLine('litellm', [lite('http://x', true)], true)).toBe('Runs on the mock adapter (no tokens).')
+  })
   it('falls back to Anthropic when it is not', () => {
-    expect(newProjectConnectionLine('litellm', [lite('', true)])).toContain('Runs on Anthropic.')
-    expect(newProjectConnectionLine('litellm', [lite('http://x', false)])).toContain('Runs on Anthropic.')
-    expect(newProjectConnectionLine('openai', [oai(false)])).toContain('Runs on Anthropic.')
-    expect(newProjectConnectionLine('litellm', null)).toContain('Runs on Anthropic.')
+    expect(newProjectConnectionLine('litellm', [lite('', true)])).toContain('so this project runs on Anthropic.')
+    expect(newProjectConnectionLine('litellm', [lite('http://x', false)])).toContain('so this project runs on Anthropic.')
+    expect(newProjectConnectionLine('openai', [oai(false)])).toBe('OpenAI is not connected, so this project runs on Anthropic. Change in App settings > Defaults.')
+    expect(newProjectConnectionLine('litellm', null)).toContain('LiteLLM is not connected, so this project runs on Anthropic.')
     expect(newProjectConnectionLine(null, null)).toContain('Runs on Anthropic.')
   })
 })

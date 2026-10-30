@@ -392,10 +392,14 @@ export default function AppSettingsView(): ReactElement {
                       label={DEFAULT_CONNECTION_COPY.label}
                       describedBy={settingDescId('default-connection-row')}
                       value={info.defaultConnection ?? 'anthropic'}
-                      options={CONNECTION_IDS.map((id) => ({
-                        value: id,
-                        label: `${CONNECTION_NAME[id]}${id === 'anthropic' || connectionUsable(connections?.find((c) => c.connection.id === id)) ? '' : ' (not set up)'}`
-                      }))}
+                      options={CONNECTION_IDS.map((id) => {
+                        const usable = id === 'anthropic' || connectionUsable(connections?.find((c) => c.connection.id === id))
+                        return {
+                          value: id,
+                          label: `${CONNECTION_NAME[id]}${usable ? '' : ' (Not connected)'}`,
+                          disabled: !usable && id !== (info.defaultConnection ?? 'anthropic')
+                        }
+                      })}
                       onChange={(v) => {
                         const defaultConnection = v as ConnectionId
                         patch({ defaultConnection }, true)

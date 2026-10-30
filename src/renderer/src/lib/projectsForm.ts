@@ -70,8 +70,17 @@ export function newProjectConnection(def: ConnectionId | null | undefined, conne
   return connectionUsable(connections?.find((c) => c.connection.id === def)) ? def : 'anthropic'
 }
 
-export function newProjectConnectionLine(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined): string {
-  return `Runs on ${CONNECTION_NAME[newProjectConnection(def, connections)]}. Change in App settings > Defaults.`
+/** The lead sentence of the new-project line (the "Change in App settings > Defaults" tail is added by the view). */
+export function newProjectConnectionNote(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined, mock = false): string {
+  if (mock) return 'Runs on the mock adapter (no tokens).'
+  const used = newProjectConnection(def, connections)
+  if (def && def !== used) return `${CONNECTION_NAME[def]} is not connected, so this project runs on ${CONNECTION_NAME[used]}.`
+  return `Runs on ${CONNECTION_NAME[used]}.`
+}
+
+export function newProjectConnectionLine(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined, mock = false): string {
+  const note = newProjectConnectionNote(def, connections, mock)
+  return mock ? note : `${note} Change in App settings > Defaults.`
 }
 
 /** The name to create with: the typed one, else the folder's name. */
