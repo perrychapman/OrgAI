@@ -6,7 +6,9 @@ import { dragWidth, keyWidth } from '../../lib/panelWidth'
  * A thin vertical drag handle on the edge of a column (a `role="separator"`). It lives inside the column it resizes,
  * on the edge facing the neighbour, so it never overlaps the canvas. `edge="end"` is a left column's right edge
  * (dragging right grows it); `edge="start"` is a right column's left edge (dragging left grows it).
- * Pointer drag (captured), arrow keys (Shift for bigger steps), Home/End and double-click to reset.
+ * Pointer drag (captured), arrow keys (Shift for bigger steps), Home/End, and double-click or Enter to reset.
+ * Per the WAI-ARIA window splitter pattern the arrows move the splitter itself: Right moves it right, so it grows the
+ * sidebar and shrinks the right panel; aria-valuenow is the column's width and aria-valuetext says so.
  */
 export function ResizeHandle({
   label,
@@ -46,6 +48,11 @@ export function ResizeHandle({
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
   const key = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      onReset()
+      return
+    }
     const next = keyWidth(value, e.key, e.shiftKey, dir, min, max)
     if (next === null) return
     e.preventDefault()
@@ -60,6 +67,8 @@ export function ResizeHandle({
       aria-orientation="vertical"
       aria-label={label}
       aria-valuenow={Math.round(value)}
+      aria-valuetext={`${Math.round(value)} px wide`}
+      title="Drag to resize · double-click to reset"
       aria-valuemin={min}
       aria-valuemax={max}
       tabIndex={0}

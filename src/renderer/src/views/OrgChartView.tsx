@@ -33,6 +33,31 @@ const nodeTypes = { role: RoleNode }
 const UNDO_MS = 12_000
 
 export default function OrgChartView({ project }: { project: Project }): ReactElement {
+  // Re-fit when the frame changes size (window, sidebar or side panel resize), as the live view does.
+  const frameRef = useRef<HTMLDivElement>(null)
+  const flowRef = useRef<{ fitView: (o?: { padding?: number; maxZoom?: number; duration?: number }) => unknown } | null>(null)
+  useEffect(() => {
+    const el = frameRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    let t: ReturnType<typeof setTimeout> | undefined
+    let first = true
+    const ro = new ResizeObserver(() => {
+      if (first) {
+        first = false
+        return
+      }
+      clearTimeout(t)
+      t = setTimeout(() => {
+        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+      }, 100)
+    })
+    ro.observe(el)
+    return () => {
+      clearTimeout(t)
+      ro.disconnect()
+    }
+  }, [])
   const selectedRoleId = useAppStore((s) => s.selectedRoleId)
   const selectRole = useAppStore((s) => s.selectRole)
   const updateRoles = useAppStore((s) => s.updateRoles)
@@ -272,7 +297,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
 
   return (
     <div className="editor" ref={rootRef} onKeyDownCapture={onRootKeyDownCapture}>
-      <CanvasFrame>
+      <CanvasFrame frameRef={frameRef}>
         <FrameToolbar label="Org chart actions">
           <Button size="sm" icon={Plus} onClick={addRole}>
             Add role
@@ -304,6 +329,9 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
               setSelectedEdgeId(null)
             }}
             onBeforeDelete={onBeforeDelete}
+            onInit={(inst) => {
+              flowRef.current = inst
+            }}
             fitView
             fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
             proOptions={{ hideAttribution: true }}

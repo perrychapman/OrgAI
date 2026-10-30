@@ -651,7 +651,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                 <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
                   <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" />
                   <span className="fold-label" aria-hidden="true">
-                    Hide finished agents{collapseFinished && finishedCount ? ` (${finishedCount})` : ''}
+                    <span className="fold-long">Hide finished agents</span>
+                    <span className="fold-short">Hide finished</span>
+                    {collapseFinished && finishedCount ? ` (${finishedCount})` : ''}
                   </span>
                 </span>
               )}
