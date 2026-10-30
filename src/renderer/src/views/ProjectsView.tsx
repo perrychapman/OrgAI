@@ -6,6 +6,7 @@ import { setupPending } from '@shared/setup'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { examplePath } from '../lib/platform'
+import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../lib/agentImport'
 import { effectiveName, newProjectConnectionNote, pathStatus, submitBlocker } from '../lib/projectsForm'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
@@ -31,13 +32,14 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
   }, [])
   const startSetup = useAppStore((s) => s.startSetup)
   const uid = useId()
-  const ids = { name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
+  const ids = { name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
 
   const [kind, setKind] = useState<SetupKind>('new')
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [brief, setBrief] = useState('')
   const [architect, setArchitect] = useState(true)
+  const [picked, setPicked] = useState<SetupChoice | null>(null)
   const [useMock, setUseMock] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -61,7 +63,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
           if (live) setCheck({ path: p, result })
         })
         .catch(() => {})
-    }, 250)
+    }, 300)
     return () => {
       live = false
       clearTimeout(t)
@@ -70,6 +72,10 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
 
   const current = check && check.path === path.trim() ? check.result : null
   const status = pathStatus(kind, path, current)
+  const found = foundLine(current)
+  const agentTotal = totalAgents(current)
+  const hasAgents = agentTotal > 0
+  const choice = effectiveSetupChoice(hasAgents, picked, architect)
   const blocker = submitBlocker({ kind, name, path, brief, status })
 
   const setPathValue = (v: string): void => {
@@ -92,11 +98,13 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         name: effectiveName(name, path, current),
         path: path.trim(),
         brief: brief.trim(),
-        setupKind: architect ? kind : undefined,
+        setupKind: choice === 'architect' ? kind : undefined,
         ...(mockAvailable && useMock ? { mock: true } : {})
       }
-      await createProject(input as Parameters<typeof createProject>[0])
-      if (architect) await startSetup()
+      const created = await createProject(input as Parameters<typeof createProject>[0])
+      // Import never writes blind: the project starts with the default chart and the review opens on the Org chart tab.
+      if (choice === 'import') useAppStore.getState().requestImport({ projectId: created.id, fresh: true })
+      if (choice === 'architect') await startSetup()
       // The form is gone: land focus on the new project's heading instead of letting it fall to the page.
       requestAnimationFrame(() => {
         const h = document.querySelector<HTMLElement>('main .topbar h1')
@@ -124,7 +132,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
             onChange={setPathValue}
             placeholder={placeholder}
             invalid={!!error || status?.tone === 'error'}
-            aria-describedby={[error ? ids.pathErr : '', status ? ids.pathMsg : ''].filter(Boolean).join(' ') || undefined}
+            aria-describedby={[error ? ids.pathErr : '', status ? ids.pathMsg : '', found ? ids.foundMsg : '', current?.existingProjectId ? ids.dupMsg : ''].filter(Boolean).join(' ') || undefined}
           />
         </div>
         <Button icon={FolderOpen} onClick={() => void pick()}>
@@ -139,6 +147,26 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
       {status && (
         <span id={ids.pathMsg} className={`field-msg ${status.tone}`}>
           {status.text}
+        </span>
+      )}
+      {found && (
+        <span id={ids.foundMsg} className="field-msg info" data-testid="agents-found">
+          {found}
+        </span>
+      )}
+      {current?.existingProjectId && (
+        <span id={ids.dupMsg} className="field-msg warn" data-testid="already-project">
+          This folder is already a project: {current.existingProjectName}.{' '}
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              useAppStore.getState().selectProject(current.existingProjectId ?? null)
+              useAppStore.getState().setView('run')
+            }}
+          >
+            Open it
+          </button>
         </span>
       )}
       <span className="hint">{hint}</span>
@@ -204,13 +232,25 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
       )}
 
       <div className="stack-2 form-options">
-        <Checkbox
-          checked={architect}
-          onChange={setArchitect}
-          label="Set up with the Architect (recommended)"
-          description="Turn off to start with the default roles and skip the interview."
-          testId="architect-setup"
-        />
+        {hasAgents ? (
+          <fieldset className="import-choice" data-testid="setup-choice">
+            <legend>How should the org chart start?</legend>
+            {(['import', 'architect', 'default'] as const).map((c) => (
+              <label key={c}>
+                <input type="radio" name={`${uid}-setup`} value={c} checked={choice === c} onChange={() => setPicked(c)} />
+                {importChoiceLabel(c, agentTotal)}
+              </label>
+            ))}
+          </fieldset>
+        ) : (
+          <Checkbox
+            checked={architect}
+            onChange={setArchitect}
+            label="Set up with the Architect (recommended)"
+            description="Turn off to start with the default roles and skip the interview."
+            testId="architect-setup"
+          />
+        )}
         {mockAvailable && <Checkbox checked={useMock} onChange={setUseMock} label="Use the mock adapter (no tokens are spent)" testId="use-mock" />}
       </div>
 
@@ -236,7 +276,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
 
       <div className="row form-submit">
         <Button type="submit" variant="primary" loading={busy} disabled={!!blocker}>
-          {busy ? (architect ? 'Scanning and starting the Architect…' : 'Creating…') : architect ? 'Create and start setup' : 'Create project'}
+          {setupSubmitLabel(choice, busy)}
         </Button>
         {blocker && !busy && (
           <span id={ids.why} className="hint">
