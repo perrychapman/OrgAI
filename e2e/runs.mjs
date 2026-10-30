@@ -110,8 +110,56 @@ try {
     check(tm.btnBottom === undefined || tm.btnBottom <= tm.ih + 0.5, 'the card action row is reachable inside the window at 1024x640', String(tm.btnBottom))
     log('chrome above the canvas at 1024x640 (px from window top to stage):', Math.round(tm.stage?.t ?? 0), 'stage', `${Math.round((tm.stage?.r ?? 0) - (tm.stage?.l ?? 0))}x${Math.round((tm.stage?.b ?? 0) - (tm.stage?.t ?? 0))}`)
     await shot('tray-1024x640')
+    // The action row is fully inside the tray's visible box and clear of the card body text.
+    const am = await page.evaluate(() => {
+      const box = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom } }
+      const tray = document.querySelector('section.frame-tray')
+      const card = tray?.querySelector('article.decision-card')
+      if (!tray || !card) return null
+      const tb = box(tray)
+      const btns = [...card.querySelectorAll('footer button')].map(box)
+      const foot = card.querySelector('footer') ? box(card.querySelector('footer')) : null
+      const texts = [...card.querySelectorAll('.decision-head, .decision-body')].filter((el) => el.getClientRects().length).map(box)
+      const inside = btns.every((b) => b.t >= tb.t - 0.5 && b.b <= tb.b + 0.5 && b.l >= tb.l - 0.5 && b.r <= tb.r + 0.5)
+      const overlap = texts.some((t) => btns.some((b) => b.l < t.r && b.r > t.l && b.t < t.b - 0.5 && b.b > t.t + 0.5))
+      // A bare "0" (a falsy count rendered by `n && <x/>`) anywhere in the tray.
+      const w = document.createTreeWalker(tray, NodeFilter.SHOW_TEXT)
+      let stray = 0
+      for (let n = w.nextNode(); n; n = w.nextNode()) if (n.textContent.trim() === '0') stray++
+      const small = []
+      for (const el of document.querySelectorAll('main *')) {
+        if (![...el.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim()) || !el.getClientRects().length) continue
+        const fs = parseFloat(getComputedStyle(el).fontSize)
+        if (fs < 12) small.push(`${el.className || el.tagName}:${fs}`)
+      }
+      const meta = document.querySelector('[data-testid=run-meta]')
+      const badges = meta ? [...meta.querySelectorAll('.badge')].map((b) => b.className) : null
+      return { n: btns.length, inside, overlap, stray, foot, tb, badges, small }
+    })
+    check(!!am && am.n > 0 && am.inside, 'the decision card action row is fully inside the tray at 1024x640', JSON.stringify(am))
+    check(!!am && !am.overlap, 'the action row does not overlap the card body text at 1024x640')
+    check(!!am && am.small.length === 0, 'no visible text under 12 px in the Live view at 1024x640', JSON.stringify(am?.small))
+    check(!!am && am.stray === 0, 'no stray "0" text node in the tray')
+    check(!!am && am.badges !== null && am.badges.every((c) => /neutral/.test(c)), 'run-meta holds text, not coloured badges', JSON.stringify(am?.badges))
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prevSize)
     await sleep(500)
+    // Side tabs are real tabs: ArrowRight moves from Transcript to Plan.
+    const tTab = page.locator('[data-testid=side-tab-transcript]')
+    if ((await tTab.count()) && !(await tTab.isVisible())) {
+      await page.getByRole('button', { name: /^Show run panel/ }).click().catch(() => {})
+      await sleep(300)
+    }
+    if (await tTab.isVisible().catch(() => false)) {
+      check((await tTab.getAttribute('role')) === 'tab', 'the Transcript side tab has role=tab')
+      await tTab.focus()
+      await page.keyboard.press('ArrowRight')
+      await sleep(200)
+      const sel = await page.locator('[data-testid=side-tab-plan]').getAttribute('aria-selected')
+      check(sel === 'true', 'ArrowRight on the Transcript tab selects Plan', String(sel))
+      await tTab.click()
+    } else {
+      check(false, 'the side panel tabs are reachable on the Live view')
+    }
   }
   await endSession(page)
   await sleep(500)
