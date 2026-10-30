@@ -527,6 +527,8 @@ export function newProject(input: { name: string; path: string; brief: string; s
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
       preferEverydayNearLimit: settings.defaultPreferEverydayNearLimit,
+      // Deprecated mirror for renderer code that still reads the legacy name (ProjectStore keeps the two in step).
+      preferSonnetNearLimit: settings.defaultPreferEverydayNearLimit,
       autoContinue: settings.defaultAutoContinue,
       maxAutoContinues: settings.defaultMaxAutoContinues,
       roles,
