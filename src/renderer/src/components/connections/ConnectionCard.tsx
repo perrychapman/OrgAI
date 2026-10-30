@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Copy, ExternalLink, Network, RefreshCw, Sparkles } from 'lucide-react'
 import type { ConnectionId, ConnectionInfo, ConnectionLoginStart, OpenAIConnection, AnthropicConnection, LiteLLMConnection, ProviderConnection } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
@@ -39,8 +39,11 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const loadModels = useAppStore((s) => s.loadModels)
   const models = useAppStore((s) => s.models[id])
   const modelsError = useAppStore((s) => s.modelsError[id])
-  // Collapsed when everything works; open when the card needs the user (not connected, error, login pending).
-  const [open, setOpen] = useState(info.status.state !== 'connected')
+  // Collapsed by default, connected or not: a provider the user did not ask about stays one line with a Connect
+  // button. Opens by itself only when something is wrong or a sign-in is pending.
+  const [open, setOpen] = useState(info.status.state === 'error' || info.status.state === 'connecting')
+  const card = useRef<HTMLElement>(null)
+  const focusOnOpen = useRef(false)
   const [busy, setBusy] = useState<null | 'refresh' | 'connect'>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -51,6 +54,13 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   useEffect(() => {
     if (state === 'error' || state === 'connecting') setOpen(true)
   }, [state])
+
+  // After the header's Connect button opened the card, move focus to its first control.
+  useEffect(() => {
+    if (!open || !focusOnOpen.current) return
+    focusOnOpen.current = false
+    card.current?.querySelector<HTMLElement>('.conn-auth input, .conn-auth button')?.focus()
+  }, [open])
 
   useEffect(() => {
     if (connected && !models) void loadModels(id)
@@ -133,7 +143,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   }, [state, info.status, info.connection, id, meta.hint, models])
 
   return (
-    <section className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
+    <section ref={card} className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
       <header className="card-sec conn-head">
         <span className="conn-mark">
           <Icon icon={meta.icon} size="lg" />
@@ -145,6 +155,19 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           </p>
         </div>
         <ConnectionStatusBadge state={state} />
+        {!connected && !open && (
+          <Button
+            size="sm"
+            variant="primary"
+            ariaLabel={`Connect ${meta.name}`}
+            onClick={() => {
+              focusOnOpen.current = true
+              setOpen(true)
+            }}
+          >
+            Connect
+          </Button>
+        )}
         <IconButton
           icon={RefreshCw}
           label={`Refresh ${meta.name} status and models`}

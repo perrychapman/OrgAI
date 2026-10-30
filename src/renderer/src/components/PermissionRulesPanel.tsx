@@ -20,10 +20,8 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
   const [error, setError] = useState<string | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
-  const [editing, setEditing] = useState(false)
   const inputId = useId()
   const errorId = `${inputId}-error`
-  const hintId = `${inputId}-hint`
 
   const refresh = useCallback(async () => {
     try {
@@ -103,13 +101,7 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
             {listError}
           </p>
         )}
-        <div
-          className="settings-card-add"
-          onFocus={() => setEditing(true)}
-          onBlur={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setEditing(false)
-          }}
-        >
+        <div className="settings-card-add">
           <div className="row gap-2">
             <div className="grow">
               <Input
@@ -121,7 +113,7 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
                 placeholder="Bash(gh repo create:*)"
                 spellCheck={false}
                 invalid={!!error}
-                aria-describedby={error ? errorId : editing ? hintId : undefined}
+                aria-describedby={error ? errorId : undefined}
                 onChange={(v) => {
                   setDraft(v)
                   if (error) setError(null)
@@ -143,20 +135,19 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
               {error}
             </span>
           )}
-          {editing && (
-            <>
-              <span className="settings-card-hint" id={hintId}>
-                A command prefix, an exact command or a whole tool. Applies to open runs too.
-              </span>
-              <div className="chip-row" aria-label="Rule examples">
+          <details className="rule-examples">
+            <summary>Examples</summary>
+            <div className="rule-examples-body">
+              <span className="settings-card-hint">A command prefix, an exact command or a whole tool. Applies to open runs too.</span>
+              <div className="chip-row" role="group" aria-label="Rule examples">
                 {EXAMPLES.map((ex) => (
                   <button key={ex} type="button" className="chip chip-btn" onClick={() => setDraft(ex)} title="Use this example">
                     {ex}
                   </button>
                 ))}
               </div>
-            </>
-          )}
+            </div>
+          </details>
         </div>
       </SettingsCard>
     </SettingsSection>

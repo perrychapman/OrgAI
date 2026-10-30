@@ -1,11 +1,13 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useRef } from 'react'
+import { PaneTitleContext } from './SettingsSection'
 import { SettingsNav, settingsPanelId, settingsTabId, type SettingsNavItem } from './SettingsNav'
 
 /**
  * Shared frame of both settings pages: optional page title, the pane nav (left rail from 640px of container width,
  * tab strip above the content below that) and one tabpanel holding the active pane's sections. Only the active pane
- * is rendered. `idBase` namespaces tab/panel ids ('app-settings', 'project-settings').
+ * is rendered. The panel starts with an h2 reading the tab label (tabIndex -1, the focus target after a deep link;
+ * sections inside are h3). `idBase` namespaces tab/panel ids ('app-settings', 'project-settings').
  */
 export function SettingsPage({
   title,
@@ -28,9 +30,10 @@ export function SettingsPage({
   children: ReactNode
 }): ReactElement {
   const scroller = useRef<HTMLDivElement>(null)
+  const paneLabel = panes.find((p) => p.id === active)?.label ?? ''
   return (
     <div className="settings-scroll" ref={scroller}>
-      {title && <h2 className="settings-page-title">{title}</h2>}
+      {title && <div className="settings-page-title">{title}</div>}
       <div className="settings-layout">
         <SettingsNav
           items={panes}
@@ -44,7 +47,10 @@ export function SettingsPage({
           }}
         />
         <div className="settings-col" role="tabpanel" id={settingsPanelId(idBase)} aria-labelledby={settingsTabId(idBase, active)}>
-          {children}
+          <h2 className="settings-pane-title" id={`${idBase}-pane-title`} tabIndex={-1}>
+            {paneLabel}
+          </h2>
+          <PaneTitleContext.Provider value={paneLabel}>{children}</PaneTitleContext.Provider>
         </div>
       </div>
     </div>
