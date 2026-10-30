@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { ImageAttachment, ImageMediaType, RunRecord, RunSummary, TranscriptEntry } from '@shared/types'
+import type { ImageAttachment, ImageMediaType, RunRecord, RunSummary, RunUsage, TranscriptEntry } from '@shared/types'
 
 const MAX_TRANSCRIPT_ENTRIES = 5000
 const MAX_LOG_LINES = 400
@@ -62,6 +62,21 @@ export class RunStore {
     if (idx === -1) this.runs.push({ ...run })
     else this.runs[idx] = { ...run }
     this.persist()
+  }
+
+  /**
+   * Attach computed usage to several summaries in one index write (runUsage normalization of runs saved before
+   * usage tracking). Existing usage is kept; unknown ids are ignored. totalCostUsd is left as it was saved.
+   */
+  setUsage(updates: readonly { id: string; usage: RunUsage }[]): void {
+    let changed = false
+    for (const u of updates) {
+      const run = this.runs.find((r) => r.id === u.id)
+      if (!run || run.usage) continue
+      run.usage = u.usage
+      changed = true
+    }
+    if (changed) this.persist()
   }
 
   list(projectId: string): RunSummary[] {

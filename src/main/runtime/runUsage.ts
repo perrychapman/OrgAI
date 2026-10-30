@@ -304,8 +304,10 @@ export function normalizeRunRecord(record: RunRecord, now: number = Date.now()):
   if (!summary.usage) {
     const base = computeRunUsage(summary, Object.values(agents), { nudges: record.plan?.autoContinues ?? 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, now: summary.endedAt ?? now })
     const cost = summary.totalCostUsd > 0 ? summary.totalCostUsd : 0
-    const usage: RunUsage = { ...base, legacy: true, updatedAt: now }
-    if (cost > 0) {
+    const isLegacy = base.legacy === true || Object.keys(agents).length === 0
+    const usage: RunUsage = { ...base, updatedAt: now }
+    if (isLegacy) usage.legacy = true
+    if (isLegacy && cost > 0) {
       usage.providerCostUsd = cost
       if (usage.costSource === 'provider' || usage.costSource === 'none') {
         usage.costUsd = cost
