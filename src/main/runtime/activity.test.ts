@@ -8,10 +8,25 @@ describe('isAuthFailure', () => {
     expect(isAuthFailure({ errorCode: 'authentication_failed' })).toBe(true)
     expect(isAuthFailure({ errorCode: 'rate_limit', text: 'Rate limited' })).toBe(false)
   })
-  it("matches the CLI's auth wording in short text", () => {
+  it("matches the CLI's exact bare logged-out reply without an error flag", () => {
     expect(isAuthFailure({ text: 'Invalid API key · Please run /login' })).toBe(true)
-    expect(isAuthFailure({ text: 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}' })).toBe(true)
-    expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token or refresh your existing token.' })).toBe(true)
+    expect(isAuthFailure({ text: 'invalid api key - please run /login  \n' })).toBe(true)
+    expect(isAuthFailure({ text: 'Invalid API key. Please run /login' })).toBe(true)
+    expect(isAuthFailure({ text: 'Invalid API key · Please run /login and retry' })).toBe(false)
+  })
+  it("matches the CLI's leading auth wording only on an error", () => {
+    const apiError = 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'
+    expect(isAuthFailure({ text: apiError })).toBe(false)
+    expect(isAuthFailure({ text: apiError, isError: true })).toBe(true)
+    expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token.' })).toBe(false)
+    expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token.', isError: true })).toBe(true)
+    expect(isAuthFailure({ text: 'Failed to authenticate. API Error: 401', errorCode: 'oauth_org_not_allowed', isError: true })).toBe(true)
+    // A non-auth error code alone never makes leading auth wording a failure
+    expect(isAuthFailure({ text: 'API Error: 401 from upstream', errorCode: 'rate_limit' })).toBe(false)
+  })
+  it('never flags model text that starts with auth wording', () => {
+    expect(isAuthFailure({ text: 'Invalid API key handling is fixed' })).toBe(false)
+    expect(isAuthFailure({ text: 'Failed to authenticate users via SSO is now handled.' })).toBe(false)
   })
   it('counts auth words, a 401 or unauthorized anywhere only on an error result', () => {
     expect(isAuthFailure({ text: 'Request failed: HTTP 401 Unauthorized' })).toBe(false)

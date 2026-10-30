@@ -229,6 +229,14 @@ describe('authFailureFrom', () => {
     expect(authFailureFrom(assistant('', 'authentication_failed'))).toBe('')
     expect(authFailureFrom(assistant('Here is how to rotate an API key safely.'))).toBeNull()
   })
+  it('only treats authentication error codes as enabling the loose text match', () => {
+    const text = 'Request failed: unauthorized'
+    expect(authFailureFrom(assistant(text, 'rate_limit'))).toBeNull()
+    expect(authFailureFrom(assistant(text, 'billing_error'))).toBeNull()
+    expect(authFailureFrom(assistant(text, 'authentication_failed'))).toBe(text)
+    expect(authFailureFrom(assistant(text, 'cloud_credential_error'))).toBe(text)
+    expect(authFailureFrom(assistant(text, 'oauth_org_not_allowed'))).toBe(text)
+  })
   it('detects an error result and ignores a normal one', () => {
     expect(authFailureFrom({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login' } as never)).not.toBeNull()
     expect(authFailureFrom({ type: 'result', subtype: 'success', is_error: false, result: 'Done.' } as never)).toBeNull()

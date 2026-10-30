@@ -153,13 +153,24 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   gateway and cloud-provider variable (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
   `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_*`, `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_USE_*`,
   `ANTHROPIC_{BEDROCK,VERTEX,FOUNDRY,AWS}_*`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_BETAS`, `ANTHROPIC_PROFILE`,
-  `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_UNIX_SOCKET`, `AWS_BEARER_TOKEN_BEDROCK`,
-  `CLOUD_ML_REGION`, `VERTEX_REGION_*`, `CLAUDE_CODE_SKIP_*_AUTH` and the gateway behaviour switches). Only the
-  connection's env sets them. Kept as legitimate Anthropic auth sources: `CLAUDE_CODE_OAUTH_TOKEN` (and its refresh
-  token) and `CLAUDE_CONFIG_DIR`. `ANTHROPIC_API_KEY` reaches a run only on the anthropic connection for an API-key
-  project, through `RunConnection.env` (copied from the project's `auth.envVar`), so run titles get it too. On
-  LiteLLM the inherited API key and OAuth token are dropped, so only the connection's `ANTHROPIC_AUTH_TOKEN`
-  authenticates. Drafts (no connection) keep an inherited `ANTHROPIC_API_KEY`. Verified by unit tests only; the
+  the workload-identity family `ANTHROPIC_{IDENTITY,SERVICE_ACCOUNT,WORKSPACE,FEDERATION}_*`,
+  `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_UNIX_SOCKET`, `AWS_BEARER_TOKEN_BEDROCK`, `CLOUD_ML_REGION`,
+  `VERTEX_REGION_*`, `CLAUDE_CODE_SKIP_*_AUTH` and every `CLAUDE_CODE_{DISABLE,ENABLE}_*` behaviour switch). Only the
+  connection's env (or OrgAI's own settings, merged after isolation) sets them. The bundled CLI of SDK 0.3.312 names
+  about 80 `CLAUDE_CODE_DISABLE_*` and 30 `CLAUDE_CODE_ENABLE_*` switches (grep of the SDK package): gateway and
+  API-surface ones (`DISABLE_EXPERIMENTAL_BETAS`, `DISABLE_ADAPTIVE_THINKING`, `ENABLE_GATEWAY_MODEL_DISCOVERY`, `ENABLE_FINE_GRAINED_TOOL_STREAMING`, `ENABLE_PROXY_AUTH_HELPER`,
+  `DISABLE_AUTH_REFRESH_LOCK`, `ENABLE_XAA`, `DISABLE_LEGACY_MODEL_REMAP`...), feature toggles and terminal UI ones
+  (`DISABLE_MOUSE`, `DISABLE_TERMINAL_TITLE`...) that a headless SDK run does not need. OrgAI sets none of them
+  (it sets only `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_CONCURRENT_SUBAGENTS`). The explicit allows
+  (`CLAUDE_CODE_ALLOWED_SWITCHES`) are `CLAUDE_CODE_ENABLE_TELEMETRY` (an organisation's OpenTelemetry opt-in;
+  `OTEL_*` passes through) and the privacy opt-outs `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and
+  `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`. Kept as
+  legitimate Anthropic auth sources: `CLAUDE_CODE_OAUTH_TOKEN` (and its refresh token) and `CLAUDE_CONFIG_DIR`.
+  `ANTHROPIC_API_KEY` reaches a run only on the anthropic connection for an API-key project, through
+  `RunConnection.env` (copied from the project's `auth.envVar`), so run titles get it too; `buildEnv` also copies
+  the inherited `auth.envVar` value for a non-proxy API-key project. On LiteLLM the inherited
+  API key, OAuth token (and refresh token) and `CLAUDE_CONFIG_DIR` (it holds the claude.ai login) are dropped, so
+  only the connection's `ANTHROPIC_AUTH_TOKEN` authenticates. Drafts (no connection) keep an inherited `ANTHROPIC_API_KEY`. Verified by unit tests only; the
   bundled CLI's actual auth choice with this env has not been checked in a live run.
 - Anthropic status (`anthropicAuth.ts`), checked token-free on the bundled CLI 2.1.312 (SDK 0.3.312) with a temp
   `CLAUDE_CONFIG_DIR`:
@@ -171,13 +182,21 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - `authMethod` values seen: `claude.ai` (a /login), `oauth_token` (`CLAUDE_CODE_OAUTH_TOKEN` or an
     `ANTHROPIC_AUTH_TOKEN` env, indistinguishable), `api_key` with `apiKeySource`, `none`. Verified.
   - The project settings source reads `<cwd>/.claude/settings.json`, so the status runs in `os.tmpdir()`, never the
-    home dir. The bundled CLI is tried first (execFile), then PATH candidates (a shell only for Windows .cmd/.bat
-    shims without metacharacters); a CLI that rejects the flag is retried without it and its detail says user
+    home dir. The bundled CLI is tried first (execFile), then PATH candidates found by `execFile(<SystemRoot>\System32\where.exe,
+    ['$PATH:claude'])` (PATH only, never the cwd) / `execFile('which', ['-a', 'claude'])`, both in the temp dir with
+    no shell and absolute paths only, plus the well-known install
+    paths, with no bare `claude` fallback (nothing found reports "Claude Code CLI not found" with the places
+    looked). A shell is used only for Windows .cmd/.bat shims without metacharacters; a CLI that rejects the flag is retried without it and its detail says user
     settings could not be excluded. The disconnected detail tells the user to run claude and /login, set an API
     key, or choose another default connection. Wiring is unit-tested with an injected runner.
-- Auth failures in a run: `activity.ts` `isAuthFailure` (the SDK assistant `error: 'authentication_failed'`, text
-  that starts with the CLI's wording such as "Invalid API key · Please run /login" or "API Error: 401", or auth
-  words / 401 on an error result) and `authFailureMessage(connection)`. The Claude adapter then ends the run
+- Auth failures in a run: `activity.ts` `isAuthFailure` and `authFailureMessage(connection)`. A failure is the SDK
+  assistant `error: 'authentication_failed'`; the exact bare CLI reply "Invalid API key · Please run /login"
+  (separator `·`, `-` or `.`, nothing else in the text), the only text match without an error flag; short text that
+  starts with the CLI's wording ("API Error: 401", "OAuth token has expired"...) when the adapter reports an
+  auth-related error (`isError`; a non-auth `errorCode` alone never counts); or auth words / 401 / unauthorized anywhere only with `isError`. The Claude
+  adapter sets `isError` on an assistant message only for the codes in claude.ts `AUTH_ERROR_CODES`
+  (`authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`), never for rate_limit or
+  billing_error, and on a result from `is_error`. The Claude adapter then ends the run
   `error` with that one-line message, writes a harness system row whose detail is the scrubbed raw text, and
   `complete()` throws it. `[mock:auth-fail]` drives the mock the same way. The live failure shape is unverified
   (from the 0.3.312 typings and the user's report).

@@ -266,6 +266,14 @@ export function authFailureDetail(raw: string, secrets: Iterable<string>): strin
 }
 
 /**
+ * SDK assistant error codes that mean the credentials are the problem (re-login or fix the key). Only these let
+ * the loose text match in isAuthFailure apply. oauth_org_not_allowed is included (the login is rejected for this
+ * organization). account_on_hold, verification_required and billing_error are account states, not credentials, and
+ * rate_limit, overloaded and the rest are transient or unrelated, so they never end a run as an auth failure.
+ */
+export const AUTH_ERROR_CODES: ReadonlySet<string> = new Set(['authentication_failed', 'oauth_org_not_allowed', 'cloud_credential_error'])
+
+/**
  * The raw text of an authentication failure in an SDK message, or null when the message is not one. An
  * assistant message with error 'authentication_failed', short CLI auth wording, or a result with is_error.
  * The matcher and wording live in activity.ts.
@@ -273,7 +281,7 @@ export function authFailureDetail(raw: string, secrets: Iterable<string>): strin
 export function authFailureFrom(msg: SDKMessage): string | null {
   if (msg.type === 'assistant') {
     const text = msg.message.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim()
-    return isAuthFailure({ errorCode: msg.error, text, isError: !!msg.error }) ? text : null
+    return isAuthFailure({ errorCode: msg.error, text, isError: !!msg.error && AUTH_ERROR_CODES.has(msg.error) }) ? text : null
   }
   if (msg.type === 'result' && msg.subtype === 'success') {
     return isAuthFailure({ text: msg.result, isError: msg.is_error }) ? msg.result : null

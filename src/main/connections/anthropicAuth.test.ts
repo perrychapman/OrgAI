@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { anthropicStatus, candidateLaunch, claudeAuthStatus, claudeCandidatePaths, dedupeByRealpath, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+import { anthropicStatus, candidateLaunch, claudeAuthStatus, claudeCandidatePaths, dedupeByRealpath, listClaudeBinaries, parseWhichOutput, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
 
 describe('candidateLaunch', () => {
   it('runs every non-shim candidate without a shell, metacharacters included', () => {
@@ -13,6 +13,28 @@ describe('candidateLaunch', () => {
     for (const bad of ['C:\\a&calc\\claude.cmd', 'C:\\%PATH%\\claude.bat', 'C:\\a"b\\claude.cmd', 'C:\\a|b\\claude.cmd']) {
       expect(candidateLaunch(bad, 'win32')).toBeNull()
     }
+  })
+})
+
+describe('listClaudeBinaries', () => {
+  it('runs where/which without a shell and keeps absolute paths only, with no bare fallback', async () => {
+    const calls: [string, string[]][] = []
+    const which = async (cmd: string, args: string[]): Promise<string> => {
+      calls.push([cmd, args])
+      return 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd\r\nclaude.cmd\r\n.\\claude\r\n'
+    }
+    expect(await listClaudeBinaries('win32', which)).toEqual(['C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd'])
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toMatch(/System32[\\/]where\.exe$/i)
+    expect(calls[0][1]).toEqual(['$PATH:claude'])
+    expect(await listClaudeBinaries('win32', async () => '')).toEqual([])
+  })
+  it('parses which -a output on POSIX', () => {
+    expect(parseWhichOutput('/usr/local/bin/claude\nclaude\n\n', 'darwin')).toEqual(['/usr/local/bin/claude'])
+  })
+  it('names the places it looked in the not-found message', async () => {
+    const none = await claudeAuthStatus({ candidates: async () => [], env: {} })
+    expect(none.detail).toMatch(/CLI not found \(looked in the bundled CLI, PATH/)
   })
 })
 

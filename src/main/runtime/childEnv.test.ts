@@ -42,14 +42,23 @@ const leaky = {
   ANTHROPIC_UNIX_SOCKET: '/tmp/s',
   ANTHROPIC_AWS_WORKSPACE_ID: 'w',
   VERTEX_REGION_CLAUDE_4_0_OPUS: 'us',
+  ANTHROPIC_IDENTITY_TOKEN: 'jwt',
+  ANTHROPIC_IDENTITY_TOKEN_FILE: '/var/run/token',
+  ANTHROPIC_SERVICE_ACCOUNT_ID: 'sa',
+  ANTHROPIC_WORKSPACE_ID: 'ws',
+  CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER: '1',
+  CLAUDE_CODE_DISABLE_AUTH_REFRESH_LOCK: '1',
+  CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4317',
   UNSET: undefined
 }
 
-const kept = { PATH: '/bin', HOME: '/Users/me', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://corp:3128', NO_PROXY: 'localhost', CLAUDE_CONFIG_DIR: '/Users/me/.claude-work' }
+const kept = { PATH: '/bin', HOME: '/Users/me', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://corp:3128', NO_PROXY: 'localhost', CLAUDE_CODE_ENABLE_TELEMETRY: '1', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4317', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
+const anthropicKept = { ...kept, CLAUDE_CONFIG_DIR: '/Users/me/.claude-work' }
 
 describe('isolateClaudeEnv', () => {
   it('strips every routing, model, gateway and cloud-provider variable and keeps the rest', () => {
-    expect(isolateClaudeEnv(leaky)).toEqual({ ...kept, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh-tok' })
+    expect(isolateClaudeEnv(leaky)).toEqual({ ...anthropicKept, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh-tok' })
   })
 
   it('keeps ANTHROPIC_API_KEY only when asked (Anthropic connection, API-key project)', () => {
@@ -57,8 +66,9 @@ describe('isolateClaudeEnv', () => {
     expect('ANTHROPIC_API_KEY' in isolateClaudeEnv(leaky, { keepApiKey: false })).toBe(false)
   })
 
-  it('on a proxy connection drops the inherited API key and OAuth token whatever keepApiKey says', () => {
+  it('on a proxy connection drops the inherited API key, OAuth token and CLAUDE_CONFIG_DIR whatever keepApiKey says', () => {
     expect(isolateClaudeEnv(leaky, { proxy: true, keepApiKey: true })).toEqual(kept)
+    expect('claude_config_dir' in isolateClaudeEnv({ claude_config_dir: '/x' }, { proxy: true })).toBe(false)
   })
 
   it('matches names case-insensitively (Windows env) and never mutates its input', () => {
@@ -71,10 +81,10 @@ describe('isolateClaudeEnv', () => {
 
 describe('isClaudeRoutingVar', () => {
   it('covers the families and leaves ordinary variables alone', () => {
-    for (const n of ['ANTHROPIC_DEFAULT_SONNET_MODEL_NAME', 'CLAUDE_CODE_USE_SOMETHING_NEW', 'ANTHROPIC_FOUNDRY_RESOURCE', 'claude_code_subagent_model']) {
+    for (const n of ['ANTHROPIC_DEFAULT_SONNET_MODEL_NAME', 'CLAUDE_CODE_USE_SOMETHING_NEW', 'ANTHROPIC_FOUNDRY_RESOURCE', 'claude_code_subagent_model', 'ANTHROPIC_IDENTITY_NEW', 'ANTHROPIC_FEDERATION_RULE_ID', 'CLAUDE_CODE_DISABLE_SOMETHING_NEW', 'CLAUDE_CODE_ENABLE_XAA']) {
       expect(isClaudeRoutingVar(n)).toBe(true)
     }
-    for (const n of ['PATH', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'HTTP_PROXY', 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH']) {
+    for (const n of ['PATH', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'HTTP_PROXY', 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH', 'CLAUDE_CODE_ENABLE_TELEMETRY', 'claude_code_enable_telemetry']) {
       expect(isClaudeRoutingVar(n)).toBe(false)
     }
   })

@@ -139,9 +139,15 @@ export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunO
 
 /**
  * How the Claude Code CLI's own auth-failure text starts ("Invalid API key · Please run /login", "API Error: 401
- * {...authentication_error...}"). Anchored, so a model reply that merely mentions API keys never matches.
+ * {...authentication_error...}"). Anchored, and trusted only when the adapter reports an auth-related error
+ * (`isError`), so a model reply such as "Invalid API key handling is fixed" never matches.
  */
 const AUTH_FAILURE_LEAD = /^(?:invalid api key|please run \/login|api error: 401\b|oauth token (?:has )?expired|failed to authenticate|invalid bearer token)/i
+/**
+ * The CLI's bare logged-out reply, which arrives as an ordinary (non-error) assistant message. The whole text must
+ * be exactly this phrase (separator "·", "-" or "."), so it is the one text match that needs no error flag.
+ */
+const AUTH_FAILURE_BARE = /^invalid api key\s*[·.-]\s*please run \/login\s*$/i
 /** Anywhere in the text, trusted only when the adapter knows the turn errored (`isError`). */
 const AUTH_FAILURE_ANYWHERE = /invalid api key|please run \/login|authentication_error|invalid bearer token|oauth token (?:has )?expired|invalid x-api-key|\b401\b|unauthori[sz]ed/i
 /** Longer text is a model's own answer, which may well discuss API keys. */
@@ -149,15 +155,17 @@ const AUTH_FAILURE_MAX_CHARS = 400
 
 /**
  * True when a turn's outcome is an authentication failure rather than a reply: the SDK's assistant error code
- * 'authentication_failed', short text that STARTS with the CLI's auth wording, or (only when the adapter knows the
- * turn errored, `isError`) short text containing auth wording, a 401 or "unauthorized". Vendor-neutral: adapters
- * pass what their SDK reports.
+ * 'authentication_failed'; the CLI's exact bare reply "Invalid API key · Please run /login"; short text that
+ * STARTS with the CLI's auth wording when the adapter reports an auth-related error (`isError`); or short
+ * text containing auth wording, a 401 or "unauthorized" only with `isError`. Adapters set `isError` only for
+ * errors about authentication (or an errored result). Vendor-neutral: adapters pass what their SDK reports.
  */
 export function isAuthFailure(input: { errorCode?: string | null; text?: string | null; isError?: boolean }): boolean {
   if (input.errorCode === 'authentication_failed') return true
   const text = (input.text ?? '').trim()
   if (!text || text.length > AUTH_FAILURE_MAX_CHARS) return false
-  if (AUTH_FAILURE_LEAD.test(text)) return true
+  if (AUTH_FAILURE_BARE.test(text)) return true
+  if (input.isError && AUTH_FAILURE_LEAD.test(text)) return true
   return !!input.isError && AUTH_FAILURE_ANYWHERE.test(text)
 }
 

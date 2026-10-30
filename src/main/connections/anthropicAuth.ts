@@ -2,7 +2,7 @@ import { exec, execFile } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, posix, win32 } from 'node:path'
 import type { ConnectionStatus, ProviderAuth } from '@shared/types'
 import { isolateClaudeEnv } from '../runtime/childEnv'
 
@@ -101,7 +101,10 @@ export async function claudeAuthStatus(deps: AuthStatusDeps = {}): Promise<Claud
     const result = await runAuthStatus(c.bin, { ...deps, shell: c.shell })
     if (result) return result
   }
-  return { loggedIn: false, detail: 'Claude Code CLI not found. Install it and run claude /login, set an API key, or choose another default connection.' }
+  return {
+    loggedIn: false,
+    detail: `Claude Code CLI not found (looked in ${claudeLookupLocations().join(', ')}). Install it and run claude /login, set an API key, or choose another default connection.`
+  }
 }
 
 /** Live status of the Anthropic connection. apiKey: the env var must be set; subscription: the CLI login. */
@@ -164,17 +167,43 @@ export function dedupeByRealpath(paths: string[], realpath: (p: string) => strin
   return out
 }
 
-export function listClaudeBinaries(): Promise<string[]> {
-  const cmd = process.platform === 'win32' ? 'where claude' : 'which -a claude'
-  return new Promise((resolve) => {
-    // Pass process.env explicitly (exec's default too): on macOS applyShellPath has already merged the login shell's
-    // PATH into it, which is what lets a Finder-launched app see Homebrew, nvm and ~/.local/bin.
-    exec(cmd, { timeout: 8000, windowsHide: true, env: process.env }, (err, stdout) => {
-      const found = err ? [] : stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-      const all = dedupeByRealpath([...new Set([...found, ...claudeCandidatePaths()])])
-      resolve(all.length ? all : ['claude'])
-    })
+/** Absolute paths from `where` / `which -a` output, one per line. A relative answer is never trusted. */
+export function parseWhichOutput(stdout: string, platform: NodeJS.Platform = process.platform): string[] {
+  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute
+  return stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && absolute(l))
+}
+
+/** Runs the PATH lookup without a shell (`where claude` / `which -a claude`); '' when it fails. */
+export type WhichRunner = (cmd: string, args: string[]) => Promise<string>
+
+const defaultWhich: WhichRunner = (cmd, args) =>
+  new Promise((resolve) => {
+    // Pass process.env explicitly: on macOS applyShellPath has already merged the login shell's PATH into it,
+    // which is what lets a Finder-launched app see Homebrew, nvm and ~/.local/bin.
+    // cwd is the temp dir, never the app's cwd: Windows resolves executables from the cwd first.
+    execFile(cmd, args, { timeout: 8000, windowsHide: true, env: process.env, cwd: tmpdir() }, (err, stdout) => resolve(err ? '' : String(stdout ?? '')))
   })
+
+/** where.exe by absolute path, so a planted where.exe in the cwd is never run. */
+function whereExe(): string {
+  return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe')
+}
+
+/**
+ * The Claude Code CLIs on PATH plus the well-known install paths, as absolute paths only. Empty when none was
+ * found: there is no bare 'claude' fallback, so nothing is ever resolved from the (temp) cwd.
+ */
+export async function listClaudeBinaries(platform: NodeJS.Platform = process.platform, which: WhichRunner = defaultWhich): Promise<string[]> {
+  // `$PATH:claude` restricts where.exe to PATH (plain `where claude` searches the cwd first).
+  const out = platform === 'win32' ? await which(whereExe(), ['$PATH:claude']) : await which('which', ['-a', 'claude'])
+  return dedupeByRealpath([...new Set([...parseWhichOutput(out, platform), ...claudeCandidatePaths(platform)])])
+}
+
+/** Where the not-found message says OrgAI looked. */
+export function claudeLookupLocations(platform: NodeJS.Platform = process.platform, home: string = homedir()): string[] {
+  const always = ['the bundled CLI', 'PATH']
+  if (platform === 'win32') return always
+  return [...always, join(home, '.claude', 'local'), join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin']
 }
 
 interface CliAuthJson {
@@ -229,7 +258,7 @@ const UNKNOWN_OPTION = /unknown option/i
 export async function runAuthStatus(bin: string, deps: AuthStatusDeps & { shell?: boolean } = {}): Promise<ClaudeAuthStatus | null> {
   const run = deps.run ?? defaultRunCli
   const opts = {
-    shell: deps.shell ?? true,
+    shell: deps.shell ?? false,
     env: isolateClaudeEnv(deps.env ?? process.env, { keepApiKey: false }),
     cwd: deps.cwd ?? tmpdir(),
     timeout: 15000
