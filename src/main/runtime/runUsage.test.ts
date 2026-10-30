@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, RunRecord, RunSummary, RunUsage, TokenUsage } from '@shared/types'
 import { runSummary } from './testHelpers'
+import { agentProducedNothing } from '@shared/defaults'
 import { priceAgentUsage } from './pricing'
 import { IntervalTimer, addTokens, bucketOf, buildUsageStats, computeRunUsage, countUsage, emptyAgentUsage, legacySummaryUsage, mergeCosts, normalizeRunRecord, setModelTokens, sumRunUsage, usageFromLegacyAgent, usageOf } from './runUsage'
 
@@ -109,13 +110,28 @@ describe('computeRunUsage', () => {
   it('counts agents that ended without a result and their tokens', () => {
     const agents = [
       priced({ id: 'root', result: 'done', roleSlug: 'lead' }, 'claude-sonnet-4-5', tok(100, 10)),
-      priced({ id: 'w', roleSlug: 'worker', result: '  ', state: 'done' }, 'claude-sonnet-4-5', tok(40, 2, 8, 0)),
-      priced({ id: 'live', roleSlug: 'worker', result: undefined, state: 'thinking' }, 'claude-sonnet-4-5', tok(5))
+      priced({ id: 'w', parentId: 'root', roleSlug: 'worker', result: '  ', state: 'done' }, 'claude-sonnet-4-5', tok(40, 2, 8, 0)),
+      priced({ id: 'live', parentId: 'root', roleSlug: 'worker', result: undefined, state: 'thinking' }, 'claude-sonnet-4-5', tok(5))
     ]
     const u = computeRunUsage(summary, agents, inputs())
     expect(u.agentsWithoutResult).toBe(1)
     expect(u.noResultTokens).toBe(50)
     expect(u.roles.find((r) => r.roleSlug === 'worker')).toMatchObject({ agentsWithoutResult: 1, noResultTokens: 50, agents: 2 })
+  })
+
+  it('never counts the root orchestrator as producing no result', () => {
+    const agents = [
+      priced({ id: 'root', parentId: null, roleSlug: 'lead', result: undefined, state: 'done' }, 'claude-sonnet-4-5', tok(100, 10)),
+      priced({ id: 'r2', parentId: null, roleSlug: 'lead', result: '', state: 'error' }, 'claude-sonnet-4-5', tok(7)),
+      priced({ id: 'w', parentId: 'root', roleSlug: 'worker', result: '', state: 'error' }, 'claude-sonnet-4-5', tok(20))
+    ]
+    const u = computeRunUsage(summary, agents, inputs())
+    expect(u.agentsWithoutResult).toBe(1)
+    expect(u.noResultTokens).toBe(20)
+    expect(u.roles.find((r) => r.roleSlug === 'lead')).toMatchObject({ agentsWithoutResult: 0, noResultTokens: 0 })
+    expect(agentProducedNothing({ id: 'root', parentId: 'x', state: 'done', result: '' })).toBe(false)
+    expect(agentProducedNothing({ id: 'w', parentId: 'root', state: 'done', result: '' })).toBe(true)
+    expect(agentProducedNothing({ id: 'w', parentId: 'root', state: 'thinking', result: '' })).toBe(false)
   })
 
   it('prefers the provider total when every priced agent was provider-priced', () => {
@@ -174,7 +190,7 @@ describe('normalizeRunRecord', () => {
   it('builds legacy agent and run usage from the old fields', () => {
     const rec = oldRecord({ totalCostUsd: 0.5 }, [
       oldAgent('root', { roleId: 'r1', roleSlug: 'lead', name: 'Lead', model: 'opus', inputTokens: 1000, outputTokens: 200, costUsd: 0.5 }),
-      oldAgent('w', { roleSlug: 'worker', name: 'Worker-2', inputTokens: 50, outputTokens: 5, costUsd: 0, result: undefined })
+      oldAgent('w', { parentId: 'root', roleSlug: 'worker', name: 'Worker-2', inputTokens: 50, outputTokens: 5, costUsd: 0, result: undefined })
     ])
     const out = normalizeRunRecord(rec, 9999)
     const root = out.agents.root!.usage!

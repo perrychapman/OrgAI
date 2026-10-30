@@ -501,10 +501,13 @@ export function emptyTokens(): TokenUsage {
 }
 
 /**
- * An agent that ended (state done or error) with no result text: the "no result" signal behind
- * AgentUsage.producedNothing and RunUsage.noResultTokens. A live agent never counts.
+ * A report (never the root orchestrator, which speaks to the user) that ended (state done or error) with no result
+ * and no final text: the "no result" signal behind AgentUsage.producedNothing and RunUsage / RoleUsage
+ * agentsWithoutResult and noResultTokens. A live agent never counts; neither does an agent with parentId null or id
+ * 'root'.
  */
-export function agentProducedNothing(agent: Pick<AgentInstance, 'state' | 'result'>): boolean {
+export function agentProducedNothing(agent: Pick<AgentInstance, 'state' | 'result'> & Partial<Pick<AgentInstance, 'id' | 'parentId'>>): boolean {
+  if (agent.id === 'root' || agent.parentId === null) return false
   return (agent.state === 'done' || agent.state === 'error') && !agent.result?.trim()
 }
 

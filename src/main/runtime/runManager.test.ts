@@ -223,11 +223,11 @@ describe('RunManager usage and pricing', () => {
   it('builds usage for an agent the adapter gave none and sets producedNothing from the final state', async () => {
     const { m, p, ctxs } = setup()
     const run = await m.start({ project: p, prompt: 'go' })
-    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', parentId: 'root', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
     const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
     expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'none' })
     expect(up.agent.usage!.legacy).toBeUndefined()
-    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', state: 'done', result: 'fine' }) })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', parentId: 'root', state: 'done', result: 'fine' }) })
     const again = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
     expect(again.agent.usage!.producedNothing).toBeUndefined()
   })
