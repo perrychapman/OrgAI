@@ -8,8 +8,6 @@ import { needsYou, projectCounts, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
 import { runStatus } from '../lib/runStatus'
 import brandIcon from '../assets/brand/icon.png'
-import NotificationsToggle from './NotificationsToggle'
-import LogsLink from './LogsLink'
 import UsageMeter from './UsageMeter'
 import { Icon } from './ui/Icon'
 
@@ -193,8 +191,6 @@ export default function Sidebar(): ReactElement {
                 : 'Claude not logged in'}
         </span>
         <UsageMeter />
-        <NotificationsToggle />
-        <LogsLink />
       </div>
     </aside>
   )
