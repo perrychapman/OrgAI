@@ -1,4 +1,4 @@
-import type { AgentInstance, AgentUsage, CostSource, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
+import type { AgentInstance, AgentUsage, CostSource, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
 import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
 import { USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
@@ -69,6 +69,8 @@ export interface RunUsageInputs {
   limitHoldMs: number
   idleMs: number
   now: number
+  /** Skill loads counted by RunManager (skill.used events). Missing or empty = RunUsage.skills stays unset. */
+  skills?: readonly SkillUseCount[]
 }
 
 /**
@@ -241,7 +243,28 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   if (cost.costPartial && !useProvider) usage.costPartial = true
   if (hasProvider) usage.providerCostUsd = provider
   if (legacy) usage.legacy = true
+  const skills = mergeSkillCounts([inputs.skills ?? []])
+  if (skills.length) usage.skills = skills
   return usage
+}
+
+/** Merge skill counts by skillId (loads summed, roles unioned, latest name wins), most loaded first. */
+export function mergeSkillCounts(lists: readonly (readonly SkillUseCount[])[]): SkillUseCount[] {
+  const byId = new Map<string, SkillUseCount>()
+  for (const list of lists) {
+    for (const s of list) {
+      const loads = Number.isFinite(s.loads) && s.loads > 0 ? s.loads : 0
+      const have = byId.get(s.skillId)
+      if (have) {
+        have.loads += loads
+        have.name = s.name
+        for (const r of s.roles) if (!have.roles.includes(r)) have.roles.push(r)
+      } else {
+        byId.set(s.skillId, { skillId: s.skillId, name: s.name, loads, roles: [...new Set(s.roles)] })
+      }
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.loads - a.loads || a.name.localeCompare(b.name))
 }
 
 /** An AgentUsage built from an agent's older fields (inputTokens includes cache). `legacy` marks it approximate. */
@@ -431,6 +454,8 @@ export function sumRunUsage(list: readonly RunUsage[], now: number): RunUsage {
   }
   if (cost.costPartial) total.costPartial = true
   if (list.some((u) => u.legacy)) total.legacy = true
+  const skills = mergeSkillCounts(list.map((u) => u.skills ?? []))
+  if (skills.length) total.skills = skills
   const pc = sum((u) => u.providerCostUsd ?? 0)
   if (pc > 0 && Number.isFinite(pc)) total.providerCostUsd = pc
   return total

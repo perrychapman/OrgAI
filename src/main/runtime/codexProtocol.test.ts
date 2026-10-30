@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
   API_KEY_ENV,
+  NATIVE_SKILL_CONFIG,
   buildLaunchConfig,
+  lockNativeSkills,
+  parseSkillsList,
   codexToolName,
   dynamicToolSpec,
   harnessToolName,
@@ -147,19 +150,82 @@ describe('dynamic tool specs', () => {
   })
 })
 
+describe('native skill discovery', () => {
+  const listResult = {
+    data: [
+      {
+        cwd: '/repo',
+        errors: [],
+        skills: [
+          { name: 'a', path: '/repo/.agents/skills/a/SKILL.md', enabled: true, scope: 'repo' },
+          { name: 'b', path: '/home/u/.agents/skills/b/SKILL.md', enabled: false, scope: 'user' },
+          { name: 'c', path: '/home/u/.agents/skills/c/SKILL.md', enabled: true, scope: 'user' },
+          { name: 'dup', path: '/repo/.agents/skills/a/SKILL.md', enabled: true },
+          { name: 'nopath', enabled: true },
+          'junk'
+        ]
+      },
+      { cwd: '/x', errors: [], skills: [{ name: 'z', path: '/z/SKILL.md' }] },
+      'junk'
+    ]
+  }
+
+  it('every launch turns the bundled skills and the skill instructions off', () => {
+    expect(NATIVE_SKILL_CONFIG).toEqual(['skills.bundled.enabled=false', 'skills.include_instructions=false'])
+    const l = buildLaunchConfig(undefined, [])
+    expect(l.config).toEqual([...NATIVE_SKILL_CONFIG])
+  })
+
+  it('parseSkillsList reads defensively and deduplicates by path', () => {
+    const skills = parseSkillsList(listResult)
+    expect(skills.map((s) => s.path)).toEqual(['/repo/.agents/skills/a/SKILL.md', '/home/u/.agents/skills/b/SKILL.md', '/home/u/.agents/skills/c/SKILL.md', '/z/SKILL.md'])
+    expect(skills.find((s) => s.name === 'b')!.enabled).toBe(false)
+    expect(skills.find((s) => s.path === '/z/SKILL.md')!.enabled).toBe(true)
+    expect(parseSkillsList(null)).toEqual([])
+    expect(parseSkillsList({ data: 'x' })).toEqual([])
+  })
+
+  it('lockNativeSkills lists the cwd without the cache and disables each enabled skill once', async () => {
+    const calls: [string, unknown][] = []
+    const request = async (method: string, params: unknown): Promise<unknown> => {
+      calls.push([method, params])
+      return method === 'skills/list' ? listResult : { effectiveEnabled: false }
+    }
+    const res = await lockNativeSkills(request, '/repo')
+    expect(calls[0]).toEqual(['skills/list', { cwds: ['/repo'], forceReload: true }])
+    expect(calls.slice(1).map((c) => c[1])).toEqual([
+      { path: '/repo/.agents/skills/a/SKILL.md', enabled: false },
+      { path: '/home/u/.agents/skills/c/SKILL.md', enabled: false },
+      { path: '/z/SKILL.md', enabled: false }
+    ])
+    expect(res).toEqual({ disabled: 3, failed: 0, skipped: 0 })
+  })
+
+  it('lockNativeSkills never throws: a failed list or write is reported', async () => {
+    expect(await lockNativeSkills(async () => Promise.reject(new Error('no such method')), '/repo')).toMatchObject({ disabled: 0, error: 'no such method' })
+    const flaky = async (method: string, params: unknown): Promise<unknown> => {
+      if (method === 'skills/list') return listResult
+      if ((params as { path: string }).path.includes('/z/')) throw new Error('write failed')
+      return {}
+    }
+    expect(await lockNativeSkills(flaky, '/repo')).toEqual({ disabled: 2, failed: 1, skipped: 0 })
+  })
+})
+
 describe('buildLaunchConfig', () => {
   const secretValue = 'sk-super-secret-1234'
+  const userConfig = (c: string): boolean => !NATIVE_SKILL_CONFIG.includes(c)
   const conn = (over: Partial<RunConnection> = {}): RunConnection => ({ connection: 'chatgpt' as never, adapter: 'codex', env: { CODEX_HOME: '/data/codex' }, ...over })
 
   it('ChatGPT login adds no provider and keeps CODEX_HOME', () => {
     const l = buildLaunchConfig(conn({ codexAuth: 'chatgpt' }), [])
-    expect(l.config).toEqual([])
+    expect(l.config.filter(userConfig)).toEqual([])
     expect(l.env).toEqual({ CODEX_HOME: '/data/codex' })
   })
 
   it('API key configures an orgai provider with the key only in the environment', () => {
     const l = buildLaunchConfig(conn({ codexAuth: 'apiKey', apiKey: secretValue, openaiBaseUrl: 'http://localhost:4000/v1' }), [])
-    expect(l.config).toEqual([
+    expect(l.config.filter(userConfig)).toEqual([
       'model_provider="orgai"',
       'model_providers.orgai.name="OrgAI"',
       'model_providers.orgai.base_url="http://localhost:4000/v1"',
@@ -179,7 +245,7 @@ describe('buildLaunchConfig', () => {
   it('configures stdio servers; secret env values are forwarded by name, never in argv or the summary', () => {
     const s = spec({ name: 'files', command: 'npx', args: ['-y', 'srv', '--root=a b'], env: { MODE: 'ro' }, secretEnv: ['API_TOKEN'] })
     const l = buildLaunchConfig(conn(), [resolved(s, { MODE: 'ro', API_TOKEN: secretValue })])
-    expect(l.config).toEqual([
+    expect(l.config.filter(userConfig)).toEqual([
       'mcp_servers.files.command="npx"',
       'mcp_servers.files.args=["-y", "srv", "--root=a b"]',
       'mcp_servers.files.env={ MODE = "ro" }',
@@ -241,7 +307,7 @@ describe('buildLaunchConfig', () => {
 
   it('skips disabled servers and servers without a command or url', () => {
     const l = buildLaunchConfig(conn(), [resolved(spec({ name: 'off', command: 'x', enabled: false })), resolved(spec({ name: 'nocmd' })), resolved(spec({ name: 'nourl', transport: 'sse' }))])
-    expect(l.config).toEqual([])
+    expect(l.config.filter(userConfig)).toEqual([])
     expect(l.skipped.map((s) => s.name)).toEqual(['nocmd', 'nourl'])
   })
 
