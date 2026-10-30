@@ -53,7 +53,7 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
       <div className="plan-head">
         <div className="plan-goal">{plan.goal}</div>
         <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-          <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'live'}`}>
+          <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'is-running'}`}>
             <span className="dot" /> {plan.status === 'active' ? 'in progress' : plan.status}
           </span>
           <span className="pill">

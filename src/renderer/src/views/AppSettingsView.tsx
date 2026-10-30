@@ -7,6 +7,7 @@ import { useAppStore } from '../store/useAppStore'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { CopyButton } from '../components/ui/CopyButton'
+import { SaveIndicator } from '../components/layout/SaveIndicator'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 
 /** Same debounce the project store uses for project saves. */
@@ -15,7 +16,6 @@ const SAVE_DELAY_MS = 350
 export default function AppSettingsView(): ReactElement {
   const [info, setInfo] = useState<AppSettingsInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
@@ -38,7 +38,7 @@ export default function AppSettingsView(): ReactElement {
     if (!next) return
     try {
       const result = await window.orgai.settings.set(next)
-      setSaved(true)
+      useAppStore.getState().setSaveStatus({ state: 'saved', at: Date.now() })
       setError(null)
       if (!pending.current) setInfo(result)
       // The auth pill depends on the global provider auth.
@@ -46,6 +46,7 @@ export default function AppSettingsView(): ReactElement {
       useAppStore.setState({ auth })
     } catch (e) {
       setError((e as Error).message)
+      useAppStore.getState().setSaveStatus({ state: 'error', at: Date.now(), message: (e as Error).message })
     }
   }
 
@@ -75,7 +76,7 @@ export default function AppSettingsView(): ReactElement {
     const { dataDir: _dataDir, ...current } = info
     const next: AppSettings = { ...current, ...p }
     setInfo({ ...next, dataDir: info.dataDir })
-    setSaved(false)
+    useAppStore.getState().setSaveStatus({ state: 'saving' })
     pending.current = next
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
@@ -97,9 +98,7 @@ export default function AppSettingsView(): ReactElement {
       <div className="topbar">
         <h1>Settings</h1>
         <div className="spacer" />
-        <span className="hint" style={{ color: error ? 'var(--danger)' : 'var(--text-faint)', fontSize: 12 }}>
-          {error ? `Save failed: ${error}` : saved ? 'Saved' : ''}
-        </span>
+        <SaveIndicator />
       </div>
       <div style={{ padding: 'var(--space-6)', overflow: 'auto', flex: 1, minHeight: 0 }}>
         <div className="settings-col">

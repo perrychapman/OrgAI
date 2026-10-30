@@ -38,10 +38,16 @@ import type {
   UserQuestion
 } from '@shared/types'
 
-export type View = 'projects' | 'settings' | 'run' | 'appSettings'
+/** Project tabs: run (Live), org (Org chart), settings (Settings). projects and appSettings are app-level. */
+export type View = 'projects' | 'org' | 'settings' | 'run' | 'appSettings'
+/** Autosave feedback shown by the topbar indicator (spec 12.5). */
+export interface SaveStatus {
+  state: 'idle' | 'saving' | 'saved' | 'error'
+  at?: number
+  message?: string
+}
 /** 'reply' sends to the viewed session; 'new' starts another run even while one is open. */
 export type ComposerMode = 'reply' | 'new'
-export type SettingsTab = 'org' | 'project'
 /** Tabs of the live view's side panel. */
 export type SideTab = 'transcript' | 'plan' | 'logs' | 'runs'
 
@@ -98,7 +104,7 @@ interface AppState {
   projects: Project[]
   selectedProjectId: string | null
   view: View
-  settingsTab: SettingsTab
+  saveStatus: SaveStatus
   selectedRoleId: string | null
   runs: Record<string, RunState>
   activeRunByProject: Record<string, string>
@@ -147,7 +153,8 @@ interface AppState {
   loadProjects(): Promise<void>
   selectProject(id: string | null): void
   setView(view: View): void
-  setSettingsTab(tab: SettingsTab): void
+  setSaveStatus(status: SaveStatus): void
+  trackSave<T>(fn: () => Promise<T>): Promise<T>
   selectRole(id: string | null): void
   selectAgent(id: string | null): void
   createProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Promise<Project>
@@ -269,7 +276,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   selectedProjectId: null,
   view: 'projects',
-  settingsTab: 'org',
+  saveStatus: { state: 'idle' },
   selectedRoleId: null,
   runs: {},
   activeRunByProject: {},
@@ -430,8 +437,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ view })
   },
 
-  setSettingsTab(tab) {
-    set({ settingsTab: tab })
+  setSaveStatus(status) {
+    set({ saveStatus: status })
+  },
+
+  /** Wraps an autosaving call: shows "Saving…", then "Saved HH:MM" or the error. */
+  async trackSave<T>(fn: () => Promise<T>): Promise<T> {
+    set({ saveStatus: { state: 'saving' } })
+    try {
+      const out = await fn()
+      set({ saveStatus: { state: 'saved', at: Date.now() } })
+      return out
+    } catch (e) {
+      set({ saveStatus: { state: 'error', at: Date.now(), message: (e as Error).message } })
+      throw e
+    }
   },
 
   selectRole(id) {
@@ -444,7 +464,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async createProject(input) {
     const project = await window.orgai.projects.create(input)
-    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'settings' }))
+    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'org' }))
     return project
   },
 

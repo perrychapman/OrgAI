@@ -72,6 +72,7 @@
   --brand-to: #2bb0ff;
 
   --edge: #3a4258;
+  --edge-message: #5d8bd6;
   --canvas-pattern: #1f2432;
   --canvas-wash-opacity: 0.06;
 
@@ -136,6 +137,7 @@
   --brand-to: #2bb0ff;
 
   --edge: #aab3c7;
+  --edge-message: #2f67b4;
   --canvas-pattern: #d3d8e4;
   --canvas-wash-opacity: 0.05;
 
@@ -201,6 +203,7 @@
     --brand-to: #2bb0ff;
 
     --edge: #aab3c7;
+    --edge-message: #2f67b4;
     --canvas-pattern: #d3d8e4;
     --canvas-wash-opacity: 0.05;
 
