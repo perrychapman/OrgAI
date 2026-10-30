@@ -6,7 +6,7 @@ import type { Project } from '@shared/types'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
 import { needsYou } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { runStatus, type RunTone } from '../lib/runStatus'
+import { autoContinueState, isStoppedRun, runStatus, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 
 const DRAFT_ID = 'new'
@@ -31,7 +31,7 @@ interface TabView {
 
 /**
  * Keyboard shortcuts for the run workspace. Ctrl+T opens the New run page. Ctrl+W hides the viewed tab when it is
- * finished (or closes the New run page); it is always swallowed in the run view so it can never close the window.
+ * finished (or closes the New run page); Ctrl+W is always swallowed so it can never close the window, even outside the run view.
  */
 export function useRunTabShortcuts(): void {
   useEffect(() => {
@@ -39,6 +39,9 @@ export function useRunTabShortcuts(): void {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
       const key = e.key.toLowerCase()
       if (key !== 't' && key !== 'w') return
+      // Electron's default menu would close the window; swallow Ctrl+W everywhere.
+      if (key === 'w') e.preventDefault()
+      if (e.repeat) return
       const st = useAppStore.getState()
       const pid = st.selectedProjectId
       if (!pid || st.view === 'projects' || st.view === 'appSettings') return
@@ -49,7 +52,6 @@ export function useRunTabShortcuts(): void {
         return
       }
       if (st.view !== 'run') return
-      e.preventDefault()
       const runId = st.draftPage[pid] ? undefined : st.activeRunByProject[pid]
       const run = runId ? st.runs[runId] : undefined
       if (!run) {
@@ -108,7 +110,19 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     }
     const run = item.run as RunState
     const waiting = needsYou(run)
-    const st = runStatus(run.summary.status, { waiting, endedWithApp: !!run.summary.endedWithApp })
+    const auto = autoContinueState({
+      status: run.summary.status,
+      plan: run.plan,
+      autoContinue: project.autoContinue,
+      maxAutoContinues: project.maxAutoContinues,
+      kind: run.summary.kind
+    })
+    const st = runStatus(run.summary.status, {
+      waiting,
+      endedWithApp: !!run.summary.endedWithApp,
+      stopped: isStoppedRun(run.agents),
+      autoContinuing: auto.active
+    })
     const tag = runTag(indexes.get(run.summary.id))
     const full = promptLine(run.summary.prompt)
     const hasDraft = draftKeys.includes(run.summary.id)
@@ -247,13 +261,31 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const onDown = (e: PointerEvent): void => {
       if (!ctxRef.current?.contains(e.target as Node)) setCtx(null)
     }
+    const close = (): void => setCtx(null)
     document.addEventListener('pointerdown', onDown)
-    return () => document.removeEventListener('pointerdown', onDown)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [ctx])
+  // Keep the menu inside the viewport: pull it left, or open it above the tab when it would run off the bottom.
+  useLayoutEffect(() => {
+    const el = ctxRef.current
+    if (!ctx || !el) return
+    const margin = 8
+    const r = el.getBoundingClientRect()
+    const tabTop = tabRefs.current.get(ctx.id)?.parentElement?.getBoundingClientRect().top ?? ctx.top
+    el.style.left = `${Math.max(margin, Math.min(ctx.left, window.innerWidth - r.width - margin))}px`
+    el.style.top = `${ctx.top + r.height + margin > window.innerHeight ? Math.max(margin, tabTop - r.height) : ctx.top}px`
   }, [ctx])
   const closeCtx = (): void => {
     const id = ctx?.id
     setCtx(null)
-    if (id) tabRefs.current.get(id)?.focus()
+    // The tab may have moved into the "+n" overflow meanwhile.
+    if (id) (tabRefs.current.get(id) ?? moreRef.current)?.focus()
   }
   const openInWindow = (item: TabItem): void => {
     const run = item.run

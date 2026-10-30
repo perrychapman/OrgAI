@@ -77,7 +77,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             </p>
             <ul className="role-chips" aria-label="Roles in this project">
               {project.roles.map((r) => (
-                <li key={r.id} className="chip" style={{ borderColor: r.color, color: r.color }}>
+                <li key={r.id} className="role-tag" style={{ ['--role' as string]: r.color }}>
                   {r.name}
                 </li>
               ))}

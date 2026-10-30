@@ -65,3 +65,14 @@
 .react-flow__node {
   cursor: pointer;
 }
+
+/* Minimap (appearance setting): tokens only, no overlay of our own. */
+.react-flow__minimap {
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.react-flow__minimap-mask {
+  fill: var(--surface-0);
+  fill-opacity: 0.6;
+}
