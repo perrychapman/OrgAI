@@ -3,6 +3,7 @@ import { ANTHROPIC_BUILTIN_MODELS, defaultRoles, defaultTierModels } from '@shar
 import type { Project, ProviderModel, Role } from '@shared/types'
 import { convertImport, importDigest, type ConvertInput } from './convert'
 import type { ModelContext } from './model'
+import { parseOpencodeAgentMd } from './parsers'
 import type { ImportedAgent } from './types'
 
 const anthropic: ModelContext = { connection: 'anthropic', catalog: ANTHROPIC_BUILTIN_MODELS, tierModels: defaultTierModels(ANTHROPIC_BUILTIN_MODELS) }
@@ -271,6 +272,34 @@ describe('convertImport: review follow-ups', () => {
     expect(bySlug(out.roles, 'implementer').mcpServers).toEqual(['mcp_github', 'mcp_db'])
     expect(out.items[0].notes).toContain('Keeps MCP access: mcp_github, mcp_db.')
     expect(out.items[0].elevatedTools).toContain('mcp')
+  })
+
+  it('opencode tool grants survive conversion and drive elevatedTools (P1-1)', () => {
+    const coder = parseOpencodeAgentMd('---\nmode: subagent\ntools:\n  bash: true\n  write: true\n  lsp: true\n---\nCode.', '.opencode/agents/coder.md').agents[0]
+    const lead = parseOpencodeAgentMd('---\nmode: primary\n---\nLead.', '.opencode/agents/lead.md').agents[0]
+    const ro = parseOpencodeAgentMd('---\nmode: subagent\ntools:\n  grep: false\n  mymcp_*: false\npermission:\n  edit: deny\n---\nLook.', '.opencode/agents/ro.md').agents[0]
+    const out = run({ mode: 'replace', agents: [lead, coder, ro] })
+    const item = (n: string): (typeof out.items)[number] => out.items.find((i) => i.name === n)!
+    expect(item('coder').tools).toEqual(['Read', 'Glob', 'Grep', 'Write', 'Bash'])
+    expect(item('coder').elevatedTools).toEqual(['Write', 'Bash'])
+    expect(item('coder').toolsDropped).toEqual(['lsp'])
+    expect(item('coder').notes.some((n) => n.startsWith('No tools'))).toBe(false)
+    // The root is read-only: its only elevated grant is spawning, never Bash / Edit / Write.
+    expect(item('lead').tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(item('lead').elevatedTools).toEqual(['canSpawn'])
+    expect(item('ro').tools).toEqual(['Read', 'Glob'])
+    expect(item('ro').elevatedTools).toEqual([])
+    expect(item('ro').notes).toContain('No tools granted: read-only by default, without Grep.')
+    expect(item('ro').notes).toContain('Removed tools with no OrgAI equivalent were ignored: mymcp_*.')
+  })
+
+  it('an OrgAI export with a root gives no hierarchy or orchestrator warning, in either mode', () => {
+    const exp = (o: Partial<ImportedAgent> & { name: string; slug: string }): ImportedAgent => agent({ source: 'orgai', file: '.orgai/org.json', ...o })
+    const agents = [exp({ name: 'Boss', slug: 'boss', reportsTo: null, tools: ['Read'] }), exp({ name: 'Dev', slug: 'dev', reportsTo: 'boss', tools: ['Read'] })]
+    for (const mode of ['replace', 'merge'] as const) {
+      const out = run({ mode, agents })
+      expect(out.warnings).toEqual([])
+    }
   })
 
   it('refuses more than 200 choices', () => {

@@ -40,12 +40,20 @@ const TABLE: Record<string, ToolName[]> = {
   google_web_search: ['WebSearch'],
   todowrite: ['TodoWrite'],
   todo: ['TodoWrite'],
+  todoread: ['TodoWrite'],
+  todo_list: ['TodoWrite'],
+  write_todos: ['TodoWrite'],
+  fetch: ['WebFetch'],
+  runcommands: ['Bash'],
+  runinterminal: ['Bash'],
+  editfiles: ['Edit', 'Write'],
+  notebookread: ['Read'],
   notebookedit: ['NotebookEdit'],
   sendmessage: ['SendMessage'],
   listagents: ['ListAgents']
 }
 
-const SPAWN_NAMES = new Set(['agent', 'task', 'custom-agent', 'custom_agent', 'subagent'])
+const SPAWN_NAMES = new Set(['agent', 'task', 'custom-agent', 'custom_agent', 'subagent', 'use_subagent'])
 
 /** The tool name without a Claude permission pattern: `Bash(git:*)` -> `Bash`. */
 function baseName(name: string): string {
@@ -69,9 +77,23 @@ function mapOne(name: string): One {
   return hit ? { tools: hit, spawn: false, known: true } : { tools: [], spawn: false, known: false }
 }
 
-export function mapTools(raw: string[] | undefined, denied?: string[]): { tools: ToolName[]; dropped: string[]; canSpawn: boolean } {
+export interface MappedTools {
+  tools: ToolName[]
+  /** Granted names with no OrgAI equivalent. */
+  dropped: string[]
+  /** Removed names with no OrgAI equivalent (nothing to remove). */
+  ignoredDenied: string[]
+  canSpawn: boolean
+}
+
+/**
+ * Foreign tool names to OrgAI tools. `raw` undefined = no grant list: DEFAULT_IMPORT_TOOLS. `denied` is applied
+ * last, so a removal always wins over a grant.
+ */
+export function mapTools(raw: string[] | undefined, denied?: string[]): MappedTools {
   const set = new Set<ToolName>()
   const dropped: string[] = []
+  const ignoredDenied: string[] = []
   let canSpawn = false
   if (raw === undefined) {
     for (const t of DEFAULT_IMPORT_TOOLS) set.add(t)
@@ -90,10 +112,15 @@ export function mapTools(raw: string[] | undefined, denied?: string[]): { tools:
   for (const name of denied ?? []) {
     if (typeof name !== 'string') continue
     const one = mapOne(name)
+    if (!one.known) {
+      const n = name.trim()
+      if (n && !ignoredDenied.includes(n)) ignoredDenied.push(n)
+      continue
+    }
     if (one.spawn) canSpawn = false
     for (const t of one.tools) set.delete(t)
   }
-  return { tools: TOOL_CATALOG.filter((t) => set.has(t)), dropped, canSpawn }
+  return { tools: TOOL_CATALOG.filter((t) => set.has(t)), dropped, ignoredDenied, canSpawn }
 }
 
 /** Roo Code groups (`'read'` or `['edit', { fileRegex }]`) as raw tool names for mapTools. `mcp` and unknown groups give nothing. */

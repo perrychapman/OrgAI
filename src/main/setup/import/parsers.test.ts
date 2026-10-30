@@ -7,6 +7,7 @@ import {
   parseKiroAgent,
   parseOpencodeAgentMd,
   parseOpencodeConfig,
+  opencodeTools,
   parseOrgExport,
   parseRooModes
 } from './parsers'
@@ -52,8 +53,29 @@ describe('opencode', () => {
     )
     const a = r.agents[0]
     expect(a).toMatchObject({ source: 'opencode', name: 'build', primary: true, model: 'anthropic/claude-sonnet-4-5', prompt: 'Build things.' })
-    expect(a.tools).toBeUndefined()
+    // bash: true in tools, but permission "*": deny wins; read: allow is a grant.
+    expect(a.tools).toEqual(['Read', 'Glob', 'Grep', 'bash', 'read'])
     expect(a.deniedTools).toEqual(['write', 'edit', 'webfetch', 'bash'])
+    expect(a.notes).toEqual(['opencode allowed only some "bash" patterns; OrgAI cannot limit a tool by pattern, so it is not granted'])
+  })
+  it('turns a tools map with true entries into grants on top of the read-only default (P1-1)', () => {
+    const md = parseOpencodeAgentMd('---\nmode: subagent\ntools:\n  bash: true\n  write: true\n---\nCode.', '.opencode/agents/coder.md').agents[0]
+    expect(md.tools).toEqual(['Read', 'Glob', 'Grep', 'bash', 'write'])
+    expect(md.deniedTools).toBeUndefined()
+    const cfg = parseOpencodeConfig('{"agent":{"coder":{"prompt":"Code.","tools":{"bash":true,"write":true,"grep":false}}}}', 'opencode.json', () => null).agents[0]
+    expect(cfg.tools).toEqual(['Read', 'Glob', 'Grep', 'bash', 'write'])
+    expect(cfg.deniedTools).toEqual(['grep'])
+  })
+  it('reads permission allow / ask as grants and pattern objects by their "*" entry', () => {
+    const t = opencodeTools(undefined, { edit: 'ask', webfetch: 'allow', bash: { '*': 'allow', 'rm *': 'deny' }, task: { 'x*': 'allow' } })
+    expect(t.tools).toEqual(['Read', 'Glob', 'Grep', 'edit', 'webfetch', 'bash'])
+    expect(t.denied).toEqual([])
+    expect(t.notes).toHaveLength(2)
+    expect(t.notes[0]).toMatch(/denied some "bash" patterns/)
+    expect(t.notes[1]).toMatch(/only some "task" patterns/)
+    // Only removals: no grant list, so the converter starts from the read-only default minus them.
+    expect(opencodeTools({ grep: false }, { edit: 'deny' })).toEqual({ denied: ['grep', 'edit'], notes: [] })
+    expect(opencodeTools('nope', ['x'])).toEqual({ denied: [], notes: [] })
   })
   it('treats subagent mode as non-primary and skips disabled', () => {
     expect(parseOpencodeAgentMd('---\nmode: subagent\n---\nx', '.opencode/agents/s.md').agents[0].primary).toBeUndefined()
@@ -117,13 +139,23 @@ describe('copilot, gemini, kiro', () => {
     expect(a).toMatchObject({ source: 'gemini', name: 'researcher', tools: ['read_file', 'google_web_search'], model: 'gemini-2.5-pro' })
     expect(a.notes).toEqual(['Ignored "temperature" (not imported)'])
   })
+  it('imports a Copilot or Gemini "*" tool list as read-only with a note', () => {
+    const c = parseCopilotAgent('---\ntools: ["*"]\n---\nx', '.github/agents/all.agent.md').agents[0]
+    expect(c.tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(c.notes[0]).toMatch(/^"\*" grants every tool in .+; OrgAI imports it as read-only/)
+    const g = parseGeminiAgent('---\nname: g\ntools: ["*", run_shell_command]\n---\nx', '.gemini/agents/g.md').agents[0]
+    expect(g.tools).toEqual(['Read', 'Glob', 'Grep', 'run_shell_command'])
+  })
   it('parses Kiro json and md, and resolves file:// prompts', () => {
     const j = parseKiroAgent('{"name":"dev","description":"Dev","prompt":"file://./p.md","tools":["fs_read","execute_bash"],"model":"claude-sonnet-4","mcpServers":{}}', '.kiro/agents/dev.json', (p) => (p === './p.md' ? 'From file' : null))
     expect(j.agents[0]).toMatchObject({ source: 'kiro', name: 'dev', prompt: 'From file', tools: ['fs_read', 'execute_bash'] })
     expect(j.agents[0].notes).toEqual(['Ignored "mcpServers" (not imported)'])
     const star = parseKiroAgent('{"tools":["*"],"prompt":"x"}', '.kiro/agents/all.json').agents[0]
     expect(star.name).toBe('all')
-    expect(star.tools).toBeUndefined()
+    expect(star.tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(star.notes[0]).toMatch(/^"\*" grants every tool in Kiro; OrgAI imports it as read-only/)
+    const builtin = parseKiroAgent('{"tools":["@builtin","write","shell"],"prompt":"x"}', '.kiro/agents/b2.json').agents[0]
+    expect(builtin.tools).toEqual(['Read', 'Glob', 'Grep', 'fs_write', 'shell'])
     const md = parseKiroAgent('---\nname: m\n---\nBody', '.kiro/agents/m.md').agents[0]
     expect(md).toMatchObject({ name: 'm', prompt: 'Body' })
     expect(parseKiroAgent('{bad', '.kiro/agents/b.json').warnings[0]).toMatch(/^\.kiro\/agents\/b\.json: invalid JSON/)
