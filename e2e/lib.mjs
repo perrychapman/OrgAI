@@ -342,10 +342,10 @@ export async function driveSetup(page, name, { deadlineMs = 12 * 60_000, decide 
   let nudges = 0
   let lastNudge = 0
   while (Date.now() - started < deadlineMs) {
-    const proposal = page.locator('.proposal').first()
+    const proposal = page.locator('article.decision-card').first()
     if (await proposal.count()) {
-      const kind = (await proposal.getAttribute('class')).match(/kind-(\w+)/)?.[1]
-      const title = await proposal.locator('.proposal-head strong').innerText().catch(() => '')
+      const kind = await proposal.getAttribute('data-kind')
+      const title = await proposal.locator('.decision-title').innerText().catch(() => '')
       log(`proposal [${kind}] "${title}"`)
       if (shot) await shot(`proposal-${kind}`)
       const verdict = decide(kind, proposal)
@@ -377,7 +377,7 @@ export async function driveSetup(page, name, { deadlineMs = 12 * 60_000, decide 
       log('nudged')
     }
     const status = await page.locator('.topbar .pill .dot').first().locator('..').innerText().catch(() => '')
-    if (/finished|failed/i.test(status) && !(await page.locator('.proposal').count())) {
+    if (/finished|failed|stopped/i.test(status) && !(await page.locator('article.decision-card').count())) {
       log('run ended early, status:', status)
       break
     }

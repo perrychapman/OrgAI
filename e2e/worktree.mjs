@@ -27,7 +27,7 @@ try {
   let lastShot = 0
   while (Date.now() - started < 12 * 60_000) {
     // Approve permission cards (shell commands under acceptEdits).
-    const perm = page.locator('.permission').first()
+    const perm = page.locator('article.decision-card[data-kind="permission"]').first()
     if (await perm.count()) {
       log('permission:', (await perm.locator('.what').innerText().catch(() => '')).slice(0, 100))
       await perm.getByRole('button', { name: 'Allow once' }).click()

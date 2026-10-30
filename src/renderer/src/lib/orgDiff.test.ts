@@ -69,4 +69,30 @@ describe('diffOrgChart', () => {
     const d = diffOrgChart(cur, prop)
     expect(d.changed[0].changes.map((c) => c.field)).toEqual(['canSpawn', 'skills'])
   })
+
+  it('treats an omitted optional field as empty, and skills as untouched when neither side has them', () => {
+    const cur = [role('a')]
+    const prop = [{ id: 'id-a', slug: 'a', name: 'a', model: 'sonnet', reportsTo: null }]
+    const d = diffOrgChart(cur, prop)
+    expect(d.changed[0].changes.map((c) => [c.field, c.to])).toEqual([
+      ['description', ''],
+      ['tools', 'none'],
+      ['prompt', 'prompt changed']
+    ])
+    expect(d.changed[0].changes.some((c) => c.field === 'skills')).toBe(false)
+  })
+
+  it('reads a slug change as one role removed and one added, not a rename', () => {
+    const d = diffOrgChart([role('dev', { name: 'Dev' })], [role('engineer', { name: 'Engineer' })])
+    expect(d.added.map((r) => r.slug)).toEqual(['engineer'])
+    expect(d.removed.map((r) => r.slug)).toEqual(['dev'])
+    expect(d.changed).toHaveLength(0)
+    expect(d.summary).toBe('1 added, 1 removed')
+  })
+
+  it('shows a name-only rename with a stable slug as one changed role', () => {
+    const d = diffOrgChart([role('dev', { name: 'Dev' })], [role('dev', { name: 'Developer' })])
+    expect(d.changed[0].changes).toEqual([{ field: 'name', label: 'name', from: 'Dev', to: 'Developer' }])
+    expect(d.summary).toBe('1 changed')
+  })
 })

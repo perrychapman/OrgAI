@@ -81,8 +81,15 @@ try {
   // Finish R1: the default action is a New run, Continue this run is the second choice.
   await page.locator('.run-tablist [role="tab"]', { hasText: 'R1' }).click()
   await sleep(300)
+  // H4: a pending permission card must go away when its session ends.
+  const permCards = page.locator('article.decision-card[data-kind="permission"]')
+  await permCards.first().waitFor({ timeout: 15_000 }).catch(() => {})
+  const permBefore = await permCards.count()
+  check(permBefore >= 1, 'a pending permission card is shown before End session', String(permBefore))
   await endSession(page)
   await sleep(500)
+  const permAfter = await permCards.count()
+  check(permAfter < permBefore, 'the permission card disappears after End session (H4)', `${permBefore} -> ${permAfter}`)
   const mode = (await page.locator('.composer').innerText()).replace(/\s+/g, ' ')
   check(/New run/.test(mode) && !/Continuing this run/.test(mode), 'a finished run defaults to New run', mode.slice(0, 120))
   check((await page.locator('.composer .btn.primary').innerText()).trim() === 'Start', 'finished run primary action is Start')
