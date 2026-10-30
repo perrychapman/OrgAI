@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
 
@@ -11,8 +11,40 @@ import { isWholeToolRule } from '@shared/types'
 
 type LocalSettings = Record<string, unknown> & { permissions?: Record<string, unknown> & { allow?: unknown } }
 
+function existingEntry(path: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(path)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw e
+  }
+}
+
+function outside(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)
+}
+
+/** Resolve a project-owned path, rejecting symlinked components that could redirect reads or writes outside it. */
+export function safeProjectPath(projectPath: string, ...parts: string[]): string {
+  const candidate = join(projectPath, ...parts)
+  if (!existsSync(projectPath)) return candidate
+  const root = realpathSync.native(projectPath)
+  let current = projectPath
+  const rel = relative(projectPath, candidate)
+  if (outside(projectPath, candidate)) throw new Error(`Path escapes the project: ${candidate}`)
+  for (const part of rel.split(/[\\/]+/).filter(Boolean)) {
+    current = join(current, part)
+    const entry = existingEntry(current)
+    if (!entry) break
+    if (entry.isSymbolicLink()) throw new Error(`Refusing a symbolic link in a project-owned path: ${current}`)
+    if (outside(root, realpathSync.native(current))) throw new Error(`Path escapes the project: ${current}`)
+  }
+  return candidate
+}
+
 export function settingsLocalPath(projectPath: string): string {
-  return join(projectPath, '.claude', 'settings.local.json')
+  return safeProjectPath(projectPath, '.claude', 'settings.local.json')
 }
 
 /** The parsed file, {} when it does not exist. Throws when it exists but is not a JSON object. */
@@ -29,7 +61,7 @@ export function readLocalSettings(projectPath: string): LocalSettings {
 function writeLocalSettings(projectPath: string, settings: LocalSettings): void {
   const file = settingsLocalPath(projectPath)
   mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', 'utf8')
+  writeFileSync(settingsLocalPath(projectPath), JSON.stringify(settings, null, 2) + '\n', 'utf8')
 }
 
 function allowOf(settings: LocalSettings): string[] {

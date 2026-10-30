@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isUnsafeAllowRule, isWholeToolRule } from './permissionRules'
+import { addRules, isUnsafeAllowRule, isWholeToolRule } from './permissionRules'
 
 describe('isUnsafeAllowRule', () => {
   it('accepts the safe workflow and git commands the Architect proposes', () => {
@@ -26,5 +29,21 @@ describe('isWholeToolRule', () => {
     expect(isWholeToolRule('mcp__orgai__propose_settings')).toBe(true)
     expect(isWholeToolRule('Bash(npm:*)')).toBe(false)
     expect(isWholeToolRule('WebFetch(domain:example.com)')).toBe(false)
+  })
+})
+
+describe('project-owned settings path', () => {
+  it('refuses a symlinked .claude directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    const repo = join(dir, 'repo')
+    const outside = join(dir, 'outside')
+    mkdirSync(repo)
+    mkdirSync(outside)
+    symlinkSync(outside, join(repo, '.claude'), process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      expect(() => addRules(repo, ['Bash(npm:*)'])).toThrow(/symbolic link/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
@@ -46,16 +47,113 @@ const BRANCH_PREFIX = 'worktree-agent-'
 const NEVER_COMMIT = ['node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.cache', '.turbo', '.claude/worktrees']
 const ADD_PATHSPEC = ['--', '.', ...NEVER_COMMIT.flatMap((d) => [`:(exclude)${d}/`, `:(exclude,glob)**/${d}/**`])]
 
+/**
+ * Every harness-owned Git invocation disables hooks and filesystem monitors. Both are executable repository
+ * configuration and must not run merely because OrgAI inspected, committed or integrated a worktree. A private,
+ * empty directory is portable across Git for Windows, macOS and Linux (unlike /dev/null).
+ */
+const EMPTY_HOOKS_DIR = mkdtempSync(join(tmpdir(), 'orgai-no-git-hooks-'))
+const SAFE_GIT_CONFIG = [
+  '-c',
+  `core.hooksPath=${EMPTY_HOOKS_DIR.replace(/\\/g, '/')}`,
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'commit.gpgSign=false',
+  '-c',
+  'merge.gpgSign=false'
+]
+
+/** Args shared with the Codex worktree creator, which lives in a separate module. */
+export function secureGitArgs(args: string[]): string[] {
+  // Repository diff drivers and textconv filters are executable too. Git's explicit switches override both config
+  // and attributes without changing ordinary diff output.
+  const command = args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
+  return [...SAFE_GIT_CONFIG, ...command]
+}
+
 export function isGitRepo(root: string): boolean {
   return existsSync(join(root, '.git'))
 }
 
-function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+function git(root: string, args: string[], input?: string, rawOutput = false): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
-    })
+    const child = execFile(
+      'git',
+      secureGitArgs(args),
+      { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout, stderr) =>
+        resolve({ ok: !error, out: rawOutput ? String(stdout) : String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
+    )
+    if (input !== undefined) {
+      child.stdin?.on('error', () => {})
+      child.stdin?.end(input)
+    }
   })
+}
+
+const EXECUTABLE_GIT_CONFIG = '^(filter\\..*\\.(clean|smudge|process)|merge\\..*\\.driver|diff\\..*\\.(command|textconv))$'
+
+/**
+ * Filter and merge-driver commands selected by repository attributes are invoked by checkout, add or merge. There
+ * is no portable, lossless no-op replacement for an arbitrary driver, so automation fails closed and leaves the
+ * worktree for manual handling. Values are intentionally never returned or logged.
+ */
+export async function gitAutomationRisk(root: string, source?: string, additionalPathSource?: string): Promise<string | undefined> {
+  // Query every scope: a tracked .gitattributes can select a driver from global or system config. We reject only
+  // drivers Git says are active for a repository path, so an unused global Git LFS installation does not block work.
+  const configured = await git(root, ['config', '--includes', '--name-only', '--get-regexp', EXECUTABLE_GIT_CONFIG])
+  if (!configured.out) {
+    // git config exits 1 with no stderr when nothing matched. Any actual config error fails closed.
+    return configured.err ? 'Git automation is disabled because executable Git configuration could not be inspected safely.' : undefined
+  }
+  const drivers = new Map<string, string[]>()
+  for (const key of [...new Set(configured.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean))]) {
+    const m = /^(filter|merge|diff)\.(.+)\.(?:clean|smudge|process|driver|command|textconv)$/i.exec(key)
+    if (!m) continue
+    drivers.set(`${m[1].toLowerCase()}\0${m[2]}`, [...(drivers.get(`${m[1].toLowerCase()}\0${m[2]}`) ?? []), key])
+  }
+  if (!drivers.size) return undefined
+
+  const listed = source
+    ? await Promise.all(
+        [source, ...(additionalPathSource ? [additionalPathSource] : [])].map((tree) =>
+          git(root, ['ls-tree', '-r', '--name-only', '-z', tree], undefined, true)
+        )
+      )
+    : await Promise.all([
+        git(root, ['ls-files', '-co', '--exclude-standard', '-z'], undefined, true),
+        ...(additionalPathSource ? [git(root, ['ls-tree', '-r', '--name-only', '-z', additionalPathSource], undefined, true)] : [])
+      ])
+  if (listed.some((result) => !result.ok)) return 'Git automation is disabled because repository attributes could not be inspected safely.'
+  // During a merge, target attributes also apply to paths introduced only by the source tree. Evaluate the target's
+  // exact attributes against the union of both trees, preserving filenames byte-for-byte from NUL output.
+  const paths = [...new Set(listed.flatMap((result) => result.out.split('\0').filter(Boolean)))]
+  const active = new Set<string>()
+  // Keep each check bounded: --all emits only attributes that are actually set, not three unspecified records per path.
+  for (let i = 0; i < paths.length; i += 4096) {
+    const batch = paths.slice(i, i + 4096)
+    const attrs = await git(
+      root,
+      ['check-attr', '-z', ...(source ? ['--source', source] : []), '--stdin', '--all'],
+      `${batch.join('\0')}\0`,
+      true
+    )
+    if (!attrs.ok) return 'Git automation is disabled because repository attributes could not be inspected safely.'
+    const fields = attrs.out.split('\0')
+    for (let n = 0; n + 2 < fields.length; n += 3) {
+      const attr = fields[n + 1]
+      const value = fields[n + 2]
+      for (const key of drivers.get(`${attr.toLowerCase()}\0${value}`) ?? []) active.add(key)
+    }
+  }
+  if (!active.size) return undefined
+  return `Git automation is disabled because repository attributes select executable filters or merge drivers (${[...active].sort().join(', ')}). Remove or manually review that configuration first.`
+}
+
+/** Exact, unambiguous worktree state for review snapshots; NUL output preserves every legal filename byte. */
+function gitStatus(root: string): Promise<{ ok: boolean; out: string; err: string }> {
+  return git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], undefined, true)
 }
 
 /** Tail of each checkout's lock queue, by pathKey. Removed when the last holder releases. */
@@ -215,8 +313,11 @@ export async function inspectPending(root: string): Promise<PendingWorktree[]> {
   const out: PendingWorktree[] = []
   for (const wt of await listAgentWorktrees(root)) {
     const exists = existsSync(wt.path)
-    const status = exists ? await git(wt.path, ['status', '--porcelain']) : { ok: false, out: '', err: '' }
-    const uncommitted = status.ok ? status.out.split(/\r?\n/).filter(Boolean).length : 0
+    // Status may invoke a clean filter to compare working-tree content with the index. Inspect attributes first and
+    // never run it when an executable driver is active; report one conservative pending change to keep cleanup gated.
+    const risk = exists ? await gitAutomationRisk(wt.path) : undefined
+    const status = exists && !risk ? await gitStatus(wt.path) : { ok: false, out: '', err: '' }
+    const uncommitted = risk ? 1 : status.ok ? status.out.split('\0').filter(Boolean).length : 0
     const ahead = await git(root, ['rev-list', '--count', `HEAD..${wt.branch}`])
     const changed = await git(root, ['diff', '--name-only', `HEAD...${wt.branch}`])
     const last = await git(root, ['log', '-1', '--format=%ct%x00%s', wt.branch])
@@ -246,7 +347,9 @@ const IDENTITY_ERROR = /user\.name|user\.email|identity|tell me who you are/i
 const FALLBACK_IDENTITY = ['-c', 'user.name=OrgAI', '-c', 'user.email=orgai@localhost']
 
 async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
-  const status = await git(wt, ['status', '--porcelain'])
+  const risk = await gitAutomationRisk(wt)
+  if (risk) return { committed: false, error: risk }
+  const status = await gitStatus(wt)
   if (!status.ok || !status.out) return { committed: false }
   await git(wt, ['add', '-A', ...ADD_PATHSPEC])
   const nothingStaged = (await git(wt, ['diff', '--cached', '--quiet'])).ok
@@ -275,6 +378,13 @@ export interface IntegrateResult {
   message: string
 }
 
+/** Immutable commits and file list represented by a merge-review artifact. */
+export interface MergeSnapshot {
+  changedFiles: string[]
+  sourceOid: string
+  targetOid: string
+}
+
 /** How a merge target is named in messages: the main checkout, or the parent report's branch. */
 async function targetName(root: string): Promise<string> {
   const head = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -293,40 +403,92 @@ export async function integrateWorktree(
   info: WorktreeInfo,
   commitMessage: string,
   /** Optional gate before merging (review-before-merge). Not called when there is nothing to merge. */
-  review?: (changedFiles: string[]) => Promise<MergeDecision>
+  review?: (snapshot: MergeSnapshot) => Promise<MergeDecision>
 ): Promise<IntegrateResult> {
   const wt = info.path
   // The target's lock is held for the git work but not while the user reviews the merge, which can take as
   // long as the user likes; another run's merge into the same checkout then waits only for git.
-  const prepared = await withRepoLock(root, async (): Promise<IntegrateResult | { changedFiles: string[]; merged?: IntegrateResult }> => {
-    if (!existsSync(wt)) {
-      return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
-    }
+  const prepared = await withRepoLock(
+    root,
+    async (): Promise<IntegrateResult | { changedFiles: string[]; sourceOid: string; targetOid: string; sourceStatus: string; merged?: IntegrateResult }> => {
+      if (!existsSync(wt)) {
+        return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
+      }
 
-    const commit = await commitLeftovers(wt, commitMessage)
-    if (commit.error) {
-      return { info: { ...info, status: 'conflict' }, message: `Could not commit the worktree changes: ${commit.error}` }
-    }
+      const commit = await commitLeftovers(wt, commitMessage)
+      if (commit.error) {
+        return { info: { ...info, status: 'conflict' }, message: `Could not commit the worktree changes: ${commit.error}` }
+      }
 
-    // Anything to merge at all?
-    const head = await git(root, ['rev-parse', 'HEAD'])
-    const ahead = await git(root, ['rev-list', '--count', `HEAD..${info.branch}`])
-    if (!ahead.ok || ahead.out === '0') {
-      await discardWorktree(root, info)
-      return { info: { ...info, status: 'empty', changedFiles: [] }, message: 'The report made no changes; worktree removed.' }
-    }
+      // Resolve both ends once. A reviewed merge later verifies these exact object ids before merging the reviewed source.
+      const head = await git(root, ['rev-parse', '--verify', 'HEAD'])
+      const source = await git(root, ['rev-parse', '--verify', info.branch])
+      const sourceRisk = await gitAutomationRisk(wt)
+      if (sourceRisk) {
+        return { info: { ...info, status: 'conflict' }, message: `${sourceRisk} Branch ${info.branch} was kept.` }
+      }
+      const sourceTreeRisk = source.ok ? await gitAutomationRisk(wt, source.out) : undefined
+      if (sourceTreeRisk) {
+        return { info: { ...info, status: 'conflict' }, message: `${sourceTreeRisk} Branch ${info.branch} was kept.` }
+      }
+      const sourceStatus = await gitStatus(wt)
+      if (!head.ok || !source.ok || !sourceStatus.ok) {
+        return { info: { ...info, status: 'conflict' }, message: `Could not resolve the commits for ${info.branch}; it was not merged.` }
+      }
+      const ahead = await git(root, ['rev-list', '--count', `${head.out}..${source.out}`])
+      if (!ahead.ok || ahead.out === '0') {
+        await discardWorktree(root, info)
+        return { info: { ...info, status: 'empty', changedFiles: [] }, message: 'The report made no changes; worktree removed.' }
+      }
 
-    const changed = await git(root, ['diff', '--name-only', `${head.out}...${info.branch}`])
-    const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
-    // Without a review gate the merge follows under the same lock.
-    return review ? { changedFiles } : { changedFiles, merged: await mergeInto(root, info, commitMessage, changedFiles) }
-  })
+      const changed = await git(root, ['diff', '--name-only', `${head.out}...${source.out}`])
+      const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
+      // Without a review gate the merge follows under the same lock.
+      return review
+        ? { changedFiles, sourceOid: source.out, targetOid: head.out, sourceStatus: sourceStatus.out }
+        : {
+            changedFiles,
+            sourceOid: source.out,
+            targetOid: head.out,
+            sourceStatus: sourceStatus.out,
+            merged: await mergeInto(root, info, commitMessage, changedFiles, source.out, head.out, sourceStatus.out)
+          }
+    }
+  )
   if ('info' in prepared) return prepared
   if (prepared.merged) return prepared.merged
-  const { changedFiles } = prepared
+  const { changedFiles, sourceOid, targetOid, sourceStatus } = prepared
 
-  if (review) {
-    const decision = await review(changedFiles)
+  if (!review) throw new Error('A prepared reviewed merge has no review callback')
+  const decision = await review({ changedFiles, sourceOid, targetOid })
+
+  return withRepoLock(root, async () => {
+    // The lock was released during the review: maintenance or another run may have removed the worktree meanwhile.
+    if (!existsSync(wt)) {
+      return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
+    }
+    const currentRisk = await gitAutomationRisk(wt)
+    if (currentRisk) {
+      return { info: { ...info, status: 'conflict', changedFiles }, message: `${currentRisk} Branch ${info.branch} was kept.` }
+    }
+    const [currentSource, currentTarget, currentStatus] = await Promise.all([
+      git(root, ['rev-parse', '--verify', info.branch]),
+      git(root, ['rev-parse', '--verify', 'HEAD']),
+      gitStatus(wt)
+    ])
+    if (
+      !currentSource.ok ||
+      !currentTarget.ok ||
+      !currentStatus.ok ||
+      currentSource.out !== sourceOid ||
+      currentTarget.out !== targetOid ||
+      currentStatus.out !== sourceStatus
+    ) {
+      return {
+        info: { ...info, status: 'conflict', changedFiles },
+        message: `Branch ${info.branch}, its worktree, or its merge target changed during review. Nothing was merged; review the current diff before trying again.`
+      }
+    }
     if (decision.behavior === 'discard') {
       await discardWorktree(root, info)
       return { info: { ...info, status: 'removed', changedFiles }, message: `The user discarded ${info.branch}; its changes were deleted.` }
@@ -337,21 +499,49 @@ export async function integrateWorktree(
         message: `The user is holding ${info.branch} for later review; it was not merged and is kept at ${wt}.`
       }
     }
-  }
-
-  return withRepoLock(root, async () => {
-    // The lock was released during the review: maintenance or another run may have removed the worktree meanwhile.
-    if (!existsSync(wt)) {
-      return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
-    }
-    return mergeInto(root, info, commitMessage, changedFiles)
+    return mergeInto(root, info, commitMessage, changedFiles, sourceOid, targetOid, sourceStatus)
   })
 }
 
 /** integrateWorktree's merge step; the caller holds the target's lock. */
-async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[]): Promise<IntegrateResult> {
+async function mergeInto(
+  root: string,
+  info: WorktreeInfo,
+  commitMessage: string,
+  changedFiles: string[],
+  sourceOid: string,
+  targetOid: string,
+  expectedSourceStatus: string
+): Promise<IntegrateResult> {
   const wt = info.path
-  const mergeArgs = ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, info.branch]
+  const [targetRisk, targetTreeRisk, targetConfigSourceTreeRisk, sourceRisk, sourceTreeRisk] = await Promise.all([
+    gitAutomationRisk(root, undefined, sourceOid),
+    gitAutomationRisk(root, targetOid, sourceOid),
+    gitAutomationRisk(root, sourceOid, targetOid),
+    gitAutomationRisk(wt),
+    gitAutomationRisk(wt, sourceOid, targetOid)
+  ])
+  const risk = targetRisk ?? targetTreeRisk ?? targetConfigSourceTreeRisk ?? sourceRisk ?? sourceTreeRisk
+  if (risk) return { info: { ...info, status: 'conflict', changedFiles }, message: `${risk} Branch ${info.branch} was kept.` }
+  const [currentSource, currentTarget, currentStatus] = await Promise.all([
+    git(root, ['rev-parse', '--verify', info.branch]),
+    git(root, ['rev-parse', '--verify', 'HEAD']),
+    gitStatus(wt)
+  ])
+  if (
+    !currentSource.ok ||
+    !currentTarget.ok ||
+    !currentStatus.ok ||
+    currentSource.out !== sourceOid ||
+    currentTarget.out !== targetOid ||
+    currentStatus.out !== expectedSourceStatus
+  ) {
+    return {
+      info: { ...info, status: 'conflict', changedFiles },
+      message: `Branch ${info.branch}, its worktree, or its merge target changed before merge. Nothing was merged; review the current diff before trying again.`
+    }
+  }
+  const mergeArgs = ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, sourceOid]
   let merge = await git(root, mergeArgs)
   if (!merge.ok && IDENTITY_ERROR.test(merge.err)) {
     // No git identity (fresh CI runner, new machine): undo any half-made merge and retry with OrgAI's, as commits do.
@@ -381,9 +571,9 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
 /** Largest patch sent to the renderer; bigger diffs are cut with a note. */
 const MAX_PATCH_BYTES = 200 * 1024
 
-/** A branch's changes since it forked from HEAD of `root` (the main checkout, or a parent's worktree). */
-export async function diffWorktree(root: string, branch: string): Promise<WorktreeDiff & { changedFiles: string[] }> {
-  const range = `HEAD...${branch}`
+/** Changes between exact commits, or HEAD and a branch for maintenance callers that omit `target`. */
+export async function diffWorktree(root: string, source: string, target = 'HEAD'): Promise<WorktreeDiff & { changedFiles: string[] }> {
+  const range = `${target}...${source}`
   const [stat, patch, names] = await Promise.all([
     git(root, ['diff', '--stat', range]),
     git(root, ['diff', range]),

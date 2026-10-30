@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ProjectProfile } from '@shared/types'
@@ -84,6 +84,20 @@ describe('profileRepo', () => {
     expect(p.tree).toContain('.github/')
     expect(p.fileCount).toBe(2)
     expect(p.keyFiles.map((f) => f.path)).toContain('.github/workflows/ci.yml')
+  })
+
+  it('does not follow symlinks outside the repository', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'orgai-profile-outside-'))
+    try {
+      writeFileSync(join(outside, 'README.md'), 'outside secret', 'utf8')
+      symlinkSync(outside, join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+      const p = await profileRepo(root)
+      expect(p.tree).not.toContain('linked')
+      expect(p.keyFiles).toEqual([])
+      expect(p.fileCount).toBe(0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('collects key files by basename case-insensitively, with repo-relative paths', async () => {

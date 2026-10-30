@@ -25,6 +25,12 @@ describe('splitCommand', () => {
   it('keeps empty segments so a trailing operator cannot match', () => {
     expect(splitCommand('npm test &&')).toEqual(['npm test', ''])
   })
+  it('rejects escape ambiguity and malformed quoting', () => {
+    expect(splitCommand('npm test \\"; rm -rf /')).toBeNull()
+    expect(splitCommand('Get-ChildItem C:\\src')).toEqual(['Get-ChildItem C:\\src'])
+    expect(splitCommand(`npm test "unterminated`)).toBeNull()
+    expect(splitCommand('npm test \\')).toBeNull()
+  })
 })
 
 describe('shellRulesFor / matchesBashRule', () => {
@@ -50,10 +56,21 @@ describe('shellRulesFor / matchesBashRule', () => {
       expect(matchesBashRule(c, rules), c).toBe(false)
     }
   })
-  it('unwraps shell wrappers', () => {
-    expect(matchesBashRule(`bash -lc 'npm test --silent'`, rules)).toBe(true)
+  it('requires separate approval for shell wrappers', () => {
+    expect(matchesBashRule(`bash -lc 'npm test --silent'`, rules)).toBe(false)
     expect(matchesBashRule(`bash -lc 'npm test && rm x'`, rules)).toBe(false)
+    expect(matchesBashRule(`pwsh -Command "npm test --silent"`, rules)).toBe(false)
+    expect(matchesBashRule(`./bash -lc 'npm test --silent'`, rules)).toBe(false)
+    expect(matchesBashRule(`sh -c 'npm test --silent'`, rules)).toBe(false)
     expect(unwrapShellCommand('ls -la')).toBe('ls -la')
+    expect(unwrapShellCommand(`bash -lc 'npm test'`)).toBe(`bash -lc 'npm test'`)
+  })
+  it('does not mistake arbitrary interpreters or malformed shell wrappers for shells', () => {
+    expect(matchesBashRule(`python -c 'npm test; __import__("os").system("rm -rf /")'`, rules)).toBe(false)
+    expect(matchesBashRule(`node -e 'npm test'`, rules)).toBe(false)
+    expect(matchesBashRule('npm test \\"; rm -rf /', rules)).toBe(false)
+    expect(matchesBashRule(`bash -lc 'npm test'; rm -rf /`, rules)).toBe(false)
+    expect(matchesBashRule(`bash -lc 'npm test'; rm -rf /; echo 'x'`, rules)).toBe(false)
   })
   it('ignores a wildcard-only or empty prefix', () => {
     expect(matchesBashRule('anything', ['Bash(:*)', 'Bash(*)'])).toBe(false)

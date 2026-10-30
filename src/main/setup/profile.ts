@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 import type { ProjectProfile } from '@shared/types'
 
@@ -53,7 +53,9 @@ export async function profileRepo(root: string): Promise<ProjectProfile> {
       const rel = relative(root, full).replace(/\\/g, '/')
       let isDir = false
       try {
-        isDir = statSync(full).isDirectory()
+        const entry = lstatSync(full)
+        if (entry.isSymbolicLink()) continue
+        isDir = entry.isDirectory()
       } catch {
         continue
       }
