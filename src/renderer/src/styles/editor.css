@@ -193,6 +193,50 @@
   min-width: 0;
 }
 
+/* Role inspector: services the role can use */
+.role-services-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.role-service {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-primary);
+}
+.role-service-tile {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--hue) 60% 50% / 0.2);
+  color: hsl(var(--hue) 60% 45%);
+  font-size: var(--text-caption);
+  font-weight: 600;
+}
+.role-service-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-service-custom {
+  color: var(--text-secondary);
+}
+
 .swatch {
   width: 22px;
   height: 22px;
