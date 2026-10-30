@@ -1,5 +1,6 @@
 import type {
   AdapterChoice,
+  AgentInstance,
   AppearanceSettings,
   AppSettings,
   ConnectionId,
@@ -495,6 +496,14 @@ export const MODEL_PRICE_MAX_PER_MTOK = 10_000
 /** A zeroed TokenUsage (a fresh object each call). */
 export function emptyTokens(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+}
+
+/**
+ * An agent that ended (state done or error) with no result text: the "no result" signal behind
+ * AgentUsage.producedNothing and RunUsage.noResultTokens. A live agent never counts.
+ */
+export function agentProducedNothing(agent: Pick<AgentInstance, 'state' | 'result'>): boolean {
+  return (agent.state === 'done' || agent.state === 'error') && !agent.result?.trim()
 }
 
 /** All four token kinds summed. */

@@ -1177,6 +1177,12 @@ export interface AgentUsage {
   /** API retries the provider reported (Claude system api_retry; Codex error with willRetry). */
   retries: number
   /**
+   * The agent ended (state done or error) without result text: its tokens count as RunUsage.noResultTokens. Filled by
+   * RunManager on every agent.upsert (absent = false); agentProducedNothing() in defaults.ts derives the same from an
+   * AgentInstance. Drives the UI's "no result" dim.
+   */
+  producedNothing?: true
+  /**
    * Normalized from a record saved before usage tracking: tokens.input holds the old inputTokens (cache included,
    * cacheRead/cacheWrite 0), turns/toolCalls/retries are 0 and cost is the stored costUsd (> 0: 'provider') or
    * unknown. Show such numbers as approximate.
