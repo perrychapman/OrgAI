@@ -16,7 +16,7 @@ makeFixtureRepo('conn', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'conn' })
 try {
-  const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
+  const project = await createProject(page, { mode: 'existing', path: repo, name: NAME, useMock: false })
   check(!!project, 'project created')
 
   const sizes = [[1024, 640], [1600, 1000]]
