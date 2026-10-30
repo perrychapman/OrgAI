@@ -26,7 +26,9 @@ import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
-import { useCostLabel } from '../lib/useCostLabel'
+import { Cost } from './ui/Cost'
+import { agentCostInput } from '../lib/cost'
+import UsagePanel from './UsagePanel'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
@@ -188,7 +190,6 @@ function ToolResultRow({ toolName, content, isError }: { toolName?: string; cont
 }
 
 export default function TranscriptPanel({ runId, agent, entries, logs, finished }: Props): ReactElement {
-  const labelCost = useCostLabel()
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -198,7 +199,11 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
   const index = useRunIndexes().get(runId)
   // Setup runs have no plan tab; fall back to the transcript there.
-  const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
+  const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
+  // The Usage tab is local to this panel (the store's SideTab has no 'usage'); picking any other tab leaves it.
+  const [usageRun, setUsageRun] = useState<string | null>(null)
+  const usageOpen = usageRun === runId
+  const tab: SideTab | 'usage' = usageOpen ? 'usage' : planTab
 
   useEffect(() => {
     // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
@@ -219,6 +224,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const tabs: TabItem[] = [
     { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
     ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
+    { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
     { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   ]
   const idPrefix = `side-${runId}`
@@ -236,11 +242,22 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
             </span>
           )}
         </div>
-        <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
+        <Tabs tabs={tabs} value={tab} onChange={(id) => {
+            if (id === 'usage') setUsageRun(runId)
+            else {
+              setUsageRun(null)
+              setTab(id as SideTab)
+            }
+          }} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
       </div>
       {tab === 'plan' && (
         <TabPanel idPrefix={idPrefix} id="plan" value={tab}>
           <PlanView plan={plan} />
+        </TabPanel>
+      )}
+      {tab === 'usage' && (
+        <TabPanel idPrefix={idPrefix} id="usage" value={tab}>
+          <UsagePanel runId={runId} agent={agent} />
         </TabPanel>
       )}
       {tab === 'transcript' && finished && !agent && (
@@ -254,7 +271,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>
-          {!labelCost(agent.costUsd).hidden && <span title={labelCost(agent.costUsd).title}>{labelCost(agent.costUsd).text}</span>}
+          <Cost value={agentCostInput(agent)} hideEmpty />
           <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>
           <span>{agent.state}</span>
           {agent.worktree && (
@@ -269,7 +286,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
         </div>
       )}
-      {tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'plan' || tab === 'usage' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}

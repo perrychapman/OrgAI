@@ -1,0 +1,131 @@
+/* ---------- App settings > Connections > Model prices ---------- */
+
+.model-prices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  container: model-prices / inline-size;
+}
+.model-prices-lead {
+  margin: 0;
+}
+.model-prices-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.model-prices-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.model-prices-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+.model-prices-form-grid .field {
+  margin-bottom: 0;
+  min-width: 0;
+}
+.model-prices-model {
+  grid-column: 1 / -1;
+}
+.model-prices-form-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+@container model-prices (min-width: 640px) {
+  .model-prices-form-grid {
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+  }
+  .model-prices-model {
+    grid-column: span 2;
+  }
+  .model-prices-conn {
+    grid-column: span 2;
+  }
+}
+
+.model-prices-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.model-prices-table th,
+.model-prices-table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.model-prices-table thead th {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-medium);
+}
+.model-prices-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.model-prices-table .num {
+  text-align: right;
+  white-space: nowrap;
+}
+.model-prices-table .model-prices-name {
+  font-weight: var(--weight-regular);
+  overflow-wrap: anywhere;
+}
+.model-prices-source {
+  color: var(--text-tertiary);
+}
+.model-prices-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* Narrow: each model becomes a block; the number cells show their column name. */
+@container model-prices (max-width: 639px) {
+  .model-prices-table thead {
+    display: none;
+  }
+  .model-prices-table,
+  .model-prices-table tbody {
+    display: block;
+  }
+  .model-prices-table tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-1) var(--space-3);
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .model-prices-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .model-prices-table th,
+  .model-prices-table td {
+    padding: 0;
+    border-bottom: 0;
+    text-align: left;
+  }
+  .model-prices-table .model-prices-name {
+    grid-column: 1 / -1;
+  }
+  .model-prices-table td[data-label]::before {
+    content: attr(data-label) ' ';
+    color: var(--text-tertiary);
+    font-family: var(--font-sans);
+  }
+  .model-prices-table .num {
+    text-align: left;
+  }
+  .model-prices-table .model-prices-actions {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+}
