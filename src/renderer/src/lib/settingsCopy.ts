@@ -53,3 +53,11 @@ export const SETTINGS_COPY = {
 } as const satisfies Record<string, SettingCopy>
 
 export type SettingCopyKey = keyof typeof SETTINGS_COPY
+
+/** Connection names as shown in the project picker, the Connections pane and the Defaults pane. */
+export const CONNECTION_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' } as const
+
+export const DEFAULT_CONNECTION_COPY = {
+  label: 'Default connection',
+  description: 'New projects only. Change an existing project in its Settings > Connection.'
+} as const

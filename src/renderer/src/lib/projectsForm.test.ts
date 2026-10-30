@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectPathCheck } from '@shared/types'
-import { effectiveName, isFullPath, pathStatus, submitBlocker } from './projectsForm'
+import { effectiveName, isFullPath, newProjectConnectionLine, pathStatus, submitBlocker } from './projectsForm'
+
+describe('newProjectConnectionLine', () => {
+  const status = { state: 'connected' }
+  const lite = (baseUrl: string, hasApiKey: boolean): never => ({ connection: { id: 'litellm', enabled: true, tierModels: {}, baseUrl, hasApiKey }, status, modelCount: 0 }) as never
+  const oai = (enabled: boolean): never => ({ connection: { id: 'openai', enabled, tierModels: {}, auth: { kind: 'chatgpt' } }, status, modelCount: 0 }) as never
+  it('uses the default when it is usable', () => {
+    expect(newProjectConnectionLine('litellm', [lite('http://x', true)])).toContain('Runs on LiteLLM.')
+    expect(newProjectConnectionLine('openai', [oai(true)])).toContain('Runs on OpenAI.')
+  })
+  it('falls back to Anthropic when it is not', () => {
+    expect(newProjectConnectionLine('litellm', [lite('', true)])).toContain('Runs on Anthropic.')
+    expect(newProjectConnectionLine('litellm', [lite('http://x', false)])).toContain('Runs on Anthropic.')
+    expect(newProjectConnectionLine('openai', [oai(false)])).toContain('Runs on Anthropic.')
+    expect(newProjectConnectionLine('litellm', null)).toContain('Runs on Anthropic.')
+    expect(newProjectConnectionLine(null, null)).toContain('Runs on Anthropic.')
+  })
+})
 
 const chk = (o: Partial<ProjectPathCheck> = {}): ProjectPathCheck => ({ exists: true, isDirectory: true, isGitRepo: true, suggestedName: 'app', empty: false, ...o })
 

@@ -190,6 +190,10 @@ interface AppState {
   /** Static app facts (version, folders, mock availability). null until loaded. */
   appInfo: AppInfo | null
   loadAppInfo(): Promise<void>
+  /** AppSettings.defaultConnection, mirrored for the Connections pane and the new-project form. null until loaded. */
+  defaultConnection: ConnectionId | null
+  loadDefaultConnection(): Promise<void>
+  setDefaultConnection(id: ConnectionId): Promise<void>
   connections: ConnectionInfo[] | null
   connectionsError: string | null
   /** Model catalogs by connection. */
@@ -392,6 +396,8 @@ function showContinuation(summary: RunSummary): void {
   void getState().loadHistory()
 }
 
+let defaultConnectionWatch: (() => void) | null = null
+
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   harnessProject: null,
@@ -425,6 +431,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelsError: {},
   login: null,
   remapNotices: [],
+
+  defaultConnection: null,
+  async loadDefaultConnection() {
+    try {
+      const s = await window.orgai.settings.get()
+      set({ defaultConnection: s.defaultConnection ?? 'anthropic' })
+      if (!defaultConnectionWatch) defaultConnectionWatch = window.orgai.onSettingsChanged((n) => set({ defaultConnection: n.defaultConnection ?? 'anthropic' }))
+    } catch {
+      // Unknown: callers fall back to Anthropic wording.
+    }
+  },
+  async setDefaultConnection(id) {
+    const { dataDir: _d, appVersion: _v, ...cur } = await window.orgai.settings.get()
+    const saved = await window.orgai.settings.set({ ...cur, defaultConnection: id })
+    set({ defaultConnection: saved.defaultConnection ?? id })
+  },
 
   async loadAppInfo() {
     if (get().appInfo) return
