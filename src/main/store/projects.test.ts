@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { McpServerSpec, PluginSpec } from '@shared/types'
+import type { McpServerSpec, PluginSpec, Project } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
 import { ProjectStore, checkProjectPath, cleanProjectPath, createPathError, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
@@ -135,5 +135,17 @@ describe('creating projects', () => {
     const p = store.create({ name: 'X', path: d, brief: '', setupKind: 'existing', mock: true }, undefined, { mockAvailable: true })
     expect(p.provider.id).toBe('mock')
     expect(store.create({ name: 'Y', path: d, brief: '' }).provider.id).toBe('claude')
+  })
+
+  it('create applies prepare to real projects but not to mock ones', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const prepare = (p: Project): Project => ({ ...p, provider: { ...p.provider, connection: 'litellm', label: 'LiteLLM' } })
+    const real = store.create({ name: 'Y', path: d, brief: '' }, undefined, { prepare })
+    expect(real.provider.connection).toBe('litellm')
+    expect(store.get(real.id)?.provider.label).toBe('LiteLLM')
+    const mock = store.create({ name: 'M', path: d, brief: '', mock: true }, undefined, { mockAvailable: true, prepare })
+    expect(mock.provider).toMatchObject({ id: 'mock' })
+    expect(mock.provider.connection).not.toBe('litellm')
   })
 })

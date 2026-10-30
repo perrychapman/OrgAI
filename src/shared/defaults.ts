@@ -251,6 +251,24 @@ export function claudeProviderLabel(auth: AppSettings['providerAuth']): string {
   return auth.kind === 'apiKey' ? `Claude (API key from ${auth.envVar})` : 'Claude (Claude Code login)'
 }
 
+/**
+ * The connection a new project starts on: settings.defaultConnection when it is usable (anthropic always; openai
+ * when enabled; litellm when enabled with a base URL and an API key), otherwise 'anthropic'.
+ */
+export function creationConnection(settings: Pick<AppSettings, 'defaultConnection' | 'connections'> | undefined): ConnectionId {
+  const want = settings?.defaultConnection
+  const c = settings?.connections
+  if (!want || !c) return 'anthropic'
+  if (want === 'openai') return c.openai?.enabled ? 'openai' : 'anthropic'
+  if (want === 'litellm') return c.litellm?.enabled && !!c.litellm.baseUrl?.trim() && c.litellm.hasApiKey ? 'litellm' : 'anthropic'
+  return 'anthropic'
+}
+
+/** Provider label for a connection. Anthropic follows the auth choice. */
+export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth']): string {
+  return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : 'LiteLLM'
+}
+
 export function slugify(name: string): string {
   return (
     name
