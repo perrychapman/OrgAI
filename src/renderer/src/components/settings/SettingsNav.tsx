@@ -6,10 +6,20 @@ export interface SettingsNavItem {
   label: string
 }
 
-/** Sub-navigation of the project settings page: a left rail at wide widths, a wrapped row when the page is narrow. */
-export function SettingsNav({ items, active, onSelect }: { items: SettingsNavItem[]; active: string; onSelect: (id: string) => void }): ReactElement {
+/** Sub-navigation of a settings page: a left rail at wide widths, a wrapped row when the page is narrow. */
+export function SettingsNav({
+  items,
+  active,
+  onSelect,
+  label = 'Project settings sections'
+}: {
+  items: SettingsNavItem[]
+  active: string
+  onSelect: (id: string) => void
+  label?: string
+}): ReactElement {
   return (
-    <nav className="settings-nav" aria-label="Project settings sections">
+    <nav className="settings-nav" aria-label={label}>
       {items.map((it) => (
         <button
           key={it.id}
