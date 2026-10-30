@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useId, useState } from 'react'
 import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
-import { skillElevatedHint, skillScriptPaths, sourceLabel } from '../../lib/skills'
+import { projectProvenance, skillElevatedHint, skillScriptPaths } from '../../lib/skills'
 import { Badge } from '../ui/Badge'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
@@ -50,8 +50,7 @@ export default function RoleSkills({ project, role, onChange }: { project: Proje
                     title={s.enabled ? undefined : 'This skill is off in the project, so runs do not get it.'}
                   />
                   <span className="role-skill-tags">
-                    <Badge>{sourceLabel(s.source)}</Badge>
-                    {s.libraryId && <Badge tone="info">From library</Badge>}
+                    <Badge tone={s.libraryId ? 'info' : 'neutral'}>{projectProvenance(s)}</Badge>
                     {!s.enabled && <Badge>Off</Badge>}
                     {hint && (
                       <Badge tone="attention" icon={TriangleAlert}>
