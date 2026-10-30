@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { decisionCount, waitingItems } from '../lib/needsYou'
 import { needsYou } from '../lib/runChains'
+import { oneLine } from '../lib/decisionTitle'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { isStoppedRun, runStatus, statusOfRun } from '../lib/runStatus'
 import { projectStatus } from '../lib/projectStatus'
@@ -139,7 +140,7 @@ export default function Sidebar(): ReactElement {
                         type="button"
                         className="needs-item"
                         data-kind={it.kind}
-                        title={`${it.label}\n${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}`}
+                        title={`${it.label}\n${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}`}
                         onClick={() => {
                           close()
                           void jumpToDecision(r.summary.projectId, r.summary.id, it.key)
@@ -234,7 +235,7 @@ export default function Sidebar(): ReactElement {
                           type="button"
                           className={`nav-run ${here ? 'active' : ''}`}
                           aria-current={here ? 'true' : undefined}
-                          title={`${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${rs.word}`}
+                          title={`${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}\n${rs.word}`}
                           onClick={() => {
                             if (selectedId !== p.id) selectProject(p.id)
                             void openRun(r.summary.id)

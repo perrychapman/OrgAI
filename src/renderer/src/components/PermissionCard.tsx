@@ -16,6 +16,15 @@ interface Props {
   onDecide: (decision: PermissionChoice) => void | Promise<void>
 }
 
+/** Bidi, zero-width and control characters (other than tab and newline) that can disguise a command. */
+const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u061c\ufeff\u202a-\u202e\u2066-\u2069]/
+const HIDDEN_ALL = new RegExp(HIDDEN_CHARS.source, 'g')
+
+/** Replaces hidden characters with visible \\uXXXX escapes. */
+function showHidden(s: string): string {
+  return s.replace(HIDDEN_ALL, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
 const MAX_LINES = 8
 const MAX_LINE_CHARS = 200
 
@@ -89,6 +98,8 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const hidden = isHiddenCommand(request.toolName, request.input)
   const commandLines = command ? command.split(/\r?\n/).filter((l) => l.trim()).length : 0
   const longCommand = !!command && (commandLines > 6 || command.length > 400)
+  const isBash = request.toolName === 'Bash'
+  const hasHidden = command !== undefined && HIDDEN_CHARS.test(command)
   const [full, setFull] = useState(false)
   return (
     <DecisionCard
@@ -98,8 +109,19 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
       who={who}
       agentId={request.agentId}
       title={permissionTitle(request.toolName, request.input)}
-      focusDetails={hidden}
-      headerExtra={hidden ? <Badge tone="attention">{commandLines > 1 ? `${commandLines} lines` : 'Long command'}</Badge> : undefined}
+      focusDetails={isBash && command !== undefined}
+      headerExtra={
+        hidden || hasHidden || isBash ? (
+          <>
+            {hidden ? (
+              <Badge tone="attention">{commandLines > 1 ? `${commandLines} lines` : 'Long command'}</Badge>
+            ) : isBash ? (
+              <Badge tone="attention">{command !== undefined ? 'Command' : 'Bash'}</Badge>
+            ) : null}
+            {hasHidden && <Badge tone="attention">Hidden characters</Badge>}
+          </>
+        ) : undefined
+      }
       helper={
         <>
           <ul className="decision-scopes">
@@ -145,7 +167,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         <pre className={`perm-input${command !== undefined ? ' perm-command' : ''}${full ? ' full' : ''}`} tabIndex={command !== undefined ? 0 : undefined}>
           {lines.map((l, i) => (
             <span key={i} className={l.kind === 'add' ? 'diff-add' : l.kind === 'del' ? 'diff-del' : l.kind === 'more' ? 'perm-more' : undefined}>
-              {l.text}
+              {command !== undefined ? showHidden(l.text) : l.text}
               {'\n'}
             </span>
           ))}

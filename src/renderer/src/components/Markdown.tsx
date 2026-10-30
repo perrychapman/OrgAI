@@ -29,7 +29,11 @@ export function spoofHost(href: string, children: ReactNode): string {
   if (!host) return ''
   const shown = textOf(children).toLowerCase()
   const bare = host.replace(/^www\./, '')
-  return shown.includes(host) || shown.includes(bare) ? '' : host
+  const mentions = (h: string): boolean =>
+    new RegExp(`(^|[^a-z0-9.-])${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9-])(?!\\.[a-z0-9])`, 'i').test(shown)
+  // Text that names the real host on label boundaries ("al.com" is not "paypal.com") needs no suffix. Any other
+  // text, including a URL or domain that is not this host, gets the real host shown.
+  return mentions(host) || mentions(bare) ? '' : host
 }
 
 /**

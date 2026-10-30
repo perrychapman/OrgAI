@@ -20,6 +20,7 @@ import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
 import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
+import { oneLine, permissionTitle } from '../lib/decisionTitle'
 import { defaultDecisionIndex } from '../lib/needsYou'
 import { Icon } from '../components/ui/Icon'
 import { Popover } from '../components/ui/Popover'
@@ -544,7 +545,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   // Every open decision as one card; the tray lists them all and shows one at a time. The newest is selected.
   const who = (agentId: string): string => run.agents[agentId]?.name ?? 'An agent'
-  const short = (t: string, n = 40): string => (t.length > n ? `${t.slice(0, n - 1)}…` : t)
+  const short = (t: string, n = 40): string => {
+    const c = Array.from(oneLine(t, 10_000))
+    return c.length > n ? `${c.slice(0, n - 1).join('')}…` : c.join('')
+  }
   const decisionItems: DecisionItem[] = [
     ...(run.ruleRequests ?? []).map((r) => ({
       key: r.id,
@@ -568,7 +572,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     })),
     ...run.permissions.map((p) => ({
       key: p.id,
-      label: short(`${p.toolName}: ${p.summary}`),
+      label: short(permissionTitle(p.toolName, p.input)),
       node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => decide(p.id, d)} />
     })),
     ...cardItems.map((it) => ({

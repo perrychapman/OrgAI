@@ -5,7 +5,7 @@ import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
-import { questionTitle } from '../lib/decisionTitle'
+import { oneLine, questionTitle } from '../lib/decisionTitle'
 
 interface Props {
   runId: string
@@ -63,7 +63,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       }
     >
       <div className="stack-3">
-        <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={question.question}>
+        <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={oneLine(question.question, 300)}>
           {question.options.map((o) => {
             const checked = selected.includes(o.label)
             if (question.allowMultiple) {
@@ -74,7 +74,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
               )
             }
             return (
-              <label key={o.label} className={`question-option${checked ? ' selected' : ''}`} title={o.description}>
+              <label key={o.label} className={`question-option${checked ? ' selected' : ''}`} title={o.description ? oneLine(o.description, 300) : undefined}>
                 <input
                   type="radio"
                   name={`q-${question.id}`}

@@ -22,5 +22,8 @@ describe('spoofHost', () => {
   it('returns the real host when the text does not', () => {
     expect(spoofHost('https://evil.test/x', 'bank.com')).toBe('evil.test')
     expect(spoofHost('https://evil.test/x', 'click here')).toBe('evil.test')
+    expect(spoofHost('https://al.com/x', 'paypal.com')).toBe('al.com')
+    expect(spoofHost('https://bank.com/x', 'bank.com.evil.test')).toBe('bank.com')
+    expect(spoofHost('https://bank.com@evil.test/x', 'https://bank.com')).toBe('evil.test')
   })
 })
