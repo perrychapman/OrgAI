@@ -26,6 +26,7 @@ import {
   type LaunchConfig,
   type PolicyChoice
 } from './codexProtocol'
+import { countUsage, setModelTokens } from './runUsage'
 import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChanges, type CodexUpdate } from './codexEvents'
 import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
@@ -289,7 +290,7 @@ class CodexSession implements RuntimeSession {
 
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
   }
 
   private setState(id: string, state: AgentInstance['state'], activity?: string): void {
@@ -588,6 +589,7 @@ class CodexSession implements RuntimeSession {
         return
       case 'toolUse':
         this.transcript(agentId, { kind: 'tool_use', id: u.id, name: u.name, input: u.input })
+        if (agent) countUsage(agent, 'toolCalls')
         this.setState(agentId, u.state, u.activity)
         return
       case 'toolResult': {
@@ -603,6 +605,12 @@ class CodexSession implements RuntimeSession {
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
+          setModelTokens(agent, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown', {
+            input: Math.max(0, u.input - u.cachedInput),
+            output: u.output,
+            cacheRead: Math.min(u.cachedInput, u.input),
+            cacheWrite: 0
+          })
           const cost = this.estimateCost(agent, u)
           const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
           if (moved) agent.costUsd = cost
@@ -621,12 +629,17 @@ class CodexSession implements RuntimeSession {
         if (u.turnId) this.completedTurns.add(u.turnId)
         if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
         this.partial.clear(agentId)
+        if (agent) countUsage(agent, 'turns')
         if (agentId === ROOT_AGENT_ID) this.rootTurnCompleted(u)
         else this.childTurnCompleted(agentId, u)
         void this.maybeRestartForMcp()
         return
       case 'error':
         this.log(u.willRetry ? 'info' : 'warn', `Codex: ${u.message}${u.willRetry ? ' (retrying)' : ''}`)
+        if (u.willRetry && agent) {
+          countUsage(agent, 'retries')
+          this.upsert(agent)
+        }
         if (u.usageLimit && !u.willRetry) void this.onUsageLimit()
         return
     }

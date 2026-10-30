@@ -405,6 +405,23 @@ describe('CodexAdapter session', () => {
     expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(false)
   })
 
+  it('reports uncached/cached token split, turns, tool calls and retries as usage', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 200, cachedInputTokens: 600 }, last: {}, modelContextWindow: null } })
+    s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'commandExecution', id: 'c1', command: 'ls', cwd: '/r', status: 'inProgress' } })
+    s.push('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: true, error: { message: 'slow down' } })
+    s.push('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed', items: [] } })
+    const usage = lastAgent(ctx, 'root').usage!
+    expect(usage.tokens).toEqual({ input: 400, output: 200, cacheRead: 600, cacheWrite: 0 })
+    expect(usage.models).toHaveLength(1)
+    expect(usage.models[0]?.providerCostUsd).toBeUndefined()
+    expect(usage).toMatchObject({ turns: 1, toolCalls: 1, retries: 1 })
+  })
+
   it('pauses on a usage limit and ends the session after the failed turn', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor()
