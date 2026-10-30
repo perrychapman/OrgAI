@@ -50,6 +50,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - A SendMessage to a finished subagent resumes it, and the SDK emits `task_started` with `task_id` = that agent and
     `parent_task_id` = the messaging agent. A `task_started` for a known agent is therefore a resume, never a re-parent
     (`agentTree.resolveParent`). Observed in a persisted run record on 0.3.312; not yet reproduced by a smoke script.
+  - Continuing a run resumes the chain's newest run; RunManager refuses while another live run holds the session.
+    Unverified: whether a resumed session reports the same session_id (`forkSession: true` gives a new one); the chain
+    therefore follows resumedFrom links and sessionId both (`runManager.sessionChain`). Verified by unit tests only.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
 - Worktree isolation (verified with `scripts/smoke-worktree.mjs`): `isolation: "worktree"` on an Agent call can be

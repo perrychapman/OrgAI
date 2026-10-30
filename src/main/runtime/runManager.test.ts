@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext } from './types'
-import { RESUME_TEXT, RunManager, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript } from './mock'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -843,6 +843,112 @@ describe('request_mcp_install through RunManager and the mock adapter', () => {
     expect(text).toContain('Use the gh CLI instead.')
     expect(text).toMatch(/Find another way/)
     expect(mcp.persistInstall).not.toHaveBeenCalled()
+    await m.stopAll()
+  })
+})
+
+describe('sessionChain', () => {
+  const r = (id: string, over: Partial<RunSummary> = {}): RunSummary => runSummary({ id, status: 'finished', ...over })
+
+  it('follows resumedFrom links both ways and shared session ids, and ignores other projects', () => {
+    const runs = [
+      r('a', { sessionId: 's1' }),
+      r('b', { sessionId: 's2', resumedFrom: 'a' }), // the provider gave the resumed session a new id
+      r('c', { resumedFrom: 'b' }), // a continuation whose init never arrived
+      r('d', { sessionId: 's2' }), // shares b's session without a link
+      r('x', { sessionId: 's9' }),
+      r('other', { projectId: 'p2', sessionId: 's1' })
+    ]
+    const ids = (from: string): string[] => sessionChain(runs, runs.find((x) => x.id === from)!).map((x) => x.id).sort()
+    expect(ids('a')).toEqual(['a', 'b', 'c', 'd'])
+    expect(ids('c')).toEqual(['a', 'b', 'c', 'd'])
+    expect(ids('x')).toEqual(['x'])
+  })
+
+  it('survives resumedFrom cycles and dangling links', () => {
+    const runs = [r('a', { resumedFrom: 'b' }), r('b', { resumedFrom: 'a' }), r('c', { resumedFrom: 'gone' })]
+    expect(sessionChain(runs, runs[0]).map((x) => x.id).sort()).toEqual(['a', 'b'])
+    expect(sessionChain(runs, runs[2]).map((x) => x.id)).toEqual(['c'])
+  })
+})
+
+describe('RunManager session chains', () => {
+  it('refuses a second continuation while one is live, and continues from the newest run once it ended', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'First job' })
+    await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    const sessionId = m.summary(run.id)?.sessionId
+    expect(sessionId).toBeTruthy()
+
+    const next = await m.continueRun(p, run.id, 'Second message, which is long enough that the excerpt has to cut it short somewhere')
+    // Refused at once, whether or not the continuation's init has arrived.
+    const refusal = m.continueRun(p, run.id, 'Again')
+    await expect(refusal).rejects.toThrow(/^Session already open: run run_[A-Za-z0-9_-]+ \("Second message/)
+    await expect(refusal).rejects.toThrow(`run ${next.id} (`)
+    await expect(refusal).rejects.toThrow(/reply there instead\.$/)
+    await waitFor(isType('run.status', (e) => e.runId === next.id && e.status === 'idle'))
+    await expect(m.continueRun(p, next.id, 'x')).rejects.toThrow('Run is still active')
+    await expect(m.continueRun(p, run.id, 'Again')).rejects.toThrow(`Session already open: run ${next.id} `)
+    const message = await m.continueRun(p, run.id, 'Again').then(
+      () => '',
+      (e: Error) => e.message
+    )
+    expect(/run (run_[A-Za-z0-9_-]+)/.exec(message)?.[1]).toBe(next.id)
+
+    await m.stop(next.id)
+    await vi.waitFor(() => expect(m.summaryOf(next.id)).toBeUndefined())
+    const seen = events.length
+    const third = await m.continueRun(p, run.id, 'Third')
+    expect(third.resumedFrom).toBe(next.id)
+    const init = await waitFor(isType('run.status', (e) => e.runId === third.id && !!e.sessionId), seen)
+    expect(init.sessionId).toBe(sessionId)
+    const notice = await waitFor(isType('log', (e) => e.runId === third.id && e.message.includes('newest run of this session')), seen)
+    expect(notice.level).toBe('info')
+    expect(notice.message).toContain(next.id)
+    expect(notice.message).toContain(run.id)
+    await m.stopAll()
+  })
+
+  it('resumes the newest run of the chain when the provider changed the session id, and hands over a paused newest run', async () => {
+    const ctxs: RuntimeContext[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: `s-${ctxs.length}` })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const first = await m.start({ project: p, prompt: 'one' })
+    const second = await m.continueRun(p, first.id, 'two')
+    expect(ctxs[1].resumeSessionId).toBe('s-1')
+    await vi.waitFor(() => expect(m.summaryOf(second.id)).toBeUndefined())
+    store.upsert({ ...store.get(second.id)!, status: 'paused', autoResume: true, pausedUntil: Date.now() + 60_000 })
+    const third = await m.continueRun(p, first.id, 'three')
+    expect(third.resumedFrom).toBe(second.id)
+    expect(ctxs[2].resumeSessionId).toBe('s-2')
+    expect(store.get(second.id)).toMatchObject({ status: 'finished', autoResume: false })
+  })
+
+  it('does not treat a live run of another session as holding this one', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const a = await m.start({ project: p, prompt: 'A' })
+    await waitFor(isType('run.status', (e) => e.runId === a.id && e.status === 'idle'))
+    await m.stop(a.id)
+    await vi.waitFor(() => expect(m.summaryOf(a.id)).toBeUndefined())
+    const b = await m.start({ project: p, prompt: 'B' })
+    await waitFor(isType('run.status', (e) => e.runId === b.id && e.status === 'idle'))
+    const next = await m.continueRun(p, a.id, 'more A')
+    expect(next.resumedFrom).toBe(a.id)
     await m.stopAll()
   })
 })
