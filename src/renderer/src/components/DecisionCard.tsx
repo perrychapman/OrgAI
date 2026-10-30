@@ -40,6 +40,9 @@ interface Props {
   testId?: string
 }
 
+/** Set by the tray stepper just before it swaps cards: the next card mount keeps focus where it is. */
+export const decisionFocus = { suppress: false }
+
 /** True when the user is in the middle of typing in a text field; a new card must not steal focus then. */
 function typingElsewhere(card: HTMLElement | null): boolean {
   const el = document.activeElement
@@ -55,6 +58,10 @@ export default function DecisionCard({ kind, runId, who, title, headerExtra, chi
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   useEffect(() => {
+    if (decisionFocus.suppress) {
+      decisionFocus.suppress = false
+      return
+    }
     if (noAutoFocus) return
     const card = ref.current
     if (!card || typingElsewhere(card)) return

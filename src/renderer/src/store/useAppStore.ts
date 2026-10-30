@@ -106,6 +106,11 @@ export interface RemapNoticeState {
 
 const MAX_MESSAGES = 100
 
+/** How many decisions (cards, questions, installs) the run still waits on. */
+export function pendingDecisionCount(r: Pick<RunState, 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'mcpInstalls'>): number {
+  return r.permissions.length + r.proposals.length + (r.questions?.length ?? 0) + (r.ruleRequests?.length ?? 0) + (r.mergeReviews?.length ?? 0) + (r.mcpInstalls?.length ?? 0)
+}
+
 function emptyRun(summary: RunSummary): RunState {
   return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: [], partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
@@ -196,7 +201,7 @@ interface AppState {
   trackSave<T>(fn: () => Promise<T>): Promise<T>
   selectRole(id: string | null): void
   selectAgent(id: string | null): void
-  createProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Promise<Project>
+  createProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind; mock?: boolean }): Promise<Project>
   updateProject(project: Project): void
   updateRoles(projectId: string, mutate: (roles: Role[]) => Role[]): void
   removeProject(id: string): Promise<void>
@@ -469,7 +474,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async saveProjectNow(project) {
-    const saved = await window.orgai.projects.save(project)
+    const saved = await get().trackSave(() => window.orgai.projects.save(project))
     get().replaceProject(saved)
     return saved
   },
@@ -857,7 +862,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (e.direction === 'in') {
         set((s) => {
           const looking = s.view === 'run' && activeRun(s)?.summary.id === e.runId
-          return looking ? {} : { unreadByRun: { ...s.unreadByRun, [e.runId]: (s.unreadByRun[e.runId] ?? 0) + 1 } }
+          // A run we never loaded (or one that already ended) has no tab to mark.
+          const known = s.runs[e.runId]
+          return looking || !known || !isRunLive(known) ? {} : { unreadByRun: { ...s.unreadByRun, [e.runId]: (s.unreadByRun[e.runId] ?? 0) + 1 } }
         })
       }
       return
@@ -880,6 +887,17 @@ export const useAppStore = create<AppState>((set, get) => ({
             pausedUntil: e.pausedUntil ?? run.summary.pausedUntil,
             pauseReason: e.pauseReason ?? run.summary.pauseReason,
             autoResume: e.autoResume ?? run.summary.autoResume
+          }
+          // A run that ended or paused has no open decisions: main cancels them, and no card keeps live-looking buttons (H4).
+          if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') {
+            run.permissions = []
+            run.proposals = []
+            run.questions = []
+            run.ruleRequests = []
+            run.mergeReviews = []
+            run.mcpInstalls = []
+            run.mcpResolved = {}
+            run.partial = {}
           }
           if (e.status === 'finished' || e.status === 'error' || e.status === 'running' || e.status === 'paused') void get().loadHistory()
           break
@@ -943,7 +961,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'mcpInstall.resolved': {
           const request = (run.mcpInstalls ?? []).find((r) => r.id === e.requestId)
           run.mcpInstalls = (run.mcpInstalls ?? []).filter((r) => r.id !== e.requestId)
-          if (request) run.mcpResolved = { ...(run.mcpResolved ?? {}), [e.requestId]: { request, outcome: e.outcome } }
+          // A cancelled request (the run ended) leaves no answered card behind.
+          if (request && !e.cancelled) run.mcpResolved = { ...(run.mcpResolved ?? {}), [e.requestId]: { request, outcome: e.outcome } }
           break
         }
         case 'log':
@@ -955,8 +974,25 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         }
       }
-      return { runs: { ...s.runs, [e.runId]: run } }
+      const next: Partial<AppState> = { runs: { ...s.runs, [e.runId]: run } }
+      // Terminal run: its tab no longer has anything unread to show.
+      if ((e.type === 'run.status' && (e.status === 'finished' || e.status === 'error')) && s.unreadByRun[e.runId]) {
+        const { [e.runId]: _u, ...rest } = s.unreadByRun
+        next.unreadByRun = rest
+      }
+      return next
     })
+    // The last open decision resolved (answered or cancelled): hand focus back to the composer (M15).
+    if (e.type.endsWith('.resolved') && !e.type.startsWith('mcp')) {
+      const st = get()
+      const r = st.runs[e.runId]
+      if (r && activeRun(st)?.summary.id === e.runId && st.view === 'run' && pendingDecisionCount(r) === 0) get().focusComposer()
+    }
+    if (e.type === 'mcpInstall.resolved') {
+      const st = get()
+      const r = st.runs[e.runId]
+      if (r && activeRun(st)?.summary.id === e.runId && st.view === 'run' && pendingDecisionCount(r) === 0) get().focusComposer()
+    }
   },
 
   dismissRun(runId) {
@@ -965,8 +1001,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!run || isRunLive(run)) return {}
       const projectId = run.summary.projectId
       const dismissedRuns = { ...s.dismissedRuns, [runId]: true as const }
+      const { [runId]: _unread, ...unreadByRun } = s.unreadByRun
       const tabNotice = HIDDEN_NOTICE
-      if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, tabNotice }
+      if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, unreadByRun, tabNotice }
       // Hiding the viewed tab moves to its right neighbour, else the left one; with no tab left, the New run page.
       const tabs = tabRunsOf(s, projectId)
       const at = tabs.findIndex((r) => r.summary.id === runId)
@@ -975,10 +1012,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const activeRunByProject = { ...s.activeRunByProject }
       if (next) {
         activeRunByProject[projectId] = next.summary.id
-        return { dismissedRuns, activeRunByProject, selectedAgentId: 'root', tabNotice }
+        return { dismissedRuns, unreadByRun, activeRunByProject, selectedAgentId: 'root', tabNotice }
       }
       delete activeRunByProject[projectId]
-      return { dismissedRuns, activeRunByProject, draftPage: { ...s.draftPage, [projectId]: true as const }, tabNotice }
+      return { dismissedRuns, unreadByRun, activeRunByProject, draftPage: { ...s.draftPage, [projectId]: true as const }, tabNotice }
     })
     setTimeout(() => set((s) => (s.tabNotice === HIDDEN_NOTICE ? { tabNotice: null } : {})), 5000)
   },

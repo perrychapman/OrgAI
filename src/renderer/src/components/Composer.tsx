@@ -49,8 +49,10 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
   useEffect(() => {
     if (autoFocus) ref.current?.focus()
   }, [autoFocus])
+  // The token is global: only a change after this composer mounted is a request to focus (not a tab switch).
+  const mountToken = useRef(focusToken)
   useEffect(() => {
-    if (focusToken) ref.current?.focus()
+    if (focusToken && focusToken !== mountToken.current) ref.current?.focus()
   }, [focusToken])
   useEffect(() => setNotice(null), [draftKey])
 

@@ -1,10 +1,11 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
   BackgroundVariant,
   Controls,
+  MiniMap,
   MarkerType,
   useReactFlow,
   ReactFlowProvider,
@@ -13,7 +14,13 @@ import {
 } from '@xyflow/react'
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project } from '@shared/types'
 import McpInstallCard from '../components/McpInstallCard'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Badge } from '../components/ui/Badge'
+import { Banner } from '../components/ui/Banner'
+import { IconButton } from '../components/ui/IconButton'
+import PermissionCard from '../components/PermissionCard'
+import { decisionFocus } from '../components/DecisionCard'
+import { useCssVar } from '../lib/useCssVar'
 import { activeRun, isRunLive, useAppStore, useProjectSummaries } from '../store/useAppStore'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { Button } from '../components/ui/Button'
@@ -32,7 +39,6 @@ import RunTabs from '../components/RunTabs'
 import RunHeader from '../components/RunHeader'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
-import { Decision } from '../components/RunLabel'
 import { formatUntil, treeLayout } from '../lib/layout'
 import { ancestorsOf, hasLiveDescendant, normalizeParents } from '../lib/agentTree'
 
@@ -46,9 +52,39 @@ const SETTLED_WORKTREE = new Set(['merged', 'empty', 'removed', 'held', 'conflic
 const COLLAPSE_KEY = 'orgai.collapseFinished'
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
-/** Message edges reuse the accent text token until the design system names a message color. */
-const MESSAGE_COLOR = 'var(--accent-text)'
-const NEUTRAL_ROLE_COLOR = 'var(--text-tertiary)'
+/** Neutral role colour used when a role has none; resolved from a token at render time (React Flow cannot take var()). */
+const NEUTRAL_ROLE_TOKEN = '--text-tertiary'
+
+/** Reads a data-* attribute on <html> and follows changes (the appearance settings write them). */
+function useHtmlAttr(name: string, fallback: string): string {
+  const read = (): string => document.documentElement.getAttribute(name) ?? fallback
+  const [value, setValue] = useState(read)
+  useEffect(() => {
+    const update = (): void => setValue(read())
+    update()
+    const mo = new MutationObserver(update)
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: [name] })
+    return () => mo.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name])
+  return value
+}
+
+/** True when the OS or the app asks for reduced motion (animated edges stay still). */
+function useReducedMotion(): boolean {
+  const attr = useHtmlAttr('data-reduce-motion', '')
+  const [os, setOs] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const on = (): void => setOs(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return os || (attr !== '' && attr !== 'false' && attr !== 'off')
+}
+
+const EDGE_TYPE = { curved: 'default', orthogonal: 'smoothstep', straight: 'straight' } as const
+const PATTERN_VARIANT = { dots: BackgroundVariant.Dots, grid: BackgroundVariant.Lines } as const
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
 
@@ -117,6 +153,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
   const { fitView } = useReactFlow()
+  const setView = useAppStore((s) => s.setView)
+  const messageColor = useCssVar('--edge-message')
+  const neutralRoleColor = useCssVar(NEUTRAL_ROLE_TOKEN)
+  const borderStrong = useCssVar('--border-strong')
+  const patternColor = useCssVar('--canvas-pattern')
+  const surfaceColor = useCssVar('--surface-0')
+  const patternKind = useHtmlAttr('data-canvas-pattern', 'dots')
+  const edgeStyle = useHtmlAttr('data-canvas-edges', 'curved') as keyof typeof EDGE_TYPE
+  const showMinimap = useHtmlAttr('data-canvas-minimap', 'off') === 'on'
+  const reducedMotion = useReducedMotion()
+  const edgeType = EDGE_TYPE[edgeStyle] ?? 'default'
 
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
@@ -135,7 +182,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
-  const [pickedInstall, setPickedInstall] = useState<string | null>(null)
+  const [pickedDecision, setPickedDecision] = useState<string | null>(null)
   const [dismissedInstalls, setDismissedInstalls] = useState<Record<string, boolean>>({})
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -158,8 +205,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const agents = useMemo(() => normalizeParents(Object.values(agentsById)), [agentsById])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
-      project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? NEUTRAL_ROLE_COLOR,
-    [project.roles]
+      project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? neutralRoleColor,
+    [project.roles, neutralRoleColor]
   )
 
   // Finished reports fold into one "done" node per parent after a short grace period. A ticker keeps
@@ -248,11 +295,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
         selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
-        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : NEUTRAL_ROLE_COLOR, onToggle: toggleGroup }
+        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: toggleGroup }
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, run, toggleGroup])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, run, toggleGroup, neutralRoleColor])
 
   const edges: Edge[] = useMemo(() => {
     const shown = new Set(visibleAgents.map((a) => a.id))
@@ -265,7 +312,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           id: `e-${a.parentId}-${a.id}`,
           source: a.parentId as string,
           target: a.id,
-          animated: live,
+          type: edgeType,
+          animated: live && !reducedMotion,
           style: { stroke: color, strokeWidth: live ? 2.2 : 1.4, opacity: a.state === 'done' ? 0.45 : 1 },
           markerEnd: { type: MarkerType.ArrowClosed, color }
         }
@@ -276,7 +324,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         id: `e-${p}-${groupId(p)}`,
         source: p,
         target: groupId(p),
-        style: { stroke: 'var(--border-strong)', strokeWidth: 1.2, strokeDasharray: '4 4' }
+        type: edgeType,
+        style: { stroke: borderStrong, strokeWidth: 1.2, strokeDasharray: '4 4' }
       }))
     // Recent messages: a dashed, animated side-to-side edge. A folded agent's end attaches to its group node;
     // a message whose ends are not on the canvas (or land on the same node) is skipped.
@@ -309,18 +358,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         target,
         sourceHandle: MSG_OUT,
         targetHandle: MSG_IN,
-        animated: true,
+        type: edgeType,
+        animated: !reducedMotion,
         className: 'msg-edge',
         label: 'msg',
-        labelStyle: { fill: MESSAGE_COLOR, fontSize: 'var(--text-caption)' },
-        labelBgStyle: { fill: 'var(--surface-0)' },
-        style: { stroke: MESSAGE_COLOR, strokeWidth: 1.8, strokeDasharray: '6 4' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: MESSAGE_COLOR },
+        labelStyle: { fill: messageColor, fontSize: 'var(--text-small)' },
+        labelBgStyle: { fill: surfaceColor },
+        style: { stroke: messageColor, strokeWidth: 1.8, strokeDasharray: '6 4' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: messageColor },
         zIndex: 10
       })
     }
     return [...agentEdges, ...groupEdges, ...messageEdges.values()]
-  }, [visibleAgents, groups, roleColor, messages, msgNow, agentsById])
+  }, [visibleAgents, groups, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, borderStrong, messageColor, surfaceColor])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
 
@@ -378,11 +428,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     ...openInstalls.map((request) => ({ request })),
     ...resolvedInstalls.map((r) => ({ request: r.request, outcome: r.outcome }))
   ]
-  const expandedInstallId = openInstalls.some((r) => r.id === pickedInstall) ? pickedInstall : (openInstalls[0]?.id ?? null)
 
   // The decisions region resizes the canvas; re-fit once it settles.
   const cardsKey =
-    cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : c.request.id === expandedInstallId ? 'e' : 'c'}`).join('|') +
+    cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : 'o'}`).join('|') +
     `/${run.permissions.length}.${run.proposals.length}.${run.questions?.length ?? 0}.${run.ruleRequests?.length ?? 0}.${run.mergeReviews?.length ?? 0}.${status === 'paused' ? 'p' : ''}`
   useEffect(() => {
     const t = setTimeout(() => fitView({ padding: 0.25, duration: 200, maxZoom: 1 }), 80)
@@ -430,119 +479,80 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     [run, selectedAgentId]
   )
 
+  // Every open decision as one card; the tray shows one at a time with a stepper (spec 12.1). The newest is selected.
+  const who = (agentId: string): string => run.agents[agentId]?.name ?? 'An agent'
+  const decisionItems: { key: string; node: ReactNode }[] = [
+    ...(run.ruleRequests ?? []).map((r) => ({
+      key: r.id,
+      node: <RuleRequestCard runId={runId} request={r} who={who(r.agentId)} onDecide={(d) => void decideRules(r.id, d)} />
+    })),
+    ...(run.questions ?? []).map((q) => ({
+      key: q.id,
+      node: <QuestionCard runId={runId} question={q} who={isSetupRun ? 'The Architect' : who(q.agentId)} onAnswer={(a) => void answerQuestion(q.id, a)} />
+    })),
+    ...run.proposals.map((p) => ({
+      key: p.id,
+      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : undefined} proposal={p} currentRoles={project.roles} onDecide={(d) => void decideProposal(p.id, d)} />
+    })),
+    ...(run.mergeReviews ?? []).map((m) => ({
+      key: m.id,
+      node: <MergeReviewCard runId={runId} review={m} onDecide={(d) => void decideMerge(m.id, d)} />
+    })),
+    ...run.permissions.map((p) => ({
+      key: p.id,
+      node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => void decide(p.id, d)} />
+    })),
+    ...cardItems.filter((it) => it.outcome).map((it) => ({
+      key: it.request.id,
+      node: (
+        <McpInstallCard
+          runId={runId}
+          request={it.request}
+          agentName={who(it.request.agentId)}
+          resolved={it.outcome}
+          collapsed={false}
+          onExpand={() => undefined}
+          onDismiss={() => setDismissedInstalls((d) => ({ ...d, [it.request.id]: true }))}
+        />
+      )
+    }))
+  ]
+  // Answered install records sit first so a real decision is never hidden behind one.
+  const isRecord = (key: string): boolean => resolvedInstalls.some((r) => r.request.id === key)
+  decisionItems.sort((a, b) => Number(isRecord(b.key)) - Number(isRecord(a.key)))
+  const pickedAt = decisionItems.findIndex((d) => d.key === pickedDecision)
+  const newestPending = decisionItems.length - 1
+  const selectedDecision = pickedAt >= 0 ? pickedAt : newestPending
+  const shownKey = decisionItems[selectedDecision]?.key ?? null
+  // Pin the card on screen: a request arriving later never swaps it away from under the user (the stepper shows it).
+  useEffect(() => {
+    if (shownKey && shownKey !== pickedDecision) setPickedDecision(shownKey)
+  }, [shownKey, pickedDecision])
+  const step = (to: number): void => {
+    decisionFocus.suppress = true
+    setPickedDecision(decisionItems[to].key)
+  }
+
+  const setupDone = isSetupRun && project.setup?.state === 'complete' && status === 'finished'
+
   return (
     <div className="run-view">
       <RunHeader run={run} project={project} agentCount={agents.length} collapseFinished={collapseFinished} finishedCount={finishedCount} onToggleCollapse={toggleCollapse} />
+      {setupDone && (
+        <Banner
+          tone="success"
+          testId="setup-complete"
+          title={`Setup complete: ${project.setup?.architecturePath ? 'architecture, ' : ''}${project.roles.length} role${project.roles.length === 1 ? '' : 's'}, settings applied`}
+          actions={
+            <Button size="sm" onClick={() => setView('org')}>
+              View org chart
+            </Button>
+          }
+        >
+          The Architect is done. Review or adjust what it set up on the Org chart tab.
+        </Banner>
+      )}
       <div className="run-body" ref={bodyRef}>
-        <FrameTray label="Waiting for you">
-          {status === 'paused' && <PauseBanner runId={runId} />}
-
-          {status !== 'paused' && run.plan?.status === 'blocked' && (
-            <div className="pause-banner plan-blocked-banner">
-              <div className="pause-title">
-                <span className="dot" /> The orchestrator needs your decision
-              </div>
-              <div className="pause-reason">{run.plan.blockedReason ?? 'It marked the plan blocked.'}</div>
-              <div className="pause-when">
-                Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
-              </div>
-              <div className="row" style={{ gap: 'var(--space-2)' }}>
-                {(sessionOpen || canContinue) && (
-                  <Button variant="primary" size="sm" onClick={() => focusComposer()}>
-                    Answer
-                  </Button>
-                )}
-                <Button variant="secondary" size="sm" onClick={() => setSideTab('plan')}>
-                  Show the plan
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {(run.ruleRequests ?? []).map((r) => (
-            <Decision key={r.id} runId={runId}>
-              <RuleRequestCard request={r} who={run.agents[r.agentId]?.name ?? r.agentId} onDecide={(d) => void decideRules(r.id, d)} />
-            </Decision>
-          ))}
-          {(run.questions ?? []).map((q) => (
-            <Decision key={q.id} runId={runId}>
-              <QuestionCard question={q} onAnswer={(a) => void answerQuestion(q.id, a)} />
-            </Decision>
-          ))}
-          {run.proposals.map((p) => (
-            <Decision key={p.id} runId={runId}>
-              <ProposalCard proposal={p} onDecide={(d) => void decideProposal(p.id, d)} />
-            </Decision>
-          ))}
-          {(run.mergeReviews ?? []).map((m) => (
-            <Decision key={m.id} runId={runId}>
-              <MergeReviewCard review={m} onDecide={(d) => void decideMerge(m.id, d)} />
-            </Decision>
-          ))}
-          {run.permissions.map((p) => (
-            <Decision key={p.id} runId={runId}>
-              <div className="permission">
-                <div className="who">
-                  {run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}
-                </div>
-                <div className="what">{p.summary}</div>
-                {p.ruleLabels && p.ruleLabels.length > 0 && (
-                  <div className="rules" title="What “Allow for session” and “Always allow” approve">
-                    {p.ruleLabels.map((r) => (
-                      <code key={r}>{r}</code>
-                    ))}
-                  </div>
-                )}
-                <div className="row" style={{ flexWrap: 'wrap' }}>
-                  <Button variant="primary" size="sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'once' })}>
-                    Allow once
-                  </Button>
-                  {p.suggestions && p.suggestions.length > 0 && (
-                    <>
-                      <Button size="sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'session' })}>
-                        Allow for session
-                      </Button>
-                      <Button size="sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'project' })}>
-                        Always allow (project)
-                      </Button>
-                    </>
-                  )}
-                  <Button size="sm" onClick={() => void decide(p.id, { behavior: 'deny', message: 'The user declined this action. Find another way or ask.' })}>
-                    Deny
-                  </Button>
-                </div>
-              </div>
-            </Decision>
-          ))}
-
-          {cardItems.length > 0 && (
-            <>
-              <span className="sr-only">
-                {openInstalls.length > 0
-                  ? `${run.agents[openInstalls[0].agentId]?.name ?? 'An agent'} is asking to install an MCP server`
-                  : 'MCP install request answered'}
-              </span>
-              {openInstalls.length > 1 && (
-                <Badge tone="warning" testId="mcp-install-count">
-                  {openInstalls.length} install requests waiting
-                </Badge>
-              )}
-              {cardItems.map((it) => (
-                <Decision key={it.request.id} runId={runId}>
-                  <McpInstallCard
-                    runId={runId}
-                    request={it.request}
-                    agentName={run.agents[it.request.agentId]?.name ?? 'An agent'}
-                    resolved={it.outcome}
-                    collapsed={!it.outcome && it.request.id !== expandedInstallId}
-                    onExpand={() => setPickedInstall(it.request.id)}
-                    onDismiss={() => setDismissedInstalls((d) => ({ ...d, [it.request.id]: true }))}
-                  />
-                </Decision>
-              ))}
-            </>
-          )}
-        </FrameTray>
 
         <CanvasFrame frameRef={canvasRef}>
           <FrameStage>
@@ -560,10 +570,58 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               deleteKeyCode={null}
               minZoom={0.3}
             >
-              <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
+              {patternKind !== 'none' && <Background variant={PATTERN_VARIANT[patternKind as 'dots' | 'grid'] ?? BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />}
               <Controls showInteractive={false} />
+              {showMinimap && <MiniMap pannable zoomable ariaLabel="Run minimap" nodeColor={neutralRoleColor} />}
             </ReactFlow>
           </FrameStage>
+          <FrameTray label="Decisions">
+          {status === 'paused' && <PauseBanner runId={runId} />}
+
+          {status !== 'paused' && run.plan?.status === 'blocked' && (
+            <div className="pause-banner plan-blocked-banner">
+              <div className="pause-title">
+                <span className="dot" /> The orchestrator needs your decision
+              </div>
+              <div className="pause-reason">{run.plan.blockedReason ?? 'It marked the plan blocked.'}</div>
+              <div className="pause-when">
+                Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
+              </div>
+              <div className="row gap-2">
+                {(sessionOpen || canContinue) && (
+                  <Button variant="primary" size="sm" onClick={() => focusComposer()}>
+                    Answer
+                  </Button>
+                )}
+                <Button variant="secondary" size="sm" onClick={() => setSideTab('plan')}>
+                  Show the plan
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {decisionItems.length > 0 && (
+            <>
+              {decisionItems.length > 1 && (
+                <div className="decision-stepper" role="group" aria-label="Pending decisions">
+                  <IconButton icon={ChevronLeft} label="Previous decision" size="sm" disabled={selectedDecision === 0} onClick={() => step(selectedDecision - 1)} />
+                  <span aria-live="polite">
+                    {selectedDecision + 1} of {decisionItems.length}
+                  </span>
+                  <IconButton icon={ChevronRight} label="Next decision" size="sm" disabled={selectedDecision === decisionItems.length - 1} onClick={() => step(selectedDecision + 1)} />
+                </div>
+              )}
+              {openInstalls.length > 1 && (
+                <Badge tone="warning" testId="mcp-install-count">
+                  {openInstalls.length} install requests waiting
+                </Badge>
+              )}
+              <div key={decisionItems[selectedDecision].key} className="decision">
+                {decisionItems[selectedDecision].node}
+              </div>
+            </>
+          )}
+        </FrameTray>
           <FrameFooter>
             <span>
               <i style={{ background: 'var(--accent)' }} />
@@ -582,7 +640,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               error
             </span>
             <span>
-              <i style={{ background: MESSAGE_COLOR }} />
+              <i style={{ background: 'var(--edge-message)' }} />
               message
             </span>
           </FrameFooter>
@@ -692,7 +750,7 @@ function PauseBanner({ runId }: { runId: string }): ReactElement | null {
           : `Auto-resume is off.${until ? ` The window resets at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` : ''} Continue it from the composer when you are ready.`}
       </div>
       {error && <div className="pause-error">{error}</div>}
-      <div className="row" style={{ gap: 'var(--space-2)' }}>
+      <div className="row gap-2">
         <Button variant="primary" size="sm" disabled={busy} onClick={() => void act(() => resumeNow(runId))}>
           Resume now
         </Button>
