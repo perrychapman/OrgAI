@@ -21,6 +21,7 @@
 @import './usage-tab.css';
 @import './history-trends.css';
 @import './model-prices.css';
+@import './skill-library.css';
 
 * {
   box-sizing: border-box;

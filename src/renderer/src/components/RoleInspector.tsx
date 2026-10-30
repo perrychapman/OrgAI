@@ -4,6 +4,7 @@ import type { Effort, Project, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
 import RoleModelPicker from './RoleModelPicker'
 import RoleServices from './connectors/RoleServices'
+import RoleSkills from './skills/RoleSkills'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { Banner } from './ui/Banner'
@@ -189,6 +190,8 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             </div>
           )}
         </section>
+
+        <RoleSkills project={project} role={role} onChange={(skills) => patch({ skills })} />
 
         <section className="stack-2" aria-labelledby={id('instructions')}>
           <h3 className="side-section-title" id={id('instructions')}>
