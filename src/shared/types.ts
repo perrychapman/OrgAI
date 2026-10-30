@@ -1223,6 +1223,11 @@ export interface RunUsage {
   costUsd: number | null
   costSource: CostSource
   costPartial?: true
+  /**
+   * The adapter's last run.cost total (the provider's own figure for this run, resume base subtracted), when it sent
+   * one. RunManager passes it as resumeBaseCostUsd when the session is continued. Informational for the UI.
+   */
+  providerCostUsd?: number
   /** Per model across all agents. */
   models: ModelUsageEntry[]
   /** Per role. */
