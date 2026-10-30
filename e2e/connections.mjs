@@ -82,7 +82,9 @@ try {
           await openAppSettings(page)
           await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
           check((await sm().inputValue()) === smWant, 'Setup model persists after reopening App settings', smWant)
-          await sm().selectOption(smBefore)
+          // The default is 'deep', which is not a listed model: the UI shows it only while it is the saved value, so it
+          // cannot be selected again. Restore only a listed value (temp data dir; the leftover is harmless).
+          if ((await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))).includes(smBefore)) await sm().selectOption(smBefore)
           await sleep(600)
           await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
         }
@@ -128,7 +130,7 @@ try {
       await sleep(600)
       check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
       check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
-      check((await page.locator('[data-testid=mcp-add-other]').count()) === 1, 'Other ways to add menu present')
+      check((await page.locator('[data-testid=mcp-add-service]').count()) === 1 && (await page.locator('[data-testid=mcp-add-other]').count()) === 1, 'Add a service and Other ways to add buttons present')
       const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on project tools at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
       await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
@@ -207,6 +209,34 @@ try {
   } catch (e) {
     check(false, 'MCP library add and link flow', String(e.message ?? e).split('\n')[0])
     await shot('mcp-library-error').catch(() => {})
+  }
+
+  // Connectors gallery: connect Notion (mock sign-in), check it, disconnect, remove.
+  try {
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    const gal = page.locator('[data-testid=connectors-section]')
+    await gal.waitFor({ timeout: 10_000 })
+    const tile = gal.locator('[data-testid=connector-tile][data-connector=notion]')
+    await tile.waitFor({ timeout: 10_000 })
+    check((await tile.getAttribute('data-state')) === 'available', 'Notion tile starts available')
+    await shot('connectors-gallery')
+    await tile.locator('[data-testid=connector-action]').click()
+    const cd = page.locator('[data-testid=connector-dialog]')
+    await cd.locator('[data-testid=connector-connect]').click()
+    await cd.locator('[data-testid=connector-status]').waitFor({ timeout: 15_000 })
+    await shot('connectors-dialog-connected')
+    await cd.locator('[data-testid=connector-test]').click()
+    await cd.locator('[data-testid=connector-tools]').waitFor({ timeout: 15_000 })
+    check(true, 'connector dialog connects and lists tools')
+    await cd.locator('[data-testid=connector-remove]').click()
+    await page.getByRole('button', { name: 'Remove service', exact: true }).last().click()
+    await cd.waitFor({ state: 'detached', timeout: 10_000 })
+    await tile.and(page.locator('[data-state=available]')).waitFor({ timeout: 10_000 })
+    check(true, 'removing a connector returns its tile to available')
+  } catch (e) {
+    check(false, 'Connectors gallery connect flow', String(e.message ?? e).split('\n')[0])
+    await shot('connectors-error').catch(() => {})
   }
 
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.

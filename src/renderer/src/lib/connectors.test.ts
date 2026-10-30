@@ -3,6 +3,8 @@ import type { ConnectorInfo } from '@shared/types'
 import { CONNECTORS } from '@shared/connectors'
 import {
   accessWords,
+  clampText,
+  noteForUser,
   connectMissing,
   connectorInitial,
   filterConnectors,
@@ -75,5 +77,25 @@ describe('connectors lib', () => {
   it('consequence names projects', () => {
     expect(removeConsequence([{ projectName: 'Acme' }], 'remove')).toContain('Acme will lose access')
     expect(removeConsequence([], 'disconnect')).toContain('No project')
+  })
+})
+
+describe('clampText', () => {
+  it('keeps short text and clamps long text with an ellipsis', () => {
+    expect(clampText('abc', 5)).toBe('abc')
+    expect(clampText('abcdef', 4)).toBe('abc…')
+    expect(Array.from(clampText('x'.repeat(500), 200))).toHaveLength(200)
+    expect(clampText('abc', 0)).toBe('')
+  })
+})
+
+describe('noteForUser', () => {
+  it('hides developer caveats and implementation details', () => {
+    expect(noteForUser(['Unverified: dynamic client registration.', 'The token is stored with Electron safeStorage and sent as Authorization: Bearer.'], 'X')).toEqual([])
+  })
+  it('puts the redirect caveat first in plain words and keeps useful notes', () => {
+    const out = noteForUser(['The server includes write tools.', 'Slack documents that redirect URLs must use HTTPS. Unverified.', 'Unverified: the token response shape.'], 'Slack')
+    expect(out).toEqual(["Slack may refuse OrgAI's sign-in address or need an admin's approval.", 'The server includes write tools.'])
+    expect(noteForUser(undefined, 'X')).toEqual([])
   })
 })
