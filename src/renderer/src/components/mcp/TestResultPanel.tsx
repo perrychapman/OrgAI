@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, CircleCheck } from 'lucide-react'
 import type { McpTestResult } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
+import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 
 /** Inline, collapsible result of mcp.test, shown under the row. Takes focus only when `focusOnMount` is set. */
@@ -55,7 +56,7 @@ export default function TestResultPanel({
             </ul>
           )
         ) : (
-          <Banner tone="danger" title="Test failed" actions={<CopyOutput text={errorText} />}>
+          <Banner tone="danger" actions={<CopyOutput text={errorText} />}>
             <div className="code-block mcp-output" tabIndex={0} aria-label="Test output">
               {shown}
             </div>
@@ -68,9 +69,8 @@ export default function TestResultPanel({
 function CopyOutput({ text }: { text: string }): ReactElement {
   const [done, setDone] = useState(false)
   return (
-    <button
-      type="button"
-      className="btn sm"
+    <Button
+      size="sm"
       onClick={() => {
         void navigator.clipboard
           ?.writeText(text)
@@ -82,7 +82,7 @@ function CopyOutput({ text }: { text: string }): ReactElement {
       }}
     >
       {done ? 'Copied' : 'Copy output'}
-    </button>
+    </Button>
   )
 }
 
