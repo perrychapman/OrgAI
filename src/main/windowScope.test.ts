@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseRunWindowHash, runWindowHash } from '@shared/types'
-import { appUrlMatcher, checkRunTarget, isExternalWebUrl, pickFocusWindow, scopedWindow, shouldBlockNavigation } from './windowScope'
+import { appUrlMatcher, checkRunTarget, isExternalWebUrl, isValidId, pickFocusWindow, scopedWindow, shouldBlockNavigation } from './windowScope'
 
 const lookup = {
   project: (id: string) => (id === 'proj_a' || id === 'proj_b' ? { id } : null),
@@ -121,5 +121,13 @@ describe('navigation guards', () => {
     expect(shouldBlockNavigation(isApp, 'about:srcdoc', false)).toBe(false)
     expect(shouldBlockNavigation(isApp, 'about:blank')).toBe(true)
     expect(shouldBlockNavigation(isApp, 'https://evil.example/', false)).toBe(true)
+  })
+})
+
+describe('isValidId', () => {
+  it('accepts newId-style ids and rejects anything else', () => {
+    expect(isValidId('run-abc_123')).toBe(true)
+    expect(isValidId('a'.repeat(128))).toBe(true)
+    for (const bad of ['', 'a'.repeat(129), '../x', 'a b', 'run/1', 42, null, undefined, {}]) expect(isValidId(bad)).toBe(false)
   })
 })

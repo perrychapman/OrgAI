@@ -1433,6 +1433,20 @@ export interface ContinueRunInput {
   images?: ImageAttachment[]
 }
 
+/**
+ * runs:pendingCards: a live run's open decision cards, oldest first per kind. Each entry is exactly what the
+ * matching `*.request` RunEvent carried (permission, question, proposal, rules, merge, mcpInstall), so no secrets:
+ * McpInstallRequest holds secret names only. Structured-clone safe.
+ */
+export interface PendingCards {
+  permissions: PermissionRequest[]
+  questions: UserQuestion[]
+  proposals: Proposal[]
+  ruleRequests: PermissionRuleRequest[]
+  mergeReviews: MergeReview[]
+  mcpInstalls: McpInstallRequest[]
+}
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
@@ -1559,6 +1573,12 @@ export interface OrgAIApi {
      * oldest first. For a second window's startup and a global runs list.
      */
     listLive(): Promise<RunSummary[]>
+    /**
+     * The decision cards a live run is waiting on right now, the same objects its `*.request` events carried.
+     * A fresh renderer (a second window, a reload) seeds its cards from this; later changes arrive as events.
+     * Empty arrays for an unknown or ended run.
+     */
+    pendingCards(runId: string): Promise<PendingCards>
   }
   window: {
     /**
@@ -1703,5 +1723,6 @@ export const IPC = {
   pluginsUpsert: 'plugins:upsert',
   pluginsRemove: 'plugins:remove',
   runsListLive: 'runs:listLive',
+  runsPendingCards: 'runs:pendingCards',
   windowOpenRun: 'window:openRun'
 } as const

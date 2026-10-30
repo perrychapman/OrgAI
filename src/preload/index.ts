@@ -76,7 +76,8 @@ const api: OrgAIApi = {
     decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
-    listLive: () => ipcRenderer.invoke(IPC.runsListLive)
+    listLive: () => ipcRenderer.invoke(IPC.runsListLive),
+    pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId)
   },
   window: {
     // Only the two ids cross; main validates them against the stores before opening anything.

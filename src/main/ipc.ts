@@ -37,6 +37,7 @@ import type {
   RemapModelsInput,
   RemapModelsOutput,
   RemapResult,
+  PendingCards,
   RunSummary,
   SendRunInput,
   StartRunInput
@@ -57,7 +58,7 @@ import { addRules, listRules, removeRule } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
 import { checkProjectPath } from './store/projects'
-import { checkRunTarget } from './windowScope'
+import { checkRunTarget, isValidId } from './windowScope'
 
 export interface IpcServices {
   projects: ProjectStore
@@ -162,6 +163,10 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.runsStop, (_e, runId: string) => runs.stop(runId))
   ipcMain.handle(IPC.runsList, (_e, projectId: string) => runs.list(projectId))
   ipcMain.handle(IPC.runsListLive, (): RunSummary[] => runs.liveRuns())
+  ipcMain.handle(IPC.runsPendingCards, (_e, runId: unknown): PendingCards => {
+    if (!isValidId(runId)) throw new Error('Invalid run id')
+    return runs.pendingCards(runId)
+  })
   ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
     const target = checkRunTarget(input, {
       project: (id) => projects.get(id),
