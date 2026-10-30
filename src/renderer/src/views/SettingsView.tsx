@@ -22,8 +22,9 @@ const SECTIONS: SettingsNavItem[] = [
   { id: 'settings-section-maintenance', label: 'Maintenance' }
 ]
 
-/** Slack so a section counts as current slightly before its top reaches the scroll edge. */
-const ACTIVE_SLACK_PX = 48
+/** Header offset (matches the section scroll-margin) plus a share of the viewport: a section counts as current once its top is this far down. */
+const ACTIVE_OFFSET_PX = 48
+const ACTIVE_VIEWPORT_SHARE = 0.35
 
 /**
  * Project settings tab: a sub-nav plus sections. Every edit goes through the store's debounced, tracked save, so the
@@ -44,10 +45,18 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
     const box = scroller.current
     if (!box) return
     const top = box.getBoundingClientRect().top
+    const line = ACTIVE_OFFSET_PX + box.clientHeight * ACTIVE_VIEWPORT_SHARE
     let current = SECTIONS[0].id
+    let best = -Infinity
     for (const s of SECTIONS) {
       const el = document.getElementById(s.id)
-      if (el && el.getBoundingClientRect().top - top <= ACTIVE_SLACK_PX) current = s.id
+      if (!el) continue
+      // The section whose top is nearest above the line wins, whatever the DOM order.
+      const rel = el.getBoundingClientRect().top - top
+      if (rel <= line && rel > best) {
+        best = rel
+        current = s.id
+      }
     }
     if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) current = SECTIONS[SECTIONS.length - 1].id
     setActive(current)
