@@ -86,6 +86,12 @@ export function humanizeToolUse(name: string, input: unknown): ToolRow {
       return row('search', str(i.query) ? `Searched the MCP registry for "${clip(str(i.query)!, 60)}"` : 'Searched the MCP registry')
     case 'list_mcp_servers':
       return row('search', 'Listed MCP servers')
+    case 'list_runs':
+      return row('agent', 'Listed runs')
+    case 'message_run': {
+      const r = str(i.runId)
+      return row('message', r ? `Sent a note to run ${clip(r, 40)}` : 'Sent a note to another run')
+    }
     case 'integrate_worktrees':
       return row('agent', 'Integrated worktrees')
     case 'Edit':

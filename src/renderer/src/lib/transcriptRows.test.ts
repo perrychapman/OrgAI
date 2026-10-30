@@ -9,6 +9,11 @@ describe('humanizeToolUse', () => {
     expect(humanizeToolUse('mcp__orgai__request_permission_rules', {}).label).toBe('Asked for a permission rule')
     expect(humanizeToolUse('mcp__orgai__propose_mcp_servers', { servers: [1, 2] }).label).toBe('Proposed MCP servers (2)')
   })
+  it('collapses the cross-run tools', () => {
+    expect(humanizeToolUse('mcp__orgai__message_run', { runId: 'R2', message: 'hi' }).label).toBe('Sent a note to run R2')
+    expect(humanizeToolUse('mcp__orgai__message_run', {}).label).toBe('Sent a note to another run')
+    expect(humanizeToolUse('mcp__orgai__list_runs', {}).label).toBe('Listed runs')
+  })
   it('describes file and shell tools', () => {
     expect(humanizeToolUse('Edit', { file_path: 'src/x.ts' }).label).toBe('Edited src/x.ts')
     expect(humanizeToolUse('Bash', { command: 'npm test' }).label).toBe('Ran `npm test`')
