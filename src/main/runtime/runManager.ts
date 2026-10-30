@@ -38,7 +38,7 @@ import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
-import { describePlanChange } from './continuation'
+import { describePlanChange, peerDeliveryBlocked } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, type RunOutcome } from './activity'
 import { cancelPending } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
@@ -118,6 +118,25 @@ interface ActiveRun {
   messagesSent: Map<string, number>
   /** Project.runMessaging when the run started; used when the current project cannot be resolved. */
   messagingAtStart: boolean
+  /** Cross-run messages this run has taken from all runs, delivered or queued (see RUN_MESSAGE_INBOUND_LIMIT). */
+  messagesReceived: number
+  /** Peer messages held while the run waits on its user (see peerDeliveryBlocked), oldest first. */
+  inbox: QueuedPeerMessage[]
+  /**
+   * The user interrupted the run and has not sent a message since. Mirrors ContinuationDriver.isHeld(), which lives
+   * inside the adapter; RunManager routes both interrupt() and send(), so it tracks the same rule itself.
+   */
+  held: boolean
+}
+
+/** A message_run message held for a run that is waiting on its user. */
+interface QueuedPeerMessage {
+  fromRunId: string
+  fromProjectId: string
+  fromProjectName: string
+  fromPrompt: string
+  text: string
+  at: number
 }
 
 /**
@@ -125,6 +144,17 @@ interface ActiveRun {
  * A hard stop so two orchestrators cannot ping-pong forever (each message wakes the other, whose reply wakes the first).
  */
 export const RUN_MESSAGE_LIMIT = 40
+
+/** The most message_run messages one run may take from all other runs together, delivered or queued. */
+export const RUN_MESSAGE_INBOUND_LIMIT = 100
+
+/** The most peer messages held for one run while it waits on its user; beyond this message_run answers 'busy'. */
+export const RUN_MESSAGE_QUEUE_LIMIT = 20
+
+/** Cards waiting for the user on a run (permission, proposal, question, merge review, install, rules). */
+function pendingCount(a: ActiveRun): number {
+  return a.pending.size + a.pendingProposals.size + a.pendingQuestions.size + a.pendingMerges.size + a.pendingInstalls.size + a.pendingRules.size
+}
 
 /** A session that is open and not being stopped: the run can still receive a message. */
 function isOpenStatus(status: RunSummary['status']): boolean {
@@ -165,6 +195,11 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
     }
   }
   return [...byId.values()].filter((r) => ids.has(r.id))
+}
+
+/** A system line in a run's root transcript. */
+function systemBlock(a: ActiveRun, at: number, text: string): void {
+  a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, block: { kind: 'system', text } } })
 }
 
 /** A prompt shortened for messages: one line, at most `max` (default 60) characters. */
@@ -318,6 +353,9 @@ export class RunManager {
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
       messagesSent: new Map(),
       messagingAtStart: runMessagingOn(project),
+      messagesReceived: 0,
+      inbox: [],
+      held: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
     }
@@ -469,13 +507,7 @@ export class RunManager {
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
-        pendingInteractions: () =>
-          active.pending.size +
-          active.pendingProposals.size +
-          active.pendingQuestions.size +
-          active.pendingMerges.size +
-          active.pendingInstalls.size +
-          active.pendingRules.size,
+        pendingInteractions: () => pendingCount(active),
         autoContinue: project.autoContinue !== false,
         maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
@@ -485,22 +517,37 @@ export class RunManager {
         }
       }
       active.session = await adapter.start(ctx)
-      void active.session.finished.finally(() => {
-        cancelPending(active, summary.id, this.broadcast)
-        // Servers approved for this run only (and their secrets) are forgotten.
-        active.runServers.clear()
-        this.flush(active)
-        this.runs.delete(summary.id)
-        this.store.prune(this.keepRunsFor)
-      })
+      void active.session.finished.finally(() => this.teardown(active))
     } catch (e) {
       emit({ type: 'run.status', runId: summary.id, status: 'error', error: (e as Error).message })
-      this.flush(active)
       // No session will ever finish this run; it must not count as live.
-      this.runs.delete(summary.id)
-      this.store.prune(this.keepRunsFor)
+      this.teardown(active)
     }
     return summary
+  }
+
+  /**
+   * A run's session ended (or never started): settle every card still open, forget run-scoped servers and held
+   * peer messages, persist the record and drop the run from the live set.
+   */
+  private teardown(active: ActiveRun): void {
+    const runId = active.summary.id
+    // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
+    cancelPending(active, runId, this.broadcast)
+    // Servers approved for this run only (and their secrets) are forgotten.
+    active.runServers.clear()
+    // Held peer messages are dropped; their senders are told if they are still live.
+    const dropped = active.inbox.splice(0)
+    if (dropped.length) {
+      const n = dropped.length
+      active.emit({ type: 'log', runId, level: 'warn', message: `${n} held message${n === 1 ? '' : 's'} from other runs ${n === 1 ? 'was' : 'were'} not delivered: the run ended first.` })
+      for (const m of dropped) {
+        this.runs.get(m.fromRunId)?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Your queued message to run ${runId} was not delivered: that run ended before it resumed.` })
+      }
+    }
+    this.flush(active)
+    this.runs.delete(runId)
+    this.store.prune(this.keepRunsFor)
   }
 
   private recordEvent(active: ActiveRun, e: RunEvent): void {
@@ -596,35 +643,85 @@ export class RunManager {
     if (target.summary.projectId !== sender.summary.projectId && !this.messagingOn(target)) off.push(target.projectName)
     if (off.length) return { result: 'refused', refusal: 'messaging-off', offProjects: off }
     const sent = sender.messagesSent.get(targetId) ?? 0
-    if (sent >= RUN_MESSAGE_LIMIT) return { result: 'refused', refusal: 'cap' }
+    if (sent >= RUN_MESSAGE_LIMIT) return { result: 'refused', refusal: 'cap', cap: 'pair' }
     const session = target?.session
     if (!target || !isOpenStatus(target.summary.status) || !session?.receive) return { result: 'not-live' }
+    if (target.messagesReceived >= RUN_MESSAGE_INBOUND_LIMIT) return { result: 'refused', refusal: 'cap', cap: 'inbound' }
+    // A peer never overrides the user: a run the user interrupted, a usage-limited run and a run waiting on a card
+    // keep the message until the user resumes it (send) or answers the last card. Messages already held stay ahead.
+    const waiting = this.deliveryBlocked(target) !== null || target.inbox.length > 0
+    if (waiting && target.inbox.length >= RUN_MESSAGE_QUEUE_LIMIT) return { result: 'refused', refusal: 'busy' }
 
     sender.messagesSent.set(targetId, sent + 1)
+    target.messagesReceived++
     const at = Date.now()
     const from = sender.summary
     const to = target.summary
-    const fromPrompt = excerpt(from.prompt, RUN_PEER_PROMPT_CHARS)
+    const message: QueuedPeerMessage = {
+      fromRunId: from.id,
+      fromProjectId: from.projectId,
+      fromProjectName: sender.projectName,
+      fromPrompt: excerpt(from.prompt, RUN_PEER_PROMPT_CHARS),
+      text,
+      at
+    }
     const toPrompt = excerpt(to.prompt, RUN_PEER_PROMPT_CHARS)
-    const block = (a: ActiveRun, text: string): void =>
-      a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, block: { kind: 'system', text } } })
-
     sender.emit({ type: 'run.message', runId: from.id, direction: 'out', peerRunId: to.id, peerProjectId: to.projectId, peerProjectName: target.projectName, peerPrompt: toPrompt, text, at })
-    block(sender, `Sent to run ${to.id} (${target.projectName}: ${toPrompt}): ${text}`)
+    if (waiting) {
+      target.inbox.push(message)
+      systemBlock(sender, at, `Queued for run ${to.id} (${target.projectName}: ${toPrompt}) until it resumes; it is waiting on its user: ${text}`)
+      sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Queued a message for run ${to.id} (${target.projectName}); it is waiting on its user.` })
+      target.emit({ type: 'log', runId: to.id, level: 'info', message: `Holding a message from run ${from.id} (${sender.projectName}) until this run resumes.` })
+      return { result: 'queued' }
+    }
+    systemBlock(sender, at, `Sent to run ${to.id} (${target.projectName}: ${toPrompt}): ${text}`)
     sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Messaged run ${to.id} (${target.projectName}).` })
+    return (await this.deliverPeerMessage(target, message)) ? { result: 'delivered' } : { result: 'not-live' }
+  }
+
+  /** Why a peer message must wait for this run's user now, or null (continuation.peerDeliveryBlocked). */
+  private deliveryBlocked(a: ActiveRun): string | null {
+    return peerDeliveryBlocked({ held: a.held, rateLimited: !!a.limited, pendingInteractions: pendingCount(a) })
+  }
+
+  /**
+   * Hand one peer message to the recipient's session and record the receiving side (run.message 'in', transcript
+   * block, log) at delivery time. False when the session could not take it; both runs get a warning.
+   */
+  private async deliverPeerMessage(target: ActiveRun, m: QueuedPeerMessage): Promise<boolean> {
+    const to = target.summary
+    const session = target.session
+    const sender = this.runs.get(m.fromRunId)
+    if (!session?.receive || !isOpenStatus(to.status)) {
+      sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} could not receive the message: it is no longer live.` })
+      return false
+    }
+    const at = Date.now()
     // The recipient's block goes first so its transcript reads in order even if receive() wakes the root at once.
-    target.emit({ type: 'run.message', runId: to.id, direction: 'in', peerRunId: from.id, peerProjectId: from.projectId, peerProjectName: sender.projectName, peerPrompt: fromPrompt, text, at })
-    block(target, `Note from run ${from.id} (${sender.projectName}: ${fromPrompt}), from its orchestrator: ${text}`)
-    target.emit({ type: 'log', runId: to.id, level: 'info', message: `Received a message from run ${from.id} (${sender.projectName}).` })
+    target.emit({ type: 'run.message', runId: to.id, direction: 'in', peerRunId: m.fromRunId, peerProjectId: m.fromProjectId, peerProjectName: m.fromProjectName, peerPrompt: m.fromPrompt, text: m.text, at })
+    systemBlock(target, at, `Note from run ${m.fromRunId} (${m.fromProjectName}: ${m.fromPrompt}), from its orchestrator: ${m.text}`)
+    target.emit({ type: 'log', runId: to.id, level: 'info', message: `Received a message from run ${m.fromRunId} (${m.fromProjectName}).` })
     try {
-      await session.receive({ fromRunId: from.id, fromProjectName: sender.projectName, fromPrompt, text })
+      await session.receive({ fromRunId: m.fromRunId, fromProjectName: m.fromProjectName, fromPrompt: m.fromPrompt, text: m.text })
+      return true
     } catch (e) {
       const message = (e as Error).message
-      sender.emit({ type: 'log', runId: from.id, level: 'warn', message: `Run ${to.id} could not receive the message: ${message}` })
-      target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Could not take the message from run ${from.id}: ${message}` })
-      return { result: 'not-live' }
+      sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} could not receive the message: ${message}` })
+      target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Could not take the message from run ${m.fromRunId}: ${message}` })
+      return false
     }
-    return { result: 'delivered' }
+  }
+
+  /** Deliver held peer messages, oldest first, while nothing makes the run wait on its user. */
+  private async flushInbox(a: ActiveRun): Promise<void> {
+    while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
+      await this.deliverPeerMessage(a, a.inbox.shift()!)
+    }
+  }
+
+  /** A card was answered: if it was the last one and the run is not held, deliver held peer messages. */
+  private cardSettled(a: ActiveRun): void {
+    if (a.inbox.length) void this.flushInbox(a)
   }
 
   /** Project.runMessaging of a run's project, read from the current saved project when possible. */
@@ -669,6 +766,7 @@ export class RunManager {
     active.pending.delete(requestId)
     resolve(decision)
     this.broadcast({ type: 'permission.resolved', runId, requestId })
+    this.cardSettled(active)
   }
 
   private requestProposal(
@@ -705,6 +803,7 @@ export class RunManager {
     active.pendingProposals.delete(proposalId)
     resolve(decision)
     this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
+    this.cardSettled(active)
   }
 
   private requestQuestion(
@@ -731,6 +830,7 @@ export class RunManager {
     const clean: QuestionAnswer = text ? { selected, text } : { selected }
     pending.resolve(clean)
     this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
+    this.cardSettled(active)
   }
 
   private requestMergeReview(
@@ -751,6 +851,7 @@ export class RunManager {
     active.pendingMerges.delete(reviewId)
     resolve(decision)
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+    this.cardSettled(active)
   }
 
   // ---------- permission rule requests ----------
@@ -812,6 +913,7 @@ export class RunManager {
     }
     pending.resolve(clean)
     this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
+    this.cardSettled(active)
   }
 
   // ---------- MCP install requests ----------
@@ -878,6 +980,7 @@ export class RunManager {
     if (!active || !pending) return
     active.pendingInstalls.delete(requestId)
     pending.resolve(decision)
+    this.cardSettled(active)
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
@@ -886,11 +989,18 @@ export class RunManager {
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(text, images)) throw new Error('Nothing to send')
     active.emit({ type: 'run.status', runId, status: 'running' })
+    // The user's message lifts an interrupt's hold (as ContinuationDriver.userMessage does in the adapter); peer
+    // messages held meanwhile follow it, so the orchestrator reads the user first.
+    active.held = false
     await active.session.send(text, images.length ? images : undefined)
+    await this.flushInbox(active)
   }
 
+  /** Interrupt the turn. Until the user's next message, peer messages are held (as automatic continues are). */
   async interrupt(runId: string): Promise<void> {
-    await this.runs.get(runId)?.session?.interrupt()
+    const active = this.runs.get(runId)
+    if (active?.session) active.held = true
+    await active?.session?.interrupt()
   }
 
   async stop(runId: string): Promise<void> {

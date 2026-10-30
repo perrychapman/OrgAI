@@ -39,3 +39,42 @@ export function pickFocusWindow<W>(windows: Iterable<[W, FocusRunTarget | undefi
   const list = [...windows]
   return scopedWindow(list, target.runId) ?? list.find(([, scope]) => !scope)?.[0] ?? list[0]?.[0]
 }
+
+/** setWindowOpenHandler: only http(s) links may leave the app, opened in the user's browser. Anything else is denied. */
+export function isExternalWebUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a navigation target is the app's own renderer: the dev server's origin (ELECTRON_RENDERER_URL) in
+ * development, the bundled index.html file in production. Hash and query are ignored, so `#/run/...` stays in.
+ * Used by the will-navigate / will-redirect guards, which cancel every other navigation.
+ */
+export function appUrlMatcher(rendererUrl: string | undefined, indexFileUrl: string): (url: string) => boolean {
+  const parse = (url: string): URL | null => {
+    try {
+      return new URL(url)
+    } catch {
+      return null
+    }
+  }
+  if (rendererUrl) {
+    const origin = parse(rendererUrl)?.origin
+    return (url) => {
+      const u = parse(url)
+      return !!u && !!origin && origin !== 'null' && u.origin === origin
+    }
+  }
+  const index = parse(indexFileUrl)
+  // Windows paths are case-insensitive and Chromium may report the drive letter in either case.
+  const key = (u: URL): string => decodeURIComponent(u.pathname).toLowerCase()
+  return (url) => {
+    const u = parse(url)
+    return !!u && !!index && u.protocol === 'file:' && index.protocol === 'file:' && u.host === index.host && key(u) === key(index)
+  }
+}

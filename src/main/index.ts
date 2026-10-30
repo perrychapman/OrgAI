@@ -1,9 +1,10 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type { AppSettings, ConnectionEvent, FocusRunTarget, RunEvent } from '@shared/types'
 import { IPC, runWindowHash } from '@shared/types'
-import { scopedWindow } from './windowScope'
+import { appUrlMatcher, isExternalWebUrl, scopedWindow } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
 import { UsageMonitor } from './usageMonitor'
@@ -89,6 +90,21 @@ function liveWindowScopes(): [BrowserWindow, FocusRunTarget | undefined][] {
   return [...windowScopes].filter(([w]) => !w.isDestroyed())
 }
 
+/** URL schemes already logged as refused by the window-open handler; each is logged once. */
+const refusedSchemes = new Set<string>()
+
+function refuseExternal(url: string): void {
+  let scheme = 'invalid'
+  try {
+    scheme = new URL(url).protocol
+  } catch {
+    // keep 'invalid'
+  }
+  if (refusedSchemes.has(scheme)) return
+  refusedSchemes.add(scheme)
+  console.warn(`Refused to open a ${scheme} link outside the app; only http and https links open in the browser.`)
+}
+
 function showWindow(win: BrowserWindow): void {
   if (win.isMinimized()) win.restore()
   win.show()
@@ -121,6 +137,9 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', 'icon.png') }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
+      // The preload is built as an ES module (index.mjs, package.json "type": "module"), which Electron cannot load
+      // in a sandboxed renderer. It uses only contextBridge and ipcRenderer, so a CommonJS preload could run sandboxed
+      // (see Risks in .orgai/ARCHITECTURE.md).
       sandbox: false,
       contextIsolation: true
     }
@@ -130,10 +149,23 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
   win.on('closed', () => windowScopes.delete(win))
   win.on('ready-to-show', () => win.show())
   notifier?.attach(win)
+  // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
+  // (file:, custom protocols, javascript:) is refused.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (isExternalWebUrl(url)) void shell.openExternal(url)
+    else refuseExternal(url)
     return { action: 'deny' }
   })
+  // The window never leaves the app's own renderer. In-page navigations (location.hash, so the #/run/... routes)
+  // do not fire will-navigate (Electron docs), and a reload is not a navigation, so they are unaffected.
+  const isAppUrl = appUrlMatcher(process.env.ELECTRON_RENDERER_URL, pathToFileURL(join(__dirname, '../renderer/index.html')).href)
+  const guard = (e: { url: string; preventDefault(): void }): void => {
+    if (isAppUrl(e.url)) return
+    e.preventDefault()
+    console.warn(`Blocked a navigation away from the app to ${e.url.slice(0, 200)}`)
+  }
+  win.webContents.on('will-navigate', guard)
+  win.webContents.on('will-redirect', guard)
 
   const hash = scope ? runWindowHash(scope) : ''
   if (process.env.ELECTRON_RENDERER_URL) {
