@@ -856,6 +856,15 @@ export interface AppSettings {
   defaultRootModel: ModelRef
   defaultReportModel: ModelRef
   /**
+   * Model for setup runs (the Architect: setup, revision, retrospective). A Claude alias (fable, opus, sonnet,
+   * haiku) stands for its tier and maps to each connection's tierModels; a full model id must be usable on the run's
+   * connection and run on the same adapter, otherwise the run falls back to the deep tier and logs a warning.
+   * Default 'opus' (deep tier).
+   */
+  setupModel: ModelRef
+  /** Model for MCP assistant runs; resolved like setupModel. Default 'opus' (deep tier). */
+  mcpAssistModel: ModelRef
+  /**
    * Legacy Anthropic auth, kept as a mirror of connections.anthropic.auth so older code keeps working.
    * settings:set keeps the two in sync (whichever one the caller changed wins).
    */

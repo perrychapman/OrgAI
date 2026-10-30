@@ -12,6 +12,7 @@ import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
+import { defaultConnections } from '@shared/defaults'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -749,6 +750,27 @@ describe('RunManager adapter selection, connections and MCP', () => {
       await m.start({ project: p, prompt: 'set up', kind: 'setup' })
       await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
       expect(claude.ctxs.map((c) => c.run.kind)).toEqual(['setup', 'mcp-assist'])
+      await m.stopAll()
+    })
+
+    it('runs the built-in roles on the App settings models, resolved against the connection', async () => {
+      const codex = recorder('codex')
+      const p = litellm('gpt-5')
+      const catalog = () => [
+        { id: 'gpt-5', label: 'g', connection: 'litellm' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'discovered' as const },
+        { id: 'gpt-5-mini', label: 'm', connection: 'litellm' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'discovered' as const }
+      ]
+      const connections = defaultConnections()
+      connections.litellm.tierModels = { deep: 'gpt-5', everyday: 'gpt-5-mini' }
+      const appSettings = () => ({ setupModel: 'gpt-5-mini', mcpAssistModel: 'claude-sonnet-4-5', connections })
+      const { m } = setupManager(p, { codex: codex.adapter }, { catalog, appSettings })
+      const setupRun = await m.start({ project: p, prompt: 'set up', kind: 'setup' })
+      const assistRun = await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
+      expect(codex.ctxs[0].roles[0]).toMatchObject({ slug: 'architect', model: 'gpt-5-mini' })
+      expect(codex.ctxs[1].roles[0]).toMatchObject({ slug: 'mcp-assistant', model: 'gpt-5', tier: 'deep' })
+      const warnings = (runId: string) => events.filter((e) => e.type === 'log' && e.runId === runId && e.level === 'warn').map((e) => (e as { message: string }).message)
+      expect(warnings(setupRun.id)).toEqual([])
+      expect(warnings(assistRun.id)).toEqual([expect.stringContaining('App setting "MCP assistant model" is claude-sonnet-4-5')])
       await m.stopAll()
     })
 

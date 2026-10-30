@@ -273,6 +273,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultIsolateWriters: true,
   defaultRootModel: 'opus',
   defaultReportModel: 'sonnet',
+  setupModel: 'opus',
+  mcpAssistModel: 'opus',
   providerAuth: { kind: 'subscription' },
   connections: defaultConnections(),
   defaultConnection: 'anthropic',

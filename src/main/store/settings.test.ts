@@ -18,6 +18,21 @@ describe('normalizeSettings', () => {
   })
 })
 
+describe('built-in role models', () => {
+  it('defaults the setup and MCP assistant models to opus', () => {
+    const s = normalizeSettings({})
+    expect(s.setupModel).toBe('opus')
+    expect(s.mcpAssistModel).toBe('opus')
+  })
+
+  it('keeps a model id and falls back on bad values', () => {
+    expect(normalizeSettings({ setupModel: ' us.openai.gpt-5 ', mcpAssistModel: 'sonnet' })).toMatchObject({ setupModel: 'us.openai.gpt-5', mcpAssistModel: 'sonnet' })
+    for (const bad of [42, '', '   ', 'inherit', 'two words', 'a\nb', 'x'.repeat(201), null, { id: 'opus' }]) {
+      expect(normalizeSettings({ setupModel: bad, mcpAssistModel: bad } as never)).toMatchObject({ setupModel: 'opus', mcpAssistModel: 'opus' })
+    }
+  })
+})
+
 describe('connections', () => {
   it('migrates settings saved before connections existed from providerAuth', () => {
     const s = normalizeSettings({ providerAuth: { kind: 'apiKey', envVar: 'MY_KEY' } })
