@@ -302,6 +302,21 @@ describe('buildUsageStats', () => {
     expect(none.totals).toMatchObject({ costUsd: 0, costSource: 'none' })
   })
 
+  it('fills RunUsage.skills (most loaded first) and merges skills across runs', () => {
+    const a = computeRunUsage(runSummary({ startedAt: 1 }), [], inputs({ skills: [{ skillId: 's1', name: 'one', loads: 1, roles: ['eng'] }, { skillId: 's2', name: 'two', loads: 3, roles: ['lead'] }] }))
+    expect(a.skills?.map((s) => s.skillId)).toEqual(['s2', 's1'])
+    expect(computeRunUsage(runSummary(), [], inputs({})).skills).toBeUndefined()
+    const b = { ...a, skills: [{ skillId: 's1', name: 'one', loads: 4, roles: ['eng', 'rev'] }] }
+    const total = sumRunUsage([a, b], 9)
+    expect(total.skills).toEqual([
+      { skillId: 's1', name: 'one', loads: 5, roles: ['eng', 'rev'] },
+      { skillId: 's2', name: 'two', loads: 3, roles: ['lead'] }
+    ])
+    const stats = buildUsageStats([run('a', 1, a), run('b', 2, b)], { projectId: 'p1' }, 3)
+    expect(stats.totals.skills?.find((s) => s.skillId === 's1')?.loads).toBe(5)
+    expect(sumRunUsage([{ ...a, skills: undefined }], 1).skills).toBeUndefined()
+  })
+
   it('sumRunUsage of nothing is empty', () => {
     expect(sumRunUsage([], 1)).toMatchObject({ costSource: 'none', agents: 0 })
     expect(legacySummaryUsage(runSummary({ totalCostUsd: 0 }), 1)).toMatchObject({ costSource: 'none', costUsd: 0 })
