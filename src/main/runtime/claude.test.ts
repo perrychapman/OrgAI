@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -205,5 +205,13 @@ describe('linkAbortSignal', () => {
     const ac = new AbortController()
     ac.abort()
     expect(() => linkAbortSignal(ac.signal)).toThrow('Completion cancelled')
+  })
+})
+
+describe('buildCompletionOptions', () => {
+  it('blocks ambient MCP servers', () => {
+    const o = buildCompletionOptions({ cwd: process.cwd(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])
+    expect(o.strictMcpConfig).toBe(true)
+    expect(o.mcpServers).toEqual({})
   })
 })

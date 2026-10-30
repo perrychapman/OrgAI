@@ -1328,18 +1328,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
   }
 
   async complete(input: CompletionInput): Promise<string> {
-    const options: Options = {
-      cwd: input.cwd,
-      systemPrompt: { type: 'custom', prompt: input.system },
-      tools: [],
-      maxTurns: 1,
-      settingSources: [],
-      permissionMode: 'dontAsk',
-      ...EXECUTABLE_OPTION
-    }
-    if (input.model) options.model = input.model
-    const env = completionEnv(input.connection)
-    if (env) options.env = env
+    const options = buildCompletionOptions(input)
     const link = input.signal ? linkAbortSignal(input.signal) : undefined
     if (link) options.abortController = link.controller
     let text = ''
@@ -1360,6 +1349,25 @@ export class ClaudeAdapter implements RuntimeAdapter {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
     return text
   }
+}
+
+/** Query options for one-shot completions. strictMcpConfig + empty mcpServers keep a cloned repo's .mcp.json from loading. */
+export function buildCompletionOptions(input: CompletionInput): Options {
+  const options: Options = {
+    cwd: input.cwd,
+    systemPrompt: { type: 'custom', prompt: input.system },
+    tools: [],
+    maxTurns: 1,
+    settingSources: [],
+    permissionMode: 'dontAsk',
+    strictMcpConfig: true,
+    mcpServers: {},
+    ...EXECUTABLE_OPTION
+  }
+  if (input.model) options.model = input.model
+  const env = completionEnv(input.connection)
+  if (env) options.env = env
+  return options
 }
 
 /** Copy SDK permission updates into the structured-clone-safe shared shape. */
