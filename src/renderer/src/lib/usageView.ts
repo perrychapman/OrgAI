@@ -1,4 +1,4 @@
-import type { AgentInstance, AgentUsage, RunUsage, TokenUsage } from '@shared/types'
+import type { AgentInstance, AgentUsage, RunUsage, TokenUsage, TranscriptEntry } from '@shared/types'
 import { agentProducedNothing, cacheHitRate, totalTokens } from '@shared/defaults'
 import { agentCostInput, formatDuration, formatTokens, type CostInput } from './cost'
 
@@ -168,16 +168,59 @@ export interface SkillRow {
   skillId: string
   name: string
   loads: number
-  /** "3 loads" / "1 load". */
+  /** "Loaded 3 times" / "Loaded 1 time". */
   loadsText: string
+  /** Distinct agents that loaded it, 0 when unknown. */
+  agents: number
+  /** "2 agents" / "1 agent", "" when unknown. */
+  agentsText: string
   /** Role slugs as plain text, "" when unknown. */
   roles: string
 }
 
-/** RunUsage.skills as rows, most loaded first. Empty when the run loaded none. */
-export function skillRows(u: Pick<RunUsage, 'skills'>): SkillRow[] {
-  return [...(u.skills ?? [])]
-    .filter((s) => s.loads > 0)
-    .sort((a, b) => b.loads - a.loads || a.name.localeCompare(b.name))
-    .map((s) => ({ skillId: s.skillId, name: s.name, loads: s.loads, loadsText: `${s.loads} ${s.loads === 1 ? 'load' : 'loads'}`, roles: s.roles.join(', ') }))
+export function loadsWording(n: number): string {
+  return `Loaded ${n} ${n === 1 ? 'time' : 'times'}`
+}
+
+/** Skill loads recorded as harness "Loaded skill <name>" transcript rows, optionally for one agent. */
+export function skillLoadsFromTranscript(entries: readonly Pick<TranscriptEntry, 'agentId' | 'source' | 'block'>[], agentId?: string): Map<string, { loads: number; agents: Set<string> }> {
+  const out = new Map<string, { loads: number; agents: Set<string> }>()
+  for (const e of entries) {
+    if (e.source !== 'harness' || e.block.kind !== 'system' || (agentId && e.agentId !== agentId)) continue
+    const name = e.block.text.match(/^Loaded skill (.+)$/)?.[1]
+    if (!name) continue
+    const cur = out.get(name) ?? { loads: 0, agents: new Set<string>() }
+    cur.loads++
+    cur.agents.add(e.agentId)
+    out.set(name, cur)
+  }
+  return out
+}
+
+function agentsWording(n: number): string {
+  return n > 0 ? `${n} ${n === 1 ? 'agent' : 'agents'}` : ''
+}
+
+/**
+ * RunUsage.skills as rows, most loaded first. Empty when the run loaded none. `seen` (from the transcript) adds the
+ * agent count; with `only` set the rows are just that agent's own loads (names matched to the run's skills).
+ */
+export function skillRows(u: Pick<RunUsage, 'skills'>, seen?: Map<string, { loads: number; agents: Set<string> }>, only = false): SkillRow[] {
+  const rows: SkillRow[] = []
+  const known = new Set<string>()
+  for (const s of u.skills ?? []) {
+    known.add(s.name)
+    const t = seen?.get(s.name)
+    const loads = only ? (t?.loads ?? 0) : s.loads
+    if (loads <= 0) continue
+    const agents = t?.agents.size ?? 0
+    rows.push({ skillId: s.skillId, name: s.name, loads, loadsText: loadsWording(loads), agents, agentsText: agentsWording(agents), roles: s.roles.join(', ') })
+  }
+  if (only && seen) {
+    for (const [name, t] of seen) {
+      if (known.has(name)) continue
+      rows.push({ skillId: `name:${name}`, name, loads: t.loads, loadsText: loadsWording(t.loads), agents: t.agents.size, agentsText: agentsWording(t.agents.size), roles: '' })
+    }
+  }
+  return rows.filter((r) => r.loads > 0).sort((a, b) => b.loads - a.loads || a.name.localeCompare(b.name))
 }

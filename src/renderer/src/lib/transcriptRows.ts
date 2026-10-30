@@ -131,6 +131,13 @@ export function humanizeToolUse(name: string, input: unknown): ToolRow {
     }
     case 'ListAgents':
       return row('agent', 'Listed running agents')
+    case 'list_skills':
+      return row('other', 'Listed its skills')
+    case 'load_skill': {
+      const skill = str(i.name)
+      const file = str(i.file)
+      return row('read', file ? `Read ${clip(file, 60)} from skill${skill ? ` ${skill}` : ''}` : skill ? `Loaded skill ${skill}` : 'Loaded a skill')
+    }
     case 'TodoWrite':
       return row('plan', 'Updated its to-do list')
   }
@@ -180,7 +187,7 @@ export function humanizeToolResult(toolName: string | undefined, content: string
   if (!text && !isError) return null
   const multi = text.length > 100 || text.includes('\n')
   if (isError) return { label: `Failed: ${resultSummary(text, true)}`, full: multi ? text : null }
-  if (isHarnessTool(toolName)) {
+  if (isHarnessTool(toolName) || (!!toolName && /^(list|load)_skills?$/.test(toolName))) {
     const bare = bareToolName(toolName!)
     let label: string | undefined
     if (/^(approved|granted)\b/i.test(text)) label = 'Approved'
@@ -189,6 +196,8 @@ export function humanizeToolResult(toolName: string | undefined, content: string
     else if (bare === 'complete_plan') label = 'Plan marked complete'
     else if (bare === 'mark_blocked') label = 'Blocker reported'
     else if (PLAN_TOOLS.has(bare)) label = 'Plan saved'
+    else if (bare === 'list_skills') label = 'Skills listed'
+    else if (bare === 'load_skill') label = 'Skill text returned'
     if (label) return { label, full: text === label ? null : text }
   }
   return { label: resultSummary(text, false), full: multi ? text : null }
