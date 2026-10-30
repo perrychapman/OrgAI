@@ -5,6 +5,7 @@ import type {
   McpInstallRequest,
   McpRegistrySearchInput,
   McpRegistrySearchResult,
+  McpLibraryEntry,
   McpServerSpec,
   MergeDecision,
   MergeReview,
@@ -196,6 +197,12 @@ export interface RuntimeContext {
    * Optional until implemented.
    */
   mcpServers?(): McpServerSpec[]
+  /**
+   * Setup-like runs (setup, mcp-assist): the app-wide MCP library entries (secret-free), for list_mcp_servers,
+   * propose_mcp_servers links and the mock adapter. A run whose project id is HARNESS_PROJECT_ID manages the
+   * library itself (scope 'library'). Optional: missing = an empty library.
+   */
+  mcpLibrary?(): McpLibraryEntry[]
   /**
    * Secret values for one server, keyed by secretEnv / secretHeaders name, read from safeStorage. Main
    * process only; never put them in RunEvents. Optional until implemented.

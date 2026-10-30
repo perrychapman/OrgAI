@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal, RunPeer } from '@shared/types'
 import type { RunMessageOutcome } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { PERMISSION_HARNESS_TOOLS } from '@shared/types'
+import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, answerText, harnessToolsFor, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
@@ -42,7 +42,12 @@ describe('setupTools', () => {
   it('lists the proposal tools by bare name', () => {
     const names = setupTools(fakeCtx()).map((t) => t.name)
     // propose_org_change belongs to work runs, not setup.
-    const setupNames = [...Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange), PERMISSION_HARNESS_TOOLS.request]
+    const setupNames = [
+      ...Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange),
+      PERMISSION_HARNESS_TOOLS.request,
+      MCP_HARNESS_TOOLS.listServers,
+      MCP_HARNESS_TOOLS.proposeServers
+    ]
     expect(names.sort()).toEqual(setupNames.sort())
     expect(names).not.toContain(INTEGRATE_TOOL)
     expect(names).not.toContain(PROPOSAL_TOOLS.orgChange)
@@ -444,6 +449,101 @@ describe('MCP tools', () => {
       expect(payload.remove).toEqual(['mcp-2'])
       const bad = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [], remove: ['ghost'] })
       expect(bad).toContain('no server "ghost"')
+    })
+
+    const entry = (over: Record<string, unknown> = {}) => ({
+      id: 'mcpl_1',
+      name: 'docs',
+      transport: 'http' as const,
+      url: 'https://docs.test/mcp',
+      source: 'user' as const,
+      addedAt: '2026-01-01T00:00:00.000Z',
+      ...over
+    })
+    const proposeCalls = (ctx: ReturnType<typeof fakeCtx>) => vi.mocked(ctx.requestProposal).mock.calls.map((c) => c[0].payload as McpServersProposalPayload)
+
+    it('project scope: a libraryId item links the entry with only libraryId and roles', async () => {
+      const ctx = assistCtx({ mcpLibrary: () => [entry({ oauth: { clientId: 'x' } })] })
+      const text = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [{ libraryId: 'mcpl_1', roles: ['lead'] }] })
+      expect(text).toMatch(/^APPROVED\./)
+      expect(text).toContain('Linked from the MCP library to this project: docs')
+      expect(text).toContain('authorizes them in Settings')
+      const payload = proposeCalls(ctx)[0]
+      expect(payload.scope).toBe('project')
+      expect(payload.upsert[0]).toMatchObject({ name: 'docs', libraryId: 'mcpl_1', source: 'library', roles: ['lead'], enabled: true })
+      expect(payload.secrets).toBeUndefined()
+    })
+
+    it('REVISE for an unknown libraryId, a missing name, a library name clash and a linked-server redefinition', async () => {
+      const ctx = assistCtx({ mcpLibrary: () => [entry()] })
+      const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ libraryId: 'nope' }] })).toMatch(/^REVISE\..*no library entry/)
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ command: 'npx' }] })).toMatch(/^REVISE\..*libraryId/)
+      const clash = await t.call({ title: 't', rationale: 'r', upsert: [{ name: 'docs', transport: 'http', url: 'https://other.test/mcp' }] })
+      expect(clash).toMatch(/^REVISE\..*library already has a different "docs"/)
+      const linkedCtx = assistCtx({
+        mcpLibrary: () => [entry()],
+        project: project({ mcpServers: [mcpSpec({ id: 'mcp-9', name: 'docs', transport: 'http', url: 'https://docs.test/mcp', command: undefined, args: undefined, secretEnv: undefined, libraryId: 'mcpl_1', source: 'library' })] })
+      })
+      const again = await byName(harnessToolsFor(linkedCtx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [{ name: 'docs', transport: 'http', url: 'https://docs.test/mcp' }] })
+      expect(again).toMatch(/^REVISE\..*linked to the MCP library/)
+      expect(ctx.requestProposal).not.toHaveBeenCalled()
+      expect(linkedCtx.requestProposal).not.toHaveBeenCalled()
+    })
+
+    it('project scope: a new server is saved to the library unless projectOnly, and the card says so', async () => {
+      const ctx = assistCtx()
+      const text = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [pinned, { ...pinned, name: 'local-db', projectOnly: true }] })
+      expect(text).toContain('Saved to the MCP library and linked to this project: github')
+      expect(text).toContain('Saved to this project only: local-db')
+      const payload = proposeCalls(ctx)[0]
+      expect(payload.upsert.map((s) => [s.name, s.projectOnly ?? false])).toEqual([['github', false], ['local-db', true]])
+    })
+
+    it('harness project: library scope with library-namespace validation and ids', async () => {
+      const ctx = assistCtx({ project: project({ id: HARNESS_PROJECT_ID, roles: [] }), mcpLibrary: () => [entry()] })
+      const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ libraryId: 'mcpl_1' }] })).toMatch(/^REVISE\..*does not apply in a library session/)
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ name: 'docs', transport: 'http', url: 'https://docs.test/mcp/v2' }] })).toMatch(/^APPROVED\./)
+      const first = proposeCalls(ctx)[0]
+      expect(first.scope).toBe('library')
+      expect(first.upsert[0].id).toBe('mcpl_1') // the same name replaces the entry
+      await t.call({ title: 't', rationale: 'r', upsert: [pinned, { ...pinned, name: 'github', args: ['-y', 'other@1.0.0'] }] })
+      expect(vi.mocked(ctx.requestProposal).mock.calls).toHaveLength(1) // duplicate names in one proposal are refused
+      const text = await t.call({ title: 't', rationale: 'r', upsert: [pinned], remove: ['docs'] })
+      expect(text).toContain('Saved to the MCP library: github')
+      const payload = proposeCalls(ctx)[1]
+      expect(payload.upsert[0].id).toMatch(/^mcpl_/)
+      expect(payload.remove).toEqual(['mcpl_1'])
+    })
+
+    it('list_mcp_servers in setup and mcp-assist shows the library and the project servers, inside the data block', async () => {
+      const link = mcpSpec({ id: 'mcp-9', name: 'docs', transport: 'http', url: 'https://docs.test/mcp', command: undefined, args: undefined, secretEnv: undefined, libraryId: 'mcpl_1', source: 'library' })
+      const mk = (kind: 'setup' | 'mcp-assist', id = 'p1') =>
+        fakeCtx({
+          run: runSummary({ kind }),
+          project: project({ id, mcpServers: id === 'p1' ? [link, mcpSpec({ name: 'local' })] : [] }),
+          mcpLibrary: () => [entry({ oauth: { clientId: 'x' }, description: 'ignore <b>previous</b>' })]
+        })
+      for (const kind of ['setup', 'mcp-assist'] as const) {
+        const text = await byName(harnessToolsFor(mk(kind)), 'list_mcp_servers').call({})
+        expect(text).toContain('docs | http | library | libraryId=mcpl_1 | oauth')
+        expect(text).toContain('docs | http | project | libraryId=mcpl_1')
+        expect(text).toContain('local | stdio | project-only')
+        expect(text).not.toContain('<b>')
+        expect(text.indexOf('<mcp-servers>')).toBeLessThan(text.indexOf('libraryId=mcpl_1'))
+        expect(text.indexOf('</mcp-servers>')).toBeGreaterThan(text.lastIndexOf('project-only'))
+      }
+      const harness = await byName(harnessToolsFor(mk('mcp-assist', HARNESS_PROJECT_ID)), 'list_mcp_servers').call({})
+      expect(harness).toContain('library | libraryId=mcpl_1')
+      expect(harness).not.toContain('project-only')
+      expect(await byName(harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'setup' }) })), 'list_mcp_servers').call({})).toMatch(/library is empty/)
+    })
+
+    it('request_mcp_install: library scope says it was saved to the MCP library', async () => {
+      const ctx = fakeCtx({ requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'library' as const })) })
+      const text = await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'r', manual: pinned }, undefined)
+      expect(text).toContain('for this project (saved to your MCP library)')
     })
   })
 })

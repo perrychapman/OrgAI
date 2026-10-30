@@ -202,6 +202,24 @@ describe('buildLaunchConfig', () => {
     expect(l.config.join('\n')).not.toMatch(/sk-super|kkk-secret/)
   })
 
+  it('hands an OAuth access token to Codex through the environment only', () => {
+    const s = spec({ name: 'oauthy', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Team': 'a' }, oauth: { resource: 'https://x.test/mcp' } as McpServerSpec['oauth'] })
+    const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: 'Bearer tok-oauth-123' })])
+    expect(l.config).toContain('mcp_servers.oauthy.bearer_token_env_var="ORGAI_MCP_0_H0"')
+    expect(l.config).toContain('mcp_servers.oauthy.http_headers={ X-Team = "a" }')
+    expect(l.env.ORGAI_MCP_0_H0).toBe('tok-oauth-123')
+    expect(l.config.join(' ')).not.toContain('tok-oauth-123')
+    expect(l.summary.join(' ')).not.toContain('tok-oauth-123')
+    expect(Object.values(l.env)).not.toContain('Bearer tok-oauth-123')
+  })
+
+  it('treats a resolved header that differs from the declared one as secret', () => {
+    const s = spec({ name: 'r', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Key': 'public' } })
+    const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'overridden-secret' })])
+    expect(l.config.join(' ')).not.toContain('overridden-secret')
+    expect(l.config).toContain('mcp_servers.r.env_http_headers={ X-Key = "ORGAI_MCP_0_H0" }')
+  })
+
   it('falls back to inline env on a secret name clash between servers and says so', () => {
     const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
     const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })

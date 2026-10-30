@@ -491,11 +491,14 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
       }
       config.push(`${base}.url=${tomlString(spec.url)}`)
       const secretNames = new Set(spec.secretHeaders ?? [])
+      // A header is plain only when it is declared in spec.headers with this exact value. Everything else (stored
+      // secrets, the OAuth access token resolve() injects as Authorization) goes through the environment, never argv.
+      const declared = spec.headers ?? {}
       const plain: Record<string, string> = {}
       const fromEnv: Record<string, string> = {}
       let k = 0
       for (const [h, v] of Object.entries(srv.headers)) {
-        if (!secretNames.has(h)) {
+        if (!secretNames.has(h) && declared[h] === v) {
           plain[h] = v
           continue
         }

@@ -2,8 +2,8 @@ import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'el
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, ConnectionEvent, FocusRunTarget, RunEvent } from '@shared/types'
-import { IPC, runWindowHash } from '@shared/types'
+import type { AppSettings, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent } from '@shared/types'
+import { HARNESS_PROJECT_ID, IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
@@ -16,6 +16,8 @@ import type { RunConnection } from './runtime/types'
 import { SecretStore } from './store/secrets'
 import { ConnectionService } from './connections/service'
 import { McpService } from './mcp/service'
+import { harnessProject } from './mcp/assist'
+import { McpLibraryStore } from './store/mcpLibrary'
 import { applyShellPath } from './shellEnv'
 import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
@@ -69,6 +71,12 @@ function broadcast(event: RunEvent): void {
     notifier?.handle(event)
   } catch (e) {
     console.error('Notification failed:', e)
+  }
+}
+
+function broadcastMcpLibrary(entries: McpLibraryInfo[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.mcpLibraryChanged, entries)
   }
 }
 
@@ -199,8 +207,27 @@ app.whenReady().then(() => {
     broadcast: broadcastConnection,
     openExternal: (url) => shell.openExternal(url)
   })
-  const mcp = new McpService({ projects, secrets })
-  const setup = new SetupService(projects, { removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId) })
+  const mockAdapter = process.env.ORGAI_MOCK === '1'
+  /** The virtual project of harness-level runs (library MCP assistant), from the current settings. */
+  const harness = () => harnessProject(settings.get(), dataDir, { mock: mockAdapter })
+  const projectOrHarness = (projectId: string) => (projectId === HARNESS_PROJECT_ID ? harness() : projects.get(projectId))
+  const mcp = new McpService({
+    projects,
+    secrets,
+    library: new McpLibraryStore(dataDir),
+    openExternal: (url) => shell.openExternal(url),
+    onLibraryChanged: broadcastMcpLibrary,
+    // Library changes that save a project (unlink on remove, promote) reach every window like a run's project update.
+    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
+  })
+  const setup = new SetupService(projects, {
+    removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
+    mcp: {
+      libraryEntries: () => mcp.libraryEntries(),
+      applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
+      applyLibraryProposal: (payload) => mcp.applyLibraryProposal(payload)
+    }
+  })
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
   const codexCompletion = (): RunConnection | undefined => {
@@ -218,17 +245,20 @@ app.whenReady().then(() => {
   const adapters = {
     claude: new ClaudeAdapter(),
     codex: new CodexAdapter({ completionConnection: codexCompletion }),
-    ...(process.env.ORGAI_MOCK === '1' ? { mock: new MockAdapter() } : {})
+    ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
   runManager = new RunManager(adapters, broadcast, runStore, setup, keepRunsFor, {
-    resolveProject: (projectId) => projects.get(projectId),
+    resolveProject: (projectId) => projectOrHarness(projectId),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),
     mcp: {
       enabledServers: (project) => mcp.enabledServers(project),
       resolve: (projectId, spec, extra) => mcp.resolve(projectId, spec, extra),
-      persistInstall: (projectId, spec, values) => mcp.persistInstall(projectId, spec, values),
+      persistInstall: (projectId, spec, values, scope) => mcp.persistInstall(projectId, spec, values, scope),
+      withLibrary: (project) => mcp.withLibrary(project),
+      prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
+      libraryEntries: () => mcp.libraryEntries(),
       searchRegistry: (input) => mcp.registrySearch(input)
     }
   })
@@ -241,6 +271,7 @@ app.whenReady().then(() => {
     connections,
     mcp,
     adapterIds: Object.keys(adapters),
+    harnessProject: harness,
     openRunWindow
   })
   connections.init()
@@ -249,10 +280,10 @@ app.whenReady().then(() => {
     projectOfRun: (runId) => {
       const summary = runManager?.summaryOf(runId)
       if (!summary) return undefined
-      const project = projects.get(summary.projectId)
+      const project = projectOrHarness(summary.projectId)
       return { projectId: summary.projectId, kind: summary.kind, autoContinue: project?.autoContinue !== false, maxAutoContinues: project?.maxAutoContinues }
     },
-    projectName: (projectId) => projects.get(projectId)?.name,
+    projectName: (projectId) => projectOrHarness(projectId)?.name,
     windows: liveWindowScopes,
     // AppSettings.notifications is the single source of truth, read fresh at every decision.
     enabled: () => settings.get().notifications !== false
@@ -271,7 +302,7 @@ app.whenReady().then(() => {
   app.on('before-quit', () => usageMonitor.stop())
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
-  const knownProjects = new Set(projects.list().map((p) => p.id))
+  const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID])
   let dropped = 0
   for (const projectId of new Set(runStore.allProjectIds())) if (!knownProjects.has(projectId)) dropped += runStore.removeProject(projectId)
   dropped += runStore.prune(keepRunsFor)

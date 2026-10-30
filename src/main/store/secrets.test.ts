@@ -2,7 +2,21 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { LITELLM_KEY, SecretStore, mcpProjectPrefix, mcpSecretKey, mcpSecretPrefix, type SecretCipher } from './secrets'
+import {
+  LITELLM_KEY,
+  SecretStore,
+  mcpLibraryOAuthKey,
+  mcpLibraryPrefix,
+  mcpLibrarySecretKey,
+  mcpOAuthKey,
+  mcpOwnerOAuthKey,
+  mcpOwnerPrefix,
+  mcpOwnerSecretKey,
+  mcpProjectPrefix,
+  mcpSecretKey,
+  mcpSecretPrefix,
+  type SecretCipher
+} from './secrets'
 
 /** Reversible fake of safeStorage: not encryption, but never stores the plain text. */
 const fakeCipher = (available = true): SecretCipher => ({
@@ -51,6 +65,24 @@ describe('SecretStore', () => {
     expect(store.keys(mcpSecretPrefix('p1', 's1'))).toEqual([b])
     expect(store.deletePrefix(mcpProjectPrefix('p1'))).toBe(1)
     expect(store.keys()).toEqual([d])
+  })
+
+  it('keeps library and project key spaces apart, including OAuth slots and owner helpers', () => {
+    expect(mcpLibrarySecretKey('e1', 'env', 'T')).toBe('mcplib:e1:env:T')
+    expect(mcpLibraryOAuthKey('e1', 'refreshToken')).toBe('mcplib:e1:oauth:refreshToken')
+    expect(mcpOAuthKey('p1', 's1', 'accessToken')).toBe('mcp:p1:s1:oauth:accessToken')
+    // a project whose id is "lib" cannot reach an entry's keys, and deleting a project prefix leaves the library alone
+    const store = new SecretStore(dataDir(), fakeCipher())
+    store.set(mcpLibrarySecretKey('e1', 'env', 'T'), 'lib')
+    store.set(mcpSecretKey('p1', 's1', 'env', 'T'), 'proj')
+    store.set(mcpOAuthKey('p1', 's1', 'accessToken'), 'tok')
+    expect(store.deletePrefix(mcpProjectPrefix('p1'))).toBe(2)
+    expect(store.keys()).toEqual(['mcplib:e1:env:T'])
+    const owner = { libraryId: 'e1' }
+    expect(mcpOwnerPrefix(owner)).toBe(mcpLibraryPrefix('e1'))
+    expect(mcpOwnerSecretKey(owner, 'header', 'H')).toBe('mcplib:e1:header:H')
+    expect(mcpOwnerOAuthKey({ projectId: 'p1', serverId: 's1' }, 'clientSecret')).toBe('mcp:p1:s1:oauth:clientSecret')
+    expect(store.deletePrefix(mcpOwnerPrefix(owner))).toBe(1)
   })
 
   it('refuses to store when encryption is unavailable and reads undecryptable values as missing', () => {

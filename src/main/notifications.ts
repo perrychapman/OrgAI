@@ -129,14 +129,15 @@ export class Notifier {
   /** Notification body for events that need the user, or null for everything else. */
   private describe(event: RunEvent, run: NotifierRun | undefined): string | null {
     const kind = run?.kind
-    const label = kind === 'setup' ? 'Setup session' : 'Run'
+    const label = kind === 'setup' ? 'Setup session' : kind === 'mcp-assist' ? 'MCP assistant session' : 'Run'
     switch (event.type) {
       case 'permission.request':
         return `${this.agentName(event.runId, event.request.agentId)} needs approval: ${event.request.summary}`.slice(0, 240)
       case 'proposal.request': {
-        const what = event.proposal.kind === 'architecture' ? 'Architecture' : event.proposal.kind === 'orgChart' ? 'Org chart' : 'Settings'
+        const what =
+          event.proposal.kind === 'architecture' ? 'Architecture' : event.proposal.kind === 'orgChart' ? 'Org chart' : event.proposal.kind === 'mcpServers' ? 'MCP servers' : 'Settings'
         const title = event.proposal.title?.trim()
-        return `Setup proposal: ${what}${title && title.toLowerCase() !== what.toLowerCase() ? ` - ${title}` : ''}`.slice(0, 240)
+        return `${kind === 'mcp-assist' ? 'MCP' : 'Setup'} proposal: ${what}${title && title.toLowerCase() !== what.toLowerCase() ? ` - ${title}` : ''}`.slice(0, 240)
       }
       case 'run.status':
         if (event.status === 'idle') {

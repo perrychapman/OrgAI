@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
-import { MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
@@ -442,7 +442,7 @@ export class MockSession implements RuntimeSession {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
       const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
-      await this.turn(this.ctx.run.kind === 'mcp-assist' ? this.script.mcpAssist : this.isSetup ? this.script.setup : this.script.work)
+      await this.turn(this.firstTurnSteps())
       while (!this.stopped) {
         const next = await this.nextMessage()
         if (next === null) break
@@ -467,6 +467,36 @@ export class MockSession implements RuntimeSession {
         }
       }
     }
+  }
+
+  /**
+   * The first turn's steps. The built-in setup and mcp-assist scripts adapt to the MCP library; a custom script
+   * (ORGAI_MOCK_SCRIPT or MockAdapterOptions.script) runs exactly as written.
+   */
+  private firstTurnSteps(): MockStep[] {
+    const library = this.ctx.mcpLibrary?.() ?? []
+    if (this.ctx.run.kind === 'mcp-assist') {
+      const steps = this.script.mcpAssist
+      if (steps !== DEFAULT_MCP_ASSIST || this.ctx.project.id === HARNESS_PROJECT_ID) return steps
+      return steps.map((st) => {
+        if (st.type !== 'harness' || st.name !== MCP_HARNESS_TOOLS.proposeServers) return st
+        const upsert: Record<string, unknown>[] = ((st.args?.upsert as Record<string, unknown>[] | undefined) ?? []).map((u) => ({ ...u, projectOnly: false }))
+        if (library[0]) upsert.push({ libraryId: library[0].id })
+        return { ...st, args: { ...st.args, upsert } }
+      })
+    }
+    if (this.isSetup && this.script.setup === DEFAULT_SETUP && library[0]) {
+      const at = DEFAULT_SETUP.findIndex((st) => st.type === 'harness' && st.name === 'complete_setup')
+      const item: Record<string, unknown> = { libraryId: library[0].id, ...(this.root ? { roles: [this.root.slug] } : {}) }
+      const step: MockStep = {
+        type: 'harness',
+        name: MCP_HARNESS_TOOLS.proposeServers,
+        retryOnRevise: false,
+        args: { title: 'Suggested tools', rationale: `The MCP library already has "${library[0].name}"; linking it saves setting it up again.`, upsert: [item] }
+      }
+      return at < 0 ? [...DEFAULT_SETUP, step] : [...DEFAULT_SETUP.slice(0, at), step, ...DEFAULT_SETUP.slice(at)]
+    }
+    return this.isSetup ? this.script.setup : this.script.work
   }
 
   private async turn(steps: MockStep[]): Promise<void> {

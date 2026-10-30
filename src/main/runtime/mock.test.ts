@@ -191,3 +191,64 @@ describe('mock adapter receive()', () => {
     expect(ctx.events.length).toBe(before)
   })
 })
+
+describe('mock adapter MCP library steps', () => {
+  const entry = { id: 'lib-1', name: 'libfs', transport: 'stdio' as const, command: 'npx', args: ['-y', 'libfs-server@1.0.0'], source: 'registry' as const, addedAt: '' }
+  async function run(ctx: ReturnType<typeof fakeCtx>): Promise<void> {
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+  }
+  const proposals = (ctx: ReturnType<typeof fakeCtx>) => (ctx.requestProposal as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as { kind: string; payload: any })
+  const mcpProposals = (ctx: ReturnType<typeof fakeCtx>) => proposals(ctx).filter((p) => p.kind === 'mcpServers')
+
+  it('setup skips the MCP step when the library is empty', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'setup' }), mcpLibrary: () => [] })
+    await run(ctx)
+    expect(mcpProposals(ctx)).toHaveLength(0)
+    expect(ctx.completeSetup).toHaveBeenCalled()
+  })
+
+  it('setup proposes linking the first library entry before completing', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'setup' }), mcpLibrary: () => [entry] })
+    await run(ctx)
+    const [p] = mcpProposals(ctx)
+    expect(p.payload.upsert[0]).toMatchObject({ libraryId: 'lib-1' })
+    expect(ctx.completeSetup).toHaveBeenCalled()
+  })
+
+  it('setup still completes when the MCP proposal is revised', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'setup' }), mcpLibrary: () => [entry] })
+    ;(ctx.requestProposal as ReturnType<typeof vi.fn>).mockImplementation(async (p: { kind: string }) =>
+      p.kind === 'mcpServers' ? { behavior: 'revise', feedback: 'no' } : { behavior: 'approve' }
+    )
+    await run(ctx)
+    expect(mcpProposals(ctx)).toHaveLength(1)
+    expect(ctx.completeSetup).toHaveBeenCalled()
+  })
+
+  it('mcp-assist on a project proposes a non-project-only server plus a library link', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), mcpLibrary: () => [entry] })
+    await run(ctx)
+    const [p] = mcpProposals(ctx)
+    expect(p.payload.upsert[0]).toMatchObject({ name: 'mock-fs' })
+    expect(p.payload.upsert.some((u: any) => u.libraryId === 'lib-1')).toBe(true)
+  })
+
+  it('mcp-assist on a project with an empty library proposes only the new server', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), mcpLibrary: () => [] })
+    await run(ctx)
+    const [p] = mcpProposals(ctx)
+    expect(p.payload.upsert).toHaveLength(1)
+  })
+
+  it('mcp-assist on the harness project proposes a library entry', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'mcp-assist', projectId: 'harness' }), project: project({ id: 'harness' }), mcpLibrary: () => [entry] })
+    await run(ctx)
+    const [p] = mcpProposals(ctx)
+    expect(p.payload.scope).toBe('library')
+    expect(p.payload.upsert).toHaveLength(1)
+    expect(p.payload.upsert[0]).toMatchObject({ name: 'mock-fs' })
+  })
+})

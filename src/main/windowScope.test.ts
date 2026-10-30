@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseRunWindowHash, runWindowHash } from '@shared/types'
+import { HARNESS_PROJECT_ID, parseRunWindowHash, runWindowHash } from '@shared/types'
 import { appUrlMatcher, checkRunTarget, isExternalWebUrl, isValidId, pickFocusWindow, scopedWindow, shouldBlockNavigation } from './windowScope'
 
 const lookup = {
@@ -10,6 +10,18 @@ const lookup = {
 describe('checkRunTarget', () => {
   it('accepts a known run of a known project', () => {
     expect(checkRunTarget({ projectId: 'proj_a', runId: 'run_1', extra: 1 }, lookup)).toEqual({ projectId: 'proj_a', runId: 'run_1' })
+  })
+
+  it('accepts a harness run when the lookup knows the virtual harness project', () => {
+    const harnessLookup = {
+      project: (id: string) => (id === HARNESS_PROJECT_ID ? { id } : lookup.project(id)),
+      runProject: (runId: string) => (runId === 'run_h' ? HARNESS_PROJECT_ID : lookup.runProject(runId))
+    }
+    expect(checkRunTarget({ projectId: 'harness', runId: 'run_h' }, harnessLookup)).toEqual({ projectId: 'harness', runId: 'run_h' })
+    // the stored-project lookup alone does not know it
+    expect(() => checkRunTarget({ projectId: 'harness', runId: 'run_h' }, lookup)).toThrow('Project not found')
+    expect(() => checkRunTarget({ projectId: 'proj_a', runId: 'run_h' }, harnessLookup)).toThrow('another project')
+    expect(parseRunWindowHash(runWindowHash({ projectId: 'harness', runId: 'run_h' }))).toEqual({ projectId: 'harness', runId: 'run_h' })
   })
 
   it('refuses unknown, mismatched and malformed targets', () => {

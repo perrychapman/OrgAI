@@ -863,7 +863,7 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const { pending, req } = await ask(ctx)
       m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', secrets: { GITHUB_TOKEN: SECRET } })
       expect(await pending).toMatchObject({ approved: true, scope: 'project' })
-      expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET })
+      expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET }, 'project')
       expect(events.find(isType('project.updated', (e) => (e.project.mcpServers?.length ?? 0) === 1))).toBeTruthy()
       // the project's server is served through enabledServers, not duplicated as a run server
       expect(ctx.mcpServers!().map((s) => s.id)).toEqual(['mcp-new'])
@@ -971,7 +971,7 @@ describe('request_mcp_install through RunManager and the mock adapter', () => {
     const text = await toolResult()
     expect(text).toMatch(/approved installing github for this project/)
     expect(text).toContain('mcp__github__')
-    expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET })
+    expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET }, 'project')
     expect(events.find(isType('mcpInstall.resolved'))?.outcome).toMatchObject({ approved: true, scope: 'project' })
     expect(JSON.stringify(events)).not.toContain(SECRET)
     await m.stopAll()
@@ -1594,6 +1594,131 @@ describe('cross-run messaging', () => {
     }
     expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^NOT LIVE/)
     expect(events.filter(isType('log', (e) => e.level === 'warn')).map((e) => e.runId).sort()).toEqual([a.id, b.id].sort())
+    await m.stopAll()
+  })
+})
+
+describe('MCP library, OAuth preparation and the harness project', () => {
+  const entry = { id: 'mcpl_1', name: 'docs', transport: 'http' as const, url: 'https://docs.test/mcp', source: 'user' as const, addedAt: '2026-01-01T00:00:00.000Z' }
+  const oauthSpec = (name: string): McpServerSpec => ({
+    id: `id-${name}`,
+    name,
+    transport: 'http',
+    url: `https://${name}.test/mcp`,
+    oauth: { clientId: 'c' },
+    enabled: true,
+    source: 'library',
+    addedAt: ''
+  })
+
+  function recorder() {
+    const ctxs: RuntimeContext[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    return { adapter, ctxs }
+  }
+
+  function setupMgr(p: Project, mcp: NonNullable<RunManagerOptions['mcp']>) {
+    const rec = recorder()
+    const setup = fakeSetup(p)
+    const applyLibraryProposal = vi.fn()
+    ;(setup.service as unknown as { applyLibraryProposal: typeof applyLibraryProposal }).applyLibraryProposal = applyLibraryProposal
+    const m = new RunManager({ mock: rec.adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), setup.service, () => 100, { mcp })
+    return { m, ...rec, setup, applyLibraryProposal }
+  }
+
+  const baseMcp = (over: Partial<NonNullable<RunManagerOptions['mcp']>> = {}): NonNullable<RunManagerOptions['mcp']> => ({
+    enabledServers: (proj) => (proj.mcpServers ?? []).filter((s) => s.enabled),
+    resolve: (_pid, s) => ({ spec: s, env: {}, headers: {} }),
+    persistInstall: vi.fn((): Project => makeProject()),
+    searchRegistry: vi.fn(async () => ({ entries: [] })),
+    ...over
+  })
+
+  it('refreshes OAuth servers before resolving and warns once per unauthorized server per run', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('github'), oauthSpec('docs')] })
+    const prepareForRun = vi.fn(async (_pid: string, specs: McpServerSpec[]) => specs.filter((s) => s.name === 'github').map((s) => s.name))
+    const { m, ctxs } = setupMgr(p, baseMcp({ prepareForRun }))
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    await ctx.resolvedMcpServers!()
+    await ctx.resolvedMcpServers!()
+    await ctx.resolveMcpSecrets!('id-github')
+    expect(prepareForRun).toHaveBeenCalledWith(p.id, expect.arrayContaining([expect.objectContaining({ name: 'github' })]))
+    const warns = events.filter(isType('log', (e) => e.level === 'warn' && e.runId === run.id))
+    expect(warns.map((w) => w.message)).toEqual([
+      'MCP server "github" needs authorization: open Settings > MCP servers and choose Authorize. It starts without credentials in this run.'
+    ])
+    await m.stopAll()
+  })
+
+  it('hands the adapter the library-refreshed project', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('docs')] })
+    const withLibrary = vi.fn((proj: Project): Project => ({ ...proj, mcpServers: (proj.mcpServers ?? []).map((s) => ({ ...s, url: 'https://moved.test/mcp' })) }))
+    const { m, ctxs } = setupMgr(p, baseMcp({ withLibrary }))
+    await m.start({ project: p, prompt: 'go' })
+    expect(withLibrary).toHaveBeenCalled()
+    expect(ctxs[0].project.mcpServers?.[0].url).toBe('https://moved.test/mcp')
+    expect(ctxs[0].mcpServers!()[0].url).toBe('https://moved.test/mcp')
+    await m.stopAll()
+  })
+
+  it('accepts the harness project for mcp-assist only, with the library in the context', async () => {
+    const harness = makeProject({ id: 'harness', name: 'OrgAI', path: join(dir, 'repo'), roles: [] })
+    const { m, ctxs, setup, applyLibraryProposal } = setupMgr(harness, baseMcp({ libraryEntries: () => [entry] }))
+    await expect(m.start({ project: harness, prompt: 'go' })).rejects.toThrow(/Only the MCP assistant/)
+    await expect(m.start({ project: harness, prompt: 'go', kind: 'setup' })).rejects.toThrow(/Only the MCP assistant/)
+    expect(ctxs).toHaveLength(0)
+    const run = await m.start({ project: harness, prompt: 'Help me', kind: 'mcp-assist' })
+    const ctx = ctxs[0]
+    expect(ctx.hiddenContext).toContain('app-wide MCP library')
+    expect(ctx.hiddenContext).toContain('name=docs id=mcpl_1')
+    expect(ctx.mcpLibrary!()).toEqual([entry])
+    expect(ctx.mcpServers!()).toEqual([])
+
+    const pending = ctx.requestProposal({ kind: 'mcpServers', agentId: 'root', title: 't', payload: { scope: 'library', upsert: [], rationale: 'r' } })
+    const req = await waitFor(isType('proposal.request'))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(await pending).toEqual({ behavior: 'approve' })
+    expect(applyLibraryProposal).toHaveBeenCalledWith(expect.objectContaining({ scope: 'library' }))
+    expect(setup.raw.applyProposal).not.toHaveBeenCalled()
+    expect(events.some((e) => e.type === 'project.updated')).toBe(false)
+    await m.stopAll()
+  })
+
+  it('a failing library proposal answers REVISE without touching a project', async () => {
+    const harness = makeProject({ id: 'harness', path: join(dir, 'repo'), roles: [] })
+    const { m, ctxs, applyLibraryProposal } = setupMgr(harness, baseMcp())
+    applyLibraryProposal.mockImplementation(() => {
+      throw new Error('name clash')
+    })
+    const run = await m.start({ project: harness, prompt: 'go', kind: 'mcp-assist' })
+    const pending = ctxs[0].requestProposal({ kind: 'mcpServers', agentId: 'root', title: 't', payload: { scope: 'library', upsert: [], rationale: 'r' } })
+    const req = await waitFor(isType('proposal.request'))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(await pending).toMatchObject({ behavior: 'revise', feedback: expect.stringContaining('name clash') })
+    await m.stopAll()
+  })
+
+  it('install scope library persists through the MCP service with scope library', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const spec: McpServerSpec = { id: 'mcp-new', name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], enabled: true, source: 'agent', addedAt: '' }
+    const persistInstall = vi.fn((): Project => ({ ...p, mcpServers: [{ ...spec, source: 'library', libraryId: 'mcpl_9' }] }))
+    const { m, ctxs } = setupMgr(p, baseMcp({ persistInstall }))
+    const run = await m.start({ project: p, prompt: 'go' })
+    const pending = ctxs[0].requestMcpInstall!({ agentId: 'root', reason: 'r', spec, requiredSecrets: [] })
+    const req = await waitFor(isType('mcpInstall.request'))
+    m.answerMcpInstall(run.id, req.request.id, { approved: true, scope: 'library' })
+    expect(await pending).toMatchObject({ approved: true, scope: 'library' })
+    expect(persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), {}, 'library')
+    expect(events.find(isType('mcpInstall.resolved'))?.outcome.scope).toBe('library')
     await m.stopAll()
   })
 })
