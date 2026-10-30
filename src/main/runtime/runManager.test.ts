@@ -431,9 +431,9 @@ describe('RunManager with the mock adapter', () => {
       const session = adapter.sessions[0]
       expect(session.harnessMessages).toHaveLength(1)
       expect(session.harnessMessages[0]).toBe(
-        'Harness: plan progress 1 of 2 done. Remaining: p2 Verify. Continue with the next step now; mark steps with update_plan as you go. ' +
-          "When every step is done, run the project's verification (build/tests) and call complete_plan. " +
-          'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+        'Harness: plan 1 of 2 done. Remaining: p2 Verify. Continue with the next step; mark steps with update_plan as you go. ' +
+          "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+          'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
       )
       expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === session.harnessMessages[0])).toBe(true)
       expect(events.some((e) => e.type === 'agent.upsert' && e.agent.id === 'root' && e.agent.activity === 'Continuing: Verify')).toBe(true)
