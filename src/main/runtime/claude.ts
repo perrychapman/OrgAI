@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { validModelId } from '../connections/codexAccount'
 import {
   createSdkMcpServer,
   query,
@@ -107,13 +109,13 @@ export function mapSupportedModels(raw: unknown): AdapterModelInfo[] {
     if (!row || typeof row !== 'object') continue
     const r = row as Record<string, unknown>
     if (typeof r.value !== 'string') continue
-    const id = r.value.trim().slice(0, 200)
-    if (!id || id.toLowerCase() === 'default' || seen.has(id)) continue
+    const id = r.value.trim()
+    if (!validModelId(id) || id.toLowerCase() === 'default' || seen.has(id)) continue
     seen.add(id)
     const info: AdapterModelInfo = { id }
     if (typeof r.displayName === 'string' && r.displayName.trim()) info.label = r.displayName.trim().slice(0, 300)
     if (typeof r.description === 'string' && r.description.trim()) info.description = r.description.trim().slice(0, 300)
-    if (typeof r.resolvedModel === 'string' && r.resolvedModel.trim()) info.resolvedModel = r.resolvedModel.trim().slice(0, 200)
+    if (typeof r.resolvedModel === 'string' && validModelId(r.resolvedModel.trim())) info.resolvedModel = r.resolvedModel.trim()
     out.push(info)
   }
   return out
@@ -1482,6 +1484,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       abort.abort()
       release?.({ value: undefined as never, done: true })
     }
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const q = query({ prompt: never, options: probeQueryOptions(abort, isolateClaudeEnv(process.env)) })
       // Drain the stream in the background so the process keeps running until we abort it.
@@ -1500,7 +1503,9 @@ export class ClaudeAdapter implements RuntimeAdapter {
       }
       const resp = (await Promise.race([
         (fn as (o: { skipBehaviors: boolean }) => Promise<unknown>).call(q, { skipBehaviors: true }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('usage probe timed out')), 10_000))
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('usage probe timed out')), 10_000)
+        })
       ])) as UsageResponseLike
       finish()
       await drain
@@ -1508,6 +1513,8 @@ export class ClaudeAdapter implements RuntimeAdapter {
     } catch {
       finish()
       return null
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -1591,7 +1598,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
 
 /** Options for the token-free discovery and usage probes. strictMcpConfig + empty mcpServers keep repo and user-scope MCP servers from starting. */
 export function probeQueryOptions(abort: AbortController, env: Record<string, string | undefined>): Options {
-  return { cwd: process.cwd(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...EXECUTABLE_OPTION }
+  return { cwd: tmpdir(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...EXECUTABLE_OPTION }
 }
 
 /** Query options for one-shot completions. strictMcpConfig + empty mcpServers keep a cloned repo's .mcp.json from loading. */
