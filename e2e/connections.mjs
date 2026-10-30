@@ -194,6 +194,34 @@ try {
     await shot('mcp-library-error').catch(() => {})
   }
 
+  // Connectors gallery: connect Notion (mock sign-in), check it, disconnect, remove.
+  try {
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    const gal = page.locator('[data-testid=connectors-section]')
+    await gal.waitFor({ timeout: 10_000 })
+    const tile = gal.locator('[data-testid=connector-tile][data-connector=notion]')
+    await tile.waitFor({ timeout: 10_000 })
+    check((await tile.getAttribute('data-state')) === 'available', 'Notion tile starts available')
+    await shot('connectors-gallery')
+    await tile.locator('[data-testid=connector-action]').click()
+    const cd = page.locator('[data-testid=connector-dialog]')
+    await cd.locator('[data-testid=connector-connect]').click()
+    await cd.locator('[data-testid=connector-status]').waitFor({ timeout: 15_000 })
+    await shot('connectors-dialog-connected')
+    await cd.locator('[data-testid=connector-test]').click()
+    await cd.locator('[data-testid=connector-tools]').waitFor({ timeout: 15_000 })
+    check(true, 'connector dialog connects and lists tools')
+    await cd.locator('[data-testid=connector-remove]').click()
+    await page.getByRole('button', { name: 'Remove service', exact: true }).last().click()
+    await cd.waitFor({ state: 'detached', timeout: 10_000 })
+    await tile.and(page.locator('[data-state=available]')).waitFor({ timeout: 10_000 })
+    check(true, 'removing a connector returns its tile to available')
+  } catch (e) {
+    check(false, 'Connectors gallery connect flow', String(e.message ?? e).split('\n')[0])
+    await shot('connectors-error').catch(() => {})
+  }
+
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
   const CANARY = 'sk-e2e-canary-9f3a7c1d'
   await openAppSettings(page)
