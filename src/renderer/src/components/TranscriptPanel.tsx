@@ -118,11 +118,12 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
 
   const visible = showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')
 
+  const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
   return (
     <>
       <div className="side-header">
-        <h2>{agent ? agent.name : finished ? 'Finished reports' : 'Transcript'}</h2>
-        <div style={{ flex: 1 }} />
+        <h2 title={headerTitle}>{headerTitle}</h2>
+        <div className="side-spacer" />
         <div className="tabs">
           <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>
             Transcript

@@ -437,3 +437,28 @@
   padding-top: 8px;
   color: var(--text-secondary);
 }
+
+/* Runs tab row actions: Continue is the one primary-weight action; the rest are secondary and the same size. */
+.run-row-actions .btn.run-retro {
+  color: var(--text-secondary);
+}
+.run-row-actions .btn.run-continue {
+  border-color: var(--accent);
+  color: var(--accent-text, var(--accent));
+}
+
+/* Side-panel header: the agent name gets the full width when the tabs do not fit beside it. */
+.side-spacer {
+  flex: 1;
+}
+@container side (max-width: 360px) {
+  .side-header {
+    flex-wrap: wrap;
+  }
+  .side-header h2 {
+    flex: 1 1 100%;
+  }
+  .side-header .side-spacer {
+    display: none;
+  }
+}

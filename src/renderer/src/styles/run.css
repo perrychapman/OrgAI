@@ -345,6 +345,8 @@
   position: absolute;
   left: 12px;
   bottom: 12px;
+  max-width: calc(100% - 96px);
+  flex-wrap: wrap;
   z-index: var(--z-canvas-overlay);
   display: flex;
   gap: 10px;
@@ -605,4 +607,9 @@ button.run-chip.new {
 }
 .run-chip .run-plan.blocked {
   color: var(--warning-text);
+}
+
+/* Keep the zoom controls clear of the legend (the fit-view button used to hide under it). */
+.canvas .react-flow__controls {
+  margin-bottom: calc(var(--space-3) + 38px);
 }
