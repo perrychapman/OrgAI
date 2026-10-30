@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,7 +17,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (orig) => {
   }
 })
 
-import { buildSkillPlugin, qualifiedSkillName, sanitizedSkillMd, skillGate } from './claudeSkills'
+import { SKILL_TEMP_PREFIX, buildSkillPlugin, sweepStaleSkillDirs, qualifiedSkillName, sanitizedSkillMd, skillGate } from './claudeSkills'
 import { ClaudeSession, buildAgents, buildEnv } from './claude'
 import { fakeCtx, project } from './testHelpers'
 
@@ -264,5 +264,52 @@ describe('ClaudeSession Skill gate', () => {
     expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
     expect(out.hookSpecificOutput.permissionDecisionReason).toBe('No skills are granted in this run.')
     expect(captured.options!.plugins).toBeUndefined()
+  })
+})
+
+describe('sweepStaleSkillDirs', () => {
+  const NOW = 1_800_000_000_000
+  const DAY = 24 * 60 * 60 * 1000
+  const old = (p: string): void => utimesSync(p, (NOW - 2 * DAY) / 1000, (NOW - 2 * DAY) / 1000)
+  const fresh = (p: string): void => utimesSync(p, (NOW - 1000) / 1000, (NOW - 1000) / 1000)
+  let root = ''
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  it('removes only old real prefixed directories', () => {
+    root = mkdtempSync(join(tmpdir(), 'sweep-test-'))
+    const oldDir = join(root, `${SKILL_TEMP_PREFIX}old`)
+    const freshDir = join(root, `${SKILL_TEMP_PREFIX}fresh`)
+    const other = join(root, 'other-old')
+    const file = join(root, `${SKILL_TEMP_PREFIX}file`)
+    mkdirSync(oldDir)
+    mkdirSync(freshDir)
+    mkdirSync(other)
+    writeFileSync(file, 'x')
+    old(oldDir)
+    fresh(freshDir)
+    old(other)
+    old(file)
+    const target = join(root, 'target')
+    mkdirSync(target)
+    writeFileSync(join(target, 'keep.txt'), 'keep')
+    const link = join(root, `${SKILL_TEMP_PREFIX}link`)
+    let linked = true
+    try {
+      symlinkSync(target, link, 'junction')
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e
+      linked = false
+    }
+    expect(sweepStaleSkillDirs({ dir: root, now: NOW })).toBe(1)
+    expect(existsSync(oldDir)).toBe(false)
+    expect(existsSync(freshDir)).toBe(true)
+    expect(existsSync(other)).toBe(true)
+    expect(existsSync(file)).toBe(true)
+    if (linked) expect(readFileSync(join(target, 'keep.txt'), 'utf8')).toBe('keep')
+  })
+
+  it('returns 0 for a missing dir', () => {
+    root = mkdtempSync(join(tmpdir(), 'sweep-test-'))
+    expect(sweepStaleSkillDirs({ dir: join(root, 'nope'), now: NOW })).toBe(0)
   })
 })
