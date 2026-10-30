@@ -7,6 +7,10 @@ import * as path from 'node:path'
 import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, makeFixtureRepo, openProject, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
+// Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
+const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-runs-script-')), 'script.json')
+fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
+process.env.ORGAI_MOCK_SCRIPT = scriptFile
 
 const NAME = 'E2E runs (orgai test)'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-runs-'))
@@ -102,6 +106,47 @@ try {
   const rows = await page.locator('.run-row').count()
   check(rows === 2, 'History tab lists both runs', String(rows))
   await shot('history')
+
+  // A1: a pending request_mcp_install must render a card in the tray; denying it clears the card and the run goes on.
+  fs.writeFileSync(scriptFile, JSON.stringify({
+    delayMs: 300,
+    work: [
+      { type: 'text', text: 'I need a docs server for this task.' },
+      { type: 'harness', name: 'request_mcp_install', args: { reason: 'Read the vendor docs.', manual: { name: 'e2e-docs', transport: 'stdio', command: 'npx', args: ['-y', 'e2e-docs-server@1.0.0'] } } },
+      { type: 'text', text: 'Carrying on without the docs server.' }
+    ]
+  }))
+  await tabsBar().getByRole('button', { name: 'Live', exact: true }).click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Needs an MCP server')
+  const mcpCard = page.locator('[data-testid=mcp-install-card]')
+  await mcpCard.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {})
+  check((await mcpCard.count()) === 1 && (await mcpCard.first().isVisible()), 'a pending MCP install request renders a card (A1)')
+  check((await mcpCard.getByRole('button', { name: 'Approve', exact: true }).count()) === 1 && (await mcpCard.getByRole('button', { name: 'Deny', exact: true }).count()) === 1, 'the MCP card has Approve and Deny buttons')
+  await shot('mcp-card')
+  await mcpCard.getByRole('button', { name: 'Deny', exact: true }).click()
+  // A denied request stays as a resolved card (Denied badge, Dismiss) with no Approve or Deny left; Dismiss removes it.
+  await mcpCard.getByRole('button', { name: 'Dismiss', exact: true }).waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await mcpCard.getByText('Denied', { exact: true }).count()) >= 1 && (await mcpCard.getByRole('button', { name: 'Deny', exact: true }).count()) === 0 && (await mcpCard.getByRole('button', { name: 'Approve', exact: true }).count()) === 0, 'the MCP card resolves to Denied with no Approve or Deny buttons')
+  await mcpCard.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await sleep(300)
+  check((await mcpCard.count()) === 0, 'Dismiss removes the resolved MCP card')
+  await page.getByText('Carrying on without the docs server.').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  check((await page.getByText('Carrying on without the docs server.').count()) >= 1, 'the run proceeds after the MCP request is denied')
+  await endSession(page)
+
+  // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
+  await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Maintenance', exact: true }).first().click()
+  await sleep(600)
+  const a2 = await page.evaluate(() => {
+    const r = [...document.querySelectorAll('.topbar .tabs button')].find((b) => b.textContent?.trim() === 'Live')?.getBoundingClientRect()
+    return { top: document.documentElement.scrollTop, live: r ? { t: r.top, b: r.bottom } : null, h: window.innerHeight }
+  })
+  check(a2.top === 0, 'Maintenance sub-nav leaves the document scrollTop at 0 (A2)', String(a2.top))
+  check(!!a2.live && a2.live.t >= 0 && a2.live.b <= a2.h, 'the Live tab button stays inside the viewport after the sub-nav click', JSON.stringify(a2))
+  await shot('settings-maintenance')
 
   // Run messaging switch persists through projects:save.
   await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
