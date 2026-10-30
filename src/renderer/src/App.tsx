@@ -1,129 +1,126 @@
 import type { ReactElement } from 'react'
 import { useEffect } from 'react'
-import { activeRun, selectedProject, useAppStore } from './store/useAppStore'
-import NotificationsToggle from './components/NotificationsToggle'
+import { HARNESS_PROJECT_ID } from '@shared/types'
+import { activeRun, runsOfProject, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
+import OrgChartView from './views/OrgChartView'
+import { SaveIndicator } from './components/layout/SaveIndicator'
+import './styles/run-tabs.css'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
-import LogsLink from './components/LogsLink'
 import ErrorBoundary from './components/ui/ErrorBoundary'
-import UsageMeter from './components/UsageMeter'
-import { projectCounts } from './lib/runChains'
+import Sidebar from './components/Sidebar'
+import RunHistory from './components/RunHistory'
+import { useRunTabShortcuts } from './components/RunTabs'
+import { needsYou } from './lib/runChains'
+import { runTag, shortPrompt } from './lib/runLabels'
+import { statusOfRun, statusText } from './lib/runStatus'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
-  const projects = useAppStore((s) => s.projects)
   const selectedId = useAppStore((s) => s.selectedProjectId)
   const view = useAppStore((s) => s.view)
   const setView = useAppStore((s) => s.setView)
-  const selectProject = useAppStore((s) => s.selectProject)
-  const auth = useAppStore((s) => s.auth)
-  const runs = useAppStore((s) => s.runs)
   const project = useAppStore(selectedProject)
   const run = useAppStore(activeRun)
+  const isHarness = selectedId === HARNESS_PROJECT_ID
+  // Project-wide: any run of this project that waits for the user.
+  const waitingHere = useAppStore((s) => (s.selectedProjectId ? runsOfProject(s, s.selectedProjectId).some(needsYou) : false))
+  const indexes = useRunIndexes()
+  useRunTabShortcuts()
 
   useEffect(() => {
     void init()
+    void useAppStore.getState().loadAppInfo()
   }, [init])
 
-  const allRuns = Object.values(runs)
+  // The window title names the viewed run, so the OS task switcher and notifications show which run is on screen.
+  const runIndex = run ? indexes.get(run.summary.id) : undefined
+  useEffect(() => {
+    document.title = run && view === 'run' ? `OrgAI · ${runTag(runIndex)} · ${shortPrompt(run.summary.prompt, 40)}` : 'OrgAI'
+  }, [run, runIndex, view])
+
+  const badge = run ? statusOfRun(run, project, waitingHere || needsYou(run)) : waitingHere ? statusOfRun({ summary: { status: 'idle', kind: 'work' } }, project, true) : undefined
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">O</span>
-          OrgAI
-        </div>
-        <div className="sidebar-section">
-          <button className={`nav-item ${view === 'projects' ? 'active' : ''}`} onClick={() => setView('projects')}>
-            <span>▦</span> Projects
-          </button>
-          <button className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} onClick={() => setView('appSettings')}>
-            <span>⚙</span> Settings
-          </button>
-        </div>
-        <div className="sidebar-label">Workspaces</div>
-        <div className="sidebar-section" style={{ overflow: 'auto' }}>
-          {projects.length === 0 && <div style={{ padding: '6px 10px', color: 'var(--text-faint)' }}>No projects yet</div>}
-          {projects.map((p) => {
-            const counts = projectCounts(allRuns, p.id)
-            const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'live' : ''
-            const summary = [counts.open > 0 ? `${counts.open} open` : '', counts.needsYou > 0 ? `${counts.needsYou} needs you` : ''].filter(Boolean).join(' · ')
-            return (
-              <button
-                key={p.id}
-                className={`nav-item ${selectedId === p.id && view !== 'projects' && view !== 'appSettings' ? 'active' : ''}`}
-                onClick={() => {
-                  selectProject(p.id)
-                  if (view === 'projects' || view === 'appSettings') setView('run')
-                }}
-                title={summary ? `${p.path}\n${summary}` : p.path}
-              >
-                <span className={`dot ${state}`} aria-hidden="true" />
-                <span className="nav-text">
-                  <span className="nav-name">{p.name}</span>
-                  {summary && <span className={`nav-counts ${counts.needsYou > 0 ? 'warn' : ''}`}>{summary}</span>}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-        <div className="sidebar-footer">
-          <span
-            className={`pill ${auth?.loggedIn ? 'ok' : auth?.mode === 'apiKey' ? 'warn' : auth ? 'danger' : ''}`}
-            title={auth?.detail}
-          >
-            <span className="dot" />
-            {auth == null
-              ? 'Checking Claude login…'
-              : auth.mode === 'apiKey'
-                ? auth.envVarSet
-                  ? `Claude · API key (${auth.envVar})`
-                  : `Claude · ${auth.envVar} not set`
-                : auth.loggedIn
-                  ? `Claude · ${auth.method ?? 'logged in'}`
-                  : 'Claude not logged in'}
-          </span>
-          <UsageMeter />
-          <NotificationsToggle />
-          <LogsLink />
-        </div>
-      </aside>
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main-content')?.focus()
+        }}
+      >
+        Skip to content
+      </a>
+      <Sidebar />
 
-      <main className="main">
-        <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ""}`} onReset={() => setView("projects")}>
-        {view === 'appSettings' ? (
-          <AppSettingsView />
-        ) : view === 'projects' || !project ? (
-          <ProjectsView />
-        ) : (
-          <>
-            <div className="topbar">
-              <h1>{project.name}</h1>
-              <span className="pill" title={project.path}>
-                {project.path}
-              </span>
-              <div className="spacer" />
-              {run && (
-                <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'live' : run.summary.status === 'error' ? 'danger' : run.summary.status === 'paused' ? 'warn' : 'ok'}`}>
-                  <span className="dot" /> {run.summary.kind === 'setup' ? 'setup · ' : ''}
-                  {run.summary.endedWithApp && run.summary.status === 'finished' ? 'ended when OrgAI closed' : run.summary.status}
-                </span>
-              )}
-              <div className="tabs">
-                <button className={view === 'run' ? 'active' : ''} onClick={() => setView('run')}>
-                  Live
-                </button>
-                <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
-                  Org chart &amp; settings
-                </button>
+      <main className="main" id="main-content" tabIndex={-1}>
+        <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ''}`} onReset={() => setView('projects')}>
+          {view === 'appSettings' ? (
+            <AppSettingsView />
+          ) : view === 'projects' || !project ? (
+            <ProjectsView />
+          ) : (
+            <>
+              <div className="topbar">
+                <h1>{isHarness ? 'MCP library assistant' : project.name}</h1>
+                {!isHarness && (
+                  <span className="pill" title={project.path}>
+                    {project.path}
+                  </span>
+                )}
+                <div className="spacer" />
+                {badge && (
+                  <span className={`pill run-status ${badge.tone}`} title={badge.note}>
+                    <span className="dot" /> {run?.summary.kind === 'setup' ? 'setup · ' : ''}
+                    {statusText(badge)}
+                  </span>
+                )}
+                <SaveIndicator />
+                <div className="tabs" role="group" aria-label="Project sections">
+                  <button type="button" className={view === 'run' ? 'active' : ''} aria-current={view === 'run' ? 'page' : undefined} onClick={() => setView('run')}>
+                    Live
+                  </button>
+                  <button type="button" className={view === 'history' ? 'active' : ''} aria-current={view === 'history' ? 'page' : undefined} onClick={() => setView('history')}>
+                    History
+                  </button>
+                  {!isHarness && (
+                    <button type="button" className={view === 'org' ? 'active' : ''} aria-current={view === 'org' ? 'page' : undefined} onClick={() => setView('org')}>
+                      Org chart
+                    </button>
+                  )}
+                  {!isHarness && (
+                    <button
+                      type="button"
+                      className={view === 'settings' ? 'active' : ''}
+                      aria-current={view === 'settings' ? 'page' : undefined}
+                      aria-label="Project settings"
+                      onClick={() => setView('settings')}
+                    >
+                      Settings
+                    </button>
+                  )}
+                  {isHarness && (
+                    <button type="button" data-testid="harness-back" onClick={() => useAppStore.getState().openMcpLibrary()}>
+                      Back to MCP library
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-            {view === 'settings' ? <SettingsView project={project} /> : <LiveRunView project={project} />}
-          </>
-        )}
+              {view === 'settings' ? (
+                <SettingsView project={project} />
+              ) : view === 'org' ? (
+                <OrgChartView project={project} />
+              ) : view === 'history' ? (
+                <RunHistory />
+              ) : (
+                <LiveRunView project={project} />
+              )}
+            </>
+          )}
         </ErrorBoundary>
       </main>
     </div>

@@ -1,23 +1,27 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import type { RateLimitWindow, UsageStatus } from '@shared/types'
+import { RefreshCw } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { Button } from './ui/Button'
 
-function RefreshLink(): ReactElement {
+function RefreshButton(): ReactElement {
   const refreshUsage = useAppStore((s) => s.refreshUsage)
   const [busy, setBusy] = useState(false)
   return (
-    <button
-      className="usage-refresh"
-      disabled={busy}
+    <Button
+      size="sm"
+      variant="ghost"
+      icon={RefreshCw}
+      loading={busy}
       title="Read plan usage now"
       onClick={() => {
         setBusy(true)
         void refreshUsage().finally(() => setBusy(false))
       }}
     >
-      {busy ? 'refreshing…' : 'refresh'}
-    </button>
+      Refresh
+    </Button>
   )
 }
 import { formatUntil } from '../lib/layout'
@@ -58,7 +62,7 @@ export default function UsageMeter(): ReactElement {
   if (usage?.authMode === 'apiKey') {
     return (
       <div className="usage-meter">
-        <div className="usage-empty">API key: no plan limits</div>
+        <div className="usage-empty">API key in use: no plan limits</div>
       </div>
     )
   }
@@ -66,11 +70,11 @@ export default function UsageMeter(): ReactElement {
     return (
       <div className="usage-meter">
         <div className="usage-empty" title="Plan usage is read at startup, every 10 minutes while idle, and every minute during a run.">
-          Usage: not reported yet
+          Usage not reported yet
         </div>
         <div className="usage-foot">
           <span className="usage-hint">Read at startup and every 10 minutes.</span>
-          <RefreshLink />
+          <RefreshButton />
         </div>
       </div>
     )
@@ -84,7 +88,7 @@ export default function UsageMeter(): ReactElement {
         const pct = r.window.utilization
         const level = r.limited ? 'danger' : (pct ?? 0) >= WARN_AT || usage.status === 'allowed_warning' ? 'warn' : ''
         return (
-          <div key={r.key} className={`usage-row ${level}`}>
+          <div key={r.key} className={`usage-row ${level}`} title={r.window.resetsAt !== null ? `${r.label}: resets ${new Date(r.window.resetsAt).toLocaleString()}` : undefined}>
             <div className="usage-head">
               <span>{r.label}</span>
               <span className="usage-pct">{pct === null ? '–' : `${Math.round(pct)}%`}</span>
@@ -94,7 +98,7 @@ export default function UsageMeter(): ReactElement {
             </div>
             {r.window.resetsAt !== null && (
               <div className="usage-reset" title={new Date(r.window.resetsAt).toLocaleString()}>
-                {r.window.resetsAt > now ? `resets in ${formatUntil(r.window.resetsAt, now)}` : 'reset due'}
+                {r.window.resetsAt > now ? `Resets in ${formatUntil(r.window.resetsAt, now)}` : 'Reset due'}
               </div>
             )}
           </div>
@@ -103,9 +107,9 @@ export default function UsageMeter(): ReactElement {
       {usage.overageInUse && <div className="usage-hint">Extra usage in use</div>}
       <div className="usage-foot">
         <span className="usage-hint" title={new Date(usage.updatedAt).toLocaleString()}>
-          as of {new Date(usage.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+          Updated {new Date(usage.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
         </span>
-        <RefreshLink />
+        <RefreshButton />
       </div>
     </div>
   )

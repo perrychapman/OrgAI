@@ -16,6 +16,50 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `continuation.ts` holds the pure `nextNudge` decision and the `ContinuationDriver` every adapter calls at turn end
   (`turnEnded`), on user messages, on interrupt (`hold`) and at session end; the adapter only delivers the nudge
   through its harness-message path (Claude: `notifyOrchestrator`). Never nudge setup runs.
+- Cross-run messages (`message_run`) never override the user: RunManager gates delivery (`peerDeliveryBlocked`) while
+  a run is held by an interrupt, usage-limited (`ActiveRun.limitHold`) or has pending cards, holds them in the run's
+  inbox (at most `RUN_MESSAGE_QUEUE_LIMIT` 20) and flushes them oldest first, one chained flush at a time, after the
+  user's next successful `send()` or the last card's answer. Only the user's send lifts a hold; peers never do, not
+  even after an auto-resume. `send()` never waits on that flush. Each `receive()` is raced against
+  `RUN_MESSAGE_RECEIVE_TIMEOUT_MS` (30 s): on timeout both runs get a warning, the chain moves on and a direct sender
+  gets refusal `timeout`. Caps: 40 per sender per target, 100 inbound per run. A direct `RuntimeSession.receive()`
+  call is ungated, so always deliver through RunManager.
+- Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
+  preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
+  (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
+- Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
+  teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
+  `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
+  `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
+- Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
+  objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
+  learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls
+  it yet.
+- Settings: `AppSettings.appearance` (theme, accent, canvas, reduceMotion; `DEFAULT_APPEARANCE`) and
+  `AppSettings.notifications` (the single source of truth; `notifications.setEnabled` in the preload is a deprecated
+  mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only
+  in `lib/theme.ts` (`initTheme` in `main.tsx`) as `data-theme`, `data-canvas-*`, `data-reduce-motion` and `--canvas-*`
+  on `<html>`. Views never read appearance settings themselves.
+- Projects: `projects:checkPath` (`ProjectPathCheck`) never rejects. `projects:create` validates the path, and
+  `ProjectCreateInput.mock` is accepted only with `ORGAI_MOCK=1`.
+
+## Renderer
+
+The UI overhaul landed on native elements with container queries. Radix and react-resizable-panels are not installed,
+and the frontend-design skill is not vendored in `.claude/skills` (only `run-desktop` is there).
+
+- Layout: `components/layout` (`CanvasFrame` with `FrameToolbar` / `FrameStage` / `FrameTray` / `FrameFooter`,
+  `SidePanel`, `SaveIndicator`). Nothing floats over the canvas: decision cards sit in `FrameTray` on the
+  `components/DecisionCard.tsx` shell.
+- Primitives: `components/ui` (`ConfirmDialog` + `useConfirm` instead of `confirm()`, `Input`, `Textarea`, `Checkbox`,
+  `Select`, `SettingRow` and the earlier ones). `IconButton` requires `label`, and `Button` takes `ariaLabel`.
+- Status words come only from `lib/runStatus.ts`: Running, Needs you, Idle, Paused, Finished, Stopped, Failed.
+- Project tabs are Live, History, Org chart and Settings. The org chart editor is `views/OrgChartView.tsx`, and project
+  settings are sectioned through `components/settings/*`.
+- e2e:free is `e2e/layout.mjs`, `runs.mjs`, `maintenance.mjs` and `connections.mjs`. Update selectors in the same change.
+- Walkthroughs on mock data are in `docs/design/ux-review*.md`. The newest, `ux-review-runs-2.md`, predates the brief A
+  run-view merge, so its N1 tray finding needs a re-walk. N2 (run windows miss pending decisions) and the focus and
+  wording items are still open.
 - Claude Agent SDK facts verified against v0.3.312 (see `scripts/smoke-*.mjs`):
   - `task_started` (system message) arrives before the `SubagentStart` hook and carries `task_id` (= `agent_id`),
     `tool_use_id` of the spawning Agent call, `subagent_type`, `description`, optional `parent_task_id`.
@@ -53,6 +97,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - Continuing a run resumes the chain's newest run; RunManager refuses while another live run holds the session.
     Unverified: whether a resumed session reports the same session_id (`forkSession: true` gives a new one); the chain
     therefore follows resumedFrom links and sessionId both (`runManager.sessionChain`). Verified by unit tests only.
+- Concurrent runs and cross-run messaging: any number of runs may be live at once (verified by RunManager unit tests on the
+  mock adapter). Work-run roots get `list_runs` / `message_run`; RunManager delivers through `RuntimeSession.receive()`,
+  framed by `prompts.ts` `peerMessageText` as peer information, never a user instruction. Opt-in per project
+  (`Project.runMessaging`, both ends), capped per run pair, never for setup-like runs. Unverified: that the Claude
+  adapter's notifyOrchestrator delivers a peer message mid-turn (no smoke script). `window:openRun` opens a run-scoped
+  window at `#/run/<projectId>/<runId>`; `runs:listLive` lists live runs across projects.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
   - A `PreToolUse` hook answering `permissionDecision: 'allow'` bypasses the permission system in every mode
@@ -86,6 +136,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - OrgAI uses its own `CODEX_HOME` at `<data>/codex`, so the user's `~/.codex` config and MCP servers never load.
     Config goes in as `-c key=value` TOML overrides. An API key travels only in the environment
     (`model_providers.orgai.env_key`), never in argv. Verified by unit tests (`codexProtocol.test.ts`).
+  - Concurrent Codex runs share that one `CODEX_HOME` at `<data>/codex` (`src/main/connections/service.ts`), each
+    with its own app-server. Whether they race on auth refresh or the session database is unverified.
   - Harness tools are `dynamicTools` on `thread/start`, answered through `item/tool/call`. `update_plan` collides
     with a built-in Codex tool, so it is exposed as `orgai_update_plan`. Subagents are threads started by the
     harness's own `spawn_agent` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
@@ -114,6 +166,29 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests.
   - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
     and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
+- MCP library and OAuth:
+  - The app-wide library lives in `<data>/mcp-library.json` (`McpLibraryStore`). A project server with `libraryId` is a
+    link: McpService refreshes its snapshot from the entry on every read (`withLibrary`, `list`, `enabledServers`,
+    `resolve`), its secrets and tokens are the entry's, and a link whose entry is gone is kept but never passed to runs.
+    Secret keys: project `mcp:<projectId>:<serverId>:{env|header|oauth}:<name>`, library `mcplib:<entryId>:...`.
+    Verified by unit tests.
+  - OAuth (`src/main/mcp/oauth.ts`): RFC 9728 discovery from the 401 `WWW-Authenticate`, RFC 8414 / OIDC metadata,
+    a user-entered client id first, then DCR, else `needsClientId`; PKCE S256, RFC 8707 `resource`, a one-shot
+    loopback redirect on 127.0.0.1, refresh with rotation. Verified only with fake fetch and the real loopback in
+    unit tests; no live authorization server has been used.
+  - The host injects `Authorization: Bearer <access token>` into resolved headers. Unverified: that the bundled
+    CLI's undocumented `oauth` block in mcpServers passes through from SDK options (not used); that GitHub's hosted
+    server (`https://api.githubcopilot.com/mcp/`) accepts a token from a user's own GitHub OAuth app; how Codex's
+    own MCP OAuth behaves when `bearer_token_env_var` is set.
+  - Runs refresh tokens that expire within 5 minutes before they start (`prepareForRun`). A server that is still not
+    authorized starts without credentials and the run logs a warning. Mid-run re-authorization is out of scope: the
+    user authorizes in Settings and the next run picks it up.
+  - Harness-level runs (the library MCP assistant) use the virtual project `HARNESS_PROJECT_ID` ('harness', built by
+    `harnessProject()` in `mcp/assist.ts`, never stored). Only `mcp-assist` runs may use it.
+  - Hardening: install-card edits are allowlisted onto the agent's spec and cannot reuse an existing id; a run-scoped
+    server never reads stored secrets. OAuth bearers are injected only when `oauth.resource` matches the server URL.
+    The loopback callback ignores (400) any request whose state does not match exactly. OAuth fetches never follow
+    redirects and refuse private-IP literals (no DNS check). All of this is unit-tested only.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.

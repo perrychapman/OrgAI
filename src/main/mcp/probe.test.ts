@@ -96,11 +96,41 @@ describe('testServer (http)', () => {
   })
 
   it('reports HTTP errors without the secret', async () => {
-    const fake = (async () => new Response('bad token tok-123', { status: 401, statusText: 'Unauthorized' })) as unknown as typeof fetch
+    const fake = (async () => new Response('bad token tok-123', { status: 403, statusText: 'Forbidden' })) as unknown as typeof fetch
     const r = await testServer(http({ Authorization: 'Bearer tok-123' }), 5000, fake)
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('HTTP 401')
+    expect(r.error).toContain('HTTP 403')
     expect(r.error).not.toContain('tok-123')
+  })
+
+  it('turns a 401 challenge into needsAuthorization with the resource metadata URL', async () => {
+    const fake = (async () =>
+      new Response('Bearer tok-123 unauthorized', {
+        status: 401,
+        headers: { 'www-authenticate': 'Bearer realm="mcp", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"' }
+      })) as unknown as typeof fetch
+    const r = await testServer(http({ Authorization: 'Bearer tok-123' }), 5000, fake)
+    expect(r).toMatchObject({
+      ok: false,
+      needsAuthorization: true,
+      authorizationServer: 'https://mcp.example.com/.well-known/oauth-protected-resource',
+      error: 'This server needs authorization. Use Authorize.'
+    })
+    expect(JSON.stringify(r)).not.toContain('tok-123')
+  })
+
+  it('a 401 without the header is needsAuthorization without a server', async () => {
+    const fake = (async () => new Response('', { status: 401 })) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.needsAuthorization).toBe(true)
+    expect(r.authorizationServer).toBeUndefined()
+  })
+
+  it('redacts bearer values from error text even when the header was not a declared secret', async () => {
+    const fake = (async () => new Response('echo: Bearer abc.def-ghi', { status: 500 })) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.error).not.toContain('abc.def-ghi')
   })
 })
 

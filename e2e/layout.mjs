@@ -37,7 +37,7 @@ try {
   const pillBox = await page.locator('.topbar .pill', { hasText: 'a-rather-long' }).first().boundingBox()
   const vw = await page.evaluate(() => window.innerWidth)
   check(!!pillBox && pillBox.x + pillBox.width <= vw, 'path pill fits in the window', JSON.stringify(pillBox))
-  const heading = await page.locator('.empty h2').innerText({ timeout: 5000 }).catch(() => '')
+  const heading = await page.locator('.new-run h2').innerText({ timeout: 5000 }).catch(() => '')
   check(/something to do/i.test(heading), 'empty state invites a first task', heading)
   check((await page.locator('.composer textarea').count()) === 1, 'composer is present')
   await shot('live-long-path')
@@ -114,10 +114,12 @@ try {
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
   await sleep(800)
-  await page.getByRole('button', { name: 'Runs', exact: true }).click()
+  check((await page.locator('.new-run').count()) === 0 && (await page.locator('.run-tab[aria-selected="true"]').count()) === 1, 'a project with history opens on its newest run, not the empty state')
+  await page.locator('.topbar .tabs').getByRole('button', { name: 'History', exact: true }).click()
   await sleep(500)
-  check((await page.locator('.run-row').count()) >= 1, 'run appears in history after reload')
-  await page.locator('.run-row .run-open').first().click()
+  check((await page.locator('.run-row').count()) >= 1, 'run appears in the History tab after reload')
+  if ((await page.locator('.run-row button.run-open').count()) > 0) await page.locator('.run-row button.run-open').first().click()
+  else await page.getByRole('button', { name: 'Live', exact: true }).click()
   await sleep(1500)
   await page.getByRole('button', { name: 'Transcript', exact: true }).click()
   await sleep(500)
@@ -130,34 +132,105 @@ try {
   check(loaded, 'reopened thumbnail image decodes (rehydrated from disk)')
   await shot('transcript-with-image-reopened')
 
-  // Run strip, composer mode row and Runs tab in the viewport x theme matrix (continuation UX).
+  // Run tabs keyboard model: Ctrl+T opens the New run page as a second tab, Ctrl+W closes it again.
+  await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+  await sleep(500)
+  check((await page.locator('.run-tabs [role="tablist"] [role="tab"]').count()) === 1, 'one run tab for the reopened run')
+  check((await page.locator('.canvas-toolbar').count()) === 0, 'no toolbar floats over the canvas')
+  await page.keyboard.press('Control+t')
+  await sleep(400)
+  check((await page.locator('.new-run').count()) === 1, 'Ctrl+T opens the New run page')
+  check((await page.locator('.run-tabs [role="tab"]').count()) === 2, 'the New run page is a second tab')
+  check((await page.locator('.run-header').count()) === 0 && (await page.locator('.react-flow').count()) === 0, 'no other run is on screen on the New run page')
+  await shot('new-run-page')
+  await page.keyboard.press('Control+w')
+  await sleep(400)
+  check((await page.locator('.new-run').count()) === 0 && (await page.locator('.run-header').count()) === 1, 'Ctrl+W closes the New run page and returns to the run')
+  await page.locator('.run-tab-new').click()
+  await sleep(300)
+  check((await page.locator('.new-run').count()) === 1, 'the + button opens the New run page')
+  await page.locator('.run-tab[aria-selected="false"]').first().focus()
+  await page.keyboard.press('ArrowRight')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('aria-selected') === 'true'), 'ArrowRight moves focus to the next tab')
+  await page.keyboard.press('ArrowLeft')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('aria-selected') === 'false'), 'ArrowLeft moves focus back')
+  await page.keyboard.press('Enter')
+  await sleep(400)
+  check((await page.locator('.run-header').count()) === 1, 'Enter activates the focused tab')
+
+  // Run tabs, run header, composer and the History tab in the viewport x theme matrix.
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
     await sleep(400)
     for (const theme of ['dark', 'light']) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await sleep(300)
-      await page.getByRole('button', { name: 'Runs', exact: true }).click().catch(() => {})
+      await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
       await sleep(300)
       const m = await page.evaluate(() => {
         const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
-        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, strip: r('.run-strip'), composer: r('.composer'), row: r('.run-row') }
+        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, tabs: r('.run-tabs'), header: r('.run-header'), composer: r('.composer') }
       })
       const inside = (b) => !!b && b.l >= -0.5 && b.r <= m.iw + 0.5 && b.t >= -0.5 && b.b <= m.ih + 0.5
       check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
-      check(inside(m.strip), `run strip inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.strip))
+      check(inside(m.tabs), `run tabs inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.tabs))
+      check(inside(m.header), `run header inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.header))
       check(inside(m.composer), `composer with mode row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.composer))
-      check(inside(m.row), `Runs tab row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.row))
-      const chip = page.locator('.run-chip-main').first()
-      await chip.focus()
+      check(!!m.tabs && !!m.header && m.header.t >= m.tabs.b - 0.5, `run header sits under the tabs in normal flow at ${w}x${h} ${theme}`, JSON.stringify([m.tabs, m.header]))
+      const tab = page.locator('.run-tab[aria-selected="true"]')
+      await tab.focus()
       await page.keyboard.press('Shift+Tab')
-      await page.keyboard.press('Tab') // keyboard modality so :focus-visible matches; the ring sits on the .run-chip wrapper
-      const ring = await chip.evaluate((el) => { const s = getComputedStyle(el.closest('.run-chip') ?? el); return { o: s.outlineStyle, ow: s.outlineWidth, bs: s.boxShadow } })
-      check((ring.o !== 'none' && parseFloat(ring.ow) > 0) || ring.bs !== 'none', `run chip shows a focus ring at ${w}x${h} ${theme}`, JSON.stringify(ring))
-      await shot(`runs-${w}x${h}-${theme}`)
+      await page.keyboard.press('Tab') // keyboard modality so :focus-visible matches
+      const ring = await tab.evaluate((el) => { const s = getComputedStyle(el); return { o: s.outlineStyle, ow: s.outlineWidth, bs: s.boxShadow } })
+      check((ring.o !== 'none' && parseFloat(ring.ow) > 0) || ring.bs !== 'none', `run tab shows a focus ring at ${w}x${h} ${theme}`, JSON.stringify(ring))
+      await shot(`live-run-${w}x${h}-${theme}`)
+      await page.locator('.topbar .tabs').getByRole('button', { name: 'History', exact: true }).click()
+      await sleep(300)
+      const hm = await page.evaluate(() => {
+        const b = document.querySelector('.run-row')?.getBoundingClientRect()
+        return { iw: window.innerWidth, ih: window.innerHeight, row: b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
+      })
+      check(!!hm.row && hm.row.l >= -0.5 && hm.row.r <= hm.iw + 0.5 && hm.row.b <= hm.ih + 0.5, `History row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(hm))
+      await shot(`history-${w}x${h}-${theme}`)
     }
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+
+  // Settings > Appearance: the theme switch flips data-theme on <html>, persists across a reload and reaches a second window.
+  await page.locator('.sidebar .nav-item', { hasText: 'Settings' }).first().click()
+  const appearance = page.locator('[data-testid=appearance-section]')
+  await appearance.waitFor({ timeout: 10_000 })
+  const themeGroup = appearance.getByRole('radiogroup', { name: 'Theme' })
+  await themeGroup.locator('label.seg-item', { hasText: 'Light' }).click()
+  await sleep(800)
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'Settings > Appearance Light flips data-theme to light')
+  await shot('settings-appearance-light')
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await sleep(600)
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'the chosen theme persists across a reload')
+  const themeProj = await findProject(page, NAME)
+  const themeRuns = await page.evaluate((id) => window.orgai.runs.list(id), themeProj.id)
+  if (themeRuns.length) {
+    await page.evaluate((t) => window.orgai.window.openRun(t), { projectId: themeProj.id, runId: themeRuns[0].id })
+    let win2
+    for (let i = 0; i < 30 && !win2; i++) {
+      win2 = app.windows().find((w) => w !== page)
+      if (!win2) await sleep(500)
+    }
+    check(!!win2, 'a second window opens for the theme check')
+    if (win2) {
+      await win2.waitForSelector('.sidebar, .run-header', { timeout: 20_000 }).catch(() => {})
+      await sleep(600)
+      check((await win2.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'the second window uses the saved light theme')
+      await win2.close().catch(() => {})
+    }
+  }
+  await page.locator('.sidebar .nav-item', { hasText: 'Settings' }).first().click()
+  await appearance.waitFor({ timeout: 10_000 })
+  await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
+  await sleep(800)
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'Settings > Appearance Dark flips data-theme back to dark')
 
   // New-idea mode, also token-free with setup skipped.
   const created = await createProject(page, { mode: 'new', path: path.join(base, 'new-idea-folder'), name: NEW_NAME, brief: 'A tiny todo app for layout testing.' })

@@ -124,7 +124,7 @@ describe('dynamic tool specs', () => {
   it('turns every harness tool into a function spec with a JSON schema from zod', () => {
     const tools = harnessToolsFor(fakeCtx())
     const specs = tools.map(dynamicToolSpec)
-    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'request_permission_rules'])
+    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'request_permission_rules', 'list_runs', 'message_run'])
     const setPlan = specs[0]
     expect(setPlan).toMatchObject({ type: 'function' })
     const schema = setPlan.inputSchema as { type: string; required: string[]; properties: Record<string, { type?: string }> }
@@ -202,6 +202,32 @@ describe('buildLaunchConfig', () => {
     expect(l.config.join('\n')).not.toMatch(/sk-super|kkk-secret/)
   })
 
+  it('never prints a header value in the summary, config or argv', () => {
+    const s = spec({ name: 'remote', transport: 'http', url: 'https://x.test/mcp', headers: {}, secretHeaders: ['Authorization'] })
+    const l = buildLaunchConfig(conn(), [resolved(s, {}, { Authorization: 'Bearer secret123' })])
+    expect(l.summary.join('\n')).not.toContain('secret123')
+    expect(l.config.join('\n')).not.toContain('secret123')
+    expect(l.env.ORGAI_MCP_0_H0).toBe('secret123')
+  })
+
+  it('hands an OAuth access token to Codex through the environment only', () => {
+    const s = spec({ name: 'oauthy', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Team': 'a' }, oauth: { resource: 'https://x.test/mcp' } as McpServerSpec['oauth'] })
+    const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: 'Bearer tok-oauth-123' })])
+    expect(l.config).toContain('mcp_servers.oauthy.bearer_token_env_var="ORGAI_MCP_0_H0"')
+    expect(l.config).toContain('mcp_servers.oauthy.http_headers={ X-Team = "a" }')
+    expect(l.env.ORGAI_MCP_0_H0).toBe('tok-oauth-123')
+    expect(l.config.join(' ')).not.toContain('tok-oauth-123')
+    expect(l.summary.join(' ')).not.toContain('tok-oauth-123')
+    expect(Object.values(l.env)).not.toContain('Bearer tok-oauth-123')
+  })
+
+  it('treats a resolved header that differs from the declared one as secret', () => {
+    const s = spec({ name: 'r', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Key': 'public' } })
+    const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'overridden-secret' })])
+    expect(l.config.join(' ')).not.toContain('overridden-secret')
+    expect(l.config).toContain('mcp_servers.r.env_http_headers={ X-Key = "ORGAI_MCP_0_H0" }')
+  })
+
   it('falls back to inline env on a secret name clash between servers and says so', () => {
     const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
     const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })
@@ -235,5 +261,13 @@ describe('untilFromRateLimits', () => {
   it('is undefined when nothing is exhausted or the shape is unexpected', () => {
     expect(untilFromRateLimits({ rateLimits: { primary: { usedPercent: 10, resetsAt: 1 } } })).toBeUndefined()
     expect(untilFromRateLimits('x')).toBeUndefined()
+  })
+})
+
+describe('displayUrl', () => {
+  it('drops userinfo and query strings from summaries', async () => {
+    const { displayUrl } = await import('./codexProtocol')
+    expect(displayUrl('https://user:pw@api.test/mcp?key=SECRET')).toBe('https://api.test/mcp')
+    expect(displayUrl('not a url')).toBe('(invalid url)')
   })
 })

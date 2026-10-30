@@ -3,13 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
-import type { RuntimeAdapter, RuntimeContext } from './types'
-import { RESUME_TEXT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
-import { MockAdapter, type MockScript } from './mock'
+import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { MockAdapter, type MockScript, type MockSession } from './mock'
+import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
-import { SET_PLAN_NUDGE, limitReachedText } from './continuation'
+import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -304,7 +305,8 @@ describe('RunManager with the mock adapter', () => {
       const req = await waitFor(isType('rules.request'))
       await m.stop(run.id)
       const resolved = await waitFor(isType('rules.resolved'))
-      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' } })
+      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' }, cancelled: true })
+      expect(events.filter(isType('rules.resolved'))).toHaveLength(1)
     })
   })
 
@@ -327,10 +329,21 @@ describe('RunManager with the mock adapter', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p)
     const run = await m.start({ project: p, prompt: 'Change x' })
-    await waitFor(isType('permission.request'))
+    const req = await waitFor(isType('permission.request'))
     await m.stop(run.id)
-    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    const finished = await waitFor(isType('run.status', (e) => e.status === 'finished'))
     expect(events.some((e) => e.type === 'run.status' && e.status === 'stopping')).toBe(true)
+    // The card is cancelled before the terminal status goes out, exactly once.
+    const resolved = events.filter(isType('permission.resolved'))
+    expect(resolved).toEqual([{ type: 'permission.resolved', runId: run.id, requestId: req.request.id, cancelled: true }])
+    expect(events.indexOf(resolved[0])).toBeLessThan(events.indexOf(finished))
+    // No node keeps saying "Waiting for you" / "Needs approval" once the session ended.
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    const agents = Object.values(m.get(run.id)?.agents ?? {})
+    expect(agents.find((a) => a.id === 'root')).toMatchObject({ state: 'done', activity: 'Stopped' })
+    expect(agents.find((a) => a.id === 'mock-report-1')).toMatchObject({ state: 'done', activity: 'Stopped' })
+    const lastRoot = events.filter(isType('agent.upsert', (e) => e.agent.id === 'root')).at(-1)
+    expect(lastRoot?.agent.activity).toBe('Stopped')
   })
 
   it('applies setup proposals through the SetupService and completes setup', async () => {
@@ -431,11 +444,17 @@ describe('RunManager with the mock adapter', () => {
       const session = adapter.sessions[0]
       expect(session.harnessMessages).toHaveLength(1)
       expect(session.harnessMessages[0]).toBe(
-        'Harness: plan progress 1 of 2 done. Remaining: p2 Verify. Continue with the next step now; mark steps with update_plan as you go. ' +
-          "When every step is done, run the project's verification (build/tests) and call complete_plan. " +
-          'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+        'Harness: plan 1 of 2 done. Remaining: p2 Verify. Continue with the next step; mark steps with update_plan as you go. ' +
+          "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+          'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
       )
-      expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === session.harnessMessages[0])).toBe(true)
+      expect(
+        events.some(
+          (e) =>
+            e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' &&
+            e.entry.block.detail === session.harnessMessages[0] && e.entry.block.text === 'Continuing: 1 of 2 steps done, next "Verify".'
+        )
+      ).toBe(true)
       expect(events.some((e) => e.type === 'agent.upsert' && e.agent.id === 'root' && e.agent.activity === 'Continuing: Verify')).toBe(true)
       expect(m.get(run.id)?.plan).toMatchObject({ status: 'done', summary: 'Built and verified', autoContinues: 1 })
       expect(events.some((e) => e.type === 'log' && e.message === 'Plan set: Ship it (2 steps).')).toBe(true)
@@ -477,7 +496,7 @@ describe('RunManager with the mock adapter', () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m, adapter } = manager(p, { work: [{ type: 'text', text: 'Done with the first part.' }] }, fast)
       const run = await m.start({ project: p, prompt: 'Go' })
-      await waitFor(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.block.text === SET_PLAN_NUDGE))
+      await waitFor(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.block.detail === SET_PLAN_NUDGE && e.entry.block.text === SET_PLAN_SUMMARY))
       await sleep(60)
       expect(adapter.sessions[0].harnessMessages).toEqual([SET_PLAN_NUDGE])
       await m.stop(run.id)
@@ -595,6 +614,69 @@ describe('RunManager with the mock adapter', () => {
       await waitFor(isType('run.status', (e) => e.status === 'finished'))
       expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
     })
+  })
+})
+
+describe('RunManager.pendingCards (runs:pendingCards)', () => {
+  const empty = { permissions: [], questions: [], proposals: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] }
+
+  it('lists a pending permission and a pending question, drops each once answered, and is empty after the end', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const script: MockScript = {
+      work: [
+        { type: 'tool', name: 'Edit', input: { file_path: 'a.ts', old_string: 'a', new_string: 'b' }, ask: true, background: true, result: 'ok' },
+        { type: 'harness', name: 'ask_user', args: { question: 'Which?', options: [{ label: 'A' }, { label: 'B' }] } },
+        { type: 'text', text: 'done' }
+      ]
+    }
+    const { m } = manager(p, script)
+    const run = await m.start({ project: p, prompt: 'Go' })
+    const perm = await waitFor(isType('permission.request'))
+    const q = await waitFor(isType('question.request'))
+
+    const cards = m.pendingCards(run.id)
+    expect(cards.permissions).toEqual([perm.request])
+    expect(cards.questions).toEqual([q.question])
+    expect(cards.proposals).toEqual([])
+    expect(structuredClone(cards)).toEqual(cards)
+
+    m.decide(run.id, perm.request.id, { behavior: 'allow' })
+    expect(m.pendingCards(run.id).permissions).toEqual([])
+    expect(m.pendingCards(run.id).questions).toEqual([q.question])
+    m.answerQuestion(run.id, q.question.id, { selected: ['A'] })
+    expect(m.pendingCards(run.id)).toEqual(empty)
+
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    await m.stop(run.id)
+    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    expect(m.pendingCards(run.id)).toEqual(empty)
+  })
+
+  it('is empty for an unknown run and for a run that ended with a card open', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    expect(m.pendingCards('nope')).toEqual(empty)
+    const run = await m.start({ project: p, prompt: 'Change x' })
+    await waitFor(isType('permission.request'))
+    expect(m.pendingCards(run.id).permissions).toHaveLength(1)
+    await m.stop(run.id)
+    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    expect(m.pendingCards(run.id)).toEqual(empty)
+  })
+
+  it("returns a setup run's pending proposal", async () => {
+    const p = makeProject({ path: join(dir, 'repo'), setup: { kind: 'existing', state: 'in_progress' } })
+    const script: MockScript = {
+      setup: [{ type: 'harness', name: 'propose_settings', args: { title: 'S', rationale: 'r', brief: 'b' }, retryOnRevise: false }]
+    }
+    const { m } = manager(p, script)
+    const run = await m.start({ project: p, prompt: 'Set it up', kind: 'setup' })
+    const req = await waitFor(isType('proposal.request'))
+    expect(m.pendingCards(run.id).proposals).toEqual([req.proposal])
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(m.pendingCards(run.id).proposals).toEqual([])
+    await m.stop(run.id)
+    await waitFor(isType('run.status', (e) => e.status === 'finished'))
   })
 })
 
@@ -781,7 +863,7 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const { pending, req } = await ask(ctx)
       m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', secrets: { GITHUB_TOKEN: SECRET } })
       expect(await pending).toMatchObject({ approved: true, scope: 'project' })
-      expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET })
+      expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET }, 'project')
       expect(events.find(isType('project.updated', (e) => (e.project.mcpServers?.length ?? 0) === 1))).toBeTruthy()
       // the project's server is served through enabledServers, not duplicated as a run server
       expect(ctx.mcpServers!().map((s) => s.id)).toEqual(['mcp-new'])
@@ -852,6 +934,94 @@ describe('RunManager adapter selection, connections and MCP', () => {
       expect((await ctxs[0].resolvedMcpServers!()).map((r) => r.spec.id)).toEqual(['mcp-p'])
       await m.stopAll()
     })
+
+    // Security review H1: a renderer-edited install spec is not trusted.
+    it('refuses an edit that changes the requested id', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', spec: spec({ id: 'mcp-p' }) })
+      const d = await pending
+      expect(d.approved).toBe(false)
+      expect(d.note).toMatch(/keep the requested id/)
+      expect(mcp.persistInstall).not.toHaveBeenCalled()
+      await m.stopAll()
+    })
+
+    it('refuses a requested id that already exists in the project, the library or the run', async () => {
+      const existing = spec({ id: 'mcp-p', name: 'docs', secretEnv: [], enabled: false })
+      const p = makeProject({ path: join(dir, 'repo'), mcpServers: [existing] })
+      const rec = recorder('mock')
+      const mcp = {
+        enabledServers: vi.fn((proj: Project) => (proj.mcpServers ?? []).filter((s) => s.enabled)),
+        resolve: vi.fn((_pid: string, s: McpServerSpec) => ({ spec: s, env: {}, headers: {} })),
+        persistInstall: vi.fn((): Project => p),
+        searchRegistry: vi.fn(async () => ({ entries: [] })),
+        libraryEntries: vi.fn(() => [{ id: 'mcpl_x', name: 'lib', transport: 'stdio' as const, command: 'npx', source: 'user' as const, addedAt: '' }])
+      }
+      const { m } = setupManager(p, { mock: rec.adapter }, { mcp })
+      const run = await m.start({ project: p, prompt: 'go' })
+      const ctx = rec.ctxs[0]
+      for (const id of ['mcp-p', 'mcpl_x']) {
+        const { pending, req } = await ask(ctx, spec({ id, name: `n-${id}`.replace('_', '-') }))
+        m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'run' })
+        const d = await pending
+        expect(d.approved).toBe(false)
+        expect(d.note).toMatch(/already exists/)
+      }
+      const first = await ask(ctx, spec({ id: 'mcp-run', name: 'run-one' }))
+      m.answerMcpInstall(run.id, first.req.id, { approved: true, scope: 'run' })
+      expect((await first.pending).approved).toBe(true)
+      const again = await ask(ctx, spec({ id: 'mcp-run', name: 'run-two' }))
+      m.answerMcpInstall(run.id, again.req.id, { approved: true, scope: 'run' })
+      expect((await again.pending).note).toMatch(/already exists/)
+      expect(mcp.persistInstall).not.toHaveBeenCalled()
+      await m.stopAll()
+    })
+
+    it('merges only allowlisted edits and strips oauth, libraryId and library source', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      const edit = {
+        ...spec({ name: 'gh', description: 'mine', transport: 'http', libraryId: 'mcpl_x', source: 'library', oauth: { tokenEndpoint: 'https://attacker.test/token' } }),
+        projectOnly: true
+      } as McpServerSpec
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', spec: edit })
+      const d = await pending
+      expect(d.approved).toBe(true)
+      const saved = mcp.persistInstall.mock.calls[0][1] as McpServerSpec & { projectOnly?: boolean }
+      expect(saved).toMatchObject({ id: 'mcp-new', name: 'gh', description: 'mine', transport: 'stdio', source: 'agent' })
+      expect(saved.oauth).toBeUndefined()
+      expect(saved.libraryId).toBeUndefined()
+      expect(saved.projectOnly).toBeUndefined()
+      expect(d.spec).toEqual(saved)
+      await m.stopAll()
+    })
+
+    it('a run-scoped server never reads stored secrets: only the values typed on the card', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'run', secrets: { GITHUB_TOKEN: SECRET } })
+      await pending
+      mcp.resolve.mockClear()
+      const resolved = await ctxs[0].resolvedMcpServers!()
+      expect(resolved[0].env).toEqual({ GITHUB_TOKEN: SECRET })
+      expect(mcp.resolve).not.toHaveBeenCalled()
+      await m.stopAll()
+    })
+
+    it('mcp-assist runs cannot request installs (the gap on the harness project)', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs } = withMcp(p)
+      await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
+      expect(ctxs[0].requestMcpInstall).toBeUndefined()
+      await m.stopAll()
+    })
   })
 })
 
@@ -889,7 +1059,7 @@ describe('request_mcp_install through RunManager and the mock adapter', () => {
     const text = await toolResult()
     expect(text).toMatch(/approved installing github for this project/)
     expect(text).toContain('mcp__github__')
-    expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET })
+    expect(mcp.persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), { GITHUB_TOKEN: SECRET }, 'project')
     expect(events.find(isType('mcpInstall.resolved'))?.outcome).toMatchObject({ approved: true, scope: 'project' })
     expect(JSON.stringify(events)).not.toContain(SECRET)
     await m.stopAll()
@@ -1042,6 +1212,601 @@ describe('RunManager session chains', () => {
     await waitFor(isType('run.status', (e) => e.runId === b.id && e.status === 'idle'))
     const next = await m.continueRun(p, a.id, 'more A')
     expect(next.resumedFrom).toBe(a.id)
+    await m.stopAll()
+  })
+})
+
+/** A MockAdapter that remembers each run's RuntimeContext and session. */
+class CapturingAdapter extends MockAdapter {
+  readonly ctxs = new Map<string, RuntimeContext>()
+  readonly bySession = new Map<string, MockSession>()
+  override async start(ctx: RuntimeContext): Promise<RuntimeSession> {
+    this.ctxs.set(ctx.run.id, ctx)
+    const session = await super.start(ctx)
+    this.bySession.set(ctx.run.id, session as MockSession)
+    return session
+  }
+}
+
+/** `projects`: the saved projects RunManager resolves (resolveProject), so tests can flip settings mid-run. */
+function multiManager(script: MockScript = {}, projects?: Map<string, Project>) {
+  const setup = fakeSetup(makeProject())
+  const store = new RunStore(join(dir, 'data'))
+  const adapter = new CapturingAdapter({ script: { delayMs: 0, ...script } })
+  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, projects ? { resolveProject: (id) => projects.get(id) } : {})
+  const tool = (runId: string, name: string, args?: unknown): Promise<string> => {
+    const t = harnessToolsFor(adapter.ctxs.get(runId)!).find((x) => x.name === name)!
+    return t.call(args)
+  }
+  return { m, store, adapter, tool }
+}
+
+describe('concurrent runs', () => {
+  const ask: MockScript = { work: [{ type: 'tool', name: 'Bash', input: { command: 'ls' }, ask: true }] }
+
+  it('runs three work runs at once across two projects with independent permission cards', async () => {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b') })
+    const { m } = multiManager(ask)
+    const a1 = await m.start({ project: pa, prompt: 'A one' })
+    const a2 = await m.start({ project: pa, prompt: 'A two' })
+    const b1 = await m.start({ project: pb, prompt: 'B one' })
+    const ids = [a1.id, a2.id, b1.id]
+    const cards = new Map<string, string>()
+    for (const id of ids) {
+      const req = await waitFor(isType('permission.request', (e) => e.runId === id))
+      cards.set(id, req.request.id)
+    }
+    expect(m.liveRuns().map((r) => r.id).sort()).toEqual([...ids].sort())
+    expect(m.liveRunCount()).toBe(3)
+    for (const id of ids) expect(events.filter(isType('transcript', (e) => e.runId === id && e.entry.block.kind === 'user'))).toHaveLength(1)
+
+    // Deciding one card leaves the others pending.
+    m.decide(a1.id, cards.get(a1.id)!, { behavior: 'allow' })
+    await waitFor(isType('permission.resolved', (e) => e.runId === a1.id))
+    expect(events.some((e) => e.type === 'permission.resolved' && e.runId !== a1.id)).toBe(false)
+    m.decide(b1.id, cards.get(b1.id)!, { behavior: 'deny', message: 'no' })
+    await waitFor(isType('permission.resolved', (e) => e.runId === b1.id))
+    expect(events.some((e) => e.type === 'permission.resolved' && e.runId === a2.id)).toBe(false)
+
+    // Stopping one run leaves the other two live.
+    await m.stop(a2.id)
+    await vi.waitFor(() => expect(m.summaryOf(a2.id)).toBeUndefined())
+    expect(m.liveRuns().map((r) => r.id).sort()).toEqual([a1.id, b1.id].sort())
+    await m.stopAll()
+  })
+
+  it('removes a run whose adapter fails to start from the live runs', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const failing = { start: async () => Promise.reject(new Error('no binary')) } as unknown as RuntimeAdapter
+    const m = new RunManager({ mock: failing }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'x' })
+    expect(m.liveRunCount()).toBe(0)
+    expect(m.liveRuns()).toEqual([])
+    expect(m.summary(run.id)).toMatchObject({ status: 'error', error: 'no binary' })
+  })
+
+  it('keeps summary.status current through send() and stop()', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'x' })
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    expect(m.liveRuns()[0].status).toBe('idle')
+    const sent = m.send(run.id, 'more')
+    expect(m.liveRuns()[0].status).toBe('running')
+    await sent
+    const stopped = m.stop(run.id)
+    expect(m.summaryOf(run.id)?.status).toBe('stopping')
+    await stopped
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+  })
+})
+
+describe('cross-run messaging', () => {
+  const idleScript: MockScript = { work: [{ type: 'text', text: 'working' }], setup: [{ type: 'text', text: 'asking' }] }
+  const idle = (id: string) => waitFor(isType('run.status', (e) => e.runId === id && e.status === 'idle'))
+
+  /** Runs a (project Alpha) and b (project Beta); both projects have runMessaging on unless told otherwise. */
+  async function two(messaging: { pa?: boolean; pb?: boolean } = {}) {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a'), runMessaging: messaging.pa ?? true })
+    const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b'), runMessaging: messaging.pb ?? true })
+    const projects = new Map<string, Project>([
+      [pa.id, pa],
+      [pb.id, pb]
+    ])
+    const h = multiManager(idleScript, projects)
+    const a = await h.m.start({ project: pa, prompt: 'Build\nthe API' })
+    const b = await h.m.start({ project: pb, prompt: 'Build the UI' })
+    await idle(a.id)
+    await idle(b.id)
+    return { ...h, projects, pa, pb, a, b }
+  }
+
+  it('delivers a message, emits run.message on both runs and records transcript blocks', async () => {
+    const { m, adapter, tool, a, b } = await two()
+    const out = await tool(a.id, 'message_run', { runId: b.id, message: '  I am editing src/api.ts  ' })
+    expect(out).toMatch(/^DELIVERED/)
+    const sentMsg = events.find(isType('run.message', (e) => e.runId === a.id))!
+    expect(sentMsg).toMatchObject({ direction: 'out', peerRunId: b.id, peerProjectId: 'pb', peerProjectName: 'Beta', peerPrompt: 'Build the UI', text: 'I am editing src/api.ts' })
+    const gotMsg = events.find(isType('run.message', (e) => e.runId === b.id))!
+    expect(gotMsg).toMatchObject({ direction: 'in', peerRunId: a.id, peerProjectId: 'pa', peerProjectName: 'Alpha', peerPrompt: 'Build the API' })
+
+    const session = adapter.bySession.get(b.id)!
+    expect(session.peerMessages).toEqual([{ fromRunId: a.id, fromProjectName: 'Alpha', fromPrompt: 'Build the API', text: 'I am editing src/api.ts' }])
+    expect(session.harnessMessages).toHaveLength(1)
+
+    const sysTexts = (id: string): string[] => m.get(id)!.transcript.filter((t) => t.block.kind === 'system').map((t) => (t.block as { text: string }).text)
+    expect(sysTexts(a.id)).toContain(`Sent to run ${b.id} (Beta: Build the UI): I am editing src/api.ts`)
+    expect(sysTexts(b.id)).toContain(`Note from run ${a.id} (Alpha: Build the API), from its orchestrator: I am editing src/api.ts`)
+
+    await m.stopAll()
+    await vi.waitFor(() => expect(m.liveRunCount()).toBe(0))
+    expect(sysTexts(a.id).some((t) => t.startsWith('Sent to run'))).toBe(true)
+    expect(sysTexts(b.id).some((t) => t.startsWith('Note from run'))).toBe(true)
+    // The receiver's row never looks like the user typed it.
+    expect(m.get(b.id)!.transcript.filter((t) => t.block.kind === 'user').map((t) => (t.block as { text: string }).text)).not.toContain('I am editing src/api.ts')
+  })
+
+  it('answers not-found, not-live and refused', async () => {
+    const { m, tool, a, b, pa } = await two()
+    expect(await tool(a.id, 'message_run', { runId: 'run-nope', message: 'hi' })).toMatch(/^NOT FOUND/)
+    expect(await tool(a.id, 'message_run', { runId: a.id, message: 'hi' })).toMatch(/^REFUSED/)
+    const s = await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
+    expect(await tool(a.id, 'message_run', { runId: s.id, message: 'hi' })).toMatch(/^REFUSED/)
+    await m.stop(b.id)
+    await vi.waitFor(() => expect(m.summaryOf(b.id)).toBeUndefined())
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^NOT LIVE/)
+    await m.stopAll()
+  })
+
+  it('refuses a setup-like sender and an empty message', async () => {
+    const { m, adapter, a, b, pa } = await two()
+    const s = await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
+    const ctxS = adapter.ctxs.get(s.id)!
+    expect(await ctxS.messageRun!(a.id, 'hi')).toEqual({ result: 'refused', refusal: 'not-work' })
+    expect(ctxS.listRuns!()).toEqual([])
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, '   ')).toEqual({ result: 'refused', refusal: 'empty' })
+    await m.stopAll()
+  })
+
+  it('list_runs excludes the caller and setup runs and includes other projects', async () => {
+    const { m, tool, a, b, pa } = await two()
+    await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
+    const out = await tool(a.id, 'list_runs')
+    const rows = out.split('\n').filter((l) => l.startsWith(b.id))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toContain(b.id)
+    expect(rows[0]).toContain('Beta')
+    expect(rows[0]).toContain('Build the UI')
+    expect(out).not.toContain(a.id)
+    await m.stopAll()
+  })
+
+  it('caps each direction of a run pair', async () => {
+    const { m, tool, a, b, pa } = await two()
+    const c = await m.start({ project: pa, prompt: 'Third run' })
+    await idle(c.id)
+    for (let i = 0; i < RUN_MESSAGE_LIMIT; i++) expect(await tool(a.id, 'message_run', { runId: b.id, message: `m${i}` })).toMatch(/^DELIVERED/)
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'one more' })).toMatch(/^REFUSED: message cap reached.*report to the user/)
+    // The other direction, and another pair, have their own budgets.
+    expect(await tool(b.id, 'message_run', { runId: a.id, message: 'reply' })).toMatch(/^DELIVERED/)
+    expect(await tool(a.id, 'message_run', { runId: c.id, message: 'hi c' })).toMatch(/^DELIVERED/)
+    await m.stopAll()
+  })
+
+  it('is opt-in per project: both projects must allow it, and the refusal names the one that does not', async () => {
+    const { m, adapter, tool, a, b, projects, pa, pb } = await two({ pb: false })
+    const out = await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })
+    expect(out).toMatch(/^REFUSED: cross-run messaging is off for "Beta"\./)
+    expect(out).toContain('"Let runs message each other" in Project settings')
+    expect(await adapter.ctxs.get(b.id)!.messageRun!(a.id, 'hi')).toEqual({ result: 'refused', refusal: 'messaging-off', offProjects: ['Beta'] })
+    expect(adapter.bySession.get(b.id)!.peerMessages).toEqual([])
+    expect(events.filter(isType('run.message'))).toEqual([])
+    // list_runs still shows the run, with its messaging flag.
+    const row = (await tool(a.id, 'list_runs')).split('\n').find((l) => l.startsWith(b.id))
+    expect(row).toContain('| off |')
+    // A project that did not opt in does not reveal its prompt, and does not read others' either.
+    expect(row).toContain('(hidden: messaging is off)')
+    expect(row).not.toContain('Build the UI')
+    expect(adapter.ctxs.get(b.id)!.listRuns!().map((p) => p.prompt)).toEqual([''])
+    // Turning it on in the saved project applies to the live runs at once.
+    projects.set(pb.id, { ...pb, runMessaging: true })
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^DELIVERED/)
+    // Both off: both are named.
+    projects.set(pa.id, { ...pa, runMessaging: false })
+    projects.set(pb.id, { ...pb, runMessaging: false })
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'hi')).toEqual({ result: 'refused', refusal: 'messaging-off', offProjects: ['Alpha', 'Beta'] })
+    // An ended run answers not-live without naming its project.
+    projects.set(pa.id, { ...pa, runMessaging: true })
+    await m.stop(b.id)
+    await vi.waitFor(() => expect(m.summaryOf(b.id)).toBeUndefined())
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'hi')).toEqual({ result: 'not-live' })
+    await m.stopAll()
+  })
+
+  it('needs only the shared flag within one project, and defaults to off', async () => {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    const projects = new Map<string, Project>([[pa.id, pa]])
+    const { m, tool } = multiManager(idleScript, projects)
+    const a1 = await m.start({ project: pa, prompt: 'one' })
+    const a2 = await m.start({ project: pa, prompt: 'two' })
+    await idle(a1.id)
+    await idle(a2.id)
+    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
+    projects.set(pa.id, { ...pa, runMessaging: true })
+    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^DELIVERED/)
+    await m.stopAll()
+  })
+
+  describe('a peer never overrides the user', () => {
+    const inFor = (id: string) => events.filter(isType('run.message', (e) => e.runId === id && e.direction === 'in'))
+    const sysTexts = (m: RunManager, id: string): string[] => m.get(id)!.transcript.filter((t) => t.block.kind === 'system').map((t) => (t.block as { text: string }).text)
+
+    it('delivers to a run that is not waiting on its user at once', async () => {
+      const { m, adapter, tool, a, b } = await two()
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'now' })).toMatch(/^DELIVERED/)
+      expect(adapter.bySession.get(b.id)!.peerMessages.map((p) => p.text)).toEqual(['now'])
+      expect(inFor(b.id)).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('queues a message for an interrupted run and delivers it after the user speaks', async () => {
+      const { m, adapter, tool, a, b } = await two()
+      await m.interrupt(b.id)
+      const out = await tool(a.id, 'message_run', { runId: b.id, message: 'heads up' })
+      expect(out).toBe(`QUEUED: run ${b.id} is waiting on its user; delivered when it resumes. Continue your own work and do not resend it.`)
+      const session = adapter.bySession.get(b.id)!
+      expect(session.peerMessages).toEqual([])
+      expect(session.harnessMessages).toEqual([])
+      // The sender's side is recorded at send time and says it was queued; the receiver's only at delivery.
+      expect(events.filter(isType('run.message', (e) => e.runId === a.id && e.direction === 'out'))).toHaveLength(1)
+      expect(sysTexts(m, a.id).some((t) => t.startsWith(`Queued for run ${b.id}`) && t.endsWith('heads up'))).toBe(true)
+      expect(inFor(b.id)).toEqual([])
+      expect(sysTexts(m, b.id).some((t) => t.startsWith('Note from run'))).toBe(false)
+
+      const before = events.length
+      await m.send(b.id, 'carry on')
+      await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['heads up']))
+      expect(inFor(b.id)).toHaveLength(1)
+      // The user's message comes first.
+      const userAt = events.findIndex((e, i) => i >= before && e.type === 'transcript' && e.runId === b.id && e.entry.block.kind === 'user')
+      const inAt = events.findIndex((e, i) => i >= before && e.type === 'run.message' && e.runId === b.id)
+      expect(userAt).toBeGreaterThanOrEqual(0)
+      expect(inAt).toBeGreaterThan(userAt)
+      // Not held any more: the next message goes straight through.
+      await idle(b.id)
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'again' })).toMatch(/^DELIVERED/)
+      await m.stopAll()
+    })
+
+    it('queues a message for a run with a pending permission card and delivers it once decided', async () => {
+      const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a'), runMessaging: true })
+      const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b'), runMessaging: true })
+      const projects = new Map<string, Project>([
+        [pa.id, pa],
+        [pb.id, pb]
+      ])
+      const { m, adapter, tool } = multiManager({ work: [{ type: 'tool', name: 'Bash', input: { command: 'ls' }, ask: true }] }, projects)
+      const a = await m.start({ project: pa, prompt: 'A' })
+      const b = await m.start({ project: pb, prompt: 'B' })
+      const card = await waitFor(isType('permission.request', (e) => e.runId === b.id))
+      await waitFor(isType('permission.request', (e) => e.runId === a.id))
+      // The sender's own pending card does not stop it from sending.
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'wait for me' })).toMatch(/^QUEUED/)
+      const session = adapter.bySession.get(b.id)!
+      expect(session.peerMessages).toEqual([])
+      expect(inFor(b.id)).toEqual([])
+      m.decide(b.id, card.request.id, { behavior: 'allow' })
+      await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['wait for me']))
+      expect(inFor(b.id)).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('refuses as busy beyond the queue limit and drops held messages when the run ends', async () => {
+      const { m, adapter, tool, a, b } = await two()
+      await m.interrupt(b.id)
+      for (let i = 0; i < RUN_MESSAGE_QUEUE_LIMIT; i++) expect(await tool(a.id, 'message_run', { runId: b.id, message: `q${i}` })).toMatch(/^QUEUED/)
+      expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'one more')).toEqual({ result: 'refused', refusal: 'busy' })
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'one more' })).toMatch(/^REFUSED: busy/)
+      await m.stop(b.id)
+      await vi.waitFor(() => expect(m.summaryOf(b.id)).toBeUndefined())
+      expect(adapter.bySession.get(b.id)!.peerMessages).toEqual([])
+      const warns = events.filter(isType('log', (e) => e.level === 'warn'))
+      expect(warns.some((e) => e.runId === b.id && e.message.startsWith(`${RUN_MESSAGE_QUEUE_LIMIT} held messages`))).toBe(true)
+      expect(warns.filter((e) => e.runId === a.id && e.message.startsWith('Your queued message'))).toHaveLength(RUN_MESSAGE_QUEUE_LIMIT)
+      await m.stopAll()
+    })
+
+    it('keeps held messages in order when a direct message arrives mid-flush', async () => {
+      const { m, adapter, a, b } = await two()
+      const ctx = adapter.ctxs.get(a.id)!
+      await m.interrupt(b.id)
+      for (const t of ['q1', 'q2', 'q3']) expect(await ctx.messageRun!(b.id, t)).toEqual({ result: 'queued' })
+      const session = adapter.bySession.get(b.id)!
+      const original = session.receive!.bind(session)
+      const done: string[] = []
+      let q4: Promise<unknown> | undefined
+      session.receive = async (msg) => {
+        // The inbox is empty while q3 is in flight, so q4 takes the direct path during this flush.
+        if (msg.text === 'q3') q4 = ctx.messageRun!(b.id, 'q4')
+        await new Promise((r) => setTimeout(r, msg.text === 'q3' ? 40 : 5))
+        done.push(msg.text)
+        return original(msg)
+      }
+      // send() does not wait on the flush it starts.
+      await m.send(b.id, 'carry on')
+      await vi.waitFor(() => expect(q4).toBeDefined())
+      expect(await q4).toEqual({ result: 'delivered' })
+      expect(done).toEqual(['q1', 'q2', 'q3', 'q4'])
+      expect(session.peerMessages.map((p) => p.text)).toEqual(['q1', 'q2', 'q3', 'q4'])
+      await m.stopAll()
+    })
+
+    it('holds messages after a usage-limit report until the user sends again', async () => {
+      const { m, adapter, a, b } = await two()
+      const ctx = adapter.ctxs.get(a.id)!
+      adapter.ctxs.get(b.id)!.rateLimited({ window: 'five_hour' })
+      expect(await ctx.messageRun!(b.id, 'limited')).toEqual({ result: 'queued' })
+      const session = adapter.bySession.get(b.id)!
+      expect(session.peerMessages).toEqual([])
+      await m.send(b.id, 'try again')
+      await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['limited']))
+      // The hold lifted: the next message goes straight through.
+      await idle(b.id)
+      expect(await ctx.messageRun!(b.id, 'after')).toEqual({ result: 'delivered' })
+      await m.stopAll()
+    })
+
+    describe('a receive that never settles', () => {
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      /** Make b's session hang forever on the message `stuck`; every other message goes through. */
+      function hangOn(session: MockSession, stuck: string): void {
+        const original = session.receive!.bind(session)
+        session.receive = (msg) => (msg.text === stuck ? new Promise<void>(() => undefined) : original(msg))
+      }
+      const warnsFor = (id: string) => events.filter(isType('log', (e) => e.runId === id && e.level === 'warn')).map((e) => e.message)
+
+      it("never holds up the user's send, and the timeout moves the inbox on", async () => {
+        const { m, adapter, a, b } = await two()
+        const ctx = adapter.ctxs.get(a.id)!
+        const session = adapter.bySession.get(b.id)!
+        hangOn(session, 'stuck')
+        await m.interrupt(b.id)
+        expect(await ctx.messageRun!(b.id, 'stuck')).toEqual({ result: 'queued' })
+        expect(await ctx.messageRun!(b.id, 'next')).toEqual({ result: 'queued' })
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        // Resolves although the flush it started is stuck on the first held message.
+        await m.send(b.id, 'carry on')
+        expect(session.peerMessages).toEqual([])
+        await vi.advanceTimersByTimeAsync(RUN_MESSAGE_RECEIVE_TIMEOUT_MS)
+        await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['next']))
+        expect(warnsFor(a.id).some((w) => w.includes(`Run ${b.id} did not accept the message`))).toBe(true)
+        expect(warnsFor(b.id).some((w) => w.includes(`from run ${a.id} did not finish`))).toBe(true)
+        await m.stopAll()
+      })
+
+      it('refuses a direct sender with timeout and delivers the next message', async () => {
+        const { m, adapter, tool, a, b } = await two()
+        const ctx = adapter.ctxs.get(a.id)!
+        const session = adapter.bySession.get(b.id)!
+        hangOn(session, 'stuck')
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const first = tool(a.id, 'message_run', { runId: b.id, message: 'stuck' })
+        // Still behind the stuck message, so it waits in the inbox rather than overtaking it.
+        expect(await ctx.messageRun!(b.id, 'next')).toEqual({ result: 'queued' })
+        await vi.advanceTimersByTimeAsync(RUN_MESSAGE_RECEIVE_TIMEOUT_MS)
+        expect(await first).toBe(`REFUSED: run ${b.id} did not accept the message in time; it may be busy. Try again later or report to the user.`)
+        await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['next']))
+        // The chain is free again: a fast receive is delivered at once.
+        expect(await ctx.messageRun!(b.id, 'fast')).toEqual({ result: 'delivered' })
+        await m.stopAll()
+      })
+
+      it('leaves a fast receive alone', async () => {
+        const { m, adapter, a, b } = await two()
+        const ctx = adapter.ctxs.get(a.id)!
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        expect(await ctx.messageRun!(b.id, 'quick')).toEqual({ result: 'delivered' })
+        await vi.advanceTimersByTimeAsync(RUN_MESSAGE_RECEIVE_TIMEOUT_MS * 2)
+        expect(adapter.bySession.get(b.id)!.peerMessages.map((p) => p.text)).toEqual(['quick'])
+        expect([...warnsFor(a.id), ...warnsFor(b.id)].filter((w) => w.includes('did not'))).toEqual([])
+        await m.stopAll()
+      })
+    })
+
+    it('keeps the hold when the user message fails to send', async () => {
+      const { m, adapter, a, b } = await two()
+      const ctx = adapter.ctxs.get(a.id)!
+      const session = adapter.bySession.get(b.id)!
+      session.send = async () => {
+        throw new Error('send failed')
+      }
+      await m.interrupt(b.id)
+      await expect(m.send(b.id, 'hello')).rejects.toThrow('send failed')
+      expect(await ctx.messageRun!(b.id, 'still held')).toEqual({ result: 'queued' })
+      adapter.ctxs.get(b.id)!.rateLimited({})
+      await expect(m.send(b.id, 'hello again')).rejects.toThrow('send failed')
+      expect(await ctx.messageRun!(b.id, 'held too')).toEqual({ result: 'queued' })
+      expect(session.peerMessages).toEqual([])
+      await m.stopAll()
+    })
+  })
+
+  it('marks its system rows as harness rows', async () => {
+    const { m, a, b, tool } = await two()
+    await m.interrupt(b.id)
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'queued one' })).toMatch(/^QUEUED/)
+    await m.send(b.id, 'resume')
+    await idle(b.id)
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'direct one' })).toMatch(/^DELIVERED/)
+    const rows = [...m.get(a.id)!.transcript, ...m.get(b.id)!.transcript].filter(
+      (t) => t.block.kind === 'system' && /^(Sent to run|Queued for run|Note from run)/.test((t.block as { text: string }).text)
+    )
+    expect(rows.length).toBeGreaterThanOrEqual(4)
+    for (const r of rows) expect(r.source).toBe('harness')
+    await m.stopAll()
+  })
+
+  it('caps what one run may receive from all runs together', async () => {
+    const { m, adapter, tool, a, b, pa } = await two()
+    const senders = [a]
+    while (senders.length * RUN_MESSAGE_LIMIT < RUN_MESSAGE_INBOUND_LIMIT + RUN_MESSAGE_LIMIT) {
+      const r = await m.start({ project: pa, prompt: `sender ${senders.length}` })
+      await idle(r.id)
+      senders.push(r)
+    }
+    let sent = 0
+    for (const s of senders) {
+      for (let i = 0; i < RUN_MESSAGE_LIMIT && sent < RUN_MESSAGE_INBOUND_LIMIT; i++, sent++) {
+        expect(await adapter.ctxs.get(s.id)!.messageRun!(b.id, `m${sent}`)).toEqual({ result: 'delivered' })
+      }
+    }
+    const last = senders[senders.length - 1]
+    expect(await adapter.ctxs.get(last.id)!.messageRun!(b.id, 'over')).toEqual({ result: 'refused', refusal: 'cap', cap: 'inbound' })
+    expect(await tool(last.id, 'message_run', { runId: b.id, message: 'over' })).toMatch(/^REFUSED: message cap reached: that run has taken the most/)
+    // The pair cap names itself too.
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'over')).toEqual({ result: 'refused', refusal: 'cap', cap: 'pair' })
+    // The recipient can still send.
+    expect(await tool(b.id, 'message_run', { runId: a.id, message: 'reply' })).toMatch(/^DELIVERED/)
+    await m.stopAll()
+  })
+
+  it('warns on both runs and answers not-live when receive throws', async () => {
+    const { m, adapter, tool, a, b } = await two()
+    adapter.bySession.get(b.id)!.receive = async () => {
+      throw new Error('boom')
+    }
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^NOT LIVE/)
+    expect(events.filter(isType('log', (e) => e.level === 'warn')).map((e) => e.runId).sort()).toEqual([a.id, b.id].sort())
+    await m.stopAll()
+  })
+})
+
+describe('MCP library, OAuth preparation and the harness project', () => {
+  const entry = { id: 'mcpl_1', name: 'docs', transport: 'http' as const, url: 'https://docs.test/mcp', source: 'user' as const, addedAt: '2026-01-01T00:00:00.000Z' }
+  const oauthSpec = (name: string): McpServerSpec => ({
+    id: `id-${name}`,
+    name,
+    transport: 'http',
+    url: `https://${name}.test/mcp`,
+    oauth: { clientId: 'c' },
+    enabled: true,
+    source: 'library',
+    addedAt: ''
+  })
+
+  function recorder() {
+    const ctxs: RuntimeContext[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    return { adapter, ctxs }
+  }
+
+  function setupMgr(p: Project, mcp: NonNullable<RunManagerOptions['mcp']>) {
+    const rec = recorder()
+    const setup = fakeSetup(p)
+    const applyLibraryProposal = vi.fn()
+    ;(setup.service as unknown as { applyLibraryProposal: typeof applyLibraryProposal }).applyLibraryProposal = applyLibraryProposal
+    const m = new RunManager({ mock: rec.adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), setup.service, () => 100, { mcp })
+    return { m, ...rec, setup, applyLibraryProposal }
+  }
+
+  const baseMcp = (over: Partial<NonNullable<RunManagerOptions['mcp']>> = {}): NonNullable<RunManagerOptions['mcp']> => ({
+    enabledServers: (proj) => (proj.mcpServers ?? []).filter((s) => s.enabled),
+    resolve: (_pid, s) => ({ spec: s, env: {}, headers: {} }),
+    persistInstall: vi.fn((): Project => makeProject()),
+    searchRegistry: vi.fn(async () => ({ entries: [] })),
+    ...over
+  })
+
+  it('refreshes OAuth servers before resolving and warns once per unauthorized server per run', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('github'), oauthSpec('docs')] })
+    const prepareForRun = vi.fn(async (_pid: string, specs: McpServerSpec[]) => specs.filter((s) => s.name === 'github').map((s) => s.name))
+    const { m, ctxs } = setupMgr(p, baseMcp({ prepareForRun }))
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    await ctx.resolvedMcpServers!()
+    await ctx.resolvedMcpServers!()
+    await ctx.resolveMcpSecrets!('id-github')
+    expect(prepareForRun).toHaveBeenCalledWith(p.id, expect.arrayContaining([expect.objectContaining({ name: 'github' })]))
+    const warns = events.filter(isType('log', (e) => e.level === 'warn' && e.runId === run.id))
+    expect(warns.map((w) => w.message)).toEqual([
+      'MCP server "github" needs authorization: open Settings > MCP servers and choose Authorize. It starts without credentials in this run.'
+    ])
+    await m.stopAll()
+  })
+
+  it('hands the adapter the library-refreshed project', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('docs')] })
+    const withLibrary = vi.fn((proj: Project): Project => ({ ...proj, mcpServers: (proj.mcpServers ?? []).map((s) => ({ ...s, url: 'https://moved.test/mcp' })) }))
+    const { m, ctxs } = setupMgr(p, baseMcp({ withLibrary }))
+    await m.start({ project: p, prompt: 'go' })
+    expect(withLibrary).toHaveBeenCalled()
+    expect(ctxs[0].project.mcpServers?.[0].url).toBe('https://moved.test/mcp')
+    expect(ctxs[0].mcpServers!()[0].url).toBe('https://moved.test/mcp')
+    await m.stopAll()
+  })
+
+  it('accepts the harness project for mcp-assist only, with the library in the context', async () => {
+    const harness = makeProject({ id: 'harness', name: 'OrgAI', path: join(dir, 'repo'), roles: [] })
+    const { m, ctxs, setup, applyLibraryProposal } = setupMgr(harness, baseMcp({ libraryEntries: () => [entry] }))
+    await expect(m.start({ project: harness, prompt: 'go' })).rejects.toThrow(/Only the MCP assistant/)
+    await expect(m.start({ project: harness, prompt: 'go', kind: 'setup' })).rejects.toThrow(/Only the MCP assistant/)
+    expect(ctxs).toHaveLength(0)
+    const run = await m.start({ project: harness, prompt: 'Help me', kind: 'mcp-assist' })
+    const ctx = ctxs[0]
+    expect(ctx.hiddenContext).toContain('app-wide MCP library')
+    expect(ctx.hiddenContext).toContain('name=docs id=mcpl_1')
+    expect(ctx.mcpLibrary!()).toEqual([entry])
+    expect(ctx.mcpServers!()).toEqual([])
+
+    const pending = ctx.requestProposal({ kind: 'mcpServers', agentId: 'root', title: 't', payload: { scope: 'library', upsert: [], rationale: 'r' } })
+    const req = await waitFor(isType('proposal.request'))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(await pending).toEqual({ behavior: 'approve' })
+    expect(applyLibraryProposal).toHaveBeenCalledWith(expect.objectContaining({ scope: 'library' }))
+    expect(setup.raw.applyProposal).not.toHaveBeenCalled()
+    expect(events.some((e) => e.type === 'project.updated')).toBe(false)
+    await m.stopAll()
+  })
+
+  it('a failing library proposal answers REVISE without touching a project', async () => {
+    const harness = makeProject({ id: 'harness', path: join(dir, 'repo'), roles: [] })
+    const { m, ctxs, applyLibraryProposal } = setupMgr(harness, baseMcp())
+    applyLibraryProposal.mockImplementation(() => {
+      throw new Error('name clash')
+    })
+    const run = await m.start({ project: harness, prompt: 'go', kind: 'mcp-assist' })
+    const pending = ctxs[0].requestProposal({ kind: 'mcpServers', agentId: 'root', title: 't', payload: { scope: 'library', upsert: [], rationale: 'r' } })
+    const req = await waitFor(isType('proposal.request'))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(await pending).toMatchObject({ behavior: 'revise', feedback: expect.stringContaining('name clash') })
+    await m.stopAll()
+  })
+
+  it('install scope library persists through the MCP service with scope library', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const spec: McpServerSpec = { id: 'mcp-new', name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], enabled: true, source: 'agent', addedAt: '' }
+    const persistInstall = vi.fn((): Project => ({ ...p, mcpServers: [{ ...spec, source: 'library', libraryId: 'mcpl_9' }] }))
+    const { m, ctxs } = setupMgr(p, baseMcp({ persistInstall }))
+    const run = await m.start({ project: p, prompt: 'go' })
+    const pending = ctxs[0].requestMcpInstall!({ agentId: 'root', reason: 'r', spec, requiredSecrets: [] })
+    const req = await waitFor(isType('mcpInstall.request'))
+    m.answerMcpInstall(run.id, req.request.id, { approved: true, scope: 'library' })
+    expect(await pending).toMatchObject({ approved: true, scope: 'library' })
+    expect(persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), {}, 'library')
+    expect(events.find(isType('mcpInstall.resolved'))?.outcome.scope).toBe('library')
     await m.stopAll()
   })
 })

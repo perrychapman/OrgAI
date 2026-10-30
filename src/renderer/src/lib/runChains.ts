@@ -50,6 +50,13 @@ export function continuedBy<T extends ChainSummary>(runs: readonly T[], id: stri
   return i >= 0 ? chain[i + 1] : undefined
 }
 
+/** The run this one continues (its direct predecessor), when that record is known. */
+export function predecessorOf<T extends ChainSummary>(runs: readonly T[], id: string): T | undefined {
+  const run = runs.find((r) => r.id === id)
+  if (!run?.resumedFrom) return undefined
+  return runs.find((r) => r.id === run.resumedFrom)
+}
+
 /** Continue is offered only on the chain's newest member, once it stopped and has a provider session. */
 export function canContinue<T extends ChainSummary>(runs: readonly T[], id: string): boolean {
   const run = runs.find((r) => r.id === id)
@@ -63,13 +70,21 @@ interface CountedRun {
   proposals?: readonly unknown[]
   questions?: readonly unknown[]
   ruleRequests?: readonly unknown[]
+  mergeReviews?: readonly unknown[]
+  mcpInstalls?: readonly unknown[]
   plan?: { status: string }
 }
 
 /** An open run that is waiting for the user: an unanswered card, a question, a permission request or a blocked plan. */
 export const needsYou = (r: CountedRun): boolean =>
   isOpenStatus(r.summary.status) &&
-  ((r.permissions?.length ?? 0) + (r.proposals?.length ?? 0) + (r.questions?.length ?? 0) + (r.ruleRequests?.length ?? 0) > 0 ||
+  ((r.permissions?.length ?? 0) +
+    (r.proposals?.length ?? 0) +
+    (r.questions?.length ?? 0) +
+    (r.ruleRequests?.length ?? 0) +
+    (r.mergeReviews?.length ?? 0) +
+    (r.mcpInstalls?.length ?? 0) >
+    0 ||
     r.plan?.status === 'blocked')
 
 /** Open runs and runs that need the user, per project. */

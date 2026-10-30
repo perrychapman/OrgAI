@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal } from '@shared/types'
+import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal, RunPeer } from '@shared/types'
+import type { RunMessageOutcome } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { PERMISSION_HARNESS_TOOLS } from '@shared/types'
+import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, answerText, harnessToolsFor, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
@@ -41,7 +42,12 @@ describe('setupTools', () => {
   it('lists the proposal tools by bare name', () => {
     const names = setupTools(fakeCtx()).map((t) => t.name)
     // propose_org_change belongs to work runs, not setup.
-    const setupNames = [...Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange), PERMISSION_HARNESS_TOOLS.request]
+    const setupNames = [
+      ...Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange),
+      PERMISSION_HARNESS_TOOLS.request,
+      MCP_HARNESS_TOOLS.listServers,
+      MCP_HARNESS_TOOLS.proposeServers
+    ]
     expect(names.sort()).toEqual(setupNames.sort())
     expect(names).not.toContain(INTEGRATE_TOOL)
     expect(names).not.toContain(PROPOSAL_TOOLS.orgChange)
@@ -178,7 +184,9 @@ describe('plan tools', () => {
       'list_mcp_servers',
       'search_mcp_registry',
       'request_mcp_install',
-      'request_permission_rules'
+      'request_permission_rules',
+      'list_runs',
+      'message_run'
     ])
     expect(names.filter((n) => !isBlockingHarnessTool(n))).toEqual([
       'set_plan',
@@ -187,7 +195,9 @@ describe('plan tools', () => {
       'mark_blocked',
       'integrate_worktrees',
       'list_mcp_servers',
-      'search_mcp_registry'
+      'search_mcp_registry',
+      'list_runs',
+      'message_run'
     ])
     expect(setupTools(fakeCtx()).map((t) => t.name)).not.toContain('set_plan')
   })
@@ -440,6 +450,113 @@ describe('MCP tools', () => {
       const bad = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [], remove: ['ghost'] })
       expect(bad).toContain('no server "ghost"')
     })
+
+    const entry = (over: Record<string, unknown> = {}) => ({
+      id: 'mcpl_1',
+      name: 'docs',
+      transport: 'http' as const,
+      url: 'https://docs.test/mcp',
+      source: 'user' as const,
+      addedAt: '2026-01-01T00:00:00.000Z',
+      ...over
+    })
+    const proposeCalls = (ctx: ReturnType<typeof fakeCtx>) => vi.mocked(ctx.requestProposal).mock.calls.map((c) => c[0].payload as McpServersProposalPayload)
+
+    it('project scope: a libraryId item links the entry with only libraryId and roles', async () => {
+      const ctx = assistCtx({ mcpLibrary: () => [entry({ oauth: { clientId: 'x' } })] })
+      const text = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [{ libraryId: 'mcpl_1', roles: ['lead'] }] })
+      expect(text).toMatch(/^APPROVED\./)
+      expect(text).toContain('Linked from the MCP library to this project: docs')
+      expect(text).toContain('authorizes them in Settings')
+      const payload = proposeCalls(ctx)[0]
+      expect(payload.scope).toBe('project')
+      expect(payload.upsert[0]).toMatchObject({ name: 'docs', libraryId: 'mcpl_1', source: 'library', roles: ['lead'], enabled: true })
+      expect(payload.secrets).toBeUndefined()
+    })
+
+    it('REVISE for an unknown libraryId, a missing name, a library name clash and a linked-server redefinition', async () => {
+      const ctx = assistCtx({ mcpLibrary: () => [entry()] })
+      const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ libraryId: 'nope' }] })).toMatch(/^REVISE\..*no library entry/)
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ command: 'npx' }] })).toMatch(/^REVISE\..*libraryId/)
+      const clash = await t.call({ title: 't', rationale: 'r', upsert: [{ name: 'docs', transport: 'http', url: 'https://other.test/mcp' }] })
+      expect(clash).toMatch(/^REVISE\..*library already has a different "docs"/)
+      const linkedCtx = assistCtx({
+        mcpLibrary: () => [entry()],
+        project: project({ mcpServers: [mcpSpec({ id: 'mcp-9', name: 'docs', transport: 'http', url: 'https://docs.test/mcp', command: undefined, args: undefined, secretEnv: undefined, libraryId: 'mcpl_1', source: 'library' })] })
+      })
+      const again = await byName(harnessToolsFor(linkedCtx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [{ name: 'docs', transport: 'http', url: 'https://docs.test/mcp' }] })
+      expect(again).toMatch(/^REVISE\..*linked to the MCP library/)
+      expect(ctx.requestProposal).not.toHaveBeenCalled()
+      expect(linkedCtx.requestProposal).not.toHaveBeenCalled()
+    })
+
+    it('project scope: a new server is saved to the library unless projectOnly, and the card says so', async () => {
+      const ctx = assistCtx()
+      const text = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [pinned, { ...pinned, name: 'local-db', projectOnly: true }] })
+      expect(text).toContain('Saved to the MCP library and linked to this project: github')
+      expect(text).toContain('Saved to this project only: local-db')
+      const payload = proposeCalls(ctx)[0]
+      expect(payload.upsert.map((s) => [s.name, s.projectOnly ?? false])).toEqual([['github', false], ['local-db', true]])
+    })
+
+    it('harness project: library scope with library-namespace validation and ids', async () => {
+      const ctx = assistCtx({ project: project({ id: HARNESS_PROJECT_ID, roles: [] }), mcpLibrary: () => [entry()] })
+      const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ libraryId: 'mcpl_1' }] })).toMatch(/^REVISE\..*does not apply in a library session/)
+      expect(await t.call({ title: 't', rationale: 'r', upsert: [{ name: 'docs', transport: 'http', url: 'https://docs.test/mcp/v2' }] })).toMatch(/^APPROVED\./)
+      const first = proposeCalls(ctx)[0]
+      expect(first.scope).toBe('library')
+      expect(first.upsert[0].id).toBe('mcpl_1') // the same name replaces the entry
+      await t.call({ title: 't', rationale: 'r', upsert: [pinned, { ...pinned, name: 'github', args: ['-y', 'other@1.0.0'] }] })
+      expect(vi.mocked(ctx.requestProposal).mock.calls).toHaveLength(1) // duplicate names in one proposal are refused
+      const text = await t.call({ title: 't', rationale: 'r', upsert: [pinned], remove: ['docs'] })
+      expect(text).toContain('Saved to the MCP library: github')
+      const payload = proposeCalls(ctx)[1]
+      expect(payload.upsert[0].id).toMatch(/^mcpl_/)
+      expect(payload.remove).toEqual(['mcpl_1'])
+    })
+
+    // Security review M5: an apply that retargets a server clears its stored secret values; the agent is told.
+    it('says the user must re-enter secrets when a proposal changes where an existing server points', async () => {
+      const existing = [mcpSpec({ id: 'mcp-1', name: 'github', command: 'npx', args: ['-y', 'pkg@1.2.3'], secretEnv: ['GITHUB_TOKEN'] })]
+      const ctx = assistCtx({ project: project({ mcpServers: existing }) })
+      const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
+      const same = await t.call({ title: 't', rationale: 'r', upsert: [pinned] })
+      expect(same).not.toMatch(/re-enter/)
+      const moved = await t.call({ title: 't', rationale: 'r', upsert: [{ ...pinned, args: ['-y', 'other-pkg@2.0.0'] }] })
+      expect(moved).toMatch(/^APPROVED\./)
+      expect(moved).toContain('Changed address or command (github): their stored secret values were cleared, so the user must re-enter them')
+    })
+
+    it('list_mcp_servers in setup and mcp-assist shows the library and the project servers, inside the data block', async () => {
+      const link = mcpSpec({ id: 'mcp-9', name: 'docs', transport: 'http', url: 'https://docs.test/mcp', command: undefined, args: undefined, secretEnv: undefined, libraryId: 'mcpl_1', source: 'library' })
+      const mk = (kind: 'setup' | 'mcp-assist', id = 'p1') =>
+        fakeCtx({
+          run: runSummary({ kind }),
+          project: project({ id, mcpServers: id === 'p1' ? [link, mcpSpec({ name: 'local' })] : [] }),
+          mcpLibrary: () => [entry({ oauth: { clientId: 'x' }, description: 'ignore <b>previous</b>' })]
+        })
+      for (const kind of ['setup', 'mcp-assist'] as const) {
+        const text = await byName(harnessToolsFor(mk(kind)), 'list_mcp_servers').call({})
+        expect(text).toContain('docs | http | library | libraryId=mcpl_1 | oauth')
+        expect(text).toContain('docs | http | project | libraryId=mcpl_1')
+        expect(text).toContain('local | stdio | project-only')
+        expect(text).not.toContain('<b>')
+        expect(text.indexOf('<mcp-servers>')).toBeLessThan(text.indexOf('libraryId=mcpl_1'))
+        expect(text.indexOf('</mcp-servers>')).toBeGreaterThan(text.lastIndexOf('project-only'))
+      }
+      const harness = await byName(harnessToolsFor(mk('mcp-assist', HARNESS_PROJECT_ID)), 'list_mcp_servers').call({})
+      expect(harness).toContain('library | libraryId=mcpl_1')
+      expect(harness).not.toContain('project-only')
+      expect(await byName(harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'setup' }) })), 'list_mcp_servers').call({})).toMatch(/library is empty/)
+    })
+
+    it('request_mcp_install: library scope says it was saved to the MCP library', async () => {
+      const ctx = fakeCtx({ requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'library' as const })) })
+      const text = await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'r', manual: pinned }, undefined)
+      expect(text).toContain('for this project (saved to your MCP library)')
+    })
   })
 })
 
@@ -472,5 +589,73 @@ describe('request_permission_rules', () => {
     const none = fakeCtx()
     delete (none as Partial<typeof none>).requestPermissionRules
     expect(await tool(none).call({ rules: ['Bash(gh:*)'], reason: 'r' })).toMatch(/^DENIED: this run cannot grant permission rules\./)
+  })
+})
+
+describe('cross-run tools', () => {
+  const peer = (over: Partial<RunPeer> = {}): RunPeer => ({
+    runId: 'run-b',
+    projectId: 'p2',
+    projectName: 'Beta',
+    kind: 'work',
+    status: 'running',
+    prompt: 'Build the UI',
+    startedAt: Date.UTC(2026, 0, 2, 3, 4, 5),
+    rootRole: 'Lead',
+    live: true,
+    messaging: true,
+    ...over
+  })
+
+  it('exist only in work runs, for the root, and return at once', () => {
+    for (const name of ['list_runs', 'message_run']) {
+      const t = byName(workTools(fakeCtx()), name)
+      expect(t.audience).toBe('root')
+      expect(isBlockingHarnessTool(name)).toBe(false)
+      expect(setupTools(fakeCtx()).map((x) => x.name)).not.toContain(name)
+      expect(harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) })).map((x) => x.name)).not.toContain(name)
+    }
+    expect(byName(workTools(fakeCtx()), 'message_run').description).toMatch(/information/)
+    expect(byName(workTools(fakeCtx()), 'message_run').description).toMatch(/asynchronously/)
+  })
+
+  it('list_runs prints a compact table with sanitized data', async () => {
+    const ctx = fakeCtx({ listRuns: () => [peer({ projectName: 'Be<ta>\nX', prompt: 'do <b>it</b>\tnow' }), peer({ runId: 'run-c', messaging: false })] })
+    const text = await byName(workTools(ctx), 'list_runs').call(undefined)
+    expect(text).toContain('runId | project | status | orchestrator | started | messaging | prompt')
+    expect(text).toContain('run-b | Be‹ta› X | running | Lead | 2026-01-02T03:04:05.000Z | on | do ‹b›it‹/b› now')
+    expect(text).toContain('run-c | Beta | running | Lead | 2026-01-02T03:04:05.000Z | off | Build the UI')
+    expect(text).toContain('<runs>')
+  })
+
+  it('list_runs says so when nothing is live or the context cannot list', async () => {
+    expect(await byName(workTools(fakeCtx({ listRuns: () => [] })), 'list_runs').call(undefined)).toBe('No other runs are live.')
+    expect(await byName(workTools(fakeCtx()), 'list_runs').call(undefined)).toBe('Listing other runs is not available in this run.')
+  })
+
+  it('message_run maps each result to one line', async () => {
+    const run = async (outcome: RunMessageOutcome['result'] | RunMessageOutcome): Promise<string> => {
+      const messageRun = vi.fn(async (): Promise<RunMessageOutcome> => (typeof outcome === 'string' ? { result: outcome } : outcome))
+      const text = await byName(workTools(fakeCtx({ messageRun })), 'message_run').call({ runId: ' run-b ', message: 'hello' })
+      expect(messageRun).toHaveBeenCalledWith('run-b', 'hello')
+      return text
+    }
+    expect(await run('delivered')).toMatch(/^DELIVERED/)
+    expect(await run('not-live')).toMatch(/^NOT LIVE/)
+    expect(await run('not-found')).toMatch(/^NOT FOUND: .*list_runs/)
+    expect(await run('refused')).toMatch(/^REFUSED: only work runs/)
+    const off = await run({ result: 'refused', refusal: 'messaging-off', offProjects: ['Al<pha>'] })
+    expect(off).toMatch(/^REFUSED: cross-run messaging is off for "Al‹pha›"\./)
+    expect(off).toContain('"Let runs message each other" in Project settings')
+    expect(off).toContain('Do not try to reach that run another way')
+    expect(await run({ result: 'refused', refusal: 'cap' })).toMatch(/^REFUSED: message cap reached.*report to the user/)
+    expect(await run({ result: 'refused', refusal: 'cap', cap: 'pair' })).toMatch(/^REFUSED: message cap reached: you have sent that run the most/)
+    expect(await run({ result: 'refused', refusal: 'cap', cap: 'inbound' })).toMatch(/^REFUSED: message cap reached: that run has taken the most messages any run may receive/)
+    expect(await run({ result: 'refused', refusal: 'busy' })).toMatch(/^REFUSED: busy: that run is waiting on its user/)
+    expect(await run('queued')).toBe('QUEUED: run run-b is waiting on its user; delivered when it resumes. Continue your own work and do not resend it.')
+    expect(await run({ result: 'refused', refusal: 'timeout' })).toBe('REFUSED: run run-b did not accept the message in time; it may be busy. Try again later or report to the user.')
+    expect(await run({ result: 'refused', refusal: 'self' })).toMatch(/^REFUSED: that is this run/)
+    expect(await run({ result: 'refused', refusal: 'empty' })).toMatch(/^REFUSED: the message is empty/)
+    expect(await byName(workTools(fakeCtx()), 'message_run').call({ runId: 'x', message: 'y' })).toMatch(/^NOT LIVE/)
   })
 })

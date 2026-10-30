@@ -16,7 +16,7 @@ makeFixtureRepo('conn', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'conn' })
 try {
-  const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
+  const project = await createProject(page, { mode: 'existing', path: repo, name: NAME, useMock: false })
   check(!!project, 'project created')
 
   const sizes = [[1024, 640], [1600, 1000]]
@@ -91,6 +91,46 @@ try {
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
       await shot(`role-model-${w}x${h}-${theme}`)
     }
+  }
+
+  // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
+  try {
+    await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+    const libSec = page.locator('[data-testid=mcp-library-section]')
+    await libSec.waitFor({ timeout: 10_000 })
+    await libSec.scrollIntoViewIfNeeded()
+    await libSec.locator('[data-testid=mcp-library-add-manual]').click()
+    const form = page.locator('[data-testid=mcp-form]')
+    await form.getByLabel('Name', { exact: true }).fill('e2e-lib-server')
+    await form.getByLabel('Command', { exact: true }).fill('npx')
+    await form.getByLabel('Arguments').fill('-y\ne2e-lib-server@1.0.0')
+    await form.getByRole('button', { name: 'Add variable' }).click()
+    await form.getByLabel('Name of variable 1').fill('E2E_TOKEN')
+    await form.getByRole('checkbox', { name: 'Secret' }).check()
+    await form.getByRole('button', { name: 'Add server' }).click()
+    await form.waitFor({ state: 'detached', timeout: 10_000 })
+    const row = libSec.locator('[data-testid=mcp-library-row][data-server=e2e-lib-server]')
+    await row.waitFor({ timeout: 10_000 })
+    check(/Secrets: \d+ of 1 set/.test((await row.textContent()) ?? ''), 'library row shows the secrets summary')
+    await shot('mcp-library-row')
+    await page.locator('.nav-item', { hasText: NAME }).first().click()
+    await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
+    await page.getByRole('button', { name: 'Project settings', exact: true }).click()
+    await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
+    await page.locator('[data-testid=mcp-add-library]').click()
+    const dlg = page.locator('[data-testid=mcp-link-dialog]')
+    await dlg.getByText('e2e-lib-server').first().click()
+    const roleBoxes = dlg.getByRole('checkbox')
+    if (await roleBoxes.count()) await roleBoxes.first().check()
+    await dlg.locator('[data-testid=mcp-link-confirm]').click()
+    await dlg.waitFor({ state: 'detached', timeout: 10_000 })
+    const linked = page.locator('#settings-section-mcp [data-testid=mcp-row-library-badge]')
+    await linked.first().waitFor({ timeout: 10_000 })
+    check((await linked.count()) >= 1, 'linked library server shows the library badge in project settings')
+    await shot('mcp-linked-row')
+  } catch (e) {
+    check(false, 'MCP library add and link flow', String(e.message ?? e).split('\n')[0])
+    await shot('mcp-library-error').catch(() => {})
   }
 
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.

@@ -99,7 +99,7 @@
   color: var(--text-on-success);
   display: grid;
   place-items: center;
-  font-size: var(--text-caption);
+  font-size: var(--text-small);
   font-weight: var(--weight-semibold);
   border: 2px solid var(--surface-2);
 }
@@ -124,7 +124,7 @@
   gap: 6px;
   align-items: center;
   margin-top: 3px;
-  font-size: var(--text-caption);
+  font-size: var(--text-small);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   white-space: nowrap;
@@ -155,7 +155,7 @@
   display: flex;
   justify-content: space-between;
   margin-top: 8px;
-  font-size: var(--text-caption);
+  font-size: var(--text-small);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
@@ -163,7 +163,7 @@
 /* Worktree badge on agent nodes. */
 .agent-node .worktree {
   margin-top: 6px;
-  font-size: var(--text-caption);
+  font-size: var(--text-small);
   font-family: var(--font-mono);
   color: var(--text-tertiary);
   border: 1px dashed var(--border-strong);
@@ -200,48 +200,86 @@
 
 /* ---------- Live view ---------- */
 
-.live {
+/* The workspace is a column: run tabs, then the panel. Nothing in it is positioned over the canvas. */
+.run-workspace {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-panel {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Row 1: CanvasFrame (stage, tray, footer), row 2: composer. The side panel spans both rows. */
+.run-body {
   flex: 1;
   min-height: 0;
   display: grid;
   /* Side column narrows with the main area (cqi of .main), capped at 400px. */
   grid-template-columns: minmax(0, 1fr) clamp(280px, 32cqi, 400px);
-  /* Row 1: in-flow approval cards (zero height when empty), row 2: canvas, row 3: composer. */
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
-.live .canvas {
-  grid-row: 2;
+.run-body:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+.run-body > .canvas-frame {
+  grid-row: 1;
   grid-column: 1;
   min-height: 200px;
 }
-.live-cards {
-  grid-row: 1;
-  grid-column: 1;
-  container-type: inline-size;
-  container-name: live-cards;
-  max-height: 40vh;
-  overflow-y: auto;
-  min-width: 0;
+.run-body > .side-panel {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+}
+.live-panel {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  background: var(--surface-1);
 }
-.live-cards:not(:empty) {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+
+/* A decision card with the run it belongs to named above it. */
+.decision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 0;
+  flex: 0 1 auto;
 }
-.live-cards-count {
-  align-self: flex-start;
+.run-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
 }
-.live .side {
-  grid-row: 1 / span 3;
-  grid-column: 2;
-  container-type: inline-size;
-  container-name: side;
+/* The run index (R1, R2...) repeats on the tab, the header, the transcript header and decision cards. */
+.run-index {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
 }
 .composer {
-  grid-row: 3;
+  grid-row: 2;
   grid-column: 1;
   border-top: 1px solid var(--border-default);
   background: var(--surface-1);
@@ -291,6 +329,11 @@
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
+.composer-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .composer-help {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
@@ -317,193 +360,21 @@
 }
 .attach-remove {
   position: absolute;
-  top: calc(-1 * var(--space-1));
-  right: calc(-1 * var(--space-1));
-  width: var(--space-4);
-  height: var(--space-4);
-  padding: 0;
-  display: grid;
-  place-items: center;
-  font-size: var(--text-caption);
-  line-height: 1;
-  color: var(--text-primary);
+  top: calc(-1 * var(--space-2));
+  right: calc(-1 * var(--space-2));
+  display: inline-flex;
   background: var(--surface-3);
-  border: 1px solid var(--border-strong);
   border-radius: var(--radius-full);
-  cursor: pointer;
 }
-.attach-remove:hover {
+.attach-remove .icon-btn {
+  border-color: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+.attach-remove .icon-btn:hover:not(:disabled) {
   background: var(--danger-soft);
   color: var(--danger-text);
 }
-.attach-remove:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
 
-.legend {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  max-width: calc(100% - 96px);
-  flex-wrap: wrap;
-  z-index: var(--z-canvas-overlay);
-  display: flex;
-  gap: 10px;
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
-  background: color-mix(in oklab, var(--surface-1) 80%, transparent);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-  backdrop-filter: blur(6px);
-}
-.legend i {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  margin-right: 5px;
-  vertical-align: middle;
-}
-
-/* ---------- Run strip (several runs per project) ---------- */
-
-.run-strip {
-  container-type: inline-size;
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: var(--z-canvas-overlay);
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  pointer-events: none;
-}
-.run-chip {
-  pointer-events: auto;
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  max-width: min(280px, 70cqw);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--text-caption);
-  white-space: nowrap;
-}
-.run-chip:hover {
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-}
-.run-chip.active {
-  border-color: var(--accent);
-  color: var(--text-primary);
-  background: var(--surface-3);
-}
-.run-chip.waiting {
-  border-color: var(--warning);
-  background: var(--warning-soft);
-  color: var(--text-primary);
-}
-.run-chip:has(:focus-visible) {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.run-chip-main {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1h);
-  min-width: 0;
-  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-2);
-  border: none;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-.run-chip-main:focus-visible {
-  outline: none;
-}
-button.run-chip.new {
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border-style: dashed;
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--text-caption);
-}
-.run-chip .run-status {
-  font-weight: var(--weight-semibold);
-}
-.run-chip .run-kind {
-  font-weight: var(--weight-semibold);
-  color: var(--warning-text);
-}
-.run-chip .run-prompt {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  color: var(--text-tertiary);
-}
-.run-chip .run-cost {
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-}
-@container (max-width: 700px) {
-  .run-chip .run-cost,
-  .run-chip .run-plan {
-    display: none;
-  }
-}
-.run-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-full);
-  flex: none;
-  background: var(--text-tertiary);
-}
-.run-dot.live {
-  background: var(--success);
-  animation: breathe 1.4s ease-in-out infinite;
-}
-.run-dot.idle {
-  background: var(--info);
-}
-.run-dot.danger {
-  background: var(--danger);
-}
-.run-dot.warn {
-  background: var(--warning);
-}
-.run-dot.paused {
-  background: var(--warning);
-}
-.run-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-right: var(--space-1);
-  padding: var(--space-0h);
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  border-radius: var(--radius-full);
-}
-.run-close:hover {
-  color: var(--text-primary);
-  background: var(--border-default);
-}
-.run-close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
 
 /* ---------- Folded "done" groups ---------- */
 
@@ -557,28 +428,16 @@ button.run-chip.new {
 }
 .done-cost {
   font-family: var(--font-mono);
-  font-size: var(--text-caption);
+  font-size: var(--text-small);
   color: var(--text-tertiary);
   margin-left: auto;
 }
 .done-expand {
-  border: 1px solid var(--border-default);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  border-radius: var(--radius-sm);
-  width: 24px;
-  height: 24px;
-  cursor: pointer;
-  font-size: var(--text-small);
-  line-height: 1;
+  display: inline-flex;
   flex: none;
 }
-.done-expand:hover {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
 
-/* ---------- Plan progress: toolbar pill and run-strip chip ---------- */
+/* ---------- Plan progress pill in the run header ---------- */
 
 .pill.plan-pill {
   cursor: pointer;
@@ -596,20 +455,29 @@ button.run-chip.new {
   border-color: var(--warning-border);
   color: var(--warning-text);
 }
-.run-chip .run-plan {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
+
+/* ---------- Run header helpers ---------- */
+
+.run-act {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.run-act-help,
+.run-header-note,
+.run-header-auto {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.run-act-help {
   color: var(--text-tertiary);
 }
-.run-chip .run-plan.done {
-  color: var(--success-text);
+.run-header-auto,
+.run-header-note {
+  flex: none;
+  white-space: nowrap;
 }
-.run-chip .run-plan.blocked {
-  color: var(--warning-text);
-}
-
-/* Keep the zoom controls clear of the legend (the fit-view button used to hide under it). */
-.canvas .react-flow__controls {
-  margin-bottom: calc(var(--space-3) + 38px);
+.pill.plan-pill .lucide {
+  flex: none;
 }

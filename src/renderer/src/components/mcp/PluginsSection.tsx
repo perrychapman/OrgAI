@@ -70,9 +70,9 @@ export default function PluginsSection({ project }: { project: Project }): React
       </div>
       {!claude && <Banner tone="info">{NOT_CLAUDE}</Banner>}
       {error && (
-        <p className="invalid-text" role="alert">
+        <Banner tone="danger" title="Could not add the plugin">
           {error}
-        </p>
+        </Banner>
       )}
       {plugins.length === 0 ? (
         <div className="card-block mcp-empty">
@@ -83,7 +83,7 @@ export default function PluginsSection({ project }: { project: Project }): React
       ) : (
         <ul className="card-block mcp-list" aria-label="Plugins">
           {plugins.map((p) => (
-            <li key={p.id} className={`mcp-row${p.enabled && claude ? '' : ' off'}`} data-testid="plugin-row" data-plugin={p.name}>
+            <li key={p.id} className={`mcp-row${p.enabled && claude ? '' : ' off'}`} data-testid="plugin-row" data-plugin={p.name} aria-disabled={!claude || undefined}>
               <div className="mcp-row-main plugin">
                 <Switch checked={p.enabled} label={`Enable ${p.name}`} disabled={!claude} title={claude ? undefined : NOT_CLAUDE} onChange={(v) => void toggle(p, v)} />
                 <div className="mcp-row-id">

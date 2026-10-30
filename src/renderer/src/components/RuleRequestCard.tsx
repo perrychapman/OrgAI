@@ -1,82 +1,89 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import type { PermissionRuleDecision, PermissionRuleRequest } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
+import { Badge } from './ui/Badge'
+import { Button } from './ui/Button'
+import { Textarea } from './ui/Textarea'
 
 interface Props {
+  runId: string
   request: PermissionRuleRequest
   /** Display name of the asking agent. */
   who: string
-  onDecide: (decision: PermissionRuleDecision) => void
+  onDecide: (decision: PermissionRuleDecision) => void | Promise<void>
 }
 
 /**
  * An agent hit a permission denial and asks for rules (request_permission_rules). Allowing applies at once to the
  * live run (the harness allows matching calls itself); "Always allow" also saves the rules to the project.
  */
-export default function RuleRequestCard({ request, who, onDecide }: Props): ReactElement {
+export default function RuleRequestCard({ runId, request, who, onDecide }: Props): ReactElement {
+  const noteId = useId()
   const [note, setNote] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit } = useDecisionAnswer()
 
   const send = (decision: PermissionRuleDecision): void => {
     if (busy) return
-    setBusy(true)
-    onDecide(decision)
+    void submit(() => onDecide(decision))
   }
 
   const flagged = new Set(request.flagged ?? [])
   return (
-    <div className="proposal kind-rules">
-      <div className="proposal-head">
-        <span className="chip setup">Permission request</span>
-        <strong>{who} asks to allow</strong>
-      </div>
-      <div className="rules-list">
-        {request.rules.map((r) => (
-          <div key={r} className="row rules-row">
-            <code>{r}</code>
-            {flagged.has(r) && (
-              <span className="chip danger" title="A bare shell tool, a wildcard, or a destructive command (rm, git push, git reset, sudo...)">
-                broad or destructive
-              </span>
-            )}
-            {!flagged.has(r) && isWholeToolRule(r) && (
-              <span className="chip" title={`Approves every ${r} call, whatever its input`}>
-                whole tool
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="proposal-body rules-reason">{request.reason}</div>
-      <textarea
-        className="textarea"
-        value={note}
-        disabled={busy}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional note for the agent if you deny (what to do instead)"
-        style={{ marginTop: 8 }}
-      />
-      <div className="proposal-note">
-        Allowing takes effect right away for this run and its reports. “Always allow” also saves the rules to the project for future runs. Deny tells the
-        agent to find another route.
-      </div>
-      <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn primary" disabled={busy} onClick={() => send({ behavior: 'grant', scope: 'run' })}>
+    <DecisionCard
+      kind="rules"
+      error={error}
+      runId={runId}
+      who={who}
+      title="asks to allow these rules"
+      helper={
+        <ul className="decision-scopes">
+          <li>Allow for this run: takes effect now for this run and its reports.</li>
+          <li>Always allow for project: also saves the rules for future runs.</li>
+          <li>Deny: the agent is told to find another route.</li>
+        </ul>
+      }
+      primary={
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => send({ behavior: 'grant', scope: 'run' })}>
           {busy ? 'Sending…' : 'Allow for this run'}
-        </button>
-        <button className="btn" disabled={busy} onClick={() => send({ behavior: 'grant', scope: 'project' })}>
-          Always allow (project)
-        </button>
-        <button
-          className="btn danger"
-          style={{ marginLeft: 'auto' }}
-          disabled={busy}
-          onClick={() => send(note.trim() ? { behavior: 'deny', message: note.trim() } : { behavior: 'deny' })}
-        >
+        </Button>
+      }
+      secondary={
+        <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'grant', scope: 'project' })}>
+          Always allow for project
+        </Button>
+      }
+      deny={
+        <Button variant="danger" size="sm" disabled={busy} onClick={() => send(note.trim() ? { behavior: 'deny', message: note.trim() } : { behavior: 'deny' })}>
           Deny
-        </button>
+        </Button>
+      }
+    >
+      <div className="stack-3">
+        <div className="rules-list">
+          {request.rules.map((r) => (
+            <div key={r} className="row rules-row">
+              <code>{r}</code>
+              {flagged.has(r) && (
+                <span title="A bare shell tool, a wildcard, or a destructive command (rm, git push, git reset, sudo...)">
+                  <Badge tone="danger">broad or destructive</Badge>
+                </span>
+              )}
+              {!flagged.has(r) && isWholeToolRule(r) && (
+                <span title={`Approves every ${r} call, whatever its input`}>
+                  <Badge tone="neutral">whole tool</Badge>
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="rules-reason">{request.reason}</div>
+        <div className="field">
+          <label htmlFor={noteId}>Note for the agent if you deny (optional)</label>
+          <Textarea id={noteId} rows={2} value={note} disabled={busy} onChange={setNote} placeholder="What to do instead" />
+        </div>
       </div>
-    </div>
+    </DecisionCard>
   )
 }

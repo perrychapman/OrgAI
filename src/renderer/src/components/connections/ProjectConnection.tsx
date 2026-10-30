@@ -13,6 +13,7 @@ import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
 import { Icon } from '../ui/Icon'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { familyMismatches, previewRemap, FAMILY_LABEL } from '../../lib/remap'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 
 const NAME: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 const ICON = { anthropic: Sparkles, openai: Bot, litellm: Network }
@@ -25,6 +26,10 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   const models = useAppStore((s) => s.models)
   const loadModels = useAppStore((s) => s.loadModels)
   const setView = useAppStore((s) => s.setView)
+  const openConnections = (): void => {
+    requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+    setView('appSettings')
+  }
   const appInfo = useAppStore((s) => s.appInfo)
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const current = projectConnection(project)
@@ -112,9 +117,9 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           <h2 id="pconn-title">Connection</h2>
           <p>
             Where this project&apos;s agents get their models. Sign-in and keys are set once in{' '}
-            <button type="button" className="link-btn" onClick={() => setView('appSettings')}>
+            <Button variant="ghost" size="sm" onClick={openConnections}>
               Settings &gt; Connections
-            </button>
+            </Button>
             .
           </p>
         </div>
@@ -143,7 +148,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           ))}
         </div>
       ) : (
-        <fieldset className="pconn-cards" data-testid="project-connection" disabled={mock && !!appInfo?.mockAdapter}>
+        <fieldset className="pconn-cards" data-testid="project-connection" disabled={mock && !!appInfo?.mockAdapter} aria-disabled={mock && !!appInfo?.mockAdapter ? true : undefined}>
           <legend className="sr-only">Connection</legend>
           {CONNECTION_IDS.map((id) => {
             const info = infoOf(id)
@@ -164,7 +169,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       {connections && !mock && disconnected(target) && (
         <Banner
           tone="warning"
-          actions={<Button size="sm" onClick={() => setView('appSettings')}>Open connections</Button>}
+          actions={<Button size="sm" onClick={openConnections}>Open connections</Button>}
         >
           {NAME[target]} is not connected. Connect it to run this project.
         </Banner>
@@ -199,7 +204,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           {mismatches.length > 0 && (
             <div className="field">
               <label>Roles that must change ({mismatches.length})</label>
-              <ul className="remap-roles" style={{ marginLeft: 0 }}>
+              <ul className="remap-roles flush">
                 {mismatches.map((m) => (
                   <li key={m.roleId}>
                     <span className="remap-role">{m.roleName}</span>
@@ -228,6 +233,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         error={error}
         onCancel={() => setPreview(false)}
         onConfirm={() => void apply()}
+        confirmDisabled={!!pending && disconnected(pending)}
+        disabledReason={`${NAME[pending ?? target]} is not connected, so its models cannot be checked. Connect it in Settings > Connections first.`}
         extra={
           mismatches.length > 0 ? (
             <p className="muted">

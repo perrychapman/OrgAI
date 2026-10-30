@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, defaultRoles, newId, newProject, rootRole, slugify } from './defaults'
+import { DEFAULT_APP_SETTINGS, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify } from './defaults'
+import type { McpLibraryEntry } from './types'
 import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
 
 describe('slugify', () => {
@@ -113,5 +114,39 @@ describe('permission modes', () => {
   it('offers the messaging tools in the catalog', () => {
     expect(TOOL_CATALOG).toContain('SendMessage')
     expect(TOOL_CATALOG).toContain('ListAgents')
+  })
+})
+
+describe('MCP library links', () => {
+  const entry: McpLibraryEntry = {
+    id: 'mcpl_1',
+    name: 'github',
+    transport: 'http',
+    url: 'https://api.githubcopilot.com/mcp/',
+    source: 'registry',
+    oauth: { clientId: 'abc', clientSource: 'manual' },
+    addedAt: '2026-01-01T00:00:00.000Z'
+  }
+
+  it('builds the project copy from the entry plus project-owned fields', () => {
+    const spec = linkedSpec(entry, { id: 'mcp_9', enabled: false, roles: ['dev'], addedAt: '2026-02-02T00:00:00.000Z' })
+    expect(spec).toMatchObject({ id: 'mcp_9', libraryId: 'mcpl_1', source: 'library', enabled: false, roles: ['dev'], name: 'github', url: entry.url, addedAt: '2026-02-02T00:00:00.000Z' })
+    expect(spec.oauth).toEqual(entry.oauth)
+    expect(linkedSpec(entry, { id: 'mcp_9', enabled: true, addedAt: 'x' }).roles).toBeUndefined()
+  })
+
+  it('turns a project server into a library entry without project fields', () => {
+    const spec = linkedSpec(entry, { id: 'mcp_9', enabled: true, roles: ['dev'], addedAt: 'x' })
+    const back = libraryEntryFromSpec(spec, 'mcpl_2')
+    expect(back).not.toHaveProperty('enabled')
+    expect(back).not.toHaveProperty('roles')
+    expect(back).not.toHaveProperty('libraryId')
+    expect(back).toMatchObject({ id: 'mcpl_2', source: 'user', name: 'github' })
+  })
+
+  it('offers OAuth on remote transports only', () => {
+    expect(mcpSupportsOAuth({ transport: 'http' })).toBe(true)
+    expect(mcpSupportsOAuth({ transport: 'sse' })).toBe(true)
+    expect(mcpSupportsOAuth({ transport: 'stdio' })).toBe(false)
   })
 })

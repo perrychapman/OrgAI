@@ -27,7 +27,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
@@ -35,7 +35,7 @@ import { PartialText } from './claudePartial'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
-import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
@@ -197,6 +197,8 @@ export function collectSecrets(resolved: ResolvedMcpServer[], connection: Runtim
   for (const r of resolved) {
     for (const n of r.spec.secretEnv ?? []) if (r.env[n]) out.add(r.env[n])
     for (const n of r.spec.secretHeaders ?? []) if (r.headers[n]) out.add(r.headers[n])
+    // Headers resolve() added (the OAuth bearer) are secrets too, though no secretHeaders entry names them.
+    for (const [n, v] of Object.entries(r.headers)) if (v && r.spec.headers?.[n] !== v) out.add(v)
   }
   for (const [k, v] of Object.entries(connection?.env ?? {})) if (v && /TOKEN|KEY|SECRET|PASSWORD/i.test(k)) out.add(v)
   if (connection?.apiKey) out.add(connection.apiKey)
@@ -446,12 +448,12 @@ class ClaudeSession implements RuntimeSession {
         const root = this.agents.get(ROOT_ID)
         return !!root && root.state !== 'idle' && root.state !== 'done'
       },
-      nudge: (text, activity) => {
-        this.notifyOrchestrator(text, activity)
+      nudge: (text, activity, summary) => {
+        this.notifyOrchestrator(text, activity, { summary })
         this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text })
+      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' })
     })
     this.finished = this.run()
   }
@@ -488,6 +490,12 @@ class ClaudeSession implements RuntimeSession {
     }
   }
 
+  /** A message from another run's orchestrator. RunManager writes the transcript block, so none is written here. */
+  async receive(message: PeerMessage): Promise<void> {
+    if (this.abort.signal.aborted) return
+    this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
   async stop(): Promise<void> {
     this.continuation.dispose()
     this.stopUsagePolling()
@@ -505,11 +513,11 @@ class ClaudeSession implements RuntimeSession {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
   }
 
-  private transcript(agentId: string, block: TranscriptBlock): void {
+  private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
     this.emit({
       type: 'transcript',
       runId: this.ctx.run.id,
-      entry: { id: newId('t'), agentId, at: Date.now(), block }
+      entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) }
     })
   }
 
@@ -570,9 +578,11 @@ class ClaudeSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…'): void {
+  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string } = {}): void {
     this.input.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
-    this.transcript(ROOT_ID, { kind: 'system', text })
+    if (opts.transcript !== false) {
+      this.transcript(ROOT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
+    }
     const root = this.agents.get(ROOT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
   }
@@ -661,7 +671,7 @@ class ClaudeSession implements RuntimeSession {
       `above the project's cap of ${cap}%. Reports in flight may have been cut off. Pick up from where things stand, ` +
       'and keep the remaining work lean.'
     this.pendingCapNote = note
-    this.transcript(ROOT_ID, { kind: 'system', text: note })
+    this.transcript(ROOT_ID, { kind: 'system', text: note }, { source: 'harness' })
     this.setState(ROOT_ID, 'idle', `Stopped: used ${used}% of the five-hour window`)
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
   }
@@ -991,7 +1001,7 @@ class ClaudeSession implements RuntimeSession {
       activity: 'Reading your request…'
     })
     if (this.ctx.resumeSessionId) {
-      this.transcript(ROOT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` })
+      this.transcript(ROOT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` }, { source: 'harness' })
     }
     this.transcript(ROOT_ID, userBlock(this.ctx.prompt, this.ctx.images))
 

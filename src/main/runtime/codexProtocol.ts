@@ -491,11 +491,14 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
       }
       config.push(`${base}.url=${tomlString(spec.url)}`)
       const secretNames = new Set(spec.secretHeaders ?? [])
+      // A header is plain only when it is declared in spec.headers with this exact value. Everything else (stored
+      // secrets, the OAuth access token resolve() injects as Authorization) goes through the environment, never argv.
+      const declared = spec.headers ?? {}
       const plain: Record<string, string> = {}
       const fromEnv: Record<string, string> = {}
       let k = 0
       for (const [h, v] of Object.entries(srv.headers)) {
-        if (!secretNames.has(h)) {
+        if (!secretNames.has(h) && declared[h] === v) {
           plain[h] = v
           continue
         }
@@ -511,7 +514,7 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
       }
       if (Object.keys(plain).length) config.push(`${base}.http_headers=${tomlTable(plain)}`)
       if (Object.keys(fromEnv).length) config.push(`${base}.env_http_headers=${tomlTable(fromEnv)}`)
-      summary.push(`mcp ${spec.name}: ${spec.transport} ${spec.url}`)
+      summary.push(`mcp ${spec.name}: ${spec.transport} ${displayUrl(spec.url)}`)
     }
   })
   return { config, env, summary, skipped }
@@ -542,4 +545,15 @@ export function untilFromRateLimits(v: unknown): number | undefined {
   if (!resets.length) return undefined
   const latest = Math.max(...resets)
   return latest < 1e11 ? latest * 1000 : latest
+}
+
+/** A URL for summaries: origin and path only, so userinfo and query-string keys never reach the log. */
+export function displayUrl(url: string | undefined): string {
+  if (!url) return ''
+  try {
+    const u = new URL(url)
+    return `${u.origin}${u.pathname}`
+  } catch {
+    return '(invalid url)'
+  }
 }

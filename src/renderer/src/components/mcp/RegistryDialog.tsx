@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Key, Search, TriangleAlert } from 'lucide-react'
-import type { McpMutationResult, McpRegistryEntry, McpServerInfo, Project } from '@shared/types'
+import type { McpRegistryEntry, McpServerInfo } from '@shared/types'
 import { isValidMcpServerName } from '@shared/defaults'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -9,11 +9,15 @@ import { Button } from '../ui/Button'
 import { CopyButton } from '../ui/CopyButton'
 import { Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
+import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
 import { RoleChecklist } from './RoleAccess'
+import type { McpWriter } from './mcpWriter'
 import {
+  REGISTRY_SUGGESTIONS,
   SECURITY_SECRETS,
   allRoleSlugs,
+  dedupeRegistryEntries,
   errMessage,
   launchTarget,
   newServerBase,
@@ -27,16 +31,14 @@ type Load = { state: 'idle' } | { state: 'loading' } | { state: 'error'; message
 
 /** Add MCP server from registry: search, pick a pinned package or remote, fill env vars, add. */
 export default function RegistryDialog({
-  project,
+  writer,
   servers,
   onClose,
-  onResult,
   onAddManually
 }: {
-  project: Project
+  writer: McpWriter
   servers: McpServerInfo[]
   onClose: () => void
-  onResult: (result: McpMutationResult) => void
   onAddManually: () => void
 }): ReactElement {
   const [query, setQuery] = useState('')
@@ -51,7 +53,7 @@ export default function RegistryDialog({
     window.orgai.mcp
       .registrySearch({ query: q.trim(), limit: 20 })
       .then((r) => {
-        if (mine === seq.current) setLoad({ state: 'done', entries: r.entries.filter((e) => e.status !== 'deleted'), query: q.trim() })
+        if (mine === seq.current) setLoad({ state: 'done', entries: dedupeRegistryEntries(r.entries), query: q.trim() })
       })
       .catch((e) => {
         if (mine === seq.current) setLoad({ state: 'error', message: errMessage(e) })
@@ -65,22 +67,21 @@ export default function RegistryDialog({
   }, [query])
 
   return (
-    <Dialog open onClose={onClose} title="Add MCP server from registry" size="lg" testId="mcp-registry">
+    <Dialog open onClose={onClose} title={writer.roles ? 'Add MCP server from registry' : 'Add MCP server to the library from the registry'} size="lg" testId="mcp-registry">
       <div className={`mcp-reg${picked ? ' has-pick' : ''}`}>
         <div className="mcp-reg-list">
           <div className="field mcp-field">
             <label htmlFor={searchId}>Search registry</label>
             <div className="mcp-search">
               <Icon icon={Search} size="sm" />
-              <input
+              <Input
                 id={searchId}
-                className="input"
                 type="search"
                 value={query}
                 autoComplete="off"
                 data-autofocus
                 placeholder="Name or capability"
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={setQuery}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault()
@@ -90,16 +91,20 @@ export default function RegistryDialog({
               />
             </div>
           </div>
-          <Results load={load} picked={picked} onPick={setPicked} onRetry={() => search(query)} onAddManually={onAddManually} />
+          <Results
+            load={load}
+            onSuggest={(q) => {
+              setQuery(q)
+              search(q)
+            }} picked={picked} onPick={setPicked} onRetry={() => search(query)} onAddManually={onAddManually} />
         </div>
         {picked && (
           <Detail
             key={picked.name}
             entry={picked}
-            project={project}
+            writer={writer}
             servers={servers}
             onBack={() => setPicked(null)}
-            onResult={onResult}
             onDone={onClose}
           />
         )}
@@ -112,10 +117,12 @@ function Results({
   load,
   picked,
   onPick,
+  onSuggest,
   onRetry,
   onAddManually
 }: {
   load: Load
+  onSuggest: (query: string) => void
   picked: McpRegistryEntry | null
   onPick: (e: McpRegistryEntry) => void
   onRetry: () => void
@@ -124,7 +131,19 @@ function Results({
   const list = useRef<HTMLUListElement>(null)
   const [active, setActive] = useState(0)
   useEffect(() => setActive(0), [load])
-  if (load.state === 'idle') return <p className="muted">Search the registry for servers by name or capability.</p>
+  if (load.state === 'idle')
+    return (
+      <div className="stack-2">
+        <p className="muted">Type a name or capability to search the registry, or start with one of these.</p>
+        <div className="row gap-2 mcp-suggest">
+          {REGISTRY_SUGGESTIONS.map((q) => (
+            <Button key={q} size="sm" onClick={() => onSuggest(q)}>
+              {q}
+            </Button>
+          ))}
+        </div>
+      </div>
+    )
   if (load.state === 'loading')
     return (
       <div className="mcp-skeletons" aria-busy="true" aria-label="Searching the registry">
@@ -156,9 +175,9 @@ function Results({
     return (
       <p className="muted">
         No servers match “{load.query}”.{' '}
-        <button type="button" className="mcp-link" onClick={onAddManually}>
+        <Button size="sm" variant="ghost" onClick={onAddManually}>
           Add manually
-        </button>
+        </Button>
       </p>
     )
   const move = (to: number): void => {
@@ -179,11 +198,17 @@ function Results({
         } else if (e.key === 'ArrowUp') {
           e.preventDefault()
           move(active - 1)
+        } else if (e.key === 'Home') {
+          e.preventDefault()
+          move(0)
+        } else if (e.key === 'End') {
+          e.preventDefault()
+          move(load.entries.length - 1)
         }
       }}
     >
       {load.entries.map((entry, i) => (
-        <ResultRow key={entry.name} entry={entry} selected={picked?.name === entry.name} tabbable={i === active} onFocus={() => setActive(i)} onPick={() => onPick(entry)} />
+        <ResultRow key={`${entry.name}@${entry.version}`} entry={entry} selected={picked?.name === entry.name && picked.version === entry.version} tabbable={i === active} onFocus={() => setActive(i)} onPick={() => onPick(entry)} />
       ))}
     </ul>
   )
@@ -216,7 +241,7 @@ function ResultRow({
       onFocus={onFocus}
       onClick={() => installable && onPick()}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' && installable) {
+        if ((e.key === 'Enter' || e.key === ' ') && installable) {
           e.preventDefault()
           onPick()
         }
@@ -244,24 +269,22 @@ function ResultRow({
           ))}
         </span>
       )}
-      {blockedReason && <span className="hint invalid-text">Cannot select: {blockedReason}.</span>}
+      {blockedReason && <span className="mcp-reason">Cannot select: {blockedReason}.</span>}
     </li>
   )
 }
 
 function Detail({
   entry,
-  project,
+  writer,
   servers,
   onBack,
-  onResult,
   onDone
 }: {
   entry: McpRegistryEntry
-  project: Project
+  writer: McpWriter
   servers: McpServerInfo[]
   onBack: () => void
-  onResult: (result: McpMutationResult) => void
   onDone: () => void
 }): ReactElement {
   const options = useMemo(() => registryOptions(entry).filter((o) => !o.blocked), [entry])
@@ -269,13 +292,13 @@ function Detail({
   const [optKey, setOptKey] = useState(options[0]?.key)
   const option: RegistryOption | undefined = options.find((o) => o.key === optKey)
   const [name, setName] = useState(() => slugName(entry.name, taken))
-  const [roles, setRoles] = useState<string[]>(() => allRoleSlugs(project.roles))
+  const [roles, setRoles] = useState<string[]>(() => allRoleSlugs(writer.roles ?? []))
   const [values, setValues] = useState<Record<string, string>>({})
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [touched, setTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [base] = useState(() => newServerBase('', project.roles).id)
+  const [base] = useState(() => newServerBase('', writer.roles ?? []).id)
   const nameId = useId()
 
   const nameError = !name ? 'Enter a name.' : !isValidMcpServerName(name) ? 'Use lowercase letters, numbers and single hyphens.' : taken.includes(name) ? 'Another server already uses this name.' : null
@@ -292,15 +315,13 @@ function Detail({
     setBusy(true)
     setError(null)
     try {
-      let result = await window.orgai.mcp.upsert({ projectId: project.id, spec })
-      onResult(result)
+      await writer.upsert(spec)
       const failed: string[] = []
       for (const v of option.vars.filter((x) => x.isSecret)) {
         const value = secrets[v.name]
         if (value === undefined) continue
         try {
-          result = await window.orgai.mcp.setSecret({ projectId: project.id, serverId: spec.id, kind: option.varKind, name: v.name, value })
-          onResult(result)
+          await writer.setSecret(spec.id, option.varKind, v.name, value)
         } catch (e) {
           failed.push(`${v.name}: ${errMessage(e)}`)
         }
@@ -356,14 +377,14 @@ function Detail({
       </div>
       <div className="field mcp-field">
         <label htmlFor={nameId}>Name</label>
-        <input
+        <Input
           id={nameId}
-          className={`input mono-input${touched && nameError ? ' invalid' : ''}`}
+          mono
+          invalid={touched && !!nameError}
           value={name}
           autoComplete="off"
           spellCheck={false}
-          aria-invalid={touched && !!nameError}
-          onChange={(e) => setName(e.target.value)}
+          onChange={setName}
           onBlur={() => setTouched(true)}
         />
         {touched && nameError && <span className="hint invalid-text">{nameError}</span>}
@@ -393,13 +414,13 @@ function Detail({
                 />
               ) : (
                 <>
-                  <input
-                    className="input mono-input"
+                  <Input
+                    mono
                     aria-label={v.name}
                     value={values[v.name] ?? v.default ?? ''}
                     autoComplete="off"
                     spellCheck={false}
-                    onChange={(e) => setValues((s) => ({ ...s, [v.name]: e.target.value }))}
+                    onChange={(value) => setValues((s) => ({ ...s, [v.name]: value }))}
                   />
                   {v.description && <span className="hint">{v.description}</span>}
                 </>
@@ -413,10 +434,12 @@ function Detail({
           )}
         </fieldset>
       )}
-      <fieldset className="mcp-vars">
-        <legend>Role access</legend>
-        <RoleChecklist roles={project.roles} value={roles} onChange={setRoles} label="Role access" />
-      </fieldset>
+      {writer.roles && (
+        <fieldset className="mcp-vars">
+          <legend>Role access</legend>
+          <RoleChecklist roles={writer.roles} value={roles} onChange={setRoles} label="Role access" />
+        </fieldset>
+      )}
       <p className="muted">
         {securityPhrase(spec.transport)} {SECURITY_SECRETS}
       </p>

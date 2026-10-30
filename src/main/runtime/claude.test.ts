@@ -122,6 +122,17 @@ describe('buildEnv', () => {
   })
 })
 
+describe('OAuth bearer headers', () => {
+  const oauthWeb = spec({ id: 'm3', name: 'oa', transport: 'http', url: 'https://o.test/mcp' })
+  const resolved = [{ spec: oauthWeb, env: {}, headers: { Authorization: 'Bearer oauth-tok-1' } }]
+  it('passes the resolved Authorization header to the SDK config', () => {
+    expect(toClaudeMcpServers(resolved)).toEqual({ oa: { type: 'http', url: 'https://o.test/mcp', headers: { Authorization: 'Bearer oauth-tok-1' } } })
+  })
+  it('redacts it even though it is not in secretHeaders', () => {
+    expect(collectSecrets(resolved, undefined)).toEqual(['Bearer oauth-tok-1'])
+  })
+})
+
 describe('secret redaction', () => {
   it('collects MCP and connection secrets and masks them in lines', () => {
     const secrets = collectSecrets(

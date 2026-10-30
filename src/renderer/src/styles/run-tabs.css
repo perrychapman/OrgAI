@@ -1,0 +1,542 @@
+/* ---------- Run tabs, run header, New run page, History (spec 2.5, 2.6) ---------- */
+
+/* Row 1 of the run bar: browser-style tabs. In normal flow; tabs never scroll, the overflow goes to the "+n" menu. */
+.run-tabs {
+  --run-tab-w: calc(var(--space-16) * 2.5);
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3) 0;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+}
+.run-tablist {
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.run-tab-wrap {
+  position: relative;
+  flex: 0 0 var(--run-tab-w);
+  display: flex;
+  height: var(--control-md);
+  border: 1px solid var(--border-default);
+  border-bottom: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+.run-tab-wrap:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.run-tab-wrap.selected {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  box-shadow: inset 0 var(--space-0h) 0 var(--accent);
+}
+.run-tab-wrap.waiting {
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+  color: var(--text-primary);
+}
+.run-tab {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+.run-tab:focus-visible,
+.run-tab-new:focus-visible,
+.run-tab-more:focus-visible,
+.run-tab-menuitem:focus-visible,
+.run-tab-close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--space-0h));
+}
+.run-tab-glyph {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+}
+.run-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* One trailing badge slot of fixed width, so a tab never changes size while you watch it. */
+.run-tab-badge {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--icon-md);
+  height: var(--icon-md);
+}
+.run-tab-badge .badge-warn {
+  display: inline-flex;
+  color: var(--warning-text);
+}
+.run-tab-badge .badge-draft {
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+.run-tab-close {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  transform: translateY(-50%);
+  display: inline-grid;
+  place-items: center;
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+}
+.run-tab-wrap:hover .run-tab-close,
+.run-tab-wrap.selected .run-tab-close,
+.run-tab-close:focus-visible {
+  opacity: 1;
+}
+.run-tab-wrap:hover:has(.run-tab-close) .run-tab-badge,
+.run-tab-wrap.selected:has(.run-tab-close) .run-tab-badge {
+  visibility: hidden;
+}
+.run-tab-close:hover {
+  background: var(--border-default);
+  color: var(--text-primary);
+}
+
+/* Status dots shared by tabs, menu items and the sidebar. */
+.run-dot {
+  flex: none;
+  width: var(--space-1h);
+  height: var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.run-dot.is-running {
+  background: var(--success);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+.run-dot.idle {
+  background: var(--info);
+}
+.run-dot.warn,
+.run-dot.paused {
+  background: var(--warning);
+}
+.run-dot.danger {
+  background: var(--danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-dot.is-running {
+    animation: none;
+  }
+}
+
+.run-tab-new,
+.run-tab-more {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-0h);
+  height: var(--control-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.run-tab-new {
+  width: var(--control-sm);
+}
+.run-tab-more {
+  padding: 0 var(--space-2);
+}
+.run-tab-new:hover,
+.run-tab-more:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.run-tab-more.waiting {
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+.run-tab-more-wrap {
+  position: relative;
+  flex: none;
+  align-self: center;
+}
+.run-tab-menu {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  min-width: calc(var(--space-16) * 4);
+  max-width: calc(var(--space-16) * 6);
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-2);
+}
+.run-tab-menuitem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+.run-tab-menuitem:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.run-tab-ctx {
+  position: fixed;
+}
+.run-tab-menuitem:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+.run-tab-badge .badge-unread {
+  display: inline-flex;
+  color: var(--info-text);
+}
+.run-tabs-notice {
+  flex: 0 1 auto;
+  align-self: center;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+/* Row 2: the run header. Wraps instead of squeezing; the meta text goes first when the header is narrow. */
+.run-header {
+  container-type: inline-size;
+  container-name: run-header;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+}
+.run-header-id {
+  flex: 1 1 calc(var(--space-16) * 4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.run-header-prompt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.run-header-meta {
+  flex: none;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.run-header-chain {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.run-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+/* Narrow header: the fold toggle keeps its icon and its accessible name, the agent count goes. */
+@container run-header (max-width: 900px) {
+  .run-agents {
+    display: none;
+  }
+  .fold-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+@container run-header (max-width: 560px) {
+  .run-header-meta {
+    display: none;
+  }
+}
+
+/* ---------- New run draft page ---------- */
+
+.new-run {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+  padding: var(--space-6) var(--space-4);
+  background: var(--canvas-bg);
+}
+.new-run-inner {
+  width: min(100%, calc(var(--space-16) * 10));
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.new-run-intro {
+  text-align: center;
+  color: var(--text-secondary);
+}
+.new-run-intro h2 {
+  margin: 0 0 var(--space-1h);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.new-run-intro p {
+  margin: 0 auto var(--space-3);
+  max-width: calc(var(--space-16) * 7);
+}
+.role-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1h);
+}
+.new-run .composer {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  padding: var(--space-3);
+}
+.new-run-others {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.new-run-others h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.new-run-others ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.new-run-scaffold {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+
+/* ---------- History tab ---------- */
+
+.history {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  container-name: history;
+}
+.history-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-default);
+}
+.history-bar h2 {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.history-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.history-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8);
+  color: var(--text-secondary);
+}
+.history-empty p {
+  margin: 0;
+}
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+}
+.history-table th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+  text-align: left;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.history-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  color: var(--text-secondary);
+}
+.history-table .col-prompt {
+  width: 100%;
+  min-width: calc(var(--space-16) * 3);
+  color: var(--text-primary);
+}
+.history-table .col-started,
+.history-table .col-cost {
+  white-space: nowrap;
+}
+.history-table .prompt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.history-table tr.run-row:hover {
+  background: var(--surface-2);
+}
+.history-table tr.run-row.active {
+  box-shadow: inset var(--space-0h) 0 0 var(--accent);
+}
+.history-table .run-chain {
+  margin-top: var(--space-0h);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.run-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.run-row-actions .btn.run-continue {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.history-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+.history-table .run-row-actions {
+  flex-wrap: nowrap;
+}
+@container history (max-width: 900px) {
+  .history-table .col-kind {
+    display: none;
+  }
+}
+@container history (max-width: 800px) {
+  .history-table .col-cost {
+    display: none;
+  }
+}
+
+/* Role names on the New run page: plain tags, not controls. */
+.role-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-0h) var(--space-2);
+  border: 1px solid var(--role);
+  border-radius: var(--radius-sm);
+  color: var(--role);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  cursor: default;
+}
+
+/* N5: a hidden tab has an unread note or a draft. */
+.run-tab-more-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--info-text);
+  flex: none;
+}

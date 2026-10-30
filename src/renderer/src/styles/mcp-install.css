@@ -1,67 +1,23 @@
-/* Live-run MCP install approval card (docs/design/providers-and-mcp.md section 6). Sized by its region. */
+/* Live-run MCP install approval card (docs/design/providers-and-mcp.md section 6). Shell is DecisionCard. */
 
 .mcp-install {
-  background: var(--surface-2);
-  border: 1px solid var(--warning-border);
-  border-radius: var(--radius-lg);
   min-width: 0;
-}
-.mcp-install.resolved,
-.mcp-install.collapsed {
-  border-color: var(--border-default);
-}
-.mcp-install.resolved.ok {
-  border-color: var(--success-border);
-}
-
-.mcpi-head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.mcpi-tile {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: var(--space-8);
-  height: var(--space-8);
-  border-radius: var(--radius-md);
-  background: var(--warning-soft);
-  color: var(--warning-text);
-}
-.collapsed .mcpi-tile,
-.resolved .mcpi-tile {
-  width: var(--space-6);
-  height: var(--space-6);
-}
-.mcpi-head-text {
-  min-width: 0;
-}
-.mcpi-title {
-  margin: 0;
-  font-size: var(--text-title-sm);
-  line-height: var(--text-title-sm-lh);
-  font-weight: var(--weight-semibold);
-  overflow-wrap: anywhere;
 }
 .mcpi-meta {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-1);
+  flex: none;
   font-size: var(--text-small);
-  line-height: var(--text-small-lh);
   color: var(--text-secondary);
 }
+
+/* Live-run MCP install approval card (docs/design/providers-and-mcp.md section 6). Sized by its region. */
 
 .mcpi-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
 }
 .mcpi-sec {
   min-width: 0;
@@ -74,8 +30,8 @@
 }
 .mcpi-label {
   padding: 0;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
   color: var(--text-secondary);
   font-weight: var(--weight-semibold);
 }
@@ -206,17 +162,7 @@
   margin-bottom: 0;
 }
 
-.mcpi-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border-subtle);
-}
 .mcpi-reason-disabled {
-  margin-right: auto;
-  font-size: var(--text-small);
   color: var(--danger-text);
 }
 
@@ -224,29 +170,21 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
 }
 .mcpi-resolved-icon {
   flex: none;
   display: grid;
 }
-.resolved.ok .mcpi-resolved-icon {
+.mcpi-resolved-icon.ok {
   color: var(--success-text);
 }
-.resolved.denied .mcpi-resolved-icon {
+.mcpi-resolved-icon.denied {
   color: var(--danger-text);
 }
 .mcpi-resolved-text {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.collapsed .mcpi-resolved-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Wide region: facts in two columns, Secret and Scope side by side. */
@@ -265,24 +203,5 @@
   .mcpi-cols:has(.mcpi-secret) {
     grid-template-columns: 1fr 1fr;
     align-items: start;
-  }
-}
-
-/* Compact region: actions stacked full width, Approve last. */
-@container live-cards (max-width: 479px) {
-  .mcpi-head,
-  .mcpi-body,
-  .mcpi-actions {
-    padding-inline: var(--space-3);
-  }
-  .mcpi-actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .mcpi-actions .btn {
-    justify-content: center;
-  }
-  .mcpi-reason-disabled {
-    margin-right: 0;
   }
 }

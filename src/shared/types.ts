@@ -400,6 +400,12 @@ export interface Project {
   autoContinue?: boolean
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
+  /**
+   * Cross-run messaging opt-in ("Let runs message each other" in Project settings). message_run is refused unless
+   * the sender's and the target's projects both have it on. Missing = DEFAULT_RUN_MESSAGING (off); read it with
+   * runMessagingOn() from defaults.ts. Saved through projects:save like other settings.
+   */
+  runMessaging?: boolean
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -420,8 +426,70 @@ export interface Project {
 /** How OrgAI reaches an MCP server. 'http' is the MCP streamable HTTP transport. */
 export type McpTransport = 'stdio' | 'http' | 'sse'
 
-/** Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. */
-export type McpServerSource = 'user' | 'registry' | 'agent'
+/**
+ * Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. 'library' = a
+ * project server linked to an app-wide library entry (McpServerSpec.libraryId); the entry keeps its own source.
+ */
+export type McpServerSource = 'user' | 'registry' | 'agent' | 'library'
+
+/**
+ * Non-secret OAuth state of a remote (http / sse) MCP server, written only by the main process (mcp:authorize);
+ * mcp:upsert and mcpLibrary:upsert keep the stored value and ignore what the renderer sends. Secret values
+ * (client secret, access and refresh tokens) live only in the SecretStore. Missing on a spec = the server is
+ * not known to use OAuth (a static header or no auth).
+ */
+export interface McpOAuthConfig {
+  /** RFC 8707 resource indicator: the canonical MCP server URL the tokens are bound to. */
+  resource?: string
+  /** Issuer of the authorization server that was used. */
+  authorizationServer?: string
+  authorizationEndpoint?: string
+  tokenEndpoint?: string
+  /** RFC 7591 dynamic client registration endpoint, when the server offers one. */
+  registrationEndpoint?: string
+  /** Scopes requested at the last authorization. */
+  scopes?: string[]
+  /** The OAuth client id: entered by the user ('manual') or registered by OrgAI ('dcr'). */
+  clientId?: string
+  /** A client secret is stored for this client (write-only through mcp:authorize). */
+  hasClientSecret?: boolean
+  clientSource?: 'manual' | 'dcr'
+  /** The loopback redirect URI a 'dcr' client was registered with; reused when its port is free. */
+  redirectUri?: string
+  /** ISO timestamp of the last successful authorization or refresh. */
+  authorizedAt?: string
+  /** ISO timestamp the current access token expires; missing = no expiry was given. */
+  expiresAt?: string
+  /** Display only: the account the token belongs to, when the server says. */
+  account?: string
+}
+
+/** Authorization state of one server, computed by the main process from McpOAuthConfig and the stored tokens. */
+export type McpAuthState = 'notRequired' | 'notAuthorized' | 'authorized' | 'expired' | 'error'
+
+export interface McpAuthStatus {
+  state: McpAuthState
+  /** ISO timestamp the access token expires. */
+  expiresAt?: string
+  /** Display only: who the token belongs to. */
+  account?: string
+  /** 'error': what failed, naming the step. Never contains a token or secret. */
+  error?: string
+  /**
+   * 'error': the authorization server offers no dynamic client registration and no client id is stored. Show
+   * client id (and optional secret) inputs and call mcp:authorize again with them.
+   */
+  needsClientId?: true
+}
+
+/** Which server mcp:authorize / cancelAuthorize / revokeAuth act on: a library entry or a project-only server. */
+export type McpAuthTarget = { libraryId: string } | { projectId: string; serverId: string }
+
+/**
+ * mcp:authorize input. clientId / clientSecret are write-only: stored (the secret in safeStorage) and never
+ * echoed. A linked project server is authorized through its library entry ({ libraryId }).
+ */
+export type McpAuthorizeInput = McpAuthTarget & { clientId?: string; clientSecret?: string }
 
 /** The MCP Registry package a server was installed from. */
 export interface McpRegistryRef {
@@ -469,7 +537,22 @@ export interface McpServerSpec {
   description?: string
   /** ISO timestamp. */
   addedAt: string
+  /**
+   * Set when this project server is a link to an app-wide library entry (McpLibraryEntry.id). The stored copy is a
+   * snapshot of the entry plus the project-owned fields (id, enabled, roles, libraryId, addedAt); the main process
+   * refreshes it from the library on every read, and secrets and OAuth tokens are the library entry's.
+   */
+  libraryId?: string
+  /** Remote servers that use OAuth (see McpOAuthConfig). Written by the main process only. */
+  oauth?: McpOAuthConfig
 }
+
+/**
+ * A harness-level (app-wide) MCP server definition in the library (<data>/mcp-library.json). Defined once;
+ * credentials and OAuth authorization live with it, and projects link it (McpServerSpec.libraryId). The name
+ * is unique within the library.
+ */
+export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'>
 
 /** Which secret slot a value fills: an entry of McpServerSpec.secretEnv or of .secretHeaders. */
 export type McpSecretKind = 'env' | 'header'
@@ -477,12 +560,45 @@ export type McpSecretKind = 'env' | 'header'
 /** mcp:list entry: the spec plus which secrets have a stored value. Secret values never cross IPC. */
 export interface McpServerInfo {
   spec: McpServerSpec
-  /** secretEnv names with a stored value. */
+  /** secretEnv names with a stored value (the library entry's values for a linked server). */
   envSet: string[]
   /** secretHeaders names with a stored value. */
   headersSet: string[]
   /** Secret names (env and headers) still missing a value; the server cannot start until they are set. */
   missingSecrets: string[]
+  /** OAuth state (the library entry's for a linked server). 'notRequired' when spec.oauth is missing. */
+  auth: McpAuthStatus
+  /** The linked library entry no longer exists: the server is kept as a snapshot but excluded from runs. */
+  libraryMissing?: true
+}
+
+/** mcpLibrary:list entry: the entry, its secret has-flags, OAuth state and the projects that link it. */
+export interface McpLibraryInfo {
+  entry: McpLibraryEntry
+  envSet: string[]
+  headersSet: string[]
+  missingSecrets: string[]
+  auth: McpAuthStatus
+  usedBy: { projectId: string; projectName: string }[]
+}
+
+/** mcpLibrary:setSecret input. `value: null` deletes the stored value. Write-only. */
+export interface McpLibrarySecretInput {
+  libraryId: string
+  kind: McpSecretKind
+  /** Must be listed in the entry's secretEnv or secretHeaders. */
+  name: string
+  value: string | null
+}
+
+/** mcp:linkLibrary input: add a library entry to a project by reference. */
+export interface McpLinkLibraryInput {
+  projectId: string
+  libraryId: string
+  /** Role slugs allowed to use it; omit for every role. */
+  roles?: string[]
+  /** Default true. */
+  enabled?: boolean
 }
 
 /** mcp:upsert input. A spec whose id is new is added; otherwise it replaces the entry with that id. */
@@ -521,6 +637,13 @@ export interface McpTestResult {
   exitCode?: number | null
   /** How long the check took, ms. */
   durationMs?: number
+  /**
+   * A remote server answered 401 with an OAuth challenge (or the server uses OAuth and has no valid token):
+   * offer Authorize (mcp:authorize) instead of a header field. `ok` is false.
+   */
+  needsAuthorization?: true
+  /** With needsAuthorization: the authorization server or resource metadata URL the challenge named, if any. */
+  authorizationServer?: string
 }
 
 /** A Claude Code plugin directory loaded for a project's runs (Claude adapter only). */
@@ -633,14 +756,15 @@ export interface McpInstallRequest {
 /**
  * The user's answer to an McpInstallRequest (renderer -> main only). `secrets` maps required secret names to
  * values; the main process moves them into safeStorage and never echoes them. `scope` 'run' adds the server
- * for this run only; 'project' also saves it to Project.mcpServers.
+ * for this run only; 'project' also saves it to Project.mcpServers as a project-only server; 'library' saves it
+ * to the app-wide library (secrets with the library entry) and links it to the project.
  */
 export interface McpInstallDecision {
   approved: boolean
   secrets?: Record<string, string>
   /** Shown to the agent, e.g. why it was denied or what was changed. */
   note?: string
-  scope: 'run' | 'project'
+  scope: 'run' | 'project' | 'library'
   /** The spec as the user edited it before approving. Omitted = the proposed spec. */
   spec?: McpServerSpec
 }
@@ -655,9 +779,14 @@ export interface McpAnswerInstallInput {
   decision: McpInstallDecision
 }
 
-/** mcp:startAssist input: start the MCP assistant session for a project. */
+/**
+ * mcp:startAssist input. scope 'project' (default) starts the MCP assistant for a project (projectId required);
+ * scope 'library' starts it at the harness level on the virtual project HARNESS_PROJECT_ID (projectId ignored),
+ * where it proposes library entries.
+ */
 export interface McpAssistInput {
-  projectId: string
+  projectId?: string
+  scope?: 'project' | 'library'
   /** What the user wants, e.g. "connect our Postgres and GitHub". */
   instruction?: string
 }
@@ -677,7 +806,43 @@ export type McpHarnessToolName = (typeof MCP_HARNESS_TOOLS)[keyof typeof MCP_HAR
 /** Harness tool every agent gets: ask the user for permission rules after a policy denial. */
 export const PERMISSION_HARNESS_TOOLS = { request: 'request_permission_rules' } as const
 
+/**
+ * Work-run root tools for talking to other runs' orchestrators (cross-run messaging). Both return at once.
+ * list_runs: every other live work run, all projects. message_run: deliver a message to one of them.
+ */
+export const RUN_HARNESS_TOOLS = { list: 'list_runs', message: 'message_run' } as const
+export type RunHarnessToolName = (typeof RUN_HARNESS_TOOLS)[keyof typeof RUN_HARNESS_TOOLS]
+/** message_run text is cut to this many characters before delivery. */
+export const RUN_MESSAGE_MAX_CHARS = 4000
+/** RunPeer.prompt and run.message peerPrompt: one line, at most this many characters. */
+export const RUN_PEER_PROMPT_CHARS = 120
+
 // ---------- App settings (global) ----------
+
+/** 'system' follows the OS (Electron nativeTheme); the renderer resolves it with matchMedia('(prefers-color-scheme: dark)'). */
+export type ThemeMode = 'dark' | 'light' | 'system'
+export const THEME_MODES: readonly ThemeMode[] = ['dark', 'light', 'system']
+export type CanvasPattern = 'dots' | 'grid' | 'none'
+export const CANVAS_PATTERNS: readonly CanvasPattern[] = ['dots', 'grid', 'none']
+export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
+export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
+
+/** App-wide look. Main applies `theme` to nativeTheme.themeSource at startup and on every settings:set. */
+export interface AppearanceSettings {
+  /** Default 'dark' until the light theme is signed off (docs/design/plan.md section 2). */
+  theme: ThemeMode
+  /** Accent color '#rrggbb' (lowercase). Default '#7c5cff'. */
+  accent: string
+  canvas: {
+    pattern: CanvasPattern
+    /** Tint the canvas background with the accent. */
+    tint: boolean
+    edges: CanvasEdgeStyle
+    minimap: boolean
+  }
+  /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
+  reduceMotion: 'system' | 'on'
+}
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
 export interface AppSettings {
@@ -697,7 +862,13 @@ export interface AppSettings {
   connections: ProviderConnections
   /** Connection new projects use. Default 'anthropic'. */
   defaultConnection: ConnectionId
+  /**
+   * OS attention notifications on or off. The single source of truth: the main process reads it every time it
+   * decides to notify. Default true.
+   */
   notifications?: boolean
+  /** Theme, accent, canvas and motion. Filled with defaults for settings saved before it existed. */
+  appearance: AppearanceSettings
   /** Weekly-window utilization (percent) above which projects that prefer Sonnet steer Opus spawns to Sonnet. */
   opusGuardThreshold: number
   /** preferSonnetNearLimit for new projects. */
@@ -708,8 +879,15 @@ export interface AppSettings {
   defaultMaxAutoContinues: number
 }
 
-/** What settings:get returns: the settings plus read-only facts about the install. */
-export type AppSettingsInfo = AppSettings & { dataDir: string }
+/**
+ * What settings:get, settings:set and the settings:changed push return: the settings plus read-only facts
+ * about the install. The main process ignores these extra fields when they are echoed back.
+ */
+export type AppSettingsInfo = AppSettings & {
+  dataDir: string
+  /** app.getVersion(). Always filled by main; optional only so renderer code that rebuilds the object compiles. */
+  appVersion?: string
+}
 
 /** Result of auth:status, shown as the sidebar pill. */
 export interface AuthStatusResult {
@@ -790,15 +968,30 @@ export interface SettingsProposalPayload {
 }
 
 /**
- * MCP assistant proposal (propose_mcp_servers): servers to add or replace, servers to remove, and the secret
- * slots the user must fill after approving. Applying it saves Project.mcpServers.
+ * One server of an mcpServers proposal. Project scope: `libraryId` links that existing library entry (its other
+ * fields are a display snapshot); otherwise a new server that is also saved to the library and linked, unless
+ * `projectOnly`. Library scope: a library entry (enabled, roles, libraryId and projectOnly are ignored).
+ */
+export type McpProposalServer = McpServerSpec & { projectOnly?: boolean }
+
+/**
+ * MCP proposal (propose_mcp_servers, from the MCP assistant or the Architect in setup): servers to add or replace,
+ * servers to remove, and the secret slots the user must fill after approving. Applying it saves
+ * Project.mcpServers (scope 'project', the default) and creates library entries, or only changes the library
+ * (scope 'library', harness-level assistant runs).
  */
 export interface McpServersProposalPayload {
+  /** Missing = 'project'. */
+  scope?: 'project' | 'library'
   /** Specs to add (new id) or replace (existing id). */
-  upsert: McpServerSpec[]
-  /** Ids of servers to remove. */
+  upsert: McpProposalServer[]
+  /** Ids of servers to remove (project scope: unlinks linked servers; library scope: library entry ids). */
   remove?: string[]
-  /** Secret slots to fill once approved; values are entered through mcp:setSecret, never in the proposal. */
+  /**
+   * Secret slots to fill once approved; values are entered through mcp:setSecret / mcpLibrary:setSecret, never in
+   * the proposal. serverId is the project server id (project scope; when that server is linked after applying, set
+   * the value on its libraryId) or the library entry id (library scope).
+   */
   secrets?: { serverId: string; kind: McpSecretKind; name: string; description?: string }[]
   rationale: string
 }
@@ -989,13 +1182,23 @@ export type TranscriptBlock =
   | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
   /** `text` may be empty when the message is only images. */
   | { kind: 'user'; text: string; images?: ImageAttachment[] }
-  | { kind: 'system'; text: string }
+  /**
+   * A line from the harness. `text` is what the user reads. `detail`, when present, is the full text the
+   * harness sent to the agent (for example the complete continuation instruction); show it behind a disclosure.
+   */
+  | { kind: 'system'; text: string; detail?: string }
 
 export interface TranscriptEntry {
   id: string
   agentId: string
   at: number
   block: TranscriptBlock
+  /**
+   * 'harness': the harness wrote this entry (a continuation nudge, a report hand-off or a notice it sent to the
+   * orchestrator, a limit notice), not the user or a model. Render it as a system row, outside the reading flow.
+   * Absent on everything else and on records saved before it existed.
+   */
+  source?: 'harness'
 }
 
 /** 'paused': the session ended on a subscription usage limit; it can resume when the window resets. */
@@ -1007,6 +1210,13 @@ export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished
  * changes through the proposal mechanism (kind 'mcpServers').
  */
 export type RunKind = 'work' | 'setup' | 'mcp-assist'
+
+/**
+ * Project id of the virtual harness project that owns harness-level runs (the library MCP assistant). It is built
+ * in the main process (name "OrgAI", path = the data dir), never stored in projects.json and never listed by
+ * projects:list; projects:get(HARNESS_PROJECT_ID) returns it so a run window can render it.
+ */
+export const HARNESS_PROJECT_ID = 'harness'
 
 export interface RunSummary {
   id: string
@@ -1032,6 +1242,28 @@ export interface RunSummary {
    * It stays continuable.
    */
   endedWithApp?: true
+}
+
+/**
+ * Another run as an orchestrator sees it through list_runs (cross-run messaging). Work runs only: setup-like runs
+ * are never listed. Structured-clone safe.
+ */
+export interface RunPeer {
+  runId: string
+  projectId: string
+  /** Display name of the run's project. */
+  projectName: string
+  kind: RunKind
+  status: RunStatus
+  /** The run's prompt on one line, at most RUN_PEER_PROMPT_CHARS characters. */
+  prompt: string
+  startedAt: number
+  /** Name of the run's root role (its orchestrator). */
+  rootRole: string
+  /** True while the run's session is open (it can receive a message_run). */
+  live: boolean
+  /** The peer's project has runMessaging on. message_run also needs the caller's project to have it on. */
+  messaging: boolean
 }
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'
@@ -1201,18 +1433,23 @@ export type RunEvent =
   /** Text the agent is streaming right now; '' clears it once the completed message lands. Never persisted. */
   | { type: 'agent.partial'; runId: string; agentId: string; text: string }
   | { type: 'permission.request'; runId: string; request: PermissionRequest }
-  | { type: 'permission.resolved'; runId: string; requestId: string }
+  /**
+   * The card is answered or gone. `cancelled`: the run ended (finished, stopped, failed or paused) before the
+   * user answered; the same flag is on every *.resolved event. RunManager emits these for every pending item
+   * before the terminal run.status, so no card outlives its run.
+   */
+  | { type: 'permission.resolved'; runId: string; requestId: string; cancelled?: true }
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
-  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision }
+  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
   | { type: 'question.request'; runId: string; question: UserQuestion }
-  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer }
+  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true }
   /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */
   | { type: 'rules.request'; runId: string; request: PermissionRuleRequest }
-  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision }
+  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision; cancelled?: true }
   | { type: 'merge.request'; runId: string; review: MergeReview }
-  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision }
+  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision; cancelled?: true }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
   /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
@@ -1221,15 +1458,57 @@ export type RunEvent =
   | { type: 'plan.updated'; runId: string; plan: RunPlan }
   /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
   | ({ type: 'agent.message'; runId: string } & AgentMessage)
+  /**
+   * Cross-run messaging: one run's orchestrator messaged another run's orchestrator (message_run). Emitted on both
+   * runs: direction 'out' on the sender (runId = sender, peer* = recipient), 'in' on the recipient (runId =
+   * recipient, peer* = sender). Separate from agent.message, which is inside one run. Live only; each run's
+   * transcript carries a persisted system block on its root. `text` is at most RUN_MESSAGE_MAX_CHARS characters.
+   */
+  | {
+      type: 'run.message'
+      runId: string
+      direction: 'in' | 'out'
+      peerRunId: string
+      peerProjectId: string
+      peerProjectName: string
+      /** The peer run's prompt, one line, at most RUN_PEER_PROMPT_CHARS characters. */
+      peerPrompt: string
+      text: string
+      at: number
+    }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
-  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome }
+  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome; cancelled?: true }
 
-/** Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked. */
+/**
+ * Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked, and of
+ * `window:openRun`. A window opened for a run loads the renderer with the hash `#/run/<projectId>/<runId>`
+ * (both encodeURIComponent'd; see RUN_WINDOW_HASH_PREFIX and runWindowHash).
+ */
 export interface FocusRunTarget {
   projectId: string
   runId: string
+}
+
+/** Hash prefix of a run-scoped window: `#/run/<projectId>/<runId>`. The main (unscoped) window has no hash. */
+export const RUN_WINDOW_HASH_PREFIX = '#/run/'
+
+/** The location.hash of a window scoped to one run. */
+export function runWindowHash(target: FocusRunTarget): string {
+  return `${RUN_WINDOW_HASH_PREFIX}${encodeURIComponent(target.projectId)}/${encodeURIComponent(target.runId)}`
+}
+
+/** Parse a run-scoped window's location.hash; null for the main window or anything malformed. */
+export function parseRunWindowHash(hash: string): FocusRunTarget | null {
+  if (!hash.startsWith(RUN_WINDOW_HASH_PREFIX)) return null
+  const parts = hash.slice(RUN_WINDOW_HASH_PREFIX.length).split('/')
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null
+  try {
+    return { projectId: decodeURIComponent(parts[0]), runId: decodeURIComponent(parts[1]) }
+  } catch {
+    return null
+  }
 }
 
 // ---------- AI drafting ----------
@@ -1248,6 +1527,31 @@ export interface DraftResult {
 }
 
 // ---------- IPC surface ----------
+
+/** projects:create. Omit setupKind to skip AI setup and start with the default roles. */
+export interface ProjectCreateInput {
+  name: string
+  path: string
+  brief: string
+  setupKind?: SetupKind
+  /**
+   * Run the project on the scripted, token-free mock adapter (provider.id 'mock'). Only accepted when
+   * AppInfo.mockAdapter is true (ORGAI_MOCK=1); otherwise projects:create rejects.
+   */
+  mock?: boolean
+}
+
+/** projects:checkPath. Never rejects; an empty or unreadable path reports exists false. */
+export interface ProjectPathCheck {
+  exists: boolean
+  isDirectory: boolean
+  /** The folder itself holds a .git directory or file (a repository root or a worktree). */
+  isGitRepo: boolean
+  /** The folder's last path segment, '' for a drive root or an empty path. */
+  suggestedName: string
+  /** An existing directory with no entries at all. False when it does not exist. */
+  empty: boolean
+}
 
 /** runs:start. `scaffold` marks a new project's first build run so the setup banner can step aside. */
 export interface StartRunInput {
@@ -1274,12 +1578,32 @@ export interface ContinueRunInput {
   images?: ImageAttachment[]
 }
 
+/**
+ * runs:pendingCards: a live run's open decision cards, oldest first per kind. Each entry is exactly what the
+ * matching `*.request` RunEvent carried (permission, question, proposal, rules, merge, mcpInstall), so no secrets:
+ * McpInstallRequest holds secret names only. Structured-clone safe.
+ */
+export interface PendingCards {
+  permissions: PermissionRequest[]
+  questions: UserQuestion[]
+  proposals: Proposal[]
+  ruleRequests: PermissionRuleRequest[]
+  mergeReviews: MergeReview[]
+  mcpInstalls: McpInstallRequest[]
+}
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
     get(id: string): Promise<Project | null>
-    /** Omit setupKind to skip AI setup and start with the default roles. */
-    create(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Promise<Project>
+    /**
+     * Omit setupKind to skip AI setup and start with the default roles. Rejects with a readable message when the
+     * path is empty, names a file, or (setupKind 'existing') does not exist; and when `mock` is set without the
+     * mock adapter.
+     */
+    create(input: ProjectCreateInput): Promise<Project>
+    /** What is at `path` right now, for validating the New project form. Never rejects. */
+    checkPath(path: string): Promise<ProjectPathCheck>
     save(project: Project): Promise<Project>
     remove(id: string): Promise<void>
     pickDirectory(): Promise<string | null>
@@ -1324,13 +1648,16 @@ export interface OrgAIApi {
   /** Connection status, login progress, catalog changes and remaps. Returns an unsubscribe function. */
   onConnectionEvent(cb: (event: ConnectionEvent) => void): () => void
   mcp: {
-    /** The project's MCP servers with their secret has-flags. */
+    /** The project's MCP servers (linked ones refreshed from the library) with secret has-flags and OAuth state. */
     list(projectId: string): Promise<McpServerInfo[]>
-    /** Add or replace one server. */
+    /**
+     * Add or replace one server. On a linked server (libraryId) only `enabled` and `roles` may change; edit the
+     * library entry for the rest. The stored `oauth` is kept whatever the renderer sends.
+     */
     upsert(input: McpUpsertInput): Promise<McpMutationResult>
-    /** Remove one server and its stored secrets. */
+    /** Remove one server and its stored secrets. A linked server is only unlinked (the library entry stays). */
     remove(input: { projectId: string; serverId: string }): Promise<McpMutationResult>
-    /** Store or clear one secret value. Write-only. */
+    /** Store or clear one secret value of a project-only server. Write-only. Linked servers: mcpLibrary.setSecret. */
     setSecret(input: McpSecretInput): Promise<McpMutationResult>
     /** Start the server outside a run and list its tools. */
     test(input: { projectId: string; serverId: string }): Promise<McpTestResult>
@@ -1338,9 +1665,48 @@ export interface OrgAIApi {
     registrySearch(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
     /** Answer an agent's request_mcp_install card. */
     answerInstall(input: McpAnswerInstallInput): Promise<void>
-    /** Start the MCP assistant session (RunKind 'mcp-assist'); its proposals are answered with setup.decide. */
+    /**
+     * Start the MCP assistant session (RunKind 'mcp-assist'); its proposals are answered with setup.decide. scope
+     * 'library' runs it on the virtual harness project (RunSummary.projectId === HARNESS_PROJECT_ID).
+     */
     startAssist(input: McpAssistInput): Promise<RunSummary>
+    /** Add a library entry to a project by reference. Rejects when the project already has a server of that name. */
+    linkLibrary(input: McpLinkLibraryInput): Promise<McpMutationResult>
+    /**
+     * Move a project-only server into the library (with its secrets and OAuth tokens) and relink it. Rejects when
+     * the library already has an entry of that name.
+     */
+    promote(input: { projectId: string; serverId: string }): Promise<McpMutationResult>
+    /**
+     * Run the whole OAuth authorization (discovery, client registration, the system browser, the loopback
+     * callback, token exchange) and resolve with the resulting state; it does not reject for flow failures
+     * (state 'error' carries the message; needsClientId asks for a client id). A linked project server is
+     * authorized through { libraryId }. Broadcasts mcpLibrary:changed for a library entry.
+     */
+    authorize(input: McpAuthorizeInput): Promise<McpAuthStatus>
+    /** Abandon a pending authorize (its promise resolves with state 'error', "Authorization was cancelled."). */
+    cancelAuthorize(target: McpAuthTarget): Promise<void>
+    /** Forget the access and refresh tokens; the client registration (client id, secret) is kept. */
+    revokeAuth(target: McpAuthTarget): Promise<McpAuthStatus>
   }
+  /** The app-wide MCP library. Every mutation also broadcasts mcpLibrary:changed. */
+  mcpLibrary: {
+    list(): Promise<McpLibraryInfo[]>
+    /**
+     * Add (new id) or replace one entry; validated like a project server, name unique within the library. The
+     * stored `oauth` is kept (an edit that changes the url drops the OAuth state and tokens). Linked projects see
+     * the change on their next read.
+     */
+    upsert(entry: McpLibraryEntry): Promise<McpLibraryInfo[]>
+    /** Delete an entry and its secrets, unlink it from every project and drop the Role.mcpServers grants to it. */
+    remove(input: { libraryId: string }): Promise<McpLibraryInfo[]>
+    /** Store or clear one secret value of an entry. Write-only. */
+    setSecret(input: McpLibrarySecretInput): Promise<McpLibraryInfo[]>
+    /** Start the entry outside a run and list its tools (refreshes an expiring OAuth token first). */
+    test(input: { libraryId: string }): Promise<McpTestResult>
+  }
+  /** The library changed (any mcpLibrary:* mutation, authorize, revoke, promote). Returns an unsubscribe function. */
+  onMcpLibraryChanged(cb: (entries: McpLibraryInfo[]) => void): () => void
   plugins: {
     /** Add or replace one plugin. Returns the saved project. */
     upsert(input: PluginUpsertInput): Promise<Project>
@@ -1389,6 +1755,24 @@ export interface OrgAIApi {
     resumeNow(runId: string): Promise<RunSummary>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
+    /**
+     * Every live run (session open or opening: starting, running, idle, stopping) across all projects, every kind,
+     * oldest first. For a second window's startup and a global runs list.
+     */
+    listLive(): Promise<RunSummary[]>
+    /**
+     * The decision cards a live run is waiting on right now, the same objects its `*.request` events carried.
+     * A fresh renderer (a second window, a reload) seeds its cards from this; later changes arrive as events.
+     * Empty arrays for an unknown or ended run.
+     */
+    pendingCards(runId: string): Promise<PendingCards>
+  }
+  window: {
+    /**
+     * Open (or focus, if one is already open) a window scoped to this run; it loads the renderer at
+     * `#/run/<projectId>/<runId>`. Rejects when the project or run is unknown or the run belongs to another project.
+     */
+    openRun(target: FocusRunTarget): Promise<void>
   }
   permissions: {
     /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
@@ -1408,7 +1792,10 @@ export interface OrgAIApi {
     refresh(): Promise<UsageStatus | null>
   }
   notifications: {
-    /** Global on/off for OS attention notifications. The renderer persists the choice. */
+    /**
+     * @deprecated Phase 1 removes it with NotificationsToggle. Mirrors into AppSettings.notifications (saved,
+     * then broadcast as settings:changed); use settings.set instead.
+     */
     setEnabled(enabled: boolean): Promise<void>
   }
   auth: {
@@ -1416,8 +1803,14 @@ export interface OrgAIApi {
   }
   settings: {
     get(): Promise<AppSettingsInfo>
+    /** Save. Main applies appearance.theme to nativeTheme, re-reads notifications and broadcasts settings:changed. */
     set(s: AppSettings): Promise<AppSettingsInfo>
   }
+  /**
+   * The saved settings changed (settings:set from any window, the deprecated notifications mirror). Returns an
+   * unsubscribe function.
+   */
+  onSettingsChanged(cb: (settings: AppSettingsInfo) => void): () => void
   app: {
     /** Open a file or folder with the OS default handler. Resolves to an error message, or '' on success. */
     openPath(path: string): Promise<string>
@@ -1453,6 +1846,7 @@ export const IPC = {
   projectsSave: 'projects:save',
   projectsRemove: 'projects:remove',
   projectsPickDir: 'projects:pickDirectory',
+  projectsCheckPath: 'projects:checkPath',
   draftOrgChart: 'draft:orgChart',
   runsStart: 'runs:start',
   runsSend: 'runs:send',
@@ -1478,6 +1872,8 @@ export const IPC = {
   authStatus: 'auth:status',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  /** main -> renderer push channel carrying AppSettingsInfo after every save. */
+  settingsChanged: 'settings:changed',
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
   appSetNotifications: 'app:setNotifications',
@@ -1511,6 +1907,21 @@ export const IPC = {
   mcpRegistrySearch: 'mcp:registrySearch',
   mcpAnswerInstall: 'mcp:answerInstall',
   mcpStartAssist: 'mcp:startAssist',
+  mcpLinkLibrary: 'mcp:linkLibrary',
+  mcpPromote: 'mcp:promote',
+  mcpAuthorize: 'mcp:authorize',
+  mcpCancelAuthorize: 'mcp:cancelAuthorize',
+  mcpRevokeAuth: 'mcp:revokeAuth',
+  mcpLibraryList: 'mcpLibrary:list',
+  mcpLibraryUpsert: 'mcpLibrary:upsert',
+  mcpLibraryRemove: 'mcpLibrary:remove',
+  mcpLibrarySetSecret: 'mcpLibrary:setSecret',
+  mcpLibraryTest: 'mcpLibrary:test',
+  /** main -> renderer push channel carrying McpLibraryInfo[] after every library or authorization change. */
+  mcpLibraryChanged: 'mcpLibrary:changed',
   pluginsUpsert: 'plugins:upsert',
-  pluginsRemove: 'plugins:remove'
+  pluginsRemove: 'plugins:remove',
+  runsListLive: 'runs:listLive',
+  runsPendingCards: 'runs:pendingCards',
+  windowOpenRun: 'window:openRun'
 } as const

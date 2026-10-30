@@ -1,7 +1,7 @@
 {
   "name": "orgai",
   "productName": "OrgAI",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A provider-agnostic harness that runs a project's org chart of AI agents and visualizes the work live.",
   "main": "./out/main/index.js",
   "private": true,
@@ -23,7 +23,7 @@
     "dist:dir": "npm run build && electron-builder --dir",
     "pack": "npm run build && electron-builder --dir --publish never",
     "test:watch": "vitest",
-    "e2e:free": "node e2e/layout.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs",
+    "e2e:free": "node e2e/layout.mjs && node e2e/runs.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run e2e:free"
   },
   "engines": {

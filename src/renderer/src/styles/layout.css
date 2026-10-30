@@ -1,0 +1,174 @@
+/* ---------- Layout regions: CanvasFrame slots, SidePanel, topbar status ---------- */
+
+/* Nothing floats over the canvas. Each slot is a grid area; the frame is a container so it follows its own width. */
+.canvas-frame {
+  container-type: size;
+  container-name: frame;
+  display: flex;
+}
+.frame-grid {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  /* The stage keeps at least 40% of the frame; the tray takes what it needs up to 60% and its card body scrolls. */
+  grid-template-rows: auto minmax(max(96px, 40cqh), 1fr) minmax(0, max-content) auto;
+  grid-template-areas:
+    'toolbar'
+    'stage'
+    'tray'
+    'footer';
+}
+.frame-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+  min-width: 0;
+}
+.frame-stage {
+  grid-area: stage;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.frame-stage > .react-flow,
+.frame-stage > .empty {
+  position: absolute;
+  inset: 0;
+}
+.frame-tray {
+  grid-area: tray;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  overflow: hidden;
+  /* Share the frame height with the stage: never more than 60% of the frame. */
+  max-height: min(60cqh, calc(100cqh - 160px));
+  min-height: 0;
+  background: var(--surface-1);
+  border-top: 1px solid var(--border-default);
+}
+.frame-footer {
+  grid-area: footer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-1h) var(--space-3);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  border-top: 1px solid var(--border-default);
+}
+.frame-footer i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  margin-right: var(--space-1h);
+  vertical-align: middle;
+}
+/* Wide or short frame: the tray docks beside the canvas and keeps its own scroll. */
+@container frame (min-width: 760px) or (max-height: 420px) {
+  .frame-grid:has(> .frame-tray) {
+    grid-template-columns: minmax(0, 1fr) clamp(280px, 40cqi, 360px);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      'toolbar toolbar'
+      'stage tray'
+      'footer tray';
+  }
+  .frame-tray {
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--border-default);
+  }
+}
+.frame-tray:empty {
+  display: none;
+}
+
+/* Cards in the tray fill its width; the card families are restyled by the run-view brief. */
+.frame-tray > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.frame-toolbar .run-strip {
+  flex: 1 1 100%;
+}
+
+/* Side panel: a collapsible column of .editor / .live. */
+.side-panel {
+  container-type: inline-size;
+  container-name: side;
+}
+.side-panel-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-1) var(--space-2) 0;
+  flex: none;
+}
+.side-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-panel-body[hidden] {
+  display: none;
+}
+.side-rail {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-2);
+}
+.editor:has(> .side-panel[data-collapsed='true']),
+.live:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+
+/* Settings pages: a single scrolling column in the editor grid. */
+.editor.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Topbar autosave indicator (spec 12.5). */
+.save-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.save-indicator.is-error {
+  color: var(--danger-text);
+}
+.save-indicator.is-saving svg {
+  animation: spin 0.9s linear infinite;
+}
+.save-indicator > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-indicator.is-saving svg {
+    animation: none;
+  }
+}
+
+/* Stacked tray (frame narrower than 760px): the legend gives its row back to the card while a decision is pending. */
+@container frame (max-width: 759px) {
+  .frame-grid:has(> .frame-tray) .frame-footer {
+    display: none;
+  }
+}

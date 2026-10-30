@@ -65,19 +65,40 @@
   justify-content: space-between;
   gap: 8px;
 }
-.usage-refresh {
-  border: 0;
-  background: transparent;
-  color: var(--text-tertiary);
-  font-size: var(--text-caption);
-  cursor: pointer;
-  padding: 0;
-}
-.usage-refresh:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-.usage-refresh:disabled {
-  cursor: default;
-  opacity: 0.6;
+
+/* Short sidebar: one line per window (label, bar, percent); reset times stay in the tooltip. */
+@container sidebar (max-height: 700px) {
+  .usage-meter {
+    gap: var(--space-1);
+    margin: var(--space-2) 0 0;
+  }
+  .usage-row {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(var(--space-8), 1fr) auto;
+    align-items: center;
+    column-gap: var(--space-2);
+  }
+  .usage-head {
+    display: contents;
+  }
+  .usage-head > span:first-child {
+    grid-column: 1;
+    grid-row: 1;
+    white-space: nowrap;
+  }
+  .usage-bar {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .usage-pct {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .usage-reset,
+  .usage-foot .usage-hint {
+    display: none;
+  }
+  .usage-foot {
+    justify-content: flex-end;
+  }
 }

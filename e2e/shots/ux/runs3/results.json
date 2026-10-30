@@ -1,0 +1,784 @@
+[
+ {
+  "k": "perm-1024-dark",
+  "m": {
+   "win": [
+    1008,
+    641
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 366
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "composer": {
+    "x": 232,
+    "y": 505,
+    "w": 496,
+    "h": 136
+   },
+   "tray": {
+    "x": 232,
+    "y": 220,
+    "w": 496,
+    "h": 256
+   },
+   "side": {
+    "x": 728,
+    "y": 139,
+    "w": 280,
+    "h": 502
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 278,
+    "ch": 255
+   },
+   "buttons": [
+    {
+     "t": "Allow once",
+     "vis": true
+    },
+    {
+     "t": "Allow for session",
+     "vis": true
+    },
+    {
+     "t": "Always allow for p",
+     "vis": true
+    },
+    {
+     "t": "Deny",
+     "vis": true
+    }
+   ],
+   "overlaps": [
+    "stage&tray"
+   ]
+  }
+ },
+ {
+  "k": "perm-1024-light",
+  "m": {
+   "win": [
+    1008,
+    641
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 366
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "composer": {
+    "x": 232,
+    "y": 505,
+    "w": 496,
+    "h": 136
+   },
+   "tray": {
+    "x": 232,
+    "y": 220,
+    "w": 496,
+    "h": 256
+   },
+   "side": {
+    "x": 728,
+    "y": 139,
+    "w": 280,
+    "h": 502
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 278,
+    "ch": 255
+   },
+   "buttons": [
+    {
+     "t": "Allow once",
+     "vis": true
+    },
+    {
+     "t": "Allow for session",
+     "vis": true
+    },
+    {
+     "t": "Always allow for p",
+     "vis": true
+    },
+    {
+     "t": "Deny",
+     "vis": true
+    }
+   ],
+   "overlaps": [
+    "stage&tray"
+   ]
+  }
+ },
+ {
+  "k": "perm-1600-dark",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": {
+    "x": 824,
+    "y": 139,
+    "w": 360,
+    "h": 686
+   },
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 686,
+    "ch": 686
+   },
+   "buttons": [
+    {
+     "t": "Allow once",
+     "vis": true
+    },
+    {
+     "t": "Allow for session",
+     "vis": true
+    },
+    {
+     "t": "Always allow for p",
+     "vis": true
+    },
+    {
+     "t": "Deny",
+     "vis": true
+    }
+   ],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "perm-1600-light",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": {
+    "x": 824,
+    "y": 139,
+    "w": 360,
+    "h": 686
+   },
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 686,
+    "ch": 686
+   },
+   "buttons": [
+    {
+     "t": "Allow once",
+     "vis": true
+    },
+    {
+     "t": "Allow for session",
+     "vis": true
+    },
+    {
+     "t": "Always allow for p",
+     "vis": true
+    },
+    {
+     "t": "Deny",
+     "vis": true
+    }
+   ],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "plain-1024-dark",
+  "m": {
+   "win": [
+    1008,
+    641
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 167,
+    "w": 496,
+    "h": 338
+   },
+   "stage": {
+    "x": 232,
+    "y": 167,
+    "w": 496,
+    "h": 309
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 167,
+    "w": 496,
+    "h": 309
+   },
+   "composer": {
+    "x": 232,
+    "y": 505,
+    "w": 496,
+    "h": 136
+   },
+   "tray": null,
+   "side": {
+    "x": 728,
+    "y": 167,
+    "w": 280,
+    "h": 474
+   },
+   "trayInFrame": false,
+   "trayScroll": null,
+   "buttons": [],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "plain-1024-light",
+  "m": {
+   "win": [
+    1008,
+    641
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 167,
+    "w": 496,
+    "h": 338
+   },
+   "stage": {
+    "x": 232,
+    "y": 167,
+    "w": 496,
+    "h": 309
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 167,
+    "w": 496,
+    "h": 309
+   },
+   "composer": {
+    "x": 232,
+    "y": 505,
+    "w": 496,
+    "h": 136
+   },
+   "tray": null,
+   "side": {
+    "x": 728,
+    "y": 167,
+    "w": 280,
+    "h": 474
+   },
+   "trayInFrame": false,
+   "trayScroll": null,
+   "buttons": [],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "plain-1600-dark",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": null,
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayInFrame": false,
+   "trayScroll": null,
+   "buttons": [],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "plain-1600-light",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": null,
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayInFrame": false,
+   "trayScroll": null,
+   "buttons": [],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "setup-bash",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": {
+    "x": 824,
+    "y": 139,
+    "w": 360,
+    "h": 686
+   },
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 686,
+    "ch": 686
+   },
+   "buttons": [
+    {
+     "t": "Allow once",
+     "vis": true
+    },
+    {
+     "t": "Allow for session",
+     "vis": true
+    },
+    {
+     "t": "Always allow for p",
+     "vis": true
+    },
+    {
+     "t": "Deny",
+     "vis": true
+    }
+   ],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "prop-1024-dark",
+  "m": {
+   "win": [
+    1008,
+    641
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 366
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "composer": {
+    "x": 232,
+    "y": 505,
+    "w": 496,
+    "h": 136
+   },
+   "tray": {
+    "x": 232,
+    "y": 220,
+    "w": 496,
+    "h": 256
+   },
+   "side": {
+    "x": 728,
+    "y": 139,
+    "w": 280,
+    "h": 502
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 409,
+    "ch": 255
+   },
+   "buttons": [
+    {
+     "t": "Approve",
+     "vis": false
+    },
+    {
+     "t": "Request changes",
+     "vis": false
+    }
+   ],
+   "overlaps": [
+    "stage&tray"
+   ]
+  }
+ },
+ {
+  "k": "prop-1024-light",
+  "m": {
+   "win": [
+    1008,
+    641
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 366
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 496,
+    "h": 160
+   },
+   "composer": {
+    "x": 232,
+    "y": 505,
+    "w": 496,
+    "h": 136
+   },
+   "tray": {
+    "x": 232,
+    "y": 220,
+    "w": 496,
+    "h": 256
+   },
+   "side": {
+    "x": 728,
+    "y": 139,
+    "w": 280,
+    "h": 502
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 409,
+    "ch": 255
+   },
+   "buttons": [
+    {
+     "t": "Approve",
+     "vis": false
+    },
+    {
+     "t": "Request changes",
+     "vis": false
+    }
+   ],
+   "overlaps": [
+    "stage&tray"
+   ]
+  }
+ },
+ {
+  "k": "prop-1600-dark",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": {
+    "x": 824,
+    "y": 139,
+    "w": 360,
+    "h": 686
+   },
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 686,
+    "ch": 686
+   },
+   "buttons": [
+    {
+     "t": "Approve",
+     "vis": true
+    },
+    {
+     "t": "Request changes",
+     "vis": true
+    }
+   ],
+   "overlaps": []
+  }
+ },
+ {
+  "k": "prop-1600-light",
+  "m": {
+   "win": [
+    1584,
+    961
+   ],
+   "canvasFrame": {
+    "x": 232,
+    "y": 139,
+    "w": 952,
+    "h": 686
+   },
+   "stage": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "reactflow": {
+    "x": 232,
+    "y": 139,
+    "w": 592,
+    "h": 657
+   },
+   "composer": {
+    "x": 232,
+    "y": 825,
+    "w": 952,
+    "h": 136
+   },
+   "tray": {
+    "x": 824,
+    "y": 139,
+    "w": 360,
+    "h": 686
+   },
+   "side": {
+    "x": 1184,
+    "y": 139,
+    "w": 400,
+    "h": 822
+   },
+   "trayParent": "frame-grid",
+   "trayInFrame": true,
+   "trayScroll": {
+    "sh": 686,
+    "ch": 686
+   },
+   "buttons": [
+    {
+     "t": "Approve",
+     "vis": true
+    },
+    {
+     "t": "Request changes",
+     "vis": true
+    }
+   ],
+   "overlaps": []
+  }
+ }
+]

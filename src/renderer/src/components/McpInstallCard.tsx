@@ -1,13 +1,16 @@
 import type { ReactElement } from 'react'
 import { useId, useState } from 'react'
-import { Check, ChevronDown, ShieldAlert, X } from 'lucide-react'
+import { Check, X } from 'lucide-react'
 import type { McpInstallOutcome, McpInstallRequest } from '@shared/types'
+import DecisionCard from './DecisionCard'
 import { Badge } from './ui/Badge'
 import { Banner } from './ui/Banner'
 import { Button } from './ui/Button'
 import { CopyButton } from './ui/CopyButton'
 import { Icon } from './ui/Icon'
+import { Textarea } from './ui/Textarea'
 import { SecretField } from './ui/SecretField'
+import { clampLabel } from '../lib/clampLabel'
 import { pinnedVersionOf } from '../lib/mcpVersion'
 
 /** The exact command line (stdio) or endpoint (http/sse) the server would run, never shortened. */
@@ -18,50 +21,45 @@ export function installCommand(request: McpInstallRequest): string {
 }
 
 function describeOutcome(o: McpInstallOutcome): string {
-  if (o.approved) return o.scope === 'project' ? 'Approved for this project' : 'Approved for this run'
+  if (o.approved) return o.scope === 'library' ? 'Approved for this project and your library' : o.scope === 'project' ? 'Approved for this project' : 'Approved for this run'
   return o.note ? `Denied. Note sent: ${o.note}` : 'Denied'
 }
 
 /**
  * Approval card for an agent's request_mcp_install. Untrusted input (reason, command) is rendered as plain text.
- * `collapsed` shows a one-line header (the live region shows one expanded card at a time); `onExpand` opens it.
- * `onDismiss` removes a resolved card from the region.
+ * The tray shows one card at a time (stepper). `onDismiss` removes a resolved card from the region.
  */
 export default function McpInstallCard({
   runId,
   request,
-  agentName,
+  agentName: agentNameRaw,
   resolved,
-  collapsed,
-  onExpand,
   onDismiss
 }: {
   runId: string
   request: McpInstallRequest
   agentName: string
   resolved?: McpInstallOutcome
-  collapsed?: boolean
-  onExpand?: () => void
   onDismiss?: () => void
 }): ReactElement {
+  const agentName = clampLabel(agentNameRaw)
   const uid = useId()
-  const titleId = `${uid}-title`
   const [secrets, setSecrets] = useState<Record<string, string>>({})
-  const [scope, setScope] = useState<'run' | 'project'>('run')
+  const [scope, setScope] = useState<'run' | 'project' | 'library'>('run')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [more, setMore] = useState(false)
 
   const { spec } = request
-  const registryName = request.registry?.name ?? spec.registry?.name
+  const registryRaw = request.registry?.name ?? spec.registry?.name
+  const registryName = registryRaw ? clampLabel(registryRaw) : undefined
   const command = installCommand(request)
   const version = pinnedVersionOf(spec)
   const remote = spec.transport !== 'stdio'
   const unpinned = !remote && !version
   const time = new Date(request.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const title = `${agentName} wants to install an MCP server`
-  const label = `MCP install request from ${agentName}`
 
   const answer = async (approved: boolean): Promise<void> => {
     setBusy(true)
@@ -74,6 +72,7 @@ export default function McpInstallCard({
           ? { approved: true, secrets: Object.keys(secrets).length > 0 ? secrets : undefined, note: note.trim() || undefined, scope }
           : { approved: false, note: note.trim() || undefined, scope: 'run' }
       })
+      setSecrets({})
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The answer could not be delivered.')
     } finally {
@@ -81,65 +80,67 @@ export default function McpInstallCard({
     }
   }
 
+  const shell = (children: ReactElement): ReactElement => (
+    <div className="mcp-install" data-testid="mcp-install-card" data-request={request.id}>
+      {children}
+    </div>
+  )
+
   if (resolved) {
-    return (
-      <section className={`mcp-install resolved ${resolved.approved ? 'ok' : 'denied'}`} aria-label={label} data-testid="mcp-install-card" data-request={request.id}>
-        <div className="mcpi-resolved">
-          <span className="mcpi-resolved-icon">
-            <Icon icon={resolved.approved ? Check : X} size="sm" />
-          </span>
-          <span className="mcpi-resolved-text">
-            <strong>{spec.name}</strong> from {agentName}. {describeOutcome(resolved)}
-          </span>
-          {onDismiss && (
+    return shell(
+      <DecisionCard
+        kind="install"
+        runId={runId}
+        who={agentName}
+        title={clampLabel(spec.name)}
+        noAutoFocus
+        headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? 'Approved' : 'Denied'}</Badge>}
+        primary={
+          onDismiss ? (
             <Button size="sm" variant="ghost" onClick={onDismiss}>
               Dismiss
             </Button>
-          )}
-        </div>
-      </section>
-    )
-  }
-
-  if (collapsed) {
-    return (
-      <section className="mcp-install collapsed" aria-label={label} data-testid="mcp-install-card" data-request={request.id}>
+          ) : undefined
+        }
+      >
         <div className="mcpi-resolved">
-          <span className="mcpi-tile">
-            <Icon icon={ShieldAlert} size="sm" />
+          <span className={`mcpi-resolved-icon ${resolved.approved ? 'ok' : 'denied'}`}>
+            <Icon icon={resolved.approved ? Check : X} size="sm" />
           </span>
-          <span className="mcpi-resolved-text">{title}</span>
-          <Badge tone="warning">Waiting for you</Badge>
-          <Button size="sm" icon={ChevronDown} onClick={onExpand}>
-            Review
-          </Button>
+          <span className="mcpi-resolved-text">{describeOutcome(resolved)}</span>
         </div>
-      </section>
+      </DecisionCard>
     )
   }
 
-  const reason = request.reason.trim()
+  const reason = request.reason.trim().slice(0, 2000)
   const longReason = reason.length > 240 || reason.split('\n').length > 4
 
-  return (
-    <section className="mcp-install" aria-labelledby={titleId} data-testid="mcp-install-card" data-request={request.id}>
-      <header className="mcpi-head">
-        <span className="mcpi-tile">
-          <Icon icon={ShieldAlert} size="md" />
+  return shell(
+    <DecisionCard
+      kind="install"
+      runId={runId}
+      who={agentName}
+      title={title}
+      error={error}
+      headerExtra={
+        <span className="mcpi-meta">
+          <span className="tabular">{time}</span>
+          <Badge tone="warning">Needs you</Badge>
         </span>
-        <div className="mcpi-head-text">
-          <h3 id={titleId} className="mcpi-title">
-            {title}
-          </h3>
-          <div className="mcpi-meta">
-            <span>Runs code on this machine</span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular">{time}</span>
-            <Badge tone="warning">Waiting for you</Badge>
-          </div>
-        </div>
-      </header>
-
+      }
+      helper={unpinned ? <span className="mcpi-reason-disabled">Only pinned versions can be approved. Runs code on this machine.</span> : 'Approving runs code on this machine. Scope below decides how long it stays.'}
+      primary={
+        <Button variant="primary" size="sm" loading={busy} disabled={unpinned} title={unpinned ? 'Only pinned versions can be approved' : undefined} onClick={() => void answer(true)}>
+          {busy ? 'Installing...' : error ? 'Retry' : 'Approve'}
+        </Button>
+      }
+      deny={
+        <Button variant="danger" size="sm" disabled={busy} onClick={() => void answer(false)}>
+          Deny
+        </Button>
+      }
+    >
       <div className="mcpi-body">
         <div className="mcpi-sec">
           <div className="mcpi-label">Why</div>
@@ -220,12 +221,13 @@ export default function McpInstallCard({
             <legend className="mcpi-label">Scope</legend>
             {(
               [
-                ['run', 'This run only', 'Removed when the run ends'],
-                ['project', 'This project', 'Saved to MCP servers in project settings, source Agent']
+                ['run', 'This run only', 'Available until this run ends, then removed.'],
+                ['project', 'This project', 'Saved to this project’s MCP servers and kept for later runs.'],
+                ['library', 'This project and library', 'Saved to your MCP library and enabled for this project.']
               ] as const
             ).map(([value, name, desc]) => (
               <label key={value} className={`mcpi-radio ${scope === value ? 'on' : ''}`}>
-                <input type="radio" name={`${uid}-scope`} value={value} checked={scope === value} onChange={() => setScope(value)} />
+                <input type="radio" data-testid={`mcp-install-scope-${value}`} name={`${uid}-scope`} value={value} checked={scope === value} onChange={() => setScope(value)} />
                 <span>
                   <span className="mcpi-radio-name">{name}</span>
                   <span className="mcpi-radio-desc">{desc}</span>
@@ -237,35 +239,10 @@ export default function McpInstallCard({
 
         <div className="field mcpi-note">
           <label htmlFor={`${uid}-note`}>Note to the agent (optional)</label>
-          <textarea id={`${uid}-note`} className="textarea" rows={2} value={note} disabled={busy} onChange={(e) => setNote(e.target.value)} />
+          <Textarea id={`${uid}-note`} rows={2} value={note} disabled={busy} onChange={setNote} />
         </div>
 
-        {error && (
-          <Banner tone="danger" title="The install failed">
-            {error}
-          </Banner>
-        )}
       </div>
-
-      <footer className="mcpi-actions">
-        {unpinned && (
-          <span className="mcpi-reason-disabled" id={`${uid}-why`}>
-            Only pinned versions can be approved
-          </span>
-        )}
-        <Button disabled={busy} onClick={() => void answer(false)}>
-          Deny
-        </Button>
-        <Button
-          variant="primary"
-          loading={busy}
-          disabled={unpinned}
-          title={unpinned ? 'Only pinned versions can be approved' : undefined}
-          onClick={() => void answer(true)}
-        >
-          {busy ? 'Installing...' : error ? 'Retry' : 'Approve'}
-        </Button>
-      </footer>
-    </section>
+    </DecisionCard>
   )
 }

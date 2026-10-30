@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { Role } from '@shared/types'
+import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 
 /** Checkbox list of roles with an All roles toggle on top. `value` is a slug list (undefined = every role). */
@@ -23,20 +24,15 @@ export function RoleChecklist({
   if (roles.length === 0) return <p className="muted">This project has no roles yet.</p>
   return (
     <div className="mcp-roles" role="group" aria-label={label}>
-      <label className="mcp-check">
-        <input type="checkbox" checked={all} disabled={disabled} onChange={() => onChange(all ? [] : roles.map((r) => r.slug))} />
-        <span>All roles</span>
-      </label>
+      <Checkbox label="All roles" checked={all} disabled={disabled} onChange={() => onChange(all ? [] : roles.map((r) => r.slug))} />
       {roles.map((r) => (
-        <label key={r.id} className="mcp-check">
-          <input
-            type="checkbox"
-            checked={selected.includes(r.slug)}
-            disabled={disabled}
-            onChange={() => onChange(selected.includes(r.slug) ? selected.filter((s) => s !== r.slug) : [...selected, r.slug])}
-          />
-          <span>{r.name}</span>
-        </label>
+        <Checkbox
+          key={r.id}
+          label={r.name}
+          checked={selected.includes(r.slug)}
+          disabled={disabled}
+          onChange={() => onChange(selected.includes(r.slug) ? selected.filter((s) => s !== r.slug) : [...selected, r.slug])}
+        />
       ))}
     </div>
   )
@@ -81,6 +77,7 @@ export function RoleAccess({
         aria-expanded={open}
         aria-controls={open ? panel : undefined}
         disabled={disabled}
+        aria-disabled={disabled || undefined}
         onClick={() => setOpen((o) => !o)}
       >
         Roles: {n} of {roles.length}

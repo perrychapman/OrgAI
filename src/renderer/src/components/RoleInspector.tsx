@@ -1,20 +1,35 @@
-import type { ReactElement } from 'react'
+import type { KeyboardEvent, ReactElement } from 'react'
+import { Trash2 } from 'lucide-react'
 import type { Effort, Project, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
 import RoleModelPicker from './RoleModelPicker'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
+import { Banner } from './ui/Banner'
+import { Button } from './ui/Button'
+import { Checkbox } from './ui/Checkbox'
+import { Input } from './ui/Input'
+import { Textarea } from './ui/Textarea'
+import { initials } from '../lib/layout'
+import { setReportsTo, wouldCycle } from '../lib/roleOps'
 
 interface Props {
   project: Project
   role: Role
+  /** Inline explanation of a side effect of the last change ("Implementer can now create subagents"). */
+  notice?: string | null
+  onNotice?: (text: string | null) => void
+  /** Remove goes through the view's confirm dialog and undo row. */
+  onRemove: () => void
+  /** Escape inside the inspector hands focus back to the node. */
+  onEscape?: () => void
 }
 
-export default function RoleInspector({ project, role }: Props): ReactElement {
+export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
-  const selectRole = useAppStore((s) => s.selectRole)
   const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
+  const id = (name: string): string => `role-${name}`
 
   const patch = (p: Partial<Role>): void =>
     updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, ...p } : r)))
@@ -24,65 +39,104 @@ export default function RoleInspector({ project, role }: Props): ReactElement {
     patch({ tools })
   }
 
-  const toggleSpawnable = (id: string): void => {
-    const spawnable = role.spawnable.includes(id) ? role.spawnable.filter((x) => x !== id) : [...role.spawnable, id]
+  const toggleSpawnable = (rid: string): void => {
+    const spawnable = role.spawnable.includes(rid) ? role.spawnable.filter((x) => x !== rid) : [...role.spawnable, rid]
     patch({ spawnable, canSpawn: spawnable.length > 0 ? true : role.canSpawn })
   }
 
-  const remove = (): void => {
-    if (!confirm(`Remove role "${role.name}"?`)) return
-    updateRoles(project.id, (roles) =>
-      roles
-        .filter((r) => r.id !== role.id)
-        .map((r) => ({
-          ...r,
-          reportsTo: r.reportsTo === role.id ? role.reportsTo : r.reportsTo,
-          spawnable: r.spawnable.filter((id) => id !== role.id)
-        }))
-    )
-    selectRole(null)
+  const changeParent = (value: string): void => {
+    const reportsTo = value || null
+    const parent = project.roles.find((r) => r.id === reportsTo)
+    updateRoles(project.id, (roles) => setReportsTo(roles, role.id, reportsTo))
+    onNotice?.(parent && !parent.canSpawn ? `${parent.name} can now create subagents, because ${role.name} reports to it.` : null)
+  }
+
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
+    if (e.key === 'Escape' && !e.defaultPrevented && onEscape) {
+      e.stopPropagation()
+      onEscape()
+    }
   }
 
   return (
     <>
-      <div className="side-header">
-        <div className="avatar" style={{ ['--role' as string]: role.color, width: 26, height: 26, fontSize: 10 }}>
-          {role.name.slice(0, 2).toUpperCase()}
+      <div className="side-header" onKeyDown={onKeyDown}>
+        <div className="avatar sm" style={{ ['--role' as string]: role.color }} aria-hidden="true">
+          {initials(role.name)}
         </div>
         <h2>{role.name || 'Role'}</h2>
-        <div style={{ flex: 1 }} />
+        <div className="grow" />
         {!isRoot && (
-          <button className="btn ghost sm danger" onClick={remove}>
+          <Button size="sm" variant="danger" icon={Trash2} onClick={onRemove}>
             Remove
-          </button>
+          </Button>
         )}
       </div>
-      <div className="side-body">
-        <div className="grid-2">
-          <div className="field">
-            <label>Name</label>
-            <input
-              className="input"
-              value={role.name}
-              onChange={(e) => patch({ name: e.target.value, slug: slugify(e.target.value) })}
-            />
+      <div className="side-body stack-3" onKeyDown={onKeyDown}>
+        {notice && <Banner tone="info" onDismiss={() => onNotice?.(null)}>{notice}</Banner>}
+
+        <section className="stack-2" aria-labelledby={id('identity')}>
+          <h3 className="side-section-title" id={id('identity')}>
+            Identity
+          </h3>
+          <div className="grid-2">
+            <div className="field">
+              <label htmlFor="role-name-input">Name</label>
+              <Input id="role-name-input" value={role.name} onChange={(v) => patch({ name: v, slug: slugify(v) })} />
+            </div>
+            <div className="field">
+              <label htmlFor={id('slug')}>Slug (subagent type)</label>
+              <Input id={id('slug')} value={role.slug} mono onChange={(v) => patch({ slug: slugify(v) })} />
+            </div>
           </div>
           <div className="field">
-            <label>Slug (subagent type)</label>
-            <input className="input" value={role.slug} onChange={(e) => patch({ slug: slugify(e.target.value) })} />
+            <label htmlFor={id('description')}>When should a manager delegate to this role?</label>
+            <Textarea id={id('description')} value={role.description} onChange={(v) => patch({ description: v })} />
           </div>
-        </div>
-
-        <div className="field">
-          <label>When should a manager delegate to this role?</label>
-          <textarea className="textarea" value={role.description} onChange={(e) => patch({ description: e.target.value })} />
-        </div>
-
-        <RoleModelPicker project={project} role={role} />
-        <div>
           <div className="field">
-            <label>Effort</label>
+            <label htmlFor={id('reports-to')}>Reports to</label>
             <select
+              id={id('reports-to')}
+              className="select"
+              value={role.reportsTo ?? ''}
+              onChange={(e) => changeParent(e.target.value)}
+            >
+              <option value="">Nobody (root orchestrator)</option>
+              {others.map((r) => (
+                <option key={r.id} value={r.id} disabled={wouldCycle(project.roles, role.id, r.id)}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <span className="field-label">Color</span>
+            <div className="row wrap gap-2" role="group" aria-label="Role color">
+              {ROLE_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className="swatch"
+                  style={{ ['--role' as string]: c }}
+                  aria-pressed={role.color === c}
+                  aria-label={`Color ${c}`}
+                  title={c}
+                  onClick={() => patch({ color: c })}
+                />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="stack-2" aria-labelledby={id('model')}>
+          <h3 className="side-section-title" id={id('model')}>
+            Model
+          </h3>
+          <RoleModelPicker project={project} role={role} />
+          <div className="field">
+            <label htmlFor={id('effort')}>Effort</label>
+            <select
+              id={id('effort')}
               className="select"
               value={role.effort ?? ''}
               onChange={(e) => patch({ effort: (e.target.value || undefined) as Effort | undefined })}
@@ -95,88 +149,65 @@ export default function RoleInspector({ project, role }: Props): ReactElement {
               ))}
             </select>
           </div>
-        </div>
+        </section>
 
-        <div className="field">
-          <label>Reports to</label>
-          <select
-            className="select"
-            value={role.reportsTo ?? ''}
-            onChange={(e) => {
-              const reportsTo = e.target.value || null
-              updateRoles(project.id, (roles) =>
-                roles.map((r) => {
-                  if (r.id === role.id) return { ...r, reportsTo }
-                  if (r.id === reportsTo) return { ...r, canSpawn: true, spawnable: [...new Set([...r.spawnable, role.id])] }
-                  return { ...r, spawnable: r.spawnable.filter((id) => id !== role.id) }
-                })
-              )
-            }}
-          >
-            <option value="">Nobody (root orchestrator)</option>
-            {others.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="side-section-title">Tools</div>
-        <div className="row wrap">
-          {TOOL_CATALOG.map((t) => (
-            <label key={t} className={`check ${role.tools.includes(t) ? 'on' : ''}`} title={TOOL_HINTS[t]}>
-              <input type="checkbox" checked={role.tools.includes(t)} onChange={() => toggleTool(t)} />
-              {t}
-            </label>
-          ))}
-        </div>
-
-        <div className="side-section-title">Delegation</div>
-        <label className={`check ${role.canSpawn ? 'on' : ''}`} style={{ marginBottom: 8 }}>
-          <input type="checkbox" checked={role.canSpawn} onChange={(e) => patch({ canSpawn: e.target.checked })} />
-          May create subagents
-        </label>
-        {role.canSpawn && (
-          <div className="row wrap">
-            {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
-            {others.map((r) => (
-              <label key={r.id} className={`check ${role.spawnable.includes(r.id) ? 'on' : ''}`}>
-                <input type="checkbox" checked={role.spawnable.includes(r.id)} onChange={() => toggleSpawnable(r.id)} />
-                <span className="avatar" style={{ ['--role' as string]: r.color, width: 14, height: 14, fontSize: 7 }} />
-                {r.name}
-              </label>
+        <section className="stack-2" aria-labelledby={id('tools')}>
+          <h3 className="side-section-title" id={id('tools')}>
+            Tools
+          </h3>
+          <div className="check-grid">
+            {TOOL_CATALOG.map((t) => (
+              <Checkbox key={t} checked={role.tools.includes(t)} onChange={() => toggleTool(t)} label={t} title={TOOL_HINTS[t]} />
             ))}
           </div>
-        )}
+        </section>
 
-        <div className="side-section-title">Responsibilities</div>
-        <div className="field">
-          <textarea
-            className="textarea"
-            value={role.responsibilities.join('\n')}
-            onChange={(e) => patch({ responsibilities: e.target.value.split('\n').map((s) => s.replace(/^[-•]\s*/, '')).filter((s) => s.trim()) })}
-            placeholder={'One per line'}
-          />
-        </div>
+        <section className="stack-2" aria-labelledby={id('delegation')}>
+          <h3 className="side-section-title" id={id('delegation')}>
+            Delegation
+          </h3>
+          <Checkbox checked={role.canSpawn} onChange={(v) => patch({ canSpawn: v })} label="May create subagents" />
+          {role.canSpawn && (
+            <div className="check-grid">
+              {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
+              {others.map((r) => (
+                <Checkbox
+                  key={r.id}
+                  checked={role.spawnable.includes(r.id)}
+                  onChange={() => toggleSpawnable(r.id)}
+                  label={
+                    <span className="row gap-2">
+                      <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
+                      {r.name}
+                    </span>
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </section>
 
-        <div className="side-section-title">System prompt</div>
-        <div className="field">
-          <textarea className="textarea mono" style={{ minHeight: 160 }} value={role.prompt} onChange={(e) => patch({ prompt: e.target.value })} />
-          <span className="hint">Responsibilities, the list of reports and the project brief are appended automatically at run time.</span>
-        </div>
-
-        <div className="side-section-title">Color</div>
-        <div className="row wrap">
-          {ROLE_COLORS.map((c) => (
-            <button
-              key={c}
-              className="avatar"
-              style={{ ['--role' as string]: c, width: 22, height: 22, border: role.color === c ? '2px solid #fff' : '2px solid transparent', cursor: 'pointer' }}
-              onClick={() => patch({ color: c })}
+        <section className="stack-2" aria-labelledby={id('instructions')}>
+          <h3 className="side-section-title" id={id('instructions')}>
+            Instructions
+          </h3>
+          <div className="field">
+            <label htmlFor={id('responsibilities')}>Responsibilities</label>
+            <Textarea
+              id={id('responsibilities')}
+              value={role.responsibilities.join('\n')}
+              onChange={(v) =>
+                patch({ responsibilities: v.split('\n').map((s) => s.replace(/^[-•]\s*/, '')).filter((s) => s.trim()) })
+              }
+              placeholder="One per line"
             />
-          ))}
-        </div>
+          </div>
+          <div className="field">
+            <label htmlFor={id('prompt')}>System prompt</label>
+            <Textarea id={id('prompt')} mono rows={8} value={role.prompt} onChange={(v) => patch({ prompt: v })} />
+            <span className="hint">Responsibilities, the list of reports and the project brief are appended automatically at run time.</span>
+          </div>
+        </section>
       </div>
     </>
   )

@@ -1,20 +1,25 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, CircleCheck } from 'lucide-react'
-import type { McpTestResult } from '@shared/types'
+import type { McpAuthStatus, McpAuthTarget, McpTestResult } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
+import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
+import { AuthorizeControl } from './McpAuth'
 
 /** Inline, collapsible result of mcp.test, shown under the row. Takes focus only when `focusOnMount` is set. */
 export default function TestResultPanel({
   serverName,
   result,
-  focusOnMount
+  focusOnMount,
+  authorize
 }: {
   serverName: string
   result: McpTestResult
   focusOnMount?: boolean
+  /** Where to authorize when the server answers with an OAuth challenge. */
+  authorize?: { target: McpAuthTarget; auth: McpAuthStatus; onChanged: (status: McpAuthStatus) => void; onUseToken?: () => void }
 }): ReactElement {
   const [open, setOpen] = useState(true)
   const head = useRef<HTMLButtonElement>(null)
@@ -37,6 +42,8 @@ export default function TestResultPanel({
             </Badge>
             <span className="tabular">{tools.length === 1 ? '1 tool' : `${tools.length} tools`}</span>
           </>
+        ) : result.needsAuthorization ? (
+          <Badge tone="warning">Needs authorization</Badge>
         ) : (
           <span className="invalid-text">Test failed</span>
         )}
@@ -54,8 +61,26 @@ export default function TestResultPanel({
               ))}
             </ul>
           )
+        ) : result.needsAuthorization && authorize ? (
+          <Banner tone="warning" title="Needs authorization">
+            <p>{serverName} wants you to sign in before agents can use it. A browser window opens to do that.</p>
+            <div className="mcp-authorize-bar">
+              <AuthorizeControl
+                target={authorize.target}
+                auth={authorize.auth.state === 'authorized' || authorize.auth.state === 'notRequired' ? { state: 'notAuthorized' } : authorize.auth}
+                serverName={serverName}
+                variant="primary"
+                onChanged={authorize.onChanged}
+              />
+              {authorize.onUseToken && (
+                <Button size="sm" variant="ghost" onClick={authorize.onUseToken}>
+                  Use a token instead
+                </Button>
+              )}
+            </div>
+          </Banner>
         ) : (
-          <Banner tone="danger" title="Test failed" actions={<CopyOutput text={errorText} />}>
+          <Banner tone="danger" actions={<CopyOutput text={errorText} />}>
             <div className="code-block mcp-output" tabIndex={0} aria-label="Test output">
               {shown}
             </div>
@@ -68,9 +93,8 @@ export default function TestResultPanel({
 function CopyOutput({ text }: { text: string }): ReactElement {
   const [done, setDone] = useState(false)
   return (
-    <button
-      type="button"
-      className="btn sm"
+    <Button
+      size="sm"
       onClick={() => {
         void navigator.clipboard
           ?.writeText(text)
@@ -82,7 +106,7 @@ function CopyOutput({ text }: { text: string }): ReactElement {
       }}
     >
       {done ? 'Copied' : 'Copy output'}
-    </button>
+    </Button>
   )
 }
 

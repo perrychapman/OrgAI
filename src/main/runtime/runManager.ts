@@ -7,8 +7,11 @@ import type {
   McpInstallRequest,
   McpRegistrySearchInput,
   McpRegistrySearchResult,
+  McpLibraryEntry,
   McpServerSpec,
+  McpServersProposalPayload,
   MergeDecision,
+  PendingCards,
   MergeReview,
   PermissionDecision,
   PermissionRequest,
@@ -23,21 +26,24 @@ import type {
   Role,
   RunEvent,
   RunKind,
+  RunPeer,
   RunPlan,
   RunRecord,
   RunSummary,
   UserQuestion
 } from '@shared/types'
-import { adapterForProject, mcpSecretNames, modelFamily, newId } from '@shared/defaults'
-import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
+import { adapterForProject, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
-import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
-import { describePlanChange } from './continuation'
+import { describePlanChange, peerDeliveryBlocked } from './continuation'
+import { isLiveAgent, runOutcome, settleAgent, type RunOutcome } from './activity'
+import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
@@ -78,14 +84,14 @@ export function pauseReasonText(window: string | undefined, error?: string): str
 interface ActiveRun {
   summary: RunSummary
   session?: RuntimeSession
-  pending: Map<string, (d: PermissionDecision) => void>
-  pendingProposals: Map<string, (d: ProposalDecision) => void>
-  pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
-  pendingMerges: Map<string, (d: MergeDecision) => void>
+  pending: PendingCardMaps['pending']
+  pendingProposals: PendingCardMaps['pendingProposals']
+  pendingQuestions: PendingCardMaps['pendingQuestions']
+  pendingMerges: PendingCardMaps['pendingMerges']
   /** request_mcp_install cards waiting for mcp:answerInstall. */
-  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision) => void }>
+  pendingInstalls: PendingCardMaps['pendingInstalls']
   /** request_permission_rules cards waiting for permissions:decideRequest. */
-  pendingRules: Map<string, { request: PermissionRuleRequest; resolve: (d: PermissionRuleDecision) => void }>
+  pendingRules: PendingCardMaps['pendingRules']
   /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
   runRules: string[]
   /** The project's (canonical) path, for saving project-scoped grants. */
@@ -97,10 +103,83 @@ interface ActiveRun {
   flushTimer?: ReturnType<typeof setTimeout>
   /** Set when the provider reported a usage-limit rejection; the run pauses instead of ending. */
   limited?: { until?: number; window?: string }
+  /**
+   * A usage-limit report holds peer delivery until the user's next successful send(). Unlike `limited` (which
+   * drives pausing at session end and is never cleared) this lifts, so a transient limit does not hold messages
+   * until teardown.
+   */
+  limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
+  outcome?: RunOutcome
+  /** Agents still live when the run ended; they read Stopped / Failed however the adapter re-reports them. */
+  cutOff?: Set<string>
   /** The provider session this run resumes; known before the adapter reports summary.sessionId at init. */
   resumeSessionId?: string
+  /** The run's own emit (records, persists, logs and broadcasts); send() and stop() route through it so summary.status stays current. */
+  emit: (e: RunEvent) => void
+  /** Display name of the project, for cross-run messages. */
+  projectName: string
+  /** Name of the root role (its orchestrator), for list_runs. */
+  rootRole: string
+  /** Cross-run messages this run has sent, per target run id (see RUN_MESSAGE_LIMIT). */
+  messagesSent: Map<string, number>
+  /** Project.runMessaging when the run started; used when the current project cannot be resolved. */
+  messagingAtStart: boolean
+  /** Cross-run messages this run has taken from all runs, delivered or queued (see RUN_MESSAGE_INBOUND_LIMIT). */
+  messagesReceived: number
+  /** Peer messages held while the run waits on its user (see peerDeliveryBlocked), oldest first. */
+  inbox: QueuedPeerMessage[]
+  /**
+   * The user interrupted the run and has not sent a message since. Mirrors ContinuationDriver.isHeld(), which lives
+   * inside the adapter; RunManager routes both interrupt() and send(), so it tracks the same rule itself.
+   */
+  held: boolean
+  /** The inbox flush in progress; flushes chain on it so concurrent flushes never reorder peer messages. */
+  flushing?: Promise<void>
+}
+
+/** A message_run message held for a run that is waiting on its user. */
+interface QueuedPeerMessage {
+  fromRunId: string
+  fromProjectId: string
+  fromProjectName: string
+  fromPrompt: string
+  text: string
+  at: number
+  /** Set once a delivery was attempted: true when the session took it, false when it could not. */
+  delivered?: boolean
+  /** The session's receive() did not settle within RUN_MESSAGE_RECEIVE_TIMEOUT_MS (delivered is false). */
+  timedOut?: boolean
+}
+
+/**
+ * The most message_run messages one run may send to one other run (so each direction of a run pair has its own cap).
+ * A hard stop so two orchestrators cannot ping-pong forever (each message wakes the other, whose reply wakes the first).
+ */
+export const RUN_MESSAGE_LIMIT = 40
+
+/** The most message_run messages one run may take from all other runs together, delivered or queued. */
+export const RUN_MESSAGE_INBOUND_LIMIT = 100
+
+/** The most peer messages held for one run while it waits on its user; beyond this message_run answers 'busy'. */
+export const RUN_MESSAGE_QUEUE_LIMIT = 20
+
+/**
+ * How long one peer delivery may wait on the recipient session's receive(). A receive that never settles would
+ * otherwise stall the run's flush chain: the sender's message_run and every later peer message to that run.
+ */
+export const RUN_MESSAGE_RECEIVE_TIMEOUT_MS = 30_000
+
+/** Cards waiting for the user on a run (permission, proposal, question, merge review, install, rules). */
+function pendingCount(a: ActiveRun): number {
+  return a.pending.size + a.pendingProposals.size + a.pendingQuestions.size + a.pendingMerges.size + a.pendingInstalls.size + a.pendingRules.size
+}
+
+/** A session that is open and not being stopped: the run can still receive a message. */
+function isOpenStatus(status: RunSummary['status']): boolean {
+  return status === 'starting' || status === 'running' || status === 'idle'
 }
 
 /** Statuses of a run whose session is open (or opening). */
@@ -139,10 +218,15 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
   return [...byId.values()].filter((r) => ids.has(r.id))
 }
 
-/** A prompt shortened for messages: one line, at most 60 characters. */
-function excerpt(prompt: string): string {
+/** A system line in a run's root transcript. */
+function systemBlock(a: ActiveRun, at: number, text: string): void {
+  a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, source: 'harness', block: { kind: 'system', text } } })
+}
+
+/** A prompt shortened for messages: one line, at most `max` (default 60) characters. */
+function excerpt(prompt: string, max = 60): string {
   const line = prompt.replace(/\s+/g, ' ').trim()
-  return line.length > 60 ? `${line.slice(0, 60)}…` : line
+  return line.length > max ? `${line.slice(0, max)}…` : line
 }
 
 export interface RunManagerOptions {
@@ -160,9 +244,52 @@ export interface RunManagerOptions {
   mcp?: {
     enabledServers(project: Project): McpServerSpec[]
     resolve(projectId: string, spec: McpServerSpec, extra?: Record<string, string>): ResolvedMcpServer
-    persistInstall(projectId: string, spec: McpServerSpec, secrets: Record<string, string>): Project
+    persistInstall(projectId: string, spec: McpServerSpec, secrets: Record<string, string>, scope?: 'project' | 'library'): Project
     searchRegistry(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
+    /** The project with linked servers refreshed from the library (links whose entry is gone disabled). */
+    withLibrary?(project: Project): Project
+    /** Refresh expiring OAuth tokens before servers start; resolves with the names still without a usable token. */
+    prepareForRun?(projectId: string, specs: McpServerSpec[]): Promise<string[]>
+    /** The app-wide MCP library (secret-free), for setup-like runs. */
+    libraryEntries?(): McpLibraryEntry[]
   }
+}
+
+/** The install-card fields a user may edit before approving; everything else stays as the agent requested it. */
+const INSTALL_EDITABLE = ['name', 'url', 'command', 'args', 'env', 'headers', 'secretEnv', 'secretHeaders', 'roles', 'enabled', 'description'] as const
+
+const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
+const isStringRecord = (v: unknown): v is Record<string, string> =>
+  !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((x) => typeof x === 'string')
+
+/**
+ * The requested spec with the user's allowed edits applied. Ids, transport, registry refs, OAuth configs and
+ * library links never come from the renderer: a card edit cannot point at another server's stored credentials.
+ */
+export function mergeInstallEdit(requested: McpServerSpec, edit: McpServerSpec | undefined): McpServerSpec {
+  const out: McpServerSpec = { ...requested }
+  delete out.oauth
+  delete out.libraryId
+  delete (out as { projectOnly?: unknown }).projectOnly
+  if (out.source === 'library') out.source = 'agent'
+  if (!edit || typeof edit !== 'object') return out
+  const target = out as unknown as Record<string, unknown>
+  const from = edit as unknown as Record<string, unknown>
+  for (const k of INSTALL_EDITABLE) {
+    if (!Object.hasOwn(from, k)) continue
+    const v = from[k]
+    if (v === undefined) {
+      if (k !== 'name' && k !== 'enabled') delete target[k]
+      continue
+    }
+    const ok =
+      k === 'enabled' ? typeof v === 'boolean'
+      : k === 'args' || k === 'secretEnv' || k === 'secretHeaders' || k === 'roles' ? isStringList(v)
+      : k === 'env' || k === 'headers' ? isStringRecord(v)
+      : typeof v === 'string'
+    if (ok) target[k] = Array.isArray(v) ? [...v] : v && typeof v === 'object' ? { ...(v as Record<string, string>) } : v
+  }
+  return out
 }
 
 /** Human label of a model family for refusal messages. */
@@ -259,10 +386,15 @@ export class RunManager {
     images: rawImages,
     notice
   }: StartInput): Promise<RunSummary> {
+    // The virtual harness project exists only for the library MCP assistant.
+    if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
+    // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
+    project = this.options.mcp?.withLibrary?.(project) ?? project
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     const { adapter, choice } = this.choose(project, kind)
     const connection = this.options.resolveConnection?.(project, choice)
-    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project)
+    const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
+    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries())
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     const summary: RunSummary = {
       id: newId('run'),
@@ -285,6 +417,14 @@ export class RunManager {
       runRules: [],
       projectPath: project.path,
       runServers: new Map(),
+      emit: () => {},
+      projectName: project.name,
+      rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
+      messagesSent: new Map(),
+      messagingAtStart: runMessagingOn(project),
+      messagesReceived: 0,
+      inbox: [],
+      held: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
     }
@@ -298,6 +438,18 @@ export class RunManager {
         const now = Date.now()
         const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
         e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
+      }
+      const outcome = e.type === 'run.status' && !active.outcome ? runOutcome(e.status, !!active.userStopped) : null
+      if (outcome) {
+        active.outcome = outcome
+        active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
+      }
+      // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
+      if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
+      if (e.type === 'agent.upsert' && active.outcome) {
+        if (isLiveAgent(e.agent)) active.cutOff?.add(e.agent.id)
+        const settled = settleAgent(e.agent, !!active.cutOff?.has(e.agent.id), active.outcome, ROOT_AGENT_ID)
+        if (settled !== e.agent) e = { ...e, agent: settled }
       }
       if (e.type === 'run.status') {
         summary.status = e.status
@@ -318,8 +470,16 @@ export class RunManager {
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      // Root and cut-off reports read Finished / Stopped / Failed instead of "Waiting for you".
+      if (outcome) {
+        for (const agent of Object.values(active.record.agents)) {
+          const settled = settleAgent(agent, !!active.cutOff?.has(agent.id), outcome, ROOT_AGENT_ID)
+          if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
+        }
+      }
     }
 
+    active.emit = emit
     emit({ type: 'run.status', runId: summary.id, status: 'starting' })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
@@ -347,13 +507,37 @@ export class RunManager {
       return [...base, ...runServerSpecs().filter((s) => !base.some((b) => b.id === s.id))]
     }
     const resolveOne = (spec: McpServerSpec): ResolvedMcpServer => {
-      const extra = active.runServers.get(spec.id)?.secrets
-      if (mcp) return mcp.resolve(live.id, spec, extra)
+      const runScoped = active.runServers.get(spec.id)
+      const extra = runScoped?.secrets
+      // A server approved for this run only never reads stored secrets or OAuth tokens: only what the user typed.
+      if (mcp && !runScoped) return mcp.resolve(live.id, spec, extra)
       const env = { ...(spec.env ?? {}) }
       const headers = { ...(spec.headers ?? {}) }
       for (const n of spec.secretEnv ?? []) if (extra?.[n]) env[n] = extra[n]
       for (const n of spec.secretHeaders ?? []) if (extra?.[n]) headers[n] = extra[n]
       return { spec, env, headers }
+    }
+    /** Servers already warned about in this run: one warning each. */
+    const warnedAuth = new Set<string>()
+    /** Refresh expiring OAuth tokens before servers resolve; warn once per server that still has no usable token. */
+    const prepareServers = async (specs: McpServerSpec[]): Promise<void> => {
+      if (!mcp?.prepareForRun || !specs.length) return
+      let names: string[] = []
+      try {
+        names = await mcp.prepareForRun(live.id, specs)
+      } catch (e) {
+        log.warn(`MCP OAuth preparation failed: ${(e as Error).message}`)
+      }
+      for (const name of names) {
+        if (warnedAuth.has(name)) continue
+        warnedAuth.add(name)
+        emit({
+          type: 'log',
+          runId: summary.id,
+          level: 'warn',
+          message: `MCP server "${name}" needs authorization: open Settings > MCP servers and choose Authorize. It starts without credentials in this run.`
+        })
+      }
     }
     try {
       // A new project's folder may not exist yet, and the provider needs a real cwd.
@@ -376,6 +560,8 @@ export class RunManager {
         resumeSessionId,
         resumeBaseCostUsd,
         emit,
+        listRuns: () => this.listRunsFor(active),
+        messageRun: (targetId, text) => this.messageRun(active, targetId, text),
         ...(connection ? { connection } : {}),
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
@@ -386,19 +572,28 @@ export class RunManager {
               ctx.project = live
             }
           }),
-        requestMcpInstall: (req) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })),
+        // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
+        ...(setupLike || project.id === HARNESS_PROJECT_ID
+          ? {}
+          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
+        ...(setupLike ? { mcpLibrary: libraryEntries } : {}),
         resolveMcpSecrets: async (serverId) => {
           const spec = allServers().find((s) => s.id === serverId)
           if (!spec) return { env: {}, headers: {} }
+          await prepareServers([spec])
           const r = resolveOne(spec)
           return {
             env: Object.fromEntries((spec.secretEnv ?? []).filter((n) => r.env[n] !== undefined).map((n) => [n, r.env[n]])),
             headers: Object.fromEntries((spec.secretHeaders ?? []).filter((n) => r.headers[n] !== undefined).map((n) => [n, r.headers[n]]))
           }
         },
-        resolvedMcpServers: async () => allServers().map(resolveOne),
+        resolvedMcpServers: async () => {
+          const specs = allServers()
+          await prepareServers(specs)
+          return specs.map(resolveOne)
+        },
         plugins: () => (setupLike ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
         requestQuestion: (req) => this.requestQuestion(active, req),
         requestPermissionRules: (req) => this.requestRules(active, req),
@@ -410,17 +605,12 @@ export class RunManager {
         requestMergeReview: (req) => this.requestMergeReview(active, req),
         rateLimited: (info) => {
           active.limited = { ...active.limited, ...info }
+          active.limitHold = true
         },
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
-        pendingInteractions: () =>
-          active.pending.size +
-          active.pendingProposals.size +
-          active.pendingQuestions.size +
-          active.pendingMerges.size +
-          active.pendingInstalls.size +
-          active.pendingRules.size,
+        pendingInteractions: () => pendingCount(active),
         autoContinue: project.autoContinue !== false,
         maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
@@ -430,43 +620,37 @@ export class RunManager {
         }
       }
       active.session = await adapter.start(ctx)
-      void active.session.finished.finally(() => {
-        for (const resolve of active.pending.values()) resolve({ behavior: 'deny', message: 'Run ended' })
-        active.pending.clear()
-        for (const resolve of active.pendingProposals.values()) resolve({ behavior: 'revise', feedback: 'Run ended' })
-        active.pendingProposals.clear()
-        for (const [questionId, q] of active.pendingQuestions) {
-          q.resolve({ selected: [] })
-          this.broadcast({ type: 'question.resolved', runId: summary.id, questionId, answer: { selected: [] } })
-        }
-        active.pendingQuestions.clear()
-        for (const [requestId, r] of active.pendingRules) {
-          r.resolve({ behavior: 'deny', message: 'Run ended' })
-          this.broadcast({ type: 'rules.resolved', runId: summary.id, requestId, decision: { behavior: 'deny', message: 'Run ended' } })
-        }
-        active.pendingRules.clear()
-        // Unanswered merge reviews keep their branch for later (maintenance panel or a future run).
-        for (const [reviewId, resolve] of active.pendingMerges) {
-          resolve({ behavior: 'hold' })
-          this.broadcast({ type: 'merge.resolved', runId: summary.id, reviewId, decision: { behavior: 'hold' } })
-        }
-        active.pendingMerges.clear()
-        // Unanswered installs are denied; servers approved for this run only (and their secrets) are forgotten.
-        for (const [requestId, p] of active.pendingInstalls) {
-          p.resolve({ approved: false, scope: 'run' })
-          this.broadcast({ type: 'mcpInstall.resolved', runId: summary.id, requestId, outcome: { approved: false, scope: 'run' } })
-        }
-        active.pendingInstalls.clear()
-        active.runServers.clear()
-        this.flush(active)
-        this.runs.delete(summary.id)
-        this.store.prune(this.keepRunsFor)
-      })
+      void active.session.finished.finally(() => this.teardown(active))
     } catch (e) {
       emit({ type: 'run.status', runId: summary.id, status: 'error', error: (e as Error).message })
-      this.flush(active)
+      // No session will ever finish this run; it must not count as live.
+      this.teardown(active)
     }
     return summary
+  }
+
+  /**
+   * A run's session ended (or never started): settle every card still open, forget run-scoped servers and held
+   * peer messages, persist the record and drop the run from the live set.
+   */
+  private teardown(active: ActiveRun): void {
+    const runId = active.summary.id
+    // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
+    cancelPending(active, runId, this.broadcast)
+    // Servers approved for this run only (and their secrets) are forgotten.
+    active.runServers.clear()
+    // Held peer messages are dropped; their senders are told if they are still live.
+    const dropped = active.inbox.splice(0)
+    if (dropped.length) {
+      const n = dropped.length
+      active.emit({ type: 'log', runId, level: 'warn', message: `${n} held message${n === 1 ? '' : 's'} from other runs ${n === 1 ? 'was' : 'were'} not delivered: the run ended first.` })
+      for (const m of dropped) {
+        this.runs.get(m.fromRunId)?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Your queued message to run ${runId} was not delivered: that run ended before it resumed.` })
+      }
+    }
+    this.flush(active)
+    this.runs.delete(runId)
+    this.store.prune(this.keepRunsFor)
   }
 
   private recordEvent(active: ActiveRun, e: RunEvent): void {
@@ -503,10 +687,192 @@ export class RunManager {
     }
   }
 
-  /** Summary of a live run, without copying its record. Undefined once the run has ended. */
   /** Runs whose session is still open. */
   liveRunCount(): number {
     return this.runs.size
+  }
+
+  /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
+  liveRuns(): RunSummary[] {
+    return [...this.runs.values()]
+      .filter((a) => LIVE_STATUSES.has(a.summary.status))
+      .map((a) => ({ ...a.summary }))
+      .sort((a, b) => a.startedAt - b.startedAt)
+  }
+
+  /**
+   * runs:pendingCards: the decision cards a run is waiting on, the objects its `*.request` events carried, so a
+   * fresh renderer can show them. Empty for an unknown or ended run (the end cancels every card).
+   */
+  pendingCards(runId: string): PendingCards {
+    const active = this.runs.get(runId)
+    return active ? listPending(active) : emptyPending()
+  }
+
+  // ---------- cross-run messaging ----------
+
+  /**
+   * list_runs: every other live work run, across projects, oldest first. A setup-like caller sees none. A peer's
+   * prompt is shown only when both the caller's and the peer's projects have runMessaging on (else ''), so a project
+   * that did not opt in neither reads nor reveals what other runs are doing beyond project, status and orchestrator.
+   */
+  private listRunsFor(self: ActiveRun): RunPeer[] {
+    if (isSetupLikeRun(self.summary.kind)) return []
+    const selfOn = this.messagingOn(self)
+    return [...this.runs.values()]
+      .filter((a) => a !== self && a.summary.kind === 'work' && isOpenStatus(a.summary.status))
+      .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
+      .map((a) => ({
+        runId: a.summary.id,
+        projectId: a.summary.projectId,
+        projectName: a.projectName,
+        kind: a.summary.kind,
+        status: a.summary.status,
+        prompt: selfOn && this.messagingOn(a) ? excerpt(a.summary.prompt, RUN_PEER_PROMPT_CHARS) : '',
+        startedAt: a.summary.startedAt,
+        rootRole: a.rootRole,
+        live: true,
+        messaging: this.messagingOn(a)
+      }))
+  }
+
+  /** message_run: see RuntimeContext.messageRun. Both runs record the exchange through their own emit. */
+  private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageOutcome> {
+    const text = (typeof rawText === 'string' ? rawText : '').trim().slice(0, RUN_MESSAGE_MAX_CHARS)
+    if (isSetupLikeRun(sender.summary.kind)) return { result: 'refused', refusal: 'not-work' }
+    if (targetId === sender.summary.id) return { result: 'refused', refusal: 'self' }
+    if (!text) return { result: 'refused', refusal: 'empty' }
+    const target = this.runs.get(targetId)
+    const stored = target ? undefined : this.store.get(targetId)
+    if (!target && !stored) return { result: 'not-found' }
+    const targetSummary = target?.summary ?? stored!
+    if (isSetupLikeRun(targetSummary.kind)) return { result: 'refused', refusal: 'not-work' }
+    // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
+    if (!target) return { result: 'not-live' }
+    // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
+    const off: string[] = []
+    if (!this.messagingOn(sender)) off.push(sender.projectName)
+    if (target.summary.projectId !== sender.summary.projectId && !this.messagingOn(target)) off.push(target.projectName)
+    if (off.length) return { result: 'refused', refusal: 'messaging-off', offProjects: off }
+    const sent = sender.messagesSent.get(targetId) ?? 0
+    if (sent >= RUN_MESSAGE_LIMIT) return { result: 'refused', refusal: 'cap', cap: 'pair' }
+    const session = target?.session
+    if (!target || !isOpenStatus(target.summary.status) || !session?.receive) return { result: 'not-live' }
+    if (target.messagesReceived >= RUN_MESSAGE_INBOUND_LIMIT) return { result: 'refused', refusal: 'cap', cap: 'inbound' }
+    // A peer never overrides the user: a run the user interrupted, a usage-limited run and a run waiting on a card
+    // keep the message until the user resumes it (send) or answers the last card. Messages already held stay ahead.
+    const waiting = this.deliveryBlocked(target) !== null || target.inbox.length > 0
+    if (waiting && target.inbox.length >= RUN_MESSAGE_QUEUE_LIMIT) return { result: 'refused', refusal: 'busy' }
+
+    sender.messagesSent.set(targetId, sent + 1)
+    target.messagesReceived++
+    const at = Date.now()
+    const from = sender.summary
+    const to = target.summary
+    const message: QueuedPeerMessage = {
+      fromRunId: from.id,
+      fromProjectId: from.projectId,
+      fromProjectName: sender.projectName,
+      fromPrompt: excerpt(from.prompt, RUN_PEER_PROMPT_CHARS),
+      text,
+      at
+    }
+    const toPrompt = excerpt(to.prompt, RUN_PEER_PROMPT_CHARS)
+    sender.emit({ type: 'run.message', runId: from.id, direction: 'out', peerRunId: to.id, peerProjectId: to.projectId, peerProjectName: target.projectName, peerPrompt: toPrompt, text, at })
+    if (waiting) {
+      target.inbox.push(message)
+      systemBlock(sender, at, `Queued for run ${to.id} (${target.projectName}: ${toPrompt}) until it resumes; it is waiting on its user: ${text}`)
+      sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Queued a message for run ${to.id} (${target.projectName}); it is waiting on its user.` })
+      target.emit({ type: 'log', runId: to.id, level: 'info', message: `Holding a message from run ${from.id} (${sender.projectName}) until this run resumes.` })
+      return { result: 'queued' }
+    }
+    systemBlock(sender, at, `Sent to run ${to.id} (${target.projectName}: ${toPrompt}): ${text}`)
+    sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Messaged run ${to.id} (${target.projectName}).` })
+    // Through the inbox, behind any flush in progress, so a direct message never overtakes held ones.
+    target.inbox.push(message)
+    await this.flushInbox(target)
+    if (message.delivered === true) return { result: 'delivered' }
+    // The session never answered: busy if the run is still live, otherwise just gone.
+    if (message.timedOut) return this.runs.get(targetId) === target ? { result: 'refused', refusal: 'timeout' } : { result: 'not-live' }
+    // Still waiting: the run became blocked before its turn came. Gone without an attempt: the run ended.
+    if (message.delivered === undefined && target.inbox.includes(message)) return { result: 'queued' }
+    return { result: 'not-live' }
+  }
+
+  /** Why a peer message must wait for this run's user now, or null (continuation.peerDeliveryBlocked). */
+  private deliveryBlocked(a: ActiveRun): string | null {
+    return peerDeliveryBlocked({ held: a.held, rateLimited: !!a.limitHold, pendingInteractions: pendingCount(a) })
+  }
+
+  /**
+   * Hand one peer message to the recipient's session and record the receiving side (run.message 'in', transcript
+   * block, log) at delivery time. False when the session could not take it; both runs get a warning.
+   */
+  private async deliverPeerMessage(target: ActiveRun, m: QueuedPeerMessage): Promise<boolean> {
+    const to = target.summary
+    const session = target.session
+    const sender = this.runs.get(m.fromRunId)
+    if (!session?.receive || !isOpenStatus(to.status)) {
+      sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} could not receive the message: it is no longer live.` })
+      return false
+    }
+    const at = Date.now()
+    // The recipient's block goes first so its transcript reads in order even if receive() wakes the root at once.
+    target.emit({ type: 'run.message', runId: to.id, direction: 'in', peerRunId: m.fromRunId, peerProjectId: m.fromProjectId, peerProjectName: m.fromProjectName, peerPrompt: m.fromPrompt, text: m.text, at })
+    systemBlock(target, at, `Note from run ${m.fromRunId} (${m.fromProjectName}: ${m.fromPrompt}), from its orchestrator: ${m.text}`)
+    target.emit({ type: 'log', runId: to.id, level: 'info', message: `Received a message from run ${m.fromRunId} (${m.fromProjectName}).` })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), RUN_MESSAGE_RECEIVE_TIMEOUT_MS)
+    })
+    try {
+      const receiving = session.receive({ fromRunId: m.fromRunId, fromProjectName: m.fromProjectName, fromPrompt: m.fromPrompt, text: m.text })
+      // A receive that settles after the timeout must not surface as an unhandled rejection.
+      receiving.catch(() => undefined)
+      if ((await Promise.race([receiving.then(() => 'ok' as const), timeout])) === 'timeout') {
+        m.timedOut = true
+        const secs = Math.round(RUN_MESSAGE_RECEIVE_TIMEOUT_MS / 1000)
+        sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} did not accept the message within ${secs}s; it may be busy.` })
+        target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Taking the message from run ${m.fromRunId} did not finish within ${secs}s; moving on.` })
+        return false
+      }
+      return true
+    } catch (e) {
+      const message = (e as Error).message
+      sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} could not receive the message: ${message}` })
+      target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Could not take the message from run ${m.fromRunId}: ${message}` })
+      return false
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** Deliver held peer messages, oldest first, while nothing makes the run wait on its user. */
+  private flushInbox(a: ActiveRun): Promise<void> {
+    const drain = async (): Promise<void> => {
+      while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
+        const m = a.inbox.shift()!
+        m.delivered = await this.deliverPeerMessage(a, m)
+      }
+    }
+    // Chained: a flush started while another runs waits for it, so messages leave strictly oldest first.
+    const next = (a.flushing ?? Promise.resolve()).then(drain).catch((e: unknown) => log.warn(`Peer message flush failed: ${(e as Error)?.message ?? e}`))
+    a.flushing = next
+    void next.finally(() => {
+      if (a.flushing === next) a.flushing = undefined
+    })
+    return next
+  }
+
+  /** A card was answered: if it was the last one and the run is not held, deliver held peer messages. */
+  private cardSettled(a: ActiveRun): void {
+    if (a.inbox.length) void this.flushInbox(a)
+  }
+
+  /** Project.runMessaging of a run's project, read from the current saved project when possible. */
+  private messagingOn(a: ActiveRun): boolean {
+    const current = this.options.resolveProject?.(a.summary.projectId)
+    return current ? runMessagingOn(current) : a.messagingAtStart
   }
 
   summaryOf(runId: string): RunSummary | undefined {
@@ -530,9 +896,12 @@ export class RunManager {
     const request: PermissionRequest = { ...req, id: newId('perm'), runId: active.summary.id }
     logPermission(active.summary, request)
     return new Promise((resolve) => {
-      active.pending.set(request.id, (decision) => {
-        logPermission(active.summary, request, decision)
-        resolve(decision)
+      active.pending.set(request.id, {
+        request,
+        resolve: (decision) => {
+          logPermission(active.summary, request, decision)
+          resolve(decision)
+        }
       })
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
     })
@@ -540,11 +909,12 @@ export class RunManager {
 
   decide(runId: string, requestId: string, decision: PermissionDecision): void {
     const active = this.runs.get(runId)
-    const resolve = active?.pending.get(requestId)
-    if (!active || !resolve) return
+    const pending = active?.pending.get(requestId)
+    if (!active || !pending) return
     active.pending.delete(requestId)
-    resolve(decision)
+    pending.resolve(decision)
     this.broadcast({ type: 'permission.resolved', runId, requestId })
+    this.cardSettled(active)
   }
 
   private requestProposal(
@@ -554,12 +924,18 @@ export class RunManager {
   ): Promise<ProposalDecision> {
     const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now() } as Proposal
     return new Promise((resolve) => {
-      active.pendingProposals.set(proposal.id, (decision) => {
+      active.pendingProposals.set(proposal.id, { proposal, resolve: (decision) => {
         if (decision.behavior === 'approve') {
           try {
-            const updated = this.setup.applyProposal(active.summary.projectId, proposal)
-            onApplied?.(updated)
-            this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            if (active.summary.projectId === HARNESS_PROJECT_ID) {
+              // The harness project is virtual: its proposals change the MCP library only, never a stored project.
+              if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload)
+            } else {
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal)
+              onApplied?.(updated)
+              this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            }
           } catch (e) {
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
@@ -569,18 +945,19 @@ export class RunManager {
           }
         }
         resolve(decision)
-      })
+      } })
       this.broadcast({ type: 'proposal.request', runId: active.summary.id, proposal })
     })
   }
 
   decideProposal(runId: string, proposalId: string, decision: ProposalDecision): void {
     const active = this.runs.get(runId)
-    const resolve = active?.pendingProposals.get(proposalId)
-    if (!active || !resolve) return
+    const pending = active?.pendingProposals.get(proposalId)
+    if (!active || !pending) return
     active.pendingProposals.delete(proposalId)
-    resolve(decision)
+    pending.resolve(decision)
     this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
+    this.cardSettled(active)
   }
 
   private requestQuestion(
@@ -607,6 +984,7 @@ export class RunManager {
     const clean: QuestionAnswer = text ? { selected, text } : { selected }
     pending.resolve(clean)
     this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
+    this.cardSettled(active)
   }
 
   private requestMergeReview(
@@ -615,18 +993,19 @@ export class RunManager {
   ): Promise<MergeDecision> {
     const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now() }
     return new Promise((resolve) => {
-      active.pendingMerges.set(review.id, resolve)
+      active.pendingMerges.set(review.id, { review, resolve })
       this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
     })
   }
 
   decideMerge(runId: string, reviewId: string, decision: MergeDecision): void {
     const active = this.runs.get(runId)
-    const resolve = active?.pendingMerges.get(reviewId)
-    if (!active || !resolve) return
+    const pending = active?.pendingMerges.get(reviewId)
+    if (!active || !pending) return
     active.pendingMerges.delete(reviewId)
-    resolve(decision)
+    pending.resolve(decision)
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+    this.cardSettled(active)
   }
 
   // ---------- permission rule requests ----------
@@ -688,6 +1067,7 @@ export class RunManager {
     }
     pending.resolve(clean)
     this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
+    this.cardSettled(active)
   }
 
   // ---------- MCP install requests ----------
@@ -702,7 +1082,7 @@ export class RunManager {
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
-        resolve: (raw) => {
+        resolve: (raw, cancelled) => {
           const decision = this.settleInstall(active, request, raw, getProject(), setProject)
           // Secrets stop here: the agent and the renderer only ever see the outcome.
           const outcome: McpInstallOutcome = {
@@ -711,7 +1091,7 @@ export class RunManager {
             ...(decision.note ? { note: decision.note } : {}),
             ...(decision.spec ? { spec: decision.spec } : {})
           }
-          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome })
+          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome, ...(cancelled ? { cancelled: true as const } : {}) })
           resolve(outcome)
         }
       })
@@ -721,11 +1101,20 @@ export class RunManager {
 
   /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
   private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
-    const scope = raw?.scope === 'project' ? 'project' : 'run'
+    const scope = raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
-    const spec: McpServerSpec = raw.spec ?? request.spec
-    const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)].filter((s) => s.id !== spec.id)
+    const refuse = (why: string): McpInstallDecision => ({ approved: false, scope, note: `The harness did not install it: ${why}` })
+    if (project.id === HARNESS_PROJECT_ID) return refuse('installs are not available in a harness session; propose library entries instead.')
+    if (raw.spec !== undefined && (!raw.spec || typeof raw.spec !== 'object' || raw.spec.id !== request.spec.id)) return refuse('the edited server must keep the requested id.')
+    const id = request.spec.id
+    const taken =
+      (project.mcpServers ?? []).some((s) => s.id === id) ||
+      active.runServers.has(id) ||
+      !!this.options.mcp?.libraryEntries?.().some((e) => e.id === id)
+    if (taken) return refuse('a server with that id already exists.')
+    const spec = mergeInstallEdit(request.spec, raw.spec)
+    const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)]
     const errors = validateSpec(spec, others)
     if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }
     const secrets: Record<string, string> = {}
@@ -733,9 +1122,9 @@ export class RunManager {
       const v = raw.secrets?.[n]
       if (typeof v === 'string' && v) secrets[n] = v
     }
-    if (scope === 'project' && this.options.mcp) {
+    if (scope !== 'run' && this.options.mcp) {
       try {
-        const saved = this.options.mcp.persistInstall(project.id, spec, secrets)
+        const saved = this.options.mcp.persistInstall(project.id, spec, secrets, scope)
         setProject(saved)
         this.broadcast({ type: 'project.updated', runId: active.summary.id, project: saved })
       } catch (e) {
@@ -744,7 +1133,7 @@ export class RunManager {
     } else {
       active.runServers.set(spec.id, { spec, secrets })
     }
-    return { approved: true, scope: scope === 'project' && this.options.mcp ? 'project' : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec: raw.spec } : {}) }
+    return { approved: true, scope: scope !== 'run' && this.options.mcp ? scope : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec } : {}) }
   }
 
   /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */
@@ -754,6 +1143,7 @@ export class RunManager {
     if (!active || !pending) return
     active.pendingInstalls.delete(requestId)
     pending.resolve(decision)
+    this.cardSettled(active)
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
@@ -761,19 +1151,29 @@ export class RunManager {
     if (!active?.session) throw new Error('Run is not active')
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(text, images)) throw new Error('Nothing to send')
-    this.broadcast({ type: 'run.status', runId, status: 'running' })
+    active.emit({ type: 'run.status', runId, status: 'running' })
+    // The user's message lifts an interrupt's hold (as ContinuationDriver.userMessage does in the adapter); peer
+    // messages held meanwhile follow it, so the orchestrator reads the user first. A usage-limit hold lifts too.
+    // Both are cleared only once the session took the message: a failed send leaves the run held. The user's send
+    // never waits on peer delivery: the flush runs on its own (flushInbox catches and logs its errors).
     await active.session.send(text, images.length ? images : undefined)
+    active.held = false
+    active.limitHold = false
+    void this.flushInbox(active)
   }
 
+  /** Interrupt the turn. Until the user's next message, peer messages are held (as automatic continues are). */
   async interrupt(runId: string): Promise<void> {
-    await this.runs.get(runId)?.session?.interrupt()
+    const active = this.runs.get(runId)
+    if (active?.session) active.held = true
+    await active?.session?.interrupt()
   }
 
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
     if (!active?.session) return
     active.userStopped = true
-    this.broadcast({ type: 'run.status', runId, status: 'stopping' })
+    active.emit({ type: 'run.status', runId, status: 'stopping' })
     await active.session.stop()
   }
 

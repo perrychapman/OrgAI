@@ -119,6 +119,8 @@ describe('CodexAdapter session', () => {
 
   const ctxFor = (over: Partial<RuntimeContext> = {}) => fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, ...over })
   const events = (ctx: ReturnType<typeof fakeCtx>, type: RunEvent['type']) => ctx.events.filter((e) => e.type === type)
+  const systemEntries = (ctx: ReturnType<typeof fakeCtx>) =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'system' ? [{ ...e.entry, block: e.entry.block }] : []))
   const lastAgent = (ctx: ReturnType<typeof fakeCtx>, id: string): AgentInstance => {
     const ups = ctx.events.filter((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.id === id)
     return ups[ups.length - 1].agent
@@ -187,8 +189,37 @@ describe('CodexAdapter session', () => {
     // The root's next turn ends with plan steps left and no reports running: the harness nudges it.
     s.push('turn/completed', turnDone('th-1', 'tu-3'))
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(3), { timeout: 2000 })
-    expect(s.turnStarts('th-1')[2].params.input[0].text).toMatch(/plan|step/i)
+    const nudgeText = s.turnStarts('th-1')[2].params.input[0].text as string
+    expect(nudgeText).toMatch(/plan|step/i)
     expect(ctx.getPlan()?.autoContinues).toBe(1)
+
+    // Harness rows: the report hand-off carries its full text, the nudge a one-line summary with the full text in detail.
+    const systemRows = systemEntries(ctx)
+    const handoff = systemRows.find((e) => e.block.text.includes('Harness: report from engineer-1'))!
+    expect(handoff).toMatchObject({ agentId: 'root', source: 'harness' })
+    expect(handoff.block.detail).toBeUndefined()
+    const nudge = systemRows.find((e) => e.block.detail === nudgeText)!
+    expect(nudge).toMatchObject({ agentId: 'root', source: 'harness' })
+    expect(nudge.block.text).not.toBe(nudgeText)
+    expect(nudge.block.text).not.toContain('\n')
+  })
+
+  it('marks harness rows but leaves agent-to-agent messages unmarked', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ resumeSessionId: 'th-old', run: { ...fakeCtx().run, resumedFrom: 'run-0' } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-old')).toHaveLength(1))
+    const resumed = systemEntries(ctx).find((e) => e.block.text === 'Continued from run run-0')
+    expect(resumed?.source).toBe('harness')
+
+    await s.ask('item/tool/call', { threadId: 'th-old', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+    const before = systemEntries(ctx).length
+    await s.ask('item/tool/call', { threadId: 'th-old', turnId: 'tu-1', callId: 'c-msg', namespace: null, tool: 'send_message', arguments: { to: 'engineer-1', message: 'Use tabs' } })
+    const added = systemEntries(ctx).slice(before)
+    expect(added.length).toBeGreaterThan(0)
+    for (const e of added) expect(e.source).toBeUndefined()
+    expect(added.some((e) => e.block.text.includes('Use tabs'))).toBe(true)
   })
 
   it('gives a writing report its own worktree and integrates it when it finishes', async () => {
@@ -239,6 +270,19 @@ describe('CodexAdapter session', () => {
     expect(s.turnStarts('th-1')).toHaveLength(2)
     const user = ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'user')
     expect(user).toHaveLength(3)
+  })
+
+  it('delivers a message from another run to the root without a transcript block', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const before = ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'system').length
+    await session.receive!({ fromRunId: 'run-9', fromProjectName: 'Other', fromPrompt: 'Do other', text: 'Ping from afar' })
+    await vi.waitFor(() => expect(s.of('turn/steer')).toHaveLength(1))
+    expect(JSON.stringify(s.of('turn/steer')[0].params)).toContain('Ping from afar')
+    expect(ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'system')).toHaveLength(before)
   })
 
   it('refuses spawns the org chart forbids', async () => {

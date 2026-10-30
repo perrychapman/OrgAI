@@ -43,11 +43,14 @@
   gap: 2px;
 }
 
+.sidebar-mock {
+  padding: 0 var(--space-4) var(--space-2);
+}
+
 .sidebar-label {
-  font-size: var(--text-caption);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
   padding: 10px 8px 4px;
 }
 
@@ -80,7 +83,7 @@
   background: var(--text-tertiary);
   flex: none;
 }
-.nav-item .dot.live {
+.nav-item .dot.is-running {
   background: var(--success);
   box-shadow: var(--halo-dot-live);
   animation: breathe 1.6s ease-in-out infinite;
@@ -111,21 +114,134 @@
   box-shadow: var(--halo-dot-warning);
 }
 
+.sidebar-projects {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* Status pills in the topbar keep their words; the path pill shrinks instead. */
+.topbar .pill.run-status {
+  flex-shrink: 0;
+}
+.nav-needs .nav-runs {
+  max-height: calc(var(--space-16) * 2);
+  overflow-y: auto;
+}
+.sidebar-empty {
+  padding: var(--space-1h) var(--space-3);
+  color: var(--text-faint);
+}
+/* A project row: disclosure chevron, the row button, then (when expanded) its open runs. */
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0h);
+}
+.nav-row .nav-item {
+  flex: 1;
+  min-width: 0;
+}
+.nav-chevron,
+.nav-chevron-spacer {
+  flex: none;
+  width: var(--space-5);
+  height: var(--control-sm);
+}
+.nav-chevron {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.nav-chevron:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-chevron:focus-visible,
+.nav-run:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--space-0h));
+}
+.nav-runs {
+  list-style: none;
+  margin: 0 0 var(--space-1) var(--space-6);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.nav-run {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+.nav-run:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-run.active {
+  background: var(--surface-3);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+.nav-run-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-needs .nav-item.needs-you {
+  color: var(--warning-text);
+}
+.nav-needs .nav-item.needs-you .nav-text {
+  flex: 1;
+}
+.nav-needs .nav-runs {
+  margin-left: var(--space-2);
+}
+.nav-run.waiting {
+  align-items: flex-start;
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+.nav-run-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.nav-run-where,
+.nav-run-what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-run-what {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 12px;
   border-top: 1px solid var(--border-default);
   font-size: var(--text-small);
   color: var(--text-secondary);
-}
-
-.notify-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  cursor: pointer;
-  user-select: none;
 }
 
 .pill {
@@ -155,9 +271,20 @@
 .pill.danger .dot {
   background: var(--danger);
 }
-.pill.live .dot {
+.pill.is-running .dot {
   background: var(--success);
   animation: breathe 1.4s ease-in-out infinite;
+}
+.pill.idle .dot {
+  background: var(--info);
+}
+.pill.paused .dot {
+  background: var(--warning);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill.live .dot {
+    animation: none;
+  }
 }
 
 .main {
@@ -166,6 +293,10 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.main:focus {
+  outline: none;
 }
 
 .topbar {
@@ -191,7 +322,7 @@
   text-overflow: ellipsis;
   flex-shrink: 1;
 }
-.topbar .pill.live,
+.topbar .pill.is-running,
 .topbar .pill.ok,
 .topbar .pill.danger {
   flex-shrink: 0;
@@ -222,4 +353,42 @@
   background: var(--surface-3);
   color: var(--text-primary);
   box-shadow: var(--inset-border-strong);
+}
+
+/* N7: the save indicator shrinks (and ellipsizes) before it can run under the section tabs. */
+.topbar .save-indicator {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* N6: on a short sidebar the Needs-you block shows three items and a "+n more" line. */
+.sidebar {
+  container: sidebar / size;
+}
+.nav-needs-more {
+  display: none;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+@container sidebar (max-height: 700px) {
+  .nav-needs .nav-needs-item:nth-child(n + 4) {
+    display: none;
+  }
+  .nav-needs-more {
+    display: block;
+  }
+}
+
+/* The document never scrolls: only the view panes do, so a scrollIntoView can not push the topbar away. */
+html,
+#root {
+  overflow: hidden;
+}
+.settings-block-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }

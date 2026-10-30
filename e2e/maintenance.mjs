@@ -59,6 +59,14 @@ async function waitNotice(re, ms = 30_000) {
   return text
 }
 
+/** Click the confirm button of the in-app ConfirmDialog (window.confirm is gone). */
+async function confirmDialog(button) {
+  const dlg = page.locator('dialog[open]')
+  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.getByRole('button', { name: button, exact: true }).click()
+  await dlg.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+}
+
 try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created')
@@ -91,18 +99,21 @@ try {
 
   // Uninstall refuses while the branch holds work.
   await page.getByRole('button', { name: /Remove OrgAI files from repository/ }).click()
+  await confirmDialog('Remove files')
   const refused = await waitNotice(/unmerged work/)
   check(/unmerged work/.test(refused), 'uninstall refuses while work is pending', refused)
   check(fs.existsSync(path.join(repo, '.orgai', 'ARCHITECTURE.md')), 'architecture file untouched after refusal')
 
   // Discard, then uninstall.
   await rowB.getByRole('button', { name: 'Discard' }).click()
+  await confirmDialog('Discard branch')
   const discarded = await waitNotice(/Discarded worktree-agent-conflictB/)
   check(/Discarded/.test(discarded), 'conflicting branch discarded', discarded)
   await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: 15_000 }).catch(() => {})
   check((await rows.count()) === 0, 'no pending branches left')
 
   await page.getByRole('button', { name: /Remove OrgAI files from repository/ }).click()
+  await confirmDialog('Remove files')
   const removed = await waitNotice(/^Removed /)
   check(/ARCHITECTURE\.md/.test(removed) && /CLAUDE\.md \(OrgAI section\)/.test(removed) && /exclude/.test(removed), 'uninstall removes doc, CLAUDE.md section and exclude line', removed)
   await shot('after')

@@ -1,5 +1,5 @@
-import type { McpRegistryEntry, McpServerSpec } from '@shared/types'
-import { isValidMcpServerName, newId } from '@shared/defaults'
+import type { McpLibraryEntry, McpRegistryEntry, McpServerSpec } from '@shared/types'
+import { SAFE_ID, isValidMcpServerName, newId } from '@shared/defaults'
 
 /**
  * Validation of MCP server specs and building specs from registry entries. Pure; shared by the settings
@@ -174,14 +174,14 @@ function tooLong(s: unknown): boolean {
  * All problems with a spec; empty = valid. `existing` is the project's current servers: the name must be
  * unique among entries with a different id.
  */
-export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSpec[] = []): string[] {
+export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSpec[] = [], where: 'project' | 'library' = 'project'): string[] {
   const errors: string[] = []
   if (!spec || typeof spec !== 'object') return ['The server spec is missing.']
-  if (typeof spec.id !== 'string' || !spec.id) errors.push('The server needs an id.')
+  if (typeof spec.id !== 'string' || !SAFE_ID.test(spec.id)) errors.push('The server id must be 1-128 letters, digits, hyphens or underscores.')
   if (typeof spec.name !== 'string' || !isValidMcpServerName(spec.name)) {
     errors.push('The name must be lowercase kebab-case (letters, digits and single hyphens, at most 48 characters), e.g. "github".')
   } else if (existing.some((s) => s.name === spec.name && s.id !== spec.id)) {
-    errors.push(`A server named "${spec.name}" already exists in this project.`)
+    errors.push(`A server named "${spec.name}" already exists in ${where === 'library' ? 'the MCP library' : 'this project'}.`)
   }
   if (spec.transport !== 'stdio' && spec.transport !== 'http' && spec.transport !== 'sse') errors.push('The transport must be stdio, http or sse.')
   if (spec.transport === 'stdio') {
@@ -239,6 +239,31 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
     errors.push(...pinErrors(spec.command.trim(), spec.args ?? []))
   }
   return errors
+}
+
+/** Library ids double as secret-key segments, so they stay in a safe alphabet. */
+export const LIBRARY_ID = SAFE_ID
+
+/** Problems with a library entry; names are unique within the library. */
+export function validateLibraryEntry(entry: McpLibraryEntry, existing: readonly McpLibraryEntry[] = []): string[] {
+  if (!entry || typeof entry !== 'object') return ['The library entry is missing.']
+  const errors: string[] = []
+  if (typeof entry.id !== 'string' || !LIBRARY_ID.test(entry.id)) errors.push('The library entry id must be 1-128 letters, digits, hyphens or underscores.')
+  const asSpec = (e: McpLibraryEntry): McpServerSpec => ({ ...e, enabled: true })
+  errors.push(...validateSpec(asSpec(entry), existing.map(asSpec), 'library'))
+  return errors
+}
+
+/** Whether two definitions launch the same server (a proposal item whose name matches an existing library entry). */
+export function sameDefinition(a: McpLibraryEntry | McpServerSpec, b: McpLibraryEntry | McpServerSpec): boolean {
+  const key = (e: McpLibraryEntry | McpServerSpec): string =>
+    JSON.stringify([e.transport, e.command ?? '', e.args ?? [], e.url ?? '', Object.entries(e.env ?? {}).sort(), Object.entries(e.headers ?? {}).sort(), [...(e.secretEnv ?? [])].sort(), [...(e.secretHeaders ?? [])].sort()])
+  return key(a) === key(b)
+}
+
+export function assertValidLibraryEntry(entry: McpLibraryEntry, existing: readonly McpLibraryEntry[] = []): void {
+  const errors = validateLibraryEntry(entry, existing)
+  if (errors.length) throw new Error(errors.join(' '))
 }
 
 /** Throws one readable Error listing every problem. */

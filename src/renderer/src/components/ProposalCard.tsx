@@ -1,12 +1,28 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useState } from 'react'
-import type { Proposal, ProposalDecision } from '@shared/types'
+import { Check, Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
+import type { Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
+import { useAppStore } from '../store/useAppStore'
+import { CopyButton } from './ui/CopyButton'
+import { clampLabel } from '../lib/clampLabel'
+import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
+import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
+import { Badge } from './ui/Badge'
+import { Button } from './ui/Button'
+import { Textarea } from './ui/Textarea'
 
 interface Props {
   proposal: Proposal
-  onDecide: (decision: ProposalDecision) => void
+  /** The run the proposal belongs to (named above the card header). */
+  runId: string
+  /** The project's current roles, for the org-chart diff. */
+  currentRoles: Role[]
+  /** The proposing agent's display name, when known. */
+  who?: string
+  onDecide: (decision: ProposalDecision) => void | Promise<void>
 }
 
 const KIND_LABEL: Record<Proposal['kind'], string> = {
@@ -23,75 +39,87 @@ const APPLY_NOTE: Record<Proposal['kind'], string> = {
   mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.'
 }
 
-export default function ProposalCard({ proposal, onDecide }: Props): ReactElement {
+export default function ProposalCard({ proposal, runId, currentRoles, who, onDecide }: Props): ReactElement {
   const [revising, setRevising] = useState(false)
   const [feedback, setFeedback] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit } = useDecisionAnswer()
+  const isSetup = useAppStore((st) => st.runs[runId]?.summary.kind === 'setup')
+  const canSkip = isSetup && proposal.kind === 'mcpServers'
+
+  const skip = (): void => {
+    void submit(() => onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK }))
+  }
 
   const approve = (): void => {
-    setBusy(true)
-    onDecide({ behavior: 'approve' })
+    void submit(() => onDecide({ behavior: 'approve' }))
   }
   const revise = (): void => {
     if (!feedback.trim()) return
-    setBusy(true)
-    onDecide({ behavior: 'revise', feedback: feedback.trim() })
+    void submit(() => onDecide({ behavior: 'revise', feedback: feedback.trim() }))
   }
 
+  // No Reject: ProposalDecision only has approve and revise.
   return (
-    <div className={`proposal kind-${proposal.kind}`}>
-      <div className="proposal-head">
-        <span className="chip">{KIND_LABEL[proposal.kind]}</span>
-        <strong>{proposal.title}</strong>
-      </div>
-      <div className="proposal-body">
-        {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
-        {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} />}
-        {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
-        {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} />}
-      </div>
-      <div className="proposal-note">{APPLY_NOTE[proposal.kind]}</div>
-      {revising && (
-        <textarea
-          className="textarea"
-          autoFocus
-          value={feedback}
-          onChange={(e) => setFeedback(e.target.value)}
-          placeholder="What should change? The Architect revises and proposes again."
-          style={{ marginTop: 8 }}
-        />
-      )}
-      <div className="row" style={{ marginTop: 10 }}>
-        {!revising ? (
+    <DecisionCard
+      kind="proposal"
+      error={error}
+      runId={runId}
+      who={who}
+      title={`${KIND_LABEL[proposal.kind]}: ${proposal.title}`}
+      helper={proposal.kind === 'mcpServers' ? mcpApplyNote(proposalScope(proposal.payload)) : APPLY_NOTE[proposal.kind]}
+      primary={
+        !revising ? (
+          <Button variant="primary" onClick={approve} disabled={busy}>
+            Approve
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={revise} disabled={busy || !feedback.trim()}>
+            Send feedback
+          </Button>
+        )
+      }
+      secondary={
+        !revising ? (
           <>
-            <button className="btn primary" onClick={approve} disabled={busy}>
-              Approve
-            </button>
-            <button className="btn" onClick={() => setRevising(true)} disabled={busy}>
+            <Button onClick={() => setRevising(true)} disabled={busy}>
               Request changes
-            </button>
+            </Button>
+            {canSkip && (
+              <Button onClick={skip} disabled={busy} testId="mcp-proposal-skip">
+                Skip
+              </Button>
+            )}
           </>
         ) : (
-          <>
-            <button className="btn primary" onClick={revise} disabled={busy || !feedback.trim()}>
-              Send feedback
-            </button>
-            <button className="btn ghost" onClick={() => setRevising(false)} disabled={busy}>
-              Back
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+          <Button variant="ghost" onClick={() => setRevising(false)} disabled={busy}>
+            Back
+          </Button>
+        )
+      }
+    >
+      {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
+      {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
+      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
+      {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} roleSlugs={currentRoles.map((r) => r.slug)} />}
+      {revising && (
+        <div className="proposal-feedback">
+          <Textarea
+            autoFocus
+            aria-label="What should change?"
+            value={feedback}
+            onChange={setFeedback}
+            placeholder="What should change? The Architect revises and proposes again."
+          />
+        </div>
+      )}
+    </DecisionCard>
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }): ReactElement {
+function Section({ title, children }: { title: string; children: ReactNode }): ReactElement {
   return (
     <div className="proposal-section">
-      <div className="side-section-title" style={{ margin: '10px 0 4px' }}>
-        {title}
-      </div>
+      <div className="proposal-section-title">{title}</div>
       {children}
     </div>
   )
@@ -100,12 +128,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'architecture' }>['payload'] }): ReactElement {
   return (
     <>
-      <p style={{ margin: 0 }}>{payload.summary}</p>
+      <p className="proposal-lead">{payload.summary}</p>
       {payload.stack.length > 0 && (
         <Section title="Stack">
-          <div className="row wrap" style={{ gap: 5 }}>
+          <div className="proposal-chips">
             {payload.stack.map((s, i) => (
-              <span key={i} className="chip" style={{ textTransform: 'none', letterSpacing: 0 }}>
+              <span key={i} className="chip proposal-chip">
                 {s}
               </span>
             ))}
@@ -157,41 +185,117 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
   )
 }
 
-function OrgChartBody({ payload }: { payload: Extract<Proposal, { kind: 'orgChart' }>['payload'] }): ReactElement {
-  const byId = new Map(payload.roles.map((r) => [r.id, r]))
+type PayloadRole = Extract<Proposal, { kind: 'orgChart' }>['payload']['roles'][number]
+
+function parentLabel(r: DiffRole, all: readonly DiffRole[]): string {
+  return r.reportsTo ? (all.find((x) => x.id === r.reportsTo)?.name ?? 'none') : 'root'
+}
+
+function RoleAvatar({ role }: { role: PayloadRole }): ReactElement {
   return (
-    <>
-      <p style={{ margin: 0, color: 'var(--text-dim)' }}>{payload.rationale}</p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
-        {payload.roles.map((r) => (
-          <details key={r.id} className="proposal-role">
-            <summary>
-              <span className="avatar" style={{ ['--role' as string]: r.color, width: 22, height: 22, fontSize: 9 }}>
-                {initials(r.name)}
-              </span>
-              <span style={{ fontWeight: 600 }}>{r.name}</span>
-              <span className="chip">{r.model}</span>
-              {r.canSpawn && <span className="chip">leads {r.spawnable.length}</span>}
-              <span style={{ color: 'var(--text-faint)', marginLeft: 'auto', fontSize: 11 }}>
-                {r.reportsTo ? `→ ${byId.get(r.reportsTo)?.name ?? ''}` : 'root'}
-              </span>
-            </summary>
-            <div className="proposal-role-body">
-              <div>{r.description}</div>
-              <div className="mono-dim">tools: {r.tools.join(', ') || 'none'}</div>
-              {r.responsibilities.length > 0 && (
-                <ul className="proposal-list">
-                  {r.responsibilities.map((x, i) => (
-                    <li key={i}>{x}</li>
-                  ))}
-                </ul>
-              )}
-              <div className="proposal-prompt">{r.prompt}</div>
-            </div>
-          </details>
-        ))}
+    <span className="avatar org-diff-avatar" style={{ ['--role' as string]: role.color }} aria-hidden="true">
+      {initials(role.name)}
+    </span>
+  )
+}
+
+function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
+  return (
+    <details className="org-diff-row is-added">
+      <summary>
+        <Badge tone="success" icon={Plus}>
+          Added
+        </Badge>
+        <RoleAvatar role={role} />
+        <span className="org-diff-name">{role.name}</span>
+        <span className="org-diff-meta">
+          reports to {parentLabel(role, all)} · {role.model}
+          {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
+        </span>
+      </summary>
+      <div className="proposal-role-body">
+        <div>{role.description}</div>
+        <div className="mono-dim">tools: {role.tools.join(', ') || 'none'}</div>
+        {role.responsibilities.length > 0 && (
+          <ul className="proposal-list">
+            {role.responsibilities.map((x, i) => (
+              <li key={i}>{x}</li>
+            ))}
+          </ul>
+        )}
+        <div className="proposal-prompt">{role.prompt}</div>
       </div>
-    </>
+    </details>
+  )
+}
+
+function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement {
+  return (
+    <div className="org-diff-row is-changed">
+      <div className="org-diff-line">
+        <Badge tone="warning" icon={Pencil}>
+          {item.renamed ? 'Renamed' : 'Changed'}
+        </Badge>
+        <RoleAvatar role={item.role} />
+        <span className="org-diff-name">{item.role.name}</span>
+      </div>
+      <ul className="org-diff-fields">
+        {item.changes.map((c) => (
+          <li key={c.field}>{c.field === 'prompt' ? 'prompt changed' : `${c.label}: ${c.from} -> ${c.to}`}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { kind: 'orgChart' }>['payload']; currentRoles: Role[] }): ReactElement {
+  const diff = diffOrgChart(currentRoles, payload.roles)
+  return (
+    <div className="org-diff">
+      <p className="org-diff-summary">{diff.summary}</p>
+      <p className="proposal-rationale">{payload.rationale}</p>
+      {diff.added.length > 0 && (
+        <div className="org-diff-group" role="group" aria-label="Added roles">
+          {diff.added.map((r) => (
+            <AddedRow key={r.id} role={r} all={payload.roles} />
+          ))}
+        </div>
+      )}
+      {diff.changed.length > 0 && (
+        <div className="org-diff-group" role="group" aria-label="Changed roles">
+          {diff.changed.map((c) => (
+            <ChangedRow key={c.role.id} item={c} />
+          ))}
+        </div>
+      )}
+      {diff.removed.length > 0 && (
+        <div className="org-diff-group" role="group" aria-label="Removed roles">
+          {diff.removed.map((r) => (
+            <div key={r.id} className="org-diff-row is-removed">
+              <div className="org-diff-line">
+                <Badge tone="danger" icon={Minus}>
+                  Removed
+                </Badge>
+                <span className="org-diff-name">{r.name}</span>
+                <span className="org-diff-meta">was reporting to {parentLabel(r, currentRoles)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {diff.unchanged.length > 0 && (
+        <details className="org-diff-unchanged">
+          <summary>
+            {diff.unchanged.length} unchanged {diff.unchanged.length === 1 ? 'role' : 'roles'}
+          </summary>
+          <ul className="proposal-list">
+            {diff.unchanged.map((r) => (
+              <li key={r.id}>{r.name}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   )
 }
 
@@ -209,11 +313,11 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
   if (payload.maxAutoContinues !== undefined) rows.push(['Max automatic continues per run', String(payload.maxAutoContinues)])
   return (
     <>
-      <p style={{ margin: 0, color: 'var(--text-dim)' }}>{payload.rationale}</p>
+      <p className="proposal-rationale">{payload.rationale}</p>
       {rows.length > 0 && (
-        <div className="agent-summary" style={{ padding: '10px 0 0', border: 0 }}>
+        <div className="proposal-kv">
           {rows.map(([k, v]) => (
-            <span key={k} style={{ display: 'contents' }}>
+            <span key={k} className="proposal-kv-row">
               <span className="k">{k}</span>
               <span className="v">{v}</span>
             </span>
@@ -246,53 +350,73 @@ function ClampText({ text }: { text: string }): ReactElement {
     <>
       <p className={`mcp-prop-text${long && !open ? ' clamped' : ''}`}>{text}</p>
       {long && (
-        <button type="button" className="mcp-link" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Button variant="ghost" size="sm" onClick={() => setOpen((o) => !o)}>
           {open ? 'Show less' : 'Show more'}
-        </button>
+        </Button>
       )}
     </>
   )
 }
 
-function McpServersBody({ payload }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload'] }): ReactElement {
-  const remove = payload.remove ?? []
-  const secrets = payload.secrets ?? []
+function McpServersBody({ payload, roleSlugs }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload']; roleSlugs: string[] }): ReactElement {
+  const scope = proposalScope(payload)
+  const removals = removalLabels(payload)
   return (
     <div className="mcp-prop">
+      <div className="mcp-prop-scope">
+        <Badge tone="info" testId="mcp-proposal-scope">
+          {scope === 'library' ? 'Library' : 'This project'}
+        </Badge>
+        <span className="mcp-prop-scope-note">{scope === 'library' ? 'Changes your MCP library' : 'Changes this project’s MCP servers'}</span>
+      </div>
       <ClampText text={payload.rationale} />
       {payload.upsert.map((s) => {
-        const target = s.transport === 'stdio' ? [s.command ?? '', ...(s.args ?? [])].join(' ').trim() : (s.url ?? '')
-        const slots = secrets.filter((x) => x.serverId === s.id).map((x) => x.name)
-        const secretNames = slots.length > 0 ? slots : [...(s.secretEnv ?? []), ...(s.secretHeaders ?? [])]
+        const pin = pinState(s)
+        const secrets = secretsLine(payload, s.id)
+        const cmd = proposalCommand(s)
+        const source = proposalSource(s)
+        const who = whoCanUse(s, roleSlugs, scope)
         return (
-          <div key={s.id} className="mcp-prop-server" data-server={s.name}>
+          <div key={s.id} className="mcp-prop-server" data-server={clampLabel(s.name)}>
             <div className="mcp-prop-head">
-              <strong>{s.name}</strong>
-              <span className="chip">{s.transport}</span>
-              {s.registry && <span className="chip">{`${s.registry.registryType} ${s.registry.identifier}@${s.registry.version}`}</span>}
+              <strong>{upsertAction(s, scope)}</strong>
+              {scope === 'project' && s.projectOnly && !s.libraryId && <Badge tone="neutral">Project only</Badge>}
+              {pin === 'pinned' && (
+                <Badge tone="success" icon={Check}>
+                  Pinned
+                </Badge>
+              )}
+              {pin === 'unpinned' && (
+                <Badge tone="danger" icon={TriangleAlert}>
+                  Version not pinned
+                </Badge>
+              )}
             </div>
             {s.description && <ClampText text={s.description} />}
-            <div className="code-block">{target}</div>
-            <div className="mono-dim">roles: {s.roles === undefined ? 'every role' : s.roles.length > 0 ? s.roles.join(', ') : 'none'}</div>
-            {s.env && Object.keys(s.env).length > 0 && (
-              <div className="mono-dim">
-                env:{' '}
-                {Object.entries(s.env)
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join(', ')}
+            {source && <div className="mcp-prop-source muted">{source}</div>}
+            {cmd && (
+              <div className="mcpi-command">
+                <div className="code-block" data-testid="mcp-proposal-command" title={cmd}>
+                  {cmd}
+                </div>
+                <CopyButton text={cmd} label={s.transport === 'stdio' ? 'Copy command' : 'Copy URL'} />
               </div>
             )}
-            {secretNames.length > 0 && <div className="mono-dim">secrets to set after approving: {secretNames.join(', ')}</div>}
+            <ul className="mcp-prop-effects">
+              <li>{effectLine(s)}</li>
+              {who && <li>Who can use it: {who}</li>}
+              {secrets && <li>{secrets}</li>}
+            </ul>
           </div>
         )
       })}
-      {remove.length > 0 && (
-        <Section title="Remove">
-          <div className="proposal-rules">
-            {remove.map((id) => (
-              <code key={id}>{id}</code>
+      {removals.length > 0 && (
+        <Section title="Removals">
+          <ul className="mcp-prop-effects">
+            {removals.map((r) => (
+              <li key={r}>{r}</li>
             ))}
-          </div>
+          </ul>
         </Section>
       )}
     </div>

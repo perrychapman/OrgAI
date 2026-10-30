@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { RunStatus } from '@shared/types'
-import { canContinue, chainOf, continuedBy, newestOf, projectCounts, relativeTime, sessionOpenRunId, statusLabel } from './runChains'
+import { canContinue, chainOf, continuedBy, newestOf, predecessorOf, projectCounts, relativeTime, sessionOpenRunId, statusLabel } from './runChains'
 
 const r = (id: string, startedAt: number, extra: { sessionId?: string; resumedFrom?: string; status?: RunStatus; projectId?: string } = {}) => ({
   id,
@@ -61,6 +61,17 @@ describe('runChains', () => {
     for (const status of ['starting', 'running', 'idle', 'stopping'] as RunStatus[]) expect(canContinue([r('a', 1, { sessionId: 's', status })], 'a')).toBe(false)
     expect(canContinue([r('a', 1, { status: 'finished' })], 'a')).toBe(false)
     expect(canContinue([], 'a')).toBe(false)
+  })
+  it('finds the direct predecessor of a continued run', () => {
+    expect(predecessorOf(runs, 'c')?.id).toBe('b')
+    expect(predecessorOf(runs, 'a')).toBeUndefined()
+  })
+  it('counts merge reviews and MCP installs as needing the user', () => {
+    const list = [
+      { summary: r('1', 1, { status: 'idle' }), mergeReviews: [{}] },
+      { summary: r('2', 2, { status: 'running' }), mcpInstalls: [{}] }
+    ]
+    expect(projectCounts(list, 'p')).toEqual({ open: 2, needsYou: 2 })
   })
   it('counts questions, proposals and blocked plans as needing the user, only on open runs', () => {
     const list = [

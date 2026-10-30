@@ -1,8 +1,10 @@
 import type {
   AdapterChoice,
+  AppearanceSettings,
   AppSettings,
   ConnectionId,
   ImageMediaType,
+  McpLibraryEntry,
   McpServerSpec,
   ModelFamily,
   ModelRef,
@@ -21,6 +23,13 @@ import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
+/** Project.runMessaging when unset: cross-run messaging is opt-in per project. */
+export const DEFAULT_RUN_MESSAGING = false
+
+/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default off). */
+export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
+  return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
+}
 /** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
 export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
 export const MAX_SUBAGENT_DEPTH_LIMIT = 5
@@ -161,6 +170,43 @@ export function mcpSecretNames(spec: Pick<McpServerSpec, 'secretEnv' | 'secretHe
   return [...(spec.secretEnv ?? []), ...(spec.secretHeaders ?? [])]
 }
 
+/** Remote transports can use OAuth (mcp:authorize); stdio servers never do. */
+export function mcpSupportsOAuth(spec: Pick<McpServerSpec, 'transport'>): boolean {
+  return spec.transport === 'http' || spec.transport === 'sse'
+}
+
+/** Runs refresh an OAuth access token that expires within this window before they start (and mcp:test before probing). */
+export const MCP_OAUTH_REFRESH_SKEW_MS = 5 * 60_000
+
+/** The project-owned fields of a linked server; everything else comes from its library entry. */
+export type McpLinkFields = Pick<McpServerSpec, 'id' | 'enabled' | 'roles' | 'addedAt'>
+
+/**
+ * The project copy of a linked library entry: the entry's fields plus the project-owned ones, source 'library'
+ * and libraryId = entry.id. McpService calls it on every read so a library edit reaches every project.
+ */
+export function linkedSpec(entry: McpLibraryEntry, own: McpLinkFields): McpServerSpec {
+  const { id: _entryId, source: _source, ...rest } = entry
+  return {
+    ...rest,
+    id: own.id,
+    enabled: own.enabled,
+    ...(own.roles ? { roles: [...own.roles] } : {}),
+    source: 'library',
+    libraryId: entry.id,
+    addedAt: own.addedAt
+  }
+}
+
+/**
+ * A library entry built from a project server (promote, or a proposal that saves a new server to the library):
+ * the project-owned fields are dropped, and a linked spec's 'library' source becomes 'user'.
+ */
+export function libraryEntryFromSpec(spec: McpServerSpec, id: string): McpLibraryEntry {
+  const { enabled: _enabled, roles: _roles, libraryId: _libraryId, ...rest } = spec
+  return { ...rest, id, source: spec.source === 'library' ? 'user' : spec.source }
+}
+
 /**
  * The enabled MCP servers a role may use: those with no `roles` list, those listing the role's slug, and
  * those the role is granted explicitly in Role.mcpServers.
@@ -170,6 +216,17 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
     (s) => s.enabled && (s.roles === undefined || s.roles.includes(role.slug) || (role.mcpServers ?? []).includes(s.id))
   )
 }
+
+/** Default look. Theme stays 'dark' until the light theme is signed off, then becomes 'system' (plan.md section 2). */
+export const DEFAULT_APPEARANCE: AppearanceSettings = {
+  theme: 'dark',
+  accent: '#7c5cff',
+  canvas: { pattern: 'dots', tint: true, edges: 'curved', minimap: false },
+  reduceMotion: 'system'
+}
+
+/** Window background before the renderer paints, per resolved theme (matches --surface-0 in tokens.css). */
+export const THEME_BACKGROUND = { dark: '#0b0d12', light: '#f4f5f9' } as const
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPermissionMode: 'auto',
@@ -182,6 +239,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   connections: defaultConnections(),
   defaultConnection: 'anthropic',
   notifications: true,
+  appearance: DEFAULT_APPEARANCE,
   opusGuardThreshold: 80,
   defaultPreferSonnetNearLimit: false,
   defaultAutoContinue: true,
@@ -358,4 +416,10 @@ export function newProject(input: { name: string; path: string; brief: string; s
 /** Root orchestrator = the role with no manager. Falls back to the first role. */
 export function rootRole(project: Project): Role | undefined {
   return project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+}
+
+/** Ids that become file names, secret-key segments or map keys: a conservative alphabet. */
+export const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/
+export function isSafeId(x: unknown): x is string {
+  return typeof x === 'string' && SAFE_ID.test(x)
 }

@@ -11,6 +11,23 @@ Planning rules, taken from `.orgai/ARCHITECTURE.md` and `CLAUDE.md`:
 - Token-spending e2e (`setup.mjs`, `history.mjs`, `worktree.mjs`) and smoke scripts are never run by a brief. Their selectors are updated and checked with `node --check` only; the user runs them with consent.
 - Each brief lands as one descriptive commit plus a merge commit.
 
+## 0. Revision 2: briefs from the UX review
+
+Source: `ux-review.md` section 4; design decisions in `spec.md` section 12. These briefs follow the earlier B-series. The earlier B5 (shell, navigation, file split) plus the layout regions and primitives of `spec.md` 12.8 (`CanvasFrame`, `SidePanel`, `ConfirmDialog`, `Input`, `Textarea`, `Checkbox`, `IconButton`) is **phase 0, the shell pass**: it lands first, alone, before any parallel restyle below. Tab model per `spec.md` 12.2 (`Live` / `Org chart` / `Settings`) is part of phase 0.
+
+| Phase | Brief | Findings | Scope |
+| --- | --- | --- | --- |
+| 0 | Shell pass | M11, M15 (skip link, real buttons), L1, L10 | Tabs, sidebar footer, `saveStatus` slice and topbar indicator (M10), layout regions, new primitives, `.pill is-*` status class and `runStatus()` mapping |
+| 1 (runtime first) | **C. Settings architecture and appearance** (runtime half) | H2, H8 | `AppSettings.appearance`, notifications single source, `nativeTheme` |
+| 2 (parallel after phase 0) | **A. Run view correctness and decisions** | H4, H5, H7, M2, M4, M5, M7, M16 display, M17, M19, L9 | Docked decision tray and one card anatomy (`spec.md` 12.1), clear pending on terminal status, status vocabulary (12.4), run strip overflow |
+| 2 | **B. Projects and first run** | H1, H3, M3, M18 | Name derivation, folder validation (possible `projects:checkPath` contract), mock checkbox and badge |
+| 2 | **C. Settings architecture and appearance** (UI half) | H2, H8, M10, M11, M12, M13, M14, L1, L10, L11 | App settings pages, sub-nav, Appearance, theme lib, Connections page |
+| 2 | **D. Org chart editor and keyboard model** | H6, M8, M9, M15, L3, L4 | `OrgChartView` split, inspector on keyboard, `ConfirmDialog` for the five `confirm()` calls, draft panel only here |
+| 3 (after A) | **E. Setup completion and history surfaces** | M1, M6, M16 harness text, L2 | Org-chart proposal diff (`spec.md` 12.3), setup-complete banner, Recent runs, transcript humanizing |
+| 3 | **F. Mock and MCP polish** | L7, L8, L12, M3 mock script | `mock.ts` pinned server (Adapter Engineer only), registry dedupe, one test-failure message |
+
+Sequencing from `ux-review.md`: runtime half of C first; then A, B, C-UI and D in parallel except shared files (`SettingsView.tsx` C and D, split first in phase 0; `LiveRunView.tsx` A then E; `ProjectsView.tsx` B then D; `shell.css` A and C). The H7 rename (`pill live` to `pill is-running`) can ship on its own and is folded into phase 0.
+
 ## 1. Dependency graph and waves
 
 ```

@@ -85,9 +85,12 @@
   align-items: center;
   gap: var(--space-2);
 }
-.mcp-row.off .mcp-row-id,
-.mcp-row.off .mcp-row-meta {
-  opacity: 0.6;
+/* Off servers stay readable: secondary text, never an opacity fade. */
+.mcp-row.off .mcp-name {
+  color: var(--text-secondary);
+}
+.mcp-test-btn {
+  display: contents;
 }
 .mcp-name {
   font-size: var(--text-body);
@@ -201,6 +204,9 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+.mcp-result:focus-visible {
+  outline-offset: 0;
+}
 .mcp-role-panel {
   padding: var(--space-2);
   border: 1px solid var(--border-default);
@@ -211,23 +217,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-4);
-}
-.mcp-check {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-sm);
-  font-size: var(--text-small);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-.mcp-check input {
-  accent-color: var(--accent);
-  margin: 0;
-}
-.mcp-check input:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
 }
 
 /* Test result panel */
@@ -289,11 +278,6 @@
 .mcp-label {
   font-size: var(--text-caption);
   color: var(--text-secondary);
-}
-.mcp-segmented {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
 }
 .mcp-vars {
   display: flex;
@@ -393,6 +377,11 @@
   gap: var(--space-2);
   max-height: calc(var(--space-16) * 5);
   overflow: auto;
+  /* Room for the focus ring, which the scroll container would clip. */
+  padding: var(--space-1);
+}
+.mcp-suggest {
+  flex-wrap: wrap;
 }
 .mcp-result {
   display: flex;
@@ -406,13 +395,25 @@
   min-width: 0;
 }
 .mcp-result:hover:not(.blocked),
+.mcp-result:focus-visible:not(.blocked),
 .mcp-result.selected {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 .mcp-result.blocked {
   cursor: default;
-  opacity: 0.8;
+  border-style: dashed;
+}
+.mcp-result.blocked .mcp-result-name {
+  color: var(--text-secondary);
+}
+/* Full reason, wrapped, never truncated. */
+.mcp-reason {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--danger-text);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .mcp-result-name {
   font-weight: var(--weight-semibold);
