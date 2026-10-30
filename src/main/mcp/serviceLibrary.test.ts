@@ -402,6 +402,7 @@ describe('OAuth', () => {
     expect(svc.list(pid)[0].auth.state).toBe('authorized')
 
     svc.upsert({ projectId: pid, spec: spec({ id: 'own', name: 'own', transport: 'http', command: undefined, args: undefined, secretEnv: undefined, url: 'https://own.test/mcp' }) })
+    runAuthorization.mockResolvedValue(flow({ config: { ...flow().config, resource: 'https://own.test/mcp' } }))
     await svc.authorize({ projectId: pid, serverId: 'own' })
     expect(secrets.get(mcpOAuthKey(pid, 'own', 'accessToken'))).toBe('AT-1')
     expect(projects.get(pid)!.mcpServers!.find((s) => s.id === 'own')!.oauth?.clientId).toBe('cid')

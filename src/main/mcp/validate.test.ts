@@ -133,3 +133,13 @@ describe('validateLibraryEntry', () => {
     expect(validateLibraryEntry(entry({ transport: 'http', command: undefined, args: undefined, url: 'ftp://x' })).join()).toMatch(/http\(s\) URL/)
   })
 })
+
+describe('safe ids', () => {
+  it('rejects spec and library ids with unsafe characters', () => {
+    expect(validateSpec(stdio('node', ['x.js'], { id: '../evil' })).join()).toMatch(/id must be/)
+    expect(validateSpec(stdio('node', ['x.js'], { id: '' })).join()).toMatch(/id must be/)
+    expect(validateSpec(stdio('node', ['x.js'], { id: 'ok_id-1' }))).toEqual([])
+    const entry = { ...stdio('node', ['x.js']), id: 'a/b' } as never
+    expect(validateLibraryEntry(entry).join()).toMatch(/id must be/)
+  })
+})

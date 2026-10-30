@@ -934,6 +934,94 @@ describe('RunManager adapter selection, connections and MCP', () => {
       expect((await ctxs[0].resolvedMcpServers!()).map((r) => r.spec.id)).toEqual(['mcp-p'])
       await m.stopAll()
     })
+
+    // Security review H1: a renderer-edited install spec is not trusted.
+    it('refuses an edit that changes the requested id', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', spec: spec({ id: 'mcp-p' }) })
+      const d = await pending
+      expect(d.approved).toBe(false)
+      expect(d.note).toMatch(/keep the requested id/)
+      expect(mcp.persistInstall).not.toHaveBeenCalled()
+      await m.stopAll()
+    })
+
+    it('refuses a requested id that already exists in the project, the library or the run', async () => {
+      const existing = spec({ id: 'mcp-p', name: 'docs', secretEnv: [], enabled: false })
+      const p = makeProject({ path: join(dir, 'repo'), mcpServers: [existing] })
+      const rec = recorder('mock')
+      const mcp = {
+        enabledServers: vi.fn((proj: Project) => (proj.mcpServers ?? []).filter((s) => s.enabled)),
+        resolve: vi.fn((_pid: string, s: McpServerSpec) => ({ spec: s, env: {}, headers: {} })),
+        persistInstall: vi.fn((): Project => p),
+        searchRegistry: vi.fn(async () => ({ entries: [] })),
+        libraryEntries: vi.fn(() => [{ id: 'mcpl_x', name: 'lib', transport: 'stdio' as const, command: 'npx', source: 'user' as const, addedAt: '' }])
+      }
+      const { m } = setupManager(p, { mock: rec.adapter }, { mcp })
+      const run = await m.start({ project: p, prompt: 'go' })
+      const ctx = rec.ctxs[0]
+      for (const id of ['mcp-p', 'mcpl_x']) {
+        const { pending, req } = await ask(ctx, spec({ id, name: `n-${id}`.replace('_', '-') }))
+        m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'run' })
+        const d = await pending
+        expect(d.approved).toBe(false)
+        expect(d.note).toMatch(/already exists/)
+      }
+      const first = await ask(ctx, spec({ id: 'mcp-run', name: 'run-one' }))
+      m.answerMcpInstall(run.id, first.req.id, { approved: true, scope: 'run' })
+      expect((await first.pending).approved).toBe(true)
+      const again = await ask(ctx, spec({ id: 'mcp-run', name: 'run-two' }))
+      m.answerMcpInstall(run.id, again.req.id, { approved: true, scope: 'run' })
+      expect((await again.pending).note).toMatch(/already exists/)
+      expect(mcp.persistInstall).not.toHaveBeenCalled()
+      await m.stopAll()
+    })
+
+    it('merges only allowlisted edits and strips oauth, libraryId and library source', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      const edit = {
+        ...spec({ name: 'gh', description: 'mine', transport: 'http', libraryId: 'mcpl_x', source: 'library', oauth: { tokenEndpoint: 'https://attacker.test/token' } }),
+        projectOnly: true
+      } as McpServerSpec
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'project', spec: edit })
+      const d = await pending
+      expect(d.approved).toBe(true)
+      const saved = mcp.persistInstall.mock.calls[0][1] as McpServerSpec & { projectOnly?: boolean }
+      expect(saved).toMatchObject({ id: 'mcp-new', name: 'gh', description: 'mine', transport: 'stdio', source: 'agent' })
+      expect(saved.oauth).toBeUndefined()
+      expect(saved.libraryId).toBeUndefined()
+      expect(saved.projectOnly).toBeUndefined()
+      expect(d.spec).toEqual(saved)
+      await m.stopAll()
+    })
+
+    it('a run-scoped server never reads stored secrets: only the values typed on the card', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs, mcp } = withMcp(p)
+      const run = await m.start({ project: p, prompt: 'go' })
+      const { pending, req } = await ask(ctxs[0])
+      m.answerMcpInstall(run.id, req.id, { approved: true, scope: 'run', secrets: { GITHUB_TOKEN: SECRET } })
+      await pending
+      mcp.resolve.mockClear()
+      const resolved = await ctxs[0].resolvedMcpServers!()
+      expect(resolved[0].env).toEqual({ GITHUB_TOKEN: SECRET })
+      expect(mcp.resolve).not.toHaveBeenCalled()
+      await m.stopAll()
+    })
+
+    it('mcp-assist runs cannot request installs (the gap on the harness project)', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m, ctxs } = withMcp(p)
+      await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
+      expect(ctxs[0].requestMcpInstall).toBeUndefined()
+      await m.stopAll()
+    })
   })
 })
 
