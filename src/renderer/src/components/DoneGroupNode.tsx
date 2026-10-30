@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react'
 import { memo } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { MSG_IN, MSG_OUT } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
+import { IconButton } from './ui/IconButton'
 import { formatCost } from '../lib/layout'
 
 /**
@@ -45,16 +47,9 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
         {conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
         {cost > 0 && <span className="done-cost">{formatCost(cost)}</span>}
       </div>
-      <button
-        className="done-expand"
-        title="Show these reports on the chart"
-        onClick={(e) => {
-          e.stopPropagation()
-          onToggle(parentId)
-        }}
-      >
-        ▾
-      </button>
+      <span className="done-expand" onClick={(e) => e.stopPropagation()}>
+        <IconButton icon={ChevronDown} size="sm" label="Show these reports on the chart" onClick={() => onToggle(parentId)} />
+      </span>
     </div>
   )
 }

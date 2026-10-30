@@ -512,3 +512,17 @@
     display: none;
   }
 }
+
+/* Role names on the New run page: plain tags, not controls. */
+.role-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-0h) var(--space-2);
+  border: 1px solid var(--role);
+  border-radius: var(--radius-sm);
+  color: var(--role);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  cursor: default;
+}

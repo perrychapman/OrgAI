@@ -1,13 +1,32 @@
-import type { ReactElement } from 'react'
-import { ClipboardList, Eye, EyeOff, Pause, RotateCcw, Square } from 'lucide-react'
+import type { ReactElement, ReactNode } from 'react'
+import { useEffect, useId, useRef } from 'react'
+import { Check, ClipboardList, Pause, RotateCcw, Square, TriangleAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { costLabel, planProgress } from '../lib/layout'
 import { needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { runStatus } from '../lib/runStatus'
+import { autoContinueState, isStoppedRun, runStatus } from '../lib/runStatus'
 import { Button } from './ui/Button'
 import { Icon } from './ui/Icon'
+import { Switch } from './ui/Switch'
+
+/** Wraps one control and points its aria-describedby at a helper text; the primitives take no such prop. */
+function Described({ text, visible, children }: { text: string; visible?: boolean; children: ReactNode }): ReactElement {
+  const id = useId()
+  const ref = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    ref.current?.querySelector('button')?.setAttribute('aria-describedby', id)
+  })
+  return (
+    <span className="run-act" ref={ref}>
+      {children}
+      <span id={id} className={visible ? 'run-act-help' : 'sr-only'}>
+        {text}
+      </span>
+    </span>
+  )
+}
 
 interface Props {
   run: RunState
@@ -35,7 +54,19 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
 
   const { summary } = run
   const waiting = needsYou(run)
-  const status = runStatus(summary.status, { waiting, endedWithApp: !!summary.endedWithApp })
+  const auto = autoContinueState({
+    status: summary.status,
+    plan: run.plan,
+    autoContinue: project.autoContinue,
+    maxAutoContinues: project.maxAutoContinues,
+    kind: summary.kind
+  })
+  const status = runStatus(summary.status, {
+    waiting,
+    endedWithApp: !!summary.endedWithApp,
+    stopped: isStoppedRun(run.agents),
+    autoContinuing: auto.active
+  })
   const sessionOpen = summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting'
   const cost = costLabel(summary.totalCostUsd, authMode)
   const tag = runTag(indexes.get(summary.id))
@@ -50,6 +81,11 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
         <span className={`pill run-status ${status.tone}`} title={status.note}>
           <span className="dot" aria-hidden="true" /> {status.word}
         </span>
+        {auto.active && (
+          <span className="run-header-auto">
+            Auto-continuing the plan ({auto.count} of {auto.max})
+          </span>
+        )}
         <span className="run-header-prompt" title={full}>
           {full}
         </span>
@@ -94,28 +130,31 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
           >
             <Icon icon={ClipboardList} size="xs" />
             {progress.done}/{progress.total} steps
-            {run.plan.status === 'done' ? ' ✓' : run.plan.status === 'blocked' ? ' !' : ''}
+            {run.plan.status === 'done' && <Icon icon={Check} size="xs" label="Plan done" />}
+            {run.plan.status === 'blocked' && <Icon icon={TriangleAlert} size="xs" label="Plan blocked" />}
           </button>
         )}
         {agentCount > 1 && (
-          <Button
-            size="sm"
-            variant={collapseFinished ? 'secondary' : 'ghost'}
-            icon={collapseFinished ? EyeOff : Eye}
-            onClick={onToggleCollapse}
-            title={collapseFinished ? 'Finished reports fold into one node per parent. Click to show them all.' : 'Click to fold finished reports into one node per parent.'}
-          >
-            <span className="fold-label">{collapseFinished ? `Folding finished${finishedCount ? ` (${finishedCount})` : ''}` : 'Showing all'}</span>
-          </Button>
+          <span className="run-act run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
+            <Switch checked={collapseFinished} onChange={onToggleCollapse} label="Hide finished agents" />
+            <span className="fold-label" aria-hidden="true">
+              Hide finished agents{collapseFinished && finishedCount ? ` (${finishedCount})` : ''}
+            </span>
+          </span>
         )}
         {sessionOpen && (
           <>
-            <Button size="sm" icon={Pause} onClick={() => void interrupt()} disabled={summary.status !== 'running'}>
-              Interrupt turn
-            </Button>
-            <Button size="sm" variant="danger" icon={Square} onClick={() => void stopRun()}>
-              End session
-            </Button>
+            <Described text="Stops the current turn. The session stays open.">
+              <Button size="sm" icon={Pause} onClick={() => void interrupt()} disabled={summary.status !== 'running'} title="Stops the current turn. The session stays open.">
+                Interrupt turn
+              </Button>
+            </Described>
+            <Described text="Ends the session and stops all of its agents.">
+              <Button size="sm" variant="danger" icon={Square} onClick={() => void stopRun()} title="Ends the session and stops all of its agents.">
+                End session
+              </Button>
+            </Described>
+            {summary.status === 'idle' && !waiting && <span className="run-header-note">Waiting for your next message</span>}
           </>
         )}
         {!sessionOpen && summary.error && (
@@ -124,14 +163,16 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
           </span>
         )}
         {!sessionOpen && summary.kind === 'work' && (summary.status === 'finished' || summary.status === 'error') && (
-          <Button
-            size="sm"
-            icon={RotateCcw}
-            title="Have the Architect review this run and revise the org chart where roles struggled"
-            onClick={() => void startRetro(summary.id)}
-          >
-            Org retrospective
-          </Button>
+          <Described visible text="Starts a session (spends tokens)">
+            <Button
+              size="sm"
+              icon={RotateCcw}
+              title="Have the Architect review this run and revise the org chart where roles struggled"
+              onClick={() => void startRetro(summary.id)}
+            >
+              Org retrospective
+            </Button>
+          </Described>
         )}
       </div>
     </header>

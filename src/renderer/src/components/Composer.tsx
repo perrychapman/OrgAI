@@ -4,7 +4,9 @@ import type { ImageAttachment } from '@shared/types'
 import { MAX_IMAGES_PER_MESSAGE } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { ComposerImages, filesToImages } from './ImageAttachments'
+import { Paperclip } from 'lucide-react'
 import { Button } from './ui/Button'
+import { IconButton } from './ui/IconButton'
 
 interface Props {
   /** Key of the draft in the store: a run id, or newRunDraftKey(projectId). */
@@ -40,6 +42,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
   const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   const labelId = useId()
   const canSend = (text.trim().length > 0 || images.length > 0) && !busy
 
@@ -137,7 +140,24 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
           }}
           placeholder={placeholder}
         />
-        <div className="composer-help">Enter to send · Shift+Enter for a new line</div>
+        <div className="composer-foot">
+          <IconButton icon={Paperclip} label="Attach images" size="sm" onClick={() => fileRef.current?.click()} />
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? [])
+              e.target.value = ''
+              if (files.length > 0) void addImages(files)
+            }}
+          />
+          <div className="composer-help">Enter to send · Shift+Enter for a new line · paste or drop images</div>
+        </div>
       </div>
       <Button variant="primary" disabled={!canSend} onClick={() => void submit()}>
         {primaryLabel}

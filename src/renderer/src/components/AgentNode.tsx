@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
+import { Check, TriangleAlert } from 'lucide-react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import type { AgentInstance } from '@shared/types'
 import { costLabel, formatElapsed, formatTokens, initials } from '../lib/layout'
+import { Icon } from './ui/Icon'
 import { activeRun, useAppStore } from '../store/useAppStore'
 
 export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
@@ -57,8 +59,12 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
         <div className="avatar-wrap">
           <div className="avatar">{initials(agent.name)}</div>
           <div className="ring" />
-          {agent.state === 'done' && <div className="badge">✓</div>}
-          {agent.state === 'error' && <div className="badge">!</div>}
+          {agent.state === 'done' && <div className="badge">
+              <Icon icon={Check} size="xs" label="Finished" />
+            </div>}
+          {agent.state === 'error' && <div className="badge">
+              <Icon icon={TriangleAlert} size="xs" label="Failed" />
+            </div>}
         </div>
         <div className="title">
           <div className="name" title={agent.name}>

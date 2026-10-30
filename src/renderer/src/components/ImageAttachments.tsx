@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { X } from 'lucide-react'
-import { Icon } from './ui/Icon'
+import { IconButton } from './ui/IconButton'
 import type { ImageAttachment, ImageMediaType } from '@shared/types'
 import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES, SUPPORTED_IMAGE_TYPES } from '@shared/defaults'
 
@@ -58,9 +58,9 @@ export function ComposerImages({ images, onRemove }: { images: ImageAttachment[]
       {images.map((img, i) => (
         <li key={i} className="attach-item">
           <img className="attach-thumb" src={dataUrl(img)} alt={img.name ?? `Attached image ${i + 1}`} />
-          <button type="button" className="attach-remove" aria-label={`Remove image ${i + 1}`} onClick={() => onRemove(i)}>
-            <Icon icon={X} size="xs" />
-          </button>
+          <span className="attach-remove">
+            <IconButton icon={X} size="sm" label={`Remove image ${i + 1}`} onClick={() => onRemove(i)} />
+          </span>
         </li>
       ))}
     </ul>
