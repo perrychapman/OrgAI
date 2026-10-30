@@ -282,3 +282,22 @@ Residual conflict points (expect small textual merges, not logic conflicts): `e2
 4. Keyboard walk-through of the new controls (tab, arrows, `Esc`, focus return).
 5. e2e selectors updated in the same commit; button names relied on by scripts unchanged unless listed in `spec.md` section 10.
 6. One descriptive commit and a merge commit, body explaining why.
+
+## 8. Revision 3: placement and brand briefs
+
+Source: `ui-review-2.md` (findings P1-P15, B1-B10 and the code audit AU1-AU14; full briefs with file lists, selector changes and the exclusivity matrix are in its section D). Decisions are reflected in `spec.md` (Revision 3 note and section 9). Phase 1 is serialized and lands before Phase 2; Phases 2 and 3 run their briefs in parallel on disjoint files; Phase 4 is serial.
+
+| Phase | Brief | Scope | Closes | Size | Depends on |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1A Tokens, brand assets, primitives | `tokens.css` surfaces, borders, gradient and type tokens; `mark.svg`, `mark-glyph.svg`; `Badge`, `Popover`, `Tabs`, `EmptyState`, `BrandLockup`; neutral disabled button; avatar tint | B1, B2, B3, B5, B6, B7, AU4, AU10 | L | none |
+| 1 | 1B Shell | Sidebar (lockup, rail below 1180 px, Ctrl/Cmd+B, Needs-you popover, account row with usage popover, gear), topbar (folder name, underline tabs, one status carrier), status carriers, window title, skip link; all shell selector updates in `e2e/*.mjs` | P3, P4, P5, P6, P9, P10, P15, B4, AU2, AU5, AU6, AU8, AU9, AU13 | L | 1A |
+| 2 | 2A Run workspace | Merge run strip and header (40 px), canvas toolbar (metadata, zoom, fold, legend popover), tray under the canvas (remove the `max-height: 420px` dock), side panel auto-collapse, composer 96 px, `NewRunPage` | P1, P2, P3, P7 (layout), P13, B3, B6, B9, AU1, AU11 | L | 1B |
+| 2 | 2B Decision cards | Action-as-title card anatomy, compact mode, `Badge` kind chips (security pass) | P7, B3, B4 | M | 1B |
+| 2 | 2C Transcript and History | Side-panel tabs, transcript text size, History status badge (security pass on Markdown) | P6, B6 | M | 1B |
+| 3 | 3A Org chart tab | Primary Add role, single heading, conditional drafting primary, 320 px panel, role nodes | P8, B8 | M | Phase 2 |
+| 3 | 3B Projects and New project | Cards (folder, last run, overflow menu), grid, form two-column with sticky submit | P11, P14 | M | Phase 2 |
+| 3 | 3C Settings pages | One heading per page, section pattern, surfaces | P10, P12 | M | Phase 2 |
+| 4 | 4A Nodes | Node content, working ring colour, remove glow and three of four loops | B8, AU3, AU14 | M | Phase 3 |
+| 4 | 4B Cleanup and keyboard | Delete `.pill` and `.chip`, small-text and raw-px sweep, Tab-order assertion | rest of B3, B6, P15 | S | 4A |
+
+Selector changes to carry with the briefs: `.nav-item` Settings becomes the "App settings" gear button; `.topbar .tabs` becomes the `Project sections` tablist; `.topbar .pill` (path and run status) becomes `[data-testid=project-folder]` and the selected run tab; `.run-header` becomes `[data-testid=run-strip]` and `[data-testid=run-meta]`; `.side .tabs` becomes the side-panel tablist. Contract request to the Runtime Lead (non-blocking): a brand-tonal `ROLE_COLORS` palette in `src/shared/defaults.ts`.
