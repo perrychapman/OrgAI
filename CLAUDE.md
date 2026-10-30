@@ -3,7 +3,7 @@
 Electron + electron-vite + React 19 + TypeScript. React Flow (`@xyflow/react`) for both the org chart editor and
 the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 
-- `npm run typecheck` runs both tsconfigs (node + web). Keep it clean. TypeScript 6: no `baseUrl`, paths are `./`-relative.
+- `npm run typecheck` runs both tsconfigs (node + web). Keep it clean. TypeScript 7: no `baseUrl`, paths are `./`-relative.
 - Shared types live in `src/shared/types.ts`. Anything crossing IPC must be defined there and be structured-clone safe.
 - The renderer only sees normalized `RunEvent`s. Vendor specifics stay inside `src/main/runtime/<provider>.ts`.
 - Adding a provider: the adapter is SDK event mapping plus hook mechanics only (spawn enforcement, deciding isolation

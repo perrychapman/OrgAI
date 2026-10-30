@@ -3,9 +3,12 @@
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
+const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const savedProvider = (page, name) => page.evaluate(async (n) => (await window.orgai.projects.list()).find((p) => p.name === n)?.provider?.id, name)
+let toggleDone = false
 const NAME = 'E2E connections (orgai test)'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-conn-'))
 const repo = path.join(base, 'repo')
@@ -34,6 +37,20 @@ try {
       check(ov.sw <= ov.cw, `no horizontal scroll on connections at ${w}x${h} ${theme}`, JSON.stringify(ov))
       await shot(`connections-${w}x${h}-${theme}`)
 
+      // About block
+      const about = page.locator('[data-testid=about-block]')
+      check((await about.count()) === 1, `about block present at ${w}x${h} ${theme}`)
+      await about.scrollIntoViewIfNeeded()
+      const aboutText = (await about.textContent()) ?? ''
+      check(aboutText.includes(PKG_VERSION), `about block shows version ${PKG_VERSION}`, aboutText.slice(0, 80))
+      const info = await page.evaluate(() => window.orgai.app.info())
+      check(fs.realpathSync(info.dataDir) === fs.realpathSync(DATA_DIR), 'app.info dataDir equals ORGAI_DATA_DIR', info.dataDir)
+      const shownPaths = await about.locator('.about-path .mono').allTextContents()
+      check(shownPaths.some((t) => { try { return fs.realpathSync(t) === fs.realpathSync(DATA_DIR) } catch { return false } }), 'about block shows the data folder', shownPaths.join(' | '))
+      const aboutOv = await about.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }))
+      check(aboutOv.sw <= aboutOv.cw + 1, `about block does not overflow at ${w}x${h} ${theme}`, JSON.stringify(aboutOv))
+      await shot(`about-${w}x${h}-${theme}`)
+
       // Project settings
       await page.locator('.nav-item', { hasText: NAME }).first().click()
       await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
@@ -44,6 +61,25 @@ try {
       check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
       check((await page.getByRole('button', { name: 'Add from registry' }).count()) === 1, 'Add from registry button present')
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
+      const toggle = page.locator('[data-testid=mock-adapter-toggle]')
+      check((await toggle.count()) === 1, `mock toggle present at ${w}x${h} ${theme}`)
+      if (!toggleDone) {
+        toggleDone = true
+        const before = await savedProvider(page, NAME)
+        check((await toggle.getAttribute('aria-checked')) === 'false', 'mock toggle starts unchecked', String(before))
+        await toggle.click()
+        await sleep(800)
+        check((await toggle.getAttribute('aria-checked')) === 'true', 'mock toggle is checked after click')
+        check((await savedProvider(page, NAME)) === 'mock', 'saved provider.id is mock when toggled on')
+        check(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled), 'connection fieldset disabled while mock is on')
+        await shot(`mock-on-${w}x${h}-${theme}`)
+        await toggle.click()
+        await sleep(800)
+        check((await toggle.getAttribute('aria-checked')) === 'false', 'mock toggle unchecked after second click')
+        const after = await savedProvider(page, NAME)
+        check(after === before && (after === 'claude' || after === 'codex'), 'provider.id restored to the connection adapter', String(after))
+        check(!(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled)), 'connection fieldset enabled again')
+      }
       await shot(`project-connection-${w}x${h}-${theme}`)
       await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
       await shot(`project-mcp-${w}x${h}-${theme}`)
