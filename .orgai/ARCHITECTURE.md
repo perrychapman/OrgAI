@@ -206,6 +206,11 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Harness tool audiences: 'root' tools go to the root role only. 'spawners' tools (list_mcp_servers, search_mcp_registry, request_mcp_install) go to the root and every canSpawn role.
 - usage.ts stays vendor-neutral and never imports the SDK. Mind the unit mismatch: usage responses give 0-100 percent and ISO resets, while rate_limit_event gives a 0-1 fraction and epoch seconds.
 - Agent parent chains are trees. Adapters resolve parents through agentTree.resolveParent, RunManager.get sanitizes stored records, and every renderer walk over parentId is cycle-safe.
+- Session chains: a run and its continuations form a chain (runManager.sessionChain follows resumedFrom links both ways and shared sessionIds).
+  - One live run per provider session. RunManager.continueRun refuses with "Session already open: run <id> ..." while a chain member is live, including a continuation whose init has not arrived.
+  - A continuation resumes the chain's newest ended run, whichever run the user picked, and logs which run it continued.
+  - Runs the store finds still live at startup were cut by the app quitting or crashing. They become finished with endedWithApp and stay continuable.
+- Git operations on one checkout are serialized through worktrees.withRepoLock (keyed by pathKey of the merge target). integrateWorktree, commitLeftovers, discardWorktree and prepareRepo take it; a merge review waits outside the lock, and different checkouts never block each other.
 - SDK spawns go through the adapter's EXECUTABLE_OPTION, and the native CLIs stay in asarUnpack.
 - PLANNED, with the UI overhaul (not in force for code that does not use them yet):
   - Radix-based components/ui and a components/layout panel shell.

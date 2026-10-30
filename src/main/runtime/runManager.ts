@@ -89,6 +89,50 @@ interface ActiveRun {
   limited?: { until?: number; window?: string }
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /** The provider session this run resumes; known before the adapter reports summary.sessionId at init. */
+  resumeSessionId?: string
+}
+
+/** Statuses of a run whose session is open (or opening). */
+const LIVE_STATUSES: ReadonlySet<RunSummary['status']> = new Set(['starting', 'running', 'idle', 'stopping'])
+
+/**
+ * The session chain of `from`: every run of its project connected to it through resumedFrom links (in either
+ * direction, transitively) or a shared non-empty sessionId. Both are followed because it is unverified whether
+ * a resumed provider session reports the same session id. Cycle-safe. Includes `from`.
+ */
+export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[] {
+  const byId = new Map<string, RunSummary>()
+  for (const r of runs) if (r.projectId === from.projectId) byId.set(r.id, r)
+  if (!byId.has(from.id)) byId.set(from.id, from)
+  const ids = new Set([from.id])
+  const sessions = new Set<string>()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const r of byId.values()) {
+      if (ids.has(r.id)) {
+        if (r.sessionId && !sessions.has(r.sessionId)) {
+          sessions.add(r.sessionId)
+          changed = true
+        }
+        if (r.resumedFrom && byId.has(r.resumedFrom) && !ids.has(r.resumedFrom)) {
+          ids.add(r.resumedFrom)
+          changed = true
+        }
+      } else if ((r.sessionId && sessions.has(r.sessionId)) || (r.resumedFrom && ids.has(r.resumedFrom))) {
+        ids.add(r.id)
+        changed = true
+      }
+    }
+  }
+  return [...byId.values()].filter((r) => ids.has(r.id))
+}
+
+/** A prompt shortened for messages: one line, at most 60 characters. */
+function excerpt(prompt: string): string {
+  const line = prompt.replace(/\s+/g, ' ').trim()
+  return line.length > 60 ? `${line.slice(0, 60)}…` : line
 }
 
 export interface RunManagerOptions {
@@ -132,6 +176,8 @@ export interface StartInput {
   plan?: RunPlan
   /** Pasted images for the first message; validated here before reaching the adapter. */
   images?: ImageAttachment[]
+  /** An info line logged on the new run right after it starts. */
+  notice?: string
 }
 
 export class RunManager {
@@ -200,7 +246,8 @@ export class RunManager {
     resumedFrom,
     resumeBaseCostUsd,
     plan: carriedPlan,
-    images: rawImages
+    images: rawImages,
+    notice
   }: StartInput): Promise<RunSummary> {
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     const { adapter, choice } = this.choose(project, kind)
@@ -225,7 +272,8 @@ export class RunManager {
       pendingMerges: new Map(),
       pendingInstalls: new Map(),
       runServers: new Map(),
-      record: { summary, agents: {}, transcript: [], logs: [] }
+      record: { summary, agents: {}, transcript: [], logs: [] },
+      ...(resumeSessionId ? { resumeSessionId } : {})
     }
     this.runs.set(summary.id, active)
     this.store.upsert(summary)
@@ -260,6 +308,7 @@ export class RunManager {
     }
 
     emit({ type: 'run.status', runId: summary.id, status: 'starting' })
+    if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
 
     const updatePlan = async (plan: RunPlan): Promise<void> => {
@@ -673,23 +722,53 @@ export class RunManager {
     const prompt = text.trim()
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(prompt, images)) throw new Error('Nothing to send')
-    if (from.status === 'paused') {
-      // The paused run is handed over to its continuation; it stays in history as finished.
-      this.clearResume(from.id)
-      const done = this.patchSummary(from.id, { status: 'finished', autoResume: false })
+
+    // One live run per provider session: two runs resuming one session would interleave in it.
+    const chain = this.chainOf(from)
+    const chainIds = new Set(chain.map((r) => r.id))
+    const chainSessions = new Set(chain.flatMap((r) => (r.sessionId ? [r.sessionId] : [])))
+    for (const a of this.runs.values()) {
+      const s = a.summary
+      if (s.projectId !== from.projectId || !LIVE_STATUSES.has(s.status)) continue
+      if (chainIds.has(s.id) || (a.resumeSessionId && chainSessions.has(a.resumeSessionId))) {
+        throw new Error(`Session already open: run ${s.id} ("${excerpt(s.prompt)}") is continuing it; reply there instead.`)
+      }
+    }
+
+    // Continue from the newest ended run of the chain, so no turn of a later continuation is lost.
+    const target = chain
+      .filter((r) => r.sessionId && (r.status === 'finished' || r.status === 'error' || r.status === 'paused'))
+      .reduce((best, r) => (r.startedAt > best.startedAt || (r.startedAt === best.startedAt && r.resumedFrom === best.id) ? r : best), from)
+    const sessionId = target.sessionId ?? from.sessionId
+
+    // A paused run is handed over to its continuation; it stays in history as finished.
+    for (const r of target.id === from.id ? [from] : [target, from]) {
+      if (r.status !== 'paused') continue
+      this.clearResume(r.id)
+      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false })
       if (done) this.broadcast({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false })
     }
     return this.start({
       project,
       prompt,
       images,
-      kind: from.kind,
-      hiddenContext: from.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
-      resumeSessionId: from.sessionId,
-      resumedFrom: from.id,
-      resumeBaseCostUsd: from.totalCostUsd,
-      plan: from.kind === 'work' ? this.get(from.id)?.plan : undefined
+      kind: target.kind,
+      hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
+      resumeSessionId: sessionId,
+      resumedFrom: target.id,
+      resumeBaseCostUsd: target.totalCostUsd,
+      plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
+      ...(target.id !== from.id
+        ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }
+        : {})
     })
+  }
+
+  /** Every run of `from`'s session chain (see sessionChain), with live runs' current summaries. */
+  private chainOf(from: RunSummary): RunSummary[] {
+    const all = new Map(this.store.list(from.projectId).map((r) => [r.id, r]))
+    for (const a of this.runs.values()) if (a.summary.projectId === from.projectId) all.set(a.summary.id, { ...a.summary })
+    return sessionChain([...all.values()], from)
   }
 
   // ---------- pause and auto-resume ----------
