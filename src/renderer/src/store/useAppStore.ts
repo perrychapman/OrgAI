@@ -701,7 +701,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setTabNotice(message) {
     set({ tabNotice: message })
-    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 5000)
+    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 4000)
   },
 
   async startRun(prompt, opts) {

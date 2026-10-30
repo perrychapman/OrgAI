@@ -6,7 +6,7 @@ import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } fro
 import { waitingItems } from '../lib/needsYou'
 import { needsYou, projectCounts, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { runStatus } from '../lib/runStatus'
+import { isStoppedRun, runStatus, statusOfRun, statusText } from '../lib/runStatus'
 import brandIcon from '../assets/brand/icon.png'
 import UsageMeter from './UsageMeter'
 import { Icon } from './ui/Icon'
@@ -79,7 +79,7 @@ export default function Sidebar(): ReactElement {
             <ul className="nav-runs" aria-label="Everything waiting for you">
               {waiting.flatMap((r) =>
                 waitingItems(r).map((it) => (
-                  <li key={it.key}>
+                  <li key={it.key} className="nav-needs-item">
                     <button
                       type="button"
                       className="nav-run waiting"
@@ -96,6 +96,7 @@ export default function Sidebar(): ReactElement {
                   </li>
                 ))
               )}
+              {items.length > 3 && <li className="nav-needs-more">+{items.length - 3} more</li>}
             </ul>
           )}
         </div>
@@ -111,12 +112,12 @@ export default function Sidebar(): ReactElement {
           const open = openRunsOf(projectRuns)
           const expanded = open.length > 0 && !collapsed[p.id]
           const newest = [...(history[p.id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
-          const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp }) : undefined
+          const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
           const subtitle =
             open.length > 0
               ? [`${counts.open} open`, counts.needsYou > 0 ? `${counts.needsYou} needs you` : ''].filter(Boolean).join(' · ')
               : newest && last
-                ? `Last run ${relativeTime(newest.startedAt)} · ${last.word}`
+                ? `Last run ${relativeTime(newest.startedAt)} · ${statusText(last)}`
                 : ''
           const active = selectedId === p.id && inProject(view)
           const viewedId = draftPage[p.id] ? undefined : viewedByProject[p.id]
@@ -155,7 +156,7 @@ export default function Sidebar(): ReactElement {
               {expanded && (
                 <ul className="nav-runs" aria-label={`Open runs of ${p.name}`}>
                   {open.map((r) => {
-                    const st = runStatus(r.summary.status, { waiting: needsYou(r) })
+                    const st = statusOfRun(r, p, needsYou(r))
                     const here = active && viewedId === r.summary.id
                     return (
                       <li key={r.summary.id}>

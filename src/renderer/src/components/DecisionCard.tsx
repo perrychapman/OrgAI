@@ -1,7 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { initials } from '../lib/layout'
 import { Badge, type BadgeTone } from './ui/Badge'
+import { Banner } from './ui/Banner'
 import { RunLabel } from './RunLabel'
 
 export type DecisionKind = 'permission' | 'rules' | 'question' | 'proposal' | 'install' | 'merge'
@@ -37,7 +38,34 @@ interface Props {
   deny?: ReactNode
   /** Skip moving focus on mount (a card that is only a record, e.g. an answered install). */
   noAutoFocus?: boolean
+  /** A failed answer, shown above the footer so the buttons stay in place. */
+  error?: string | null
   testId?: string
+}
+
+/**
+ * Busy and error state for answering a decision. `submit` runs the (possibly async) answer: busy stays on while it is
+ * in flight and after it succeeds (the card goes away), and clears with the error shown when it rejects.
+ */
+export function useDecisionAnswer(): { busy: boolean; error: string | null; submit: (run: () => void | Promise<void>) => Promise<void>; reset: () => void } {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = useCallback(async (run: () => void | Promise<void>): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      await run()
+    } catch (e) {
+      setBusy(false)
+      const raw = e instanceof Error ? e.message : ''
+      setError(raw.replace(/^(Error invoking remote method '[^']*': )?(Error: )?/, '') || 'The answer could not be delivered. Try again.')
+    }
+  }, [])
+  const reset = useCallback(() => {
+    setBusy(false)
+    setError(null)
+  }, [])
+  return { busy, error, submit, reset }
 }
 
 /** Set by the tray stepper just before it swaps cards: the next card mount keeps focus where it is. */
@@ -54,7 +82,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, title, headerExtra, children, helper, primary, secondary, deny, noAutoFocus, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, title, headerExtra, children, helper, primary, secondary, deny, noAutoFocus, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   useEffect(() => {
@@ -94,6 +122,13 @@ export default function DecisionCard({ kind, runId, who, title, headerExtra, chi
       </header>
       {children !== undefined && children !== null && <div className="decision-body">{children}</div>}
       {helper && <div className="decision-helper">{helper}</div>}
+      {error && (
+        <div className="decision-error">
+          <Banner tone="danger" title="The answer was not delivered">
+            {error}
+          </Banner>
+        </div>
+      )}
       <footer className="decision-footer">
         {primary}
         {secondary && <div className="decision-secondary">{secondary}</div>}

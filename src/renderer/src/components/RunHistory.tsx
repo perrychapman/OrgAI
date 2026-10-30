@@ -2,13 +2,14 @@ import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
-import { activeRun, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
+import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { costLabel } from '../lib/layout'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { runStatus } from '../lib/runStatus'
+import { statusOfRun, statusText } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
+import { Badge } from './ui/Badge'
 import { Icon } from './ui/Icon'
 
 type Filter = 'all' | 'work' | 'setup'
@@ -124,7 +125,9 @@ function HistoryRow({
   onContinue: () => void
   onRetro: () => void
 }): ReactElement {
-  const status = runStatus(r.status, { waiting, endedWithApp: !!r.endedWithApp })
+  const live = useAppStore((s) => s.runs[r.id])
+  const proj = useAppStore(selectedProject)
+  const status = statusOfRun(live ?? { summary: r }, proj, waiting)
   const successor = continuedBy(summaries, r.id)
   const predecessor = predecessorOf(summaries, r.id)
   const chainLength = chainOf(summaries, r.id).length
@@ -164,7 +167,7 @@ function HistoryRow({
       </td>
       <td>
         <span className={`pill run-status ${status.tone}`} title={r.pauseReason ?? status.note}>
-          <span className="dot" aria-hidden="true" /> {status.word}
+          <span className="dot" aria-hidden="true" /> {statusText(status)}
         </span>
       </td>
       <td className="col-cost" title={cost.title}>
@@ -178,9 +181,17 @@ function HistoryRow({
       </td>
       <td>
         <div className="run-row-actions">
-          <Button size="sm" className="run-open" onClick={onOpen} title={viewed ? 'You are viewing this run' : open ? 'Open this live run' : 'Open this run'}>
-            {viewed ? 'Viewing' : 'Open'}
-          </Button>
+          {viewed ? (
+            <span className="run-open">
+              <Badge tone="info" title="You are viewing this run">
+                Viewing
+              </Badge>
+            </span>
+          ) : (
+            <Button size="sm" className="run-open" onClick={onOpen} title={open ? 'Open this live run' : 'Open this run'}>
+              Open
+            </Button>
+          )}
           {canContinue(summaries, r.id) && (
             <Button size="sm" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
               Continue

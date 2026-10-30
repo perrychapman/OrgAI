@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useId, useState } from 'react'
 import type { PermissionRuleDecision, PermissionRuleRequest } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
-import DecisionCard from './DecisionCard'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
@@ -12,7 +12,7 @@ interface Props {
   request: PermissionRuleRequest
   /** Display name of the asking agent. */
   who: string
-  onDecide: (decision: PermissionRuleDecision) => void
+  onDecide: (decision: PermissionRuleDecision) => void | Promise<void>
 }
 
 /**
@@ -22,18 +22,18 @@ interface Props {
 export default function RuleRequestCard({ runId, request, who, onDecide }: Props): ReactElement {
   const noteId = useId()
   const [note, setNote] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit } = useDecisionAnswer()
 
   const send = (decision: PermissionRuleDecision): void => {
     if (busy) return
-    setBusy(true)
-    onDecide(decision)
+    void submit(() => onDecide(decision))
   }
 
   const flagged = new Set(request.flagged ?? [])
   return (
     <DecisionCard
       kind="rules"
+      error={error}
       runId={runId}
       who={who}
       title="asks to allow these rules"
