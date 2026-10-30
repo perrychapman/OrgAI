@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import { ROOT_AGENT_ID } from './types'
 import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
@@ -1874,12 +1875,14 @@ describe('run titles', () => {
     const status = await waitFor(isType('run.status', (e) => e.status === 'error'))
     expect(status.error).toMatch(/^The LiteLLM connection was refused/)
     expect(status.error).toMatch(/Settings > Connections/)
-    expect(m.summaryOf(run.id)).toMatchObject({ status: 'error' })
     expect(events.some((e) => e.type === 'permission.request')).toBe(false)
+    await sleep(20)
     const record = m.get(run.id)
-    const root = record?.agents.find((a) => a.parentId === null || a.parentId === undefined)
-    expect(root?.state).toBe('error')
-    expect(record?.agents.flatMap((a) => a.transcript ?? []).some((t) => t.kind === 'text' && /Invalid API key/.test(t.text))).toBe(false)
+    expect(record?.summary).toMatchObject({ status: 'error', error: status.error })
+    expect(record?.agents[ROOT_AGENT_ID]?.state).toBe('error')
+    const blocks = record?.transcript.map((t) => ({ block: t.block, source: t.source })) ?? []
+    expect(blocks.some((b) => b.block.kind === 'system' && b.source === 'harness')).toBe(true)
+    expect(blocks.some((b) => b.block.kind === 'text' && /Invalid API key/.test((b.block as { text: string }).text))).toBe(false)
   })
 
   it('a failing completion leaves the run healthy and untitled', async () => {
