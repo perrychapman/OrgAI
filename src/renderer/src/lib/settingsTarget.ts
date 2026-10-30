@@ -51,6 +51,8 @@ export function appPaneForSection(id: string): AppSettingsPane | undefined {
 const PROJECT_SECTION_PANE: Record<string, ProjectSettingsPane> = {
   'settings-section-general': 'general',
   'settings-section-permissions': 'agents',
+  'settings-section-rules': 'agents',
+  'settings-section-behaviour': 'agents',
   'settings-section-limits': 'limits',
   'settings-section-connection': 'connection',
   'settings-section-mcp': 'tools',

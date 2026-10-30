@@ -39,7 +39,7 @@ export const SETTINGS_COPY = {
   },
   maxAutoContinues: {
     label: 'Max automatic continues',
-    description: 'Per run. Then the orchestrator waits for you and says why.'
+    description: 'Per run, then it waits for you.'
   },
   preferSonnet: {
     label: 'Prefer Sonnet near the Opus limit',

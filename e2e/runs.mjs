@@ -150,8 +150,8 @@ try {
 
   // Run messaging switch persists through projects:save.
   await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
-  await page.getByRole('tab', { name: 'General', exact: true }).click()
-  const sw = page.getByRole('switch', { name: 'Let runs message each other' })
+  await page.getByRole('tab', { name: 'Agents', exact: true }).click()
+  const sw =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw.waitFor({ timeout: 10_000 })
   check((await sw.getAttribute('aria-checked')) === 'false', 'run messaging switch starts off')
   await sw.click()
@@ -161,7 +161,8 @@ try {
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
   await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
-  const sw2 = page.getByRole('switch', { name: 'Let runs message each other' })
+  await page.getByRole('tab', { name: 'Agents', exact: true }).click()
+  const sw2 =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw2.waitFor({ timeout: 10_000 })
   check((await sw2.getAttribute('aria-checked')) === 'true', 'switch is still on after reload')
   await shot('settings-messaging')
