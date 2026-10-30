@@ -1,6 +1,7 @@
 // Shared helpers for the OrgAI end-to-end scripts. Each script launches the BUILT app (run `npm run build` first)
 // with playwright-core's Electron driver, works against a throwaway fixture repository under os.tmpdir(), and
-// removes its OrgAI project at the end. The app uses the real user data directory (%APPDATA%/orgai on Windows).
+// removes its OrgAI project at the end. The app runs against a fresh temp data dir per script (ORGAI_DATA_DIR, which
+// replaces userData and holds the logs too), or against ORGAI_DATA_DIR if you set it yourself.
 import { _electron as electron } from 'playwright-core'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -15,6 +16,32 @@ export const SHOTS_DIR = path.join(E2E_DIR, 'shots')
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
+
+/** os.tmpdir() with symlinks resolved (macOS: /var/folders/... is /private/var/folders/...), as the app reports paths. */
+export const TMP = fs.realpathSync.native(os.tmpdir())
+
+// One data dir per script run, shared by every launch() in it (history.mjs restarts the app). A dir we created is
+// removed when the script passes and kept (path printed) when it fails, so its logs/main.log can be read.
+const ownDataDir = !process.env.ORGAI_DATA_DIR?.trim()
+export const DATA_DIR = ownDataDir ? fs.mkdtempSync(path.join(TMP, 'orgai-e2e-data-')) : path.resolve(process.env.ORGAI_DATA_DIR.trim())
+process.on('exit', (code) => {
+  if (!ownDataDir) return
+  let used = true
+  try {
+    used = fs.readdirSync(DATA_DIR).length > 0
+  } catch {
+    used = false
+  }
+  if ((code || process.exitCode) && used) {
+    console.log(`data dir kept for inspection: ${DATA_DIR}`)
+    return
+  }
+  try {
+    fs.rmSync(DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  } catch {
+    /* a file the app still holds; the OS temp cleaner gets it */
+  }
+})
 
 /** Path of the Electron binary. The `electron` package's main export is that path (electron.exe on Windows). */
 export function electronBinary() {
@@ -85,7 +112,7 @@ export function writeFile(root, rel, content) {
  */
 export function makeFixtureRepo(tag = 'fixture', { initGit = true, at } = {}) {
   if (at) fs.mkdirSync(at, { recursive: true })
-  const root = at ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `orgai-e2e-${tag}-`)))
+  const root = at ?? fs.mkdtempSync(path.join(TMP, `orgai-e2e-${tag}-`))
   writeFile(
     root,
     'package.json',
@@ -165,7 +192,7 @@ test('adds and lists notes', () => {
 }
 
 export function removeFixture(root) {
-  if (!root || !root.startsWith(fs.realpathSync.native(os.tmpdir()))) return
+  if (!root || !root.startsWith(TMP)) return
   try {
     if (fs.existsSync(path.join(root, '.git'))) gitSafe(root, ['worktree', 'prune'])
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
@@ -183,7 +210,8 @@ export function removeFixture(root) {
 export async function launch({ shotPrefix = 'shot' } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
-  const app = await electron.launch({ executablePath: electronBinary(), args: [APP_DIR], cwd: APP_DIR, timeout: 60_000 })
+  // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
+  const app = await electron.launch({ executablePath: electronBinary(), args: [APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
   const page = await app.firstWindow()
   page.on('dialog', (d) => {
     log('dialog:', d.message().slice(0, 100))
@@ -345,8 +373,7 @@ export async function driveSetup(page, name, { deadlineMs = 12 * 60_000, decide 
   return { done: false, approved }
 }
 
-/** Directory holding per-run record files in the real user data dir. */
+/** Directory holding per-run record files: <userData>/data/runs, where userData is the ORGAI_DATA_DIR the app got. */
 export function runRecordsDir() {
-  const base = process.platform === 'win32' ? process.env.APPDATA : process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
-  return path.join(base, 'orgai', 'data', 'runs')
+  return path.join(DATA_DIR, 'data', 'runs')
 }

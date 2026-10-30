@@ -1,5 +1,5 @@
 import { exec } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ConnectionStatus, ProviderAuth } from '@shared/types'
@@ -55,12 +55,35 @@ export function claudeCandidatePaths(
   })
 }
 
+/**
+ * Drop entries that resolve to a file already listed (Homebrew's /opt/homebrew/bin/claude symlink and its Cellar
+ * target, ~/.local/bin/claude and ~/.claude/local/claude). The first spelling wins; unresolvable paths stay as given.
+ */
+export function dedupeByRealpath(paths: string[], realpath: (p: string) => string = (p) => realpathSync.native(p)): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of paths) {
+    let key = p
+    try {
+      key = realpath(p)
+    } catch {
+      /* not a file path (bare "claude") or gone: compare as given */
+    }
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(p)
+  }
+  return out
+}
+
 export function listClaudeBinaries(): Promise<string[]> {
   const cmd = process.platform === 'win32' ? 'where claude' : 'which -a claude'
   return new Promise((resolve) => {
-    exec(cmd, { timeout: 8000, windowsHide: true }, (err, stdout) => {
+    // Pass process.env explicitly (exec's default too): on macOS applyShellPath has already merged the login shell's
+    // PATH into it, which is what lets a Finder-launched app see Homebrew, nvm and ~/.local/bin.
+    exec(cmd, { timeout: 8000, windowsHide: true, env: process.env }, (err, stdout) => {
       const found = err ? [] : stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-      const all = [...new Set([...found, ...claudeCandidatePaths()])]
+      const all = dedupeByRealpath([...new Set([...found, ...claudeCandidatePaths()])])
       resolve(all.length ? all : ['claude'])
     })
   })

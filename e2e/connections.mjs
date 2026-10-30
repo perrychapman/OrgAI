@@ -2,13 +2,12 @@
 // role model picker), checks the markup exists in either its loaded or its error state (the IPC handlers may
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
-import { check, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E connections (orgai test)'
-const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-e2e-conn-')))
+const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-conn-'))
 const repo = path.join(base, 'repo')
 makeFixtureRepo('conn', { at: repo })
 

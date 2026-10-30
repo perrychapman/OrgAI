@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
-import { parseSse, redact, testServer } from './probe'
+import { parseSse, redact, testServer, usesWindowsShell } from './probe'
 
 const script = join(__dirname, 'fixtures', 'stdio-server.cjs')
 
@@ -111,5 +111,14 @@ describe('helpers', () => {
   })
   it('redact replaces every occurrence', () => {
     expect(redact('a abc b abc', ['abc'])).toBe('a [redacted] b [redacted]')
+  })
+  it('usesWindowsShell only routes non-.exe commands through cmd on win32', () => {
+    expect(usesWindowsShell('npx', 'win32')).toBe(true)
+    expect(usesWindowsShell('C:\\tools\\server.EXE', 'win32')).toBe(false)
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(usesWindowsShell('npx', platform)).toBe(false)
+      expect(usesWindowsShell('uvx', platform)).toBe(false)
+      expect(usesWindowsShell('/opt/homebrew/bin/node', platform)).toBe(false)
+    }
   })
 })

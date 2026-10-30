@@ -57,6 +57,15 @@ export function killTree(child: ChildProcess): void {
   }
 }
 
+/**
+ * Windows runs anything but an .exe through cmd.exe so npx.cmd, uvx.cmd and .bat shims resolve. Everywhere else
+ * the command is spawned directly and found through env.PATH (the login-shell PATH on macOS, see shellEnv.ts),
+ * in its own process group so killTree can take down npx's children.
+ */
+export function usesWindowsShell(command: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' && !/\.exe$/i.test(command)
+}
+
 function quoteForCmd(arg: string): string {
   if (arg === '') return '""'
   return /[\s&|<>^()"]/.test(arg) ? `"${arg}"` : arg
@@ -80,7 +89,7 @@ class StdioClient implements RpcClient {
     const command = spec.command ?? ''
     const args = spec.args ?? []
     const env = { ...process.env, ...resolved.env }
-    const winShell = process.platform === 'win32' && !/\.exe$/i.test(command)
+    const winShell = usesWindowsShell(command)
     if (winShell && [command, ...args].some((a) => /["%\r\n]/.test(a))) {
       throw new Error('Arguments with quotes or % cannot be tested on Windows; run the server by hand to check it.')
     }

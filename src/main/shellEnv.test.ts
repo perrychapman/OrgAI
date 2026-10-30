@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyShellPath, compareVersionsDesc, mergePaths, parseMarkedValue, resolveShellPath, wellKnownDirs } from './shellEnv'
+import { applyShellPath, compareVersionsDesc, mergePaths, parseMarkedValue, resolveShellPath, shellInvocation, wellKnownDirs } from './shellEnv'
 
 describe('parseMarkedValue', () => {
   it('extracts the value between markers and ignores banners', () => {
@@ -91,6 +91,72 @@ describe('resolveShellPath', () => {
     let used = ''
     resolveShellPath({ platform: 'linux', env: {}, run: (s) => ((used = s), ''), ...none })
     expect(used).toBe('/bin/bash')
+  })
+
+  it('asks fish with a list-safe command and reads its PATH', () => {
+    let seen: string[] = []
+    const r = resolveShellPath({
+      platform: 'darwin',
+      env: { PATH: '/usr/bin', SHELL: '/opt/homebrew/bin/fish' },
+      seed: 'f',
+      run: (shell, args) => {
+        expect(shell).toBe('/opt/homebrew/bin/fish')
+        seen = args
+        return '__ORGAI_PATH_f_START__/opt/homebrew/bin:/usr/bin__ORGAI_PATH_f_END__'
+      },
+      ...none
+    })
+    expect(seen[0]).toBe('-ilc')
+    expect(seen[1]).toContain('string join : $PATH')
+    expect(seen[1]).not.toContain('"')
+    expect(r.path).toBe('/usr/bin:/opt/homebrew/bin')
+  })
+
+  it('falls back to the platform shell for csh-family, unknown or relative SHELL values', () => {
+    for (const SHELL of ['/bin/tcsh', '/bin/csh', '/opt/homebrew/bin/nu', 'zsh']) {
+      let used = ''
+      resolveShellPath({ platform: 'darwin', env: { PATH: '/usr/bin', SHELL }, run: (s) => ((used = s), ''), ...none })
+      expect(used, SHELL).toBe('/bin/zsh')
+    }
+    let used = ''
+    resolveShellPath({ platform: 'linux', env: { SHELL: '/usr/bin/zsh' }, run: (s) => ((used = s), ''), ...none })
+    expect(used).toBe('/usr/bin/zsh')
+  })
+
+  it('keeps the PATH a shell printed before exiting non-zero', () => {
+    const r = resolveShellPath({
+      platform: 'darwin',
+      env: { PATH: '/usr/bin', SHELL: '/bin/zsh' },
+      seed: 'e',
+      run: () => {
+        throw Object.assign(new Error('Command failed: /bin/zsh -ilc ...'), { status: 1, stdout: 'oops\n__ORGAI_PATH_e_START__/opt/homebrew/bin__ORGAI_PATH_e_END__' })
+      },
+      ...none
+    })
+    expect(r.path).toBe('/usr/bin:/opt/homebrew/bin')
+    expect(r.fromShell).toBe(true)
+    expect(r.note).toContain('Command failed')
+  })
+
+  it('adds nothing from a shell that exits non-zero without output', () => {
+    const r = resolveShellPath({
+      platform: 'darwin',
+      env: { PATH: '/usr/bin', SHELL: '/bin/bash' },
+      run: () => {
+        throw Object.assign(new Error('Command failed'), { status: 127, stdout: '' })
+      },
+      ...none
+    })
+    expect(r.path).toBe('/usr/bin')
+    expect(r.fromShell).toBe(false)
+    expect(r.added).toEqual([])
+  })
+})
+
+describe('shellInvocation', () => {
+  it('prints "$PATH" for POSIX shells', () => {
+    expect(shellInvocation('/bin/bash', '/bin/zsh', 'S', 'E')).toEqual({ shell: '/bin/bash', command: `printf '%s' "S$PATHE"` })
+    expect(shellInvocation(undefined, '/bin/zsh', 'S', 'E').shell).toBe('/bin/zsh')
   })
 })
 

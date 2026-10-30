@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { CodexAppServer, CodexRpcError, codexHomeDir, resolveCodexBinary } from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
 import { fakeCtx, project } from './testHelpers'
@@ -18,6 +18,30 @@ const live = process.env.ORGAI_CODEX_INTEGRATION === '1' && !!resolveCodexBinary
 describe('codexHomeDir', () => {
   it('lives under the data dir', () => {
     expect(codexHomeDir('/data').replace(/\\/g, '/')).toBe('/data/codex')
+  })
+})
+
+describe('resolveCodexBinary', () => {
+  // ORGAI_CODEX_PATH overrides the package lookup; keep a developer's setting out of these checks.
+  const saved = process.env.ORGAI_CODEX_PATH
+  beforeEach(() => {
+    delete process.env.ORGAI_CODEX_PATH
+  })
+  afterEach(() => {
+    if (saved !== undefined) process.env.ORGAI_CODEX_PATH = saved
+  })
+
+  it('is undefined for a platform without a codex package', () => {
+    expect(resolveCodexBinary('aix', 'ppc64')).toBeUndefined()
+    expect(resolveCodexBinary('darwin', 'ia32')).toBeUndefined()
+  })
+
+  it('never throws for the macOS triples and uses the bare binary name there', () => {
+    for (const arch of ['arm64', 'x64']) {
+      const bin = resolveCodexBinary('darwin', arch)
+      // Only installed on a Mac; elsewhere the optional dependency is absent and the lookup is undefined.
+      if (bin) expect(bin.path.replace(/\\/g, '/')).toMatch(/apple-darwin\/bin\/codex$/)
+    }
   })
 })
 

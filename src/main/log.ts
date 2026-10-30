@@ -1,11 +1,13 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { format } from 'node:util'
 import { app } from 'electron'
 import type { PermissionDecision, PermissionRequest, RunEvent, RunSummary } from '@shared/types'
 
 /**
- * Main-process log at <userData>/logs/main.log. Rotates to main.1.log at 2 MB (two files kept).
+ * Main-process log at app.getPath('logs')/main.log (<userData>/logs on Windows and Linux, ~/Library/Logs/<name> on
+ * macOS), falling back to <userData>/logs when that is unavailable. Rotates to main.1.log at 2 MB (two files kept).
  * Writes are synchronous so the last lines before a crash make it to disk.
  */
 
@@ -21,10 +23,57 @@ let writing = false
 
 const original = { error: console.error.bind(console), warn: console.warn.bind(console) }
 
+/**
+ * ORGAI_DATA_DIR redirects everything OrgAI writes (CI, e2e, tests): it becomes userData, and logs go to <dir>/logs
+ * so a macOS runner never writes into ~/Library/Logs. Relative values resolve against the working directory.
+ * Undefined when the variable is unset or blank.
+ */
+export function dataDirOverride(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): { userData: string; logs: string } | undefined {
+  const raw = env.ORGAI_DATA_DIR?.trim()
+  if (!raw) return undefined
+  const userData = resolve(cwd, raw)
+  return { userData, logs: join(userData, 'logs') }
+}
+
+/** True when `dir` exists (created if needed) and is writable. */
+export function canWriteDir(dir: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true })
+    accessSync(dir, constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The first candidate that resolves (a thunk may throw) and is writable. Otherwise the first one that resolved,
+ * otherwise `fallback` under the OS temp dir. Never throws.
+ */
+export function pickLogsDir(candidates: Array<() => string>, canWrite: (dir: string) => boolean, fallback: string = join(tmpdir(), 'orgai-logs')): string {
+  let firstResolved: string | undefined
+  for (const candidate of candidates) {
+    let d: string
+    try {
+      d = candidate()
+    } catch {
+      continue
+    }
+    if (!d) continue
+    firstResolved ??= d
+    try {
+      if (canWrite(d)) return d
+    } catch {
+      /* treat as not writable */
+    }
+  }
+  return firstResolved ?? fallback
+}
+
 export function logsDir(): string {
   // app.getPath('logs') is ~/Library/Logs/<name> on macOS (where Console.app looks); on Windows and Linux it is
-  // <userData>/logs, the same place as before.
-  if (!dir) dir = app.getPath('logs')
+  // <userData>/logs. If it throws or is read-only (sandboxed or managed Macs), use <userData>/logs.
+  if (!dir) dir = pickLogsDir([() => app.getPath('logs'), () => join(app.getPath('userData'), 'logs')], canWriteDir)
   return dir
 }
 
