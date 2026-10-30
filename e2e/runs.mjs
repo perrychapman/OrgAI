@@ -442,9 +442,37 @@ try {
   ts = await trayState()
   check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
   await shot('three-decisions-2400')
+  // Docked tray: the canvas pane meets the tray (no blank strip between them).
+  const dockGap = await page.evaluate(() => {
+    const pane = document.querySelector('.frame-stage .react-flow')?.getBoundingClientRect()
+    const tray = document.querySelector('section.frame-tray')?.getBoundingClientRect()
+    return pane && tray ? Math.round(tray.left - pane.right) : null
+  })
+  check(dockGap !== null && Math.abs(dockGap) <= 2, 'with an open decision at 2400 the canvas pane meets the docked tray', String(dockGap))
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
   await sleep(400)
   await endSession(page)
+  // Regression: a frame of 1500 x 560 or more with no open decision must not reserve a blank tray column. The pane
+  // meets the side panel (or the frame edge) and no frame-tray takes width.
+  await setSize(2400, 1000)
+  await setPanel(true)
+  await sleep(300)
+  const emptyTray = await page.evaluate(() => {
+    const pane = document.querySelector('.frame-stage .react-flow')?.getBoundingClientRect()
+    const panel = document.querySelector('.side-panel')?.getBoundingClientRect()
+    const frame = document.querySelector('.frame-grid')?.getBoundingClientRect()
+    const tray = document.querySelector('section.frame-tray')
+    const trayW = tray ? tray.getBoundingClientRect().width : 0
+    return {
+      frameW: frame ? Math.round(frame.width) : 0,
+      trayW: Math.round(trayW),
+      gap: pane && panel ? Math.round(panel.left - pane.right) : null
+    }
+  })
+  check(emptyTray.frameW >= 1500, 'the frame is 1500 px wide or more for the empty-tray check', JSON.stringify(emptyTray))
+  check(emptyTray.trayW === 0 && emptyTray.gap !== null && Math.abs(emptyTray.gap) <= 2, 'with no open decision at 2400 no blank tray column is reserved: the canvas pane meets the side panel', JSON.stringify(emptyTray))
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
+  await sleep(400)
 
   // AI run titles (mock adapter: the title is the first 4 words of the prompt, capitalised).
   fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
