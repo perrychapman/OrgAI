@@ -180,15 +180,22 @@ const defaultWhich: WhichRunner = (cmd, args) =>
   new Promise((resolve) => {
     // Pass process.env explicitly: on macOS applyShellPath has already merged the login shell's PATH into it,
     // which is what lets a Finder-launched app see Homebrew, nvm and ~/.local/bin.
-    execFile(cmd, args, { timeout: 8000, windowsHide: true, env: process.env }, (err, stdout) => resolve(err ? '' : String(stdout ?? '')))
+    // cwd is the temp dir, never the app's cwd: Windows resolves executables from the cwd first.
+    execFile(cmd, args, { timeout: 8000, windowsHide: true, env: process.env, cwd: tmpdir() }, (err, stdout) => resolve(err ? '' : String(stdout ?? '')))
   })
+
+/** where.exe by absolute path, so a planted where.exe in the cwd is never run. */
+function whereExe(): string {
+  return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe')
+}
 
 /**
  * The Claude Code CLIs on PATH plus the well-known install paths, as absolute paths only. Empty when none was
  * found: there is no bare 'claude' fallback, so nothing is ever resolved from the (temp) cwd.
  */
 export async function listClaudeBinaries(platform: NodeJS.Platform = process.platform, which: WhichRunner = defaultWhich): Promise<string[]> {
-  const out = platform === 'win32' ? await which('where', ['claude']) : await which('which', ['-a', 'claude'])
+  // `$PATH:claude` restricts where.exe to PATH (plain `where claude` searches the cwd first).
+  const out = platform === 'win32' ? await which(whereExe(), ['$PATH:claude']) : await which('which', ['-a', 'claude'])
   return dedupeByRealpath([...new Set([...parseWhichOutput(out, platform), ...claudeCandidatePaths(platform)])])
 }
 

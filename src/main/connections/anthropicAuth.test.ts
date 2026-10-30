@@ -24,7 +24,9 @@ describe('listClaudeBinaries', () => {
       return 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd\r\nclaude.cmd\r\n.\\claude\r\n'
     }
     expect(await listClaudeBinaries('win32', which)).toEqual(['C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd'])
-    expect(calls).toEqual([['where', ['claude']]])
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toMatch(/System32[\\/]where\.exe$/i)
+    expect(calls[0][1]).toEqual(['$PATH:claude'])
     expect(await listClaudeBinaries('win32', async () => '')).toEqual([])
   })
   it('parses which -a output on POSIX', () => {

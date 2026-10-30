@@ -45,10 +45,15 @@ export const CLAUDE_ROUTING_VARS: readonly string[] = [
 
 /**
  * CLI behaviour switches a user may legitimately export outside routing, kept although they match the
- * CLAUDE_CODE_(DISABLE|ENABLE)_ family. CLAUDE_CODE_ENABLE_TELEMETRY is an organisation's OpenTelemetry
- * monitoring opt-in (the OTEL_* settings it reads pass through anyway).
+ * CLAUDE_CODE_(DISABLE|ENABLE)_ family: CLAUDE_CODE_ENABLE_TELEMETRY (an organisation's OpenTelemetry monitoring
+ * opt-in; the OTEL_* settings it reads pass through anyway) and the privacy opt-outs
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY, which only reduce traffic.
  */
-export const CLAUDE_CODE_ALLOWED_SWITCHES: readonly string[] = ['CLAUDE_CODE_ENABLE_TELEMETRY']
+export const CLAUDE_CODE_ALLOWED_SWITCHES: readonly string[] = [
+  'CLAUDE_CODE_ENABLE_TELEMETRY',
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY'
+]
 
 /** Families of routing variables: tier model overrides, provider switches, provider endpoints and auth skips. */
 export const CLAUDE_ROUTING_PATTERNS: readonly RegExp[] = [

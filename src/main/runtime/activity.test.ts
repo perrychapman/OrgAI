@@ -20,7 +20,9 @@ describe('isAuthFailure', () => {
     expect(isAuthFailure({ text: apiError, isError: true })).toBe(true)
     expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token.' })).toBe(false)
     expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token.', isError: true })).toBe(true)
-    expect(isAuthFailure({ text: 'Failed to authenticate. API Error: 401', errorCode: 'oauth_org_not_allowed' })).toBe(true)
+    expect(isAuthFailure({ text: 'Failed to authenticate. API Error: 401', errorCode: 'oauth_org_not_allowed', isError: true })).toBe(true)
+    // A non-auth error code alone never makes leading auth wording a failure
+    expect(isAuthFailure({ text: 'API Error: 401 from upstream', errorCode: 'rate_limit' })).toBe(false)
   })
   it('never flags model text that starts with auth wording', () => {
     expect(isAuthFailure({ text: 'Invalid API key handling is fixed' })).toBe(false)

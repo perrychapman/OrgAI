@@ -155,15 +155,17 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   `VERTEX_REGION_*`, `CLAUDE_CODE_SKIP_*_AUTH` and every `CLAUDE_CODE_{DISABLE,ENABLE}_*` behaviour switch). Only the
   connection's env (or OrgAI's own settings, merged after isolation) sets them. The bundled CLI of SDK 0.3.312 names
   about 80 `CLAUDE_CODE_DISABLE_*` and 30 `CLAUDE_CODE_ENABLE_*` switches (grep of the SDK package): gateway and
-  API-surface ones (`DISABLE_EXPERIMENTAL_BETAS`, `DISABLE_ADAPTIVE_THINKING`, `DISABLE_NONESSENTIAL_TRAFFIC`,
-  `ENABLE_GATEWAY_MODEL_DISCOVERY`, `ENABLE_FINE_GRAINED_TOOL_STREAMING`, `ENABLE_PROXY_AUTH_HELPER`,
+  API-surface ones (`DISABLE_EXPERIMENTAL_BETAS`, `DISABLE_ADAPTIVE_THINKING`, `ENABLE_GATEWAY_MODEL_DISCOVERY`, `ENABLE_FINE_GRAINED_TOOL_STREAMING`, `ENABLE_PROXY_AUTH_HELPER`,
   `DISABLE_AUTH_REFRESH_LOCK`, `ENABLE_XAA`, `DISABLE_LEGACY_MODEL_REMAP`...), feature toggles and terminal UI ones
   (`DISABLE_MOUSE`, `DISABLE_TERMINAL_TITLE`...) that a headless SDK run does not need. OrgAI sets none of them
-  (it sets only `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_CONCURRENT_SUBAGENTS`). The one explicit allow is
-  `CLAUDE_CODE_ENABLE_TELEMETRY` (an organisation's OpenTelemetry opt-in; `OTEL_*` passes through). Kept as
+  (it sets only `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_CONCURRENT_SUBAGENTS`). The explicit allows
+  (`CLAUDE_CODE_ALLOWED_SWITCHES`) are `CLAUDE_CODE_ENABLE_TELEMETRY` (an organisation's OpenTelemetry opt-in;
+  `OTEL_*` passes through) and the privacy opt-outs `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and
+  `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`. Kept as
   legitimate Anthropic auth sources: `CLAUDE_CODE_OAUTH_TOKEN` (and its refresh token) and `CLAUDE_CONFIG_DIR`.
   `ANTHROPIC_API_KEY` reaches a run only on the anthropic connection for an API-key project, through
-  `RunConnection.env` (copied from the project's `auth.envVar`), so run titles get it too. On LiteLLM the inherited
+  `RunConnection.env` (copied from the project's `auth.envVar`), so run titles get it too; `buildEnv` also copies
+  the inherited `auth.envVar` value for a non-proxy API-key project. On LiteLLM the inherited
   API key, OAuth token (and refresh token) and `CLAUDE_CONFIG_DIR` (it holds the claude.ai login) are dropped, so
   only the connection's `ANTHROPIC_AUTH_TOKEN` authenticates. Drafts (no connection) keep an inherited `ANTHROPIC_API_KEY`. Verified by unit tests only; the
   bundled CLI's actual auth choice with this env has not been checked in a live run.
@@ -177,8 +179,9 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - `authMethod` values seen: `claude.ai` (a /login), `oauth_token` (`CLAUDE_CODE_OAUTH_TOKEN` or an
     `ANTHROPIC_AUTH_TOKEN` env, indistinguishable), `api_key` with `apiKeySource`, `none`. Verified.
   - The project settings source reads `<cwd>/.claude/settings.json`, so the status runs in `os.tmpdir()`, never the
-    home dir. The bundled CLI is tried first (execFile), then PATH candidates found by `execFile('where',
-    ['claude'])` / `execFile('which', ['-a', 'claude'])` (no shell, absolute paths only) plus the well-known install
+    home dir. The bundled CLI is tried first (execFile), then PATH candidates found by `execFile(<SystemRoot>\System32\where.exe,
+    ['$PATH:claude'])` (PATH only, never the cwd) / `execFile('which', ['-a', 'claude'])`, both in the temp dir with
+    no shell and absolute paths only, plus the well-known install
     paths, with no bare `claude` fallback (nothing found reports "Claude Code CLI not found" with the places
     looked). A shell is used only for Windows .cmd/.bat shims without metacharacters; a CLI that rejects the flag is retried without it and its detail says user
     settings could not be excluded. The disconnected detail tells the user to run claude and /login, set an API
@@ -186,8 +189,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
 - Auth failures in a run: `activity.ts` `isAuthFailure` and `authFailureMessage(connection)`. A failure is the SDK
   assistant `error: 'authentication_failed'`; the exact bare CLI reply "Invalid API key · Please run /login"
   (separator `·`, `-` or `.`, nothing else in the text), the only text match without an error flag; short text that
-  starts with the CLI's wording ("API Error: 401", "OAuth token has expired"...) when the adapter reports an error
-  (`isError` or any `errorCode`); or auth words / 401 / unauthorized anywhere only with `isError`. The Claude
+  starts with the CLI's wording ("API Error: 401", "OAuth token has expired"...) when the adapter reports an
+  auth-related error (`isError`; a non-auth `errorCode` alone never counts); or auth words / 401 / unauthorized anywhere only with `isError`. The Claude
   adapter sets `isError` on an assistant message only for the codes in claude.ts `AUTH_ERROR_CODES`
   (`authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`), never for rate_limit or
   billing_error, and on a result from `is_error`. The Claude adapter then ends the run

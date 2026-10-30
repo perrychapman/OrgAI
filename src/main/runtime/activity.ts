@@ -139,8 +139,8 @@ export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunO
 
 /**
  * How the Claude Code CLI's own auth-failure text starts ("Invalid API key · Please run /login", "API Error: 401
- * {...authentication_error...}"). Anchored, and trusted only when the adapter reports an error (`isError` or an
- * `errorCode`), so a model reply such as "Invalid API key handling is fixed" never matches.
+ * {...authentication_error...}"). Anchored, and trusted only when the adapter reports an auth-related error
+ * (`isError`), so a model reply such as "Invalid API key handling is fixed" never matches.
  */
 const AUTH_FAILURE_LEAD = /^(?:invalid api key|please run \/login|api error: 401\b|oauth token (?:has )?expired|failed to authenticate|invalid bearer token)/i
 /**
@@ -156,7 +156,7 @@ const AUTH_FAILURE_MAX_CHARS = 400
 /**
  * True when a turn's outcome is an authentication failure rather than a reply: the SDK's assistant error code
  * 'authentication_failed'; the CLI's exact bare reply "Invalid API key · Please run /login"; short text that
- * STARTS with the CLI's auth wording when the adapter reports an error (`isError` or any `errorCode`); or short
+ * STARTS with the CLI's auth wording when the adapter reports an auth-related error (`isError`); or short
  * text containing auth wording, a 401 or "unauthorized" only with `isError`. Adapters set `isError` only for
  * errors about authentication (or an errored result). Vendor-neutral: adapters pass what their SDK reports.
  */
@@ -165,7 +165,7 @@ export function isAuthFailure(input: { errorCode?: string | null; text?: string 
   const text = (input.text ?? '').trim()
   if (!text || text.length > AUTH_FAILURE_MAX_CHARS) return false
   if (AUTH_FAILURE_BARE.test(text)) return true
-  if ((input.isError || !!input.errorCode) && AUTH_FAILURE_LEAD.test(text)) return true
+  if (input.isError && AUTH_FAILURE_LEAD.test(text)) return true
   return !!input.isError && AUTH_FAILURE_ANYWHERE.test(text)
 }
 

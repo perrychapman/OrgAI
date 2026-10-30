@@ -53,7 +53,7 @@ const leaky = {
   UNSET: undefined
 }
 
-const kept = { PATH: '/bin', HOME: '/Users/me', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://corp:3128', NO_PROXY: 'localhost', CLAUDE_CODE_ENABLE_TELEMETRY: '1', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4317' }
+const kept = { PATH: '/bin', HOME: '/Users/me', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://corp:3128', NO_PROXY: 'localhost', CLAUDE_CODE_ENABLE_TELEMETRY: '1', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4317', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
 const anthropicKept = { ...kept, CLAUDE_CONFIG_DIR: '/Users/me/.claude-work' }
 
 describe('isolateClaudeEnv', () => {
