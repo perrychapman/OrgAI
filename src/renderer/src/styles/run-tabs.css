@@ -291,7 +291,12 @@
   color: var(--text-tertiary);
 }
 .run-header-chain {
-  flex: 1 0 100%;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-secondary);
@@ -525,4 +530,13 @@
   line-height: var(--text-small-lh);
   font-weight: var(--weight-semibold);
   cursor: default;
+}
+
+/* N5: a hidden tab has an unread note or a draft. */
+.run-tab-more-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--info-text);
+  flex: none;
 }

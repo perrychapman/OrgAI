@@ -2,7 +2,7 @@
 
 /* Nothing floats over the canvas. Each slot is a grid area; the frame is a container so it follows its own width. */
 .canvas-frame {
-  container-type: inline-size;
+  container-type: size;
   container-name: frame;
   display: flex;
 }
@@ -12,7 +12,8 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* The stage keeps at least 40% of the frame; the tray takes what it needs up to 60% and its card body scrolls. */
+  grid-template-rows: auto minmax(max(96px, 40cqh), 1fr) minmax(0, max-content) auto;
   grid-template-areas:
     'toolbar'
     'stage'
@@ -34,7 +35,7 @@
   grid-area: stage;
   position: relative;
   min-width: 0;
-  min-height: 160px;
+  min-height: 0;
 }
 .frame-stage > .react-flow,
 .frame-stage > .empty {
@@ -48,8 +49,10 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  max-height: 40vh;
-  overflow-y: auto;
+  overflow: hidden;
+  /* Share the frame height with the stage: never more than 60% of the frame. */
+  max-height: min(60cqh, calc(100cqh - 160px));
+  min-height: 0;
   background: var(--surface-1);
   border-top: 1px solid var(--border-default);
 }
@@ -72,10 +75,11 @@
   margin-right: var(--space-1h);
   vertical-align: middle;
 }
-/* Wide frame: the tray docks beside the canvas and keeps its own scroll. */
-@container frame (min-width: 900px) {
+/* Wide or short frame: the tray docks beside the canvas and keeps its own scroll. */
+@container frame (min-width: 760px) or (max-height: 420px) {
   .frame-grid:has(> .frame-tray) {
-    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-columns: minmax(0, 1fr) clamp(280px, 40cqi, 360px);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       'toolbar toolbar'
       'stage tray'
@@ -159,5 +163,12 @@
 @media (prefers-reduced-motion: reduce) {
   .save-indicator.is-saving svg {
     animation: none;
+  }
+}
+
+/* Stacked tray (frame narrower than 760px): the legend gives its row back to the card while a decision is pending. */
+@container frame (max-width: 759px) {
+  .frame-grid:has(> .frame-tray) .frame-footer {
+    display: none;
   }
 }

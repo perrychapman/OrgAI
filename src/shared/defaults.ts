@@ -417,3 +417,9 @@ export function newProject(input: { name: string; path: string; brief: string; s
 export function rootRole(project: Project): Role | undefined {
   return project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
 }
+
+/** Ids that become file names, secret-key segments or map keys: a conservative alphabet. */
+export const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/
+export function isSafeId(x: unknown): x is string {
+  return typeof x === 'string' && SAFE_ID.test(x)
+}

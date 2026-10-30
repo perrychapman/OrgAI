@@ -64,7 +64,7 @@ export default function McpLibrarySection(): ReactElement {
 
   const infos = library ?? []
   return (
-    <section ref={section} id="settings-section-mcp-library" className="settings-section mcp-section" aria-labelledby="mcp-library-title" data-testid="mcp-library-section" tabIndex={-1}>
+    <section ref={section} id="appsettings-section-mcp-library" className="settings-section mcp-section" aria-labelledby="mcp-library-title" data-testid="mcp-library-section" tabIndex={-1}>
       <div className="section-head">
         <div>
           <h2 id="mcp-library-title">MCP library</h2>
@@ -250,7 +250,7 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
                   setTesting(false)
                 }}
               >
-                Cancel
+                Stop waiting
               </Button>
               <span className="muted" role="status">
                 Testing

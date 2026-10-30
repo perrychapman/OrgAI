@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AppSettings, Project, ProjectCreateInput, ProjectPathCheck } from '@shared/types'
-import { newProject } from '@shared/defaults'
+import { HARNESS_PROJECT_ID } from '@shared/types'
+import { isSafeId, newProject } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 
 /** The file-system calls checkProjectPath makes; node:fs by default, a fake in tests. */
@@ -141,11 +142,14 @@ export class ProjectStore {
 
   /**
    * Save a project the renderer sent. mcpServers and plugins change only through mcp:* / plugins:*, so a stale
-   * renderer copy must not wipe them: the stored values win. A project that is new to the store keeps what it sent.
+   * renderer copy must not wipe them: the stored values win. Unknown, unsafe and harness ids are refused:
+   * projects are created through create() (projects:create) so renderer-supplied servers never land unvalidated.
    */
   saveFromRenderer(project: Project): Project {
+    if (!isSafeId(project?.id)) throw new Error('Invalid project id')
+    if (project.id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be saved')
     const stored = this.get(project.id)
-    if (!stored) return this.save(project)
+    if (!stored) throw new Error('Project not found')
     const next: Project = { ...project }
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers

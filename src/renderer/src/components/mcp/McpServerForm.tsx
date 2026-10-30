@@ -340,7 +340,11 @@ export default function McpServerForm({
                   />
                 )}
               </div>
-              <Checkbox label="Secret" checked={r.secret} disabled={isSaved(r)} onChange={(secret) => patchRow(r.rid, { secret, value: '' })} />
+              <Checkbox label="Secret" checked={r.secret} disabled={isSaved(r)} onChange={(secret) => {
+                // Keep what the user typed: moving a value into the secret slot must not drop it silently.
+                if (secret && r.value && r.name) setPending((p) => ({ ...p, [`${kind}:${r.name}`]: r.value }))
+                patchRow(r.rid, { secret, value: '' })
+              }} />
               <IconButton icon={Trash2} label={`Remove ${label} ${r.name || i + 1}`} size="sm" onClick={() => setRows((rs) => rs.filter((x) => x.rid !== r.rid))} />
               {touched[errKey] && errors[errKey] && <span className="hint invalid-text mcp-var-err">{errors[errKey]}</span>}
             </div>

@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import type { QuestionAnswer, UserQuestion } from '@shared/types'
-import DecisionCard from './DecisionCard'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
@@ -11,14 +11,14 @@ interface Props {
   question: UserQuestion
   /** Display name of the asking agent (the Architect for setup runs). */
   who: string
-  onAnswer: (answer: QuestionAnswer) => void
+  onAnswer: (answer: QuestionAnswer) => void | Promise<void>
 }
 
 /** A multiple-choice question from an agent (ask_user). Blocks the agent until submitted. */
 export default function QuestionCard({ runId, question, who, onAnswer }: Props): ReactElement {
   const [selected, setSelected] = useState<string[]>([])
   const [text, setText] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit: answer } = useDecisionAnswer()
 
   const toggle = (label: string): void => {
     if (question.allowMultiple) {
@@ -32,14 +32,14 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
 
   const submit = (): void => {
     if (!canSubmit) return
-    setBusy(true)
     const note = question.allowFreeText ? text.trim() : ''
-    onAnswer(note ? { selected, text: note } : { selected })
+    void answer(() => onAnswer(note ? { selected, text: note } : { selected }))
   }
 
   return (
     <DecisionCard
       kind="question"
+      error={error}
       runId={runId}
       title={question.question}
       who={who}

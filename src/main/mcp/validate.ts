@@ -1,5 +1,5 @@
 import type { McpLibraryEntry, McpRegistryEntry, McpServerSpec } from '@shared/types'
-import { isValidMcpServerName, newId } from '@shared/defaults'
+import { SAFE_ID, isValidMcpServerName, newId } from '@shared/defaults'
 
 /**
  * Validation of MCP server specs and building specs from registry entries. Pure; shared by the settings
@@ -177,7 +177,7 @@ function tooLong(s: unknown): boolean {
 export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSpec[] = [], where: 'project' | 'library' = 'project'): string[] {
   const errors: string[] = []
   if (!spec || typeof spec !== 'object') return ['The server spec is missing.']
-  if (typeof spec.id !== 'string' || !spec.id) errors.push('The server needs an id.')
+  if (typeof spec.id !== 'string' || !SAFE_ID.test(spec.id)) errors.push('The server id must be 1-128 letters, digits, hyphens or underscores.')
   if (typeof spec.name !== 'string' || !isValidMcpServerName(spec.name)) {
     errors.push('The name must be lowercase kebab-case (letters, digits and single hyphens, at most 48 characters), e.g. "github".')
   } else if (existing.some((s) => s.name === spec.name && s.id !== spec.id)) {
@@ -242,7 +242,7 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
 }
 
 /** Library ids double as secret-key segments, so they stay in a safe alphabet. */
-export const LIBRARY_ID = /^[A-Za-z0-9_-]{1,128}$/
+export const LIBRARY_ID = SAFE_ID
 
 /** Problems with a library entry; names are unique within the library. */
 export function validateLibraryEntry(entry: McpLibraryEntry, existing: readonly McpLibraryEntry[] = []): string[] {

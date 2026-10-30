@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useId, useState } from 'react'
-import { Check, ChevronDown, X } from 'lucide-react'
+import { Check, X } from 'lucide-react'
 import type { McpInstallOutcome, McpInstallRequest } from '@shared/types'
 import DecisionCard from './DecisionCard'
 import { Badge } from './ui/Badge'
@@ -26,24 +26,19 @@ function describeOutcome(o: McpInstallOutcome): string {
 
 /**
  * Approval card for an agent's request_mcp_install. Untrusted input (reason, command) is rendered as plain text.
- * `collapsed` shows a one-line header (the live region shows one expanded card at a time); `onExpand` opens it.
- * `onDismiss` removes a resolved card from the region.
+ * The tray shows one card at a time (stepper). `onDismiss` removes a resolved card from the region.
  */
 export default function McpInstallCard({
   runId,
   request,
   agentName,
   resolved,
-  collapsed,
-  onExpand,
   onDismiss
 }: {
   runId: string
   request: McpInstallRequest
   agentName: string
   resolved?: McpInstallOutcome
-  collapsed?: boolean
-  onExpand?: () => void
   onDismiss?: () => void
 }): ReactElement {
   const uid = useId()
@@ -114,24 +109,6 @@ export default function McpInstallCard({
     )
   }
 
-  if (collapsed) {
-    return shell(
-      <DecisionCard
-        kind="install"
-        runId={runId}
-        who={agentName}
-        title={title}
-        noAutoFocus
-        headerExtra={<Badge tone="warning">Needs you</Badge>}
-        primary={
-          <Button size="sm" icon={ChevronDown} onClick={onExpand}>
-            Review
-          </Button>
-        }
-      />
-    )
-  }
-
   const reason = request.reason.trim()
   const longReason = reason.length > 240 || reason.split('\n').length > 4
 
@@ -141,6 +118,7 @@ export default function McpInstallCard({
       runId={runId}
       who={agentName}
       title={title}
+      error={error}
       headerExtra={
         <span className="mcpi-meta">
           <span className="tabular">{time}</span>
@@ -260,13 +238,7 @@ export default function McpInstallCard({
           <Textarea id={`${uid}-note`} rows={2} value={note} disabled={busy} onChange={setNote} />
         </div>
 
-        {error && (
-          <Banner tone="danger" title="The install failed">
-            {error}
-          </Banner>
-        )}
       </div>
-
     </DecisionCard>
   )
 }

@@ -15,6 +15,9 @@ import { Select } from '../components/ui/Select'
 import { SettingRow } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
+import { SettingsNav, type SettingsNavItem } from '../components/settings/SettingsNav'
+import { useSectionNav } from '../components/settings/useSectionNav'
+import { APP_SETTINGS_SECTIONS, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 
@@ -50,6 +53,16 @@ const ACCENT_SWATCHES: { name: string; hex: string }[] = [
   { name: 'Rose', hex: '#e5486a' }
 ]
 
+const SECTIONS: SettingsNavItem[] = [
+  { id: APP_SETTINGS_SECTIONS.appearance, label: 'Appearance' },
+  { id: APP_SETTINGS_SECTIONS.notifications, label: 'Notifications' },
+  { id: APP_SETTINGS_SECTIONS.connections, label: 'Connections' },
+  { id: APP_SETTINGS_SECTIONS.mcpLibrary, label: 'MCP library' },
+  { id: APP_SETTINGS_SECTIONS.defaults, label: 'Defaults for new projects' },
+  { id: APP_SETTINGS_SECTIONS.about, label: 'About' }
+]
+const SECTION_IDS = SECTIONS.map((x) => x.id)
+
 function stripInfo(info: AppSettingsInfo): AppSettings {
   const { dataDir: _dataDir, appVersion: _appVersion, ...settings } = info
   return settings
@@ -62,6 +75,14 @@ export default function AppSettingsView(): ReactElement {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
+  const scroller = useRef<HTMLDivElement>(null)
+  const { active, go } = useSectionNav(SECTION_IDS, scroller, info !== null, appInfo !== null)
+  // A jump from elsewhere ("Settings > Connections") lands on its section once the page has content.
+  useEffect(() => {
+    if (!info) return
+    const target = takeAppSettingsSection()
+    if (target) go(target)
+  }, [info, go])
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   useEffect(() => {
     void loadAppInfo()
@@ -162,18 +183,18 @@ export default function AppSettingsView(): ReactElement {
         <div className="spacer" />
         <SaveIndicator />
       </div>
-      <div className="settings-scroll">
-        <div className="settings-col">
+      <div className="settings-scroll" ref={scroller}>
+        <h2 className="settings-page-title">App settings</h2>
+        <div className="settings-layout">
+          <SettingsNav items={SECTIONS} active={active} onSelect={go} label="App settings sections" />
+          <div className="settings-col">
           {error && (
             <p className="field-error" role="alert">
               {error}
             </p>
           )}
-          <ConnectionsPanel />
+          <section id="appsettings-section-appearance" className="settings-section" aria-labelledby="appearance-title" data-testid="appearance-section">
 
-          <McpLibrarySection />
-
-          <section className="settings-section" aria-labelledby="appearance-title" data-testid="appearance-section">
             <div className="section-head">
               <div>
                 <h2 id="appearance-title">Appearance</h2>
@@ -243,7 +264,30 @@ export default function AppSettingsView(): ReactElement {
               <SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />
             </div>
           </section>
-
+          <section id="appsettings-section-notifications" className="settings-section" aria-labelledby="notify-title">
+            <div className="section-head">
+              <div>
+                <h2 id="notify-title">Notifications</h2>
+              </div>
+            </div>
+            <SettingRow
+              title="Notify me when a run needs attention or finishes"
+              description="Shown by your operating system while OrgAI is in the background."
+              control={
+                <Switch
+                  checked={info.notifications !== false}
+                  label="Notify me when a run needs attention or finishes"
+                  testId="notifications-switch"
+                  onChange={(notifications) => patch({ notifications }, true)}
+                />
+              }
+            />
+          </section>
+          <div id="appsettings-section-connections">
+          <ConnectionsPanel />
+          </div>
+          <McpLibrarySection />
+          <div id="appsettings-section-defaults" className="settings-block-stack">
           <section className="settings-section" aria-labelledby="defaults-title">
             <div className="section-head">
               <div>
@@ -326,7 +370,6 @@ export default function AppSettingsView(): ReactElement {
               description="Uses the weekly threshold under Usage."
             />
           </section>
-
           <section className="settings-section" aria-labelledby="usage-title">
             <div className="section-head">
               <div>
@@ -351,29 +394,9 @@ export default function AppSettingsView(): ReactElement {
               </span>
             </div>
           </section>
-
-          <section className="settings-section" aria-labelledby="notify-title">
-            <div className="section-head">
-              <div>
-                <h2 id="notify-title">Notifications</h2>
-              </div>
-            </div>
-            <SettingRow
-              title="Notify me when a run needs attention or finishes"
-              description="Shown by your operating system while OrgAI is in the background."
-              control={
-                <Switch
-                  checked={info.notifications !== false}
-                  label="Notify me when a run needs attention or finishes"
-                  testId="notifications-switch"
-                  onChange={(notifications) => patch({ notifications }, true)}
-                />
-              }
-            />
-          </section>
-
+          </div>
           {appInfo && (
-            <section className="settings-section" data-testid="about-block" aria-labelledby="about-title">
+            <section id="appsettings-section-about" className="settings-section" data-testid="about-block" aria-labelledby="about-title">
               <div className="section-head">
                 <div>
                   <h2 id="about-title">About</h2>
@@ -414,6 +437,7 @@ export default function AppSettingsView(): ReactElement {
               <p className="muted">Projects, settings and run history are stored in the data folder.</p>
             </section>
           )}
+          </div>
         </div>
       </div>
     </>

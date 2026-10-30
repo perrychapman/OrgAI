@@ -6,7 +6,7 @@ import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '
 import { costLabel, planProgress } from '../lib/layout'
 import { needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { autoContinueState, isStoppedRun, runStatus } from '../lib/runStatus'
+import { autoContinueState, isStoppedRun, runStatus, statusText } from '../lib/runStatus'
 import { Button } from './ui/Button'
 import { Icon } from './ui/Icon'
 import { Switch } from './ui/Switch'
@@ -48,6 +48,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
   const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
   const interrupt = useAppStore((s) => s.interrupt)
   const stopRun = useAppStore((s) => s.stopRun)
+  const mock = useAppStore((s) => !!s.appInfo?.mockAdapter)
   const startRetro = useAppStore((s) => s.startRetro)
   const setSideTab = useAppStore((s) => s.setSideTab)
   const openRun = useAppStore((s) => s.openRun)
@@ -79,37 +80,37 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
       <div className="run-header-id">
         <span className="run-index">{tag}</span>
         <span className={`pill run-status ${status.tone}`} title={status.note}>
-          <span className="dot" aria-hidden="true" /> {status.word}
+          <span className="dot" aria-hidden="true" /> {statusText(status)}
         </span>
-        {auto.active && (
-          <span className="run-header-auto">
-            Auto-continuing the plan ({auto.count} of {auto.max})
+        {summary.resumedFrom && (
+          <span className="run-header-chain">
+            Continues{' '}
+            {before ? (
+              <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={promptLine(before.prompt)}>
+                {runTag(indexes.get(before.id))}: {shortPrompt(before.prompt, 48)}
+              </button>
+            ) : (
+              'an earlier run'
+            )}
           </span>
         )}
         <span className="run-header-prompt" title={full}>
           {full}
         </span>
+        {auto.active && auto.count > 0 && (
+          <span className="run-header-auto">
+            {auto.count} of {auto.max} auto-continues
+          </span>
+        )}
         <span className="run-header-meta">
           <span title={new Date(summary.startedAt).toLocaleString()}>Started {relativeTime(summary.startedAt)}</span>
           <span aria-hidden="true"> · </span>
           <span title={cost.title}>{cost.text}</span>
         </span>
       </div>
-      {summary.resumedFrom && (
-        <div className="run-header-chain">
-          Continues{' '}
-          {before ? (
-            <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={promptLine(before.prompt)}>
-              {runTag(indexes.get(before.id))}: {shortPrompt(before.prompt, 48)}
-            </button>
-          ) : (
-            'an earlier run'
-          )}
-        </div>
-      )}
       <div className="run-header-actions">
         {summary.kind === 'setup' && (
-          <span className="pill warn">
+          <span className="pill">
             <span className="dot" aria-hidden="true" /> Setup session
           </span>
         )}
@@ -163,7 +164,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
           </span>
         )}
         {!sessionOpen && summary.kind === 'work' && (summary.status === 'finished' || summary.status === 'error') && (
-          <Described visible text="Starts a session (spends tokens)">
+          <Described visible text={mock ? 'Starts a session (mock, no tokens)' : 'Starts a session (spends tokens)'}>
             <Button
               size="sm"
               icon={RotateCcw}

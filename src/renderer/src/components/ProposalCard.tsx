@@ -7,7 +7,7 @@ import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { effectLine, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
 import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
-import DecisionCard from './DecisionCard'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
@@ -20,7 +20,7 @@ interface Props {
   currentRoles: Role[]
   /** The proposing agent's display name, when known. */
   who?: string
-  onDecide: (decision: ProposalDecision) => void
+  onDecide: (decision: ProposalDecision) => void | Promise<void>
 }
 
 const KIND_LABEL: Record<Proposal['kind'], string> = {
@@ -40,29 +40,27 @@ const APPLY_NOTE: Record<Proposal['kind'], string> = {
 export default function ProposalCard({ proposal, runId, currentRoles, who, onDecide }: Props): ReactElement {
   const [revising, setRevising] = useState(false)
   const [feedback, setFeedback] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit } = useDecisionAnswer()
   const isSetup = useAppStore((st) => st.runs[runId]?.summary.kind === 'setup')
   const canSkip = isSetup && proposal.kind === 'mcpServers'
 
   const skip = (): void => {
-    setBusy(true)
-    onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK })
+    void submit(() => onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK }))
   }
 
   const approve = (): void => {
-    setBusy(true)
-    onDecide({ behavior: 'approve' })
+    void submit(() => onDecide({ behavior: 'approve' }))
   }
   const revise = (): void => {
     if (!feedback.trim()) return
-    setBusy(true)
-    onDecide({ behavior: 'revise', feedback: feedback.trim() })
+    void submit(() => onDecide({ behavior: 'revise', feedback: feedback.trim() }))
   }
 
   // No Reject: ProposalDecision only has approve and revise.
   return (
     <DecisionCard
       kind="proposal"
+      error={error}
       runId={runId}
       who={who}
       title={`${KIND_LABEL[proposal.kind]}: ${proposal.title}`}
@@ -234,7 +232,7 @@ function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement 
     <div className="org-diff-row is-changed">
       <div className="org-diff-line">
         <Badge tone="warning" icon={Pencil}>
-          Changed
+          {item.renamed ? 'Renamed' : 'Changed'}
         </Badge>
         <RoleAvatar role={item.role} />
         <span className="org-diff-name">{item.role.name}</span>

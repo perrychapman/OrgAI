@@ -704,6 +704,8 @@ export const proposeMcpServers = defineTool({
     const created: string[] = []
     const projectOnly: string[] = []
     const needAuth: string[] = []
+    /** Existing servers this proposal points somewhere else: their stored secret values are cleared on approval. */
+    const retargeted: string[] = []
     for (const u of upsert) {
       const label = datum(u.name ?? u.libraryId, 60)
       const reject = (why: string): string => `REVISE. The proposal was not shown to the user because "${label}" is not acceptable: ${why}`
@@ -734,6 +736,7 @@ export const proposeMcpServers = defineTool({
         ...(u.registry ? { registry: u.registry } : {})
       }
       if (same) spec.addedAt = same.addedAt
+      if (same && !same.libraryId && !sameTarget(same, spec) && mcpSecretNames(same).length) retargeted.push(spec.name)
       if (libraryScope) {
         const errors = validateLibraryEntry(libraryEntryFromSpec(spec, id), [...keep.filter((s) => s.id !== id), ...specs.map((s) => libraryEntryFromSpec(s, s.id))])
         if (errors.length) return reject(errors.join(' '))
@@ -787,10 +790,18 @@ export const proposeMcpServers = defineTool({
     }
     const follow: string[] = []
     if (secrets.length) follow.push(`The user still has to enter ${secrets.map((s) => s.name).join(', ')} in Settings (values are never shared with you).`)
+    if (retargeted.length) follow.push(`Changed address or command (${retargeted.join(', ')}): their stored secret values were cleared, so the user must re-enter them in Settings.`)
     if (needAuth.length) follow.push(`Remote servers (${[...new Set(needAuth)].join(', ')}): if they sign in with OAuth, the user authorizes them in Settings > MCP servers.`)
     return decisionText(d, `${saved.join(' ')}${follow.length ? ` ${follow.join(' ')}` : ''} Tell the user briefly what to do next.`)
   }
 })
+
+/** Same launch target: transport plus url, or command plus args. A change clears the stored secret values. */
+function sameTarget(a: McpServerSpec, b: McpServerSpec): boolean {
+  if (a.transport !== b.transport) return false
+  if (a.transport === 'stdio') return (a.command ?? '') === (b.command ?? '') && JSON.stringify(a.args ?? []) === JSON.stringify(b.args ?? [])
+  return (a.url ?? '').trim() === (b.url ?? '').trim()
+}
 
 /** The text request_permission_rules returns for a decision. */
 export function ruleDecisionText(d: PermissionRuleDecision, rules: string[]): string {

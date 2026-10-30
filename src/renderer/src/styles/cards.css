@@ -279,7 +279,7 @@
   overflow: auto;
 }
 .diff-patch {
-  max-height: 40vh;
+  max-height: 240px;
 }
 .diff-patch .diff-add {
   color: var(--success-text);
@@ -368,7 +368,8 @@
   gap: var(--space-2);
   width: 100%;
   min-width: 0;
-  max-height: min(60vh, 480px);
+  flex: 0 1 auto;
+  min-height: 0;
   padding: var(--space-3);
   background: var(--surface-3);
   border: 1px solid var(--warning-border);
@@ -434,12 +435,14 @@
 .decision-body {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: min(40vh, 320px);
+  max-height: 320px;
   overflow: auto;
   padding-right: var(--space-1);
 }
+.decision-body > .decision-helper {
+  margin-top: var(--space-2);
+}
 .decision-helper {
-  flex: none;
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
@@ -449,6 +452,9 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-3);
 }
 .decision-secondary {
   display: flex;
@@ -472,6 +478,7 @@
   overflow: auto;
 }
 .decision-stepper {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -497,4 +504,23 @@
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
   overflow-wrap: anywhere;
+}
+.decision-stepper-title {
+  margin-right: auto;
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.decision-stepper .icon-btn {
+  min-width: 32px;
+  min-height: 32px;
+}
+
+/* The tray gives a card whatever height is left; the body is the one scroller, the footer never leaves. */
+.decision-error {
+  flex: none;
+}
+@container frame (min-width: 760px) or (max-height: 420px) {
+  .decision-body {
+    max-height: none;
+  }
 }

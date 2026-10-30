@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useRef, useState } from 'react'
+import { useRef } from 'react'
 import type { Project } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import ProjectConnection from '../components/connections/ProjectConnection'
@@ -11,6 +11,7 @@ import { LimitsSection } from '../components/settings/LimitsSection'
 import { MaintenanceSection } from '../components/settings/MaintenanceSection'
 import { PermissionsSection } from '../components/settings/PermissionsSection'
 import { SettingsNav, type SettingsNavItem } from '../components/settings/SettingsNav'
+import { useSectionNav } from '../components/settings/useSectionNav'
 
 /** Section ids in page order. Connection, MCP and plugins keep the ids their components own. */
 const SECTIONS: SettingsNavItem[] = [
@@ -21,9 +22,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: 'settings-section-mcp', label: 'MCP and plugins' },
   { id: 'settings-section-maintenance', label: 'Maintenance' }
 ]
-
-/** Slack so a section counts as current slightly before its top reaches the scroll edge. */
-const ACTIVE_SLACK_PX = 48
+const SECTION_IDS = SECTIONS.map((s) => s.id)
 
 /**
  * Project settings tab: a sub-nav plus sections. Every edit goes through the store's debounced, tracked save, so the
@@ -33,29 +32,11 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
   const updateProject = useAppStore((s) => s.updateProject)
   const patch = (p: Partial<Project>): void => updateProject({ ...project, ...p })
   const scroller = useRef<HTMLDivElement>(null)
-  const [active, setActive] = useState(SECTIONS[0].id)
-
-  const go = useCallback((id: string): void => {
-    setActive(id)
-    document.getElementById(id)?.scrollIntoView({ block: 'start' })
-  }, [])
-
-  const onScroll = useCallback((): void => {
-    const box = scroller.current
-    if (!box) return
-    const top = box.getBoundingClientRect().top
-    let current = SECTIONS[0].id
-    for (const s of SECTIONS) {
-      const el = document.getElementById(s.id)
-      if (el && el.getBoundingClientRect().top - top <= ACTIVE_SLACK_PX) current = s.id
-    }
-    if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) current = SECTIONS[SECTIONS.length - 1].id
-    setActive(current)
-  }, [])
+  const { active, go } = useSectionNav(SECTION_IDS, scroller)
 
   return (
     <div className="editor single">
-      <div className="settings-scroll" ref={scroller} onScroll={onScroll}>
+      <div className="settings-scroll" ref={scroller}>
         <h2 className="settings-page-title">Project settings</h2>
         <div className="settings-layout">
           <SettingsNav items={SECTIONS} active={active} onSelect={go} />

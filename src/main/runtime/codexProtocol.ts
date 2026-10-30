@@ -514,7 +514,7 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
       }
       if (Object.keys(plain).length) config.push(`${base}.http_headers=${tomlTable(plain)}`)
       if (Object.keys(fromEnv).length) config.push(`${base}.env_http_headers=${tomlTable(fromEnv)}`)
-      summary.push(`mcp ${spec.name}: ${spec.transport} ${spec.url}`)
+      summary.push(`mcp ${spec.name}: ${spec.transport} ${displayUrl(spec.url)}`)
     }
   })
   return { config, env, summary, skipped }
@@ -545,4 +545,15 @@ export function untilFromRateLimits(v: unknown): number | undefined {
   if (!resets.length) return undefined
   const latest = Math.max(...resets)
   return latest < 1e11 ? latest * 1000 : latest
+}
+
+/** A URL for summaries: origin and path only, so userinfo and query-string keys never reach the log. */
+export function displayUrl(url: string | undefined): string {
+  if (!url) return ''
+  try {
+    const u = new URL(url)
+    return `${u.origin}${u.pathname}`
+  } catch {
+    return '(invalid url)'
+  }
 }

@@ -1,4 +1,4 @@
-import type { AgentInstance, RunStatus } from '@shared/types'
+import type { AgentInstance, RunStatus, RunSummary } from '@shared/types'
 
 /**
  * The one status vocabulary of the app (spec 12.4): tabs, run header, history, sidebar, node activity and the topbar
@@ -83,4 +83,34 @@ export function autoContinueState(input: AutoContinueInput, defaultMax = 40): { 
   const open = input.status === 'running' || input.status === 'idle' || input.status === 'starting'
   const active = input.kind !== 'setup' && input.autoContinue !== false && !!input.plan && input.plan.status === 'active' && open && count < max
   return { active, count, max }
+}
+
+/** The words to show for a status: a run cut off by the app closing says so instead of "Finished". */
+export function statusText(view: RunStatusView): string {
+  return view.note === 'Ended when OrgAI closed' ? view.note : view.word
+}
+
+/** The shared status of a run held in the store, so tab, header, pill, sidebar and history never disagree. */
+export function statusOfRun(
+  run: {
+    summary: Pick<RunSummary, 'status' | 'kind' | 'endedWithApp'>
+    plan?: AutoContinueInput['plan']
+    agents?: Record<string, Pick<AgentInstance, 'parentId' | 'activity'>>
+  },
+  project: { autoContinue?: boolean; maxAutoContinues?: number } | undefined,
+  waiting: boolean
+): RunStatusView {
+  const auto = autoContinueState({
+    status: run.summary.status,
+    plan: run.plan,
+    autoContinue: project?.autoContinue,
+    maxAutoContinues: project?.maxAutoContinues,
+    kind: run.summary.kind
+  })
+  return runStatus(run.summary.status, {
+    waiting,
+    endedWithApp: !!run.summary.endedWithApp,
+    stopped: isStoppedRun(run.agents),
+    autoContinuing: auto.active
+  })
 }

@@ -335,13 +335,22 @@ describe('loopback', () => {
     lb.close()
   })
 
-  it('rejects a mismatched state', async () => {
+  it('answers 400 to a wrong or missing state and keeps waiting for the right one', async () => {
     const lb = await startLoopback()
     const p = lb.waitForCode('right', { timeoutMs: 5000 })
-    const assertion = expect(p).rejects.toMatchObject({ step: 'callback' })
-    const res = await get(`${lb.redirectUri}?code=c&state=wrong`)
-    await res.text()
-    await assertion
+    const settled = vi.fn()
+    p.then(settled, settled)
+    for (const q of ['?code=c&state=wrong', '?code=c', '?error=access_denied&state=wrong', '?error=access_denied']) {
+      const res = await get(`${lb.redirectUri}${q}`)
+      await res.text()
+      expect(res.status).toBe(400)
+    }
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled).not.toHaveBeenCalled()
+    const ok = await get(`${lb.redirectUri}?code=real&state=right`)
+    await ok.text()
+    expect(ok.status).toBe(200)
+    expect(await p).toBe('real')
     lb.close()
   })
 
@@ -488,12 +497,12 @@ describe('runAuthorization', () => {
     probe.close()
     await new Promise((r) => setTimeout(r, 50))
     const { fetch, calls } = fakeFetch(flowRoutes(okToken))
-    const reuse = await runAuthorization({ url: MCP, config: { clientId: 'dcr-old', clientSource: 'dcr', redirectUri }, fetch, openExternal: browser().open })
+    const reuse = await runAuthorization({ url: MCP, config: { clientId: 'dcr-old', clientSource: 'dcr', redirectUri, authorizationServer: AS }, fetch, openExternal: browser().open })
     expect(reuse.config.clientId).toBe('dcr-old')
     expect(calls.some((c) => c.url === `${AS}/register`)).toBe(false)
 
     const busy = await startLoopback()
-    const r2 = await runAuthorization({ url: MCP, config: { clientId: 'dcr-old', clientSource: 'dcr', redirectUri: busy.redirectUri }, fetch, openExternal: browser().open })
+    const r2 = await runAuthorization({ url: MCP, config: { clientId: 'dcr-old', clientSource: 'dcr', redirectUri: busy.redirectUri, authorizationServer: AS }, fetch, openExternal: browser().open })
     busy.close()
     expect(r2.config.clientId).toBe('dcr-client')
     expect(calls.some((c) => c.url === `${AS}/register`)).toBe(true)
@@ -530,7 +539,11 @@ describe('runAuthorization', () => {
       created = { ...real, close: () => (closeSpy(), real.close()) }
       return created
     }
-    await expect(runAuthorization({ url: MCP, fetch, listen, openExternal: browser({ state: () => 'forged' }).open })).rejects.toMatchObject({ step: 'callback' })
+    // a forged state gets a 400 and the flow keeps waiting until it times out
+    await expect(runAuthorization({ url: MCP, fetch, listen, timeoutMs: 100, openExternal: browser({ state: () => 'forged' }).open })).rejects.toMatchObject({
+      step: 'callback',
+      message: expect.stringContaining('timed out')
+    })
     expect(closeSpy).toHaveBeenCalled()
   })
 
@@ -572,5 +585,234 @@ describe('authStatusFrom', () => {
     expect(authStatusFrom({}, { accessToken: false, refreshToken: false }, 0)).toEqual({ state: 'notAuthorized' })
     expect(authStatusFrom({ expiresAt: '2020-01-01T00:00:00Z' }, { accessToken: true, refreshToken: false }, Date.now()).state).toBe('expired')
     expect(authStatusFrom({ expiresAt: '2020-01-01T00:00:00Z' }, { accessToken: true, refreshToken: true }, Date.now()).state).toBe('authorized')
+  })
+})
+
+describe('OAuth URL hardening', () => {
+  const LOCAL = 'http://127.0.0.1:9999'
+  const localRoutes = (over: { prm?: unknown; meta?: Record<string, unknown>; challenge?: string } = {}): Record<string, Handler> => ({
+    [`GET ${LOCAL}/mcp`]: () => new Response('', { status: 401, headers: { 'www-authenticate': over.challenge ?? `Bearer resource_metadata="${LOCAL}/prm"` } }),
+    [`GET ${LOCAL}/prm`]: () => json(over.prm ?? { authorization_servers: [LOCAL] }),
+    [`GET ${LOCAL}/.well-known/oauth-authorization-server`]: () => json(over.meta ?? { authorization_endpoint: `${LOCAL}/a`, token_endpoint: `${LOCAL}/t` })
+  })
+
+  it('a remote server cannot point discovery at loopback http or private IP literals', async () => {
+    const bad = [
+      'http://127.0.0.1:8080',
+      'https://127.0.0.1',
+      'https://localhost',
+      'https://10.1.2.3',
+      'https://172.16.0.1',
+      'https://172.31.255.1',
+      'https://192.168.1.1',
+      'https://169.254.169.254',
+      'https://100.64.0.1',
+      'https://0.0.0.0',
+      'https://[::1]',
+      'https://[fc00::1]',
+      'https://[fd12::1]',
+      'https://[fe80::1]',
+      'https://[::ffff:10.0.0.1]',
+      'https://[::ffff:127.0.0.1]'
+    ]
+    for (const issuer of bad) {
+      const routes = { ...discoveryRoutes(), 'GET https://mcp.example.com/prm.json': () => json({ authorization_servers: [issuer] }) }
+      const { fetch, calls } = fakeFetch(routes)
+      await expect(discover(MCP, fetch), issuer).rejects.toMatchObject({ step: 'discovery' })
+      expect(calls.some((c) => c.url.startsWith(issuer)), issuer).toBe(false)
+    }
+    for (const field of ['authorization_endpoint', 'token_endpoint', 'registration_endpoint']) {
+      for (const target of ['http://127.0.0.1:1/x', 'https://192.168.0.5/x', 'https://[::1]/x']) {
+        const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, [field]: target } }))
+        await expect(discover(MCP, fetch), `${field} ${target}`).rejects.toMatchObject({ step: 'discovery' })
+      }
+    }
+  })
+
+  it('a public https URL and a non-literal hostname are fine', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, token_endpoint: 'https://internal.corp.example/token' } }))
+    const d = await discover(MCP, fetch)
+    expect(d.tokenEndpoint).toBe('https://internal.corp.example/token')
+  })
+
+  it('refuses a non-https or private resource_metadata from the challenge (falls back to well-known)', async () => {
+    for (const rm of ['http://mcp.example.com/prm.json', 'http://127.0.0.1:1/prm', 'https://10.0.0.1/prm', 'https://169.254.169.254/latest']) {
+      const routes = discoveryRoutes({ challenge: `Bearer resource_metadata="${rm}"` })
+      delete routes['GET https://mcp.example.com/prm.json']
+      routes['GET https://mcp.example.com/.well-known/oauth-protected-resource/mcp'] = () => json(PRM)
+      const { fetch, calls } = fakeFetch(routes)
+      await discover(MCP, fetch)
+      expect(calls.some((c) => c.url === rm), rm).toBe(false)
+    }
+  })
+
+  it('a loopback server may use loopback http and local endpoints', async () => {
+    const { fetch } = fakeFetch(localRoutes())
+    const d = await discover(`${LOCAL}/mcp`, fetch)
+    expect(d.tokenEndpoint).toBe(`${LOCAL}/t`)
+  })
+
+  it('registerClient, exchangeCode and refreshTokens refuse a downgraded or private endpoint for a remote resource', async () => {
+    const never = vi.fn(async () => json({ client_id: 'x', access_token: 'at' }))
+    const f = never as unknown as FetchLike
+    const base: OAuthDiscovery = { resource: MCP, authorizationServer: AS, authorizationEndpoint: `${AS}/a`, tokenEndpoint: `${AS}/t` }
+    await expect(registerClient({ ...base, registrationEndpoint: 'http://127.0.0.1:1/reg' }, 'http://127.0.0.1:5/cb', f)).rejects.toMatchObject({ step: 'registration' })
+    await expect(registerClient({ ...base, registrationEndpoint: 'https://10.0.0.1/reg' }, 'http://127.0.0.1:5/cb', f)).rejects.toMatchObject({ step: 'registration' })
+    const client = { clientId: 'c', source: 'manual' as const }
+    await expect(exchangeCode({ ...base, tokenEndpoint: 'http://127.0.0.1:1/t' }, client, { code: 'c', verifier: 'v', redirectUri: 'r' }, f)).rejects.toMatchObject({ step: 'token' })
+    await expect(exchangeCode({ ...base, tokenEndpoint: 'https://169.254.169.254/t' }, client, { code: 'c', verifier: 'v', redirectUri: 'r' }, f)).rejects.toMatchObject({ step: 'token' })
+    await expect(refreshTokens({ tokenEndpoint: 'http://127.0.0.1:1/t', resource: MCP, clientId: 'c' }, { refreshToken: 'r' }, f)).rejects.toMatchObject({ step: 'refresh' })
+    await expect(refreshTokens({ tokenEndpoint: 'http://127.0.0.1:1/t', clientId: 'c' }, { refreshToken: 'r' }, f)).rejects.toMatchObject({ step: 'refresh' })
+    expect(never).not.toHaveBeenCalled()
+    // a loopback resource may refresh against loopback http
+    const ok = vi.fn(async () => json({ access_token: 'at2' }))
+    const t = await refreshTokens({ tokenEndpoint: 'http://127.0.0.1:1/t', resource: 'http://127.0.0.1:9999/mcp', clientId: 'c' }, { refreshToken: 'r' }, ok as unknown as FetchLike)
+    expect(t.accessToken).toBe('at2')
+  })
+
+  it('every OAuth fetch passes redirect: error', async () => {
+    const seen: (string | undefined)[] = []
+    const routes = {
+      ...discoveryRoutes(),
+      [`POST ${AS}/register`]: () => json({ client_id: 'dcr-client' }, 201),
+      [`POST ${AS}/token`]: () => json({ access_token: 'AT', refresh_token: 'RT' })
+    }
+    const inner = fakeFetch(routes).fetch
+    const spy = (async (i: string | URL | Request, init?: RequestInit) => {
+      seen.push(init?.redirect)
+      return inner(i, init)
+    }) as FetchLike
+    const d = await discover(MCP, spy)
+    const c = await registerClient(d, 'http://127.0.0.1:5/cb', spy)
+    await exchangeCode(d, c, { code: 'x', verifier: 'v', redirectUri: 'r' }, spy)
+    await refreshTokens({ tokenEndpoint: d.tokenEndpoint, resource: d.resource, clientId: c.clientId }, { refreshToken: 'r' }, spy)
+    expect(seen.length).toBeGreaterThanOrEqual(6)
+    expect(seen.every((r) => r === 'error')).toBe(true)
+  })
+
+  it('caps response bodies at 64 KB', async () => {
+    const big = 'x'.repeat(70_000)
+    const sized = (): Response => new Response(`{"access_token":"AT","pad":"${big}"}`, { status: 200 })
+    const d = { tokenEndpoint: `${AS}/token`, resource: MCP }
+    await expect(exchangeCode(d, { clientId: 'c', source: 'manual' }, { code: 'x', verifier: 'v', redirectUri: 'r' }, fakeFetch({ [`POST ${AS}/token`]: sized }).fetch)).rejects.toMatchObject({
+      step: 'token',
+      message: expect.stringContaining('too large')
+    })
+    const chunked = (): Response =>
+      new Response(new ReadableStream({ pull: (c) => c.enqueue(new TextEncoder().encode('y'.repeat(10_000))) }), { status: 200 })
+    await expect(registerClient({ resource: MCP, authorizationServer: AS, authorizationEndpoint: 'a', tokenEndpoint: 't', registrationEndpoint: `${AS}/register` }, 'r', fakeFetch({ [`POST ${AS}/register`]: chunked }).fetch)).rejects.toMatchObject({
+      step: 'registration'
+    })
+    const bigMeta = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, pad: big } }))
+    await expect(discover(MCP, bigMeta.fetch)).rejects.toMatchObject({ step: 'discovery' })
+  })
+
+  it('error messages carry the sanitized error code only, never error_description or the raw body', async () => {
+    const run = (h: Handler): Promise<Error> =>
+      exchangeCode({ tokenEndpoint: `${AS}/token`, resource: MCP }, { clientId: 'c', source: 'manual' }, { code: 'x', verifier: 'v', redirectUri: 'r' }, fakeFetch({ [`POST ${AS}/token`]: h }).fetch).catch((e) => e)
+    const err = await run(() => json({ error: 'invalid_grant', error_description: 'internal host db-7.corp secret detail' }, 400))
+    expect(err.message).toBe('Token request failed (HTTP 400): invalid_grant')
+    const err2 = await run(() => json({ error: 'bad<script>error code!' }, 400))
+    expect(err2.message).toBe('Token request failed (HTTP 400): badscripterrorcode')
+    const err3 = await run(() => new Response('<html>internal stack trace at 10.0.0.1</html>', { status: 500 }))
+    expect(err3.message).not.toContain('internal')
+    const reg = fakeFetch({ [`POST ${AS}/register`]: () => new Response('<html>secret page 10.0.0.1</html>', { status: 500 }) })
+    const err4 = await registerClient({ resource: MCP, authorizationServer: AS, authorizationEndpoint: 'a', tokenEndpoint: 't', registrationEndpoint: `${AS}/register` }, 'r', reg.fetch).catch((e) => e)
+    expect(err4.message).toBe('Registration failed (HTTP 500)')
+  })
+})
+
+describe('runAuthorization stored client scoping', () => {
+  const OTHER = 'https://other-auth.example.com'
+  function routes(): Record<string, Handler> {
+    return {
+      ...discoveryRoutes(),
+      [`POST ${AS}/register`]: () => json({ client_id: 'fresh-dcr' }, 201),
+      [`POST ${AS}/token`]: () => json({ access_token: 'AT', refresh_token: 'RT' })
+    }
+  }
+  const open = async (raw: string): Promise<void> => {
+    const u = new URL(raw)
+    const r = new URL(u.searchParams.get('redirect_uri')!)
+    r.searchParams.set('code', 'c')
+    r.searchParams.set('state', u.searchParams.get('state')!)
+    await (await fetch(r)).text()
+  }
+
+  it('does not reuse a stored dcr client or secret when the authorization server changed; re-registers', async () => {
+    const { fetch, calls } = fakeFetch(routes())
+    const r = await runAuthorization({
+      url: MCP,
+      storedClientSecret: 'old-secret',
+      config: { clientId: 'old-dcr', clientSource: 'dcr', redirectUri: 'http://127.0.0.1:1/callback', hasClientSecret: true, authorizationServer: OTHER },
+      fetch,
+      openExternal: open
+    })
+    expect(r.config.clientId).toBe('fresh-dcr')
+    expect(r.config.hasClientSecret).toBe(false)
+    expect(calls.some((c) => c.url === `${AS}/register`)).toBe(true)
+    expect(calls.some((c) => c.body?.includes('old-secret') || c.body?.includes('old-dcr'))).toBe(false)
+  })
+
+  it('does not reuse a stored client lacking authorizationServer, and sends a legacy clientSecret nowhere', async () => {
+    const { fetch, calls } = fakeFetch(routes())
+    const r = await runAuthorization({ url: MCP, clientSecret: 'legacy-stored', config: { clientId: 'old-dcr', clientSource: 'dcr', redirectUri: 'http://127.0.0.1:1/callback' }, fetch, openExternal: open })
+    expect(r.config.clientId).toBe('fresh-dcr')
+    expect(calls.some((c) => c.body?.includes('legacy-stored'))).toBe(false)
+  })
+
+  it('a stored manual client of another authorization server needs a client id (no DCR) and its secret is not sent', async () => {
+    const r = routes()
+    delete r[`POST ${AS}/register`]
+    const meta: Record<string, unknown> = { ...ASMETA }
+    delete meta.registration_endpoint
+    const { fetch, calls } = fakeFetch({ ...r, [`GET ${AS}/.well-known/oauth-authorization-server`]: () => json(meta) })
+    const err = await runAuthorization({
+      url: MCP,
+      storedClientSecret: 'manual-secret',
+      config: { clientId: 'kept', clientSource: 'manual', hasClientSecret: true, authorizationServer: OTHER },
+      fetch,
+      openExternal: open
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(err.needsClientId).toBe(true)
+    expect(calls.some((c) => c.body?.includes('manual-secret'))).toBe(false)
+  })
+
+  it('a freshly entered clientId and clientSecret pair is used even when the stored config is for another server', async () => {
+    const { fetch, calls } = fakeFetch(routes())
+    const r = await runAuthorization({
+      url: MCP,
+      clientId: 'typed',
+      clientSecret: 'typed-secret',
+      storedClientSecret: 'old-secret',
+      config: { clientId: 'old', clientSource: 'manual', hasClientSecret: true, authorizationServer: OTHER },
+      fetch,
+      openExternal: open
+    })
+    expect(r.config.clientId).toBe('typed')
+    expect(r.clientSecret).toBe('typed-secret')
+    const tokenCall = calls.find((c) => c.url === `${AS}/token`)!
+    expect(tokenCall.body).toContain('client_secret=typed-secret')
+    expect(calls.some((c) => c.body?.includes('old-secret'))).toBe(false)
+  })
+
+  it('reuses a stored manual client and storedClientSecret for the same authorization server', async () => {
+    const { fetch, calls } = fakeFetch(routes())
+    const r = await runAuthorization({ url: MCP, storedClientSecret: 'kept-secret', config: { clientId: 'kept', clientSource: 'manual', hasClientSecret: true, authorizationServer: AS }, fetch, openExternal: open })
+    expect(r.config.clientId).toBe('kept')
+    expect(calls.find((c) => c.url === `${AS}/token`)!.body).toContain('client_secret=kept-secret')
+  })
+})
+
+describe('isPrivateHost follow-ups (review of the security fixes)', () => {
+  it('treats a trailing-dot localhost and the extra reserved ranges as private', async () => {
+    const { isPrivateHost, isLoopbackUrl } = await import('./oauth')
+    for (const h of ['localhost.', '127.0.0.1.', '192.0.0.1', '198.18.0.1', '224.0.0.1', '240.0.0.1', '[64:ff9b::a00:1]', '[ff02::1]']) {
+      expect(isPrivateHost(h), h).toBe(true)
+    }
+    expect(isLoopbackUrl('http://localhost./mcp')).toBe(true)
+    expect(isPrivateHost('example.com')).toBe(false)
+    expect(isPrivateHost('8.8.8.8')).toBe(false)
   })
 })

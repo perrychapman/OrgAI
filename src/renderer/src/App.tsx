@@ -15,7 +15,7 @@ import RunHistory from './components/RunHistory'
 import { useRunTabShortcuts } from './components/RunTabs'
 import { needsYou } from './lib/runChains'
 import { runTag, shortPrompt } from './lib/runLabels'
-import { runStatus } from './lib/runStatus'
+import { statusOfRun, statusText } from './lib/runStatus'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -41,7 +41,7 @@ export default function App(): ReactElement {
     document.title = run && view === 'run' ? `OrgAI · ${runTag(runIndex)} · ${shortPrompt(run.summary.prompt, 40)}` : 'OrgAI'
   }, [run, runIndex, view])
 
-  const badge = run || waitingHere ? runStatus(run?.summary.status ?? 'idle', { waiting: waitingHere || (run ? needsYou(run) : false), endedWithApp: !!run?.summary.endedWithApp }) : undefined
+  const badge = run ? statusOfRun(run, project, waitingHere || needsYou(run)) : waitingHere ? statusOfRun({ summary: { status: 'idle', kind: 'work' } }, project, true) : undefined
 
   return (
     <div className="app">
@@ -76,7 +76,7 @@ export default function App(): ReactElement {
                 {badge && (
                   <span className={`pill run-status ${badge.tone}`} title={badge.note}>
                     <span className="dot" /> {run?.summary.kind === 'setup' ? 'setup · ' : ''}
-                    {badge.word}
+                    {statusText(badge)}
                   </span>
                 )}
                 <SaveIndicator />

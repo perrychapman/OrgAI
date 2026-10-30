@@ -255,6 +255,43 @@ export interface RunManagerOptions {
   }
 }
 
+/** The install-card fields a user may edit before approving; everything else stays as the agent requested it. */
+const INSTALL_EDITABLE = ['name', 'url', 'command', 'args', 'env', 'headers', 'secretEnv', 'secretHeaders', 'roles', 'enabled', 'description'] as const
+
+const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
+const isStringRecord = (v: unknown): v is Record<string, string> =>
+  !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((x) => typeof x === 'string')
+
+/**
+ * The requested spec with the user's allowed edits applied. Ids, transport, registry refs, OAuth configs and
+ * library links never come from the renderer: a card edit cannot point at another server's stored credentials.
+ */
+export function mergeInstallEdit(requested: McpServerSpec, edit: McpServerSpec | undefined): McpServerSpec {
+  const out: McpServerSpec = { ...requested }
+  delete out.oauth
+  delete out.libraryId
+  delete (out as { projectOnly?: unknown }).projectOnly
+  if (out.source === 'library') out.source = 'agent'
+  if (!edit || typeof edit !== 'object') return out
+  const target = out as unknown as Record<string, unknown>
+  const from = edit as unknown as Record<string, unknown>
+  for (const k of INSTALL_EDITABLE) {
+    if (!Object.hasOwn(from, k)) continue
+    const v = from[k]
+    if (v === undefined) {
+      if (k !== 'name' && k !== 'enabled') delete target[k]
+      continue
+    }
+    const ok =
+      k === 'enabled' ? typeof v === 'boolean'
+      : k === 'args' || k === 'secretEnv' || k === 'secretHeaders' || k === 'roles' ? isStringList(v)
+      : k === 'env' || k === 'headers' ? isStringRecord(v)
+      : typeof v === 'string'
+    if (ok) target[k] = Array.isArray(v) ? [...v] : v && typeof v === 'object' ? { ...(v as Record<string, string>) } : v
+  }
+  return out
+}
+
 /** Human label of a model family for refusal messages. */
 const FAMILY_LABEL: Record<string, string> = { claude: 'Claude', openai: 'OpenAI', other: 'other' }
 const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
@@ -470,8 +507,10 @@ export class RunManager {
       return [...base, ...runServerSpecs().filter((s) => !base.some((b) => b.id === s.id))]
     }
     const resolveOne = (spec: McpServerSpec): ResolvedMcpServer => {
-      const extra = active.runServers.get(spec.id)?.secrets
-      if (mcp) return mcp.resolve(live.id, spec, extra)
+      const runScoped = active.runServers.get(spec.id)
+      const extra = runScoped?.secrets
+      // A server approved for this run only never reads stored secrets or OAuth tokens: only what the user typed.
+      if (mcp && !runScoped) return mcp.resolve(live.id, spec, extra)
       const env = { ...(spec.env ?? {}) }
       const headers = { ...(spec.headers ?? {}) }
       for (const n of spec.secretEnv ?? []) if (extra?.[n]) env[n] = extra[n]
@@ -533,7 +572,10 @@ export class RunManager {
               ctx.project = live
             }
           }),
-        requestMcpInstall: (req) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })),
+        // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
+        ...(setupLike || project.id === HARNESS_PROJECT_ID
+          ? {}
+          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
         ...(setupLike ? { mcpLibrary: libraryEntries } : {}),
@@ -1062,8 +1104,17 @@ export class RunManager {
     const scope = raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
-    const spec: McpServerSpec = raw.spec ?? request.spec
-    const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)].filter((s) => s.id !== spec.id)
+    const refuse = (why: string): McpInstallDecision => ({ approved: false, scope, note: `The harness did not install it: ${why}` })
+    if (project.id === HARNESS_PROJECT_ID) return refuse('installs are not available in a harness session; propose library entries instead.')
+    if (raw.spec !== undefined && (!raw.spec || typeof raw.spec !== 'object' || raw.spec.id !== request.spec.id)) return refuse('the edited server must keep the requested id.')
+    const id = request.spec.id
+    const taken =
+      (project.mcpServers ?? []).some((s) => s.id === id) ||
+      active.runServers.has(id) ||
+      !!this.options.mcp?.libraryEntries?.().some((e) => e.id === id)
+    if (taken) return refuse('a server with that id already exists.')
+    const spec = mergeInstallEdit(request.spec, raw.spec)
+    const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)]
     const errors = validateSpec(spec, others)
     if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }
     const secrets: Record<string, string> = {}
@@ -1082,7 +1133,7 @@ export class RunManager {
     } else {
       active.runServers.set(spec.id, { spec, secrets })
     }
-    return { approved: true, scope: scope !== 'run' && this.options.mcp ? scope : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec: raw.spec } : {}) }
+    return { approved: true, scope: scope !== 'run' && this.options.mcp ? scope : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec } : {}) }
   }
 
   /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */

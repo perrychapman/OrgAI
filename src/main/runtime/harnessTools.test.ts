@@ -517,6 +517,18 @@ describe('MCP tools', () => {
       expect(payload.remove).toEqual(['mcpl_1'])
     })
 
+    // Security review M5: an apply that retargets a server clears its stored secret values; the agent is told.
+    it('says the user must re-enter secrets when a proposal changes where an existing server points', async () => {
+      const existing = [mcpSpec({ id: 'mcp-1', name: 'github', command: 'npx', args: ['-y', 'pkg@1.2.3'], secretEnv: ['GITHUB_TOKEN'] })]
+      const ctx = assistCtx({ project: project({ mcpServers: existing }) })
+      const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
+      const same = await t.call({ title: 't', rationale: 'r', upsert: [pinned] })
+      expect(same).not.toMatch(/re-enter/)
+      const moved = await t.call({ title: 't', rationale: 'r', upsert: [{ ...pinned, args: ['-y', 'other-pkg@2.0.0'] }] })
+      expect(moved).toMatch(/^APPROVED\./)
+      expect(moved).toContain('Changed address or command (github): their stored secret values were cleared, so the user must re-enter them')
+    })
+
     it('list_mcp_servers in setup and mcp-assist shows the library and the project servers, inside the data block', async () => {
       const link = mcpSpec({ id: 'mcp-9', name: 'docs', transport: 'http', url: 'https://docs.test/mcp', command: undefined, args: undefined, secretEnv: undefined, libraryId: 'mcpl_1', source: 'library' })
       const mk = (kind: 'setup' | 'mcp-assist', id = 'p1') =>

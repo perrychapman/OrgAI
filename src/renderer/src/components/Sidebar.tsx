@@ -1,12 +1,13 @@
 import type { ReactElement } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { AuthStatusResult, ConnectionStatus } from '@shared/types'
 import { BellRing, ChevronDown, ChevronRight, LayoutGrid, Settings } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { waitingItems } from '../lib/needsYou'
 import { needsYou, projectCounts, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { runStatus } from '../lib/runStatus'
+import { isStoppedRun, runStatus, statusOfRun, statusText } from '../lib/runStatus'
 import brandIcon from '../assets/brand/icon.png'
 import UsageMeter from './UsageMeter'
 import { Icon } from './ui/Icon'
@@ -19,6 +20,23 @@ function openRunsOf(runs: RunState[]): RunState[] {
     .sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)) || b.summary.startedAt - a.summary.startedAt)
 }
 
+/** The footer pill follows the Anthropic connection's status (what the Connections panel shows); the login probe only adds detail. */
+function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | undefined): { tone: string; label: string; title?: string } {
+  if (status) {
+    const detail = status.detail ?? auth?.detail
+    if (status.state === 'connected') {
+      const how = auth?.mode === 'apiKey' ? `API key (${auth.envVar})` : (status.account ?? auth?.method ?? 'connected')
+      return { tone: 'ok', label: `Claude · ${how}`, title: detail }
+    }
+    if (status.state === 'connecting') return { tone: 'warn', label: 'Claude · connecting…', title: detail }
+    if (status.state === 'error') return { tone: 'danger', label: 'Claude · error', title: detail }
+    return { tone: 'warn', label: 'Claude · not connected', title: detail }
+  }
+  if (auth == null) return { tone: '', label: 'Checking Claude login…' }
+  if (auth.mode === 'apiKey') return { tone: 'warn', label: auth.envVarSet ? `Claude · API key (${auth.envVar})` : `Claude · ${auth.envVar} not set`, title: auth.detail }
+  return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
+}
+
 export default function Sidebar(): ReactElement {
   const projects = useAppStore((s) => s.projects)
   const selectedId = useAppStore((s) => s.selectedProjectId)
@@ -29,6 +47,12 @@ export default function Sidebar(): ReactElement {
   const selectProject = useAppStore((s) => s.selectProject)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const auth = useAppStore((s) => s.auth)
+  const connections = useAppStore((s) => s.connections)
+  const loadConnections = useAppStore((s) => s.loadConnections)
+  useEffect(() => {
+    if (!connections) void loadConnections()
+  }, [connections, loadConnections])
+  const pill = claudePill(auth, connections?.find((c) => c.connection.id === 'anthropic')?.status)
   const mockAdapter = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const runs = useAppStore((s) => s.runs)
   const history = useAppStore((s) => s.historyByProject)
@@ -79,7 +103,7 @@ export default function Sidebar(): ReactElement {
             <ul className="nav-runs" aria-label="Everything waiting for you">
               {waiting.flatMap((r) =>
                 waitingItems(r).map((it) => (
-                  <li key={it.key}>
+                  <li key={it.key} className="nav-needs-item">
                     <button
                       type="button"
                       className="nav-run waiting"
@@ -96,6 +120,7 @@ export default function Sidebar(): ReactElement {
                   </li>
                 ))
               )}
+              {items.length > 3 && <li className="nav-needs-more">+{items.length - 3} more</li>}
             </ul>
           )}
         </div>
@@ -111,12 +136,12 @@ export default function Sidebar(): ReactElement {
           const open = openRunsOf(projectRuns)
           const expanded = open.length > 0 && !collapsed[p.id]
           const newest = [...(history[p.id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
-          const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp }) : undefined
+          const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
           const subtitle =
             open.length > 0
               ? [`${counts.open} open`, counts.needsYou > 0 ? `${counts.needsYou} needs you` : ''].filter(Boolean).join(' · ')
               : newest && last
-                ? `Last run ${relativeTime(newest.startedAt)} · ${last.word}`
+                ? `Last run ${relativeTime(newest.startedAt)} · ${statusText(last)}`
                 : ''
           const active = selectedId === p.id && inProject(view)
           const viewedId = draftPage[p.id] ? undefined : viewedByProject[p.id]
@@ -155,7 +180,7 @@ export default function Sidebar(): ReactElement {
               {expanded && (
                 <ul className="nav-runs" aria-label={`Open runs of ${p.name}`}>
                   {open.map((r) => {
-                    const st = runStatus(r.summary.status, { waiting: needsYou(r) })
+                    const st = statusOfRun(r, p, needsYou(r))
                     const here = active && viewedId === r.summary.id
                     return (
                       <li key={r.summary.id}>
@@ -184,20 +209,9 @@ export default function Sidebar(): ReactElement {
         })}
       </div>
       <div className="sidebar-footer">
-        <span
-          className={`pill ${auth?.loggedIn ? 'ok' : auth?.mode === 'apiKey' ? 'warn' : auth ? 'danger' : ''}`}
-          title={auth?.detail}
-        >
+        <span className={`pill ${pill.tone}`} title={pill.title} data-testid="auth-pill">
           <span className="dot" />
-          {auth == null
-            ? 'Checking Claude login…'
-            : auth.mode === 'apiKey'
-              ? auth.envVarSet
-                ? `Claude · API key (${auth.envVar})`
-                : `Claude · ${auth.envVar} not set`
-              : auth.loggedIn
-                ? `Claude · ${auth.method ?? 'logged in'}`
-                : 'Claude not logged in'}
+          {pill.label}
         </span>
         <UsageMeter />
       </div>

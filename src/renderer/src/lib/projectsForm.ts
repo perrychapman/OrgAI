@@ -13,17 +13,31 @@ export function pathLeaf(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? ''
 }
 
+/** A drive letter, a UNC share or a leading slash: the path names one folder wherever the app runs. */
+export function isFullPath(path: string): boolean {
+  return /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path.trim())
+}
+
+function fullPathExample(): string {
+  const win = typeof navigator !== 'undefined' && /win/i.test(navigator.platform ?? '')
+  return win ? 'C:\\Projects\\shop' : '/Users/you/projects/shop'
+}
+
 /** What to tell the user about the folder they typed, or null while there is nothing to say. */
 export function pathStatus(kind: SetupKind, path: string, check: ProjectPathCheck | null): PathStatus | null {
   const p = path.trim()
-  if (!p || !check) return null
+  if (!p) return null
+  // A relative path would resolve against the app's own folder, so it is refused before anything is checked.
+  if (!isFullPath(p)) return { tone: 'error', text: `Use a full path, for example ${fullPathExample()}`, blocking: true }
+  if (!check) return null
+  // A folder that is not there never counts as empty, whatever else the check says.
+  if (!check.exists && kind === 'existing') return { tone: 'error', text: 'No folder at this path.', blocking: true }
   if (check.exists && !check.isDirectory) return { tone: 'error', text: 'This is a file, not a folder.', blocking: true }
   if (kind === 'new') {
     if (!check.exists) return { tone: 'info', text: `A new folder will be created at ${p}`, blocking: false }
     if (check.empty) return { tone: 'ok', text: 'Empty folder. A good place to start.', blocking: false }
     return { tone: 'warn', text: 'This folder already has files. An empty folder is best for a new idea.', blocking: false }
   }
-  if (!check.exists) return { tone: 'error', text: 'No folder at this path.', blocking: true }
   if (check.empty) return { tone: 'warn', text: 'Empty folder. Choose "New idea" if there is no code yet.', blocking: false }
   if (!check.isGitRepo) return { tone: 'warn', text: "Not a git repository yet (that's fine).", blocking: false }
   return { tone: 'ok', text: 'Git repository found.', blocking: false }

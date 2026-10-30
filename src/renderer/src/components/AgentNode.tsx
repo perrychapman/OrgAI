@@ -50,7 +50,9 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   const streaming = partial !== undefined
   const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
   const cost = costLabel(agent.costUsd, authMode)
-  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : agent.activity
+  // An idle run is not a pending decision: the root waits for a reply, "Waiting for you" is for a card.
+  const idleActivity = isRoot && agent.state === 'idle' && agent.activity === 'Waiting for you' ? 'Waiting for your reply' : agent.activity
+  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : idleActivity
 
   return (
     <div className={`agent-node state-${agent.state} ${selected ? 'selected' : ''}`} style={{ ['--role' as string]: color }}>
