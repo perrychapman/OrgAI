@@ -9,6 +9,7 @@ import type {
   McpServerSpec,
   MergeDecision,
   MergeReview,
+  ModelPrice,
   PermissionDecision,
   PermissionRuleDecision,
   PermissionRuleRequest,
@@ -68,6 +69,14 @@ export interface RunConnection {
   apiKey?: string
   /** Codex adapter on LiteLLM: the OpenAI-compatible base URL ("<litellm baseUrl>/v1"). */
   openaiBaseUrl?: string
+  /**
+   * LiteLLM only: token prices by model id from the catalog (ProviderModel.price, read from /model/info). Keys are
+   * the proxy's model names, plus the bare upstream model (litellm_params.model without its "provider/" prefix) when
+   * no model name already has it, since a proxy may answer with the upstream name. Look up with pricing.ts
+   * `priceFor` (date suffixes and provider prefixes are tolerated). Missing or no match = no estimate (cost 0;
+   * the Claude adapter then keeps the CLI's own rates). Not secret.
+   */
+  pricing?: Record<string, ModelPrice>
 }
 
 /** An MCP server spec with its secret values filled in, ready for an adapter. Never emit, log or persist. */
