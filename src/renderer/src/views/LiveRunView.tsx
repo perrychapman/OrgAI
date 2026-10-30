@@ -27,6 +27,8 @@ import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RuleRequestCard from '../components/RuleRequestCard'
+import { SidePanel } from '../components/layout/SidePanel'
+import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
 import RunStrip, { useStripRuns } from '../components/RunStrip'
 import MergeReviewCard from '../components/MergeReviewCard'
 import { costLabel, formatUntil, planProgress, treeLayout } from '../lib/layout'
@@ -478,10 +480,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           </>
         )}
       </div>
-      <div className="canvas" ref={canvasRef}>
+      <CanvasFrame frameRef={canvasRef}>
+        <FrameToolbar label="Run status and actions">
         {showStrip && <RunStrip runs={stripRuns} />}
         {run && (
-          <div className="canvas-toolbar" style={showStrip ? { top: 52 } : undefined}>
+          <>
             {isSetupRun && <span className="pill warn"><span className="dot" /> Setup session</span>}
             {project.permissionMode === 'auto' && (
               <span className="pill unattended" title="Permission mode is auto: Claude approves or denies each call and asks only when unsure. Saved rules never ask.">
@@ -543,9 +546,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                 Org retrospective
               </button>
             )}
-          </div>
+          </>
         )}
+        </FrameToolbar>
 
+        <FrameTray label="Decisions">
         {run && status === 'paused' && <PauseBanner runId={run.summary.id} />}
 
         {run && status !== 'paused' && run.plan?.status === 'blocked' && (
@@ -571,7 +576,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0 || (run.ruleRequests?.length ?? 0) > 0) && (
-          <div className="proposals" style={{ top: showStrip ? 96 : 56 }}>
+          <div className="proposals">
             {(run.ruleRequests ?? []).map((r) => (
               <RuleRequestCard key={r.id} request={r} who={run.agents[r.agentId]?.name ?? r.agentId} onDecide={(d) => void decideRules(r.id, d)} />
             ))}
@@ -585,7 +590,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.mergeReviews?.length > 0 && (
-          <div className="proposals merge-reviews" style={{ top: showStrip ? 96 : 56 }}>
+          <div className="proposals merge-reviews">
             {run.mergeReviews.map((m) => (
               <MergeReviewCard key={m.id} review={m} onDecide={(d) => void decideMerge(m.id, d)} />
             ))}
@@ -593,7 +598,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length || run.questions?.length || run.ruleRequests?.length || run.mergeReviews?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : { top: showStrip ? 96 : 56 }}>
+          <div className="permissions">
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>
@@ -630,7 +635,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             ))}
           </div>
         )}
+        </FrameTray>
 
+        <FrameStage>
         {!run ? (
           <div className="empty">
             {needsSetup ? (
@@ -713,8 +720,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             <Controls showInteractive={false} />
           </ReactFlow>
         )}
+        </FrameStage>
 
-        <div className="legend">
+        <FrameFooter>
           <span>
             <i style={{ background: 'var(--accent)' }} />
             working
@@ -735,8 +743,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
             <i style={{ background: MESSAGE_COLOR }} />
             message
           </span>
-        </div>
-      </div>
+        </FrameFooter>
+      </CanvasFrame>
 
       <div
         className={`composer ${dragOver ? 'drag' : ''}`}
@@ -842,9 +850,9 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         </button>
       </div>
 
-      <div className="side">
+      <SidePanel label="run panel">
         <TranscriptPanel agent={selectedAgent} entries={entries} logs={run?.logs ?? []} finished={finishedGroup} />
-      </div>
+      </SidePanel>
     </div>
   )
 }

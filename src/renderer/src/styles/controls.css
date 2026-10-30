@@ -153,8 +153,6 @@
   background: var(--surface-3);
   border: 1px solid var(--border-default);
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   font-weight: var(--weight-semibold);
 }
 .chip.setup {

@@ -44,10 +44,9 @@
 }
 
 .sidebar-label {
-  font-size: var(--text-caption);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
   padding: 10px 8px 4px;
 }
 
@@ -80,7 +79,7 @@
   background: var(--text-tertiary);
   flex: none;
 }
-.nav-item .dot.live {
+.nav-item .dot.is-running {
   background: var(--success);
   box-shadow: var(--halo-dot-live);
   animation: breathe 1.6s ease-in-out infinite;
@@ -155,7 +154,7 @@
 .pill.danger .dot {
   background: var(--danger);
 }
-.pill.live .dot {
+.pill.is-running .dot {
   background: var(--success);
   animation: breathe 1.4s ease-in-out infinite;
 }
@@ -191,7 +190,7 @@
   text-overflow: ellipsis;
   flex-shrink: 1;
 }
-.topbar .pill.live,
+.topbar .pill.is-running,
 .topbar .pill.ok,
 .topbar .pill.danger {
   flex-shrink: 0;

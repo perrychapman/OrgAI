@@ -341,49 +341,19 @@
   outline-offset: 1px;
 }
 
-.legend {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  max-width: calc(100% - 96px);
-  flex-wrap: wrap;
-  z-index: var(--z-canvas-overlay);
-  display: flex;
-  gap: 10px;
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
-  background: color-mix(in oklab, var(--surface-1) 80%, transparent);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-  backdrop-filter: blur(6px);
-}
-.legend i {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  margin-right: 5px;
-  vertical-align: middle;
-}
 
 /* ---------- Run strip (several runs per project) ---------- */
 
 .run-strip {
   container-type: inline-size;
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: var(--z-canvas-overlay);
+  flex: 1 1 100%;
   display: flex;
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: none;
-  pointer-events: none;
+  min-width: 0;
 }
 .run-chip {
-  pointer-events: auto;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -468,7 +438,7 @@ button.run-chip.new {
   flex: none;
   background: var(--text-tertiary);
 }
-.run-dot.live {
+.run-dot.is-running {
   background: var(--success);
   animation: breathe 1.4s ease-in-out infinite;
 }
@@ -609,7 +579,3 @@ button.run-chip.new {
   color: var(--warning-text);
 }
 
-/* Keep the zoom controls clear of the legend (the fit-view button used to hide under it). */
-.canvas .react-flow__controls {
-  margin-bottom: calc(var(--space-3) + 38px);
-}

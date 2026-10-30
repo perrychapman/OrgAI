@@ -1,14 +1,9 @@
 /* ---------- Permission cards ---------- */
 
 .permissions {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: var(--z-tray);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 360px;
 }
 .permission {
   background: var(--surface-3);
@@ -19,10 +14,8 @@
   animation: pop-in var(--dur-base) var(--ease-out) both;
 }
 .permission .who {
-  font-size: var(--text-caption);
+  font-size: var(--text-small);
   color: var(--warning-text);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
   font-weight: var(--weight-semibold);
 }
 .permission .what {
@@ -51,18 +44,9 @@
 /* ---------- Proposals (setup sessions) ---------- */
 
 .proposals {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
-  z-index: var(--z-sheet);
-  width: 520px;
-  max-width: calc(100% - 24px);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
-  pointer-events: none;
 }
 .proposal {
   pointer-events: auto;
@@ -225,13 +209,7 @@
 /* ---------- Usage-limit pause banner: bottom of the canvas, just above the composer ---------- */
 
 .pause-banner {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  z-index: var(--z-sheet);
-  max-width: 640px;
-  margin: 0 auto;
+  margin: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;

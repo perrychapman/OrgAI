@@ -32,7 +32,7 @@ export default function RunHistory(): ReactElement {
         const chainLength = chainOf(summaries, r.id).length
         const cost = costLabel(r.totalCostUsd, authMode)
         const started = new Date(r.startedAt)
-        const tone = waiting || r.status === 'paused' ? 'warn' : r.status === 'error' ? 'danger' : open ? 'live' : ''
+        const tone = waiting || r.status === 'paused' ? 'warn' : r.status === 'error' ? 'danger' : open ? 'is-running' : ''
         return (
           <li key={r.id} className={`run-row ${viewed ? 'active' : ''}`}>
             <div className="run-row-head">

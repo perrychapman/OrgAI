@@ -434,3 +434,122 @@
   white-space: pre-wrap;
   user-select: text;
 }
+
+/* ---------- Spacing utilities on the --space-* scale (replace inline margins) ---------- */
+.stack-1,
+.stack-2,
+.stack-3,
+.stack-4 {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.stack-1 {
+  gap: var(--space-1);
+}
+.stack-2 {
+  gap: var(--space-2);
+}
+.stack-3 {
+  gap: var(--space-3);
+}
+.stack-4 {
+  gap: var(--space-4);
+}
+.row.gap-1 {
+  gap: var(--space-1);
+}
+.row.gap-2 {
+  gap: var(--space-2);
+}
+.row.gap-3 {
+  gap: var(--space-3);
+}
+.row.gap-4 {
+  gap: var(--space-4);
+}
+.row.end {
+  justify-content: flex-end;
+}
+.row.between {
+  justify-content: space-between;
+}
+.row > .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- Form primitives ---------- */
+.input.is-invalid,
+.textarea.is-invalid {
+  border-color: var(--danger-border);
+}
+.input.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+
+/* Checkbox: the native input stays in the layout (focusable, form-aware); the box is drawn beside it. */
+.checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.checkbox.is-disabled {
+  cursor: default;
+  color: var(--text-disabled);
+}
+.checkbox input {
+  position: absolute;
+  inset: 2px auto auto 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.checkbox-box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+  color: transparent;
+}
+.checkbox-box svg {
+  width: 12px;
+  height: 12px;
+}
+.checkbox:hover .checkbox-box {
+  border-color: var(--border-strong);
+}
+.checkbox input:checked + .checkbox-box {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+.checkbox input:focus-visible + .checkbox-box {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.checkbox input:disabled + .checkbox-box {
+  opacity: 0.5;
+}
+.checkbox-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.checkbox-desc {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
