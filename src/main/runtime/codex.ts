@@ -1,4 +1,5 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import { isModelTier } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
@@ -103,7 +104,7 @@ const EXIT_WAIT_MS = 3000
 /** A model id for Codex from a role's model: undefined for 'inherit' and for bare Claude aliases. */
 export function codexModelFor(model: string | undefined): string | undefined {
   const m = model?.trim()
-  if (!m || m === 'inherit' || CLAUDE_ALIASES.has(m.toLowerCase())) return undefined
+  if (!m || m === 'inherit' || isModelTier(m.toLowerCase()) || CLAUDE_ALIASES.has(m.toLowerCase())) return undefined
   return m
 }
 

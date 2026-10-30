@@ -1,5 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily } from './defaults'
+import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit } from './defaults'
+import type { ProviderModel } from './types'
+
+describe('tier-based model defaults', () => {
+  const catalog: ProviderModel[] = [
+    { id: 'gpt-x-mini', label: 'm', connection: 'openai', family: 'openai', adapter: 'codex', tier: 'everyday', source: 'discovered' },
+    { id: 'gpt-x-old', label: 'o', connection: 'openai', family: 'openai', adapter: 'codex', tier: 'deep', source: 'discovered' },
+    { id: 'gpt-x', label: 'x', connection: 'openai', family: 'openai', adapter: 'codex', tier: 'deep', source: 'discovered', recommended: true }
+  ]
+
+  it('maps a tier through the connection, then its catalog suggestion (recommended first), then the nearest tier', () => {
+    expect(modelForTier('deep', { connection: 'openai', tierModels: { deep: 'chosen' }, catalog })).toEqual({ model: 'chosen', tier: 'deep' })
+    expect(modelForTier('deep', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x', tier: 'deep' })
+    expect(modelForTier('fast', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x-mini', tier: 'everyday' })
+    expect(modelForTier('deep', { connection: 'litellm', tierModels: {}, catalog: [] })).toBeUndefined()
+    expect(modelForTier('deep', { connection: 'anthropic', tierModels: {} })).toEqual({ model: 'opus', tier: 'deep' })
+  })
+
+  it('resolves model settings: tiers, legacy aliases as tiers, concrete ids kept', () => {
+    expect(settingTier('Deep')).toBe('deep')
+    expect(settingTier('opus')).toBe('deep')
+    expect(settingTier('gpt-5')).toBeUndefined()
+    expect(resolveModelSetting('deep', { connection: 'litellm', tierModels: { deep: 'my-big' } })).toEqual({ model: 'my-big', tier: 'deep' })
+    expect(resolveModelSetting('opus', { connection: 'litellm', tierModels: { deep: 'my-big' } })).toEqual({ model: 'my-big', tier: 'deep' })
+    expect(resolveModelSetting('deep', { connection: 'litellm', tierModels: {} })).toBeUndefined()
+    expect(resolveModelSetting('gpt-x', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x', tier: 'deep' })
+    expect(resolveModelSetting('inherit', { connection: 'openai', tierModels: {} })).toEqual({ model: 'inherit' })
+  })
+
+  it('builds the default chart from tiers on the given connection', () => {
+    const roles = defaultRoles({ connection: 'litellm', tierModels: { deep: 'big', everyday: 'mid', fast: 'small' } })
+    expect(roles.map((r) => [r.model, r.tier])).toEqual([['big', 'deep'], ['mid', 'everyday'], ['mid', 'everyday'], ['small', 'fast']])
+    expect(defaultRoles({ connection: 'litellm', tierModels: {} }).every((r) => r.model === 'inherit' && !r.tier)).toBe(true)
+  })
+
+  it('new projects take tier settings through the anthropic tier mapping', () => {
+    const anthropic = { ...DEFAULT_APP_SETTINGS.connections.anthropic, tierModels: { deep: 'claude-opus-9', everyday: 'sonnet' } }
+    const settings = { ...DEFAULT_APP_SETTINGS, connections: { ...DEFAULT_APP_SETTINGS.connections, anthropic } }
+    const p = newProject({ name: 'x', path: '/x', brief: '' }, settings)
+    expect(p.roles[0]).toMatchObject({ model: 'claude-opus-9', tier: 'deep' })
+    expect(p.roles[1]).toMatchObject({ model: 'sonnet', tier: 'everyday' })
+    expect(p.preferEverydayNearLimit).toBe(false)
+  })
+
+  it('reads the near-limit flag with the legacy field as fallback', () => {
+    expect(preferEverydayNearLimit({ preferSonnetNearLimit: true })).toBe(true)
+    expect(preferEverydayNearLimit({ preferEverydayNearLimit: false, preferSonnetNearLimit: true })).toBe(false)
+    expect(preferEverydayNearLimit(undefined)).toBe(false)
+  })
+})
 import type { McpLibraryEntry } from './types'
 import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
 

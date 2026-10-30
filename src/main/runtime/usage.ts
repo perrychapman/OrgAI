@@ -227,9 +227,15 @@ export function opusWeeklyWindow(usage: UsageStatus | null | undefined): RateLim
   return usage.windows.sevenDay
 }
 
-/** Should new Opus reports be spawned on Sonnet? True when the guarding window is at or above the threshold. */
-export function shouldSteerToSonnet(usage: UsageStatus | null | undefined, threshold: number): boolean {
+/**
+ * Should new deep- and top-tier reports be spawned on the everyday tier? True when the guarding weekly window is at
+ * or above the threshold.
+ */
+export function shouldSteerToEveryday(usage: UsageStatus | null | undefined, threshold: number): boolean {
   if (!Number.isFinite(threshold)) return false
   const w = opusWeeklyWindow(usage)
   return typeof w?.utilization === 'number' && w.utilization >= threshold
 }
+
+/** @deprecated Old name of shouldSteerToEveryday. */
+export const shouldSteerToSonnet = shouldSteerToEveryday

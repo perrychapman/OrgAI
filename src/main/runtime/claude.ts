@@ -26,8 +26,8 @@ import {
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
-import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
@@ -48,7 +48,7 @@ import {
   mapUsageResponse,
   mergeUsage,
   shareUsed,
-  shouldSteerToSonnet,
+  shouldSteerToEveryday,
   trackShare,
   windowShareExceeded,
   type AuthMode,
@@ -83,8 +83,40 @@ function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
   return images?.length ? { kind: 'user', text, images } : { kind: 'user', text }
 }
 
-function isOpusModel(model: string | undefined): boolean {
-  return !!model && /opus/i.test(model)
+/** Whether a model setting (tier name, alias or concrete id) is on the deep or top tier, or is one of the connection's deep/top models. */
+export function isDeepOrTopModel(model: string | undefined, tierModels: RunConnection['tierModels']): boolean {
+  const m = model?.trim()
+  if (!m) return false
+  const tier = settingTier(m) ?? tierForModel(m)
+  if (tier === 'deep' || tier === 'top') return true
+  return m === tierModels?.deep?.trim() || m === tierModels?.top?.trim()
+}
+
+/** The model a steered spawn runs on: the connection's everyday model, else the anthropic builtin everyday entry. */
+export function everydayReplacement(tierModels: RunConnection['tierModels']): string | undefined {
+  return tierModels?.everyday?.trim() || ANTHROPIC_BUILTIN_MODELS.find((m) => m.tier === 'everyday')?.id
+}
+
+/** Map a supportedModels() response (untrusted) to AdapterModelInfo rows. */
+export function mapSupportedModels(raw: unknown): AdapterModelInfo[] {
+  if (!Array.isArray(raw)) return []
+  const out: AdapterModelInfo[] = []
+  const seen = new Set<string>()
+  for (const row of raw) {
+    if (out.length >= 200) break
+    if (!row || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    if (typeof r.value !== 'string') continue
+    const id = r.value.trim().slice(0, 200)
+    if (!id || id.toLowerCase() === 'default' || seen.has(id)) continue
+    seen.add(id)
+    const info: AdapterModelInfo = { id }
+    if (typeof r.displayName === 'string' && r.displayName.trim()) info.label = r.displayName.trim().slice(0, 300)
+    if (typeof r.description === 'string' && r.description.trim()) info.description = r.description.trim().slice(0, 300)
+    if (typeof r.resolvedModel === 'string' && r.resolvedModel.trim()) info.resolvedModel = r.resolvedModel.trim().slice(0, 200)
+    out.push(info)
+  }
+  return out
 }
 
 /**
@@ -797,13 +829,18 @@ export class ClaudeSession implements RuntimeSession {
     this.ctx.rateLimited({ ...(until ? { until } : {}), ...(window ? { window } : {}) })
   }
 
-  /** Spawn a report on Sonnet instead of Opus while the Opus weekly window is near its limit? */
-  private steerToSonnet(target: Role | undefined, toolInput: Record<string, unknown>): boolean {
-    if (this.isSetup || usesProxy(this.ctx) || !this.ctx.project.preferSonnetNearLimit || this.authMode === 'apiKey') return false
+  /** The everyday model to spawn this report on instead of its deep/top one while the weekly window is near its limit, if any. */
+  private steerToEveryday(target: Role | undefined, toolInput: Record<string, unknown>): { from: string; to: string } | undefined {
+    if (this.isSetup || usesProxy(this.ctx) || !preferEverydayNearLimit(this.ctx.project) || this.authMode === 'apiKey') return undefined
     const explicit = typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : undefined
     let model = explicit ?? target?.model ?? 'inherit'
     if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
-    return isOpusModel(model) && shouldSteerToSonnet(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)
+    const tierModels = this.ctx.connection?.tierModels
+    const deep = target?.tier === 'deep' || target?.tier === 'top' || isDeepOrTopModel(model, tierModels)
+    if (!deep || !shouldSteerToEveryday(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)) return undefined
+    const to = everydayReplacement(tierModels)
+    if (!to || to === model) return undefined
+    return { from: model || 'its configured model', to }
   }
 
   private buildHooks(): Options['hooks'] {
@@ -856,10 +893,11 @@ export class ClaudeSession implements RuntimeSession {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
           updates.isolation = 'worktree'
         }
-        // Near the Opus weekly limit, new Opus reports run on Sonnet (project.preferSonnetNearLimit).
-        if (this.steerToSonnet(target, toolInput)) {
-          updates.model = 'sonnet'
-          this.log('info', `Spawning ${target?.name ?? requested} on Sonnet instead of Opus: the weekly usage window is near its limit.`)
+        // Near the weekly limit, new deep/top reports run on the everyday tier (preferEverydayNearLimit).
+        const steer = this.steerToEveryday(target, toolInput)
+        if (steer) {
+          updates.model = steer.to
+          this.log('info', `Spawning ${target?.name ?? requested} on the everyday tier (${steer.to}) instead of ${steer.from}: the weekly usage window is near its limit.`)
         }
         if (!Object.keys(updates).length) return {}
         return {
@@ -1445,7 +1483,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       release?.({ value: undefined as never, done: true })
     }
     try {
-      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [], env: isolateClaudeEnv(process.env), ...EXECUTABLE_OPTION } })
+      const q = query({ prompt: never, options: probeQueryOptions(abort, isolateClaudeEnv(process.env)) })
       // Drain the stream in the background so the process keeps running until we abort it.
       const drain = (async () => {
         try {
@@ -1468,6 +1506,58 @@ export class ClaudeAdapter implements RuntimeAdapter {
       await drain
       return mapUsageResponse(resp, 'subscription')
     } catch {
+      finish()
+      return null
+    }
+  }
+
+  /**
+   * The models the CLI offers, without a run. supportedModels() returns the initialize response, so like
+   * probeUsage it answers with no prompt and no model call. Null on any error or timeout; never throws.
+   */
+  async listModels(auth: ProviderAuth): Promise<AdapterModelInfo[] | null> {
+    const abort = new AbortController()
+    let release: ((r: IteratorResult<SDKUserMessage>) => void) | undefined
+    const never: AsyncIterable<SDKUserMessage> = {
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<SDKUserMessage>>((r) => (release = r)) })
+    }
+    const finish = (): void => {
+      abort.abort()
+      release?.({ value: undefined as never, done: true })
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const env: Record<string, string | undefined> = isolateClaudeEnv(process.env)
+      if (auth.kind === 'apiKey') {
+        const key = process.env[auth.envVar]
+        if (key) env.ANTHROPIC_API_KEY = key
+      }
+      const q = query({ prompt: never, options: probeQueryOptions(abort, env) })
+      const drain = (async () => {
+        try {
+          for await (const _ of q as AsyncIterable<unknown>) void _
+        } catch {
+          /* aborted */
+        }
+      })()
+      const fn = (q as unknown as Record<string, unknown>).supportedModels
+      if (typeof fn !== 'function') {
+        finish()
+        await drain
+        return null
+      }
+      const resp = await Promise.race([
+        (fn as () => Promise<unknown>).call(q),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('model list timed out')), 10_000)
+        })
+      ])
+      clearTimeout(timer)
+      finish()
+      await drain
+      return mapSupportedModels(resp)
+    } catch {
+      clearTimeout(timer)
       finish()
       return null
     }
@@ -1497,6 +1587,11 @@ export class ClaudeAdapter implements RuntimeAdapter {
     if (isAuthFailure({ text })) throw new Error(authFailureMessage(input.connection?.connection))
     return text
   }
+}
+
+/** Options for the token-free discovery and usage probes. strictMcpConfig + empty mcpServers keep repo and user-scope MCP servers from starting. */
+export function probeQueryOptions(abort: AbortController, env: Record<string, string | undefined>): Options {
+  return { cwd: process.cwd(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...EXECUTABLE_OPTION }
 }
 
 /** Query options for one-shot completions. strictMcpConfig + empty mcpServers keep a cloned repo's .mcp.json from loading. */

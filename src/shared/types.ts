@@ -46,8 +46,9 @@ export const CONNECTION_IDS: readonly ConnectionId[] = ['anthropic', 'openai', '
 
 /**
  * The intent behind a role's model, so the model can be remapped when the project's connection changes.
- * top = most capable (fable), deep = deep reasoning (opus), everyday = fast and capable (sonnet),
- * fast = cheap and quick (haiku).
+ * top = most capable, deep = deep reasoning, everyday = fast and capable, fast = cheap and quick. Each connection
+ * maps tiers to its own models (ConnectionBase.tierModels); defaults and settings are expressed as tiers, never as
+ * one vendor's model names.
  */
 export type ModelTier = 'top' | 'deep' | 'everyday' | 'fast'
 
@@ -89,6 +90,15 @@ interface ConnectionBase {
    * "no model for this tier": roles of that tier keep their current model on remap.
    */
   tierModels: Partial<Record<ModelTier, ModelRef>>
+  /**
+   * Tiers whose tierModels entry OrgAI chose (auto-fill from the catalog), not the user. Model discovery moves these
+   * forward to the catalog's current suggestion for the tier (and remaps roles still on the old model); tiers not
+   * listed are explicit user picks and are never changed while their model is still in the catalog. connections:update
+   * removes a tier from this list when the user changes its entry. Missing (settings saved before it existed): the
+   * main process derives it on the next discovery (an entry equal to the builtin default or the previous catalog's
+   * suggestion counts as auto). Main-owned: the renderer echoes it back unchanged.
+   */
+  autoTiers?: ModelTier[]
 }
 
 /** OpenAI auth: the ChatGPT login Codex keeps (connections:login), or an API key read from an env var. */
@@ -135,6 +145,13 @@ export interface ConnectionInfo {
   status: ConnectionStatus
   /** Models currently in the catalog for this connection (builtin plus discovered). */
   modelCount: number
+  /** When model discovery last succeeded for this connection (epoch ms). Missing = never (builtin list only). */
+  modelsRefreshedAt?: number
+  /**
+   * The last background (scheduled) discovery failure, cleared by the next success. A scheduled failure keeps the
+   * last good catalog and never changes `status`; a manual refresh or connect still reports errors in `status`.
+   */
+  modelsError?: string
 }
 
 /** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
@@ -189,6 +206,8 @@ export interface ProviderModel {
   contextWindow?: number
   /** One-line hint for pickers. */
   hint?: string
+  /** The provider marks this model as its default or recommended choice (Codex model/list isDefault). */
+  recommended?: boolean
   /** 'builtin' = shipped with OrgAI; 'discovered' = listed by the connection at runtime. */
   source: 'builtin' | 'discovered'
   /**
@@ -276,14 +295,30 @@ export interface AdapterChoice {
 export type ConnectionEvent =
   | { type: 'connection.status'; connection: ConnectionId; status: ConnectionStatus }
   | { type: 'connection.login'; login: ConnectionLoginUpdate }
-  /** The catalog for a connection changed (discovery, refresh, login). Carries that connection's full list. */
-  | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[] }
+  /**
+   * A connection's catalog was (re)discovered: boot, the 24 h schedule, connect, login or models:refresh. Sent after
+   * every successful discovery, even when the list is unchanged; `changed` says whether the model ids differ.
+   * Carries that connection's full list and the discovery time (also on ConnectionInfo.modelsRefreshedAt).
+   */
+  | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[]; changed?: boolean; refreshedAt?: number }
   /** A connection change remapped role models. Only projects with at least one change are listed; reload them. */
   | { type: 'projects.remapped'; results: RemapResult[] }
 
 /** Model choices are provider-scoped aliases or full model IDs. */
 export type ModelRef = string
 
+/**
+ * A model setting (AppSettings.defaultRootModel, defaultReportModel, setupModel, mcpAssistModel): a tier name
+ * ('top' | 'deep' | 'everyday' | 'fast', resolved through the run's or project's connection tierModels; tier names
+ * win over a catalog model of the same name) or a concrete model id from a connection's catalog. Legacy Claude aliases
+ * (fable, opus, sonnet, haiku) still work and stand for their tier. Resolve with defaults.ts resolveModelSetting.
+ */
+export type ModelSetting = ModelTier | ModelRef
+
+/**
+ * @deprecated Claude-only aliases. Pickers list MODEL_TIER_OPTIONS plus the connection's catalog (models:list).
+ * Kept for labels of legacy values.
+ */
 export const CLAUDE_MODEL_OPTIONS: { value: ModelRef; label: string; hint: string }[] = [
   { value: 'inherit', label: 'Inherit from parent', hint: 'Uses whatever model spawned this agent' },
   { value: 'fable', label: 'Fable', hint: 'Most capable, highest cost' },
@@ -411,9 +446,12 @@ export interface Project {
    */
   maxWindowShare?: number
   /**
-   * Subscription plans: spawn new Opus reports on Sonnet while the Opus weekly window (or the
-   * seven-day window when the plan has no per-model one) is at or above the app's opusGuardThreshold.
+   * Subscription plans (Anthropic connection): spawn new deep- or top-tier reports on the connection's everyday tier
+   * while the guarding weekly window (the deep model's own weekly window, else the seven-day window) is at or above
+   * the app's opusGuardThreshold. Read through defaults.ts preferEverydayNearLimit (falls back to the legacy field).
    */
+  preferEverydayNearLimit?: boolean
+  /** @deprecated Legacy name of preferEverydayNearLimit; read only when that is unset. */
   preferSonnetNearLimit?: boolean
   /**
    * Work runs: once the orchestrator has a plan, the harness reminds it of the remaining steps whenever a
@@ -875,17 +913,22 @@ export interface AppSettings {
   defaultMaxBudgetUsd?: number
   defaultKeepRuns: number
   defaultIsolateWriters: boolean
-  defaultRootModel: ModelRef
-  defaultReportModel: ModelRef
   /**
-   * Model for setup runs (the Architect: setup, revision, retrospective). A Claude alias (fable, opus, sonnet,
-   * haiku) stands for its tier and maps to each connection's tierModels; a full model id must be usable on the run's
-   * connection and run on the same adapter, otherwise the run falls back to the deep tier and logs a warning.
-   * Default 'opus' (deep tier).
+   * Model for a new project's root role (ModelSetting: a tier name or a concrete model id). Default 'deep'. A tier
+   * maps through the new project's connection tierModels. Settings saved with the old default 'opus' load as 'deep'.
    */
-  setupModel: ModelRef
-  /** Model for MCP assistant runs; resolved like setupModel. Default 'opus' (deep tier). */
-  mcpAssistModel: ModelRef
+  defaultRootModel: ModelSetting
+  /** Model for a new project's other roles (ModelSetting). Default 'everyday' (an old saved 'sonnet' loads as 'everyday'). */
+  defaultReportModel: ModelSetting
+  /**
+   * Model for setup runs (the Architect: setup, revision, retrospective). A ModelSetting: a tier name maps to the
+   * run's connection tierModels (a legacy Claude alias stands for its tier); a concrete model id must be usable on the
+   * run's connection and run on the same adapter, otherwise the run falls back to the deep tier and logs a warning.
+   * Default 'deep' (an old saved 'opus' loads as 'deep').
+   */
+  setupModel: ModelSetting
+  /** Model for MCP assistant runs; resolved like setupModel. Default 'deep'. */
+  mcpAssistModel: ModelSetting
   /**
    * Legacy Anthropic auth, kept as a mirror of connections.anthropic.auth so older code keeps working.
    * settings:set keeps the two in sync (whichever one the caller changed wins).
@@ -902,10 +945,23 @@ export interface AppSettings {
   notifications?: boolean
   /** Theme, accent, canvas and motion. Filled with defaults for settings saved before it existed. */
   appearance: AppearanceSettings
-  /** Weekly-window utilization (percent) above which projects that prefer Sonnet steer Opus spawns to Sonnet. */
+  /**
+   * Weekly-window utilization (percent) at or above which projects with preferEverydayNearLimit spawn deep- and
+   * top-tier reports on the everyday tier. (The name predates tiers.)
+   */
   opusGuardThreshold: number
-  /** preferSonnetNearLimit for new projects. */
+  /** preferEverydayNearLimit for new projects. Default false. */
+  defaultPreferEverydayNearLimit: boolean
+  /**
+   * @deprecated Mirror of defaultPreferEverydayNearLimit for older renderer code; settings:set keeps the two in step
+   * (whichever one the caller changed wins).
+   */
   defaultPreferSonnetNearLimit: boolean
+  /**
+   * Fetch the community price list (LiteLLM's model_prices_and_context_window.json on GitHub, MIT) at most once a
+   * day and use it as the last price fallback, behind overrides, proxy prices and the built-in table. Missing = on.
+   */
+  communityPrices?: boolean
   /** autoContinue for new projects. */
   defaultAutoContinue: boolean
   /** maxAutoContinues for new projects. */
@@ -1095,9 +1151,10 @@ export interface TokenUsage {
 /**
  * Where a model's cost came from. Resolution order per model (pricing.ts): 'override' (AppSettings.modelPrices) >
  * 'provider' (the provider reported a cost > 0, e.g. the Claude SDK's costUSD) > 'proxy' (the LiteLLM proxy's
- * /model/info price) > 'builtin' (OrgAI's price table) > 'unknown' (tokens but no price: cost is null, never $0).
+ * /model/info price) > 'builtin' (OrgAI's price table) > 'community' (the cached community price list,
+ * AppSettings.communityPrices) > 'unknown' (tokens but no price: cost is null, never $0).
  */
-export type PriceSource = 'override' | 'provider' | 'proxy' | 'builtin' | 'unknown'
+export type PriceSource = 'override' | 'provider' | 'proxy' | 'builtin' | 'community' | 'unknown'
 
 /**
  * How trustworthy an aggregated cost is. 'provider': every priced token was priced by the provider. 'computed': at
@@ -1127,7 +1184,7 @@ export interface ModelPriceInfo {
   /** Set for proxy prices and connection-scoped overrides. */
   connection?: ConnectionId
   price: ModelPrice
-  /** 'override' | 'proxy' | 'builtin' (never 'provider' or 'unknown'). */
+  /** 'override' | 'proxy' | 'builtin' (never 'provider' or 'unknown'; community prices are resolved per model, never listed). */
   source: Exclude<PriceSource, 'provider' | 'unknown'>
 }
 

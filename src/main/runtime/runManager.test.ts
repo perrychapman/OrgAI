@@ -289,6 +289,24 @@ describe('RunManager usage and pricing', () => {
     expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('override')
   })
 
+  it('prices an unknown model from community prices, and not when the setting is off', async () => {
+    let off = false
+    const community = { 'zeta-9': { inputPerToken: 1e-5, outputPerToken: 1e-5 } }
+    const { m, p, ctxs } = setup({
+      appSettings: () => ({ ...defaultSettingsLite(), communityPrices: !off }),
+      communityPrices: () => community
+    })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'zeta-9', tok(1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(10, 9)
+    expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('community')
+    off = true
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('unknown')
+  })
+
   it('prices an alias through the connection env (LiteLLM tier remap)', async () => {
     const { m, p, ctxs } = setup({
       resolveConnection: () => ({ connection: 'anthropic', adapter: 'claude', env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-5' } })

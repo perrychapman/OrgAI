@@ -130,7 +130,7 @@ export function mergeCosts(parts: readonly CostPart[]): CostResult {
   return out
 }
 
-const SOURCE_RANK: Record<PriceSource, number> = { override: 0, proxy: 1, builtin: 2, provider: 3, unknown: 4 }
+const SOURCE_RANK: Record<PriceSource, number> = { override: 0, proxy: 1, builtin: 2, community: 3, provider: 4, unknown: 5 }
 
 function mergeModelEntries(lists: readonly (readonly ModelUsageEntry[])[]): ModelUsageEntry[] {
   const byModel = new Map<string, ModelUsageEntry>()
