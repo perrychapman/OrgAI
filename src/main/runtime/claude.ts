@@ -27,13 +27,14 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
+import { buildSkillPlugin, qualifiedSkillName, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
@@ -254,6 +255,9 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
     // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
     CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
   }
+  // Bundled skills (and any not granted) must not be offered; set after isolation, which strips CLAUDE_CODE_DISABLE_*.
+  // The verified route is the env var (disableBundledSkills is a Settings field, not an Options field).
+  if (!isSetupLikeRun(ctx.run.kind)) env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = '1'
   if (!proxy && project.provider.auth.kind === 'apiKey') {
     const key = base[project.provider.auth.envVar]
     if (key) env.ANTHROPIC_API_KEY = key
@@ -299,7 +303,9 @@ export function buildAgents(
   ctx: RuntimeContext,
   harness: Pick<HarnessTool, 'name' | 'audience'>[],
   isolation: boolean,
-  mcpSpecs: Pick<Project, 'mcpServers'> = ctx.project
+  mcpSpecs: Pick<Project, 'mcpServers'> = ctx.project,
+  /** Run skills actually loaded as the orgai plugin (empty = none). */
+  skills: RunSkill[] = []
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
   const agents: Record<string, AgentDefinition> = {}
@@ -312,9 +318,17 @@ export function buildAgents(
     if (role.canSpawn && !isSetup) for (const t of [MESSAGE_TOOL, LIST_AGENTS_TOOL]) if (!tools.includes(t)) tools.push(t)
     const mcp = agentMcpServerNames(mcpSpecs, role)
     for (const name of mcp) if (!tools.includes(mcpToolRule(name))) tools.push(mcpToolRule(name))
+    // Roles with a grant get the native Skill tool; the PreToolUse gate limits it to their own orgai:<name> skills.
+    // AgentDefinition.skills is deliberately not set: it preloads full skill content on every spawn and grants nothing.
+    const granted = isSetup ? [] : skills.filter((s) => s.roleIds.includes(role.id))
+    if (granted.length && !tools.includes('Skill')) tools.push('Skill')
     const def: AgentDefinition = {
       description: role.description,
-      prompt: buildRolePrompt(role, ctx.roles, ctx.project, { isSetup, isolation }),
+      prompt: buildRolePrompt(role, ctx.roles, ctx.project, {
+        isSetup,
+        isolation,
+        ...(granted.length ? { skills: granted.map((s) => ({ name: qualifiedSkillName(s.name), description: s.description })), skillTool: 'Skill' as const } : {})
+      }),
       tools,
       model: role.model || 'inherit'
     }
@@ -475,6 +489,8 @@ export class ClaudeSession implements RuntimeSession {
   private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
+  /** The run-scoped orgai skills plugin (work runs with granted skills); removed at stop and teardown. */
+  private skillPlugin?: SkillPlugin
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -564,6 +580,7 @@ export class ClaudeSession implements RuntimeSession {
     this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
+    this.skillPlugin?.cleanup()
   }
 
   // ---------- internals ----------
@@ -813,6 +830,16 @@ export class ClaudeSession implements RuntimeSession {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
+      if (input.tool_name === 'Skill') {
+        const roleId = input.agent_id ? (this.agents.get(agentId)?.roleId ?? this.rolesBySlug.get(input.agent_type ?? '')?.id ?? '') : this.root.id
+        const verdict = skillGate(input.tool_input, roleId, this.skillPlugin?.names ?? new Map())
+        if (!verdict.allow) {
+          this.log('warn', `Blocked Skill call by ${this.agents.get(agentId)?.name ?? agentId}: ${verdict.reason}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }
+        }
+        this.emit({ type: 'skill.used', runId: this.ctx.run.id, agentId, skillId: verdict.skill.id, name: verdict.skill.name, at: Date.now() })
+      }
       this.lastToolAgent.set(input.tool_name, agentId)
       if (input.tool_name.startsWith(ORGAI_TOOL_PREFIX)) this.harnessCallers.record(input.tool_name, input.tool_use_id, input.agent_id)
       const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
@@ -1005,6 +1032,19 @@ export class ClaudeSession implements RuntimeSession {
     const { project } = this.ctx
     const env = buildEnv(this.ctx)
 
+    // Granted skills become a run-scoped plugin (orgai:<name>). Setup-like runs get none.
+    if (!this.isSetup) {
+      const granted = this.ctx.skills?.() ?? []
+      if (granted.length) {
+        this.skillPlugin = buildSkillPlugin(granted, this.ctx.run.id, (m) => this.log('warn', m))
+        if (!this.skillPlugin.names.size) {
+          this.skillPlugin.cleanup()
+          this.skillPlugin = undefined
+        }
+      }
+    }
+    const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
+
     // The harness tools for this kind of run (setup / mcp-assist / work); the audience decides who sees which.
     const tools = harnessToolsFor(this.ctx, {
       integratePending: (wt) => this.integrator.integratePending(wt),
@@ -1018,7 +1058,7 @@ export class ClaudeSession implements RuntimeSession {
         if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
       },
       addMcpServer: (spec) => this.addMcpServer(spec)
-    })
+    }, { nativeSkills: true })
     this.harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
@@ -1027,7 +1067,7 @@ export class ClaudeSession implements RuntimeSession {
 
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }, this.skillPlugin ? [...this.skillPlugin.names.values()] : []),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
@@ -1074,6 +1114,12 @@ export class ClaudeSession implements RuntimeSession {
     options.mcpServers = this.mcpRecord(resolved)
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
+    if (this.skillPlugin) {
+      plugins.push({ type: 'local', path: this.skillPlugin.path, skipMcpDiscovery: true })
+      // Options.skills only adds Skill(<name>) allow rules (verified in sdk.mjs); the PreToolUse gate is the filter.
+      options.skills = skillNames
+      options.settings = { disableBundledSkills: true }
+    }
     if (plugins.length) options.plugins = plugins
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     const savedRules = listRules(project.path)
@@ -1143,6 +1189,7 @@ export class ClaudeSession implements RuntimeSession {
       this.ending = true
       this.continuation.dispose()
       this.stopUsagePolling()
+      this.skillPlugin?.cleanup()
       this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
@@ -1478,8 +1525,18 @@ export class ClaudeAdapter implements RuntimeAdapter {
     const link = input.signal ? linkAbortSignal(input.signal) : undefined
     if (link) options.abortController = link.controller
     let text = ''
+    let reported = false
     try {
       for await (const msg of query({ prompt: input.prompt, options })) {
+        if (msg.type === 'result' && !reported && input.onUsage) {
+          reported = true
+          const u = msg.usage
+          input.onUsage({
+            tokens: { input: u?.input_tokens ?? 0, output: u?.output_tokens ?? 0, cacheRead: u?.cache_read_input_tokens ?? 0, cacheWrite: u?.cache_creation_input_tokens ?? 0 },
+            costUsd: msg.total_cost_usd,
+            model: input.model
+          })
+        }
         if (msg.type === 'assistant') {
           for (const block of msg.message.content) if (block.type === 'text') text += block.text
         } else if (msg.type === 'result' && msg.subtype !== 'success') {
