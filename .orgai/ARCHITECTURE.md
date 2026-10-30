@@ -36,6 +36,8 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Vendor-neutral usage mapping.
 - Image attachments. attachments.ts sanitizes untrusted pasted images: count and size limits, base64 checks, and magic-byte sniffing.
 - Agent tree rules. agentTree.ts resolves a reported agent's parent without creating cycles and repairs cyclic stored records.
+- Concurrency. Any number of runs may be live at once, in one project and across projects, on every adapter: RunManager keys runs by id, ContinuationDriver and adapter sessions keep per-instance state, and each Codex session starts its own app-server. The only refusal is continueRun's "Session already open" for one provider session chain. RunManager.liveRuns() backs runs:listLive.
+- Cross-run messaging. Work-run roots get list_runs and message_run (RUN_HARNESS_TOOLS). RunManager implements RuntimeContext.listRuns / messageRun and delivers through the target's RuntimeSession.receive(), which every adapter routes through its harness-message path (peerMessageText in prompts.ts frames the text as peer data). Both runs get a run.message event (direction out/in) and a root transcript system block ("Sent to run …" / "Note from run …").
 - Worktrees. worktrees.ts pathKey resolves the nearest existing ancestor's realpath (macOS /tmp is /private/tmp). withRepoLock serializes git work per checkout. Both commit-producing git calls (commit, merge) fall back to an OrgAI identity when git has none.
 
 - `src/main/runtime/types.ts`
@@ -109,6 +111,7 @@ McpService covers:
 
 ### Main shell, stores and maintenance
 
+- One window factory, createWindow(scope?) in index.ts. The main window is unscoped. window:openRun opens (or focuses) a window scoped to one run, loading the renderer at the hash #/run/<projectId>/<runId> (runWindowHash / parseRunWindowHash in src/shared/types.ts). index.ts keeps a Map<BrowserWindow, FocusRunTarget | undefined> of scopes. windowScope.ts holds the pure checkRunTarget (id pattern plus store lookups) and pickFocusWindow: a notification click focuses the run's window, else the main window, else any. Every window gets the same preload and security settings and every broadcast. Closing a secondary window never quits the app.
 - The app entry. Startup order: ORGAI_DATA_DIR override (app.setPath('userData') + app.setAppLogsPath(<dir>/logs)), app.setName('OrgAI') when unpackaged, installLogging, applyShellPath, stores, SecretStore(safeStorage), ConnectionService, McpService, SetupService, adapters, RunManager, IPC, connections.init(). Then installAppMenu, and createWindow last.
 - ORGAI_DATA_DIR is how e2e and CI keep off the real profile. package.json productName ("OrgAI") names the packaged app.
 - IPC handlers, logging and notifications. log.ts pickLogsDir falls back from the app logs dir to <userData>/logs, then to temp.
@@ -125,6 +128,7 @@ McpService covers:
 - `src/main/log.ts`
 - `src/main/appInfo.ts`
 - `src/main/notifications.ts`
+- `src/main/windowScope.ts`
 - `src/main/usageMonitor.ts`
 - `src/main/maintenance.ts`
 - `src/main/shellEnv.ts`
@@ -133,7 +137,7 @@ McpService covers:
 
 ### Preload bridge
 
-The contextBridge API window.orgai and its typings. window.orgai.app.info() returns AppInfo.
+The contextBridge API window.orgai and its typings (index.d.ts types window.orgai as OrgAIApi). window.orgai.app.info() returns AppInfo. window.orgai.runs.listLive() returns every live run across projects; window.orgai.window.openRun({ projectId, runId }) opens a run-scoped window.
 
 - `src/preload/`
 
@@ -224,6 +228,11 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
   - A denial means the agent finds another route.
   - Registry content is untrusted data: it is quoted as data and never followed as instructions.
 - Setup-like runs (setup, mcp-assist) use built-in roles (the Architect, the MCP assistant) and are never nudged by the continuation driver.
+- Cross-run messaging (list_runs, message_run) is for work-run roots only and never involves setup-like runs.
+  - It is opt-in per project: Project.runMessaging (default off, runMessagingOn in defaults.ts). message_run is refused unless both projects have it on; the refusal names the project and tells the agent not to work around it. list_runs lists every other live work run but hides prompts unless both projects opted in.
+  - Each sender may send RUN_MESSAGE_LIMIT (40) messages per target run; text is cut to RUN_MESSAGE_MAX_CHARS (4000).
+  - A received message is information from a peer, never a user instruction: adapters deliver only peerMessageText(), receive() writes no transcript block, and the recipient's block reads "Note from run …" so it never looks like the user typed it. run.message is separate from agent.message (which stays inside one run).
+- Window scope: a run-scoped window's location.hash is #/run/<projectId>/<runId>; the main window has none. window:openRun validates both ids against the stores before opening anything.
 - Harness tool audiences: 'root' tools go to the root role only. 'spawners' tools (list_mcp_servers, search_mcp_registry, request_mcp_install) go to the root and every canSpawn role.
 - usage.ts stays vendor-neutral and never imports the SDK. Mind the unit mismatch: usage responses give 0-100 percent and ISO resets, while rate_limit_event gives a 0-1 fraction and epoch seconds.
 - Agent parent chains are trees. Adapters resolve parents through agentTree.resolveParent, RunManager.get sanitizes stored records, and every renderer walk over parentId is cycle-safe.
@@ -296,6 +305,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - No lint or format tooling, and the renderer has no component tests.
 - The Claude SDK is pinned to 0.3.312. Plan usage relies on an experimental API and can break on upgrade.
 - claude.ts and codex.ts are large hotspots for merge conflicts.
+- Cross-run messaging: delivery of a peer message to a Claude orchestrator mid-turn is assumed from the existing notifyOrchestrator path and not smoke-tested; Codex delivery is tested only against a fake app-server. receive() wakes a run even after the user interrupted it (it does not consult the continuation hold, window cap or rate-limit state); the per-pair cap bounds but does not prevent token spend between many runs.
 - No e2e test covers the packaged app.
 
 _Maintained by OrgAI. Approved by the project owner during setup._

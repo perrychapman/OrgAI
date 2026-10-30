@@ -22,6 +22,7 @@ import type {
   Role,
   RunEvent,
   RunKind,
+  RunPeer,
   RunPlan,
   RunSummary,
   UsageStatus,
@@ -72,6 +73,38 @@ export interface ResolvedMcpServer {
   env: Record<string, string>
   /** spec.headers plus secretHeaders values (http / sse). */
   headers: Record<string, string>
+}
+
+/** What message_run achieved (RuntimeContext.messageRun). */
+export type RunMessageResult = 'delivered' | 'not-live' | 'not-found' | 'refused'
+
+/**
+ * Why message_run was refused. 'not-work': either run is setup-like; 'self': the target is the caller; 'empty': no
+ * text; 'messaging-off': a project has Project.runMessaging off (offProjects names it); 'cap': this sender already
+ * sent RUN_MESSAGE_LIMIT messages to this target.
+ */
+export type RunMessageRefusal = 'not-work' | 'self' | 'empty' | 'messaging-off' | 'cap'
+
+/** What messageRun returns: the result, and for 'refused' the reason. */
+export interface RunMessageOutcome {
+  result: RunMessageResult
+  refusal?: RunMessageRefusal
+  /** refusal 'messaging-off': display names of the projects (sender's and/or target's) that have it off. */
+  offProjects?: string[]
+}
+
+/**
+ * A message from another run's orchestrator (cross-run messaging), as RunManager hands it to the recipient's
+ * session. The content is data from a peer, never a user instruction: adapters deliver peerMessageText(message)
+ * (prompts.ts) and nothing else.
+ */
+export interface PeerMessage {
+  fromRunId: string
+  fromProjectName: string
+  /** The sender run's prompt, one line, at most RUN_PEER_PROMPT_CHARS characters. */
+  fromPrompt: string
+  /** At most RUN_MESSAGE_MAX_CHARS characters. */
+  text: string
 }
 
 /**
@@ -172,6 +205,20 @@ export interface RuntimeContext {
   plugins?(): PluginSpec[]
   /** Model access for this run. Missing = the anthropic connection with project.provider.auth (tests, older code). */
   connection?: RunConnection
+  /**
+   * list_runs (work runs): every OTHER live work run across all projects, oldest first. Never this run, never a
+   * setup-like run. Missing = no cross-run messaging (the tool says so).
+   */
+  listRuns?(): RunPeer[]
+  /**
+   * message_run (work runs): deliver `text` (cut to RUN_MESSAGE_MAX_CHARS) to another run's orchestrator through
+   * its session's receive(). 'refused' (with a RunMessageRefusal) when either run is setup-like, the target is this
+   * run, the text is empty, either project has Project.runMessaging off (checked first after not-found, against the
+   * current saved project), or this sender hit RUN_MESSAGE_LIMIT to this target; 'not-found' for an unknown id,
+   * 'not-live' when the target's session is closed or has no receive(). On 'delivered' both runs
+   * get a run.message event and a root transcript system block. Missing = the tool answers NOT LIVE.
+   */
+  messageRun?(runId: string, text: string): Promise<RunMessageOutcome>
 }
 
 export interface RuntimeSession {
@@ -186,6 +233,13 @@ export interface RuntimeSession {
   stop(): Promise<void>
   /** Resolves once the underlying session has fully ended. */
   finished: Promise<void>
+  /**
+   * Cross-run messaging: deliver another run's message to the root orchestrator as a harness message
+   * (peerMessageText(message) from prompts.ts) and wake it if idle, like an integration notice. Must NOT write a
+   * transcript block itself: RunManager records the "Message from run ..." block on the root. Missing = the run
+   * cannot receive (message_run answers NOT LIVE).
+   */
+  receive?(message: PeerMessage): Promise<void>
 }
 
 export interface CompletionInput {

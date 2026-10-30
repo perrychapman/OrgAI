@@ -400,6 +400,12 @@ export interface Project {
   autoContinue?: boolean
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
+  /**
+   * Cross-run messaging opt-in ("Let runs message each other" in Project settings). message_run is refused unless
+   * the sender's and the target's projects both have it on. Missing = DEFAULT_RUN_MESSAGING (off); read it with
+   * runMessagingOn() from defaults.ts. Saved through projects:save like other settings.
+   */
+  runMessaging?: boolean
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -676,6 +682,17 @@ export type McpHarnessToolName = (typeof MCP_HARNESS_TOOLS)[keyof typeof MCP_HAR
 
 /** Harness tool every agent gets: ask the user for permission rules after a policy denial. */
 export const PERMISSION_HARNESS_TOOLS = { request: 'request_permission_rules' } as const
+
+/**
+ * Work-run root tools for talking to other runs' orchestrators (cross-run messaging). Both return at once.
+ * list_runs: every other live work run, all projects. message_run: deliver a message to one of them.
+ */
+export const RUN_HARNESS_TOOLS = { list: 'list_runs', message: 'message_run' } as const
+export type RunHarnessToolName = (typeof RUN_HARNESS_TOOLS)[keyof typeof RUN_HARNESS_TOOLS]
+/** message_run text is cut to this many characters before delivery. */
+export const RUN_MESSAGE_MAX_CHARS = 4000
+/** RunPeer.prompt and run.message peerPrompt: one line, at most this many characters. */
+export const RUN_PEER_PROMPT_CHARS = 120
 
 // ---------- App settings (global) ----------
 
@@ -1034,6 +1051,28 @@ export interface RunSummary {
   endedWithApp?: true
 }
 
+/**
+ * Another run as an orchestrator sees it through list_runs (cross-run messaging). Work runs only: setup-like runs
+ * are never listed. Structured-clone safe.
+ */
+export interface RunPeer {
+  runId: string
+  projectId: string
+  /** Display name of the run's project. */
+  projectName: string
+  kind: RunKind
+  status: RunStatus
+  /** The run's prompt on one line, at most RUN_PEER_PROMPT_CHARS characters. */
+  prompt: string
+  startedAt: number
+  /** Name of the run's root role (its orchestrator). */
+  rootRole: string
+  /** True while the run's session is open (it can receive a message_run). */
+  live: boolean
+  /** The peer's project has runMessaging on. message_run also needs the caller's project to have it on. */
+  messaging: boolean
+}
+
 export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'
 
 /** One step of the orchestrator's plan (set_plan / update_plan). */
@@ -1221,15 +1260,57 @@ export type RunEvent =
   | { type: 'plan.updated'; runId: string; plan: RunPlan }
   /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
   | ({ type: 'agent.message'; runId: string } & AgentMessage)
+  /**
+   * Cross-run messaging: one run's orchestrator messaged another run's orchestrator (message_run). Emitted on both
+   * runs: direction 'out' on the sender (runId = sender, peer* = recipient), 'in' on the recipient (runId =
+   * recipient, peer* = sender). Separate from agent.message, which is inside one run. Live only; each run's
+   * transcript carries a persisted system block on its root. `text` is at most RUN_MESSAGE_MAX_CHARS characters.
+   */
+  | {
+      type: 'run.message'
+      runId: string
+      direction: 'in' | 'out'
+      peerRunId: string
+      peerProjectId: string
+      peerProjectName: string
+      /** The peer run's prompt, one line, at most RUN_PEER_PROMPT_CHARS characters. */
+      peerPrompt: string
+      text: string
+      at: number
+    }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
   | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome }
 
-/** Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked. */
+/**
+ * Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked, and of
+ * `window:openRun`. A window opened for a run loads the renderer with the hash `#/run/<projectId>/<runId>`
+ * (both encodeURIComponent'd; see RUN_WINDOW_HASH_PREFIX and runWindowHash).
+ */
 export interface FocusRunTarget {
   projectId: string
   runId: string
+}
+
+/** Hash prefix of a run-scoped window: `#/run/<projectId>/<runId>`. The main (unscoped) window has no hash. */
+export const RUN_WINDOW_HASH_PREFIX = '#/run/'
+
+/** The location.hash of a window scoped to one run. */
+export function runWindowHash(target: FocusRunTarget): string {
+  return `${RUN_WINDOW_HASH_PREFIX}${encodeURIComponent(target.projectId)}/${encodeURIComponent(target.runId)}`
+}
+
+/** Parse a run-scoped window's location.hash; null for the main window or anything malformed. */
+export function parseRunWindowHash(hash: string): FocusRunTarget | null {
+  if (!hash.startsWith(RUN_WINDOW_HASH_PREFIX)) return null
+  const parts = hash.slice(RUN_WINDOW_HASH_PREFIX.length).split('/')
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null
+  try {
+    return { projectId: decodeURIComponent(parts[0]), runId: decodeURIComponent(parts[1]) }
+  } catch {
+    return null
+  }
 }
 
 // ---------- AI drafting ----------
@@ -1389,6 +1470,18 @@ export interface OrgAIApi {
     resumeNow(runId: string): Promise<RunSummary>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
+    /**
+     * Every live run (session open or opening: starting, running, idle, stopping) across all projects, every kind,
+     * oldest first. For a second window's startup and a global runs list.
+     */
+    listLive(): Promise<RunSummary[]>
+  }
+  window: {
+    /**
+     * Open (or focus, if one is already open) a window scoped to this run; it loads the renderer at
+     * `#/run/<projectId>/<runId>`. Rejects when the project or run is unknown or the run belongs to another project.
+     */
+    openRun(target: FocusRunTarget): Promise<void>
   }
   permissions: {
     /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
@@ -1512,5 +1605,7 @@ export const IPC = {
   mcpAnswerInstall: 'mcp:answerInstall',
   mcpStartAssist: 'mcp:startAssist',
   pluginsUpsert: 'plugins:upsert',
-  pluginsRemove: 'plugins:remove'
+  pluginsRemove: 'plugins:remove',
+  runsListLive: 'runs:listLive',
+  windowOpenRun: 'window:openRun'
 } as const

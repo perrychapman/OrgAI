@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { MockAdapter, type MockSession } from './mock'
-import { ROOT_AGENT_ID } from './types'
+import { ROOT_AGENT_ID, type PeerMessage } from './types'
+import { peerMessageText } from './prompts'
 import { fakeCtx, project, runSummary } from './testHelpers'
 
 const png: ImageAttachment = { mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
@@ -106,5 +107,37 @@ describe('mock adapter MCP and connection recording', () => {
     expect(ctx.requestQuestion).toHaveBeenCalled()
     expect(session.harnessMessages).toEqual([])
     expect(ctx.events.some((e) => e.type === 'log' && /unknown harness tool/.test(e.message))).toBe(false)
+  })
+})
+
+describe('mock adapter receive()', () => {
+  const msg: PeerMessage = { fromRunId: 'run-x', fromProjectName: 'Other', fromPrompt: 'Do other things', text: 'Please sync the API' }
+
+  it('wakes an idle root, records framed and raw text, and writes no transcript block itself', async () => {
+    const ctx = fakeCtx({ prompt: 'Start' })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    for (let i = 0; i < 200 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    const before = ctx.events.length
+    await session.receive(msg)
+    const framed = peerMessageText(msg)
+    expect(session.harnessMessages).toEqual([framed])
+    expect(session.peerMessages).toEqual([msg])
+    const after = ctx.events.slice(before)
+    expect(after.some((e) => e.type === 'run.status' && e.status === 'running')).toBe(true)
+    expect(after.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === framed)).toBe(false)
+    await session.stop()
+    await session.finished
+  })
+
+  it('is a no-op after stop', async () => {
+    const ctx = fakeCtx({ prompt: 'Start' })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    await session.stop()
+    await session.finished
+    const before = ctx.events.length
+    await session.receive(msg)
+    expect(session.harnessMessages).toEqual([])
+    expect(session.peerMessages).toEqual([])
+    expect(ctx.events.length).toBe(before)
   })
 })

@@ -68,6 +68,8 @@ const heldLocks = new AsyncLocalStorage<ReadonlySet<string>>()
  * Two runs of one project, or a run and the maintenance panel, then never merge, commit or remove worktrees in
  * the same checkout at the same time. Different checkouts do not block each other. Re-entrant within one call
  * chain. Callers queue in arrival order; a rejected fn releases the lock.
+ * Concurrent runs: two live runs of one project share the repo's lock, so their merges and commits queue per
+ * checkout (never refuse); runs of different projects, or a worktree vs the main checkout, do not block each other.
  */
 export async function withRepoLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
   const key = pathKey(root)
