@@ -2740,7 +2740,11 @@ export interface OrgAIApi {
     read(input: { libraryId: string }): Promise<SkillContent>
     /** Write a new library entry from a draft. Name unique within the library. */
     create(draft: SkillDraft): Promise<SkillLibraryInfo[]>
-    /** Copy one skill folder (SKILL.md at its top; untrusted, same caps and checks as the repo import) into the library. */
+    /**
+     * Copy one skill folder (SKILL.md at its top; untrusted, same caps and checks as the repo import) into the library.
+     * `path` must be a folder the user just chose with projects.pickDirectory() (main remembers the last 20 picks);
+     * any other path is refused, as are UNC and device paths.
+     */
     addFromFolder(input: SkillLibraryFolderInput): Promise<SkillLibraryInfo[]>
     /** Rewrite an entry's SKILL.md (resource files kept). Linked projects see it on their next read. */
     update(input: { libraryId: string; draft: SkillDraft }): Promise<SkillLibraryInfo[]>

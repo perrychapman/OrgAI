@@ -162,7 +162,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     const result = win
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-    return result.canceled ? null : result.filePaths[0] ?? null
+    const picked = result.canceled ? null : result.filePaths[0] ?? null
+    if (picked) rememberPickedFolder(picked)
+    return picked
   })
 
   ipcMain.handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
@@ -325,6 +327,23 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   registerSkillIpc(skills, skillEvaluation)
 }
 
+/**
+ * Folders the user chose in the main-process folder dialog (projects:pickDirectory), newest last, at most 20.
+ * skillLibrary:addFromFolder accepts only these, so a compromised renderer cannot copy an arbitrary folder (or a UNC
+ * share) into the library and read it back.
+ */
+const pickedFolders: string[] = []
+function rememberPickedFolder(path: string): void {
+  const i = pickedFolders.indexOf(path)
+  if (i !== -1) pickedFolders.splice(i, 1)
+  pickedFolders.push(path)
+  if (pickedFolders.length > 20) pickedFolders.shift()
+}
+/** For tests. */
+export function wasPickedFolder(path: string): boolean {
+  return pickedFolders.includes(path)
+}
+
 /** A plain object argument, or {} (handlers validate the fields; services re-check ids against the stores). */
 function obj<T>(input: unknown): T {
   return (input && typeof input === 'object' ? input : {}) as T
@@ -389,6 +408,7 @@ function registerSkillIpc(skills: SkillServiceApi, evaluation: SkillEvaluationAp
   ipcMain.handle(IPC.skillLibraryAddFromFolder, (_e, input: unknown): SkillLibraryInfo[] => {
     const i = obj<SkillLibraryFolderInput>(input)
     if (typeof i.path !== 'string' || !i.path) throw new Error('Choose a skill folder.')
+    if (!wasPickedFolder(i.path)) throw new Error('Choose the skill folder with the folder picker first.')
     return skills.libraryAddFromFolder({ path: i.path })
   })
   ipcMain.handle(IPC.skillLibraryUpdate, (_e, input: unknown): SkillLibraryInfo[] => {
