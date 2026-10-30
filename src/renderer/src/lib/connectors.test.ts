@@ -1,0 +1,79 @@
+import { describe, expect, it } from 'vitest'
+import type { ConnectorInfo } from '@shared/types'
+import { CONNECTORS } from '@shared/connectors'
+import {
+  accessWords,
+  connectMissing,
+  connectorInitial,
+  filterConnectors,
+  honestyNote,
+  missingSentence,
+  plainToolName,
+  removeConsequence,
+  roleAccessSummary,
+  sortForGallery,
+  stateChip
+} from './connectors'
+
+const info = (i: number, state: ConnectorInfo['state']): ConnectorInfo => ({ connector: CONNECTORS[i], state })
+
+describe('connectors lib', () => {
+  it('chips say words', () => {
+    expect(stateChip(info(0, 'available')).label).toBe('Not connected')
+    expect(stateChip(info(0, 'needsSetup')).label).toBe('Needs setup')
+    expect(stateChip(info(0, 'error')).tone).toBe('danger')
+    expect(stateChip(info(0, 'connected')).label).toBe('Connected')
+  })
+  it('names the account', () => {
+    const c = { ...info(0, 'connected'), library: { auth: { state: 'authorized', account: 'a@b.c' } } } as unknown as ConnectorInfo
+    expect(stateChip(c).label).toBe('Connected as a@b.c')
+  })
+  it('initials', () => {
+    expect(connectorInitial({ name: 'Slack' })).toBe('S')
+    expect(connectorInitial({ name: 'Google Drive' })).toBe('GD')
+  })
+  it('access words', () => {
+    expect(accessWords({ readOnly: true })).toBe('Can read')
+    expect(accessWords({ readOnly: false })).toBe('Can read and change')
+  })
+  it('lists what is missing per auth kind', () => {
+    expect(connectMissing({ kind: 'oauth' }, { clientId: '', clientSecret: '', token: '' })).toEqual([])
+    const oc = { kind: 'oauthClient', consoleUrl: 'https://x.y', clientSecret: 'required' } as const
+    expect(connectMissing(oc, { clientId: ' ', clientSecret: '', token: '' })).toEqual(['Client ID', 'Client secret'])
+    expect(connectMissing({ ...oc, clientSecret: 'optional' }, { clientId: 'a', clientSecret: '', token: '' })).toEqual([])
+    const t = { kind: 'token', header: 'Authorization', label: 'Access token', help: '' } as const
+    expect(connectMissing(t, { clientId: '', clientSecret: '', token: '' })).toEqual(['Access token'])
+    expect(missingSentence(['Client ID', 'Client secret'])).toBe('Add the Client ID and Client secret to continue.')
+    expect(missingSentence([])).toBe('')
+  })
+  it('honesty note', () => {
+    expect(honestyNote({ status: 'preview', verified: false })).toMatch(/not yet tested/)
+    expect(honestyNote({ status: 'stable', verified: true })).toBeUndefined()
+  })
+  it('plain tool names', () => {
+    expect(plainToolName('search_messages')).toBe('Search messages')
+    expect(plainToolName('listIssues')).toBe('List issues')
+    expect(plainToolName('mcp__slack__send_message')).toBe('Send message')
+  })
+  it('names roles', () => {
+    const roles = [
+      { slug: 'a', name: 'Reviewer' },
+      { slug: 'b', name: 'Researcher' },
+      { slug: 'c', name: 'Lead' }
+    ]
+    expect(roleAccessSummary(roles, undefined)).toBe('All roles')
+    expect(roleAccessSummary(roles, ['a', 'b'])).toBe('Reviewer, Researcher')
+    expect(roleAccessSummary(roles, [])).toBe('No roles')
+    expect(roleAccessSummary([], undefined)).toBe('No roles yet')
+  })
+  it('sorts connected first and filters', () => {
+    const list = [info(0, 'available'), info(1, 'connected'), info(2, 'needsSetup')]
+    expect(sortForGallery(list).map((i) => i.state)).toEqual(['connected', 'needsSetup', 'available'])
+    expect(filterConnectors(list, CONNECTORS[1].name.toLowerCase()).length).toBeGreaterThan(0)
+    expect(filterConnectors(list, 'zzzz-none')).toEqual([])
+  })
+  it('consequence names projects', () => {
+    expect(removeConsequence([{ projectName: 'Acme' }], 'remove')).toContain('Acme will lose access')
+    expect(removeConsequence([], 'disconnect')).toContain('No project')
+  })
+})
