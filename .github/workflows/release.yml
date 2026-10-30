@@ -1,6 +1,10 @@
-# Builds the installers and drafts a GitHub release.
-# - Push a tag `v<version>` (must equal package.json's version) to build all three and draft the release.
-# - Or run it by hand (workflow_dispatch). dry_run (the default) only builds and uploads workflow artifacts.
+# Builds the installers and drafts a GitHub release. Releases are cut from main only.
+# - Flow: work lands on dev. Bump package.json's version on dev, merge dev -> main by PR, then tag the main commit
+#   `v<version>` (must equal package.json's version) and push the tag. That builds all three and drafts the release;
+#   publish the draft by hand.
+# - The meta job refuses a tag, or a dispatch with dry_run off, whose commit is not reachable from origin/main.
+# - Or run it by hand (workflow_dispatch). dry_run (the default) only builds and uploads workflow artifacts; a dry run
+#   of a ref that is not on main is allowed (build only) and prints a notice.
 # Nothing is uploaded by electron-builder itself (`--publish never`); the publish job creates the draft release.
 # Mac builds are unsigned unless the CSC_LINK secret is set; notarization runs only when the APPLE_* secrets are set.
 name: Release
@@ -35,6 +39,10 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       publish: ${{ steps.meta.outputs.publish }}
     steps:
+      # Full history plus origin/main and the tags, for the reachability check.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: meta
         shell: bash
         env:
@@ -52,6 +60,20 @@ jobs:
             if [ "$publish" = "true" ] && [ -z "$tag" ]; then
               echo "::error::A non-dry-run release needs a tag."; exit 1
             fi
+          fi
+          # Releases are cut from main only. A branch ref is checked through its remote-tracking ref.
+          check="$ref"
+          case "$check" in refs/heads/*) check="refs/remotes/origin/${check#refs/heads/}" ;; esac
+          if ! commit="$(git rev-parse --verify --quiet "$check^{commit}")"; then
+            echo "::error::Cannot resolve $ref to a commit."; exit 1
+          fi
+          if git merge-base --is-ancestor "$commit" origin/main; then
+            echo "$ref ($commit) is reachable from origin/main."
+          elif [ "$publish" = "true" ]; then
+            echo "::error::$ref ($commit) is not reachable from origin/main. Releases are cut from main only: merge dev into main by PR, then tag the main commit."
+            exit 1
+          else
+            echo "::notice::$ref ($commit) is not on main. Dry run: build only, nothing is published."
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
