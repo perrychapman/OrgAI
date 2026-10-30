@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForProject, builtinModels, projectConnection } from '@shared/defaults'
+import { adapterForProject, builtinModels, connectionProviderLabel, creationConnection, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS } from '@shared/types'
 import type {
   AdapterChoice,
@@ -513,6 +513,18 @@ export class ConnectionService {
     return { project: next, result: out.result }
   }
 
+  /**
+   * Put a freshly built project on settings.defaultConnection (when usable): provider fields, tier models of that
+   * connection and the adapter its models need. Nothing is saved or broadcast.
+   */
+  prepareNewProject(project: Project): Project {
+    const settings = this.deps.settings.get()
+    const id = creationConnection(settings)
+    if (id === 'anthropic') return project
+    const provider = { ...project.provider, connection: id, label: connectionProviderLabel(id, settings.providerAuth) }
+    return this.remapOne({ ...project, provider }, id, settings.connections[id].tierModels, undefined, 'switched').project
+  }
+
   private withAdapter(project: Project): Project {
     if (project.provider.id === 'mock') return project
     const adapter = adapterForProject(project, this.catalog()).adapter
@@ -559,13 +571,18 @@ export class ConnectionService {
 
   // ---------- per-run model access ----------
 
-  runConnection(_project: Project | undefined, choice: AdapterChoice): RunConnection {
+  runConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
     const id = choice.connection
     const base: RunConnection = { connection: id, adapter: choice.adapter }
     if (choice.adapter === 'mock') return base
     const settings = this.deps.settings.get()
     const codexHome = (): Record<string, string> => ({ CODEX_HOME: codexHomeDir(this.deps.dataDir) })
-    if (id === 'anthropic') return { ...base, env: {} }
+    if (id === 'anthropic') {
+      // Lets one-shot completions get the key even when the env var is not literally ANTHROPIC_API_KEY.
+      const auth = project?.provider.auth ?? settings.connections.anthropic.auth
+      const key = auth.kind === 'apiKey' ? this.env(auth.envVar) : undefined
+      return { ...base, env: key ? { ANTHROPIC_API_KEY: key } : {} }
+    }
     if (id === 'openai') {
       const auth = settings.connections.openai.auth
       if (auth.kind === 'chatgpt') return { ...base, codexAuth: 'chatgpt', env: codexHome() }

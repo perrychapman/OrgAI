@@ -1,7 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify } from './defaults'
+import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify } from './defaults'
 import type { McpLibraryEntry } from './types'
 import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
+
+describe('creationConnection', () => {
+  const withConn = (defaultConnection: 'anthropic' | 'openai' | 'litellm', over: { openai?: boolean; litellm?: Record<string, unknown> } = {}) => {
+    const c = structuredClone(DEFAULT_APP_SETTINGS.connections)
+    if (over.openai !== undefined) c.openai.enabled = over.openai
+    if (over.litellm) Object.assign(c.litellm, over.litellm)
+    return { defaultConnection, connections: c }
+  }
+  const ready = { enabled: true, baseUrl: 'http://localhost:4000', hasApiKey: true }
+
+  it('anthropic is always usable', () => {
+    expect(creationConnection(withConn('anthropic'))).toBe('anthropic')
+    expect(creationConnection(undefined)).toBe('anthropic')
+  })
+  it('openai needs to be enabled', () => {
+    expect(creationConnection(withConn('openai', { openai: true }))).toBe('openai')
+    expect(creationConnection(withConn('openai', { openai: false }))).toBe('anthropic')
+  })
+  it('litellm needs enabled, a base URL and an API key', () => {
+    expect(creationConnection(withConn('litellm', { litellm: ready }))).toBe('litellm')
+    expect(creationConnection(withConn('litellm', { litellm: { ...ready, enabled: false } }))).toBe('anthropic')
+    expect(creationConnection(withConn('litellm', { litellm: { ...ready, baseUrl: ' ' } }))).toBe('anthropic')
+    expect(creationConnection(withConn('litellm', { litellm: { ...ready, hasApiKey: false } }))).toBe('anthropic')
+  })
+})
 
 describe('slugify', () => {
   it('lowercases and hyphenates', () => {
