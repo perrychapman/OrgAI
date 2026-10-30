@@ -39,7 +39,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `AppSettings.notifications` (the single source of truth; `notifications.setEnabled` in the preload is a deprecated
   mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only
   in `lib/theme.ts` (`initTheme` in `main.tsx`) as `data-theme`, `data-canvas-*`, `data-reduce-motion` and `--canvas-*`
-  on `<html>`. Views never read appearance settings themselves.
+  on `<html>`. Views never read appearance settings themselves. `AppSettings.setupModel` / `mcpAssistModel` (default
+  'opus', normalized in `store/settings.ts`) pick the built-in Architect and MCP assistant models, resolved per run by
+  `runtime/builtinModel.ts` (deep-tier fallback, one run warning). They are edited in App settings > Defaults >
+  "Assistants"; the MCP assist dialog hint and the Org retrospective tooltip name them (`lib/assistantModels.ts`).
+  The `orgai:settings-section` window event switches a mounted App settings page to the requested pane.
 - Run titles: `RunSummary.title` (at most `RUN_TITLE_MAX_CHARS` = 32) and the `run.title` event come from
   `src/main/ai/runTitle.ts`. RunManager fires it for work runs with prompt text and never awaits it. It is a one-shot
   `complete({ kind: 'title', model: fast tier, connection })` with a 20 s timeout, cleaned by `cleanTitle`. A failure
@@ -232,6 +236,10 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     (`model_providers.orgai.env_key`), never in argv. Verified by unit tests (`codexProtocol.test.ts`).
   - Concurrent Codex runs share that one `CODEX_HOME` at `<data>/codex` (`src/main/connections/service.ts`), each
     with its own app-server. Whether they race on auth refresh or the session database is unverified.
+  - `CodexAppServer.start` creates `CODEX_HOME` (mode 0o700) before spawning (issue #8). Verified token-free by
+    fake-server unit tests; that codex 0.166.0 exits 1 on a missing dir was verified by the user. Exit errors
+    (`codexExitMessage`) carry a redacted stderr tail (last 10 lines, 2,000 chars; exact env values redacted plus
+    `maskKeyLike`). Still unverified: whether a LiteLLM proxy serves `/v1/responses` for GPT models.
   - Harness tools are `dynamicTools` on `thread/start`, answered through `item/tool/call`. `update_plan` collides
     with a built-in Codex tool, so it is exposed as `orgai_update_plan`. Subagents are threads started by the
     harness's own `spawn_agent` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`
