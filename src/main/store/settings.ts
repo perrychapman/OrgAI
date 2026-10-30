@@ -4,6 +4,7 @@ import type {
   AppearanceSettings,
   AppSettings,
   ConnectionId,
+  ModelPriceOverride,
   ModelRef,
   ModelTier,
   OpenAIAuth,
@@ -11,7 +12,8 @@ import type {
   ProviderConnections
 } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
-import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, defaultConnections } from '@shared/defaults'
+import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections } from '@shared/defaults'
+import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
 
 const oneOf = <T extends string>(options: readonly T[], v: unknown, fallback: T): T =>
   (options as readonly unknown[]).includes(v) ? (v as T) : fallback
@@ -44,7 +46,33 @@ export function normalizeAppearance(raw: unknown): AppearanceSettings {
   }
 }
 
-type RawConnection = Partial<{
+/**
+ * AppSettings.modelPrices from disk or the renderer: an array only; invalid entries are dropped; duplicates (same
+ * normalized model and connection) keep the last; capped at MODEL_PRICE_OVERRIDES_MAX. Fresh plain objects only.
+ */
+export function normalizeModelPrices(raw: unknown): ModelPriceOverride[] {
+  if (!Array.isArray(raw)) return []
+  const byKey = new Map<string, ModelPriceOverride>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const o = item as Record<string, unknown>
+    const model = typeof o.model === 'string' ? o.model.trim() : ''
+    if (!model || model.length > MODEL_PRICE_ID_MAX_CHARS) continue
+    const price = sanitizeModelPrice(o.price)
+    if (!price) continue
+    let connection: ConnectionId | undefined
+    if (o.connection !== undefined && o.connection !== null) {
+      if (!(CONNECTION_IDS as readonly unknown[]).includes(o.connection)) continue
+      connection = o.connection as ConnectionId
+    }
+    const key = `${connection ?? '*'}|${normalizeModelId(model)}`
+    byKey.delete(key) // last wins, and moves to the end
+    byKey.set(key, connection ? { model, connection, price } : { model, price })
+  }
+  return [...byKey.values()].slice(0, MODEL_PRICE_OVERRIDES_MAX)
+}
+
+type RawConnection =Partial<{
   enabled: unknown
   auth: unknown
   tierModels: unknown
@@ -151,6 +179,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultConnection: (CONNECTION_IDS as readonly unknown[]).includes(r.defaultConnection) ? (r.defaultConnection as ConnectionId) : d.defaultConnection,
     notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
     appearance: normalizeAppearance(r.appearance),
+    modelPrices: normalizeModelPrices(r.modelPrices),
     opusGuardThreshold:
       r.opusGuardThreshold != null && Number.isFinite(threshold) && threshold >= 1 && threshold <= 100 ? threshold : d.opusGuardThreshold,
     defaultPreferSonnetNearLimit:
@@ -208,7 +237,9 @@ export class SettingsStore {
     const stored = this.settings.appearance
     const given = (next.appearance ?? {}) as Partial<AppearanceSettings>
     const appearance = { ...stored, ...given, canvas: { ...stored.canvas, ...(given.canvas ?? {}) } }
-    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, { ...next, appearance }))
+    // modelPrices left out (an older renderer) keeps the stored overrides; an array (even empty) replaces them.
+    const modelPrices = next.modelPrices !== undefined ? next.modelPrices : this.settings.modelPrices
+    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices }))
     normalized.connections.litellm.hasApiKey = this.settings.connections.litellm.hasApiKey
     this.settings = normalized
     this.persist()

@@ -1,12 +1,18 @@
-import type { ProviderModel } from '@shared/types'
+import { MODEL_PRICE_MAX_PER_MTOK } from '@shared/defaults'
+import type { ModelPrice, ProviderModel } from '@shared/types'
 import { makeDiscoveredModel } from './catalog'
 
 /**
  * LiteLLM proxy discovery. UNVERIFIED against a live proxy (written from LiteLLM's documented API):
  *   GET {base}/v1/models      -> { data: [{ id }] }                       (OpenAI-compatible)
  *   GET {base}/model/info     -> { data: [{ model_name, litellm_params: { model }, model_info: {
- *                                  litellm_provider, max_input_tokens, max_tokens, mode } }] }
- * Auth is sent both as `Authorization: Bearer` and `x-api-key` since proxies differ. /model/info is
+ *                                  litellm_provider, max_input_tokens, max_tokens, mode,
+ *                                  input_cost_per_token, output_cost_per_token,
+ *                                  cache_read_input_token_cost, cache_creation_input_token_cost } }] }
+ * Prices are USD per token; they become ProviderModel.price in USD per MTok. Where the cost fields sit in the real
+ * /model/info nesting is UNVERIFIED, so they are read from model_info first, then the entry's top level, then
+ * litellm_params. The per-request x-litellm-response-cost header is not used: the SDK route exposes no response
+ * headers. Auth is sent both as `Authorization: Bearer` and `x-api-key` since proxies differ. /model/info is
  * best-effort enrichment and may be admin-only. The key never appears in an error string.
  */
 
@@ -100,6 +106,33 @@ export interface ModelInfoEntry {
   litellmProvider?: string
   contextWindow?: number
   mode?: string
+  price?: ModelPrice
+}
+
+/** LiteLLM per-token USD -> per-MTok, rounded to drop float noise (5e-06 -> 5). */
+function perMTok(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined
+  const m = Math.round(v * 1e12) / 1e6
+  return m <= MODEL_PRICE_MAX_PER_MTOK ? m : undefined
+}
+
+function priceFrom(sources: Record<string, unknown>[]): ModelPrice | undefined {
+  const pick = (key: string): number | undefined => {
+    for (const s of sources) {
+      const v = perMTok(s[key])
+      if (v !== undefined) return v
+    }
+    return undefined
+  }
+  const input = pick('input_cost_per_token')
+  const output = pick('output_cost_per_token')
+  if (input === undefined || output === undefined) return undefined
+  const price: ModelPrice = { inputPerMTok: input, outputPerMTok: output }
+  const read = pick('cache_read_input_token_cost')
+  const write = pick('cache_creation_input_token_cost')
+  if (read !== undefined) price.cacheReadPerMTok = read
+  if (write !== undefined) price.cacheWritePerMTok = write
+  return price
 }
 
 /** Per-model details from a /model/info body, keyed by model_name. */
@@ -119,7 +152,8 @@ export function parseModelInfo(body: unknown): Map<string, ModelInfoEntry> {
     out.set(name, {
       litellmProvider: prev?.litellmProvider ?? provider,
       contextWindow: prev?.contextWindow ?? num(info.max_input_tokens) ?? num(info.max_tokens),
-      mode: prev?.mode ?? str(info.mode)
+      mode: prev?.mode ?? str(info.mode),
+      price: prev?.price ?? priceFrom([info, e, params])
     })
   }
   return out
@@ -133,7 +167,7 @@ export function buildLiteLLMModels(ids: string[], info: Map<string, ModelInfoEnt
   for (const id of ids) {
     const e = info.get(id)
     if (e?.mode && !CHAT_MODES.has(e.mode)) continue
-    models.push(makeDiscoveredModel('litellm', { id, litellmProvider: e?.litellmProvider, contextWindow: e?.contextWindow }))
+    models.push(makeDiscoveredModel('litellm', { id, litellmProvider: e?.litellmProvider, contextWindow: e?.contextWindow, price: e?.price }))
   }
   return models
 }
