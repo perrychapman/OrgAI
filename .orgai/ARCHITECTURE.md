@@ -160,7 +160,7 @@ The contextBridge API window.orgai and its typings (index.d.ts types window.orga
 
 ### UI primitives
 
-components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, SegmentedControl (native radio group), CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). PLANNED: Radix-based versions, and a components/layout panel shell over react-resizable-panels. Neither exists yet.
+components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, SegmentedControl (native radio group), CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). components/layout holds CanvasFrame, SidePanel and SaveIndicator. PLANNED: Radix-based versions and a react-resizable-panels shell; neither exists yet. Button takes an optional className for test hooks.
 
 - `src/renderer/src/components/ui/`
 
@@ -169,14 +169,19 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - The app shell, projects view, org chart editor, live run view, app and project settings, transcript, usage meter, zustand store and dagre layout.
 - Connections settings (components/connections/).
 - MCP servers, plugins, registry dialog and install cards (components/mcp/).
-- RunStrip.tsx, the strip of a project's runs.
+- Run workspace: components/RunTabs.tsx (browser-style tablist, roving tabindex, +n overflow menu, tab context menu with Open in new window, Ctrl+T / Ctrl+W), RunHeader.tsx (index, status, full prompt, actions), NewRunPage.tsx (the blank draft page behind +), Composer.tsx (shared message box; drafts live in the store per run id or `new:<projectId>`), RunLabel.tsx (names a run on decision cards), Sidebar.tsx (project rows expand to open runs, global Needs you list), RunHistory.tsx (the History tab). LiveRunView composes them on layout/CanvasFrame (stage, decision tray, footer) and layout/SidePanel; nothing floats over the canvas.
+- Run state in useAppStore: `draftPage` per project (New run page), `composerDrafts`, `sideTabByRun`, `unreadByRun` (notes from other runs), `historyByProject`; runs.listLive() fills `runs` at init so a second window or a reload shows every live run. Run index (R1, R2) is per project by start order (lib/runLabels.ts); status words come from lib/runStatus.ts.
+- Multi-window: window.orgai.window.openRun opens a window whose location hash is `#/run/<projectId>/<runId>` (RUN_WINDOW_HASH_PREFIX, parseRunWindowHash in shared/types.ts); init selects that run. The window title reads `OrgAI · R2 · <prompt>`.
+- Cross-run messages: RunEvent run.message only marks the receiving tab unread. The transcript shows the persisted system rows on the root ("Sent to run ...", "Note from run ...") through lib/peerNotes.ts as a sender row and a tinted receiver row, as plain text, never Markdown. Harness-written entries (source "harness") render as system rows with `detail` behind a disclosure. Project.runMessaging (default off) is the Switch in project Settings.
 - lib/platform.ts: navigator-based isMacPlatform, modKeyLabel and examplePath, no IPC.
 - lib/runChains.ts: session chains. Continue is offered only on the chain's newest member.
+- lib/needsYou.ts, runLabels.ts, runStatus.ts, peerNotes.ts: pure helpers for decisions, run labels, the status vocabulary and cross-run notes (unit tested).
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`
 - `src/renderer/src/components/mcp/`
-- `src/renderer/src/components/RunStrip.tsx`
+- `src/renderer/src/components/RunTabs.tsx`
+- `src/renderer/src/components/layout/`
 - `src/renderer/src/lib/platform.ts`
 - `src/renderer/src/lib/runChains.ts`
 

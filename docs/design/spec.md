@@ -43,6 +43,9 @@ Design stance: a calm, dense-but-airy desktop tool in the vein of Linear / VS Co
 - **Sidebar, 232 px, collapsible to a 56 px icon rail** (auto-collapse below 1180 px window width; toggle with `Ctrl/Cmd+B`).
   - Header: brand lockup (section 9).
   - `Projects` nav item (home grid). Under it a `Projects` section list (one label only; the duplicate `Workspaces` label goes) with a `+` icon button that opens the New project dialog. Each row: status dot (idle, running, needs you) plus name; a numeric badge shows pending approvals when above zero; tooltip shows path.
+  - **`Needs you (n)` entry** (UX review `ux-review-runs.md`, "Proposed navigation model" point 4), pinned at the top of the list, shown only when n > 0. It expands to one row per waiting item across all projects: `<project> · Run R2: <short prompt>` plus the kind (permission, question, proposal, merge review). Click selects that project, opens that run and focuses its Inbox item. Waiting work must be reachable from anywhere in one click.
+  - **Project rows expand** (chevron at the row's left, `aria-expanded`) to list the project's open runs: status dot plus the first ~28 characters of the prompt, needs-you runs first, then working, then the rest. Clicking a run row selects the project and opens that run in one click (fixes R3). Clicking the project row itself opens the run that needs you, else the last viewed run; a project with no open runs opens its newest run (section 2.2). A project with open runs auto-expands; the expanded state is remembered per project.
+  - **Row subtitle**: with no open runs the row shows `Last run 2h ago · Finished` (status word from the single vocabulary); with open runs the child list replaces it and the row shows text counts (`2 open`, `1 needs you`) beside the dot.
   - Footer (pinned): one **Account card** and a **Settings** icon button (gear). The card shows the provider mark, `Claude · <method>` and, on subscription auth, the *single most constrained* plan window as a 4 px bar plus percent. Clicking the card opens the **Usage popover** (all windows, reset times, as-of, `Refresh`, link to `Settings > Claude and usage`). A logged-out or error state turns the dot warning/danger and the card text says what to do (`Not logged in · Fix`), opening Settings > Claude and usage.
   - Removed from the footer: the notifications checkbox (moves to Settings > Notifications), the `Logs` button (moves to Settings > Data and about > `Open log folder`), the always-expanded usage bars.
 - **Main area** is either the Projects page, a project workspace, or App Settings. App Settings is a full-width page with its own left sub-nav and a `Back` link; `Esc` returns.
@@ -56,10 +59,12 @@ Header (one row, 52 px) then a tab bar:
 | --- | --- |
 | Breadcrumb | `Projects / <name>` (the first part links back). |
 | Working directory | Mono text, middle-truncated, with a copy icon button and tooltip of the full path. Not a pill. |
-| Run status | A single `Badge` (dot + label) for the viewed run: `Working`, `Waiting for you`, `Paused`, `Finished`, `Failed`, `Idle`. This is the only place the run status is repeated outside the run bar. |
-| Tabs (Radix Tabs, underline style) | Superseded by section 12.2: `Live` · `Org chart` · `Settings`. History is the `Runs` list inside Live (section 12.2). |
+| Run status | A single `Badge` (dot + label) for the viewed run, from the single vocabulary: `Working`, `Waiting for you`, `Idle`, `Paused`, `Finished`, `Failed`. The topbar badge uses `needsYou` (project-wide: it shows `Waiting for you` when any run of the project needs the user, otherwise the viewed run's status). Outside the run header this is the only place status is repeated. |
+| Tabs (Radix Tabs, underline style) | `Live` · `History` · `Org chart` · `Settings` (section 12.2 adds Org chart and Settings as separate tabs). `History` is a top-level project tab (UX review `ux-review-runs.md`, option D); the side panel no longer has a `Runs` tab. |
 
-Rules: tabs are real `role=tablist`, arrow-key navigable, deep-linkable through the store (`projectTab`). Settings no longer contains the org chart.
+Rules: tabs are real `role=tablist`, arrow-key navigable, deep-linkable through the store (`projectTab`). The tab names follow the shipped app (`Live`, `Org chart & settings`); this supersedes the earlier proposal to rename them `Run` / `Org chart` / `Settings`.
+
+**Opening a project** shows its newest run on `Live` (or `History` when the user last left it there), never the empty state. The empty state (`run-empty`) appears only for a project with no runs at all.
 
 ### 2.3 Settings structure
 
@@ -101,9 +106,10 @@ Settings that exist in both scopes (permission mode, cost cap, runs to keep, iso
 
 ```
 +--------------------------------------------------------------+------------------+
-| RUN BAR  [Run ▾ "Add auth..." · Working]  $0.42 · 4 agents   | Side panel       |
-|          [Interrupt] [End session] [⋯]                       | Inbox(2) |Agent |  |
-+--------------------------------------------------------------+ Log              |
+| RUN TABS [● R1 Add auth…] [◐ R2 Fix hea… Waiting] [+2] [+]   | Side panel       |
+| RUN HEADER "Add auth with OAuth…" Working · 10:42 · $0.42 · R1| Inbox(2) |Agent |  |
+|          [Fit] [Interrupt] [End session] [Plan]             | Log              |
++--------------------------------------------------------------+                  |
 |                                                              |                  |
 |                 React Flow canvas                            | agent identity   |
 |                                                              | stat chips       |
@@ -115,10 +121,18 @@ Settings that exist in both scopes (permission mode, cost cap, runs to keep, iso
 +--------------------------------------------------------------+------------------+
 ```
 
-- **Run bar** replaces the floating run strip and canvas toolbar. It is a normal 44 px row above the canvas (not absolutely positioned), left to right:
-  1. **Run selector** (Radix DropdownMenu/Select): current run prompt (truncated) with kind icon and status dot; the list shows open runs first, then `New run`. Replaces the run strip chips. Closed sessions do not need a dismiss `x` because they are only listed in History.
-  2. **Run facts** as plain text: cost (with the existing API-equivalent tooltip), agent count, `continued` badge, `Setup session` badge.
-  3. **Actions**: while the session is open, `Interrupt turn` (secondary) and `End session` (danger-ghost). When finished: `Org retrospective` (secondary). Rare actions (fold finished toggle, retrospective) go in the `⋯` menu.
+- **Run bar** replaces the floating run strip and canvas toolbar. It sits in normal flow above the canvas (nothing floats over the canvas) and has two rows. It implements the "Run tabs" recommendation of `ux-review-runs.md` (B + C + D, dropdown retired), which fixes R1, R2 and R3 of that review.
+  - **Row 1, run tabs** (32 px, `.run-tabs`, `role=tablist`, `aria-label="Open runs"`). Each tab (`.run-tab`, `role=tab`, `aria-selected`) is, left to right: status dot (colour plus the status word in `aria-label`), run index (`R1`, `R2`, ... numbered per project in start order, stable for the life of the project, mono), the first ~24 characters of the prompt (ellipsis; full prompt in `title`), then **at most one trailing badge** by priority: `Waiting for you` (warning), draft dot (the composer holds unsent text), unread link badge (cross-run message, below). An `x` shows only on finished tabs (Finished, Failed); a running tab cannot be closed from the tab.
+    - Keyboard: roving tabindex (only the selected tab is in the tab order); `ArrowLeft`/`ArrowRight` move focus between tabs and wrap, `Home`/`End` jump to first/last, `Enter`/`Space` activate, `Delete` or `Ctrl+W` hides a finished tab (no-op with a status message on a running one), `Ctrl+T` opens New run. Hide removes the tab only; the run stays in History and in the sidebar until finished.
+    - Overflow: tabs never scroll horizontally. When they do not fit (at 1024 px about 5), the rest collapse into a `+n` menu button (`.run-tab-more`, `aria-haspopup="menu"`) listing hidden runs with dot, index, prompt and badge; choosing one swaps it into the visible set. The selected tab is always visible.
+    - A fixed `+` button (`.run-tab-new`, `aria-label="New run"`) ends the row and opens the **New run draft page**. The page is a blank tab, `R<next>` labelled `New run`: a centred composer, role chips (the roles that will take part), and the line `N other runs keep going` with a link for each. Start can only start a new run; no other run's toolbar, cards, nodes or transcript is on screen. This fixes the defect where Start on a finished run continued it (R1/R2).
+    - Tab context menu (right click or `Shift+F10`): `Hide`, and `Open in new window` (a later capability: render the item disabled with the hint `Available when multi-window lands`; do not build it now).
+    - Each tab and the window title carry the run index and prompt (`R2: Fix header - OrgAI`), so notifications and the OS task switcher name the run.
+  - **Row 2, run header** (`.run-header`, 40 px), left to right: the full prompt (one line, truncated; full text in `title` and on hover), the status word (single vocabulary: `Working`, `Waiting for you`, `Idle`, `Paused`, `Finished`, `Failed`), start time (relative, absolute in tooltip), cost (API-equivalent tooltip), the run index (`R2`), `continued` and `Setup session` badges; then the canvas actions: `Fit view` (icon), `Interrupt turn` (secondary), `End session` (danger-ghost) while the session is open, and the plan pill. Rare actions (fold finished, retrospective) go in the `⋯` menu.
+  - **Finished run**: the default action in the run header and composer is `New run` (primary); `Continue this run` is the explicit second choice (secondary), never the default. `Org retrospective` stays in `⋯`.
+  - **State**: the composer draft is kept per run (a draft dot shows on the tab when it is non-empty). The whole run view (canvas, side panel selection, composer, banners) is keyed by run id so switching tabs never shows one run's content under another's header.
+  - **Decision cards always name the run**: `Run R2: Add caching` in the card header, so a card is never ambiguous when several runs wait.
+  - At 1024x640 row 1 shows about five tabs then `+n`, and the prompt column of the header truncates first; at 1600 px all tabs show their full 24-character prompt and the header shows the start time inline.
 - **Canvas controls** (React Flow `Controls`) gain a `Fold finished (n)` toggle button and a `Legend` popover button, replacing the always-visible legend. The legend shows icon + color + label for each state.
 - **Attention (decisions)**: superseded by section 12.1 (one docked tray, one anatomy; no floating tray, no sheet). The text below is kept only as history:
   - *Permission requests*: compact cards stacked in a **tray** docked to the top-right of the canvas, width 360, max three visible then `+n more` (opens the Inbox tab). Actions: primary `Allow once`, a split `Allow ▾` menu (`For this session`, `Always for this project`) shown only when suggestions exist, and `Deny`. The rule labels (`ruleLabels`) show inside the menu items.
@@ -131,19 +145,29 @@ Settings that exist in both scopes (permission mode, cost cap, runs to keep, iso
   - Agent identity header: avatar, name, `role · model`, state badge; below it three stat chips (elapsed, tokens in/out, cost) and, when present, a worktree chip (`isolated · branch · status`). This replaces the key/value grid.
   - Transcript: prose entries render without borders (assistant text is plain Markdown; user messages are a tinted bubble); tool calls and results are collapsible rows (`Read src/app.ts` + chevron; results collapsed by default when longer than 6 lines; errors expanded). `Show thinking` becomes a header switch labelled `Thinking`.
   - `Log` is the *run* log (rename from Logs); it has level filter chips and shows an error count badge on the tab, never a bare `!`.
-- **Project run history** leaves this panel and becomes the `History` tab (section 2.6).
+- **Project run history** leaves this panel and becomes the top-level `History` project tab (section 2.6); the side panel has no `Runs` tab.
+
+#### Cross-run messages
+
+From `ux-review-runs.md`, "Cross-run messages". Not built yet; this fixes the visual rules so the first implementation follows them.
+
+- **Setting**: project settings, Agents and permissions, `Let runs message each other` (Switch, default off). Messages never cross projects. The first message while it is off raises one decision card (`Allow once` / `Always for this project` / `Deny`) naming both runs.
+- **Sender transcript**: a system-style row, not an assistant bubble: `To run R2 (Fix header): <text>` with an `Open run R2` link.
+- **Receiver transcript**: a tinted row with a left rule in the sender's run colour, header `Note from run R1 (Add caching)` and an `Open run R1` link. It never uses the user bubble style and never reads as typed by the user.
+- **Tab**: a link icon plus an unread badge on the receiving tab (it takes the trailing-badge slot only when nothing outranks it); the tab title is unchanged.
+- **Notifications**: no OS notification for message traffic. Notify only when an exchange creates something that needs the user (approval, question, loop guard), naming both runs.
 
 ### 2.6 History tab
 
-A table: Status (badge) · Prompt (truncated, 2 lines max) · Kind · Started (relative with absolute tooltip) · Cost · actions (`Open`, `Continue` where possible, `⋯` with `Org retrospective`). Rows are real table rows with one primary `Open` link; buttons are not nested in buttons. Empty state: "No runs yet. Start one from the Run tab." Filter: segmented `All / Work / Setup`.
+A table: Status (badge) · Prompt (truncated, 2 lines max) · Kind · Started (relative with absolute tooltip) · Cost · actions (`Open`, `Continue` where possible, `⋯` with `Org retrospective`). Rows are real table rows with one primary `Open` link; buttons are not nested in buttons. Empty state: "No runs yet. Start one from the Live tab." Filter: segmented `All / Work / Setup`. `History` is a top-level project tab beside `Live` and `Org chart & settings` (section 2.2). `Open` on a closed run adds it as a tab in the run tabs (section 2.5); `Continue` is offered only on a chain's newest run.
 
 #### Session chains and concurrent runs (rules the overhaul keeps)
 
 - A **session chain** is the runs of one project that share a `sessionId` (fallback: linked by `resumedFrom`). Helpers live in `lib/runChains.ts`. Only the chain's newest member may offer `Continue`; older members say "Continued by <run>" with a button that opens it, and a continuation says "Continued from <run>".
 - The composer always states what Send does in a mode row above the field: "Replying to <root role>" / "Answering the Architect" / "Continuing this session (run from <time>)" / "New run: N open runs keep going". When both a primary mode and New run apply, a two-item segmented control switches them and the primary button reads Send / Continue / Start. Helper text "Enter to send · Shift+Enter for a new line" is persistent.
-- Several runs may be open at once. Run chips are buttons with status words (Working, Waiting for you, Paused, Finished, Failed, Idle), open sessions first, one chip per chain. Starting a run while another is open switches the view to the new run; the others keep running. Dismissing the viewed chip switches to another open run rather than leaving the canvas empty.
+- Several runs may be open at once. Run tabs (section 2.5) carry the status dot and word, open sessions first, one tab per chain. Starting a run from the New run draft page switches the view to the new run; the others keep running. Hiding the viewed tab switches to another open run rather than leaving the canvas empty.
 - If the runtime refuses a Continue because the session is open in another run (`Session already open: ... run <id>`), the composer keeps the draft and offers "Open that run".
-- Sidebar project rows show text counts ("2 open", "1 needs you") beside the colour dot, and the Runs tab shows the open-run count. Paused banners say that only that run is paused.
+- Sidebar project rows show text counts ("2 open", "1 needs you") beside the colour dot and expand to their open runs (section 2.1). Paused banners say that only that run is paused.
 
 ### 2.7 Org chart tab
 
@@ -504,7 +528,7 @@ Current selectors and what happens. `plan.md` Brief E0 introduces `e2e/selectors
 | --- | --- | --- |
 | `.sidebar .nav-item` with text (`lib.mjs:212,252`) | classes change | `[data-testid="nav-projects"]`, `[data-testid="nav-project-<id>"]` (or `nav-project` with `data-name`) |
 | `.sidebar-footer .pill` (`layout.mjs:18`) | removed; becomes Account card | `[data-testid="account-card"]` |
-| `.topbar .tabs` + `Live` / `Org chart & settings` (`layout.mjs:27`) | tabs renamed and re-rendered by Radix | `getByRole('tab', { name: 'Run' | 'Org chart' | 'History' | 'Settings' })` |
+| `.topbar .tabs` + `Live` / `Org chart & settings` (`layout.mjs:27`) | tabs re-rendered by Radix; `History` is added as a top-level tab, names stay `Live` and `Org chart & settings` | `getByRole('tab', { name: 'Live' | 'History' | 'Org chart & settings' })` |
 | `.topbar .pill` path (`layout.mjs:32`) | path pill removed | `[data-testid="project-path"]` |
 | `.topbar .pill .dot` status text (`lib.mjs:338`) | status badge | `[data-testid="run-status"]` with text |
 | `form.card`, `.tabs` kind buttons, placeholders (`lib.mjs:223-238`) | form moves to a dialog; placeholders may change | `getByRole('dialog', { name: 'New project' })`, fields by label; `getByRole('radio', { name: 'New idea' })` |
@@ -515,6 +539,7 @@ Current selectors and what happens. `plan.md` Brief E0 introduces `e2e/selectors
 | `.proposal`, `.proposal-head strong`, `Approve` / `Request changes` / `Send feedback` (`lib.mjs:304-318`) | proposals move to a sheet | `[data-testid="decision-card"][data-kind="proposal"]`, `.title` via `data-testid="decision-title"`; button names stay |
 | `.agent-node .activity` (`lib.mjs:327`) | node markup restyled | `[data-testid="agent-node"]` with `[data-testid="agent-activity"]` |
 | `.transcript .entry.text` (`lib.mjs:331`) | transcript markup changes | `[data-testid="transcript-entry"][data-kind="text"]` |
+| `.run-strip` / `.run-chip` (run chips above the canvas) | replaced by run tabs (section 2.5) | `.run-tabs` (the `role=tablist`), `.run-tab` (each tab, `role=tab`, `aria-selected`, `data-run-id`), `.run-tab-new` (the `+` button, opens the New run draft), `.run-tab-more` (the `+n` overflow menu button), `.run-header` (row 2: prompt, status word, facts, canvas actions). Status text is read from `.run-header`; tab by `getByRole('tab', { name: /R2/ })` |
 | `End session` button (`lib.mjs:270`) | stays a button, location changes | `getByRole('button', { name: 'End session' })` (unchanged) |
 | `.editor .tabs, .tabs` + `Project settings` (`maintenance.mjs:65`) | sub-tab removed; `Settings` is a project tab | `getByRole('tab', { name: 'Settings' })`, then the `Repository and parallel work` section via `[data-testid="settings-section-repository"]` |
 | `.maint-row`, `Merge into main checkout`, `Discard` (`maintenance.mjs:46-99`) | restyled list rows; labels kept | `[data-testid="branch-row"]` (with `data-branch`); keep the button names `Merge into main checkout`, `Discard` |

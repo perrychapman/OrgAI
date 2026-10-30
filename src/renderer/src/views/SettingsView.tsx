@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from 'react'
 import type { MaintenanceResult, PendingWorktree, WorktreeDiff } from '@shared/types'
 import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import type { PermissionMode, Project } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { Switch } from '../components/ui/Switch'
+import { runMessagingOn, MAX_AUTO_CONTINUES_LIMIT,MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import DiffView from '../components/DiffView'
 import ProjectConnection from '../components/connections/ProjectConnection'
@@ -254,6 +255,15 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
             {project.permissionMode === 'auto'
               ? 'Unattended mode still asks when the classifier is unsure; saved rules below never ask.'
               : 'Prompts appear as approval cards in the live view.'}
+          </span>
+        </div>
+        <div className="field">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <label id="run-messaging-label">Let runs message each other</label>
+            <Switch checked={runMessagingOn(project)} label="Let runs message each other" onChange={(next) => patch({ runMessaging: next })} />
+          </div>
+          <span className="hint">
+            Orchestrators of this project&apos;s runs can read each other&apos;s prompts and exchange short notes. Off by default; messages between projects need it on in both.
           </span>
         </div>
         <div className="field">

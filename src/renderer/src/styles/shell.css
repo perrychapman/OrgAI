@@ -110,6 +110,128 @@
   box-shadow: var(--halo-dot-warning);
 }
 
+.sidebar-projects {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* Status pills in the topbar keep their words; the path pill shrinks instead. */
+.topbar .pill.run-status {
+  flex-shrink: 0;
+}
+.nav-needs .nav-runs {
+  max-height: calc(var(--space-16) * 2);
+  overflow-y: auto;
+}
+.sidebar-empty {
+  padding: var(--space-1h) var(--space-3);
+  color: var(--text-faint);
+}
+/* A project row: disclosure chevron, the row button, then (when expanded) its open runs. */
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0h);
+}
+.nav-row .nav-item {
+  flex: 1;
+  min-width: 0;
+}
+.nav-chevron,
+.nav-chevron-spacer {
+  flex: none;
+  width: var(--space-5);
+  height: var(--control-sm);
+}
+.nav-chevron {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.nav-chevron:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-chevron:focus-visible,
+.nav-run:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--space-0h));
+}
+.nav-runs {
+  list-style: none;
+  margin: 0 0 var(--space-1) var(--space-6);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.nav-run {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+.nav-run:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-run.active {
+  background: var(--surface-3);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+.nav-run-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-needs .nav-item.needs-you {
+  color: var(--warning-text);
+}
+.nav-needs .nav-item.needs-you .nav-text {
+  flex: 1;
+}
+.nav-needs .nav-runs {
+  margin-left: var(--space-2);
+}
+.nav-run.waiting {
+  align-items: flex-start;
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+.nav-run-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.nav-run-where,
+.nav-run-what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-run-what {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 12px;
@@ -157,6 +279,17 @@
 .pill.is-running .dot {
   background: var(--success);
   animation: breathe 1.4s ease-in-out infinite;
+}
+.pill.idle .dot {
+  background: var(--info);
+}
+.pill.paused .dot {
+  background: var(--warning);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill.live .dot {
+    animation: none;
+  }
 }
 
 .main {

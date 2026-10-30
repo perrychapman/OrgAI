@@ -211,6 +211,38 @@
 .entry.system .md {
   font-size: var(--text-caption);
 }
+.entry.system.harness {
+  border-style: dashed;
+}
+.entry-detail summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.entry-detail pre {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+
+/* Cross-run notes: never styled like the user's own messages. The receiver row has a left rule in the accent. */
+.entry.peer {
+  white-space: normal;
+}
+.entry.peer .peer-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.entry.peer-in {
+  background: var(--info-soft);
+  border-color: var(--info-border);
+  border-left: var(--space-1) solid var(--info);
+}
+.entry.peer-out {
+  border-style: dashed;
+}
 
 /* Text an agent is still streaming; replaced by the final entry when its message completes. */
 .entry.text.streaming {
@@ -218,60 +250,6 @@
   border-color: color-mix(in oklab, var(--border-default) 50%, var(--accent) 50%);
 }
 
-/* ---------- Run history ---------- */
-
-.run-history {
-  list-style: none;
-  margin: 0;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.run-row {
-  text-align: left;
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  color: var(--text-primary);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.run-row:hover {
-  border-color: var(--border-strong);
-}
-.run-row-head,
-.run-row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1h);
-}
-.run-row-cost {
-  margin-left: auto;
-  color: var(--text-tertiary);
-  font-size: var(--text-caption);
-}
-.run-chain {
-  font-size: var(--text-caption);
-  color: var(--text-secondary);
-}
-.run-row.active {
-  border-color: var(--accent);
-}
-.run-row .prompt {
-  font-size: var(--text-small);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.run-row .when {
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
-}
 
 /* ---------- Finished-report list ---------- */
 
@@ -437,27 +415,18 @@
   color: var(--text-secondary);
 }
 
-/* Runs tab row actions: Continue is the one primary-weight action; the rest are secondary and the same size. */
-.run-row-actions .btn.run-retro {
-  color: var(--text-secondary);
-}
-.run-row-actions .btn.run-continue {
-  border-color: var(--accent);
-  color: var(--accent-text, var(--accent));
-}
-
 /* Side-panel header: the agent name gets the full width when the tabs do not fit beside it. */
 .side-spacer {
   flex: 1;
 }
 @container side (max-width: 360px) {
-  .side-header {
+  .live-panel .side-header {
     flex-wrap: wrap;
   }
-  .side-header h2 {
-    flex: 1 1 100%;
+  .live-panel .side-header h2 {
+    flex: 1 1 calc(100% - var(--space-10));
   }
-  .side-header .side-spacer {
+  .live-panel .side-header .side-spacer {
     display: none;
   }
 }

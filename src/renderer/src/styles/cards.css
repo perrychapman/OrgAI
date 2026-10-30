@@ -1,5 +1,6 @@
 /* ---------- Permission cards ---------- */
 
+/* Cards sit in the run's in-flow decisions region (.live-cards), never over the canvas. */
 .permissions {
   display: flex;
   flex-direction: column;
@@ -43,13 +44,10 @@
 
 /* ---------- Proposals (setup sessions) ---------- */
 
-.proposals {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.live-cards .proposal-body {
+  max-height: 30vh;
 }
 .proposal {
-  pointer-events: auto;
   background: var(--surface-3);
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-lg);
@@ -206,7 +204,7 @@
   color: var(--text-secondary);
 }
 
-/* ---------- Usage-limit pause banner: bottom of the canvas, just above the composer ---------- */
+/* ---------- Usage-limit pause banner: first row of the run's decisions region, in flow ---------- */
 
 .pause-banner {
   margin: 0;

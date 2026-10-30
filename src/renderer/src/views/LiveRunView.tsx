@@ -11,14 +11,12 @@ import {
   type Edge,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentInstance, ImageAttachment, McpInstallOutcome, McpInstallRequest, Project } from '@shared/types'
+import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project } from '@shared/types'
 import McpInstallCard from '../components/McpInstallCard'
 import { Badge } from '../components/ui/Badge'
-import { MAX_IMAGES_PER_MESSAGE } from '@shared/defaults'
-import { ComposerImages, filesToImages } from '../components/ImageAttachments'
-import { setupPending } from '@shared/setup'
 import { activeRun, isRunLive, useAppStore, useProjectSummaries } from '../store/useAppStore'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { Button } from '../components/ui/Button'
 import { canContinue as chainCanContinue, continuedBy, relativeTime, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
 import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
@@ -27,15 +25,16 @@ import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RuleRequestCard from '../components/RuleRequestCard'
-import { SidePanel } from '../components/layout/SidePanel'
-import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
-import RunStrip, { useStripRuns } from '../components/RunStrip'
 import MergeReviewCard from '../components/MergeReviewCard'
-import { costLabel, formatUntil, planProgress, treeLayout } from '../lib/layout'
+import { SidePanel } from '../components/layout/SidePanel'
+import { CanvasFrame, FrameFooter, FrameStage, FrameTray } from '../components/layout/CanvasFrame'
+import RunTabs from '../components/RunTabs'
+import RunHeader from '../components/RunHeader'
+import NewRunPage from '../components/NewRunPage'
+import Composer from '../components/Composer'
+import { Decision } from '../components/RunLabel'
+import { formatUntil, treeLayout } from '../lib/layout'
 import { ancestorsOf, hasLiveDescendant, normalizeParents } from '../lib/agentTree'
-
-const SCAFFOLD_PROMPT =
-  'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 const NODE_W = 240
@@ -47,7 +46,9 @@ const SETTLED_WORKTREE = new Set(['merged', 'empty', 'removed', 'held', 'conflic
 const COLLAPSE_KEY = 'orgai.collapseFinished'
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
-const MESSAGE_COLOR = '#e879f9'
+/** Message edges reuse the accent text token until the design system names a message color. */
+const MESSAGE_COLOR = 'var(--accent-text)'
+const NEUTRAL_ROLE_COLOR = 'var(--text-tertiary)'
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
 
@@ -66,57 +67,77 @@ function readCollapsePref(): boolean {
   }
 }
 
+/**
+ * The project's run workspace: run tabs on top, then either one run (header, decisions, canvas, composer, side
+ * panel) or the blank New run page. Each run is keyed, so its local state (images, folded groups, picked installs,
+ * the session block) never leaks into another run.
+ */
 export default function LiveRunView({ project }: { project: Project }): ReactElement {
+  const runId = useAppStore((s) => activeRun(s)?.summary.id)
+  const hasWorkspace = useAppStore((s) => !!s.draftPage[project.id] || !!s.activeRunByProject[project.id])
+  const ensureWorkspace = useAppStore((s) => s.ensureWorkspace)
+
+  // A project opened without a workspace (e.g. straight after creation) picks its newest run or the New run page.
+  useEffect(() => {
+    if (!hasWorkspace) void ensureWorkspace()
+  }, [project.id, hasWorkspace, ensureWorkspace])
+
   return (
-    <ReactFlowProvider>
-      <LiveRunInner project={project} />
-    </ReactFlowProvider>
+    <div className="run-workspace">
+      <RunTabs project={project} />
+      <div className="run-panel" id="run-panel" role="tabpanel" aria-labelledby={`run-tab-${runId ?? 'new'}`}>
+        {runId ? (
+          <ReactFlowProvider key={`${project.id}:${runId}`}>
+            <RunView project={project} runId={runId} />
+          </ReactFlowProvider>
+        ) : (
+          <NewRunPage key={`new:${project.id}`} project={project} />
+        )}
+      </div>
+    </div>
   )
 }
 
-function LiveRunInner({ project }: { project: Project }): ReactElement {
-  const run = useAppStore(activeRun)
+function RunView({ project, runId }: { project: Project; runId: string }): ReactElement {
+  const run = useAppStore((s) => s.runs[runId])
   const selectedAgentId = useAppStore((s) => s.selectedAgentId)
   const selectAgent = useAppStore((s) => s.selectAgent)
   const startRun = useAppStore((s) => s.startRun)
-  const startSetup = useAppStore((s) => s.startSetup)
-  const startRetro = useAppStore((s) => s.startRetro)
   const sendMessage = useAppStore((s) => s.sendMessage)
-  const interrupt = useAppStore((s) => s.interrupt)
-  const stopRun = useAppStore((s) => s.stopRun)
   const decide = useAppStore((s) => s.decide)
   const decideProposal = useAppStore((s) => s.decideProposal)
   const continueRun = useAppStore((s) => s.continueRun)
   const composerFocusToken = useAppStore((s) => s.composerFocusToken)
-  const composerRef = useRef<HTMLTextAreaElement>(null)
   const answerQuestion = useAppStore((s) => s.answerQuestion)
   const decideRules = useAppStore((s) => s.decideRules)
-  const composerMode = useAppStore((s) => s.composerMode)
-  const setComposerMode = useAppStore((s) => s.setComposerMode)
-  const stripRuns = useStripRuns()
-  const showStrip = stripRuns.length > 0
   const decideMerge = useAppStore((s) => s.decideMerge)
-  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
+  const openRun = useAppStore((s) => s.openRun)
   const setSideTab = useAppStore((s) => s.setSideTab)
+  const focusComposer = useAppStore((s) => s.focusComposer)
+  const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
+  const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
   const { fitView } = useReactFlow()
 
-  const [text, setText] = useState('')
-  const [images, setImages] = useState<ImageAttachment[]>([])
-  const [imageNotice, setImageNotice] = useState<string | null>(null)
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
-  const openRun = useAppStore((s) => s.openRun)
+  /** What Send does on a finished run: a new run (default) or the explicit Continue. */
+  const continueIntent = useAppStore((s) => s.continueIntent === runId)
+  const [finishedChoice, setFinishedChoice] = useState<'new' | 'continue'>(continueIntent ? 'continue' : 'new')
+  useEffect(() => {
+    // History's Continue sets the intent just before the view mounts; it is consumed once.
+    if (!continueIntent) return
+    setFinishedChoice('continue')
+    useAppStore.setState({ continueIntent: null })
+  }, [continueIntent])
   const summaries = useProjectSummaries()
-  const openRunCount = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === s.selectedProjectId && isRunLive(r)).length)
-  const [dragOver, setDragOver] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [setupBusy, setSetupBusy] = useState(false)
+  const otherOpenRuns = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === project.id && r.summary.id !== runId && isRunLive(r)).length)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedInstall, setPickedInstall] = useState<string | null>(null)
   const [dismissedInstalls, setDismissedInstalls] = useState<Record<string, boolean>>({})
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   const toggleCollapse = (): void => {
     setCollapseFinished((v) => {
@@ -130,24 +151,14 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   }
   const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
 
-  const isSetupRun = run?.summary.kind === 'setup'
-  const needsSetup = setupPending(project)
+  const isSetupRun = run.summary.kind === 'setup'
   const rootName = project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
 
-  const beginSetup = async (): Promise<void> => {
-    setSetupBusy(true)
-    try {
-      await startSetup()
-    } finally {
-      setSetupBusy(false)
-    }
-  }
-
-  const agentsById = run?.agents
-  const agents = useMemo(() => (agentsById ? normalizeParents(Object.values(agentsById)) : []), [agentsById])
+  const agentsById = run.agents
+  const agents = useMemo(() => normalizeParents(Object.values(agentsById)), [agentsById])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
-      project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? '#646d84',
+      project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? NEUTRAL_ROLE_COLOR,
     [project.roles]
   )
 
@@ -161,7 +172,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   }, [agents, collapseFinished])
 
   // Message edges fade after MESSAGE_EDGE_MS; tick while the newest one is still showing.
-  const messages = run?.messages
+  const messages = run.messages
   useEffect(() => {
     const latest = messages?.length ? messages[messages.length - 1].at : 0
     if (!latest || Date.now() - latest > MESSAGE_EDGE_MS) return undefined
@@ -230,14 +241,14 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
       data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
     }))
     const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
-      const parent = run?.agents[parentId]
+      const parent = run.agents[parentId]
       return {
         id: groupId(parentId),
         type: 'done-group' as const,
         position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
         selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
-        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : '#646d84', onToggle: toggleGroup }
+        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : NEUTRAL_ROLE_COLOR, onToggle: toggleGroup }
       }
     })
     return [...agentNodes, ...groupNodes]
@@ -281,7 +292,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         const g = groupOf.get(cur)
         if (g !== undefined) return groupId(g)
         if (cur !== id && shown.has(cur)) return null
-        cur = agentsById?.[cur]?.parentId ?? null
+        cur = agentsById[cur]?.parentId ?? null
       }
       return null
     }
@@ -301,8 +312,8 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         animated: true,
         className: 'msg-edge',
         label: 'msg',
-        labelStyle: { fill: MESSAGE_COLOR, fontSize: 10 },
-        labelBgStyle: { fill: '#11141c' },
+        labelStyle: { fill: MESSAGE_COLOR, fontSize: 'var(--text-caption)' },
+        labelBgStyle: { fill: 'var(--surface-0)' },
         style: { stroke: MESSAGE_COLOR, strokeWidth: 1.8, strokeDasharray: '6 4' },
         markerEnd: { type: MarkerType.ArrowClosed, color: MESSAGE_COLOR },
         zIndex: 10
@@ -315,7 +326,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
 
   // A selected "done" group lists its reports in the side panel.
   const finishedGroup: FinishedGroup | undefined = useMemo(() => {
-    if (!run || !selectedAgentId?.startsWith('group:')) return undefined
+    if (!selectedAgentId?.startsWith('group:')) return undefined
     const parentId = selectedAgentId.slice('group:'.length)
     const members = groups.get(parentId)
     if (!members) return undefined
@@ -328,98 +339,67 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   }, [run, selectedAgentId, groups, selectAgent, toggleGroup])
   const finishedCount = [...groups.values()].reduce((n, g) => n + g.length, 0)
 
-  const status = run?.summary.status
+  const status = run.summary.status
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
-  const canSend = (text.trim().length > 0 || images.length > 0) && !busy
   // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
   // session chain: an older member says who continued it.
-  const canContinue = !!run && chainCanContinue(summaries, run.summary.id)
-  const successor = run && !sessionOpen ? continuedBy(summaries, run.summary.id) : undefined
-  // What Send does. "New run" starts another run even while this session stays open.
-  const primaryMode: 'reply' | 'continue' | null = sessionOpen ? 'reply' : canContinue ? 'continue' : null
-  const sendMode: 'reply' | 'continue' | 'new' = primaryMode && composerMode !== 'new' ? primaryMode : 'new'
+  const canContinue = chainCanContinue(summaries, runId)
+  const successor = !sessionOpen ? continuedBy(summaries, runId) : undefined
+  // What Send does. On a finished run the default is a NEW run; Continue is the explicit second choice.
+  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && finishedChoice === 'continue' ? 'continue' : 'new'
   const modeLabel =
     sendMode === 'reply'
       ? isSetupRun
         ? 'Answering the Architect'
         : `Replying to ${rootName}`
       : sendMode === 'continue'
-        ? run?.summary.endedWithApp
-          ? 'Continuing this session (it ended when OrgAI closed)'
-          : `Continuing this session (run from ${run ? relativeTime(run.summary.startedAt) : 'earlier'})`
-        : openRunCount > 0
-          ? `New run: ${openRunCount} open run${openRunCount === 1 ? '' : 's'} keep${openRunCount === 1 ? 's' : ''} going`
+        ? run.summary.endedWithApp
+          ? 'Continuing this run (it ended when OrgAI closed)'
+          : `Continuing this run (from ${relativeTime(run.summary.startedAt)})`
+        : otherOpenRuns > 0
+          ? `New run: ${otherOpenRuns} other run${otherOpenRuns === 1 ? '' : 's'} keep${otherOpenRuns === 1 ? 's' : ''} going`
           : 'New run'
   const primaryLabel = sendMode === 'reply' ? 'Send' : sendMode === 'continue' ? 'Continue' : 'Start'
-
-  useEffect(() => {
-    setSessionBlock(null)
-  }, [run?.summary.id])
-
-  useEffect(() => {
-    if (composerFocusToken) composerRef.current?.focus()
-  }, [composerFocusToken])
-
-  const addImages = async (files: File[]): Promise<void> => {
-    const { images: added, notice } = await filesToImages(files, images.length)
-    if (added.length > 0) setImages((cur) => [...cur, ...added].slice(0, MAX_IMAGES_PER_MESSAGE))
-    setImageNotice(notice)
-  }
-
-  const submit = async (): Promise<void> => {
-    if (!canSend) return
-    const prompt = text.trim()
-    const sending = images
-    const imgs = sending.length > 0 ? sending : undefined
-    const previousText = text
-    setText('')
-    setImages([])
-    setImageNotice(null)
-    setBusy(true)
-    try {
-      setSessionBlock(null)
-      if (sendMode === 'reply') await sendMessage(prompt, imgs)
-      else if (sendMode === 'continue' && run) await continueRun(run.summary.id, prompt, imgs)
-      else await startRun(prompt, imgs ? { images: imgs } : undefined)
-    } catch (err) {
-      // Keep the draft and attachments so nothing is lost on failure.
-      setText((cur) => cur || previousText)
-      setImages((cur) => (cur.length > 0 ? cur : sending))
-      const message = err instanceof Error ? err.message : 'Could not send the message.'
-      const liveId = sessionOpenRunId(message)
-      if (liveId) setSessionBlock({ message: message.replace(/^(Error invoking remote method '[^']*': )?(Error: )?/, ''), runId: liveId })
-      else setImageNotice(message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const scaffold = async (): Promise<void> => {
-    setBusy(true)
-    try {
-      await startRun(SCAFFOLD_PROMPT, { scaffold: true })
-    } finally {
-      setBusy(false)
-    }
-  }
+  const placeholder =
+    sendMode === 'reply'
+      ? isSetupRun
+        ? 'Your answer'
+        : 'Your reply'
+      : sendMode === 'continue'
+        ? run.summary.endedWithApp
+          ? 'Pick up where it was cut off'
+          : 'What next?'
+        : 'Describe the task'
 
   // Install approval cards: open ones first (one expanded, the rest collapsed), answered ones until dismissed.
-  const openInstalls = run?.mcpInstalls ?? []
-  const resolvedInstalls = Object.values(run?.mcpResolved ?? {}).filter((r) => !dismissedInstalls[r.request.id])
+  const openInstalls = run.mcpInstalls ?? []
+  const resolvedInstalls = Object.values(run.mcpResolved ?? {}).filter((r) => !dismissedInstalls[r.request.id])
   const cardItems: { request: McpInstallRequest; outcome?: McpInstallOutcome }[] = [
     ...openInstalls.map((request) => ({ request })),
     ...resolvedInstalls.map((r) => ({ request: r.request, outcome: r.outcome }))
   ]
   const expandedInstallId = openInstalls.some((r) => r.id === pickedInstall) ? pickedInstall : (openInstalls[0]?.id ?? null)
 
-  // The card region resizes the canvas; re-fit once it settles.
-  const cardsKey = cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : c.request.id === expandedInstallId ? 'e' : 'c'}`).join('|')
+  // The decisions region resizes the canvas; re-fit once it settles.
+  const cardsKey =
+    cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : c.request.id === expandedInstallId ? 'e' : 'c'}`).join('|') +
+    `/${run.permissions.length}.${run.proposals.length}.${run.questions?.length ?? 0}.${run.ruleRequests?.length ?? 0}.${run.mergeReviews?.length ?? 0}.${status === 'paused' ? 'p' : ''}`
   useEffect(() => {
     const t = setTimeout(() => fitView({ padding: 0.25, duration: 200, maxZoom: 1 }), 80)
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
 
-  // Re-fit when the canvas container itself changes size (window resize, strip, side panel).
+  // A jump from the sidebar's "Needs you" list asks the first decision of this run to take focus.
+  useEffect(() => {
+    if (!pendingFocus) return
+    const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
+    const target = region?.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ?? region
+    target?.focus()
+    target?.scrollIntoView?.({ block: 'nearest' })
+    clearDecisionFocus()
+  }, [pendingFocus, clearDecisionFocus])
+
+  // Re-fit when the canvas container itself changes size (window resize, side panel, decisions region).
   const canvasRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = canvasRef.current
@@ -444,164 +424,67 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     }
   }, [fitView])
 
-  const selectedAgent = run && selectedAgentId ? run.agents[selectedAgentId] : undefined
+  const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
   const entries = useMemo(
-    () => (run && selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
+    () => (selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
     [run, selectedAgentId]
   )
 
   return (
-    <div className="live">
-      <div className="live-cards" aria-live="polite">
-        {run && cardItems.length > 0 && (
-          <>
-            <span className="sr-only">
-              {openInstalls.length > 0
-                ? `${run.agents[openInstalls[0].agentId]?.name ?? 'An agent'} is asking to install an MCP server`
-                : 'MCP install request answered'}
-            </span>
-            {openInstalls.length > 1 && (
-              <Badge tone="warning" testId="mcp-install-count">
-                {openInstalls.length} install requests waiting
-              </Badge>
-            )}
-            {cardItems.map((it) => (
-              <McpInstallCard
-                key={it.request.id}
-                runId={run.summary.id}
-                request={it.request}
-                agentName={run.agents[it.request.agentId]?.name ?? 'An agent'}
-                resolved={it.outcome}
-                collapsed={!it.outcome && it.request.id !== expandedInstallId}
-                onExpand={() => setPickedInstall(it.request.id)}
-                onDismiss={() => setDismissedInstalls((d) => ({ ...d, [it.request.id]: true }))}
-              />
-            ))}
-          </>
-        )}
-      </div>
-      <CanvasFrame frameRef={canvasRef}>
-        <FrameToolbar label="Run status and actions">
-        {showStrip && <RunStrip runs={stripRuns} />}
-        {run && (
-          <>
-            {isSetupRun && <span className="pill warn"><span className="dot" /> Setup session</span>}
-            {project.permissionMode === 'auto' && (
-              <span className="pill unattended" title="Permission mode is auto: Claude approves or denies each call and asks only when unsure. Saved rules never ask.">
-                unattended
-              </span>
-            )}
-            {run.summary.resumedFrom && (
-              <span className="pill" title={`Continued from run ${run.summary.resumedFrom}`}>
-                continued
-              </span>
-            )}
-            <span className="pill" title={costLabel(run.summary.totalCostUsd, authMode).title}>
-              {costLabel(run.summary.totalCostUsd, authMode).text}
-            </span>
-            <span className="pill">
-              {agents.length} agent{agents.length === 1 ? '' : 's'}
-            </span>
-            {run.plan && (
-              <button
-                className={`pill plan-pill ${run.plan.status}`}
-                title={`Plan ${run.plan.status === 'active' ? 'in progress' : run.plan.status}: ${run.plan.goal}. Click to open the plan.`}
-                onClick={() => setSideTab('plan')}
-              >
-                {planProgress(run.plan).done}/{planProgress(run.plan).total} steps
-                {run.plan.status === 'done' ? ' ✓' : run.plan.status === 'blocked' ? ' !' : ''}
-              </button>
-            )}
-            {agents.length > 1 && (
-              <button
-                className={`btn sm ${collapseFinished ? '' : 'ghost'}`}
-                onClick={toggleCollapse}
-                title={collapseFinished ? 'Finished reports fold into one node per parent. Click to show them all.' : 'Click to fold finished reports into one node per parent.'}
-              >
-                {collapseFinished ? `Folding finished${finishedCount ? ` (${finishedCount})` : ''}` : 'Showing all'}
-              </button>
-            )}
-            {sessionOpen && (
-              <>
-                <button className="btn sm" onClick={() => void interrupt()} disabled={status !== 'running'}>
-                  Interrupt turn
-                </button>
-                <button className="btn sm danger" onClick={() => void stopRun()}>
-                  End session
-                </button>
-              </>
-            )}
-            {!sessionOpen && status && (
-              <span className="pill">
-                Session {status}
-                {run.summary.error ? `: ${run.summary.error.slice(0, 60)}` : ''}
-              </span>
-            )}
-            {!sessionOpen && run.summary.kind === 'work' && (status === 'finished' || status === 'error') && (
-              <button
-                className="btn sm"
-                title="Have the Architect review this run and revise the org chart where roles struggled"
-                onClick={() => void startRetro(run.summary.id)}
-              >
-                Org retrospective
-              </button>
-            )}
-          </>
-        )}
-        </FrameToolbar>
+    <div className="run-view">
+      <RunHeader run={run} project={project} agentCount={agents.length} collapseFinished={collapseFinished} finishedCount={finishedCount} onToggleCollapse={toggleCollapse} />
+      <div className="run-body" ref={bodyRef}>
+        <FrameTray label="Waiting for you">
+          {status === 'paused' && <PauseBanner runId={runId} />}
 
-        <FrameTray label="Decisions">
-        {run && status === 'paused' && <PauseBanner runId={run.summary.id} />}
-
-        {run && status !== 'paused' && run.plan?.status === 'blocked' && (
-          <div className="pause-banner plan-blocked-banner">
-            <div className="pause-title">
-              <span className="dot" /> The orchestrator needs your decision
-            </div>
-            <div className="pause-reason">{run.plan.blockedReason ?? 'It marked the plan blocked.'}</div>
-            <div className="pause-when">
-              Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
-            </div>
-            {(sessionOpen || canContinue) && (
-              <div className="row" style={{ gap: 8 }}>
-                <button className="btn primary sm" onClick={() => composerRef.current?.focus()}>
-                  Answer
-                </button>
-                <button className="btn sm" onClick={() => setSideTab('plan')}>
-                  Show the plan
-                </button>
+          {status !== 'paused' && run.plan?.status === 'blocked' && (
+            <div className="pause-banner plan-blocked-banner">
+              <div className="pause-title">
+                <span className="dot" /> The orchestrator needs your decision
               </div>
-            )}
-          </div>
-        )}
+              <div className="pause-reason">{run.plan.blockedReason ?? 'It marked the plan blocked.'}</div>
+              <div className="pause-when">
+                Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
+              </div>
+              <div className="row" style={{ gap: 'var(--space-2)' }}>
+                {(sessionOpen || canContinue) && (
+                  <Button variant="primary" size="sm" onClick={() => focusComposer()}>
+                    Answer
+                  </Button>
+                )}
+                <Button variant="secondary" size="sm" onClick={() => setSideTab('plan')}>
+                  Show the plan
+                </Button>
+              </div>
+            </div>
+          )}
 
-        {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0 || (run.ruleRequests?.length ?? 0) > 0) && (
-          <div className="proposals">
-            {(run.ruleRequests ?? []).map((r) => (
-              <RuleRequestCard key={r.id} request={r} who={run.agents[r.agentId]?.name ?? r.agentId} onDecide={(d) => void decideRules(r.id, d)} />
-            ))}
-            {(run.questions ?? []).map((q) => (
-              <QuestionCard key={q.id} question={q} onAnswer={(a) => void answerQuestion(q.id, a)} />
-            ))}
-            {run.proposals.map((p) => (
-              <ProposalCard key={p.id} proposal={p} onDecide={(d) => void decideProposal(p.id, d)} />
-            ))}
-          </div>
-        )}
-
-        {run && run.mergeReviews?.length > 0 && (
-          <div className="proposals merge-reviews">
-            {run.mergeReviews.map((m) => (
-              <MergeReviewCard key={m.id} review={m} onDecide={(d) => void decideMerge(m.id, d)} />
-            ))}
-          </div>
-        )}
-
-        {run && run.permissions.length > 0 && (
-          <div className="permissions">
-            {run.permissions.map((p) => (
-              <div key={p.id} className="permission">
-                <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>
+          {(run.ruleRequests ?? []).map((r) => (
+            <Decision key={r.id} runId={runId}>
+              <RuleRequestCard request={r} who={run.agents[r.agentId]?.name ?? r.agentId} onDecide={(d) => void decideRules(r.id, d)} />
+            </Decision>
+          ))}
+          {(run.questions ?? []).map((q) => (
+            <Decision key={q.id} runId={runId}>
+              <QuestionCard question={q} onAnswer={(a) => void answerQuestion(q.id, a)} />
+            </Decision>
+          ))}
+          {run.proposals.map((p) => (
+            <Decision key={p.id} runId={runId}>
+              <ProposalCard proposal={p} onDecide={(d) => void decideProposal(p.id, d)} />
+            </Decision>
+          ))}
+          {(run.mergeReviews ?? []).map((m) => (
+            <Decision key={m.id} runId={runId}>
+              <MergeReviewCard review={m} onDecide={(d) => void decideMerge(m.id, d)} />
+            </Decision>
+          ))}
+          {run.permissions.map((p) => (
+            <Decision key={p.id} runId={runId}>
+              <div className="permission">
+                <div className="who">
+                  {run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}
+                </div>
                 <div className="what">{p.summary}</div>
                 {p.ruleLabels && p.ruleLabels.length > 0 && (
                   <div className="rules" title="What “Allow for session” and “Always allow” approve">
@@ -611,248 +494,160 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
                   </div>
                 )}
                 <div className="row" style={{ flexWrap: 'wrap' }}>
-                  <button className="btn primary sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'once' })}>
+                  <Button variant="primary" size="sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'once' })}>
                     Allow once
-                  </button>
+                  </Button>
                   {p.suggestions && p.suggestions.length > 0 && (
                     <>
-                      <button className="btn sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'session' })}>
+                      <Button size="sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'session' })}>
                         Allow for session
-                      </button>
-                      <button className="btn sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'project' })}>
+                      </Button>
+                      <Button size="sm" onClick={() => void decide(p.id, { behavior: 'allow', scope: 'project' })}>
                         Always allow (project)
-                      </button>
+                      </Button>
                     </>
                   )}
-                  <button
-                    className="btn sm"
-                    onClick={() => void decide(p.id, { behavior: 'deny', message: 'The user declined this action. Find another way or ask.' })}
-                  >
+                  <Button size="sm" onClick={() => void decide(p.id, { behavior: 'deny', message: 'The user declined this action. Find another way or ask.' })}>
                     Deny
-                  </button>
+                  </Button>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+            </Decision>
+          ))}
+
+          {cardItems.length > 0 && (
+            <>
+              <span className="sr-only">
+                {openInstalls.length > 0
+                  ? `${run.agents[openInstalls[0].agentId]?.name ?? 'An agent'} is asking to install an MCP server`
+                  : 'MCP install request answered'}
+              </span>
+              {openInstalls.length > 1 && (
+                <Badge tone="warning" testId="mcp-install-count">
+                  {openInstalls.length} install requests waiting
+                </Badge>
+              )}
+              {cardItems.map((it) => (
+                <Decision key={it.request.id} runId={runId}>
+                  <McpInstallCard
+                    runId={runId}
+                    request={it.request}
+                    agentName={run.agents[it.request.agentId]?.name ?? 'An agent'}
+                    resolved={it.outcome}
+                    collapsed={!it.outcome && it.request.id !== expandedInstallId}
+                    onExpand={() => setPickedInstall(it.request.id)}
+                    onDismiss={() => setDismissedInstalls((d) => ({ ...d, [it.request.id]: true }))}
+                  />
+                </Decision>
+              ))}
+            </>
+          )}
         </FrameTray>
 
-        <FrameStage>
-        {!run ? (
-          <div className="empty">
-            {needsSetup ? (
-              <div>
-                <h2>{project.setup?.state === 'pending' ? 'Set this project up with the Architect' : 'Setup is not finished'}</h2>
-                <p>
-                  {project.setup?.kind === 'new'
-                    ? 'The Architect asks a few questions about your idea, then proposes the architecture, the org chart, and the run settings. You approve each one.'
-                    : 'The Architect scans the repository, reads the code, and proposes an architecture document, an org chart that fits the work already done, and run settings. You approve each one.'}
-                </p>
-                <div className="row" style={{ justifyContent: 'center' }}>
-                  <button className="btn primary" onClick={() => void beginSetup()} disabled={setupBusy}>
-                    {setupBusy ? (
-                      <>
-                        <span className="spinner" /> Scanning…
-                      </>
-                    ) : project.setup?.state === 'pending' ? (
-                      'Start setup'
-                    ) : (
-                      'Resume setup'
-                    )}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div>
-                <h2>Give {rootName} something to do</h2>
-                <p>
-                  Type a task below. The orchestrator plans it and delegates to its reports. Every subagent appears here the moment it
-                  is created, attached to the agent that spawned it.
-                </p>
-                <div className="row" style={{ justifyContent: 'center', gap: 6 }}>
-                  {project.roles.map((r) => (
-                    <span key={r.id} className="chip" style={{ borderColor: r.color, color: r.color }}>
-                      {r.name}
-                    </span>
-                  ))}
-                </div>
-                {project.setup?.kind === 'new' && project.setup.state === 'complete' && !project.setup.scaffoldedAt && (
-                  <div style={{ marginTop: 18 }}>
-                    <p style={{ margin: '0 auto 10px' }}>
-                      Setup is complete and the folder is still empty. The org chart can build the initial structure from the approved
-                      architecture document.{' '}
-                      {project.permissionMode === 'auto'
-                        ? 'It runs unattended: Claude approves each call and asks only when unsure.'
-                        : project.permissionMode === 'acceptEdits'
-                          ? 'Edits are auto-accepted; shell commands still ask.'
-                          : 'Approvals follow the project permission mode.'}
-                    </p>
-                    <button className="btn primary" disabled={busy} onClick={() => void scaffold()}>
-                      {busy ? (
-                        <>
-                          <span className="spinner" /> Starting…
-                        </>
-                      ) : (
-                        'Scaffold the project'
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        ) : (
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodeClick={onNodeClick}
-            onPaneClick={() => selectAgent(null)}
-            nodesConnectable={false}
-            elementsSelectable
-            fitView
-            fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-            proOptions={{ hideAttribution: true }}
-            deleteKeyCode={null}
-            minZoom={0.3}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1f2432" />
-            <Controls showInteractive={false} />
-          </ReactFlow>
-        )}
-        </FrameStage>
-
-        <FrameFooter>
-          <span>
-            <i style={{ background: 'var(--accent)' }} />
-            working
-          </span>
-          <span>
-            <i style={{ background: 'var(--warn)' }} />
-            needs approval
-          </span>
-          <span>
-            <i style={{ background: 'var(--ok)' }} />
-            done
-          </span>
-          <span>
-            <i style={{ background: 'var(--danger)' }} />
-            error
-          </span>
-          <span>
-            <i style={{ background: MESSAGE_COLOR }} />
-            message
-          </span>
-        </FrameFooter>
-      </CanvasFrame>
-
-      <div
-        className={`composer ${dragOver ? 'drag' : ''}`}
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.includes('Files')) {
-            e.preventDefault()
-            setDragOver(true)
-          }
-        }}
-        onDragLeave={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false)
-        }}
-        onDrop={(e) => {
-          setDragOver(false)
-          const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
-          if (files.length === 0) return
-          e.preventDefault()
-          void addImages(files)
-        }}
-      >
-        <div className="composer-field">
-          <div className="composer-mode">
-            <span className="composer-mode-label" id="composer-mode-label">
-              {modeLabel}
+        <CanvasFrame frameRef={canvasRef}>
+          <FrameStage>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodeClick={onNodeClick}
+              onPaneClick={() => selectAgent(null)}
+              nodesConnectable={false}
+              elementsSelectable
+              fitView
+              fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
+              proOptions={{ hideAttribution: true }}
+              deleteKeyCode={null}
+              minZoom={0.3}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
+              <Controls showInteractive={false} />
+            </ReactFlow>
+          </FrameStage>
+          <FrameFooter>
+            <span>
+              <i style={{ background: 'var(--accent)' }} />
+              working
             </span>
-            {primaryMode && (
+            <span>
+              <i style={{ background: 'var(--warning)' }} />
+              needs approval
+            </span>
+            <span>
+              <i style={{ background: 'var(--success)' }} />
+              done
+            </span>
+            <span>
+              <i style={{ background: 'var(--danger)' }} />
+              error
+            </span>
+            <span>
+              <i style={{ background: MESSAGE_COLOR }} />
+              message
+            </span>
+          </FrameFooter>
+        </CanvasFrame>
+
+        <Composer
+          draftKey={runId}
+          modeLabel={modeLabel}
+          primaryLabel={primaryLabel}
+          placeholder={placeholder}
+          focusToken={composerFocusToken}
+          modeSwitch={
+            !sessionOpen && canContinue ? (
               <SegmentedControl
                 label="What Send does"
-                value={sendMode === 'new' ? 'new' : 'primary'}
+                value={sendMode === 'continue' ? 'continue' : 'new'}
                 options={[
-                  {
-                    value: 'primary',
-                    label: primaryMode === 'reply' ? (isSetupRun ? 'Answer' : 'Reply') : 'Continue',
-                    title: primaryMode === 'reply' ? 'Message the open session' : 'Resume this session with its memory'
-                  },
-                  { value: 'new', label: 'New run', title: 'Start a fresh run; open sessions keep running' }
+                  { value: 'new', label: 'New run', title: 'Start a fresh run of this project' },
+                  { value: 'continue', label: 'Continue this run', title: 'Resume this run’s session with its memory' }
                 ]}
-                onChange={(v) => setComposerMode(v === 'new' ? 'new' : 'reply')}
+                onChange={(v) => setFinishedChoice(v)}
               />
-            )}
-          </div>
-          {successor && (
-            <div className="composer-notice info" role="status">
-              This run was continued by a later run.
-              <button type="button" className="link-btn" onClick={() => void openRun(successor.id)}>
-                Open it
-              </button>
-            </div>
-          )}
-          {sessionBlock && (
-            <div className="composer-notice" role="alert">
-              {sessionBlock.message}
-              <button type="button" className="link-btn" onClick={() => void openRun(sessionBlock.runId)}>
-                Open that run
-              </button>
-            </div>
-          )}
-          {imageNotice && (
-            <div className="composer-notice" role="status">
-              {imageNotice}
-            </div>
-          )}
-          <ComposerImages images={images} onRemove={(i) => setImages((cur) => cur.filter((_, j) => j !== i))} />
-          <textarea
-            ref={composerRef}
-            className="textarea"
-            aria-labelledby="composer-mode-label"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onPaste={(e) => {
-              const files = Array.from(e.clipboardData.items)
-                .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-                .map((it) => it.getAsFile())
-                .filter((f): f is File => !!f)
-              if (files.length === 0) return
-              if (!e.clipboardData.getData('text/plain')) e.preventDefault()
-              void addImages(files)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault()
-                void submit()
-              }
-            }}
-            placeholder={
-              sendMode === 'reply'
-                ? isSetupRun
-                  ? 'Your answer'
-                  : 'Your reply'
-                : sendMode === 'continue'
-                  ? run?.summary.endedWithApp
-                  ? 'Pick up where it was cut off'
-                  : 'What next?'
-                  : needsSetup
-                    ? 'Describe the task (setup is not finished)'
-                    : 'Describe the task'
-            }
-          />
-          <div className="composer-help">Enter to send · Shift+Enter for a new line</div>
-        </div>
-        <button type="button" className="btn primary" disabled={!canSend} onClick={() => void submit()}>
-          {primaryLabel}
-        </button>
-      </div>
+            ) : undefined
+          }
+          notices={
+            <>
+              {successor && (
+                <div className="composer-notice info" role="status">
+                  This run was continued by a later run.
+                  <button type="button" className="link-btn" onClick={() => void openRun(successor.id)}>
+                    Open it
+                  </button>
+                </div>
+              )}
+              {sessionBlock && (
+                <div className="composer-notice" role="alert">
+                  {sessionBlock.message}
+                  <button type="button" className="link-btn" onClick={() => void openRun(sessionBlock.runId)}>
+                    Open that run
+                  </button>
+                </div>
+              )}
+            </>
+          }
+          onSubmit={async (text, images) => {
+            setSessionBlock(null)
+            if (sendMode === 'reply') await sendMessage(text, images)
+            else if (sendMode === 'continue') await continueRun(runId, text, images)
+            else await startRun(text, images ? { images } : undefined)
+          }}
+          onFail={(err) => {
+            const message = err instanceof Error ? err.message : ''
+            const liveId = sessionOpenRunId(message)
+            if (!liveId) return false
+            setSessionBlock({ message: message.replace(/^(Error invoking remote method '[^']*': )?(Error: )?/, ''), runId: liveId })
+            return true
+          }}
+        />
 
-      <SidePanel label="run panel">
-        <TranscriptPanel agent={selectedAgent} entries={entries} logs={run?.logs ?? []} finished={finishedGroup} />
-      </SidePanel>
+        <SidePanel label="run panel">
+          <div className="live-panel">
+            <TranscriptPanel runId={runId} agent={selectedAgent} entries={entries} logs={run.logs ?? []} finished={finishedGroup} />
+          </div>
+        </SidePanel>
+      </div>
     </div>
   )
 }
@@ -897,14 +692,14 @@ function PauseBanner({ runId }: { runId: string }): ReactElement | null {
           : `Auto-resume is off.${until ? ` The window resets at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` : ''} Continue it from the composer when you are ready.`}
       </div>
       {error && <div className="pause-error">{error}</div>}
-      <div className="row" style={{ gap: 8 }}>
-        <button className="btn primary sm" disabled={busy} onClick={() => void act(() => resumeNow(runId))}>
+      <div className="row" style={{ gap: 'var(--space-2)' }}>
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => void act(() => resumeNow(runId))}>
           Resume now
-        </button>
+        </Button>
         {summary.autoResume && (
-          <button className="btn sm" disabled={busy} onClick={() => void act(() => cancelAutoResume(runId))}>
+          <Button size="sm" disabled={busy} onClick={() => void act(() => cancelAutoResume(runId))}>
             Cancel auto-resume
-          </button>
+          </Button>
         )}
       </div>
     </div>
