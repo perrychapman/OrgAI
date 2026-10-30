@@ -16,6 +16,8 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
   const applyDraft = useAppStore((s) => s.applyDraft)
   const discardDraft = useAppStore((s) => s.discardDraft)
   const startSetup = useAppStore((s) => s.startSetup)
+  const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
+  const cost = mock ? '(mock, no tokens)' : '(spends tokens)'
   const { confirm, dialog } = useConfirm()
   const [instruction, setInstruction] = useState('')
   const [startFresh, setStartFresh] = useState(false)
@@ -27,7 +29,7 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
     if (!text) {
       const ok = await confirm({
         title: 'Review the whole project?',
-        body: 'With nothing written, the Architect reviews the repository and revises the architecture document, org chart and settings. Starts an Architect session (spends tokens).',
+        body: `With nothing written, the Architect reviews the repository and revises the architecture document, org chart and settings. Starts an Architect session ${cost}.`,
         confirmLabel: 'Start full review'
       })
       if (!ok) return
@@ -71,7 +73,7 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
             <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>
               {architectBusy ? 'Starting…' : 'Revise with the Architect'}
             </Button>
-            <span className="hint">Starts an Architect session (spends tokens).</span>
+            <span className="hint">Starts an Architect session {cost}.</span>
           </div>
         </section>
 

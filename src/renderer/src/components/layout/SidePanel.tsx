@@ -14,15 +14,25 @@ export function SidePanel({
   children,
   defaultCollapsed = false,
   collapsible = true,
-  testId
+  testId,
+  open,
+  onOpenChange
 }: {
   label: string
   children: ReactNode
   defaultCollapsed?: boolean
   collapsible?: boolean
   testId?: string
+  /** Controlled expansion: lets the parent open the panel before moving focus into it. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }): ReactElement {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  const [inner, setInner] = useState(defaultCollapsed)
+  const collapsed = open === undefined ? inner : !open
+  const setCollapsed = (c: boolean): void => {
+    setInner(c)
+    onOpenChange?.(!c)
+  }
   const isCollapsed = collapsible && collapsed
   return (
     <aside className="side side-panel" aria-label={label} data-collapsed={isCollapsed ? 'true' : 'false'} data-testid={testId}>
