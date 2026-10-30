@@ -1,5 +1,6 @@
 import type {
   AdapterChoice,
+  AppearanceSettings,
   AppSettings,
   ConnectionId,
   ImageMediaType,
@@ -171,6 +172,17 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
   )
 }
 
+/** Default look. Theme stays 'dark' until the light theme is signed off, then becomes 'system' (plan.md section 2). */
+export const DEFAULT_APPEARANCE: AppearanceSettings = {
+  theme: 'dark',
+  accent: '#7c5cff',
+  canvas: { pattern: 'dots', tint: true, edges: 'curved', minimap: false },
+  reduceMotion: 'system'
+}
+
+/** Window background before the renderer paints, per resolved theme (matches --surface-0 in tokens.css). */
+export const THEME_BACKGROUND = { dark: '#0b0d12', light: '#f4f5f9' } as const
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPermissionMode: 'auto',
   defaultMaxBudgetUsd: undefined,
@@ -182,6 +194,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   connections: defaultConnections(),
   defaultConnection: 'anthropic',
   notifications: true,
+  appearance: DEFAULT_APPEARANCE,
   opusGuardThreshold: 80,
   defaultPreferSonnetNearLimit: false,
   defaultAutoContinue: true,
