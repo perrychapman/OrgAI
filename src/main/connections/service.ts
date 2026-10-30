@@ -202,6 +202,7 @@ export class ConnectionService {
       try {
         const found = await this.discover(id)
         if (Array.isArray(found)) results.push(...this.applyCatalog(id, found, ['catalog']))
+        else if (found === SIGNED_OUT) delete this.modelsErrors[id]
       } catch (e) {
         this.setStatus(id, { state: 'error', detail: this.safeMessage(e), checkedAt: this.now() })
       }
