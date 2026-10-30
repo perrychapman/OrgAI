@@ -3,6 +3,7 @@ import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpath
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { SKILL_MAX_FILE_BYTES } from '@shared/types'
+import { shellInjectionProblem } from '../skills/skillMd'
 import type { RunSkill } from './types'
 
 /**
@@ -24,9 +25,6 @@ export interface SkillPlugin {
 }
 
 export const qualifiedSkillName = (pluginName: string, name: string): string => `${pluginName}:${name}`
-
-/** Claude Code's inline shell injection: !`cmd` anywhere, or a fenced block opened with ```! (or ~~~!). */
-const SHELL_INJECTION = /!`[^`\n]*`|^[ \t]*(?:```|~~~)!/m
 
 /** A SKILL.md body with its frontmatter removed. Only the body is ever re-emitted. */
 export function skillBody(markdown: string): string {
@@ -80,7 +78,7 @@ function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): 
       mkdirSync(dirname(dest), { recursive: true })
       if (file.path === 'SKILL.md') {
         const text = readFileSync(source, 'utf8')
-        if (SHELL_INJECTION.test(skillBody(text))) throw new Error('SKILL.md uses shell injection (!`command`), which OrgAI does not run')
+        if (shellInjectionProblem(skillBody(text))) throw new Error('SKILL.md uses shell injection (!`command`), which OrgAI does not run')
         writeFileSync(dest, sanitizedSkillMd(skill, text))
       } else copyFileSync(source, dest)
     }
