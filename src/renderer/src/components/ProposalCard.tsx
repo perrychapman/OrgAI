@@ -10,6 +10,7 @@ import { clampLabel } from '../lib/clampLabel'
 import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
 import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
+import { oneLine, proposalTitle } from '../lib/decisionTitle'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
@@ -65,7 +66,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       error={error}
       runId={runId}
       who={who}
-      title={`${KIND_LABEL[proposal.kind]}: ${proposal.title}`}
+      title={proposalTitle(KIND_LABEL[proposal.kind])}
       helper={proposal.kind === 'mcpServers' ? mcpApplyNote(proposalScope(proposal.payload)) : APPLY_NOTE[proposal.kind]}
       primary={
         !revising ? (
@@ -97,6 +98,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
         )
       }
     >
+      {proposal.title.trim() && <p className="proposal-lead">{oneLine(proposal.title, 200)}</p>}
       {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}

@@ -12,6 +12,7 @@ import { Textarea } from './ui/Textarea'
 import { SecretField } from './ui/SecretField'
 import { clampLabel } from '../lib/clampLabel'
 import { pinnedVersionOf } from '../lib/mcpVersion'
+import { installTitle } from '../lib/decisionTitle'
 
 /** The exact command line (stdio) or endpoint (http/sse) the server would run, never shortened. */
 export function installCommand(request: McpInstallRequest): string {
@@ -59,7 +60,7 @@ export default function McpInstallCard({
   const remote = spec.transport !== 'stdio'
   const unpinned = !remote && !version
   const time = new Date(request.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const title = `${agentName} wants to install an MCP server`
+  const title = installTitle(spec.name)
 
   const answer = async (approved: boolean): Promise<void> => {
     setBusy(true)
@@ -92,7 +93,8 @@ export default function McpInstallCard({
         kind="install"
         runId={runId}
         who={agentName}
-        title={clampLabel(spec.name)}
+        agentId={request.agentId}
+        title={title}
         noAutoFocus
         headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? 'Approved' : 'Denied'}</Badge>}
         primary={
@@ -121,12 +123,12 @@ export default function McpInstallCard({
       kind="install"
       runId={runId}
       who={agentName}
+      agentId={request.agentId}
       title={title}
       error={error}
       headerExtra={
         <span className="mcpi-meta">
           <span className="tabular">{time}</span>
-          <Badge tone="warning">Needs you</Badge>
         </span>
       }
       helper={unpinned ? <span className="mcpi-reason-disabled">Only pinned versions can be approved. Runs code on this machine.</span> : 'Approving runs code on this machine. Scope below decides how long it stays.'}

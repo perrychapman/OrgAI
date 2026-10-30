@@ -5,6 +5,7 @@ import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
+import { questionTitle } from '../lib/decisionTitle'
 
 interface Props {
   runId: string
@@ -41,8 +42,9 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       kind="question"
       error={error}
       runId={runId}
-      title={question.question}
+      title={questionTitle(question.question)}
       who={who}
+      agentId={question.agentId}
       helper={
         <>
           {who} is waiting for your answer. {question.allowMultiple ? 'Pick one or more.' : 'Pick one.'}
@@ -55,6 +57,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       }
     >
       <div className="stack-3">
+        <p className="question-text">{question.question}</p>
         <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={question.question}>
           {question.options.map((o) => {
             const checked = selected.includes(o.label)

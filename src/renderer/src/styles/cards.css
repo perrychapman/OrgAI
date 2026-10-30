@@ -360,17 +360,18 @@
   color: var(--text-secondary);
 }
 
-/* ---------- Decision card (spec 12.1): header, scrolling body, footer that never scrolls away ---------- */
+/* ---------- Decision card (spec 12.1, ui-review-2.md B.7) ----------
+   Head (meta line + action title), a body that is the one scroller, and an opaque footer that never leaves. */
 
 .decision-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
   width: 100%;
   min-width: 0;
   flex: 0 1 auto;
   min-height: 0;
-  padding: var(--space-3);
+  max-height: 100%;
+  overflow: hidden;
   background: var(--surface-3);
   border: 1px solid var(--warning-border);
   border-radius: var(--radius-lg);
@@ -384,44 +385,64 @@
 .decision-card.kind-proposal {
   border-color: var(--accent-border);
 }
-.decision-run {
-  min-width: 0;
-  flex: none;
-}
 .decision-head {
   flex: none;
   display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3) var(--space-3) var(--space-2);
+}
+/* One 12 px meta line: kind chip, agent, run label, extras. */
+.decision-meta {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.decision-meta > .badge {
+  flex: none;
 }
 .decision-who {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1h);
-  max-width: 40%;
+  max-width: 60%;
   min-width: 0;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 .decision-who-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.decision-avatar {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
+.avatar.decision-avatar {
   width: 20px;
   height: 20px;
-  border-radius: var(--radius-full);
-  background: var(--surface-1);
-  border: 1px solid var(--border-default);
-  font-size: var(--text-caption);
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
+  letter-spacing: 0;
+}
+.decision-run {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+.decision-branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 .decision-title {
   flex: 1;
@@ -433,12 +454,35 @@
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
+.decision-details {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-caption);
+  cursor: pointer;
+}
+.decision-details:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.decision-details:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .decision-body {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: 320px;
+  max-height: min(40cqh, 320px);
   overflow: auto;
-  padding-right: var(--space-1);
+  padding: 0 var(--space-3) var(--space-2);
 }
 .decision-body > .decision-helper {
   margin-top: var(--space-2);
@@ -447,15 +491,20 @@
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
+.decision-error {
+  flex: none;
+  padding: 0 var(--space-3) var(--space-2);
+}
+/* Opaque action row: its own surface so a long body scrolls above it and never runs under the buttons. */
 .decision-footer {
   flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  position: sticky;
-  bottom: 0;
-  background: var(--surface-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border-top: 1px solid var(--border-subtle);
 }
 .decision-secondary {
   display: flex;
@@ -464,6 +513,33 @@
 }
 .decision-deny {
   margin-left: auto;
+}
+.question-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: var(--weight-semibold);
+}
+
+/* Compact (frame under 480 px tall, or the tray flags it): the body hides behind Details; head and footer stay. */
+.frame-tray[data-compact='true'] .decision-details {
+  display: inline-flex;
+}
+.frame-tray[data-compact='true'] .decision-card[data-expanded='false'] .decision-body {
+  display: none;
+}
+.frame-tray[data-compact='true'] .decision-body {
+  max-height: min(30cqh, 200px);
+}
+@container frame (max-height: 479px) {
+  .decision-details {
+    display: inline-flex;
+  }
+  .decision-card[data-expanded='false'] .decision-body {
+    display: none;
+  }
+  .decision-body {
+    max-height: min(30cqh, 200px);
+  }
 }
 .decision-tool-input {
   margin: 0;
@@ -514,14 +590,4 @@
 .decision-stepper .icon-btn {
   min-width: 32px;
   min-height: 32px;
-}
-
-/* The tray gives a card whatever height is left; the body is the one scroller, the footer never leaves. */
-.decision-error {
-  flex: none;
-}
-@container frame (min-width: 760px) or (max-height: 420px) {
-  .decision-body {
-    max-height: none;
-  }
 }
