@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type {
+  AgentImportApplyInput,
   AgentImportApplyResult,
   AgentImportInput,
   AgentImportPreview,
@@ -116,7 +117,8 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   // Agent import: read-only scans of the stored project's folder; the renderer supplies choices, never roles.
   ipcMain.handle(IPC.projectsScanAgents, (_e, path: string): AgentImportScan => importer.scan(path))
   ipcMain.handle(IPC.projectsPreviewImport, (_e, input: AgentImportInput): AgentImportPreview => importer.preview(input))
-  ipcMain.handle(IPC.projectsApplyImport, (_e, input: AgentImportInput): AgentImportApplyResult => importer.apply(input))
+  // The digest of the reviewed preview is required; apply refuses without it or when the folder changed since.
+  ipcMain.handle(IPC.projectsApplyImport, (_e, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input))
   ipcMain.handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   ipcMain.handle(IPC.projectsSave, (_e, project: Project) => {

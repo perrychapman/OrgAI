@@ -14,6 +14,12 @@ export interface FrontmatterResult {
 
 const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 const MAX_DEPTH = 24
+/** Longest line kept, in characters; longer lines are cut (with an error string) so no line costs much to scan. */
+export const MAX_LINE_CHARS = 4000
+/** Scalars longer than this are never read as numbers (no real number is this long). */
+const MAX_NUMBER_CHARS = 64
+/** Linear: no ambiguous split between digit runs, so a long digit run that ends in a non-digit cannot backtrack. */
+const NUMBER = /^[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/
 
 interface Line {
   indent: number
@@ -134,7 +140,7 @@ function parseScalar(s: string, depth = 0): FmValue {
   if (t === '~' || /^null$/i.test(t)) return null
   if (/^(true|yes)$/i.test(t) && t.toLowerCase() === 'true') return true
   if (/^false$/i.test(t)) return false
-  if (/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t)) {
+  if (t.length <= MAX_NUMBER_CHARS && NUMBER.test(t)) {
     const n = Number(t)
     if (Number.isFinite(n)) return n
   }
@@ -147,7 +153,12 @@ class Parser {
   error?: string
   constructor(src: string[]) {
     this.rawLines = src
-    for (const raw of src) {
+    for (let n = 0; n < src.length; n++) {
+      let raw = src[n]
+      if (raw.length > MAX_LINE_CHARS) {
+        this.fail(`line ${n + 1} is longer than ${MAX_LINE_CHARS} characters; it was cut`)
+        raw = raw.slice(0, MAX_LINE_CHARS)
+      }
       if (/^\s*$/.test(raw)) { this.lines.push({ indent: -1, text: '', raw }); continue }
       const indent = raw.length - raw.trimStart().length
       let text = raw.trim()

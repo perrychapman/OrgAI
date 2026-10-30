@@ -118,6 +118,24 @@ describe('scanAgentSources', () => {
     expect(r.scan.warnings.some((w) => /evil\.md.*outside/.test(w))).toBe(true)
   })
 
+  it('skips a link whose real path lands in .git', () => {
+    put('.git/hooks/agent.md', claude('githook'))
+    try {
+      mkdirSync(join(root, '.claude'))
+      symlinkSync(join(root, '.git', 'hooks'), join(root, '.claude', 'agents'), 'junction')
+    } catch {
+      return
+    }
+    const r = scanAgentSources(root)
+    expect(r.agents).toEqual([])
+    expect(r.scan.warnings.some((w) => /into \.git/.test(w))).toBe(true)
+  })
+
+  it('refuses a relative root', () => {
+    put('.claude/agents/a.md', claude('a'))
+    expect(scanAgentSources('relative/root')).toEqual({ scan: { sources: [], instructionFiles: [], warnings: [] }, agents: [] })
+  })
+
   it('skips oversized files', () => {
     put('.claude/agents/big.md', claude('big', 'x'.repeat(300 * 1024)))
     put('.claude/agents/ok.md', claude('ok'))

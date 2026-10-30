@@ -88,6 +88,11 @@ class Scanner {
       if (warn) this.warnings.push(`${rel}: points outside the project folder, skipped`)
       return null
     }
+    // Never read git internals, even through a link that lands in .git.
+    if (relative(this.rootReal, real).split(sep).some((seg) => seg.toLowerCase() === '.git')) {
+      if (warn) this.warnings.push(`${rel}: points into .git, skipped`)
+      return null
+    }
     return real
   }
 
@@ -255,6 +260,8 @@ function emptyResult(warnings: string[] = []): ImportScanResult {
 
 export function scanAgentSources(root: string, opts?: { sources?: AgentImportSource[] }): ImportScanResult {
   try {
+    // A relative root would resolve against the app's cwd.
+    if (typeof root !== 'string' || !isAbsolute(root)) return emptyResult()
     let rootReal: string
     try {
       rootReal = realpathSync(root)

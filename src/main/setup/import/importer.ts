@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path'
 import { HARNESS_PROJECT_ID, isAgentImportSource } from '@shared/types'
 import type {
+  AgentImportApplyInput,
   AgentImportApplyResult,
   AgentImportInput,
   AgentImportPreview,
@@ -40,6 +41,11 @@ function cleanSources(sources: unknown): AgentImportSource[] | undefined {
   return [...new Set(sources.filter(isAgentImportSource))]
 }
 
+/** An absolute folder path (a relative one would resolve against the app's cwd). */
+function isAbsolutePath(p: string): boolean {
+  return isAbsolute(p) || /^[a-zA-Z]:[\\/]/.test(p)
+}
+
 /**
  * Agent import (projects:scanAgents / previewImport / applyImport / exportOrg and ProjectCreateInput.importAgents).
  * Read-only on the repo except exportOrg. The renderer never supplies roles: preview and apply always re-scan the
@@ -52,7 +58,7 @@ export class AgentImportService {
   scan(path: unknown): AgentImportScan {
     try {
       const root = cleanProjectPath(path)
-      if (!root) return { sources: [], instructionFiles: [], warnings: [] }
+      if (!root || !isAbsolutePath(root)) return { sources: [], instructionFiles: [], warnings: [] }
       return scanAgentSources(root).scan
     } catch (e) {
       return { sources: [], instructionFiles: [], warnings: [`The folder could not be scanned: ${e instanceof Error ? e.message : String(e)}`] }
@@ -64,7 +70,7 @@ export class AgentImportService {
     const out: Partial<ProjectPathCheck> = {}
     try {
       const root = cleanProjectPath(path)
-      if (!root || !check.isDirectory) return out
+      if (!root || !isAbsolutePath(root) || !check.isDirectory) return out
       const key = pathKey(root)
       const same = this.deps.projects.list().find((p) => p.id !== HARNESS_PROJECT_ID && !!p.path && pathKey(p.path) === key)
       if (same) {
@@ -85,7 +91,7 @@ export class AgentImportService {
     const project = this.deps.projects.get(projectId)
     if (!project) throw new Error('Project not found')
     // A relative or empty path would resolve against the app's cwd.
-    if (!project.path || !(isAbsolute(project.path) || /^[a-zA-Z]:[\\/]/.test(project.path))) throw new Error('The project has no folder to scan.')
+    if (!project.path || !isAbsolutePath(project.path)) throw new Error('The project has no folder to scan.')
     return project
   }
 
@@ -111,10 +117,12 @@ export class AgentImportService {
   }
 
   /** projects:applyImport: recompute from disk, apply the choices, save. Undo = save previousRoles. */
-  apply(input: AgentImportInput): AgentImportApplyResult {
+  apply(input: AgentImportApplyInput): AgentImportApplyResult {
     const project = this.stored(input?.projectId)
+    // The digest is required: apply only what the user reviewed in a preview.
+    if (typeof input.digest !== 'string' || !input.digest) throw new Error('Preview the import before applying it.')
     const preview = this.compute(project, input)
-    if (typeof input.digest === 'string' && input.digest !== preview.digest) {
+    if (input.digest !== preview.digest) {
       throw new Error('The agent definitions in the folder changed since the preview. Review the import again.')
     }
     if (!preview.items.some((i) => i.action !== 'skip')) throw new Error('There is nothing to import.')
