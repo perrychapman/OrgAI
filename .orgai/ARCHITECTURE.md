@@ -93,9 +93,9 @@ SDK event mapping and hook mechanics only. Only the Adapter Engineer edits claud
 ConnectionService covers:
 
 - probes and status, the OpenAI ChatGPT login (browser or device code) through Codex, and the LiteLLM key
-- model discovery (LiteLLM /v1/models and /model/info, Codex model/list), with the catalog persisted to models.json
+- model discovery (LiteLLM /v1/models and /model/info, Codex model/list), with the catalog persisted to models.json (LiteLLM entries keep /model/info prices as ProviderModel.price)
 - tier mapping and project remaps, including the projects:previewRemap dry run
-- the per-run RunConnection, and Codex plan usage
+- the per-run RunConnection (LiteLLM runs carry `pricing`), Codex plan usage and the LiteLLM key spend (probeLiteLLMUsage, /key/info)
 
 - default connection at creation: prepareNewProject puts a new project on AppSettings.defaultConnection when creationConnection (defaults.ts) finds it usable and it maps every tier the roles use, else on anthropic (projects:create passes it to ProjectStore.create; mock and existing projects are untouched)
 
@@ -267,6 +267,7 @@ components/layout:
   - Anthropic always runs on Claude and OpenAI always on Codex.
   - On LiteLLM the root role's model family picks the adapter (adapterForProject).
   - A work run whose roles mix families is refused before the run exists.
+- Usage and cost per connection: usage.status reports carry `connection` (anthropic plan windows, openai Codex windows, litellm `spend` from `/key/info`); the renderer keeps the latest per connection. `RunSummary.connection` labels each run's cost: the CLI estimate on anthropic, `/model/info` prices on litellm (`RunConnection.pricing`, `runtime/pricing.ts`, shared by both adapters), 0 on openai. The LiteLLM endpoints and price fields are unverified against a live proxy.
 - Remaps:
   - Role.tier plus each connection's tierModels drive remaps. A remap never clobbers an explicit pick of a valid catalog model, except when the project switches connection.
   - Remaps are reported as projects.remapped with Undo in the UI.

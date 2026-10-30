@@ -39,6 +39,11 @@ describe('priceFor', () => {
     expect(priceFor(pricing, undefined)).toBeUndefined()
     expect(priceFor(undefined, 'gpt-5')).toBeUndefined()
     expect(priceFor(pricing, 'constructor')).toBeUndefined()
+    const sizes = { llama3: sonnet, foo: sonnet }
+    expect(priceFor(sizes, 'llama3:8b')).toBeUndefined()
+    expect(priceFor(sizes, 'foo-405')).toBeUndefined()
+    expect(priceFor(sizes, 'llama3:0')).toBe(sonnet)
+    expect(priceFor(sizes, 'foo-001')).toBe(sonnet)
   })
   it('normalizes keys', () => {
     expect(normalizeModelKey(' Bedrock/anthropic.claude-x-20250101 ')).toBe('anthropic.claude-x')

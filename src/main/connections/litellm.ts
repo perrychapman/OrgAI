@@ -71,7 +71,7 @@ async function getJson(path: string, base: string, key: string, fetchImpl: Fetch
       try {
         const body = (await res.json()) as { error?: { message?: unknown } | string; detail?: unknown }
         const msg = typeof body.error === 'string' ? body.error : body.error?.message ?? body.detail
-        if (typeof msg === 'string' && msg) reason = msg.replace(key, '***').slice(0, 120)
+        if (typeof msg === 'string' && msg) reason = msg.split(key).join('***').slice(0, 120)
       } catch {
         // keep statusText
       }
@@ -188,12 +188,11 @@ export async function fetchLiteLLMModels(baseUrl: string, key: string, fetchImpl
 
 /** Epoch ms from an ISO string or an epoch number (seconds or ms); null otherwise. */
 function instant(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v < 1e12 ? v * 1000 : v
-  if (typeof v === 'string' && v.trim()) {
-    const t = Date.parse(v.trim())
-    return Number.isFinite(t) ? t : null
-  }
-  return null
+  let t = Number.NaN
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) t = v < 1e12 ? v * 1000 : v
+  else if (typeof v === 'string' && v.trim()) t = Date.parse(v.trim())
+  // Only instants a Date can represent, so the renderer can always format them.
+  return Number.isFinite(t) && t > 0 && Number.isFinite(new Date(t).getTime()) ? t : null
 }
 
 /**

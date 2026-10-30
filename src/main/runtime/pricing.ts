@@ -45,9 +45,9 @@ export function normalizeModelKey(model: string): string {
 
 /**
  * A suffix that only versions a model ("-v2", "-2024-08-06", "-20250929", "-001", ":0", "-latest"), never one that
- * names another model ("-mini", or "-5" in "claude-sonnet-4-5" against "claude-sonnet-4").
+ * names another model ("-mini", "-5" in "claude-sonnet-4-5" against "claude-sonnet-4", ":8b", "-405").
  */
-const VERSION_SUFFIX = /^(?:[-@](?:\d{8}|\d{4}-\d{2}-\d{2}|\d{3}|latest|v\d[\w.:-]*)|:\d[\w.-]*)$/
+const VERSION_SUFFIX = /^(?:[-@](?:\d{8}|\d{4}-\d{2}-\d{2}|00\d|latest|v\d+(?:[.:]\d+)*)|:\d+)$/
 
 /** True when one key is the other plus a version suffix. */
 function sameModelVersioned(a: string, b: string): boolean {

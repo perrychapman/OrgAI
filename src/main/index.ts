@@ -252,13 +252,14 @@ app.whenReady().then(() => {
     ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
   // A LiteLLM run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
-  // writes), one timer at a time. Set once the usage monitor exists.
+  // writes); each end restarts the one timer, so the last run's spend is read. Set once the usage monitor exists.
   let refreshLiteLLMSpend: (() => void) | undefined
   let spendTimer: ReturnType<typeof setTimeout> | undefined
   const runBroadcast = (event: RunEvent): void => {
     broadcast(event)
     if (event.type !== 'run.status' || !['finished', 'error', 'paused'].includes(event.status)) return
-    if (spendTimer || runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
+    if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
+    clearTimeout(spendTimer)
     spendTimer = setTimeout(() => {
       spendTimer = undefined
       refreshLiteLLMSpend?.()

@@ -80,6 +80,8 @@ describe('parseKeyInfo', () => {
       expect(parseKeyInfo(body)).toBeNull()
     }
     expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: 'not a date' } })?.resetsAt).toBeNull()
+    expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: 9e15 } })?.resetsAt).toBeNull() // beyond what a Date holds
+    expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: '+275760-09-14T00:00:00.000Z' } })?.resetsAt).toBeNull()
   })
   it('fetchLiteLLMKeyInfo sends the key only as auth headers and refuses redirects', async () => {
     const fetchImpl = vi.fn(async () => json({ info: { spend: 2 } }))
