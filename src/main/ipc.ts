@@ -319,7 +319,11 @@ function registerConnectionIpc(projects: ProjectStore, connections: ConnectionSe
   ipcMain.handle(IPC.connectionsLogout, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.logout(id))
   ipcMain.handle(IPC.modelsList, (_e, query?: ModelsQuery): ProviderModel[] => connections.models(query))
   ipcMain.handle(IPC.modelsRefresh, (_e, query?: ModelsQuery): Promise<ProviderModel[]> => connections.refresh(query))
-  ipcMain.handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => connections.prices(query))
+  ipcMain.handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => {
+    const connection = query && typeof query === 'object' ? query.connection : undefined
+    if (connection !== undefined && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
+    return connections.prices(connection ? { connection } : undefined)
+  })
   ipcMain.handle(IPC.projectsRemapModels, (_e, input: RemapModelsInput): RemapModelsOutput => {
     if (!projects.get(input.projectId)) throw new Error('Project not found')
     return connections.remapModels(input)

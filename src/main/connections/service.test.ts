@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -93,6 +93,29 @@ describe('ConnectionService litellm', () => {
     const again = setup({}, ctx.dataDir)
     expect(again.service.models({ connection: 'litellm' })).toHaveLength(5)
     expect(again.service.catalog().some((m) => m.id === 'gpt-5' && m.connection === 'litellm')).toBe(true)
+  })
+
+  it('keeps proxy prices across a restart, drops a stored bad price, and lists them in prices()', async () => {
+    const priceFetch = (async (url: string | URL | Request) =>
+      String(url).endsWith('/v1/models')
+        ? json({ data: [{ id: 'claude-opus-4-5' }, { id: 'gpt-5' }] })
+        : json({ data: [{ model_name: 'claude-opus-4-5', model_info: { input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5 } }] })) as unknown as typeof fetch
+    const ctx = setup({ fetch: priceFetch })
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const again = setup({}, ctx.dataDir)
+    expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')?.price).toEqual({ inputPerMTok: 5, outputPerMTok: 25 })
+    expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'gpt-5')).not.toHaveProperty('price')
+    expect(again.service.prices({ connection: 'litellm' }).filter((r) => r.source === 'proxy')).toEqual([
+      { model: 'claude-opus-4-5', connection: 'litellm', price: { inputPerMTok: 5, outputPerMTok: 25 }, source: 'proxy' }
+    ])
+
+    const file = join(ctx.dataDir, 'models.json')
+    const stored = JSON.parse(readFileSync(file, 'utf8'))
+    stored.models.litellm[0].price = { inputPerMTok: -4, outputPerMTok: 1e9 }
+    writeFileSync(file, JSON.stringify(stored))
+    const bad = setup({}, ctx.dataDir)
+    expect(bad.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')).not.toHaveProperty('price')
   })
 
   it('updating tierModels remaps that connection\'s projects, keeping explicit picks', async () => {

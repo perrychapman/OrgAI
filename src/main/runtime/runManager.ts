@@ -1,5 +1,7 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import type {
+  AgentInstance,
+  RunUsage,
   UsageStats,
   UsageStatsQuery,
   AppSettings,
@@ -35,7 +37,9 @@ import type {
   RunSummary,
   UserQuestion
 } from '@shared/types'
-import { adapterForProject, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
+import { adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
+import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
+import { IntervalTimer, buildUsageStats, computeRunUsage, legacySummaryUsage, normalizeRunRecord, usageFromLegacyAgent } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
 import { MCP_ASSIST_MODEL_LABEL, SETUP_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
@@ -64,6 +68,8 @@ export function canonicalPath(p: string): string {
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** run.usage events (and the index save that goes with them) are published at most this often per run. */
+export const USAGE_THROTTLE_MS = 1000
 /** When a usage limit gives no reset time, try again after this long. */
 export const DEFAULT_PAUSE_MS = 5 * 60 * 1000
 /** Sent to the orchestrator when a paused run continues. */
@@ -126,6 +132,22 @@ interface ActiveRun {
   resumeSessionId?: string
   /** The run's own emit (records, persists, logs and broadcasts); send() and stop() route through it so summary.status stays current. */
   emit: (e: RunEvent) => void
+  /** The adapter's last run.cost total (the provider's own figure; resume base already subtracted). */
+  providerTotalUsd?: number
+  /** Time with at least one decision card open. */
+  waiting: IntervalTimer
+  /** Time held on a usage limit, until the user's next send or the run's end. */
+  limitTimer: IntervalTimer
+  /** Time in status 'idle'. */
+  idleTimer: IntervalTimer
+  /** Trailing timer for the throttled run.usage event. */
+  usageTimer?: ReturnType<typeof setTimeout>
+  /** When run.usage was last published (epoch ms; 0 = never). */
+  lastUsageAt: number
+  /** summary.usage changed since it was last published and saved. */
+  usageDirty: boolean
+  /** The last published usage without its timestamp; an identical recompute is not sent again. */
+  lastUsageKey?: string
   /** Display name of the project, for cross-run messages. */
   projectName: string
   /** Name of the root role (its orchestrator), for list_runs. */
@@ -225,6 +247,33 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
   return [...byId.values()].filter((r) => ids.has(r.id))
 }
 
+/**
+ * A priced copy of an agent for agent.upsert: usage priced (an agent the adapter gave no usage is built from its
+ * token fields), producedNothing set from the agent's final state and the legacy costUsd mirrored. Never mutates the input.
+ */
+function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
+  const priced = priceAgentUsage(agent.usage ?? usageFromLegacyAgent(agent, false), ctx)
+  if (agentProducedNothing(agent)) priced.producedNothing = true
+  else delete priced.producedNothing
+  return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
+}
+
+const USAGE_KINDS: readonly RunKind[] = ['work', 'setup', 'mcp-assist']
+
+/** runs:usageStats input from the renderer: finite times, known kinds (default work), known bucket. */
+function sanitizeUsageQuery(raw: UsageStatsQuery): UsageStatsQuery & { kinds: RunKind[] } {
+  const q = (raw && typeof raw === 'object' ? raw : {}) as Partial<UsageStatsQuery>
+  const kinds = Array.isArray(q.kinds) ? [...new Set(q.kinds.filter((k): k is RunKind => (USAGE_KINDS as readonly unknown[]).includes(k)))] : []
+  const out: UsageStatsQuery & { kinds: RunKind[] } = {
+    projectId: typeof q.projectId === 'string' ? q.projectId : '',
+    kinds: kinds.length ? kinds : ['work'],
+    bucket: q.bucket === 'week' ? 'week' : 'day'
+  }
+  if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
+  if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  return out
+}
+
 /** A system line in a run's root transcript. */
 function systemBlock(a: ActiveRun, at: number, text: string): void {
   a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, source: 'harness', block: { kind: 'system', text } } })
@@ -249,7 +298,7 @@ export interface RunManagerOptions {
    * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
    * Missing = the built-in roles keep their default model ('opus').
    */
-  appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'>
+  appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'> & Partial<Pick<AppSettings, 'modelPrices'>>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
   /**
@@ -353,7 +402,17 @@ export class RunManager {
     /** Retention per project; older finished runs are deleted when a run ends. */
     private keepRunsFor: (projectId: string) => number,
     private options: RunManagerOptions = {}
-  ) {}
+  ) {
+    // Card requests and resolutions change how long a run waits on the user (RunUsage.waitingMs).
+    const raw = broadcast
+    this.broadcast = (e) => {
+      raw(e)
+      if ('runId' in e && /\.(request|resolved)$/.test(e.type)) {
+        const a = this.runs.get(e.runId)
+        if (a) a.waiting.set(pendingCount(a) > 0, Date.now())
+      }
+    }
+  }
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
   async removeProject(projectId: string): Promise<void> {
@@ -364,6 +423,7 @@ export class RunManager {
         r.userStopped = true
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
+        if (r.usageTimer) clearTimeout(r.usageTimer)
         this.runs.delete(r.summary.id)
       }
     }
@@ -472,13 +532,31 @@ export class RunManager {
       messagesReceived: 0,
       inbox: [],
       held: false,
+      waiting: new IntervalTimer(),
+      limitTimer: new IntervalTimer(),
+      idleTimer: new IntervalTimer(),
+      lastUsageAt: 0,
+      usageDirty: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
     }
     this.runs.set(summary.id, active)
     this.store.upsert(summary)
 
+    // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
+    const pricing = (): PricingContext => {
+      const s = this.options.appSettings?.()
+      return {
+        connection: choice.connection,
+        overrides: s?.modelPrices ?? [],
+        catalog: this.options.catalog?.() ?? [],
+        aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels)
+      }
+    }
+
     const emit = (raw: RunEvent): void => {
+      // Usage is computed by the host; an adapter's run.usage is dropped.
+      if (raw.type === 'run.usage') return
       let e = raw
       // A session that ends after a usage-limit rejection is paused, not finished.
       if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
@@ -493,16 +571,23 @@ export class RunManager {
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
       if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
-      if (e.type === 'agent.upsert' && active.outcome) {
-        if (isLiveAgent(e.agent)) active.cutOff?.add(e.agent.id)
-        const settled = settleAgent(e.agent, !!active.cutOff?.has(e.agent.id), active.outcome, ROOT_AGENT_ID)
-        if (settled !== e.agent) e = { ...e, agent: settled }
+      if (e.type === 'agent.upsert') {
+        let agent = e.agent
+        if (active.outcome) {
+          if (isLiveAgent(agent)) active.cutOff?.add(agent.id)
+          agent = settleAgent(agent, !!active.cutOff?.has(agent.id), active.outcome, ROOT_AGENT_ID)
+        }
+        // Priced into a copy (never the adapter's object) before it is recorded or broadcast.
+        e = { ...e, agent: priceAgent(agent, pricing()) }
       }
+      const closing = e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')
       if (e.type === 'run.status') {
+        const now = Date.now()
         summary.status = e.status
         if (e.sessionId) summary.sessionId = e.sessionId
         if (e.error) summary.error = e.error
-        if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') summary.endedAt = Date.now()
+        active.idleTimer.set(e.status === 'idle', now)
+        if (closing) summary.endedAt = now
         if (e.status === 'paused') {
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
@@ -511,12 +596,16 @@ export class RunManager {
         }
         this.store.upsert(summary)
       } else if (e.type === 'run.cost') {
-        summary.totalCostUsd = e.totalCostUsd
-        this.store.upsert(summary)
+        // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
+        active.providerTotalUsd = e.totalCostUsd
       }
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      if (e.type === 'agent.upsert' || e.type === 'run.cost' || e.type === 'run.status' || e.type === 'plan.updated') {
+        if (closing) this.closeTimers(active)
+        this.refreshUsage(active, closing)
+      }
       // Root and cut-off reports read Finished / Stopped / Failed instead of "Waiting for you".
       if (outcome) {
         for (const agent of Object.values(active.record.agents)) {
@@ -666,6 +755,7 @@ export class RunManager {
         rateLimited: (info) => {
           active.limited = { ...active.limited, ...info }
           active.limitHold = true
+          active.limitTimer.set(true, Date.now())
         },
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
@@ -689,6 +779,61 @@ export class RunManager {
     return summary
   }
 
+  /** Close the open wait / limit / idle intervals (the run ended or paused). */
+  private closeTimers(a: ActiveRun): void {
+    const now = Date.now()
+    a.waiting.set(false, now)
+    a.limitTimer.set(false, now)
+    a.idleTimer.set(false, now)
+  }
+
+  /** The run's current RunUsage from its (priced) agents and RunManager's own timers. */
+  private currentUsage(a: ActiveRun, now: number): RunUsage {
+    return computeRunUsage(a.summary, Object.values(a.record.agents), {
+      providerTotalUsd: a.providerTotalUsd,
+      nudges: a.record.plan?.autoContinues ?? 0,
+      waitingMs: a.waiting.elapsed(now),
+      limitHoldMs: a.limitTimer.elapsed(now),
+      idleMs: a.idleTimer.elapsed(now),
+      now
+    })
+  }
+
+  /**
+   * Recompute summary.usage (and totalCostUsd) now; publish run.usage and save the index at most once per
+   * USAGE_THROTTLE_MS (trailing), or immediately when `immediate` (terminal status, teardown).
+   */
+  private refreshUsage(a: ActiveRun, immediate: boolean): void {
+    const now = Date.now()
+    a.summary.usage = this.currentUsage(a, now)
+    a.summary.totalCostUsd = a.summary.usage.costUsd ?? 0
+    a.usageDirty = true
+    if (immediate) {
+      this.publishUsage(a)
+      return
+    }
+    if (a.usageTimer) return
+    const wait = Math.max(0, a.lastUsageAt + USAGE_THROTTLE_MS - now)
+    if (wait === 0) this.publishUsage(a)
+    else a.usageTimer = setTimeout(() => this.publishUsage(a), wait)
+  }
+
+  private publishUsage(a: ActiveRun): void {
+    if (a.usageTimer) clearTimeout(a.usageTimer)
+    a.usageTimer = undefined
+    const now = Date.now()
+    a.summary.usage = this.currentUsage(a, now)
+    a.summary.totalCostUsd = a.summary.usage.costUsd ?? 0
+    a.lastUsageAt = now
+    a.usageDirty = false
+    // Nothing but the timestamp changed (e.g. a settled agent after the end): the last event and save still stand.
+    const key = JSON.stringify({ ...a.summary.usage, updatedAt: 0 })
+    if (key === a.lastUsageKey) return
+    a.lastUsageKey = key
+    this.store.upsert(a.summary)
+    this.broadcast({ type: 'run.usage', runId: a.summary.id, usage: a.summary.usage })
+  }
+
   /**
    * A run's session ended (or never started): settle every card still open, forget run-scoped servers and held
    * peer messages, persist the record and drop the run from the live set.
@@ -697,6 +842,13 @@ export class RunManager {
     const runId = active.summary.id
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     cancelPending(active, runId, this.broadcast)
+    // The final usage goes out and is saved with the record, whatever the throttle still holds.
+    this.closeTimers(active)
+    if (active.usageDirty || !active.summary.usage) this.refreshUsage(active, true)
+    else if (active.usageTimer) {
+      clearTimeout(active.usageTimer)
+      active.usageTimer = undefined
+    }
     // A stopped run's pending title is dropped; a run that ended on its own may still get its title afterwards.
     if (active.userStopped) active.titleAbort?.abort()
     // Servers approved for this run only (and their secrets) are forgotten.
@@ -816,9 +968,32 @@ export class RunManager {
   }
 
   /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */
-  usageStats(query: UsageStatsQuery): UsageStats {
-    void query
-    throw new Error('runs:usageStats is not implemented yet')
+  usageStats(raw: UsageStatsQuery): UsageStats {
+    const query = sanitizeUsageQuery(raw)
+    const now = Date.now()
+    const inRange = (s: RunSummary): boolean =>
+      (query.kinds as RunKind[]).includes(s.kind) && (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until)
+    const byId = new Map<string, RunSummary>()
+    const fill: { id: string; usage: RunUsage }[] = []
+    for (const s of this.store.list(query.projectId)) {
+      if (!inRange(s) || this.runs.has(s.id)) continue
+      if (s.usage) {
+        byId.set(s.id, s)
+        continue
+      }
+      // Saved before usage tracking: normalize from the record once, then keep the result in the index.
+      const record = this.store.getRecord(s.id)
+      const usage = (record ? normalizeRunRecord(record, now).summary.usage : undefined) ?? legacySummaryUsage(s, now)
+      fill.push({ id: s.id, usage })
+      byId.set(s.id, { ...s, usage })
+    }
+    if (fill.length) this.store.setUsage(fill)
+    // Live runs read their current usage, not the last saved one.
+    for (const a of this.runs.values()) {
+      if (a.summary.projectId !== query.projectId || !inRange(a.summary)) continue
+      byId.set(a.summary.id, { ...a.summary, usage: this.currentUsage(a, now) })
+    }
+    return buildUsageStats([...byId.values()], query, now)
   }
 
   // ---------- cross-run messaging ----------
@@ -993,8 +1168,10 @@ export class RunManager {
 
   get(runId: string): RunRecord | null {
     const active = this.runs.get(runId)
-    if (active) return { ...active.record, summary: { ...active.summary } }
-    const stored = this.store.getRecord(runId)
+    if (active) return normalizeRunRecord({ ...active.record, summary: { ...active.summary } })
+    const found = this.store.getRecord(runId)
+    // Records saved before usage tracking get legacy usage on read (nothing is written back here).
+    const stored = found ? normalizeRunRecord(found) : null
     if (!stored) return null
     // Records written before agentTree.resolveParent existed can hold a parent cycle; repair them on read.
     const agents = breakParentCycles(stored.agents ?? {}, ROOT_AGENT_ID)
@@ -1271,6 +1448,7 @@ export class RunManager {
     await active.session.send(text, images.length ? images : undefined)
     active.held = false
     active.limitHold = false
+    active.limitTimer.set(false, Date.now())
     void this.flushInbox(active)
   }
 
@@ -1362,7 +1540,7 @@ export class RunManager {
       hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
       resumeSessionId: sessionId,
       resumedFrom: target.id,
-      resumeBaseCostUsd: target.totalCostUsd,
+      resumeBaseCostUsd: target.usage?.providerCostUsd ?? target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }

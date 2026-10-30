@@ -27,7 +27,7 @@ import type {
   UsageStatus
 } from '@shared/types'
 import { CodexAppServer, codexHomeDir } from '../runtime/codexAppServer'
-import { listModelPrices } from '../runtime/pricing'
+import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
 import { LITELLM_KEY, type SecretStore } from '../store/secrets'
 import type { SettingsStore } from '../store/settings'
@@ -105,9 +105,14 @@ export class ConnectionService {
       for (const id of CONNECTION_IDS) {
         const list = parsed.models?.[id]
         if (Array.isArray(list)) {
-          this.discovered[id] = list.filter(
-            (m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && (m as ProviderModel).connection === id
-          )
+          this.discovered[id] = list
+            .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && (m as ProviderModel).connection === id)
+            .map((m) => {
+              // A stored price is untrusted file data: keep it only when it is valid, as a fresh object.
+              const { price: stored, ...rest } = m
+              const price = sanitizeModelPrice(stored)
+              return price ? { ...rest, price } : rest
+            })
         }
       }
     } catch (e) {

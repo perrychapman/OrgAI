@@ -1,6 +1,6 @@
 import { adapterForFamily, defaultTierModels } from '@shared/defaults'
 import { MODEL_TIERS } from '@shared/types'
-import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel } from '@shared/types'
+import type { ConnectionId, ModelFamily, ModelPrice, ModelRef, ModelTier, ProviderModel } from '@shared/types'
 
 /** Pure helpers that turn discovered model ids into catalog entries. */
 
@@ -62,6 +62,8 @@ export interface DiscoveredModelInput {
   /** Force a family (Codex model/list is always openai). */
   family?: ModelFamily
   tier?: ModelTier
+  /** The connection's own price (already per MTok and validated by the caller). */
+  price?: ModelPrice
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
@@ -75,6 +77,7 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     adapter: adapterForFamily(family),
     ...(tier ? { tier } : {}),
     ...(m.contextWindow && m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
+    ...(m.price ? { price: { ...m.price } } : {}),
     ...(m.hint ? { hint: m.hint } : {}),
     source: 'discovered'
   }
