@@ -4,6 +4,7 @@ import { defaultRunToOpen } from '../lib/needsYou'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
+import { withRunTitle } from '../lib/runTitle'
 import { describeRemap, type ProjectChanges } from '../lib/remap'
 import type {
   AppInfo,
@@ -936,6 +937,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set((s) => {
       const existing = s.runs[e.runId]
+      // A title for a run the store never loaded: the record already carries it when fetched. No placeholder run.
+      if (e.type === 'run.title' && !existing) {
+        const title = e.title
+        return {
+          history: withRunTitle(s.history, e.runId, title),
+          historyByProject: Object.fromEntries(Object.entries(s.historyByProject).map(([id, list]) => [id, withRunTitle(list, e.runId, title)]))
+        }
+      }
       const run: RunState = existing
         ? { ...existing }
         : emptyRun({ id: e.runId, projectId: '', kind: 'work', prompt: '', status: 'starting', startedAt: Date.now(), totalCostUsd: 0 })
@@ -1045,7 +1054,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const next: Partial<AppState> = { runs: { ...s.runs, [e.runId]: run } }
       // A title can land after the run ended: the history rows carry it too.
       if (e.type === 'run.title') {
-        const withTitle = (list: RunSummary[]): RunSummary[] => (list.some((h) => h.id === e.runId) ? list.map((h) => (h.id === e.runId ? { ...h, title: e.title } : h)) : list)
+        const withTitle = (list: RunSummary[]): RunSummary[] => withRunTitle(list, e.runId, e.title)
         next.history = withTitle(s.history)
         next.historyByProject = Object.fromEntries(Object.entries(s.historyByProject).map(([id, list]) => [id, withTitle(list)]))
       }
