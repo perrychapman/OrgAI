@@ -140,6 +140,44 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   `claude` and `codex`. `adapterForProject` (`src/shared/defaults.ts`) picks the adapter from the connection, or for
   LiteLLM from the root role's model family. A work run whose roles mix families is refused before the run exists.
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
+- Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new
+  project takes `AppSettings.defaultConnection` when `creationConnection` (`defaults.ts`) finds it usable (anthropic
+  always, openai when enabled, litellm when enabled with a base URL and a stored key) and the connection maps every
+  tier the roles use; otherwise it stays on anthropic. It gets that connection's provider label, tier models (the
+  'switched' remap) and adapter. Mock projects and existing projects are untouched. Verified by unit tests.
+- Child env isolation (`src/main/runtime/childEnv.ts` `isolateClaudeEnv`, used by claude.ts `buildEnv`,
+  `completionEnv` and `probeUsage`, and by `claude auth status`): the inherited env loses every routing, model,
+  gateway and cloud-provider variable (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
+  `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_*`, `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_USE_*`,
+  `ANTHROPIC_{BEDROCK,VERTEX,FOUNDRY,AWS}_*`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_BETAS`, `ANTHROPIC_PROFILE`,
+  `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_UNIX_SOCKET`, `AWS_BEARER_TOKEN_BEDROCK`,
+  `CLOUD_ML_REGION`, `VERTEX_REGION_*`, `CLAUDE_CODE_SKIP_*_AUTH` and the gateway behaviour switches). Only the
+  connection's env sets them. Kept as legitimate Anthropic auth sources: `CLAUDE_CODE_OAUTH_TOKEN` (and its refresh
+  token) and `CLAUDE_CONFIG_DIR`. `ANTHROPIC_API_KEY` reaches a run only on the anthropic connection for an API-key
+  project, through `RunConnection.env` (copied from the project's `auth.envVar`), so run titles get it too. On
+  LiteLLM the inherited API key and OAuth token are dropped, so only the connection's `ANTHROPIC_AUTH_TOKEN`
+  authenticates. Drafts (no connection) keep an inherited `ANTHROPIC_API_KEY`. Verified by unit tests only; the
+  bundled CLI's actual auth choice with this env has not been checked in a live run.
+- Anthropic status (`anthropicAuth.ts`), checked token-free on the bundled CLI 2.1.312 (SDK 0.3.312) with a temp
+  `CLAUDE_CONFIG_DIR`:
+  - `claude auth status --setting-sources project` is rejected (unknown option); the global form
+    `claude --setting-sources project auth status` is accepted. Verified.
+  - With an `env.ANTHROPIC_AUTH_TOKEN` in the config dir's `settings.json`, plain `auth status` reports
+    `loggedIn: true, authMethod: 'oauth_token'`; with `--setting-sources project` it reports `loggedIn: false,
+    authMethod: 'none'` and exits 1 with the JSON still on stdout. Verified.
+  - `authMethod` values seen: `claude.ai` (a /login), `oauth_token` (`CLAUDE_CODE_OAUTH_TOKEN` or an
+    `ANTHROPIC_AUTH_TOKEN` env, indistinguishable), `api_key` with `apiKeySource`, `none`. Verified.
+  - The project settings source reads `<cwd>/.claude/settings.json`, so the status runs in `os.tmpdir()`, never the
+    home dir. The bundled CLI is tried first (execFile), then PATH candidates (a shell only for Windows .cmd/.bat
+    shims without metacharacters); a CLI that rejects the flag is retried without it and its detail says user
+    settings could not be excluded. The disconnected detail tells the user to run claude and /login, set an API
+    key, or choose another default connection. Wiring is unit-tested with an injected runner.
+- Auth failures in a run: `activity.ts` `isAuthFailure` (the SDK assistant `error: 'authentication_failed'`, text
+  that starts with the CLI's wording such as "Invalid API key · Please run /login" or "API Error: 401", or auth
+  words / 401 on an error result) and `authFailureMessage(connection)`. The Claude adapter then ends the run
+  `error` with that one-line message, writes a harness system row whose detail is the scrubbed raw text, and
+  `complete()` throws it. `[mock:auth-fail]` drives the mock the same way. The live failure shape is unverified
+  (from the 0.3.312 typings and the user's report).
 - Codex (`@openai/codex` 0.166.0):
   - `codex app-server` speaks JSON-RPC over stdio, one object per line. The `jsonrpc` field is not needed. The
     client sends `initialize` and then `initialized`. Verified offline against `generate-json-schema` /

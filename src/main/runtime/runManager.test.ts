@@ -1866,6 +1866,22 @@ describe('run titles', () => {
     await m.stop(imageRun.id)
   })
 
+  it('an authentication failure ends the run failed with a readable error naming the connection', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const connection = { connection: 'litellm' as const, adapter: 'mock' as const }
+    const { m } = manager(p, {}, { resolveConnection: () => connection })
+    const run = await m.start({ project: p, prompt: 'Do it [mock:auth-fail]' })
+    const status = await waitFor(isType('run.status', (e) => e.status === 'error'))
+    expect(status.error).toMatch(/^The LiteLLM connection was refused/)
+    expect(status.error).toMatch(/Settings > Connections/)
+    expect(m.summaryOf(run.id)).toMatchObject({ status: 'error' })
+    expect(events.some((e) => e.type === 'permission.request')).toBe(false)
+    const record = m.get(run.id)
+    const root = record?.agents.find((a) => a.parentId === null || a.parentId === undefined)
+    expect(root?.state).toBe('error')
+    expect(record?.agents.flatMap((a) => a.transcript ?? []).some((t) => t.kind === 'text' && /Invalid API key/.test(t.text))).toBe(false)
+  })
+
   it('a failing completion leaves the run healthy and untitled', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p)

@@ -45,7 +45,7 @@ Open the `.dmg`, drag OrgAI to Applications, then right-click the app and choose
 
 ## 6. Claude login
 
-The status pill reads "logged in" when `claude auth status` works. Try with `claude` logged out (`claude auth logout`) and in again.
+The status pill reads "logged in" when `claude auth status` works. Try with `claude` logged out (`claude auth logout`) and in again. OrgAI asks the bundled CLI with user settings excluded (`claude --setting-sources project auth status`), so a login that exists only as an env block in `~/.claude/settings.json` reads as not logged in. That is intended.
 
 ## 7. Worktree isolation (scratch repo)
 
@@ -54,6 +54,14 @@ Create `mkdir /tmp/scratch && cd /tmp/scratch && git init && git commit --allow-
 ## 8. Connections
 
 Settings > Connections: Anthropic (CLI login or API key), OpenAI ChatGPT login via the browser, and via device code, and LiteLLM "test and connect" against your proxy.
+
+LiteLLM default and env isolation (the "Invalid API key · Please run /login" report):
+
+1. Keep your own Claude Code pointed at your gateway (`~/.claude/settings.json` env and/or shell exports of `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`). OrgAI must ignore both.
+2. In App settings > Connections, connect LiteLLM (base URL + key, every tier mapped). In App settings > Defaults, set Default connection to LiteLLM.
+3. Create a new project. Its Settings > Connection must read LiteLLM, and the org chart roles must carry LiteLLM model ids. Projects created before keep their own connection.
+4. Run it and send one message. The orchestrator must answer through your proxy (check the proxy's request log).
+5. On the Anthropic connection with no `claude` /login on the Mac (only the gateway config), the Anthropic card must read "Not logged in for OrgAI runs ...", and a run on it must end Failed with "The Anthropic connection was refused ..." instead of showing "Invalid API key" as the reply.
 
 ## 9. MCP and installs
 

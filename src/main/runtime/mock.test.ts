@@ -3,6 +3,7 @@ import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '
 import { MockAdapter, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage } from './types'
 import { peerMessageText } from './prompts'
+import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 
 const png: ImageAttachment = { mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
@@ -250,6 +251,38 @@ describe('mock adapter MCP library steps', () => {
     expect(p.payload.scope).toBe('library')
     expect(p.payload.upsert).toHaveLength(1)
     expect(p.payload.upsert[0]).toMatchObject({ name: 'mock-fs' })
+  })
+})
+
+describe('mock adapter auth failure', () => {
+  const message = authFailureMessage('litellm')
+  const connection = { connection: 'litellm' as const, adapter: 'claude' as const, env: {} }
+  function check(ctx: ReturnType<typeof fakeCtx>): void {
+    const status = ctx.events.filter((e) => e.type === 'run.status').map((e) => (e as { status: string }).status)
+    expect(status).toContain('error')
+    expect(status).not.toContain('finished')
+    const err = ctx.events.find((e) => e.type === 'run.status' && e.status === 'error')
+    expect(err).toMatchObject({ error: message })
+    const row = ctx.events.find((e) => e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' && e.entry.block.text === message)
+    expect(row).toBeTruthy()
+    const root = [...ctx.events].reverse().find((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID)
+    expect(root).toMatchObject({ agent: { state: 'error' } })
+  }
+  it('fails the run from the first prompt', async () => {
+    const ctx = fakeCtx({ prompt: 'hello [mock:auth-fail]', connection })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await session.finished
+    check(ctx)
+  })
+  it('fails the run from a later user message', async () => {
+    const ctx = fakeCtx({ prompt: 'hello', connection })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await session.send('now [mock:auth-fail]')
+    await session.finished
+    check(ctx)
+  })
+  it('makes complete() throw the readable message', async () => {
+    await expect(new MockAdapter().complete({ system: 's', prompt: '[mock:auth-fail]', kind: 'title', connection })).rejects.toThrow(message)
   })
 })
 

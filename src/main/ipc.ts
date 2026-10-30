@@ -93,7 +93,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
   ipcMain.handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
-    projects.create(input, settings.get(), { mockAvailable: adapterIds.includes('mock') })
+    projects.create(input, settings.get(), { mockAvailable: adapterIds.includes('mock'), prepare: (p) => connections.prepareNewProject(p) })
   )
   ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => checkProjectPath(path))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
@@ -217,7 +217,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
         envVarSet
       }
     }
-    return { ...(await claudeAuthStatus()), mode: 'subscription' }
+    // Only the AuthStatusResult fields cross IPC.
+    const s = await claudeAuthStatus()
+    return { loggedIn: s.loggedIn, method: s.method, detail: s.detail, mode: 'subscription' }
   })
 
   // settings.set() notifies SettingsStore listeners: index.ts applies the theme and broadcasts settings:changed.

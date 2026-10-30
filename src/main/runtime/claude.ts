@@ -37,7 +37,8 @@ import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
-import { describeTool } from './activity'
+import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
+import { isolateClaudeEnv } from './childEnv'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
 import {
@@ -217,7 +218,6 @@ export function usesProxy(ctx: Pick<RuntimeContext, 'connection'>): boolean {
   return !!ctx.connection && ctx.connection.connection !== 'anthropic'
 }
 
-/** Environment for a one-shot completion on a run's connection; undefined (SDK default) without one. */
 /**
  * Links an external signal to a fresh AbortController. Throws 'Completion cancelled' if the signal is already
  * aborted. `dispose` removes the listener.
@@ -230,27 +230,55 @@ export function linkAbortSignal(signal: AbortSignal): { controller: AbortControl
   return { controller, dispose: () => signal.removeEventListener('abort', onAbort) }
 }
 
-export function completionEnv(connection: RunConnection | undefined, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> | undefined {
-  if (!connection) return undefined
-  const env: Record<string, string | undefined> = { ...base, ...connection.env }
-  if (connection.connection !== 'anthropic') delete env.ANTHROPIC_API_KEY
-  return env
+export function completionEnv(connection: RunConnection | undefined, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+  // No connection (drafts): isolated from routing vars, but the legacy inherited key still works.
+  if (!connection) return isolateClaudeEnv(base, { keepApiKey: true })
+  // The anthropic API key arrives through connection.env; nothing inherited authenticates.
+  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...connection.env }
 }
 
-/** Child-process environment. A non-anthropic connection authenticates with its own token, never ANTHROPIC_API_KEY. */
+/**
+ * Child-process environment: the isolated base (no inherited routing, model or gateway vars, no stray API key),
+ * OrgAI's settings, the project's API key on the anthropic path, then the connection's env. A non-anthropic
+ * connection authenticates with its own token only.
+ */
 export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
   const { project } = ctx
+  const proxy = usesProxy(ctx)
   const env: Record<string, string | undefined> = {
-    ...base,
+    ...isolateClaudeEnv(base, { proxy, keepApiKey: false }),
     CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(project.maxSubagentDepth),
     CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(project.maxConcurrentSubagents),
     // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
     CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
   }
-  if (usesProxy(ctx)) delete env.ANTHROPIC_API_KEY
-  else if (project.provider.auth.kind === 'apiKey') env.ANTHROPIC_API_KEY = base[project.provider.auth.envVar]
+  if (!proxy && project.provider.auth.kind === 'apiKey') {
+    const key = base[project.provider.auth.envVar]
+    if (key) env.ANTHROPIC_API_KEY = key
+  }
   Object.assign(env, ctx.connection?.env)
   return env
+}
+
+/** Provider auth-failure text safe for the transcript and log: exact secrets redacted, then key-like tokens masked. */
+export function authFailureDetail(raw: string, secrets: Iterable<string>): string {
+  return scrubAuthDetail(redactSecrets(raw, secrets))
+}
+
+/**
+ * The raw text of an authentication failure in an SDK message, or null when the message is not one. An
+ * assistant message with error 'authentication_failed', short CLI auth wording, or a result with is_error.
+ * The matcher and wording live in activity.ts.
+ */
+export function authFailureFrom(msg: SDKMessage): string | null {
+  if (msg.type === 'assistant') {
+    const text = msg.message.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim()
+    return isAuthFailure({ errorCode: msg.error, text, isError: !!msg.error }) ? text : null
+  }
+  if (msg.type === 'result' && msg.subtype === 'success') {
+    return isAuthFailure({ text: msg.result, isError: msg.is_error }) ? msg.result : null
+  }
+  return null
 }
 
 /**
@@ -430,6 +458,8 @@ class ClaudeSession implements RuntimeSession {
   /** Set once the provider rejected a request on a usage limit. */
   private limited = false
   private ending = false
+  /** The CLI refused the credentials; the run ends 'error' with a readable message. */
+  private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
 
@@ -1039,10 +1069,10 @@ class ClaudeSession implements RuntimeSession {
       })
       this.q = query({ prompt: this.input, options: await this.buildOptions() })
       for await (const msg of this.q) this.handle(msg)
-      this.emit({ type: 'run.status', runId, status: 'finished' })
+      this.emitEnd()
     } catch (e) {
       if (this.abort.signal.aborted) {
-        this.emit({ type: 'run.status', runId, status: 'finished' })
+        this.emitEnd()
       } else {
         const message = redactSecrets((e as Error).message ?? String(e), this.secrets)
         this.log('error', message)
@@ -1064,7 +1094,29 @@ class ClaudeSession implements RuntimeSession {
     }
   }
 
+  /** The run's closing status: 'error' with the readable message after an auth failure, else 'finished'. */
+  private emitEnd(): void {
+    const runId = this.ctx.run.id
+    if (this.authFailed) this.emit({ type: 'run.status', runId, status: 'error', error: authFailureMessage(this.ctx.connection?.connection) })
+    else this.emit({ type: 'run.status', runId, status: 'finished' })
+  }
+
+  /** An agent's turn was an auth failure: say so once, mark the root and end the session. */
+  private failAuth(raw: string): void {
+    if (this.authFailed) return
+    this.authFailed = true
+    const message = authFailureMessage(this.ctx.connection?.connection)
+    const detail = authFailureDetail(raw, this.secrets)
+    this.transcript(ROOT_ID, { kind: 'system', text: message, ...(detail ? { detail } : {}) }, { source: 'harness' })
+    this.log('error', `Authentication failed${detail ? `: ${detail}` : ''}`)
+    this.partial.clearAll()
+    this.setState(ROOT_ID, 'error', 'Connection refused')
+    this.ending = true
+    void this.stop()
+  }
+
   private handle(msg: SDKMessage): void {
+    if (this.authFailed) return
     const runId = this.ctx.run.id
     switch (msg.type) {
       case 'system': {
@@ -1133,6 +1185,11 @@ class ClaudeSession implements RuntimeSession {
         break
       }
       case 'assistant': {
+        const authRaw = authFailureFrom(msg)
+        if (authRaw !== null) {
+          this.failAuth(authRaw)
+          break
+        }
         const agentId = this.resolveAgentId(msg)
         const a = this.ensureAgent(agentId)
         const usage = msg.message.usage
@@ -1233,6 +1290,11 @@ class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'run.cost', runId, totalCostUsd })
         this.apportionCost(msg.modelUsage)
         this.partial.clear(ROOT_ID, true)
+        const authRaw = authFailureFrom(msg)
+        if (authRaw !== null) {
+          this.failAuth(authRaw)
+          break
+        }
         const root = this.ensureAgent(ROOT_ID)
         if (msg.subtype === 'success') {
           root.result = msg.result
@@ -1299,7 +1361,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       release?.({ value: undefined as never, done: true })
     }
     try {
-      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [], ...EXECUTABLE_OPTION } })
+      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [], env: isolateClaudeEnv(process.env), ...EXECUTABLE_OPTION } })
       // Drain the stream in the background so the process keeps running until we abort it.
       const drain = (async () => {
         try {
@@ -1339,6 +1401,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
         } else if (msg.type === 'result' && msg.subtype !== 'success') {
           throw new Error(`Completion failed: ${msg.subtype}`)
         }
+        if (authFailureFrom(msg) !== null) throw new Error(authFailureMessage(input.connection?.connection))
       }
     } catch (err) {
       if (input.signal?.aborted) throw new Error('Completion cancelled')
@@ -1347,6 +1410,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       link?.dispose()
     }
     if (input.signal?.aborted) throw new Error('Completion cancelled')
+    if (isAuthFailure({ text })) throw new Error(authFailureMessage(input.connection?.connection))
     return text
   }
 }
@@ -1365,8 +1429,7 @@ export function buildCompletionOptions(input: CompletionInput): Options {
     ...EXECUTABLE_OPTION
   }
   if (input.model) options.model = input.model
-  const env = completionEnv(input.connection)
-  if (env) options.env = env
+  options.env = completionEnv(input.connection)
   return options
 }
 
