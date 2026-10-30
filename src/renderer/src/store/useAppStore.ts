@@ -58,7 +58,7 @@ export interface ImportNotice {
 
 export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'logs'
+export type SideTab = 'transcript' | 'plan' | 'usage' | 'logs'
 
 /** A half-typed message. Kept per run (and per project for the New run page) so it survives tab switches. */
 export interface ComposerDraft {
@@ -1123,6 +1123,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
+          break
+        case 'run.usage':
+          // The host's usage is the truth for the run; totalCostUsd mirrors it (null = unknown keeps the last figure).
+          run.summary = { ...run.summary, usage: e.usage, totalCostUsd: e.usage.costUsd ?? run.summary.totalCostUsd }
           break
         case 'run.title':
           run.summary = { ...run.summary, title: e.title }

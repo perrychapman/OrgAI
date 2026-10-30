@@ -3,7 +3,8 @@ import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
-import { useCostLabel } from '../lib/useCostLabel'
+import { Cost } from './ui/Cost'
+import { runCostInput } from '../lib/cost'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
@@ -11,8 +12,10 @@ import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
+import UsageTrends from './UsageTrends'
 
 type Filter = 'all' | 'work' | 'setup'
+type HistoryView = 'runs' | 'trends'
 
 /** History is the one place status is content: the shared status words in the Badge status tones. */
 const STATUS_BADGE: Record<RunTone, BadgeTone> = {
@@ -36,9 +39,10 @@ export default function RunHistory(): ReactElement {
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
   const startRetro = useAppStore((s) => s.startRetro)
   const current = useAppStore(activeRun)
-  const labelCost = useCostLabel()
   const indexes = useRunIndexes()
   const [filter, setFilter] = useState<Filter>('all')
+  const [view, setView] = useState<HistoryView>('runs')
+  const project = useAppStore(selectedProject)
 
   const shown = summaries.filter((r) => filter === 'all' || (filter === 'work' ? r.kind === 'work' : r.kind === 'setup'))
 
@@ -46,18 +50,35 @@ export default function RunHistory(): ReactElement {
     <div className="history">
       <div className="history-bar">
         <h2>History</h2>
-        <SegmentedControl<Filter>
-          label="Show runs of kind"
-          value={filter}
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'work', label: 'Work' },
-            { value: 'setup', label: 'Setup' }
-          ]}
-          onChange={setFilter}
-        />
+        <div className="history-bar-controls">
+          <SegmentedControl<HistoryView>
+            label="History view"
+            value={view}
+            options={[
+              { value: 'runs', label: 'Runs' },
+              { value: 'trends', label: 'Trends' }
+            ]}
+            onChange={setView}
+          />
+          {view === 'runs' && (
+            <SegmentedControl<Filter>
+              label="Show runs of kind"
+              value={filter}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'work', label: 'Work' },
+                { value: 'setup', label: 'Setup' }
+              ]}
+              onChange={setFilter}
+            />
+          )}
+        </div>
       </div>
-      {summaries.length === 0 ? (
+      {view === 'trends' ? (
+        project ? (
+          <UsageTrends projectId={project.id} />
+        ) : null
+      ) : summaries.length === 0 ? (
         <div className="history-empty">
           <Icon icon={HistoryIcon} size="lg" />
           <p>No runs yet. Give the team a goal on the Live tab; every run you start is kept here.</p>
@@ -98,7 +119,6 @@ export default function RunHistory(): ReactElement {
                   waiting={!!runs[r.id] && needsYou(runs[r.id])}
                   viewed={current?.summary.id === r.id}
                   summaries={summaries}
-                  cost={labelCost(r.totalCostUsd, r.connection ?? 'anthropic')}
                   indexes={indexes}
                   onOpen={() => void openRun(r.id)}
                   onContinue={() => void continueFromHistory(r.id)}
@@ -119,7 +139,6 @@ function HistoryRow({
   waiting,
   viewed,
   summaries,
-  cost,
   indexes,
   onOpen,
   onContinue,
@@ -130,7 +149,6 @@ function HistoryRow({
   waiting: boolean
   viewed: boolean
   summaries: RunSummary[]
-  cost: { text: string; title: string; hidden: boolean }
   indexes: Map<string, number>
   onOpen: () => void
   onContinue: () => void
@@ -193,8 +211,8 @@ function HistoryRow({
           {statusText(status)}
         </Badge>
       </td>
-      <td className="col-cost" title={cost.hidden ? undefined : cost.title}>
-        {cost.hidden ? '–' : cost.text}
+      <td className="col-cost">
+        <Cost value={runCostInput(r)} />
       </td>
       <td className="col-started" title={started.toLocaleString()}>
         {relativeTime(r.startedAt)}

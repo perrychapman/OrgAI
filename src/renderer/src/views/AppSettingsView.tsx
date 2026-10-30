@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
-import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, PermissionMode, ThemeMode } from '@shared/types'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import type { ConnectionId } from '@shared/types'
 import { CLAUDE_MODEL_OPTIONS, CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
@@ -26,6 +26,7 @@ import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/
 import { connectionUsable } from '../lib/projectsForm'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
+import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 
 /** Same debounce the project store uses for project saves. */
@@ -91,7 +92,7 @@ export default function AppSettingsView(): ReactElement {
   const focusHex = useRef(false)
   const [highlightUsage, setHighlightUsage] = useState(false)
   // Set by a deep link; the first render that has the page loaded moves focus to the pane heading.
-  const pendingFocus = useRef<{ usage: boolean } | null>(null)
+  const pendingFocus = useRef<{ usage: boolean; section?: string } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
@@ -104,7 +105,7 @@ export default function AppSettingsView(): ReactElement {
       const next = target ? appPaneForSection(target) : undefined
       if (next) {
         setPane(next)
-        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage }
+        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage, section: target === APP_SETTINGS_SECTIONS.modelPrices ? target : undefined }
       }
     }
     take()
@@ -121,7 +122,18 @@ export default function AppSettingsView(): ReactElement {
     const pf = pendingFocus.current
     if (!pf || !ready) return
     pendingFocus.current = null
-    focusPaneHeading({ preventScroll: pf.usage })
+    focusPaneHeading({ preventScroll: pf.usage || !!pf.section })
+    if (pf.section) {
+      // Land on the section itself: scroll its title to the top and focus it (an add form pre-filled by a deep link then takes focus).
+      // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
+      const land = (): void => document.getElementById(pf.section!)?.scrollIntoView({ block: 'start' })
+      land()
+      setTimeout(land, 350)
+      setTimeout(land, 900)
+      const title = document.getElementById(pf.section)?.querySelector<HTMLElement>('.settings-section-title')
+      title?.setAttribute('tabindex', '-1')
+      title?.focus({ preventScroll: true })
+    }
     if (pf.usage) {
       document.getElementById(APP_SETTINGS_SECTIONS.usage)?.scrollIntoView({ block: 'center' })
       setHighlightUsage(true)
@@ -208,6 +220,17 @@ export default function AppSettingsView(): ReactElement {
     if (timer.current) clearTimeout(timer.current)
     if (immediate) void flush()
     else timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
+  }
+
+  /** Save the price overrides now (with any queued edit); rejects with the save error so the Model prices form shows it. */
+  const saveModelPrices = async (modelPrices: ModelPriceOverride[]): Promise<void> => {
+    const base = pending.current ?? stripInfo(info)
+    pending.current = null
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+    const result = await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...base, modelPrices }))
+    setInfo(result)
+    setError(null)
   }
 
   const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
@@ -382,7 +405,12 @@ export default function AppSettingsView(): ReactElement {
             </SettingsSection>
           </>
         )}
-        {pane === 'connections' && <ConnectionsPanel />}
+        {pane === 'connections' && (
+          <>
+            <ConnectionsPanel />
+            <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
+          </>
+        )}
         {pane === 'mcp-library' && <McpLibrarySection />}
         {pane === 'defaults' && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="Starting values for new projects, plus the assistants that work across all projects.">

@@ -177,8 +177,8 @@ describe('fastModel', () => {
     expect(ctx.service.fastModel({ adapter: 'claude', connection: 'anthropic' })).toBe('haiku')
     expect(ctx.service.fastModel({ adapter: 'codex', connection: 'openai' })).toBe('gpt-5-nano')
     expect(ctx.service.fastModel({ adapter: 'mock', connection: 'anthropic' })).toBeUndefined()
-    // LiteLLM without a fast tier: the Claude adapter falls back to the haiku alias, Codex to its default.
-    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('haiku')
+    // LiteLLM without any catalog or mapping: the adapter's default model.
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBeUndefined()
     expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBeUndefined()
     const s = ctx.settings.get()
     ctx.settings.set({ ...s, connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { fast: 'claude-haiku-4-5' } } } })
@@ -213,7 +213,7 @@ describe('runConnection', () => {
     const p = litellmProject([['gpt-5', 'deep']])
     ctx.settings.set({ ...ctx.settings.get(), connections: { ...ctx.settings.get().connections, litellm: { ...ctx.settings.get().connections.litellm, baseUrl: 'http://localhost:4000' } } })
     expect(() => ctx.service.runConnection(p, { adapter: 'codex', connection: 'litellm', mismatched: [] })).toThrow('LiteLLM has no API key. Set it in Settings > Connections.')
-    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] })).toEqual({ connection: 'anthropic', adapter: 'claude', env: {} })
+    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] })).toMatchObject({ connection: 'anthropic', adapter: 'claude', env: {}, tierModels: { fast: 'haiku' }, models: ['fable', 'opus', 'sonnet', 'haiku'] })
   })
 
   it('openai: chatgpt uses CODEX_HOME, apiKey reads the env var', () => {

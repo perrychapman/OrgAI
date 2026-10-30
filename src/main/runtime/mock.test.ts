@@ -10,7 +10,15 @@ import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 
-const png: ImageAttachment = { mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
+describe('mock listModels', () => {
+  it('lists the builtin aliases plus an unknown family', async () => {
+    const list = await new MockAdapter().listModels()
+    expect(list?.map((m) => m.id)).toEqual(['fable', 'opus', 'sonnet', 'haiku', 'mock-lyric'])
+    expect(list?.every((m) => m.label && m.description)).toBe(true)
+  })
+})
+
+const png: ImageAttachment ={ mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
 
 function userBlocks(events: RunEvent[]): Extract<TranscriptBlock, { kind: 'user' }>[] {
   const out: Extract<TranscriptBlock, { kind: 'user' }>[] = []

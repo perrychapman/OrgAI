@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
@@ -125,7 +125,7 @@ const DEFAULT_SETUP: MockStep[] = [
           responsibilities: ['Plan', 'Delegate', 'Review'],
           prompt: 'You are the lead. Break the request into briefs, delegate them, and review what comes back.',
           tools: ['Read', 'Glob', 'Grep'],
-          model: 'opus',
+          model: 'deep',
           canSpawn: true,
           spawnable: ['Engineer'],
           reportsTo: null
@@ -136,7 +136,7 @@ const DEFAULT_SETUP: MockStep[] = [
           responsibilities: ['Implement', 'Report the files changed'],
           prompt: 'You are an engineer. Implement the brief, stay within its files, and list every file you touched.',
           tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'],
-          model: 'sonnet',
+          model: 'everyday',
           canSpawn: false,
           spawnable: [],
           reportsTo: 'Lead'
@@ -841,6 +841,17 @@ export class MockAdapter implements RuntimeAdapter {
 
   private usage(input: CompletionInput): void {
     input.onUsage?.({ tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, model: input.model ?? 'mock' })
+  }
+
+  /** A fixed model list: the four builtin aliases plus one id outside any known family, so discovering a new family is testable. */
+  async listModels(): Promise<AdapterModelInfo[] | null> {
+    return [
+      { id: 'fable', label: 'Fable', description: 'Most capable model for the hardest work' },
+      { id: 'opus', label: 'Opus', description: 'Deep reasoning for complex tasks' },
+      { id: 'sonnet', label: 'Sonnet', description: 'Balanced model for everyday work' },
+      { id: 'haiku', label: 'Haiku', description: 'Fast model for simple tasks' },
+      { id: 'mock-lyric', label: 'Lyric', description: 'Fastest model for quick lookups' }
+    ]
   }
 
   /** A fixed org chart draft, in the JSON shape the drafter expects. */

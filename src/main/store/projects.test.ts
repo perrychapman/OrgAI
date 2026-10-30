@@ -4,8 +4,25 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { McpServerSpec, PluginSpec, Project, SkillSpec } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, checkProjectPath, cleanProjectPath, createPathError, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
+
+describe('reconcileNearLimitProject', () => {
+  it('lets an older renderer that toggles only the legacy field win, and mirrors both', () => {
+    const stored = { ...project(), preferEverydayNearLimit: false, preferSonnetNearLimit: false }
+    expect(reconcileNearLimitProject(stored, { ...stored, preferSonnetNearLimit: true })).toMatchObject({ preferEverydayNearLimit: true, preferSonnetNearLimit: true })
+    expect(reconcileNearLimitProject(stored, { ...stored, preferEverydayNearLimit: true })).toMatchObject({ preferEverydayNearLimit: true, preferSonnetNearLimit: true })
+  })
+
+  it('migrates a legacy-only project and leaves an unset one unset', () => {
+    const legacy = { ...project(), preferSonnetNearLimit: true }
+    expect(reconcileNearLimitProject(legacy, { ...legacy })).toMatchObject({ preferEverydayNearLimit: true, preferSonnetNearLimit: true })
+    const base = project()
+    const none = reconcileNearLimitProject(base, { ...base })
+    expect(none.preferEverydayNearLimit).toBeUndefined()
+    expect(none.preferSonnetNearLimit).toBeUndefined()
+  })
+})
 
 const dirs: string[] = []
 function dataDir(): string {

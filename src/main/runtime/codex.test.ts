@@ -798,6 +798,8 @@ describe('codexModelFor', () => {
   it('drops inherit and bare Claude aliases, keeps real model ids', () => {
     expect(codexModelFor('inherit')).toBeUndefined()
     expect(codexModelFor('opus')).toBeUndefined()
+    expect(codexModelFor('deep')).toBeUndefined()
+    expect(codexModelFor('Everyday')).toBeUndefined()
     expect(codexModelFor(undefined)).toBeUndefined()
     expect(codexModelFor('gpt-5.1-codex')).toBe('gpt-5.1-codex')
   })

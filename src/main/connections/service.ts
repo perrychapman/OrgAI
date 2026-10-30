@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForProject, builtinModels, connectionProviderLabel, creationConnection, projectConnection } from '@shared/defaults'
-import { CONNECTION_IDS } from '@shared/types'
+import { adapterForFamily, adapterForProject, builtinModels, connectionProviderLabel, creationConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
+import { CONNECTION_IDS, MODEL_TIERS } from '@shared/types'
 import type {
   ModelPriceInfo,
   ModelPricesQuery,
@@ -18,6 +18,7 @@ import type {
   ModelTier,
   ModelsQuery,
   Project,
+  ProviderAuth,
   ProviderConnection,
   ProviderModel,
   RemapModelsInput,
@@ -31,10 +32,10 @@ import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
 import { LITELLM_KEY, type SecretStore } from '../store/secrets'
 import type { SettingsStore } from '../store/settings'
-import type { RunConnection } from '../runtime/types'
+import type { AdapterModelInfo, RunConnection } from '../runtime/types'
 import { anthropicStatus } from './anthropicAuth'
-import { autoFillTierModels, makeDiscoveredModel } from './catalog'
-import { cancelLogin, listModels, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
+import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
+import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
 import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
@@ -53,6 +54,21 @@ export interface ConnectionServiceDeps {
   now?: () => number
   /** Probe the Anthropic connection. Default: anthropicAuth.anthropicStatus (runs `claude auth status`). */
   anthropicProbe?: typeof anthropicStatus
+  /**
+   * The models the Claude login offers right now (the adapter's listModels / SDK supportedModels). null = could not
+   * say; the catalog is kept. Missing = no Anthropic discovery (builtin aliases only).
+   */
+  anthropicModels?: (auth: ProviderAuth) => Promise<AdapterModelInfo[] | null>
+}
+
+/** startDiscovery options. */
+export interface DiscoveryOptions {
+  /** Wait before the first check after boot. Default 20 s. */
+  bootDelayMs?: number
+  /** Time between checks. Default 60 minutes. */
+  checkEveryMs?: number
+  /** A connection whose last successful discovery is older than this is refreshed. Default 24 h. */
+  staleAfterMs?: number
 }
 
 interface CodexLease {
@@ -82,6 +98,12 @@ export class ConnectionService {
   private statuses: Partial<Record<ConnectionId, ConnectionStatus>> = {}
   private discovered: Partial<Record<ConnectionId, ProviderModel[]>> = {}
   private modelsFile: string
+  /** When each connection's discovery last succeeded (epoch ms), persisted in models.json. */
+  private refreshedAt: Partial<Record<ConnectionId, number>> = {}
+  /** The last scheduled-discovery failure per connection (cleared by a success). */
+  private modelsErrors: Partial<Record<ConnectionId, string>> = {}
+  private discoveryTimers: ReturnType<typeof setTimeout>[] = []
+  private discoveryBusy = false
   private codex: Promise<CodexLease> | null = null
   /** The started lease; cleared synchronously when the server is released or exits. */
   private codexLease: CodexLease | null = null
@@ -102,18 +124,25 @@ export class ConnectionService {
   private loadModels(): void {
     try {
       if (!existsSync(this.modelsFile)) return
-      const parsed = JSON.parse(readFileSync(this.modelsFile, 'utf8')) as { models?: Record<string, unknown> }
+      const parsed = JSON.parse(readFileSync(this.modelsFile, 'utf8')) as { models?: Record<string, unknown>; refreshedAt?: Record<string, unknown> }
       for (const id of CONNECTION_IDS) {
+        const at = parsed.refreshedAt?.[id]
+        if (typeof at === 'number' && Number.isFinite(at) && at > 0) this.refreshedAt[id] = at
         const list = parsed.models?.[id]
         if (Array.isArray(list)) {
           this.discovered[id] = list
             .slice(0, LITELLM_MAX_MODELS)
-            .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && (m as ProviderModel).connection === id)
+            .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && validModelId((m as ProviderModel).id) && (m as ProviderModel).connection === id)
             .map((m) => {
               // A stored price is untrusted file data: keep it only when it is valid, as a fresh object.
               const { price: stored, ...rest } = m
               const price = sanitizeModelPrice(stored)
-              return price ? { ...rest, price } : rest
+              const capped: ProviderModel = {
+                ...rest,
+                ...(typeof rest.label === 'string' ? { label: rest.label.slice(0, MODEL_TEXT_MAX) } : {}),
+                ...(typeof rest.hint === 'string' ? { hint: rest.hint.slice(0, MODEL_TEXT_MAX) } : {})
+              }
+              return price ? { ...capped, price } : capped
             })
         }
       }
@@ -126,7 +155,7 @@ export class ConnectionService {
   private persistModels(): void {
     mkdirSync(dirname(this.modelsFile), { recursive: true })
     const tmp = `${this.modelsFile}.tmp`
-    writeFileSync(tmp, JSON.stringify({ version: 1, models: this.discovered }, null, 2), 'utf8')
+    writeFileSync(tmp, JSON.stringify({ version: 1, models: this.discovered, refreshedAt: this.refreshedAt }, null, 2), 'utf8')
     renameSync(tmp, this.modelsFile)
   }
 
@@ -134,7 +163,12 @@ export class ConnectionService {
 
   private catalogFor(id: ConnectionId): ProviderModel[] {
     const found = this.discovered[id] ?? []
-    if (id === 'anthropic') return builtinModels('anthropic')
+    if (id === 'anthropic') {
+      // Discovered entries first (newest or recommended first), then any builtin alias discovery did not list: saved
+      // roles keep working with their alias.
+      const listed = new Set(found.map((m) => m.id))
+      return [...found.map((m) => ({ ...m })), ...builtinModels('anthropic').filter((m) => !listed.has(m.id))]
+    }
     // OpenAI placeholders stand in until model/list has answered.
     if (id === 'openai') return found.length ? found.map((m) => ({ ...m })) : builtinModels('openai')
     return found.map((m) => ({ ...m }))
@@ -163,7 +197,6 @@ export class ConnectionService {
     const ids = query?.connection ? [query.connection] : CONNECTION_IDS.filter((id) => s.connections[id].enabled)
     const results: RemapResult[] = []
     for (const id of ids) {
-      if (id === 'anthropic') continue
       try {
         const found = await this.discover(id)
         if (found) results.push(...this.applyCatalog(id, found, ['catalog']))
@@ -190,9 +223,18 @@ export class ConnectionService {
         const account = await readAccount(rpc)
         return account.account ? listModels(rpc) : []
       })
-      return list.map((m) => makeDiscoveredModel('openai', { id: m.id, label: m.label, family: 'openai', hint: m.description }))
+      return list.map((m) => {
+        const base = makeDiscoveredModel('openai', { id: m.id, label: m.label, family: 'openai', hint: m.description })
+        // The id gives a tier for the known families; otherwise the provider's description, and its recommended
+        // model never stays tierless.
+        const tier = base.tier ?? tierFromDescription(m.description) ?? (m.isDefault ? 'deep' : undefined)
+        return makeDiscoveredModel('openai', { id: m.id, label: m.label, family: 'openai', hint: m.description, recommended: m.isDefault, ...(tier ? { tier } : {}) })
+      })
     }
-    return null
+    const list = await this.deps.anthropicModels?.(this.deps.settings.get().connections.anthropic.auth)
+    if (!list?.length) return null
+    const found = anthropicModelsToCatalog(list)
+    return found.length ? found : null
   }
 
   /**
@@ -202,19 +244,70 @@ export class ConnectionService {
    */
   private applyCatalog(id: ConnectionId, found: ProviderModel[], reasons: RemapReason[]): RemapResult[] {
     if (id === 'openai' && found.length === 0) return []
-    const beforeIds = this.catalogFor(id).map((m) => m.id).join('\n')
+    const before = this.catalogFor(id)
+    const beforeIds = before.map((m) => m.id).join('\n')
+    const previousSuggestion = suggestTierModels(id, before)
     this.discovered[id] = found
+    const refreshedAt = this.now()
+    this.refreshedAt[id] = refreshedAt
+    delete this.modelsErrors[id]
     this.persistModels()
     const catalog = this.catalogFor(id)
     const changed = beforeIds !== catalog.map((m) => m.id).join('\n')
+    const { previous, next } = this.retier(id, catalog, previousSuggestion)
+    this.deps.broadcast({ type: 'models.updated', connection: id, models: catalog, changed, refreshedAt })
+    const results: RemapResult[] = []
+    for (const reason of reasons) results.push(...this.remapConnectionProjects(id, next, previous, reason))
+    return results
+  }
+
+  /** Tiers whose mapping follows the catalog's suggestion: autoTiers, else derived from the stored mapping. */
+  private autoTiersOf(id: ConnectionId, tierModels: Tiers, stored: ModelTier[] | undefined, suggestion: Tiers): Set<ModelTier> {
+    if (stored) return new Set(stored)
+    const builtin = builtinTierModels(id)
+    const out = new Set<ModelTier>()
+    for (const tier of MODEL_TIERS) {
+      const cur = tierModels[tier]?.trim()
+      if (!cur || cur === builtin[tier] || cur === suggestion[tier]) out.add(tier)
+    }
+    return out
+  }
+
+  /**
+   * Re-derive the tier mapping against a catalog and save it with autoTiers when either changed. An auto tier
+   * follows the catalog's suggestion; a user tier is kept while its model is still listed, else it falls back to the
+   * suggestion and becomes auto. Returns the mapping before and after.
+   */
+  private retier(id: ConnectionId, catalog: readonly ProviderModel[], previousSuggestion: Tiers): { previous: Tiers; next: Tiers } {
     const conn = this.deps.settings.get().connections[id]
     const previous = conn.tierModels
-    const filled = autoFillTierModels(previous, catalog)
-    if (!sameTiers(previous, filled)) this.saveConnection({ ...conn, tierModels: filled } as ProviderConnection)
-    if (changed) this.deps.broadcast({ type: 'models.updated', connection: id, models: catalog })
-    const results: RemapResult[] = []
-    for (const reason of reasons) results.push(...this.remapConnectionProjects(id, filled, previous, reason))
-    return results
+    const suggestion = suggestTierModels(id, catalog)
+    const ids = new Set(catalog.map((m) => m.id))
+    const auto = this.autoTiersOf(id, previous, conn.autoTiers, previousSuggestion)
+    const next: Tiers = {}
+    for (const tier of MODEL_TIERS) {
+      const cur = previous[tier]?.trim()
+      const want = suggestion[tier]
+      if (!cur) {
+        if (want) {
+          next[tier] = want
+          auto.add(tier)
+        }
+      } else if (auto.has(tier)) {
+        const keep = want ?? (ids.has(cur) ? cur : undefined)
+        if (keep) next[tier] = keep
+        else auto.delete(tier)
+      } else if (ids.has(cur)) next[tier] = cur
+      else if (want) {
+        next[tier] = want
+        auto.add(tier)
+      }
+    }
+    const autoTiers = MODEL_TIERS.filter((t) => auto.has(t) && next[t])
+    if (!sameTiers(previous, next) || JSON.stringify(conn.autoTiers) !== JSON.stringify(autoTiers)) {
+      this.saveConnection({ ...conn, tierModels: next, autoTiers } as ProviderConnection)
+    }
+    return { previous, next }
   }
 
   // ---------- statuses ----------
@@ -234,7 +327,15 @@ export class ConnectionService {
 
   private info(id: ConnectionId): ConnectionInfo {
     const connection = this.deps.settings.get().connections[id]
-    return { connection, status: this.statuses[id] ?? { state: 'disconnected' }, modelCount: this.catalogFor(id).length }
+    const refreshed = this.refreshedAt[id]
+    const error = this.modelsErrors[id]
+    return {
+      connection,
+      status: this.statuses[id] ?? { state: 'disconnected' },
+      modelCount: this.catalogFor(id).length,
+      ...(refreshed ? { modelsRefreshedAt: refreshed } : {}),
+      ...(error ? { modelsError: error } : {})
+    }
   }
 
   async list(): Promise<ConnectionInfo[]> {
@@ -302,8 +403,11 @@ export class ConnectionService {
   async update(c: ProviderConnection): Promise<ConnectionInfo> {
     if (!c || !CONNECTION_IDS.includes(c.id)) throw new Error('Unknown connection')
     const old = this.deps.settings.get().connections[c.id]
+    // autoTiers is main-owned (the renderer's copy is ignored): a tier the caller changed is the user's from now on.
+    const wasAuto = this.autoTiersOf(c.id, old.tierModels, old.autoTiers, suggestTierModels(c.id, this.catalogFor(c.id)))
+    for (const tier of MODEL_TIERS) if ((c.tierModels?.[tier] ?? '') !== (old.tierModels[tier] ?? '')) wasAuto.delete(tier)
     // SettingsStore.set keeps the stored hasApiKey and mirrors Anthropic auth into providerAuth.
-    this.saveConnection(c)
+    this.saveConnection({ ...c, autoTiers: MODEL_TIERS.filter((t) => wasAuto.has(t)) } as ProviderConnection)
     const fresh = this.deps.settings.get().connections[c.id]
     if (c.id === 'litellm' && fresh.id === 'litellm' && old.id === 'litellm' && fresh.baseUrl !== old.baseUrl) {
       this.setStatus('litellm', { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() })
@@ -349,10 +453,9 @@ export class ConnectionService {
 
   /** No discovery (Anthropic, API-key OpenAI): still fill missing tiers from the catalog and remap. */
   private reapplyTiers(id: ConnectionId): RemapResult[] {
-    const conn = this.deps.settings.get().connections[id]
-    const filled = autoFillTierModels(conn.tierModels, this.catalogFor(id))
-    if (!sameTiers(conn.tierModels, filled)) this.saveConnection({ ...conn, tierModels: filled } as ProviderConnection)
-    return this.remapConnectionProjects(id, filled, conn.tierModels, 'connected')
+    const catalog = this.catalogFor(id)
+    const { previous, next } = this.retier(id, catalog, suggestTierModels(id, catalog))
+    return this.remapConnectionProjects(id, next, previous, 'connected')
   }
 
   async logout(id: ConnectionId): Promise<ConnectionInfo> {
@@ -601,6 +704,17 @@ export class ConnectionService {
   // ---------- per-run model access ----------
 
   runConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
+    const built = this.buildRunConnection(project, choice)
+    if (choice.adapter === 'mock') return built
+    const id = choice.connection
+    return {
+      ...built,
+      tierModels: { ...this.deps.settings.get().connections[id].tierModels },
+      models: this.catalogFor(id).map((m) => m.id)
+    }
+  }
+
+  private buildRunConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
     const id = choice.connection
     const base: RunConnection = { connection: id, adapter: choice.adapter }
     if (choice.adapter === 'mock') return base
@@ -641,14 +755,78 @@ export class ConnectionService {
 
   /**
    * The fast-tier model for one-shot helpers (run titles) on a run's connection: the connection's tierModels.fast,
-   * with 'haiku' as the Anthropic fallback. The mock adapter has none. On LiteLLM + Claude the run's env also maps
-   * the haiku alias to the same model (ANTHROPIC_DEFAULT_HAIKU_MODEL).
+   * else the catalog's suggestion for the nearest tier (modelForTier), if it runs on the run's adapter. undefined =
+   * the adapter's default model. The mock adapter has none.
    */
   fastModel(choice: Pick<AdapterChoice, 'adapter' | 'connection'>): string | undefined {
     if (choice.adapter === 'mock') return undefined
-    const fast = this.deps.settings.get().connections[choice.connection]?.tierModels.fast?.trim()
+    const conn = this.deps.settings.get().connections[choice.connection]
+    if (!conn) return undefined
+    const fast = conn.tierModels.fast?.trim()
     if (fast) return fast
-    return choice.connection === 'anthropic' || choice.adapter === 'claude' ? 'haiku' : undefined
+    const catalog = this.catalogFor(choice.connection)
+    const hit = modelForTier('fast', { connection: choice.connection, tierModels: conn.tierModels, catalog })
+    if (!hit) return undefined
+    const family = catalog.find((m) => m.id === hit.model)?.family ?? modelFamily(hit.model)
+    return adapterForFamily(family) === choice.adapter ? hit.model : undefined
+  }
+
+  // ---------- scheduled discovery ----------
+
+  private configured(id: ConnectionId): boolean {
+    const conn = this.deps.settings.get().connections[id]
+    if (!conn.enabled) return false
+    if (id === 'anthropic') return true
+    if (id === 'openai') return conn.id === 'openai' && conn.auth.kind === 'chatgpt'
+    return !!(conn as { baseUrl?: string }).baseUrl && !!this.deps.secrets.get(LITELLM_KEY)
+  }
+
+  /**
+   * Refresh each configured, enabled connection whose last successful discovery is older than staleAfterMs. One run
+   * at a time. A failure keeps the last good catalog, leaves the status alone, records modelsError and logs once.
+   */
+  async discoverStale(staleAfterMs = 24 * 3600_000): Promise<void> {
+    if (this.disposed || this.discoveryBusy) return
+    this.discoveryBusy = true
+    try {
+      const results: RemapResult[] = []
+      for (const id of CONNECTION_IDS) {
+        if (this.disposed) break
+        if (!this.configured(id)) continue
+        const at = this.refreshedAt[id]
+        // A timestamp in the future (clock skew, a tampered file) counts as never refreshed.
+        const now = this.now()
+        if (at && at <= now && now - at < staleAfterMs) continue
+        try {
+          const found = await this.discover(id)
+          if (this.disposed) continue
+          if (found?.length) results.push(...this.applyCatalog(id, found, ['catalog']))
+          else this.modelsErrors[id] = 'No models returned'
+        } catch (e) {
+          const message = this.safeMessage(e)
+          if (this.modelsErrors[id] !== message) console.warn(`Model discovery for ${id} failed: ${message}`)
+          this.modelsErrors[id] = message
+        }
+      }
+      this.broadcastRemaps(results)
+    } finally {
+      this.discoveryBusy = false
+    }
+  }
+
+  /** Discover models after a boot delay and then on every check (unref'd timers; dispose() clears them). */
+  startDiscovery(opts: DiscoveryOptions = {}): void {
+    if (this.disposed) return
+    const { bootDelayMs = 20_000, checkEveryMs = 60 * 60_000, staleAfterMs = 24 * 3600_000 } = opts
+    const tick = (): void => void this.discoverStale(staleAfterMs)
+    const boot = setTimeout(() => {
+      tick()
+      const every = setInterval(tick, checkEveryMs)
+      every.unref?.()
+      this.discoveryTimers.push(every)
+    }, bootDelayMs)
+    boot.unref?.()
+    this.discoveryTimers.push(boot)
   }
 
   // ---------- usage, boot, shutdown ----------
@@ -705,6 +883,10 @@ export class ConnectionService {
 
   dispose(): void {
     this.disposed = true
+    for (const t of this.discoveryTimers.splice(0)) {
+      clearTimeout(t)
+      clearInterval(t)
+    }
     const codex = this.codex
     this.codex = null
     this.pendingLogins.clear()

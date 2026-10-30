@@ -15,6 +15,8 @@ import { CodexAdapter } from './runtime/codex'
 import type { RunConnection } from './runtime/types'
 import { SecretStore } from './store/secrets'
 import { ConnectionService } from './connections/service'
+import { CommunityPrices } from './connections/communityPrices'
+import type { RuntimeAdapter } from './runtime/types'
 import { McpService } from './mcp/service'
 import { harnessProject } from './mcp/assist'
 import { McpLibraryStore } from './store/mcpLibrary'
@@ -217,8 +219,16 @@ app.whenReady().then(() => {
     projects,
     secrets,
     broadcast: broadcastConnection,
-    openExternal: (url) => shell.openExternal(url)
+    openExternal: (url) => shell.openExternal(url),
+    // Models the Claude login offers (SDK supportedModels); the scripted mock answers its own list. `adapters` is
+    // declared below and only read when discovery runs.
+    anthropicModels: (auth) => {
+      const adapter = process.env.ORGAI_MOCK === '1' ? (adapters as { mock?: RuntimeAdapter }).mock : (adapters.claude as RuntimeAdapter)
+      return adapter?.listModels?.(auth) ?? Promise.resolve(null)
+    }
   })
+  // Community model prices (LiteLLM's public list): a cached fallback after the builtin table; AppSettings.communityPrices turns it off.
+  const communityPrices = new CommunityPrices({ dataDir, enabled: () => settings.get().communityPrices !== false })
   const mockAdapter = process.env.ORGAI_MOCK === '1'
   /** The virtual project of harness-level runs (library MCP assistant), from the current settings. */
   const harness = () => harnessProject(settings.get(), dataDir, { mock: mockAdapter })
@@ -284,6 +294,7 @@ app.whenReady().then(() => {
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
     appSettings: () => settings.get(),
+    communityPrices: () => communityPrices.get(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),
     fastModel: (_project, choice) => connections.fastModel(choice),
     mcp: {
@@ -327,7 +338,12 @@ app.whenReady().then(() => {
     skillEvaluation
   })
   connections.init()
-  app.on('before-quit', () => connections.dispose())
+  connections.startDiscovery()
+  if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
+  app.on('before-quit', () => {
+    connections.dispose()
+    communityPrices.dispose()
+  })
   notifier = new Notifier({
     projectOfRun: (runId) => {
       const summary = runManager?.summaryOf(runId)

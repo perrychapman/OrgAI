@@ -5,7 +5,7 @@ import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistr
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_MODES, RUN_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, TOOL_CATALOG } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { toRoles } from '../ai/draft'
+import { toRoles, type DraftModelContext } from '../ai/draft'
 import { sameDefinition, specFromRegistry, validateLibraryEntry, validateSpec, type RegistryChoice } from '../mcp/validate'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RunMessageOutcome, type RunSkill, type RuntimeContext } from './types'
 import { pendingWorktrees } from './worktrees'
@@ -137,6 +137,12 @@ export function answerText(answer: QuestionAnswer): string {
   return parts.length ? parts.join('\n') : 'The user did not answer (the session may be ending). Ask again in prose if it still matters.'
 }
 
+/** What toRoles needs to map proposed role models onto the run's connection (undefined = anthropic builtins). */
+function modelContext(ctx: RuntimeContext): DraftModelContext | undefined {
+  const c = ctx.connection
+  return c?.tierModels ? { connection: c.connection, tierModels: c.tierModels, ...(c.models ? { models: c.models } : {}) } : undefined
+}
+
 export const draftRoleSchema = z.object({
   name: z.string().describe('Human-readable role name'),
   description: z.string().describe('One sentence telling a manager when to delegate to this role'),
@@ -145,7 +151,7 @@ export const draftRoleSchema = z.object({
   tools: z
     .array(z.string())
     .describe(`Subset of: ${TOOL_CATALOG.join(', ')}. SendMessage and ListAgents let a role message other running agents and see who is running`),
-  model: z.string().describe('One of: inherit, fable, opus, sonnet, haiku'),
+  model: z.string().describe("A tier: top, deep, everyday or fast (mapped to the project's connection), or inherit. An exact model id only when listed as available."),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
   reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
@@ -181,7 +187,7 @@ export const proposeOrgChart = defineTool({
   async handler(ctx, { title, rationale, roles }, hooks) {
     let converted
     try {
-      converted = toRoles({ rationale, roles })
+      converted = toRoles({ rationale, roles }, modelContext(ctx))
     } catch (e) {
       return `REVISE. The org chart could not be validated: ${(e as Error).message}`
     }
@@ -308,7 +314,7 @@ export const proposeOrgChange = defineTool({
   async handler(ctx, { title, rationale, roles }, hooks) {
     let converted
     try {
-      converted = toRoles({ rationale, roles })
+      converted = toRoles({ rationale, roles }, modelContext(ctx))
     } catch (e) {
       return `REVISE. The org chart could not be validated: ${(e as Error).message}`
     }

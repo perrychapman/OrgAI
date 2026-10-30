@@ -2,8 +2,29 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AppSettings, Project, ProjectCreateInput, ProjectPathCheck } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
-import { isSafeId, newProject, skillEvaluationOf } from '@shared/defaults'
+import { isSafeId, newProject, preferEverydayNearLimit, skillEvaluationOf } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
+
+/**
+ * Keep Project.preferEverydayNearLimit and its deprecated mirror preferSonnetNearLimit in step on a renderer save: an
+ * older renderer that changes only the legacy field wins; otherwise the new field (or, when neither is set, the legacy
+ * one) decides. Both fields come back set to the effective value, or both unset when neither was set. Pure.
+ */
+export function reconcileNearLimitProject(stored: Project, incoming: Project): Project {
+  const legacy = incoming.preferSonnetNearLimit
+  const legacyChanged = typeof legacy === 'boolean' && legacy !== stored.preferSonnetNearLimit
+  const freshChanged = incoming.preferEverydayNearLimit !== stored.preferEverydayNearLimit
+  const value = legacyChanged && !freshChanged ? legacy : incoming.preferEverydayNearLimit === undefined && legacy === undefined ? undefined : preferEverydayNearLimit(incoming)
+  const next = { ...incoming }
+  if (value === undefined) {
+    delete next.preferEverydayNearLimit
+    delete next.preferSonnetNearLimit
+  } else {
+    next.preferEverydayNearLimit = value
+    next.preferSonnetNearLimit = value
+  }
+  return next
+}
 
 /** The file-system calls checkProjectPath makes; node:fs by default, a fake in tests. */
 export interface PathFs {
@@ -158,7 +179,7 @@ export class ProjectStore {
     if (project.id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be saved')
     const stored = this.get(project.id)
     if (!stored) throw new Error('Project not found')
-    const next: Project = { ...project }
+    const next: Project = reconcileNearLimitProject(stored, { ...project })
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers
     if (stored.plugins !== undefined) next.plugins = stored.plugins

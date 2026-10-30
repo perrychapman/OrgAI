@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth } from './settings'
+import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
 
 describe('modelPrices', () => {
   const price = { inputPerToken: 1e-6, outputPerToken: 2e-6 }
@@ -96,17 +96,56 @@ describe('normalizeSettings', () => {
 })
 
 describe('built-in role models', () => {
-  it('defaults the setup and MCP assistant models to opus', () => {
+  it('defaults every model setting to a tier, never a vendor alias', () => {
     const s = normalizeSettings({})
-    expect(s.setupModel).toBe('opus')
-    expect(s.mcpAssistModel).toBe('opus')
+    expect(s).toMatchObject({ defaultRootModel: 'deep', defaultReportModel: 'everyday', setupModel: 'deep', mcpAssistModel: 'deep' })
   })
 
   it('keeps a model id and falls back on bad values', () => {
     expect(normalizeSettings({ setupModel: ' us.openai.gpt-5 ', mcpAssistModel: 'sonnet' })).toMatchObject({ setupModel: 'us.openai.gpt-5', mcpAssistModel: 'sonnet' })
     for (const bad of [42, '', '   ', 'inherit', 'two words', 'a\nb', 'x'.repeat(201), null, { id: 'opus' }]) {
-      expect(normalizeSettings({ setupModel: bad, mcpAssistModel: bad } as never)).toMatchObject({ setupModel: 'opus', mcpAssistModel: 'opus' })
+      expect(normalizeSettings({ setupModel: bad, mcpAssistModel: bad } as never)).toMatchObject({ setupModel: 'deep', mcpAssistModel: 'deep' })
     }
+  })
+
+  it('migrates a saved value equal to the old Claude default to its tier, and only that', () => {
+    expect(normalizeSettings({ defaultRootModel: 'opus', defaultReportModel: 'sonnet', setupModel: 'opus', mcpAssistModel: 'opus' })).toMatchObject({
+      defaultRootModel: 'deep',
+      defaultReportModel: 'everyday',
+      setupModel: 'deep',
+      mcpAssistModel: 'deep'
+    })
+    expect(normalizeSettings({ defaultRootModel: 'fable', defaultReportModel: 'haiku', setupModel: 'sonnet', mcpAssistModel: 'claude-opus-4-5' })).toMatchObject({
+      defaultRootModel: 'fable',
+      defaultReportModel: 'haiku',
+      setupModel: 'sonnet',
+      mcpAssistModel: 'claude-opus-4-5'
+    })
+  })
+})
+
+describe('near-limit everyday steering', () => {
+  it('reads the legacy field when the new one is missing and mirrors both', () => {
+    expect(normalizeSettings({ defaultPreferSonnetNearLimit: true })).toMatchObject({ defaultPreferEverydayNearLimit: true, defaultPreferSonnetNearLimit: true })
+    expect(normalizeSettings({ defaultPreferEverydayNearLimit: false, defaultPreferSonnetNearLimit: true })).toMatchObject({
+      defaultPreferEverydayNearLimit: false,
+      defaultPreferSonnetNearLimit: false
+    })
+    expect(normalizeSettings({})).toMatchObject({ defaultPreferEverydayNearLimit: false, communityPrices: true })
+  })
+
+  it('lets an older renderer that changes only the legacy field win', () => {
+    const prev = normalizeSettings({})
+    expect(reconcileNearLimit(prev, { ...prev, defaultPreferSonnetNearLimit: true }).defaultPreferEverydayNearLimit).toBe(true)
+    expect(reconcileNearLimit(prev, { ...prev, defaultPreferEverydayNearLimit: true }).defaultPreferEverydayNearLimit).toBe(true)
+  })
+})
+
+describe('connection autoTiers', () => {
+  it('keeps known tiers once and leaves a missing list undefined', () => {
+    const s = normalizeSettings({ connections: { litellm: { autoTiers: ['fast', 'fast', 'bogus', 'deep'] } } } as never)
+    expect(s.connections.litellm.autoTiers).toEqual(['fast', 'deep'])
+    expect(normalizeSettings({}).connections.anthropic.autoTiers).toBeUndefined()
   })
 })
 

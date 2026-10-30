@@ -77,6 +77,8 @@
   --edge-message: #5d8bd6;
   --canvas-pattern: #1f2432;
   --canvas-wash-opacity: 0.06;
+  /* Strength of an element that produced nothing (no-result node, dim table row). */
+  --dim-opacity: 0.55;
 
   --elev-0: none;
   --elev-1: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px rgb(0 0 0 / 0.4);
@@ -144,6 +146,7 @@
   --edge-message: #2f67b4;
   --canvas-pattern: #d3d8e4;
   --canvas-wash-opacity: 0.05;
+  --dim-opacity: 0.5;
 
   --elev-0: none;
   --elev-1: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.04);
@@ -212,6 +215,7 @@
     --edge-message: #2f67b4;
     --canvas-pattern: #d3d8e4;
     --canvas-wash-opacity: 0.05;
+    --dim-opacity: 0.5;
 
     --elev-0: none;
     --elev-1: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.04);

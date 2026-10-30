@@ -16,7 +16,7 @@ import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { familyMismatches, previewRemap, roleTier, FAMILY_LABEL } from '../../lib/remap'
-import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } from '../../lib/settingsTarget'
 
 const NAME: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 const ICON = { anthropic: Sparkles, openai: Bot, litellm: Network }
@@ -198,6 +198,19 @@ export default function ProjectConnection({ project }: { project: Project }): Re
             })}
           </ul>
         </details>
+        <p className="settings-card-note" data-testid="model-prices-link">
+          Model prices are set in App settings.{' '}
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              requestModelPrice()
+              setView('appSettings')
+            }}
+          >
+            Open model prices
+          </button>
+        </p>
       </SettingsCard>
 
       {target === 'litellm' && (

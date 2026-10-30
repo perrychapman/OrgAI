@@ -77,9 +77,16 @@ type RawConnection =Partial<{
   enabled: unknown
   auth: unknown
   tierModels: unknown
+  autoTiers: unknown
   baseUrl: unknown
   hasApiKey: unknown
 }>
+
+/** ConnectionBase.autoTiers: known tiers, each once; anything else (or a non-array) is undefined (derived later). */
+function autoTiers(v: unknown): { autoTiers?: ModelTier[] } {
+  if (!Array.isArray(v)) return {}
+  return { autoTiers: [...new Set(v.filter((t): t is ModelTier => isModelTier(t)))] }
+}
 
 function tierModels(v: unknown, fallback: Partial<Record<ModelTier, ModelRef>>): Partial<Record<ModelTier, ModelRef>> {
   if (!v || typeof v !== 'object') return { ...fallback }
@@ -113,14 +120,21 @@ export function normalizeConnections(raw: unknown, legacyAuth: ProviderAuth): Pr
     return { kind: 'chatgpt' }
   }
   return {
-    anthropic: { id: 'anthropic', enabled: bool(a.enabled, d.anthropic.enabled), auth: anthropicAuth(), tierModels: tierModels(a.tierModels, d.anthropic.tierModels) },
-    openai: { id: 'openai', enabled: bool(o.enabled, d.openai.enabled), auth: openaiAuth(), tierModels: tierModels(o.tierModels, d.openai.tierModels) },
+    anthropic: {
+      id: 'anthropic',
+      enabled: bool(a.enabled, d.anthropic.enabled),
+      auth: anthropicAuth(),
+      tierModels: tierModels(a.tierModels, d.anthropic.tierModels),
+      ...autoTiers(a.autoTiers)
+    },
+    openai: { id: 'openai', enabled: bool(o.enabled, d.openai.enabled), auth: openaiAuth(), tierModels: tierModels(o.tierModels, d.openai.tierModels), ...autoTiers(o.autoTiers) },
     litellm: {
       id: 'litellm',
       enabled: bool(l.enabled, d.litellm.enabled),
       baseUrl: typeof l.baseUrl === 'string' ? l.baseUrl.trim() : d.litellm.baseUrl,
       hasApiKey: bool(l.hasApiKey, d.litellm.hasApiKey),
-      tierModels: tierModels(l.tierModels, d.litellm.tierModels)
+      tierModels: tierModels(l.tierModels, d.litellm.tierModels),
+      ...autoTiers(l.autoTiers)
     }
   }
 }
@@ -144,6 +158,30 @@ export function reconcileAnthropicAuth(prev: AppSettings, next: Partial<AppSetti
   return next
 }
 
+/**
+ * Keep defaultPreferEverydayNearLimit and its deprecated mirror defaultPreferSonnetNearLimit in step on settings:set:
+ * an older renderer changes only the legacy field, which then wins; otherwise the new field wins.
+ */
+export function reconcileNearLimit(prev: AppSettings, next: Partial<AppSettings>): Partial<AppSettings> {
+  const legacy = next.defaultPreferSonnetNearLimit
+  const fresh = next.defaultPreferEverydayNearLimit
+  const legacyChanged = typeof legacy === 'boolean' && legacy !== prev.defaultPreferSonnetNearLimit
+  const freshChanged = typeof fresh === 'boolean' && fresh !== prev.defaultPreferEverydayNearLimit
+  if (legacyChanged && !freshChanged) return { ...next, defaultPreferEverydayNearLimit: legacy }
+  return next
+}
+
+/**
+ * Model settings saved while the defaults were Claude aliases: a value equal to that old default becomes its tier
+ * (defaultRootModel / setupModel / mcpAssistModel 'opus' -> 'deep', defaultReportModel 'sonnet' -> 'everyday').
+ * Any other value, aliases included, is kept (a legacy alias still stands for its tier at resolution).
+ */
+const LEGACY_MODEL_DEFAULTS = { root: ['opus', 'deep'], report: ['sonnet', 'everyday'], builtin: ['opus', 'deep'] } as const
+function migrateModelDefault(value: string, kind: keyof typeof LEGACY_MODEL_DEFAULTS): string {
+  const [old, tier] = LEGACY_MODEL_DEFAULTS[kind]
+  return value === old ? tier : value
+}
+
 /** Merge whatever is on disk (or sent by the renderer) over the defaults, dropping anything malformed. */
 export function normalizeSettings(raw: Partial<AppSettings> | null | undefined): AppSettings {
   const d = DEFAULT_APP_SETTINGS
@@ -165,15 +203,21 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
   const threshold = Number(r.opusGuardThreshold)
   const maxContinues = Number(r.defaultMaxAutoContinues)
   const connections = normalizeConnections(r.connections, auth(r.providerAuth))
+  const nearLimit =
+    typeof r.defaultPreferEverydayNearLimit === 'boolean'
+      ? r.defaultPreferEverydayNearLimit
+      : typeof r.defaultPreferSonnetNearLimit === 'boolean'
+        ? r.defaultPreferSonnetNearLimit
+        : d.defaultPreferEverydayNearLimit
   return {
     defaultPermissionMode: isPermissionMode(r.defaultPermissionMode) ? r.defaultPermissionMode : d.defaultPermissionMode,
     defaultMaxBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : d.defaultMaxBudgetUsd,
     defaultKeepRuns: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : d.defaultKeepRuns,
     defaultIsolateWriters: typeof r.defaultIsolateWriters === 'boolean' ? r.defaultIsolateWriters : d.defaultIsolateWriters,
-    defaultRootModel: str(r.defaultRootModel, d.defaultRootModel),
-    defaultReportModel: str(r.defaultReportModel, d.defaultReportModel),
-    setupModel: modelRef(r.setupModel, d.setupModel),
-    mcpAssistModel: modelRef(r.mcpAssistModel, d.mcpAssistModel),
+    defaultRootModel: migrateModelDefault(str(r.defaultRootModel, d.defaultRootModel), 'root'),
+    defaultReportModel: migrateModelDefault(str(r.defaultReportModel, d.defaultReportModel), 'report'),
+    setupModel: migrateModelDefault(modelRef(r.setupModel, d.setupModel), 'builtin'),
+    mcpAssistModel: migrateModelDefault(modelRef(r.mcpAssistModel, d.mcpAssistModel), 'builtin'),
     // The connection is authoritative; the legacy field mirrors it (see reconcileAnthropicAuth).
     providerAuth: { ...connections.anthropic.auth },
     connections,
@@ -183,8 +227,9 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     modelPrices: normalizeModelPrices(r.modelPrices),
     opusGuardThreshold:
       r.opusGuardThreshold != null && Number.isFinite(threshold) && threshold >= 1 && threshold <= 100 ? threshold : d.opusGuardThreshold,
-    defaultPreferSonnetNearLimit:
-      typeof r.defaultPreferSonnetNearLimit === 'boolean' ? r.defaultPreferSonnetNearLimit : d.defaultPreferSonnetNearLimit,
+    defaultPreferEverydayNearLimit: nearLimit,
+    defaultPreferSonnetNearLimit: nearLimit,
+    communityPrices: typeof r.communityPrices === 'boolean' ? r.communityPrices : d.communityPrices,
     defaultAutoContinue: typeof r.defaultAutoContinue === 'boolean' ? r.defaultAutoContinue : d.defaultAutoContinue,
     defaultMaxAutoContinues:
       r.defaultMaxAutoContinues != null && Number.isFinite(maxContinues) && maxContinues >= 0
@@ -240,7 +285,7 @@ export class SettingsStore {
     const appearance = { ...stored, ...given, canvas: { ...stored.canvas, ...(given.canvas ?? {}) } }
     // modelPrices left out (an older renderer) keeps the stored overrides; an array (even empty) replaces them.
     const modelPrices = next.modelPrices !== undefined ? next.modelPrices : this.settings.modelPrices
-    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices }))
+    const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices })))
     normalized.connections.litellm.hasApiKey = this.settings.connections.litellm.hasApiKey
     this.settings = normalized
     this.persist()
