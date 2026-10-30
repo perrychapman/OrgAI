@@ -421,4 +421,23 @@ describe('withRepoLock', () => {
     review.resolve()
     expect((await pending).info.status).toBe('merged')
   })
+
+  it('reports a worktree discarded during the review as removed, not as a conflict', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('rev3')
+    put(wt.path, 'src/r3.js', 'export const r3 = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'merge' }
+    })
+    while (!reviewing) await tick()
+    await discardWorktree(root, wt)
+    review.resolve()
+    const res = await pending
+    expect(res.info.status).toBe('removed')
+    expect(res.message).toMatch(/removed during the review/)
+  })
 })
