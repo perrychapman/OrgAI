@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { anthropicStatus, claudeCandidatePaths } from './anthropicAuth'
+import { anthropicStatus, claudeCandidatePaths, dedupeByRealpath } from './anthropicAuth'
 
 describe('claudeCandidatePaths', () => {
   it('lists the native installer and Homebrew locations that exist on macOS', () => {
@@ -16,6 +16,27 @@ describe('claudeCandidatePaths', () => {
         throw new Error('EACCES')
       })
     ).toEqual([])
+  })
+})
+
+describe('dedupeByRealpath', () => {
+  it('keeps the first spelling of paths that resolve to the same file', () => {
+    const links: Record<string, string> = {
+      '/opt/homebrew/bin/claude': '/opt/homebrew/Cellar/claude/1.0/bin/claude',
+      '/opt/homebrew/Cellar/claude/1.0/bin/claude': '/opt/homebrew/Cellar/claude/1.0/bin/claude',
+      '/Users/me/.local/bin/claude': '/Users/me/.claude/local/claude',
+      '/Users/me/.claude/local/claude': '/Users/me/.claude/local/claude'
+    }
+    const real = (p: string): string => {
+      if (!(p in links)) throw new Error('ENOENT')
+      return links[p]
+    }
+    expect(
+      dedupeByRealpath(
+        ['/opt/homebrew/bin/claude', '/Users/me/.local/bin/claude', '/opt/homebrew/Cellar/claude/1.0/bin/claude', '/Users/me/.claude/local/claude', 'claude'],
+        real
+      )
+    ).toEqual(['/opt/homebrew/bin/claude', '/Users/me/.local/bin/claude', 'claude'])
   })
 })
 

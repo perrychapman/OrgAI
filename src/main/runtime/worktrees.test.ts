@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -184,6 +184,33 @@ describe('integrateWorktree', () => {
     expect(git(root, `log -1 --format=%s ${wt.branch}`)).toBe('Implementer: change a')
   })
 
+  it('commits and merges with OrgAI identity when git has none (fresh CI runner)', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('noid1')
+    put(wt.path, 'src/noid.js', 'export const n = 1\n')
+    // No repo, global or system identity, no env identity, and no hostname guessing.
+    git(root, 'config --unset user.name')
+    git(root, 'config --unset user.email')
+    git(root, 'config user.useConfigOnly true')
+    const keys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL']
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
+    for (const k of keys) delete process.env[k]
+    process.env.GIT_CONFIG_GLOBAL = join(root, 'no-global-gitconfig')
+    process.env.GIT_CONFIG_NOSYSTEM = '1'
+    try {
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Implementer: no identity')
+      expect(res.info.status, res.message).toBe('merged')
+      expect(execSync('git log -1 --format=%an%x20%P', { cwd: root, encoding: 'utf8' }).trim().split(' ')).toHaveLength(3)
+      expect(execSync('git log -1 --format=%an', { cwd: root, encoding: 'utf8' }).trim()).toBe('OrgAI')
+      expect(existsSync(join(root, '.git', 'MERGE_HEAD'))).toBe(false)
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+    }
+  })
+
   it('reports an empty report and removes it', async () => {
     await prepareRepo(root)
     const wt = addWorktree('empty1')
@@ -322,8 +349,9 @@ describe('pathKey', () => {
     expect(pathKey('C:\\Repo\\Sub\\', 'win32')).toBe('c:/repo/sub')
   })
   it('folds case on win32 and darwin but not on linux', () => {
-    expect(pathKey('/Users/Me/Proj', 'darwin')).toBe('/users/me/proj')
-    expect(pathKey('/Users/Me/Proj', 'linux')).toBe('/Users/Me/Proj')
+    // A root that exists nowhere, so no ancestor resolves (on Windows "/Users" would resolve to C:\Users).
+    expect(pathKey('/OrgAI-No-Such-Root/Me/Proj', 'darwin')).toBe('/orgai-no-such-root/me/proj')
+    expect(pathKey('/OrgAI-No-Such-Root/Me/Proj', 'linux')).toBe('/OrgAI-No-Such-Root/Me/Proj')
   })
   it('resolves existing directories to their real path', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-pk-'))
@@ -331,6 +359,72 @@ describe('pathKey', () => {
       expect(pathKey(dir, 'linux')).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/** A directory link to `target` (a junction on Windows, which needs no privileges). Undefined if links are refused. */
+function linkTo(target: string): string | undefined {
+  const link = join(mkdtempSync(join(tmpdir(), 'orgai-link-')), 'linked')
+  try {
+    symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+    return link
+  } catch {
+    rmSync(dirname(link), { recursive: true, force: true })
+    return undefined
+  }
+}
+
+// macOS: /tmp and /var are symlinks into /private, so git reports /private/... for a project picked as /tmp/...
+describe('symlinked project roots', () => {
+  it('pathKey treats a link and its target as the same checkout', (ctx) => {
+    const link = linkTo(root)
+    if (!link) return ctx.skip()
+    try {
+      expect(pathKey(link)).toBe(pathKey(root))
+      expect(pathKey(join(link, '.claude', 'worktrees'))).toBe(pathKey(join(root, '.claude', 'worktrees')))
+    } finally {
+      rmSync(dirname(link), { recursive: true, force: true })
+    }
+  })
+
+  it('finds and inspects an agent worktree through the link', async (ctx) => {
+    const link = linkTo(root)
+    if (!link) return ctx.skip()
+    try {
+      await prepareRepo(link)
+      const wt = addWorktree('viaLink')
+      const found = await findWorktree(link, 'viaLink')
+      expect(found?.branch).toBe(wt.branch)
+      expect(pathKey(found!.path)).toBe(pathKey(wt.path))
+      expect(pathKey(found!.path).startsWith(`${pathKey(link)}/`)).toBe(true)
+      expect((await inspectPending(link)).map((p) => p.branch)).toEqual([wt.branch])
+    } finally {
+      rmSync(dirname(link), { recursive: true, force: true })
+    }
+  })
+
+  it('serialises the repo lock across a link and its target', async (ctx) => {
+    const link = linkTo(root)
+    if (!link) return ctx.skip()
+    try {
+      const order: string[] = []
+      let release!: () => void
+      const gate = new Promise<void>((r) => (release = r))
+      const first = withRepoLock(root, async () => {
+        order.push('a-start')
+        await gate
+        order.push('a-end')
+      })
+      const second = withRepoLock(link, async () => {
+        order.push('b')
+      })
+      await new Promise((r) => setTimeout(r, 20))
+      release()
+      await Promise.all([first, second])
+      expect(order).toEqual(['a-start', 'a-end', 'b'])
+    } finally {
+      rmSync(dirname(link), { recursive: true, force: true })
     }
   })
 })

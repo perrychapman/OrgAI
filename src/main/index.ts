@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ConnectionEvent, RunEvent } from '@shared/types'
 import { IPC } from '@shared/types'
@@ -21,8 +22,19 @@ import { MaintenanceService } from './maintenance'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { installLogging } from './log'
+import { dataDirOverride, installLogging } from './log'
 
+// Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
+// touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
+const dataOverride = dataDirOverride()
+if (dataOverride) {
+  mkdirSync(dataOverride.logs, { recursive: true })
+  app.setPath('userData', dataOverride.userData)
+  app.setAppLogsPath(dataOverride.logs)
+}
+// Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
+// and the About entry. userData was fixed by Electron before this runs, so it does not move.
+if (!app.isPackaged) app.setName('OrgAI')
 installLogging()
 // Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
 applyShellPath()

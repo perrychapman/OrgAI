@@ -1,9 +1,8 @@
 // Token-free. Creates projects in both form modes with "Skip AI setup", checks the live view's layout with a very
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
-import { check, cleanup, endSession, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -15,7 +14,7 @@ const NAME = 'E2E layout (orgai test)'
 const NEW_NAME = 'E2E layout new idea (orgai test)'
 
 // A long path stresses the topbar path pill.
-const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-e2e-layout-')))
+const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-layout-'))
 const repo = path.join(base, 'a-rather-long-directory-name-for-layout-checks', 'and-another-nested-level-to-make-it-longer', 'repo')
 makeFixtureRepo('layout', { at: repo })
 
@@ -118,7 +117,8 @@ try {
   await page.getByRole('button', { name: 'Runs', exact: true }).click()
   await sleep(500)
   check((await page.locator('.run-row').count()) >= 1, 'run appears in history after reload')
-  await page.locator('.run-row').first().click()
+  // Rows are not clickable; each has an Open button (RunHistory).
+  await page.locator('.run-row').first().getByRole('button', { name: 'Open', exact: true }).click()
   await sleep(1500)
   await page.getByRole('button', { name: 'Transcript', exact: true }).click()
   await sleep(500)

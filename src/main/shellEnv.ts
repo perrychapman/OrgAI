@@ -107,6 +107,23 @@ export function wellKnownDirs(
   })
 }
 
+/** Shells that take `-ilc` and expand "$PATH" as one colon-joined string. */
+const POSIX_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'oksh', 'yash'])
+
+/**
+ * Which shell to ask and what to run in it. POSIX shells print "$PATH". fish keeps PATH as a list (quoted expansion
+ * joins with spaces before fish 3.0), so it prints `string join : $PATH`. csh/tcsh reject `-ilc` and nushell or
+ * xonsh quote differently, so any other or relative SHELL falls back to the platform shell.
+ */
+export function shellInvocation(shellEnv: string | undefined, fallback: string, start: string, end: string): { shell: string; command: string } {
+  const posix = (shell: string): { shell: string; command: string } => ({ shell, command: `printf '%s' "${start}$PATH${end}"` })
+  if (!shellEnv || !shellEnv.startsWith('/')) return posix(fallback)
+  const name = shellEnv.split('/').pop() ?? ''
+  if (name === 'fish') return { shell: shellEnv, command: `printf '%s' '${start}'(string join : $PATH)'${end}'` }
+  if (POSIX_SHELLS.has(name)) return posix(shellEnv)
+  return posix(fallback)
+}
+
 function defaultRun(shell: string, args: string[], timeoutMs: number): string {
   return execFileSync(shell, args, {
     encoding: 'utf8',
@@ -131,17 +148,22 @@ export function resolveShellPath(opts: ShellPathOptions = {}): ShellPathResult {
   const seed = opts.seed ?? Math.random().toString(36).slice(2, 10)
   const start = `__ORGAI_PATH_${seed}_START__`
   const end = `__ORGAI_PATH_${seed}_END__`
-  const shell = env.SHELL && env.SHELL.startsWith('/') ? env.SHELL : platform === 'darwin' ? '/bin/zsh' : '/bin/bash'
+  const fallbackShell = platform === 'darwin' ? '/bin/zsh' : '/bin/bash'
+  const { shell, command } = shellInvocation(env.SHELL, fallbackShell, start, end)
 
   let shellPath: string[] = []
   let note: string | undefined
   try {
     // -i: interactive (zsh reads .zshrc, where nvm/volta/pyenv put themselves), -l: login (.zprofile, where Homebrew does).
-    const out = (opts.run ?? defaultRun)(shell, ['-ilc', `printf '%s' "${start}$PATH${end}"`], opts.timeoutMs ?? 3000)
+    const out = (opts.run ?? defaultRun)(shell, ['-ilc', command], opts.timeoutMs ?? 3000)
     const value = parseMarkedValue(out, start, end)
     if (value) shellPath = splitPath(value, ':')
     else note = 'login shell printed no PATH'
   } catch (e) {
+    // A shell that exits non-zero (a failing line at the end of .zshrc) may still have printed the PATH.
+    const stdout = (e as { stdout?: unknown }).stdout
+    const value = typeof stdout === 'string' ? parseMarkedValue(stdout, start, end) : undefined
+    if (value) shellPath = splitPath(value, ':')
     note = `login shell failed: ${(e as Error).message.split('\n')[0]}`
   }
 

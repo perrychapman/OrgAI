@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -138,18 +138,32 @@ async function listAgentWorktrees(root: string): Promise<{ path: string; branch:
 }
 
 /**
- * Path comparison key: forward slashes, no trailing slash. Case-folded on Windows and macOS, whose default
+ * Real path of `p`, or for a path that does not exist (yet) the real path of its nearest existing ancestor plus
+ * the rest, so /tmp/proj/.claude/worktrees/new keys like /private/tmp/proj/.claude/worktrees/new.
+ */
+function realpathOfNearest(p: string): string {
+  if (!isAbsolute(p)) return p
+  const rest: string[] = []
+  let cur = p
+  // Stop below the filesystem root: resolving "/" alone would turn a foreign path into C:\... on Windows.
+  for (let parent = dirname(cur); parent !== cur; cur = parent, parent = dirname(cur)) {
+    try {
+      const real = realpathSync.native(cur)
+      return rest.length ? join(real, ...rest.reverse()) : real
+    } catch {
+      rest.push(basename(cur))
+    }
+  }
+  return p
+}
+
+/**
+ * Path comparison key:forward slashes, no trailing slash. Case-folded on Windows and macOS, whose default
  * file systems are case-insensitive, but not on Linux. Symlinks are resolved when the path exists: git prints
  * real paths (/private/var/... for /var/...) while a project folder may have been picked through a symlink.
  */
 export function pathKey(p: string, platform: string = process.platform): string {
-  let real = p
-  try {
-    real = realpathSync.native(p)
-  } catch {
-    /* the path does not exist (yet): compare as given */
-  }
-  const key = real.replace(/\\/g, '/').replace(/\/+$/, '')
+  const key = realpathOfNearest(p).replace(/\\/g, '/').replace(/\/+$/, '')
   return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
 }
 
@@ -227,6 +241,10 @@ export async function commitLeftovers(wt: string, message: string): Promise<{ co
   return withRepoLock(wt, () => commitLeftoversUnlocked(wt, message))
 }
 
+/** git's complaint when no user.name / user.email is configured ("Please tell me who you are", "Author identity unknown"). */
+const IDENTITY_ERROR = /user\.name|user\.email|identity|tell me who you are/i
+const FALLBACK_IDENTITY = ['-c', 'user.name=OrgAI', '-c', 'user.email=orgai@localhost']
+
 async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
   const status = await git(wt, ['status', '--porcelain'])
   if (!status.ok || !status.out) return { committed: false }
@@ -237,8 +255,8 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
     return { committed: false }
   }
   let commit = await git(wt, ['commit', '-q', '-m', message])
-  if (!commit.ok && /user\.name|user\.email|identity/i.test(commit.err)) {
-    commit = await git(wt, ['-c', 'user.name=OrgAI', '-c', 'user.email=orgai@localhost', 'commit', '-q', '-m', message])
+  if (!commit.ok && IDENTITY_ERROR.test(commit.err)) {
+    commit = await git(wt, [...FALLBACK_IDENTITY, 'commit', '-q', '-m', message])
   }
   return commit.ok ? { committed: true } : { committed: false, error: commit.err.slice(0, 300) }
 }
@@ -327,7 +345,13 @@ export async function integrateWorktree(
 /** integrateWorktree's merge step; the caller holds the target's lock. */
 async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[]): Promise<IntegrateResult> {
   const wt = info.path
-  const merge = await git(root, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, info.branch])
+  const mergeArgs = ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, info.branch]
+  let merge = await git(root, mergeArgs)
+  if (!merge.ok && IDENTITY_ERROR.test(merge.err)) {
+    // No git identity (fresh CI runner, new machine): undo any half-made merge and retry with OrgAI's, as commits do.
+    await git(root, ['merge', '--abort'])
+    merge = await git(root, [...FALLBACK_IDENTITY, ...mergeArgs])
+  }
   if (!merge.ok) {
     const conflicts = await git(root, ['diff', '--name-only', '--diff-filter=U'])
     const conflictFiles = conflicts.ok ? conflicts.out.split(/\r?\n/).filter(Boolean) : []
