@@ -243,6 +243,18 @@
   grid-row: 1 / span 2;
   grid-column: 2;
 }
+/* Wide panel (SidePanel sets data-side-wide from 480 px): the composer moves under the transcript, in the panel column.
+   Same element, so the draft and attachments survive; the canvas frame takes both rows. */
+.run-body[data-side-wide='true'] > .canvas-frame {
+  grid-row: 1 / span 2;
+}
+.run-body[data-side-wide='true'] > .side-panel {
+  grid-row: 1;
+}
+.run-body[data-side-wide='true'] > .composer {
+  grid-column: 2;
+  border-left: 1px solid var(--border-default);
+}
 .live-panel {
   flex: 1;
   min-height: 0;

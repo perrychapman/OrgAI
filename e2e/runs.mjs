@@ -331,10 +331,13 @@ try {
     const geo = () => page.evaluate(() => ({
       panel: Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0),
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
+      gap: Math.round((document.querySelector('.side-panel')?.getBoundingClientRect().left ?? 0) - (document.querySelector('.run-body .react-flow')?.getBoundingClientRect().right ?? 0)),
+      composerInPanel: (() => { const c = document.querySelector('.run-body > .composer')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
     const g0 = await geo()
+    check(Math.abs(g0.gap) <= 2, 'the canvas pane meets the side panel (no blank strip) at the default width', JSON.stringify(g0))
     await handle.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     const hb = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
     check(!!hb, 'the run view side panel has a resize handle with a live run', JSON.stringify({ ...(await geo()), ...(await envDiag()) }))
@@ -346,6 +349,7 @@ try {
       await page.mouse.up()
       await sleep(200)
       const g1 = await geo()
+      check(Math.abs(g1.gap) <= 2, 'the canvas pane meets the side panel after a drag', JSON.stringify(g1))
       check(g1.panel - g0.panel >= 30, 'dragging the run side panel handle left widens the panel', `${g0.panel} -> ${g1.panel}`)
       const hb2 = (await handle.boundingBox({ timeout: 3000 }).catch(() => null)) ?? hb
       await page.mouse.move(hb2.x + hb2.width / 2, y)
@@ -354,9 +358,33 @@ try {
       await page.mouse.up()
       await sleep(250)
       const g2 = await geo()
-      check(g2.stage >= 359, 'dragged to max at 1024 the canvas stage keeps at least 360 px', JSON.stringify(g2))
-      check(g2.panel <= 640 && g2.panel >= g1.panel, 'the panel stays within 280-640 px', JSON.stringify(g2))
+      check(g2.stage >= 279, 'dragged to max at 1024 the canvas stage keeps at least 280 px', JSON.stringify(g2))
+      check(g2.panel >= g1.panel && Math.abs(g2.gap) <= 2, 'dragged to max the panel only grows and the canvas still meets it', JSON.stringify(g2))
+      check(g2.panel < 480 || g2.composerInPanel, 'a panel of 480 px or more holds the composer below its content', JSON.stringify(g2))
       await shot('side-panel-max-1024')
+      // A large window: no 640 px cap, the composer moves into the panel column, the toolbar does not overflow.
+      await setSize(1800, 1000)
+      await sleep(300)
+      const hb3 = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
+      if (hb3) {
+        const y3 = hb3.y + hb3.height / 2
+        await page.mouse.move(hb3.x + hb3.width / 2, y3)
+        await page.mouse.down()
+        await page.mouse.move(hb3.x + hb3.width / 2 - 900, y3, { steps: 8 })
+        await page.mouse.up()
+        await sleep(300)
+        const g3 = await geo()
+        check(g3.panel > 640, 'the panel can be dragged wider than 640 px in a large window', JSON.stringify(g3))
+        check(Math.abs(g3.gap) <= 2 && g3.stage >= 279 && g3.composerInPanel, 'a wide panel: canvas meets it, keeps 280 px, composer sits under the panel content', JSON.stringify(g3))
+        const tb = await page.evaluate(() => { const t = document.querySelector('.frame-toolbar'); return t ? t.scrollWidth - t.clientWidth : 0 })
+        check(tb <= 1, 'the canvas toolbar does not overflow at a narrow canvas width', String(tb))
+        await shot('side-panel-wide-1800')
+        await handle.dblclick()
+        await sleep(200)
+        check(!(await geo()).composerInPanel, 'back at the default width the composer sits under the canvas')
+      }
+      await setSize(1024, 640)
+      await sleep(300)
       await handle.dblclick()
       await sleep(200)
       check(Math.abs((await geo()).panel - g0.panel) <= 1, 'double-click restores the run side panel default width', JSON.stringify(await geo()))

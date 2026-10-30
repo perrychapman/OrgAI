@@ -88,7 +88,7 @@
 /* Only a roomy frame (1500 x 560 or more) docks the tray beside the canvas; a narrower or shorter one stacks, so
    collapsing the side panel never moves the tray sideways. The beside tray is at least 420 px wide. */
 @container frame (min-width: 1500px) and (min-height: 560px) {
-  .frame-grid:has(> .frame-tray) {
+  .frame-grid:has(> .frame-tray:not(:empty)) {
     grid-template-columns: minmax(0, 1fr) clamp(420px, 30cqi, 480px);
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
@@ -346,6 +346,9 @@ button.run-meta-item:focus-visible {
   }
 }
 @container frame (max-width: 340px) {
+  .run-meta {
+    visibility: hidden;
+  }
   .fold-label {
     position: absolute;
     width: 1px;
