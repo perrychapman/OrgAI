@@ -1124,6 +1124,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
           break
+        case 'run.usage':
+          // The host's usage is the truth for the run; totalCostUsd mirrors it (null = unknown keeps the last figure).
+          run.summary = { ...run.summary, usage: e.usage, totalCostUsd: e.usage.costUsd ?? run.summary.totalCostUsd }
+          break
         case 'run.title':
           run.summary = { ...run.summary, title: e.title }
           break

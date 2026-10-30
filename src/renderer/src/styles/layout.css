@@ -340,6 +340,7 @@ button.run-meta-item:focus-visible {
 }
 @container frame (max-width: 420px) {
   .run-meta-cost,
+  .run-meta-wall,
   .run-meta-agents {
     display: none;
   }

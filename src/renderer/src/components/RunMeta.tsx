@@ -1,9 +1,11 @@
 import type { ReactElement } from 'react'
-import { Bot, ClipboardList, ShieldAlert } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Bot, ClipboardList, Clock, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
-import { useCostLabel } from '../lib/useCostLabel'
+import { agentCostInput, formatDuration, runCostInput, sumCosts, costView } from '../lib/cost'
+import { Cost } from './ui/Cost'
 import { predecessorOf, relativeTime } from '../lib/runChains'
 import { runName, runTag, shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
@@ -17,13 +19,22 @@ import { Icon } from './ui/Icon'
 export default function RunMeta({ run, project, agentCount }: { run: RunState; project: Project; agentCount: number }): ReactElement {
   const indexes = useRunIndexes()
   const summaries = useProjectSummaries()
-  const labelCost = useCostLabel(run.summary.connection)
   const setSideTab = useAppStore((s) => s.setSideTab)
   const openRun = useAppStore((s) => s.openRun)
   const { summary } = run
-  // The strip total can lag the agent costs (the adapter sends run.cost per turn); never show less than the parts.
-  const total = Math.max(summary.totalCostUsd, Object.values(run.agents).reduce((sum, a) => sum + (a.costUsd || 0), 0))
-  const cost = labelCost(total)
+  // Wall time ticks each second while the run is live; "Started" refreshes every 30 s either way.
+  const live = !summary.endedAt
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), live ? 1000 : 30_000)
+    return () => clearInterval(t)
+  }, [live])
+  const wallMs = (summary.endedAt ?? now) - summary.startedAt
+  // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
+  const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
+  const cost =
+    summary.usage ?? (agentCosts.costUsd !== null && agentCosts.costUsd > summary.totalCostUsd ? agentCosts : runCostInput(summary))
+  const showCost = !costView(cost).empty
   const before = summary.resumedFrom ? predecessorOf(summaries, summary.id) : undefined
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
@@ -65,13 +76,19 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {run.plan.status === 'blocked' && <span className="sr-only"> (plan blocked)</span>}
         </button>
       )}
-      {!cost.hidden && (
-      <span className="run-meta-item run-meta-cost" title={cost.title}>
-        {cost.text}
-      </span>
+      {wallMs >= 0 && (
+        <span className="run-meta-item run-meta-wall" title={live ? 'Wall time so far' : 'Wall time'}>
+          <Icon icon={Clock} size="xs" />
+          {formatDuration(wallMs)}
+        </span>
+      )}
+      {showCost && (
+        <span className="run-meta-item run-meta-cost">
+          <Cost value={cost} />
+        </span>
       )}
       <span className="run-meta-item run-meta-started" title={new Date(summary.startedAt).toLocaleString()}>
-        Started {relativeTime(summary.startedAt)}
+        Started {relativeTime(summary.startedAt, now)}
       </span>
       {auto.active && auto.count > 0 && (
         <span className="run-meta-item run-meta-auto">
