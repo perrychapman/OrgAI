@@ -45,6 +45,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const [notice, setNotice] = useState<{ roleId: string; text: string } | null>(null)
   const [undo, setUndo] = useState<{ removed: RemovedRole; name: string } | null>(null)
   const [focusTick, setFocusTick] = useState(0)
+  const [panelOpen, setPanelOpen] = useState(true)
   const focusWanted = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -211,6 +212,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const onNodeClick: NodeMouseHandler<RoleFlowNode> = useCallback(
     (_e, node) => {
       setSelectedEdgeId(null)
+      setPanelOpen(true)
       selectRole(node.id)
     },
     [selectRole]
@@ -220,6 +222,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     const el = e.target as HTMLElement
     if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('react-flow__node')) {
       focusWanted.current = true
+      setPanelOpen(true)
       setFocusTick((t) => t + 1)
     }
   }
@@ -254,6 +257,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     setUndo(null)
     setSelectedEdgeId(null)
     focusWanted.current = true
+    setPanelOpen(true)
     setFocusTick((t) => t + 1)
     selectRole(role.id)
   }
@@ -315,7 +319,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
           <span>Drag from a node's bottom handle to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</span>
         </FrameFooter>
       </CanvasFrame>
-      <SidePanel label={selectedRole ? 'role inspector' : 'AI draft panel'}>
+      <SidePanel label={selectedRole ? 'role inspector' : 'AI draft panel'} open={panelOpen} onOpenChange={setPanelOpen}>
         {selectedRole ? (
           <RoleInspector
             project={project}

@@ -36,6 +36,12 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
   const [error, setError] = useState<string | null>(null)
   const [check, setCheck] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
 
+  // The form opens with the cursor in its first field.
+  useEffect(() => {
+    document.getElementById(ids.name)?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Debounced live check of the folder; stale answers are dropped.
   useEffect(() => {
     const p = path.trim()
@@ -84,6 +90,13 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
       }
       await createProject(input as Parameters<typeof createProject>[0])
       if (architect) await startSetup()
+      // The form is gone: land focus on the new project's heading instead of letting it fall to the page.
+      requestAnimationFrame(() => {
+        const h = document.querySelector<HTMLElement>('main .topbar h1')
+        if (!h) return
+        h.tabIndex = -1
+        h.focus({ preventScroll: true })
+      })
     } catch (err) {
       setError((err as Error).message)
       document.getElementById(ids.path)?.focus()

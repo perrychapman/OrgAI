@@ -381,3 +381,14 @@
     display: block;
   }
 }
+
+/* The document never scrolls: only the view panes do, so a scrollIntoView can not push the topbar away. */
+html,
+#root {
+  overflow: hidden;
+}
+.settings-block-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
