@@ -40,7 +40,7 @@ jobs:
       publish: ${{ steps.meta.outputs.publish }}
     steps:
       # Full history plus origin/main and the tags, for the reachability check.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: meta
@@ -105,10 +105,10 @@ jobs:
             args: --mac --x64
             arch: x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.meta.outputs.ref }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -152,7 +152,7 @@ jobs:
             fi
           fi
           npx electron-builder ${{ matrix.args }} --publish never
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: orgai-${{ matrix.name }}
           path: |
@@ -173,12 +173,12 @@ jobs:
       contents: write
     steps:
       # One folder per leg (no merge-multiple): both mac legs may write a latest-mac.yml.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: orgai-*
       - run: ls -R dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           draft: true
