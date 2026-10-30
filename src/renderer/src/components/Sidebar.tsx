@@ -86,7 +86,7 @@ export default function Sidebar(): ReactElement {
           <Icon icon={LayoutGrid} size="sm" /> Projects
         </button>
         <button type="button" className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} aria-current={view === 'appSettings' ? 'page' : undefined} onClick={() => setView('appSettings')}>
-          <Icon icon={Settings} size="sm" /> Settings
+          <Icon icon={Settings} size="sm" /> App settings
         </button>
       </div>
 

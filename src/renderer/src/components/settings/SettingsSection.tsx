@@ -1,21 +1,48 @@
-import type { ReactElement, ReactNode } from 'react'
+import type { ReactElement, ReactNode, Ref } from 'react'
 import { useId } from 'react'
 
-/** One project-settings section: the same sentence-case heading, optional lead line, then its controls. */
-export function SettingsSection({ id, title, description, children }: { id: string; title: string; description?: ReactNode; children: ReactNode }): ReactElement {
+/**
+ * One settings section, the same on both pages: a title (one tier above row labels), an optional one-line lead, an
+ * optional actions slot (buttons that act on the whole section) and then its content (usually `SettingsCard`s).
+ * `id` is the stable DOM id deep links and e2e use.
+ */
+export function SettingsSection({
+  id,
+  title,
+  description,
+  actions,
+  testId,
+  sectionRef,
+  children
+}: {
+  id: string
+  title: string
+  /** One line under the title. */
+  description?: ReactNode
+  /** Section-level buttons, right of the title (wraps below it when narrow). */
+  actions?: ReactNode
+  testId?: string
+  sectionRef?: Ref<HTMLElement>
+  children: ReactNode
+}): ReactElement {
   const titleId = useId()
   return (
-    <section id={id} className="settings-block" aria-labelledby={titleId}>
-      <h2 id={titleId} className="side-section-title">
-        {title}
-      </h2>
-      {description && <p className="settings-block-lead">{description}</p>}
+    <section id={id} ref={sectionRef} className="settings-section" aria-labelledby={titleId} data-testid={testId}>
+      <header className="settings-section-head">
+        <div className="settings-section-heading">
+          <h2 id={titleId} className="settings-section-title">
+            {title}
+          </h2>
+          {description && <p className="settings-section-lead">{description}</p>}
+        </div>
+        {actions && <div className="settings-section-actions">{actions}</div>}
+      </header>
       {children}
     </section>
   )
 }
 
-/** Smaller heading for a group of related controls inside a section. */
+/** Lower-tier heading (caption, sentence case) above a card or a run of rows inside a section. */
 export function SettingsGroup({ title, children }: { title: string; children: ReactNode }): ReactElement {
   const titleId = useId()
   return (

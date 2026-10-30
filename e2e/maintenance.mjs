@@ -44,8 +44,8 @@ log('fixture at', repo)
 
 const { app, page, shot } = await launch({ shotPrefix: 'maint' })
 const rows = page.locator('.maint-row')
-// The panel's own notice: a direct child of the block headed "Maintenance".
-const notice = page.locator('.side-section-title', { hasText: /^Maintenance$/ }).locator('xpath=..').locator(':scope > .draft-box')
+// The panel's own notice: a direct child of the Maintenance section.
+const notice = page.locator('#settings-section-maintenance > .draft-box')
 
 /** Wait for the maintenance notice to match. */
 async function waitNotice(re, ms = 30_000) {
@@ -71,6 +71,7 @@ try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created')
   await page.locator('.editor .tabs, .tabs').getByRole('button', { name: 'Project settings', exact: true }).first().click()
+  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
   await page.waitForSelector('.maint-row', { timeout: 20_000 })
   const count = await rows.count()
   check(count === 2, 'maintenance lists two pending branches', String(count))

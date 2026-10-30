@@ -138,7 +138,7 @@ try {
 
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
-  await page.getByRole('button', { name: 'Maintenance', exact: true }).first().click()
+  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
   await sleep(600)
   const a2 = await page.evaluate(() => {
     const r = [...document.querySelectorAll('.topbar .tabs button')].find((b) => b.textContent?.trim() === 'Live')?.getBoundingClientRect()
@@ -150,6 +150,7 @@ try {
 
   // Run messaging switch persists through projects:save.
   await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
+  await page.getByRole('tab', { name: 'General', exact: true }).click()
   const sw = page.getByRole('switch', { name: 'Let runs message each other' })
   await sw.waitFor({ timeout: 10_000 })
   check((await sw.getAttribute('aria-checked')) === 'false', 'run messaging switch starts off')

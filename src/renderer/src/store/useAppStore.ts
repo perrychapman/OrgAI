@@ -124,6 +124,9 @@ interface AppState {
   /** The virtual project that hosts library assistant runs. It is never in `projects`. */
   harnessProject: Project | null
   mcpFocus: McpFocus | null
+  /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
+  projectSettingsPane: Record<string, string>
+  setProjectSettingsPane(projectId: string, pane: string): void
   /** Show the app settings MCP library, optionally on one entry. */
   openMcpLibrary(libraryId?: string): void
   /** Show a project's settings on its MCP servers section, optionally on one server. */
@@ -392,6 +395,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   harnessProject: null,
   mcpFocus: null,
+  projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
   saveStatus: { state: 'idle' },
@@ -769,7 +773,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openProjectMcp(projectId, serverId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
-    set({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId } })
+    set((s) => ({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId }, projectSettingsPane: { ...s.projectSettingsPane, [projectId]: 'tools' } }))
+  },
+
+  setProjectSettingsPane(projectId, pane) {
+    set((s) => ({ projectSettingsPane: { ...s.projectSettingsPane, [projectId]: pane } }))
   },
 
   clearMcpFocus() {

@@ -197,7 +197,7 @@ try {
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
   // Settings > Appearance: the theme switch flips data-theme on <html>, persists across a reload and reaches a second window.
-  await page.locator('.sidebar .nav-item', { hasText: 'Settings' }).first().click()
+  await page.locator('.sidebar .nav-item', { hasText: 'App settings' }).first().click()
   const appearance = page.locator('[data-testid=appearance-section]')
   await appearance.waitFor({ timeout: 10_000 })
   const themeGroup = appearance.getByRole('radiogroup', { name: 'Theme' })
@@ -226,7 +226,7 @@ try {
       await win2.close().catch(() => {})
     }
   }
-  await page.locator('.sidebar .nav-item', { hasText: 'Settings' }).first().click()
+  await page.locator('.sidebar .nav-item', { hasText: 'App settings' }).first().click()
   await appearance.waitFor({ timeout: 10_000 })
   await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
   await sleep(800)

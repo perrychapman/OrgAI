@@ -68,7 +68,7 @@ Rules: tabs are real `role=tablist`, arrow-key navigable, deep-linkable through 
 
 ### 2.3 Settings structure
 
-Two scopes, same layout: left sub-nav (200 px) + content column (max 720 px) with page title, short description and groups. Each group is a `Card` containing **setting rows**: label and one-line description on the left, control on the right (`SettingRow`). Auto-save with a header `Saved` indicator (existing behavior, now shared by both scopes).
+Two scopes, same layout: pane nav (left rail of 168 px from 640 px of container width, a horizontal tab strip above the content below that) + content column (max 720 px). Each pane holds one or more sections (`SettingsSection`: title in `--text-title-lg`, optional one-line lead, optional actions slot, a rule and 32 px above each following section). Inside a section, `SettingsGroup` is a caption-size secondary heading above a card. Each group is a `Card` containing **setting rows**: label and one-line description on the left, control on the right (`SettingRow`). Auto-save with a header `Saved` indicator (existing behavior, now shared by both scopes).
 
 #### Project settings (tab `Settings`)
 
@@ -81,9 +81,11 @@ Two scopes, same layout: left sub-nav (200 px) + content column (max 720 px) wit
 | **Provider** | Provider (read-only value `Claude`), Authentication (RadioGroup: Claude Code login / API key from environment variable; env var input appears when selected). | One row; drop the apologetic sentence. |
 | **Danger zone** | `Remove OrgAI files from repository` (describes the exact files), `Delete project` (moves here from the project card menu too). | Visually separated card with danger border; both open a `ConfirmDialog`. |
 
-Order is the order of frequency of change; the left sub-nav scrolls to a section and highlights the active one (scroll-spy) so each section is also a bookmarkable anchor. Sections render on one scrolling page (not hidden panes) so Ctrl+F works.
+Panes, in order: **General · Agents · Limits · Connection · Tools (MCP servers, then Plugins) · Maintenance**. The sub-nav selects one pane at a time (native tablist, one pane mounted). This replaces the earlier scroll-anchor model, which produced a 2,600 to 3,000 px page whose highlight lagged by a screen (`ux-review-settings.md` finding 3); the cost is that Ctrl+F only searches the open pane. Every section keeps a stable DOM id (`settings-section-*`) and deep links open the pane that holds it. Each pane stays near one screen and about 150 words at rest.
 
-#### App settings (gear in the sidebar)
+#### App settings (sidebar item `App settings`, topbar title `App settings`)
+
+Panes: **General (Appearance, Notifications) · Connections · MCP library · Defaults (Defaults for new projects, Usage) · About**. Same pane model, same `SettingsSection` tier; the topbar h1 is the page title, so there is no second title in the page. Saves drive the same topbar `SaveIndicator` as the project page.
 
 | Page | Rows |
 | --- | --- |
@@ -93,7 +95,7 @@ Order is the order of frequency of change; the left sub-nav scrolls to a section
 | **Defaults for new projects** | Orchestrator model, Report model, Permission mode, Estimated-cost cap, Runs to keep, Isolate writing reports (Switch), Prefer Sonnet near the limit (Switch). One group, one footnote: "Applied when a project is created. Existing projects keep their own settings." |
 | **Data and about** | Data directory (path + Open folder), App logs (Open log folder), Version, link to docs, the OrgAI lockup. |
 
-Settings that exist in both scopes (permission mode, cost cap, runs to keep, isolate, prefer Sonnet) use the same labels and descriptions; app-level rows are prefixed by the page title "Defaults for new projects" instead of re-labelling each field.
+Rows: label and a one-line description (15 words at most, no internal tool names) on the left, the control on the right at a fixed width (number 120 px, select or segmented 240 px, full width only for paths and textareas), a hairline between rows, 56 px minimum height. Long rationale goes behind a native "Learn more" disclosure on the row. Settings that exist in both scopes (permission mode, cost cap, runs to keep, isolate, auto-continue, max continues, prefer Sonnet, Opus threshold) take their wording from the shared table `lib/settingsCopy.ts` and use the same labels and descriptions; app-level rows are prefixed by the page title "Defaults for new projects" instead of re-labelling each field.
 
 ### 2.4 Projects page
 
