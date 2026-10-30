@@ -6,6 +6,7 @@ import type {
   UsageStatsQuery,
   AppSettings,
   AdapterChoice,
+  ModelPrice,
   ImageAttachment,
   McpInstallDecision,
   McpInstallOutcome,
@@ -290,20 +291,22 @@ export interface RunManagerOptions {
   resolveProject?: (projectId: string) => Project | null | undefined
   /** App setting passed to adapters (see RuntimeContext.opusGuardThreshold). */
   opusGuardThreshold?: () => number
+  /** Community model prices (communityPrices.ts); undefined when the setting is off or nothing is cached. */
+  communityPrices?: () => Record<string, ModelPrice> | undefined
   /** Delay between a turn ending and the automatic-continue check (RuntimeContext.continuationDelayMs). */
   continuationDelayMs?: number
   /** The model catalog used to decide which adapter a LiteLLM project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
   /**
    * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
-   * Missing = the built-in roles keep their default model ('opus').
+   * Missing = the built-in roles use the 'deep' tier on the run's connection.
    */
-  appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'> & Partial<Pick<AppSettings, 'modelPrices'>>
+  appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'> & Partial<Pick<AppSettings, 'modelPrices' | 'communityPrices'>>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
   /**
-   * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = 'haiku' on the
-   * Claude adapter, the adapter's default model elsewhere.
+   * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = the adapter's
+   * default model.
    */
   fastModel?: (project: Project, choice: AdapterChoice) => string | undefined
   /** MCP servers and secrets (McpService). Missing = runs have no MCP servers and cannot install any. */
@@ -548,12 +551,14 @@ export class RunManager {
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
     const pricing = (): PricingContext => {
       const s = this.options.appSettings?.()
+      const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
       return {
         connection: choice.connection,
         overrides: s?.modelPrices ?? [],
         ...(connection?.pricing ? { pricing: connection.pricing } : {}),
         catalog: this.options.catalog?.() ?? [],
-        aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels)
+        aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels),
+        ...(community ? { community } : {})
       }
     }
 
@@ -628,7 +633,7 @@ export class RunManager {
       void this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
-        model: this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined),
+        model: this.options.fastModel?.(project, choice),
         connection,
         ...(titleContext ? { continues: titleContext } : {})
       })

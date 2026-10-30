@@ -71,6 +71,7 @@ import type { AgentImportService } from './setup/import/importer'
 import { claudeAuthStatus } from './connections/anthropicAuth'
 import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
+import { projectConnection } from '@shared/defaults'
 import { log, logPath, logsDir } from './log'
 import { addRules, listRules, removeRule } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
@@ -146,7 +147,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
     const project = projects.get(req.projectId)
     if (!project) throw new Error('Project not found')
-    return draftOrgChart(runs.adapterFor(project), project, req)
+    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
   })
 
   ipcMain.handle(IPC.runsStart, async (_e, input: StartRunInput) => {
