@@ -37,10 +37,10 @@ import type {
   RunSummary,
   UserQuestion
 } from '@shared/types'
-import { adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
+import { adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, projectConnection, runMessagingOn } from '@shared/defaults'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
-import { IntervalTimer, buildUsageStats, computeRunUsage, legacySummaryUsage, normalizeRunRecord, usageFromLegacyAgent } from './runUsage'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
+import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
 import { MCP_ASSIST_MODEL_LABEL, SETUP_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
@@ -249,11 +249,11 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
 }
 
 /**
- * A priced copy of an agent for agent.upsert: usage priced (an agent the adapter gave no usage is built from its
- * token fields), producedNothing set from the agent's final state and the legacy costUsd mirrored. Never mutates the input.
+ * A priced copy of an agent for agent.upsert: usage priced (a live agent the adapter gave no usage starts empty: its
+ * legacy cost field is an adapter estimate and must not read as the provider's), producedNothing set from the agent's final state and the legacy costUsd mirrored. Never mutates the input.
  */
 function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
-  const priced = priceAgentUsage(agent.usage ?? usageFromLegacyAgent(agent, false), ctx)
+  const priced = priceAgentUsage(agent.usage ?? emptyAgentUsage(), ctx)
   if (agentProducedNothing(agent)) priced.producedNothing = true
   else delete priced.producedNothing
   return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
@@ -272,6 +272,8 @@ function sanitizeUsageQuery(raw: UsageStatsQuery): UsageStatsQuery & { kinds: Ru
   }
   if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
   if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  const limit = typeof q.limit === 'number' && Number.isFinite(q.limit) ? Math.floor(q.limit) : USAGE_STATS_DEFAULT_LIMIT
+  out.limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, limit))
   return out
 }
 
@@ -623,7 +625,8 @@ export class RunManager {
         this.store.upsert(summary)
       } else if (e.type === 'run.cost') {
         // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
-        active.providerTotalUsd = e.totalCostUsd
+        // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
+        if (!connection?.pricing) active.providerTotalUsd = e.totalCostUsd
       }
       this.recordEvent(active, e)
       logRunEvent(summary, e)
@@ -1564,7 +1567,8 @@ export class RunManager {
       resumeSessionId: sessionId,
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
-      resumeBaseCostUsd: target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
+      // On a LiteLLM project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
+      resumeBaseCostUsd: projectConnection(project) === 'litellm' ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }
