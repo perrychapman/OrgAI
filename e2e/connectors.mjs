@@ -121,6 +121,8 @@ try {
   check((await page.locator('[data-testid=connected-service-row][data-connector=slack]').count()) === 1, 'Tools lists the connected Slack service')
   const nameBox = await row.locator('.mcp-name').boundingBox()
   check(!!nameBox && nameBox.width > 40, 'tool row server name is wider than 40px at 1280', JSON.stringify(nameBox))
+  const logoBox = await row.locator('.connector-logo').first().boundingBox()
+  check(!!logoBox && !!nameBox && logoBox.x + logoBox.width <= nameBox.x && Math.abs(logoBox.y - nameBox.y) < 40, 'connected service logo sits left of its name (CSS nesting regression)', JSON.stringify({ logoBox, nameBox }))
   const nameH = await row.locator('.mcp-name').evaluate((el) => ({ h: el.getBoundingClientRect().height, lh: parseFloat(getComputedStyle(el).lineHeight) }))
   check(nameH.h <= nameH.lh * 1.5, 'tool row server name stays on one line at 1280', JSON.stringify(nameH))
   await noHScroll('project Tools at 1280')
