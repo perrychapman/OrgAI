@@ -10,11 +10,11 @@ import type { Role, RunSummary, SkillFinding, SkillInfo, TranscriptEntry } from 
 export const MIN_RUNS_FOR_NEVER_LOADED = 3
 /** Descriptions with a token-set Jaccard similarity at or above this overlap. */
 export const OVERLAP_THRESHOLD = 0.6
-/** A description shorter than this (characters), or with fewer meaningful words than VAGUE_MIN_WORDS, is vague. */
+/** A description shorter than this (characters), or with fewer words (stopwords included) than VAGUE_MIN_WORDS, is vague. */
 export const VAGUE_MIN_CHARS = 40
 export const VAGUE_MIN_WORDS = 6
-/** Share of generic words among the meaningful words at or above which a description is vague. */
-export const VAGUE_GENERIC_SHARE = 0.4
+/** Share of generic words among the meaningful words at or above which a description with no "when to use" cue is vague. */
+export const VAGUE_GENERIC_SHARE = 0.5
 /** Stale check: most referenced paths probed per skill. */
 export const MAX_STALE_PATHS = 50
 /** Tool sequences: window length, the runs a window must appear in, entries read per run, findings kept. */
@@ -53,7 +53,8 @@ const STOPWORDS = new Set(
     'also just only more most other some each every which who whom what where how why there here has have had having use used using when whenever').split(' ')
 )
 const GENERIC = new Set(['helper', 'helpers', 'utility', 'utilities', 'stuff', 'various', 'misc', 'miscellaneous', 'things', 'thing', 'general', 'common', 'tasks', 'task', 'tool', 'tools', 'etc', 'work', 'help'])
-const TRIGGER = /\b(?:when|whenever|use|used|using|if|before|after|while|for)\b/i
+/** A "when to use" cue. Bare "for" is not one: "helper for misc stuff" says nothing about when. */
+const TRIGGER = /\b(?:when|whenever|use|used|using|if|before|after|while|during|once)\b/i
 
 /** Lowercased alphanumeric words minus stopwords, as a set. */
 export function tokenSet(text: string): Set<string> {
@@ -73,14 +74,21 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
 const oneLine = (s: string): string => s.replace(/[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/g, ' ').replace(/\s+/g, ' ').trim()
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 
+/**
+ * Why a description is too thin for an agent to know when to load the skill, or null. Flags only genuinely vague
+ * text: under VAGUE_MIN_CHARS characters, under VAGUE_MIN_WORDS words, nothing but generic words, or mostly generic
+ * words with no "when to use" cue. A specific description without a cue passes. Deterministic and linear.
+ */
 export function vagueReason(description: string): string | null {
   const d = description.trim()
   if (d.length < VAGUE_MIN_CHARS) return `only ${d.length} characters`
+  let wordCount = 0
+  for (const w of d.split(/[^\p{L}\p{N}]+/u)) if (w) wordCount++
+  if (wordCount < VAGUE_MIN_WORDS) return `only ${wordCount} words`
   const words = [...tokenSet(d)]
-  if (words.length < VAGUE_MIN_WORDS) return `only ${words.length} meaningful words`
   const generic = words.filter((w) => GENERIC.has(w)).length
-  if (generic / words.length >= VAGUE_GENERIC_SHARE) return 'mostly generic words'
-  if (!TRIGGER.test(d)) return 'it does not say when to use the skill'
+  if (generic === words.length) return 'only generic words'
+  if (generic / words.length >= VAGUE_GENERIC_SHARE && !TRIGGER.test(d)) return 'mostly generic words and no cue for when to use it'
   return null
 }
 
@@ -153,7 +161,7 @@ export function qualityFindings(input: EvalInput): SkillFinding[] {
       push({ kind: 'neverGranted', severity: 'info', skillIds: [spec.id], title: `${spec.name} is not granted to any role`, detail: 'No role may load this skill, so no agent ever uses it. Grant it to a role or remove it.' })
     }
     if (spec.enabled && isGranted && !info.libraryMissing && input.runs.length >= MIN_RUNS_FOR_NEVER_LOADED && !(loads.get(spec.id) ?? 0)) {
-      push({ kind: 'neverLoaded', severity: 'info', skillIds: [spec.id], title: `${spec.name} was never loaded`, detail: `Granted to a role but not loaded in the last ${input.runs.length} runs. Its description may not match the work, or it may not be needed.`, evidence: { runIds: input.runs.map((r) => r.summary.id), count: 0 } })
+      push({ kind: 'neverLoaded', severity: 'info', skillIds: [spec.id], title: `${spec.name} was never loaded`, detail: `Granted to a role but not loaded in the last ${input.runs.length} runs. Its description may not match the work, or it may not be needed.`, evidence: { runIds: input.runs.map((r) => r.summary.id) } })
     }
     const vague = vagueReason(spec.description)
     if (vague) {
@@ -226,8 +234,9 @@ export function toolSequenceFindings(runs: EvalRun[]): SkillFinding[] {
       severity: 'info' as const,
       skillIds: [],
       title: `The same ${SEQUENCE_WINDOW} tool calls repeat in ${e.runIds.length} runs`,
-      detail: `Agents ran ${e.names.join(', then ')} in ${e.runIds.length} different runs. A skill could capture this routine.`,
-      evidence: { sequence: e.names, runIds: e.runIds, count: e.runIds.length }
+      // The run count is stated once, in the title. No evidence.count: it would only repeat it.
+      detail: `Agents ran ${e.names.join(', then ')}, in that order, each time. A skill could capture this routine.`,
+      evidence: { sequence: e.names, runIds: e.runIds }
     }))
 }
 
@@ -278,7 +287,8 @@ export function correctionFindings(runs: EvalRun[]): SkillFinding[] {
       skillIds: [],
       title: `The same correction came up in ${runIds.length} runs`,
       detail: `Users said things like: "${clip(g.rep.text, EXCERPT_CHARS)}". A skill could carry this guidance so it need not be repeated.`,
-      evidence: { runIds, count: g.members.length }
+      // count only when it adds a fact (more mentions than runs); equal, it would repeat the title's run count.
+      evidence: g.members.length > runIds.length ? { runIds, count: g.members.length } : { runIds }
     }))
 }
 

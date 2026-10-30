@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SkillInfo, TranscriptEntry } from '@shared/types'
 import { role, runSummary } from '../runtime/testHelpers'
-import { correctionFindings, evaluateSkills, qualityFindings, referencedPaths, relativePathCandidate, toolSequenceFindings, type EvalInput, type EvalRun } from './evaluate'
+import { correctionFindings, evaluateSkills, qualityFindings, referencedPaths, relativePathCandidate, toolSequenceFindings, vagueReason, type EvalInput, type EvalRun } from './evaluate'
 
 const GOOD = 'Use when filling in or reading PDF forms, extracting text and merging documents.'
 function skill(id: string, over: Partial<SkillInfo['spec']> = {}, info: Partial<SkillInfo> = {}): SkillInfo {
@@ -55,12 +55,40 @@ describe('quality findings', () => {
     expect(String(f[0].evidence?.similarity)).toMatch(/^\d(\.\d{1,2})?$/)
   })
 
-  it('vagueDescription: short, generic, no trigger; a good one passes', () => {
+  it('vagueDescription: short, few words or generic; reasonable ones pass', () => {
     const vague = (d: string): boolean => kinds(qualityFindings(input({ skills: [{ info: skill('a', { description: d }), skillMd: '' }] }))).includes('vagueDescription')
     expect(vague('PDF helper')).toBe(true)
     expect(vague('Helper utility for various misc stuff and things in general work')).toBe(true)
-    expect(vague('Fills in PDF forms and extracts text from scanned documents quickly')).toBe(true)
+    expect(vague('General helper tools for various common tasks and other work, plus deploys')).toBe(true)
     expect(vague(GOOD)).toBe(false)
+    // The UX walkthrough's false positive (ux-review-skills-2 P1-3): 8 words, only 5 of them meaningful.
+    expect(vague('Use before deploying to verify the release checklist.')).toBe(false)
+    // Specific without a "when" cue is not vague any more.
+    expect(vague('Fills in PDF forms and extracts text from scanned documents quickly')).toBe(false)
+    // Mostly generic words pass when they say when to use the skill.
+    expect(vague('Helper tools for common tasks; use when the release checklist runs')).toBe(false)
+  })
+
+  it('vagueReason states one reason per rule', () => {
+    expect(vagueReason('PDF helper')).toBe('only 10 characters')
+    expect(vagueReason('Supercalifragilistic expialidocious antidisestablishment')).toBe('only 3 words')
+    expect(vagueReason('Helper utility for various misc stuff and things in general work')).toBe('only generic words')
+    expect(vagueReason('General helper tools for various common tasks and other work, plus deploys')).toBe('mostly generic words and no cue for when to use it')
+    expect(vagueReason('Use before deploying to verify the release checklist.')).toBeNull()
+  })
+
+  it('vagueReason is linear on long input', () => {
+    const long = 'word '.repeat(50_000) + 'when deploying'
+    const t = performance.now()
+    vagueReason(long)
+    expect(performance.now() - t).toBeLessThan(500)
+  })
+
+  it('neverLoaded evidence has no zero count', () => {
+    const runs = [1, 2, 3].map((i) => run(String(i), []))
+    const f = qualityFindings(input({ roles: [role({ id: 'r', slug: 'r', skills: ['a'] })], skills: [{ info: skill('a', {}, { grantedTo: ['r'] }), skillMd: '' }], runs })).find((x) => x.kind === 'neverLoaded')
+    expect(f).toBeDefined()
+    expect(f?.evidence?.count).toBeUndefined()
   })
 
   it('libraryMissing', () => {
@@ -112,7 +140,9 @@ describe('gap findings', () => {
     expect(toolSequenceFindings([runWith('1', seq), runWith('2', seq)])).toHaveLength(0)
     const f = toolSequenceFindings([runWith('1', seq), runWith('2', seq), runWith('3', seq)])
     expect(f).toHaveLength(1)
-    expect(f[0].evidence).toMatchObject({ sequence: seq, runIds: ['1', '2', '3'], count: 3 })
+    expect(f[0].evidence).toEqual({ sequence: seq, runIds: ['1', '2', '3'] })
+    expect(f[0].title).toContain('3 runs')
+    expect(f[0].detail).not.toMatch(/[0-9]/)
     const same = Array(6).fill('Read')
     expect(toolSequenceFindings([runWith('1', same), runWith('2', same), runWith('3', same)])).toHaveLength(0)
   })
@@ -122,7 +152,7 @@ describe('gap findings', () => {
     const runs = [1, 2, 3].map((i) => runWith(String(i), [...many.flat(), ...seq, ...seq]))
     const f = toolSequenceFindings(runs)
     expect(f.length).toBeLessThanOrEqual(5)
-    expect(f.every((x) => x.evidence?.count === 3)).toBe(true)
+    expect(f.every((x) => x.evidence?.runIds?.length === 3 && x.evidence.count === undefined)).toBe(true)
   })
 
   it('does not join tool calls of different agents', () => {
