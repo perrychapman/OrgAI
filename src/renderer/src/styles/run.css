@@ -227,8 +227,8 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  /* Side column narrows with the main area (cqi of .main), capped at 400px. */
-  grid-template-columns: minmax(0, 1fr) clamp(280px, 28cqi, 400px);
+  /* Side column narrows with the main area (cqi of .main), capped at 400px, unless the user dragged it (--side-panel-w). */
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, clamp(280px, 28cqi, 400px));
   grid-template-rows: minmax(0, 1fr) auto;
 }
 .run-body:has(> .side-panel[data-collapsed='true']) {

@@ -124,8 +124,56 @@
   scroll-padding-bottom: var(--space-3);
 }
 
+/* Drag handle on a column edge (ResizeHandle). It sits inside its own column, never over the canvas. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.resize-handle[data-edge='end'] {
+  right: 0;
+}
+.resize-handle[data-edge='start'] {
+  left: 0;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background-color var(--dur-fast, 120ms) ease;
+}
+.resize-handle[data-edge='end']::after {
+  right: 0;
+}
+.resize-handle[data-edge='start']::after {
+  left: 0;
+}
+.resize-handle:hover::after {
+  background: var(--border-strong);
+}
+.resize-handle:active::after,
+.resize-handle:focus-visible::after {
+  background: var(--focus-ring);
+}
+html[data-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+html[data-resizing] * {
+  cursor: col-resize !important;
+}
+
 /* Side panel: a collapsible column of .editor / .live. */
 .side-panel {
+  position: relative;
   container-type: inline-size;
   container-name: side;
 }
