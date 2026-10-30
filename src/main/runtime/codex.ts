@@ -211,12 +211,12 @@ class CodexSession implements RuntimeSession {
         const r = this.agents.get(ROOT_AGENT_ID)
         return !!r && r.state !== 'idle' && r.state !== 'done'
       },
-      nudge: (text, activity) => {
-        this.notifyOrchestrator(text, activity)
+      nudge: (text, activity, summary) => {
+        this.notifyOrchestrator(text, activity, { summary })
         this.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' })
     })
     this.finished = this.run()
   }
@@ -262,8 +262,8 @@ class CodexSession implements RuntimeSession {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
   }
 
-  private transcript(agentId: string, block: TranscriptBlock): void {
-    this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block } })
+  private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
+    this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
   }
 
   private upsert(agent: AgentInstance): void {
@@ -334,9 +334,19 @@ class CodexSession implements RuntimeSession {
     })
   }
 
-  /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean } = {}): void {
-    if (opts.transcript !== false) this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+  /**
+   * Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. The transcript
+   * row is a harness row (`summary` as its text and the full message in `detail` when a summary is given), except for
+   * `agentMessage` deliveries: those carry another agent's words and stay unmarked, like Claude's native SendMessage.
+   */
+  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; agentMessage?: boolean } = {}): void {
+    if (opts.transcript !== false) {
+      this.transcript(
+        ROOT_AGENT_ID,
+        { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) },
+        opts.agentMessage ? undefined : { source: 'harness' }
+      )
+    }
     const rootAgent = this.agents.get(ROOT_AGENT_ID)
     if (rootAgent && (rootAgent.state === 'idle' || rootAgent.state === 'done')) {
       this.setState(ROOT_AGENT_ID, 'thinking', activity)
@@ -479,7 +489,7 @@ class CodexSession implements RuntimeSession {
     const { ctx } = this
     const runId = ctx.run.id
     this.newAgent(ROOT_AGENT_ID, this.root, { state: 'thinking', activity: 'Reading your request…', parentId: null })
-    if (ctx.resumeSessionId) this.transcript(ROOT_AGENT_ID, { kind: 'system', text: `Continued from run ${ctx.run.resumedFrom ?? ctx.resumeSessionId}` })
+    if (ctx.resumeSessionId) this.transcript(ROOT_AGENT_ID, { kind: 'system', text: `Continued from run ${ctx.run.resumedFrom ?? ctx.resumeSessionId}` }, { source: 'harness' })
     this.transcript(ROOT_AGENT_ID, userBlock(ctx.prompt, ctx.images))
 
     try {
@@ -507,7 +517,7 @@ class CodexSession implements RuntimeSession {
           started = await this.startThread({ threadId: ctx.resumeSessionId, ...resumeParams }, METHOD.threadResume)
         } catch (e) {
           this.log('warn', `Could not resume Codex thread ${ctx.resumeSessionId} (${(e as Error).message}); starting a new thread.`)
-          this.transcript(ROOT_AGENT_ID, { kind: 'system', text: 'The earlier Codex conversation could not be resumed; this run starts a new one.' })
+          this.transcript(ROOT_AGENT_ID, { kind: 'system', text: 'The earlier Codex conversation could not be resumed; this run starts a new one.' }, { source: 'harness' })
         }
       }
       if (!started) started = await this.startThread(params)
@@ -654,16 +664,20 @@ class CodexSession implements RuntimeSession {
     this.deliverTo(child.parentId ?? ROOT_AGENT_ID, text)
   }
 
-  /** Hand a harness message to an agent (the orchestrator gets the full notifyOrchestrator treatment). */
-  private deliverTo(agentId: string, text: string): Promise<void> {
+  /**
+   * Hand a message to an agent (the orchestrator gets the full notifyOrchestrator treatment). Harness-written
+   * messages (report hand-offs) get a harness row; `agentMessage` deliveries (send_message) carry another
+   * agent's words and stay unmarked.
+   */
+  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean } = {}): Promise<void> {
     if (agentId === ROOT_AGENT_ID) {
-      this.notifyOrchestrator(text)
+      this.notifyOrchestrator(text, undefined, { agentMessage: opts.agentMessage })
       return Promise.resolve()
     }
     const threadId = this.agentThread.get(agentId)
     const target = this.agents.get(agentId)
     if (!threadId || !target) return Promise.reject(new Error(`${agentId} has no thread`))
-    this.transcript(agentId, { kind: 'system', text })
+    this.transcript(agentId, { kind: 'system', text }, opts.agentMessage ? undefined : { source: 'harness' })
     if (target.state === 'done' || target.state === 'idle') {
       target.endedAt = undefined
       this.setState(agentId, 'thinking', 'Reading a message…')
@@ -838,7 +852,7 @@ class CodexSession implements RuntimeSession {
   private networkHost: NetworkHost = {
     agents: () => this.agents.values(),
     spawn: (req) => this.spawnChild(req),
-    deliver: (toAgentId, text) => this.deliverTo(toAgentId, text),
+    deliver: (toAgentId, text) => this.deliverTo(toAgentId, text, { agentMessage: true }),
     announce: (m: AgentMessage, text: string) => {
       this.emit({ type: 'agent.message', runId: this.ctx.run.id, ...m })
       this.transcript(m.from, { kind: 'system', text })
