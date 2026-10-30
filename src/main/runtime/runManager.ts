@@ -1,5 +1,6 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import type {
+  AppSettings,
   AdapterChoice,
   ImageAttachment,
   McpInstallDecision,
@@ -35,6 +36,7 @@ import type {
 import { adapterForProject, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
+import { MCP_ASSIST_MODEL_LABEL, SETUP_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -241,6 +243,11 @@ export interface RunManagerOptions {
   continuationDelayMs?: number
   /** The model catalog used to decide which adapter a LiteLLM project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
+  /**
+   * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
+   * Missing = the built-in roles keep their default model ('opus').
+   */
+  appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
   /**
@@ -387,6 +394,25 @@ export class RunManager {
     const adapter = this.adapters[choice.adapter]
     if (!adapter) throw new Error(`No runtime adapter for provider "${choice.adapter}"`)
     return { adapter, choice }
+  }
+
+  /**
+   * The model of a setup or MCP assistant run's built-in role, from App settings, resolved against the run's
+   * connection (builtinModel.ts). undefined for work runs or without settings (the role's default applies).
+   */
+  private builtinRoleModel(kind: RunKind, project: Project, choice: AdapterChoice): ResolvedBuiltinModel | undefined {
+    if (kind !== 'setup' && kind !== 'mcp-assist') return undefined
+    const settings = this.options.appSettings?.()
+    if (!settings) return undefined
+    const setting = kind === 'setup' ? settings.setupModel : settings.mcpAssistModel
+    const label = kind === 'setup' ? SETUP_MODEL_LABEL : MCP_ASSIST_MODEL_LABEL
+    return resolveBuiltinModel(setting, label, {
+      connection: choice.connection,
+      adapter: choice.adapter,
+      catalog: this.options.catalog?.() ?? [],
+      tierModels: settings.connections?.[choice.connection]?.tierModels ?? {},
+      root: project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+    })
   }
 
   async start({
@@ -580,10 +606,12 @@ export class RunManager {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
       }
+      const builtinModel = this.builtinRoleModel(kind, project, choice)
+      if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
       const ctx: RuntimeContext = {
         run: summary,
         project,
-        roles: kind === 'setup' ? [architectRole()] : kind === 'mcp-assist' ? [mcpAssistantRole()] : project.roles,
+        roles: kind === 'setup' ? [architectRole(builtinModel)] : kind === 'mcp-assist' ? [mcpAssistantRole(builtinModel)] : project.roles,
         prompt,
         images: images.length ? images : undefined,
         hiddenContext,

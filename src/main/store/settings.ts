@@ -126,6 +126,11 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     if (a?.kind === 'subscription') return { kind: 'subscription' }
     return { ...d.providerAuth }
   }
+  // A model id: one line of printable characters without spaces, at most 200 long; anything else is the default.
+  const modelRef = (v: unknown, fallback: string): string => {
+    const t = typeof v === 'string' ? v.trim() : ''
+    return t && t !== 'inherit' && t.length <= 200 && /^[!-~]+$/.test(t) ? t : fallback
+  }
   const budget = r.defaultMaxBudgetUsd
   const keep = Number(r.defaultKeepRuns)
   const threshold = Number(r.opusGuardThreshold)
@@ -138,6 +143,8 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultIsolateWriters: typeof r.defaultIsolateWriters === 'boolean' ? r.defaultIsolateWriters : d.defaultIsolateWriters,
     defaultRootModel: str(r.defaultRootModel, d.defaultRootModel),
     defaultReportModel: str(r.defaultReportModel, d.defaultReportModel),
+    setupModel: modelRef(r.setupModel, d.setupModel),
+    mcpAssistModel: modelRef(r.mcpAssistModel, d.mcpAssistModel),
     // The connection is authoritative; the legacy field mirrors it (see reconcileAnthropicAuth).
     providerAuth: { ...connections.anthropic.auth },
     connections,

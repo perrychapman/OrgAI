@@ -1,4 +1,4 @@
-import type { Project, Role, SetupKind } from './types'
+import type { ModelRef, ModelTier, Project, Role, SetupKind } from './types'
 import { ROLE_COLORS, newId } from './defaults'
 
 export const ARCHITECT_SLUG = 'architect'
@@ -47,7 +47,14 @@ Org chart design principles:
 You have a shell (Bash) for environment work the user asks for or that setup clearly needs: installing CLIs and tools, git init and first commits, checking tool versions, creating accounts' config files. Commands may be shown to the user for approval before they run, so keep commands short and explain what each does. If the permission policy denies a command you need, call request_permission_rules with the narrowest rule (for example "Bash(gh:*)") and a reason; the user decides in the app and the result says whether to retry. Do not write or edit project code yourself; that is the org chart's job once setup is complete. The harness writes the approved architecture to .orgai/ARCHITECTURE.md and references it from CLAUDE.md so every future agent inherits it.`
 
 /** The built-in role that runs setup sessions. Not part of the project's org chart. */
-export function architectRole(): Role {
+/** The model a built-in role runs on, resolved per run against the project's connection (RunManager). */
+export interface BuiltinRoleModel {
+  model: ModelRef
+  tier?: ModelTier
+}
+
+/** The built-in role that runs setup sessions. Default model 'opus' (no tier), as before AppSettings.setupModel. */
+export function architectRole(choice?: BuiltinRoleModel): Role {
   return {
     id: newId('role'),
     slug: ARCHITECT_SLUG,
@@ -61,7 +68,8 @@ export function architectRole(): Role {
     ],
     prompt: ARCHITECT_PROMPT,
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Bash'],
-    model: 'opus',
+    model: choice?.model ?? 'opus',
+    ...(choice?.tier ? { tier: choice.tier } : {}),
     canSpawn: false,
     spawnable: [],
     reportsTo: null,
@@ -110,7 +118,7 @@ How you work:
 Remote (http) servers receive what the agent sends them; stdio servers run code on this machine with the user's permissions. Say so plainly when you recommend one, and recommend the least powerful option that does the job. Keep chat messages short; the proposal carries the detail.`
 
 /** The built-in role that runs MCP assistant sessions (RunKind 'mcp-assist'). Not part of the project's org chart. */
-export function mcpAssistantRole(): Role {
+export function mcpAssistantRole(choice?: BuiltinRoleModel): Role {
   return {
     id: newId('role'),
     slug: MCP_ASSISTANT_SLUG,
@@ -123,8 +131,8 @@ export function mcpAssistantRole(): Role {
     ],
     prompt: MCP_ASSISTANT_PROMPT,
     tools: ['Read', 'Glob', 'Grep', 'WebFetch'],
-    model: 'opus',
-    tier: 'deep',
+    model: choice?.model ?? 'opus',
+    ...(choice ? (choice.tier ? { tier: choice.tier } : {}) : { tier: 'deep' as const }),
     canSpawn: false,
     spawnable: [],
     reportsTo: null,

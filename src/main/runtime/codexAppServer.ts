@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join } from 'node:path'
 
@@ -64,6 +64,25 @@ export function resolveCodexBinary(platform: string = process.platform, arch: st
   }
 }
 
+/** How many non-empty stderr lines CodexAppServer keeps for exit errors, and their total length cap. */
+export const STDERR_TAIL_LINES = 10
+export const STDERR_TAIL_MAX_CHARS = 2_000
+/** Env keys whose values are not secret (and are useful in an error, e.g. a missing CODEX_HOME path). */
+const PLAIN_ENV_KEYS = new Set(['CODEX_HOME', 'PATH', 'Path', 'RUST_LOG'])
+
+/** Replace every occurrence of each secret (at least 4 characters) with [redacted], longest first. */
+export function redactSecrets(text: string, secrets: readonly string[]): string {
+  let out = text
+  for (const s of [...secrets].filter((v) => v.length >= 4).sort((a, b) => b.length - a.length)) out = out.split(s).join('[redacted]')
+  return out
+}
+
+/** The error text for an app-server that exited: the exit code, then its last stderr lines when there are any. */
+export function codexExitMessage(code: number | null | undefined, tail?: string, during?: string): string {
+  const head = `codex app-server exited (code ${code ?? 'unknown'})${during ? ` during ${during}` : ''}`
+  return tail ? `${head}: ${tail}` : head
+}
+
 export interface JsonRpcError {
   code: number
   message: string
@@ -92,8 +111,13 @@ export interface CodexAppServerOptions {
   requestTimeoutMs?: number
   /** Override the binary (tests). */
   binary?: CodexBinary
-  /** stderr lines (debug logging; never contains secrets the client put there). */
+  /** stderr lines (debug logging), secrets replaced by [redacted] (see `redact`). */
   onStderr?(line: string): void
+  /**
+   * Extra secret values to scrub from stderr lines and the exit error (e.g. the run's API key). Every `env` value
+   * except CODEX_HOME, PATH and RUST_LOG is scrubbed as well.
+   */
+  redact?: string[]
 }
 
 type ServerRequestHandler = (method: string, params: unknown) => Promise<unknown>
@@ -107,6 +131,8 @@ export class CodexAppServer {
   private notificationHandlers = new Set<NotificationHandler>()
   private serverRequestHandler?: ServerRequestHandler
   private buffer = ''
+  private stderrBuffer = ''
+  private stderrLines: string[] = []
   private closed = false
   private exitHandlers = new Set<(code: number | null, error?: Error) => void>()
   /** Resolves when the process exits. */
@@ -121,6 +147,9 @@ export class CodexAppServer {
   async start(clientVersion = '0.0.0'): Promise<unknown> {
     const binary = this.options.binary ?? resolveCodexBinary()
     if (!binary) throw new Error('The Codex CLI is not installed for this platform (@openai/codex optional dependency missing).')
+    // codex app-server exits 1 at once when CODEX_HOME names a folder that does not exist.
+    const home = this.options.env?.CODEX_HOME?.trim()
+    if (home) mkdirSync(home, { recursive: true })
     const env: Record<string, string | undefined> = { ...process.env, ...this.options.env }
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
     const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
@@ -129,19 +158,33 @@ export class CodexAppServer {
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onData(chunk))
     child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string) => {
-      for (const line of chunk.split(/\r?\n/)) if (line.trim()) this.options.onStderr?.(line.trim())
-    })
+    child.stderr.on('data', (chunk: string) => this.onStderrData(chunk))
     // A write to a dying process raises EPIPE on stdin; the exit handler reports the real failure.
     child.stdin.on('error', () => {})
     child.on('error', (err) => this.handleExit(null, err))
-    child.on('exit', (code) => this.handleExit(code))
+    // 'close' fires once stdio has drained, so the stderr tail is complete. A grandchild holding the pipes open
+    // must not hang the client: 'exit' settles it after a short grace period.
+    child.on('close', (code) => this.handleExit(code))
+    child.on('exit', (code) => {
+      setTimeout(() => this.handleExit(code), 250).unref?.()
+    })
     const result = await this.request('initialize', {
       clientInfo: { name: 'orgai', title: 'OrgAI', version: clientVersion },
       capabilities: { experimentalApi: this.options.experimentalApi !== false, requestAttestation: false }
     })
     this.notify('initialized')
     return result
+  }
+
+  /**
+   * The last non-empty stderr lines (at most STDERR_TAIL_LINES and STDERR_TAIL_MAX_CHARS, newest kept), with
+   * secrets redacted; '' when there are none. Includes a trailing line that has no newline yet.
+   */
+  stderrTail(): string {
+    const partial = this.stderrBuffer.trim()
+    const lines = partial ? [...this.stderrLines, this.scrub(partial)] : this.stderrLines
+    const text = lines.slice(-STDERR_TAIL_LINES).join('\n')
+    return text.length > STDERR_TAIL_MAX_CHARS ? `…${text.slice(-(STDERR_TAIL_MAX_CHARS - 1))}` : text
   }
 
   get running(): boolean {
@@ -186,9 +229,13 @@ export class CodexAppServer {
   private handleExit(code: number | null, error?: Error): void {
     if (this.closed) return
     this.closed = true
+    // A last line without a newline still counts.
+    if (this.stderrBuffer.trim()) this.pushStderrLine(this.stderrBuffer)
+    this.stderrBuffer = ''
+    const tail = this.stderrTail()
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
-      p.reject(error ?? new Error(`codex app-server exited (code ${code ?? 'unknown'}) during ${p.method}`))
+      p.reject(error ?? new Error(codexExitMessage(code, tail, p.method)))
     }
     this.pending.clear()
     for (const h of this.exitHandlers) h(code, error)
@@ -209,6 +256,42 @@ export class CodexAppServer {
   private write(msg: unknown): void {
     if (!this.child || this.closed) return
     this.child.stdin.write(`${JSON.stringify(msg)}\n`)
+  }
+
+  private secrets(): string[] {
+    const fromEnv = Object.entries(this.options.env ?? {})
+      .filter(([k, v]) => !PLAIN_ENV_KEYS.has(k) && typeof v === 'string')
+      .map(([, v]) => v as string)
+    return [...fromEnv, ...(this.options.redact ?? [])]
+  }
+
+  private scrub(line: string): string {
+    return redactSecrets(line, this.secrets())
+  }
+
+  /** stderr arrives in chunks that can split a line: complete lines go out, the rest waits for the next chunk. */
+  private onStderrData(chunk: string): void {
+    this.stderrBuffer += chunk
+    let nl: number
+    while ((nl = this.stderrBuffer.indexOf('\n')) >= 0) {
+      const line = this.stderrBuffer.slice(0, nl)
+      this.stderrBuffer = this.stderrBuffer.slice(nl + 1)
+      this.pushStderrLine(line)
+    }
+    // A runaway line without newlines is flushed in pieces so the buffer stays bounded.
+    if (this.stderrBuffer.length > STDERR_TAIL_MAX_CHARS * 4) {
+      this.pushStderrLine(this.stderrBuffer)
+      this.stderrBuffer = ''
+    }
+  }
+
+  private pushStderrLine(raw: string): void {
+    const line = raw.trim()
+    if (!line) return
+    const clean = this.scrub(line)
+    this.stderrLines.push(clean.length > STDERR_TAIL_MAX_CHARS ? `${clean.slice(0, STDERR_TAIL_MAX_CHARS - 1)}…` : clean)
+    if (this.stderrLines.length > STDERR_TAIL_LINES) this.stderrLines.shift()
+    this.options.onStderr?.(clean)
   }
 
   private onData(chunk: string): void {

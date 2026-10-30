@@ -252,6 +252,7 @@ app.whenReady().then(() => {
     resolveProject: (projectId) => projectOrHarness(projectId),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
+    appSettings: () => settings.get(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),
     fastModel: (_project, choice) => connections.fastModel(choice),
     mcp: {

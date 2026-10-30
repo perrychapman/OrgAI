@@ -1,7 +1,7 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { CodexAppServer, CodexRpcError, type CodexAppServerOptions } from './codexAppServer'
+import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
 import {
   METHOD,
   SERVER_REQUEST,
@@ -74,6 +74,8 @@ export interface CodexServerLike {
   onExit(handler: (code: number | null, error?: Error) => void): () => void
   close(): void
   readonly exited: Promise<void>
+  /** The app-server's last stderr lines, secrets redacted, for exit errors. Optional for test fakes. */
+  stderrTail?(): string
 }
 
 export interface CodexAdapterOptions {
@@ -449,7 +451,7 @@ class CodexSession implements RuntimeSession {
     this.unsubscribers.push(
       server.onExit((code, error) => {
         if (this.restarting || this.ending) return
-        const message = error?.message ?? `codex app-server exited (code ${code ?? 'unknown'})`
+        const message = error?.message ?? codexExitMessage(code, server.stderrTail?.())
         this.fail(message)
       })
     )
@@ -1006,7 +1008,7 @@ export class CodexAdapter implements RuntimeAdapter {
       return { decision: 'decline' }
     })
     server.onExit((code, error) => {
-      failure ??= error?.message ?? `codex app-server exited (code ${code ?? 'unknown'})`
+      failure ??= error?.message ?? codexExitMessage(code, server.stderrTail?.())
       done()
     })
     let timer: ReturnType<typeof setTimeout> | undefined

@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CodexAppServer, CodexRpcError, codexHomeDir, resolveCodexBinary } from './codexAppServer'
+import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, redactSecrets, resolveCodexBinary } from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
 import { fakeCtx, project } from './testHelpers'
 import { harnessToolsFor } from './harnessTools'
@@ -66,6 +66,85 @@ describe('request plumbing without a process', () => {
     const e = new CodexRpcError('thread/start', { code: -32600, message: 'bad' })
     expect(e.message).toBe('thread/start: bad')
     expect(e.error.code).toBe(-32600)
+  })
+})
+
+/**
+ * A fake `codex` that is Node itself: start() runs `node app-server ...` in `cwd`, so a script named `app-server`
+ * there plays the server. Token-free, no codex install needed.
+ */
+describe('fake app-server process', () => {
+  let dir = ''
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-codex-fake-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+
+  /** Write the fake server: it prints `chunks` to stderr one write at a time, then exits with `code`. */
+  const fake = (chunks: string[], code = 1): void => {
+    const body = `const chunks = ${JSON.stringify(chunks)}
+let i = 0
+const next = () => { if (i < chunks.length) { process.stderr.write(chunks[i++], next) } else { setTimeout(() => process.exit(${code}), 20) } }
+next()
+`
+    writeFileSync(join(dir, 'app-server'), body)
+  }
+
+  it('creates a missing CODEX_HOME before spawning', async () => {
+    fake([])
+    const home = join(dir, 'data', 'codex')
+    expect(existsSync(home)).toBe(false)
+    const s = new CodexAppServer({ cwd: dir, env: { CODEX_HOME: home }, binary: { path: process.execPath } })
+    await expect(s.start()).rejects.toThrow(/codex app-server exited \(code 1\) during initialize$/)
+    expect(existsSync(home)).toBe(true)
+  })
+
+  it('appends the stderr tail to the exit error, joining split lines and redacting secrets', async () => {
+    const key = 'sk-test-SECRET-1234567890'
+    const lines = Array.from({ length: 12 }, (_, i) => `noise ${i}\n`)
+    fake([...lines, 'Error: CODEX_HOME points to "/x", but ', 'that path does not exist\n', `\nkey was ${key.slice(0, 10)}`, `${key.slice(10)} (extra ${'tok-abcdef'})`])
+    const seen: string[] = []
+    const s = new CodexAppServer({
+      cwd: dir,
+      env: { CODEX_HOME: join(dir, 'home'), OPENAI_API_KEY: key },
+      redact: ['tok-abcdef'],
+      binary: { path: process.execPath },
+      onStderr: (line) => seen.push(line)
+    })
+    const err = await s.start().then(
+      () => undefined,
+      (e: Error) => e
+    )
+    expect(err?.message).toMatch(/^codex app-server exited \(code 1\) during initialize: /)
+    expect(err?.message).toContain('Error: CODEX_HOME points to "/x", but that path does not exist')
+    expect(err?.message).toContain('key was [redacted] (extra [redacted])')
+    expect(err?.message).not.toContain('SECRET')
+    expect(err?.message).not.toContain('noise 3')
+    expect(s.stderrTail().split('\n')).toHaveLength(10)
+    expect(seen.join('\n')).not.toContain('SECRET')
+    expect(seen).toContain('Error: CODEX_HOME points to "/x", but that path does not exist')
+  })
+})
+
+describe('stderr helpers', () => {
+  it('formats the exit message with and without a tail', () => {
+    expect(codexExitMessage(1)).toBe('codex app-server exited (code 1)')
+    expect(codexExitMessage(null, 'boom', 'thread/start')).toBe('codex app-server exited (code unknown) during thread/start: boom')
+  })
+
+  it('redacts every secret, longest first, and ignores very short values', () => {
+    expect(redactSecrets('a abcd abcdef', ['abcd', 'abcdef', 'a'])).toBe('a [redacted] [redacted]')
+  })
+
+  it('caps the tail length', async () => {
+    const s = new CodexAppServer()
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+    for (let i = 0; i < 10; i++) feed(`${'x'.repeat(500)}\n`)
+    expect(s.stderrTail().length).toBeLessThanOrEqual(STDERR_TAIL_MAX_CHARS)
+    feed('y'.repeat(STDERR_TAIL_MAX_CHARS * 5))
+    expect(s.stderrTail().length).toBeLessThanOrEqual(STDERR_TAIL_MAX_CHARS)
   })
 })
 
