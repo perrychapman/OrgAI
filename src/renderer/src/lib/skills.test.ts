@@ -248,7 +248,7 @@ describe('evaluation results', () => {
     expect(openSuggestionCount(null)).toBe(0)
   })
   it('merges count and runs into one evidence line', () => {
-    expect(evidenceLines({ count: 3, runIds: ['1', '2', '3'] })).toEqual(['Seen 3 times in 3 runs'])
+    expect(evidenceLines({ count: 3, runIds: ['1', '2', '3'] })).toEqual(['Seen 3 times'])
     expect(evidenceLines({ count: 1 })).toEqual(['Seen 1 time'])
     expect(evidenceLines({ runIds: ['1'] })).toEqual(['In 1 run'])
     expect(evidenceLines(undefined)).toEqual([])

@@ -304,8 +304,8 @@ export function evidenceLines(e: SkillFinding['evidence'] | undefined): string[]
   const runs = e.runIds?.length ?? 0
   if (typeof e.count === 'number') {
     const times = `Seen ${e.count} ${e.count === 1 ? 'time' : 'times'}`
-    lines.push(runs > 0 ? `${times} in ${plural(runs, 'run')}` : times)
-  } else if (runs > 0) {
+    lines.push(times)
+  } else if (runs > 0 && !e.sequence?.length) {
     lines.push(`In ${plural(runs, 'run')}`)
   }
   return lines
