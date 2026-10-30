@@ -181,9 +181,9 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - electron-builder config, macOS entitlements, and the macOS first-test checklist.
 - electron-builder.yml mac targets carry no arch list (in electron-builder 26 an arch list overrides the --arm64/--x64 CLI flags). Mac artifacts are ${productName}-${version}-${arch}.${ext}.
 - CI and packaging:
-  - .github/workflows/ci.yml: on push to main and pull requests. check job (npm ci, typecheck, test, build, e2e:free) and pack job (electron-builder --dir), both on windows-latest and macos-14.
-  - .github/workflows/release.yml: a v<version> tag, or workflow_dispatch (dry run by default). windows on windows-latest, mac-arm64 on macos-14, mac-x64 on macos-15-intel. Each leg runs on its native runner so npm ci installs the matching darwin-<arch> optional deps. Unsigned unless the CSC_LINK/APPLE_* secrets are set. The publish job drafts a GitHub release.
-  - .github/dependabot.yml: weekly grouped npm and actions updates.
+  - .github/workflows/ci.yml: on push to main or dev and on pull requests into main or dev. check job (npm ci, typecheck, test, build, e2e:free) and pack job (electron-builder --dir), both on windows-latest and macos-14.
+  - .github/workflows/release.yml: a v<version> tag, or workflow_dispatch (dry run by default). The meta job refuses a tag or publishing dispatch whose commit is not reachable from origin/main (a dry run of another ref only builds, with a notice). windows on windows-latest, mac-arm64 on macos-14, mac-x64 on macos-15-intel. Each leg runs on its native runner so npm ci installs the matching darwin-<arch> optional deps. Unsigned unless the CSC_LINK/APPLE_* secrets are set. The publish job drafts a GitHub release.
+  - .github/dependabot.yml: weekly grouped npm and actions updates, targeting dev.
   - scripts/ci-check-version.mjs: the release tag must equal package.json's version.
 
 - `scripts/`
@@ -247,6 +247,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - SDK and provider behaviour claims are verified with a smoke script and recorded in CLAUDE.md with the version, or marked unverified there.
 - Worktree commit and merge belong to the harness. Never register WorktreeCreate or WorktreeRemove hooks just to observe.
 - Each feature lands as one descriptive commit plus a merge commit ('Merge <feature>').
+- Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Agent runs happen on dev.
 - Build output (out/, release/, release-*/, *.tsbuildinfo) is gitignored. Never commit it.
 
 ## Commands
@@ -264,6 +265,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Package unpacked dir, no publish: `npm run pack` (not `npm pack`, which is npm's own tarball command). `npm run dist:dir` also builds an unpacked dir.
 - Package macOS: `npm run dist:mac` (signed when an identity is available) or `npm run dist:mac:unsigned`. Per arch, on a machine of that arch: `npm run dist:mac:arm64`, `npm run dist:mac:x64`
 - Regenerate icon: `npm run icon`
+- Release: bump version on dev, merge dev → main by PR, `git tag v<version> && git push origin v<version>`
 
 ## Risks and gaps
 

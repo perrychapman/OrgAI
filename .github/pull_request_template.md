@@ -1,0 +1,5 @@
+- **What changed:**
+- **Files touched:**
+- **Checks run:** [ ] `npm run typecheck` [ ] `npm test` [ ] `npm run build` [ ] `npm run e2e:free`
+- **Spends tokens?** No / Yes, with the maintainer's consent (which smoke script or e2e, and why):
+- **Target:** feature work goes into `dev`; only `dev` -> `main` PRs target `main`.
