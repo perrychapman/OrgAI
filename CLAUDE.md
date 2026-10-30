@@ -51,6 +51,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 
 ## Renderer
 
+- Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 360 px; when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
+
 The UI overhaul landed on native elements with container queries. Radix and react-resizable-panels are not installed,
 and the frontend-design skill is not vendored in `.claude/skills` (only `run-desktop` is there).
 

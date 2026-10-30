@@ -19,6 +19,19 @@ export function maxWidthFor(container: number, reserve: number, min: number, max
   return Math.max(min, Math.min(max, Math.floor(container - reserve)))
 }
 
+/**
+ * One width budget for the panel next to the canvas. `parent` is the grid width (0 = not measured yet). The canvas keeps
+ * CANVAS_MIN_PX; the panel gets what is left, clamped to its range. When even the panel's minimum does not fit, `fits`
+ * is false and the panel must show as its rail instead of squeezing the canvas. `saved` is never changed here.
+ */
+export function panelBudget(parent: number, saved: number | null): { fits: boolean; max: number; width: number | null } {
+  if (parent <= 0) return { fits: true, max: PANEL_W.max, width: saved === null ? null : clampWidth(saved, PANEL_W.min, PANEL_W.max) }
+  const room = Math.floor(parent - CANVAS_MIN_PX)
+  const fits = room >= PANEL_W.min
+  const max = Math.max(PANEL_W.min, Math.min(PANEL_W.max, room))
+  return { fits, max, width: saved === null ? null : clampWidth(saved, PANEL_W.min, max) }
+}
+
 /** New width for a pointer drag. `dir` is 1 when moving right grows the column (sidebar), -1 when it shrinks it (right panel). */
 export function dragWidth(start: number, dx: number, dir: 1 | -1, min: number, max: number): number {
   return clampWidth(start + dir * dx, min, max)

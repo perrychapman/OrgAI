@@ -156,8 +156,30 @@
 .resize-handle[data-edge='start']::after {
   left: 0;
 }
-.resize-handle:hover::after {
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 28px;
+  margin-top: -14px;
+  border-radius: 2px;
   background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--dur-fast, 120ms) ease;
+}
+.resize-handle[data-edge='end']::before {
+  right: 0;
+}
+.resize-handle[data-edge='start']::before {
+  left: 0;
+}
+.resize-handle:hover::before,
+.resize-handle:focus-visible::before {
+  opacity: 1;
+}
+.resize-handle:hover::after {
+  background: var(--focus-ring);
 }
 .resize-handle:active::after,
 .resize-handle:focus-visible::after {
@@ -313,10 +335,17 @@ button.run-meta-item:focus-visible {
   }
 }
 @container frame (max-width: 560px) {
+  .fold-long {
+    display: none;
+  }
+}
+@container frame (max-width: 420px) {
   .run-meta-cost,
   .run-meta-agents {
     display: none;
   }
+}
+@container frame (max-width: 340px) {
   .fold-label {
     position: absolute;
     width: 1px;
@@ -324,6 +353,14 @@ button.run-meta-item:focus-visible {
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
+  }
+}
+.fold-short {
+  display: none;
+}
+@container frame (max-width: 560px) {
+  .fold-short {
+    display: inline;
   }
 }
 .run-fold {

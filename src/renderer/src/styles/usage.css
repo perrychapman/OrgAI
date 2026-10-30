@@ -83,3 +83,6 @@
   color: var(--text-tertiary);
   font-size: var(--text-caption);
 }
+.usage-stale {
+  color: var(--warning-text);
+}

@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
-import { CANVAS_MIN_PX, PANEL_W, clampWidth, maxWidthFor, usePersistedWidth } from '../../lib/panelWidth'
+import { PANEL_W, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
 import { ResizeHandle } from './ResizeHandle'
 
 const PREF_PREFIX = 'orgai.sidePanel.'
@@ -27,7 +27,7 @@ function readPref(key: string | undefined): 'open' | 'closed' | null {
  * `autoCollapseBelow` (px): when the panel's grid is narrower than this on first layout, it starts collapsed. The
  * user's own toggle is saved under `persistKey` (localStorage) and wins over that default from then on.
  * The panel is drag-resizable (a `ResizeHandle` on its left edge): the width is saved per `persistKey` (shared key
- * `default` without one) as `orgai.sidePanelW.<key>`, clamped to 280..640 px and so the canvas keeps 360 px. It drives
+ * `default` without one) as `orgai.sidePanelW.<key>`, clamped to 280..640 px so the canvas keeps 360 px; when 280 px does not fit it shows as its rail. It drives
  * `--side-panel-w` on the parent grid; with no saved width the grid's own CSS default applies.
  * `revealOn`: when this value changes to a non-null value (a selected node), the panel opens without saving.
  */
@@ -63,7 +63,8 @@ export function SidePanel({
   const collapsed = open === undefined ? inner : !open
   const [saved, setSaved] = usePersistedWidth(WIDTH_PREFIX + (persistKey ?? 'default'))
   const [sizes, setSizes] = useState({ panel: 0, parent: 0 })
-  const max = maxWidthFor(sizes.parent, CANVAS_MIN_PX, PANEL_W.min, PANEL_W.max)
+  const budget = panelBudget(sizes.parent, saved)
+  const max = budget.max
   // The grid column follows the saved width, re-clamped when the container shrinks (the saved value is kept).
   useLayoutEffect(() => {
     const el = ref.current
@@ -77,7 +78,7 @@ export function SidePanel({
     ro.observe(parent)
     return () => ro.disconnect()
   }, [])
-  const applied = saved === null ? null : clampWidth(saved, PANEL_W.min, max)
+  const applied = budget.fits ? budget.width : null
   useLayoutEffect(() => {
     const parent = ref.current?.parentElement
     if (!parent) return undefined
@@ -101,10 +102,9 @@ export function SidePanel({
       })
     }
     apply()
-    if (typeof ResizeObserver === 'undefined') return undefined
-    const ro = new ResizeObserver(apply)
-    ro.observe(parent)
-    return () => ro.disconnect()
+    // Window resizes only: dragging a resize handle (sidebar or panel) must not fold the panel.
+    window.addEventListener('resize', apply)
+    return () => window.removeEventListener('resize', apply)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoCollapseBelow, persistKey])
   const first = useRef(true)
@@ -130,7 +130,8 @@ export function SidePanel({
       }
     }
   }
-  const isCollapsed = collapsible && collapsed
+  // No room for the panel's minimum next to a 360 px canvas: show the rail (the saved width and choice are kept).
+  const isCollapsed = collapsible && (collapsed || !budget.fits)
   return (
     <aside ref={ref} className="side side-panel" aria-label={label} data-collapsed={isCollapsed ? 'true' : 'false'} data-testid={testId}>
       {isCollapsed && (

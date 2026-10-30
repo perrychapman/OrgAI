@@ -10,19 +10,23 @@ const REFRESH_EVERY_MS = 60_000
 let lastAttempt = 0
 let inFlight = false
 
-function refreshIfStale(): void {
-  if (inFlight) return
+function refreshIfStale(): Promise<void> | null {
+  if (inFlight) return null
   const state = useAppStore.getState()
   const t = Date.now()
-  if (t - lastAttempt < REFRESH_EVERY_MS) return
-  if (state.usage?.available && t - state.usage.updatedAt < REFRESH_EVERY_MS) return
-  if (state.usage?.authMode === 'apiKey') return
+  if (t - lastAttempt < REFRESH_EVERY_MS) return null
+  if (state.usage?.available && t - state.usage.updatedAt < REFRESH_EVERY_MS) return null
+  if (state.usage?.authMode === 'apiKey') return null
   lastAttempt = t
   inFlight = true
-  void state.refreshUsage().finally(() => {
+  const p = state.refreshUsage().finally(() => {
     inFlight = false
   })
+  return p
 }
+
+/** A successful reading older than this gets an "out of date" cue. */
+const OUT_OF_DATE_MS = 15 * 60_000
 
 const WARN_AT = 80
 
@@ -79,6 +83,7 @@ export function UsageBar({ usage }: { usage: UsageStatus | null }): ReactElement
 export default function UsageMeter(): ReactElement {
   const usage = useAppStore((s) => s.usage)
   const [now, setNow] = useState(() => Date.now())
+  const [reading, setReading] = useState(inFlight)
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 30_000)
@@ -87,9 +92,21 @@ export default function UsageMeter(): ReactElement {
 
   // Mounted only while the account popover is open: read now if the data is stale, then every minute.
   useEffect(() => {
-    refreshIfStale()
-    const t = setInterval(refreshIfStale, REFRESH_EVERY_MS)
-    return () => clearInterval(t)
+    let alive = true
+    const run = (): void => {
+      const p = refreshIfStale()
+      if (!p) return
+      setReading(true)
+      void p.finally(() => {
+        if (alive) setReading(false)
+      })
+    }
+    run()
+    const t = setInterval(run, REFRESH_EVERY_MS)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
   }, [])
 
   if (usage?.authMode === 'apiKey') {
@@ -102,8 +119,8 @@ export default function UsageMeter(): ReactElement {
   if (!usage?.available) {
     return (
       <div className="usage-meter">
-        <div className="usage-empty" title="Plan usage refreshes on its own.">
-          Usage not reported yet
+        <div className="usage-empty" title="Plan usage refreshes on its own." role="status">
+          {reading || inFlight ? 'Reading usage…' : 'Usage not reported yet'}
         </div>
       </div>
     )
@@ -133,6 +150,11 @@ export default function UsageMeter(): ReactElement {
           </div>
         )
       })}
+      {now - usage.updatedAt > OUT_OF_DATE_MS && (
+        <div className="usage-hint usage-stale" title={`Last updated ${new Date(usage.updatedAt).toLocaleTimeString()}`}>
+          Out of date · updated {formatUntil(now, usage.updatedAt)} ago
+        </div>
+      )}
       {usage.overageInUse && <div className="usage-hint">Extra usage in use</div>}
     </div>
   )
