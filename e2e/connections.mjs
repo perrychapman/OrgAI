@@ -68,7 +68,9 @@ try {
           await openAppSettings(page)
           await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
           check((await sm().inputValue()) === smWant, 'Setup model persists after reopening App settings', smWant)
-          await sm().selectOption(smBefore)
+          // The default is 'deep', which is not a listed model: the UI shows it only while it is the saved value, so it
+          // cannot be selected again. Restore only a listed value (temp data dir; the leftover is harmless).
+          if ((await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))).includes(smBefore)) await sm().selectOption(smBefore)
           await sleep(600)
           await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
         }
