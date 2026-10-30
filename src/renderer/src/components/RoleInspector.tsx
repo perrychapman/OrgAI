@@ -3,6 +3,7 @@ import { Trash2 } from 'lucide-react'
 import type { Effort, Project, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
 import RoleModelPicker from './RoleModelPicker'
+import RoleServices from './connectors/RoleServices'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { Banner } from './ui/Banner'
@@ -161,6 +162,8 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             ))}
           </div>
         </section>
+
+        <RoleServices project={project} role={role} />
 
         <section className="stack-2" aria-labelledby={id('delegation')}>
           <h3 className="side-section-title" id={id('delegation')}>
