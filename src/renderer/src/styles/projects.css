@@ -33,6 +33,11 @@
 .form-options {
   margin: 4px 0 16px;
 }
+.form-connection {
+  margin: 0 0 12px;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
 .form-submit {
   gap: 12px;
 }

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Copy, ExternalLink, Network, RefreshCw, Sparkles } from 'lucide-react'
 import type { ConnectionId, ConnectionInfo, ConnectionLoginStart, OpenAIConnection, AnthropicConnection, LiteLLMConnection, ProviderConnection } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
+import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { ConfirmDialog } from '../ui/Dialog'
@@ -50,6 +51,19 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const [notice, setNotice] = useState<string | null>(null)
   const state = info.status.state
   const connected = state === 'connected'
+  const defaultId = useAppStore((s) => s.defaultConnection)
+  const loadDefault = useAppStore((s) => s.loadDefaultConnection)
+  const isDefault = defaultId === id
+  useEffect(() => {
+    void loadDefault()
+  }, [loadDefault])
+  const makeDefault = async (): Promise<void> => {
+    try {
+      await useAppStore.getState().setDefaultConnection(id)
+    } catch (e) {
+      setError(errText(e))
+    }
+  }
 
   useEffect(() => {
     if (state === 'error' || state === 'connecting') setOpen(true)
@@ -155,6 +169,16 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           </p>
         </div>
         <ConnectionStatusBadge state={state} />
+        {isDefault && (
+          <Badge tone="accent" testId="default-connection-badge">
+            Default for new projects
+          </Badge>
+        )}
+        {connected && defaultId !== null && !isDefault && (
+          <Button size="sm" variant="ghost" ariaLabel={`Use ${meta.name} for new projects`} onClick={() => void makeDefault()}>
+            Use for new projects
+          </Button>
+        )}
         {!connected && !open && (
           <Button
             size="sm"

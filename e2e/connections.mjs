@@ -38,6 +38,25 @@ try {
       check(ov.sw <= ov.cw, `no horizontal scroll on connections at ${w}x${h} ${theme}`, JSON.stringify(ov))
       await shot(`connections-${w}x${h}-${theme}`)
 
+      // Defaults pane: the Default connection row exists
+      await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+      const defConn = page.getByRole('combobox', { name: 'Default connection', exact: true })
+      await defConn.waitFor({ timeout: 10_000 })
+      check((await defConn.count()) === 1, `default connection row on the Defaults pane at ${w}x${h} ${theme}`)
+      if (w === 1024 && theme === 'dark') {
+        await defConn.selectOption('openai')
+        await sleep(600)
+        await page.reload()
+        await page.waitForSelector('.nav-item', { timeout: 15_000 })
+        await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+        await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+        const after = await page.getByRole('combobox', { name: 'Default connection', exact: true }).inputValue()
+        check(after === 'openai', 'default connection persists after reload', after)
+        await page.getByRole('combobox', { name: 'Default connection', exact: true }).selectOption('anthropic')
+        await sleep(600)
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      }
+
       // About block
       await page.getByRole('tab', { name: 'About', exact: true }).click()
       const about = page.locator('[data-testid=about-block]')

@@ -2,7 +2,8 @@ import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, PermissionMode, ThemeMode } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import type { ConnectionId } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
@@ -21,7 +22,8 @@ import { ClampedNumber } from '../components/settings/ClampedNumber'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
-import { SETTINGS_COPY } from '../lib/settingsCopy'
+import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/settingsCopy'
+import { connectionUsable } from '../lib/projectsForm'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
@@ -132,9 +134,12 @@ export default function AppSettingsView(): ReactElement {
     document.getElementById('accent-hex')?.focus()
   })
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
+  const connections = useAppStore((s) => s.connections)
+  const loadConnections = useAppStore((s) => s.loadConnections)
   useEffect(() => {
     void loadAppInfo()
-  }, [loadAppInfo])
+    void loadConnections()
+  }, [loadAppInfo, loadConnections])
 
   useEffect(() => {
     window.orgai.settings
@@ -375,6 +380,32 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'mcp-library' && <McpLibrarySection />}
         {pane === 'defaults' && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="For new projects. Existing ones keep their own.">
+            <SettingsGroup title="Connection">
+              <SettingsCard>
+                <SettingRow
+                  id="default-connection-row"
+                  title={DEFAULT_CONNECTION_COPY.label}
+                  description={DEFAULT_CONNECTION_COPY.description}
+                  width="select"
+                  control={
+                    <Select
+                      label={DEFAULT_CONNECTION_COPY.label}
+                      describedBy={settingDescId('default-connection-row')}
+                      value={info.defaultConnection ?? 'anthropic'}
+                      options={CONNECTION_IDS.map((id) => ({
+                        value: id,
+                        label: `${CONNECTION_NAME[id]}${id === 'anthropic' || connectionUsable(connections?.find((c) => c.connection.id === id)) ? '' : ' (not set up)'}`
+                      }))}
+                      onChange={(v) => {
+                        const defaultConnection = v as ConnectionId
+                        patch({ defaultConnection }, true)
+                        useAppStore.setState({ defaultConnection })
+                      }}
+                    />
+                  }
+                />
+              </SettingsCard>
+            </SettingsGroup>
             <SettingsGroup title="Models">
               <SettingsCard>
                 <SettingRow

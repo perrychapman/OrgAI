@@ -6,7 +6,7 @@ import { setupPending } from '@shared/setup'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { examplePath } from '../lib/platform'
-import { effectiveName, pathStatus, submitBlocker } from '../lib/projectsForm'
+import { effectiveName, newProjectConnectionLine, pathStatus, submitBlocker } from '../lib/projectsForm'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Checkbox } from '../components/ui/Checkbox'
@@ -22,6 +22,12 @@ const KINDS: { value: SetupKind; label: string }[] = [
 
 function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
   const createProject = useAppStore((s) => s.createProject)
+  const defaultConnection = useAppStore((s) => s.defaultConnection)
+  const connections = useAppStore((s) => s.connections)
+  useEffect(() => {
+    void useAppStore.getState().loadDefaultConnection()
+    if (!useAppStore.getState().connections) void useAppStore.getState().loadConnections()
+  }, [])
   const startSetup = useAppStore((s) => s.startSetup)
   const uid = useId()
   const ids = { name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
@@ -206,6 +212,10 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         />
         {mockAvailable && <Checkbox checked={useMock} onChange={setUseMock} label="Use the mock adapter (no tokens are spent)" testId="use-mock" />}
       </div>
+
+      <p className="form-connection muted" data-testid="new-project-connection">
+        {newProjectConnectionLine(defaultConnection, connections)}
+      </p>
 
       <div className="row form-submit">
         <Button type="submit" variant="primary" loading={busy} disabled={!!blocker}>
