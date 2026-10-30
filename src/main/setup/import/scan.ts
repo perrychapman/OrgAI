@@ -237,6 +237,8 @@ class Scanner {
       if (inRoot.some((seg) => seg.toLowerCase() === '.git')) return null
       if (this.relativeCache.has(real)) return this.relativeCache.get(real) ?? null
       if (!this.take(p)) return null
+      // Regular files only, checked before open: opening a FIFO or device would block.
+      if (!statSync(real).isFile()) return null
       const text = this.boundedRead(real)
       const out = text === 'big' ? null : text
       this.relativeCache.set(real, out)

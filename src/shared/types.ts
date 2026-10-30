@@ -1662,6 +1662,7 @@ export interface AgentImportInput {
   /**
    * applyImport only: AgentImportPreview.digest of the preview the user reviewed. When given and the folder's
    * definitions changed since (another prompt, tool list or model under the same name), apply refuses.
+   * Omitting it opts out of that check, so the UI always sends the digest of the preview it showed.
    */
   digest?: string
 }
