@@ -6,7 +6,7 @@ import { totalTokens } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { formatTokens, sumCosts, unpricedModels, type CostInput } from '../lib/cost'
 import { requestModelPrice } from '../lib/settingsTarget'
-import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
+import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, skillRows, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
 import { Button } from './ui/Button'
@@ -150,6 +150,27 @@ function AgentTable({ rows, selectedId, onSelect }: { rows: AgentRow[]; selected
   )
 }
 
+function SkillsLoaded({ run }: { run: RunUsage }): ReactElement | null {
+  const rows = skillRows(run)
+  if (rows.length === 0) return null
+  return (
+    <section className="usage-skills" data-testid="usage-skills" aria-label="Skills loaded">
+      <h4 className="usage-skills-title">Skills loaded</h4>
+      <dl className="usage-skills-list">
+        {rows.map((r) => (
+          <div key={r.skillId} className="usage-skill" data-testid="usage-skill">
+            <dt title={r.name}>{r.name}</dt>
+            <dd>
+              {r.loadsText}
+              {r.roles && <span className="usage-sub">{r.roles}</span>}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  )
+}
+
 function RoleTable({ run, rows: agentRowsList }: { run: RunUsage; rows: AgentRow[] }): ReactElement | null {
   const rows = roleRows(run, agentRowsList)
   if (rows.length === 0) return null
@@ -244,6 +265,7 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
       )}
       {rows.length > 0 && <AgentTable rows={rows} selectedId={scoped?.id} onSelect={selectAgent} />}
       {usage && !scoped && <RoleTable run={usage} rows={rows} />}
+      {usage && !scoped && <SkillsLoaded run={usage} />}
       {scoped && scopedRow ? <Totals row={scopedRow} part="more" /> : usage ? <Totals run={usage} part="more" /> : null}
     </div>
   )
