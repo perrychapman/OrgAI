@@ -274,6 +274,25 @@ try {
   check(failText.includes('Do [mock:title-fail] something'), 'a run without a title shows the prompt excerpt on its tab', failText)
   await endSession(page)
 
+  // An auth failure ends the run Failed with the readable connection message.
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Check the setup [mock:auth-fail]')
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  let authRun
+  for (let i = 0; i < 40 && !(authRun?.endedAt); i++) {
+    authRun = await summaryFor('mock:auth-fail')
+    await sleep(300)
+  }
+  check(authRun?.status === 'error' && /connection was refused/.test(authRun?.error ?? ''), 'a [mock:auth-fail] run ends in error with the readable message', JSON.stringify(authRun))
+  await page.getByText(/connection was refused/).first().waitFor({ timeout: 10_000 }).catch(() => {})
+  const refused = await page.getByText(/connection was refused/).count()
+  check(refused > 0, 'the readable "connection was refused" error shows in the UI', String(refused))
+  await page.getByText('Failed', { exact: true }).first().waitFor({ timeout: 5000 }).catch(() => {})
+  check((await page.getByText('Failed', { exact: true }).count()) > 0, 'the run status word is Failed')
+  await shot('run-auth-fail')
+  await endSession(page)
+
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
