@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { LayoutGrid, Plus, Undo2 } from 'lucide-react'
+import { Download, LayoutGrid, Plus, Undo2, Upload } from 'lucide-react'
 import {
   ReactFlow,
   Background,
@@ -13,12 +13,15 @@ import {
   type NodeChange,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { Project, Role } from '@shared/types'
+import type { AgentImportScan, Project, Role } from '@shared/types'
 import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar } from '../components/layout/CanvasFrame'
 import { SidePanel } from '../components/layout/SidePanel'
+import { Banner } from '../components/ui/Banner'
 import { Button } from '../components/ui/Button'
+import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
+import { importBannerVisible, notImportedLine, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
 import { useConfirm } from '../components/ui/ConfirmDialog'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
@@ -71,12 +74,41 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const [undo, setUndo] = useState<{ removed: RemovedRole; name: string } | null>(null)
   const [focusTick, setFocusTick] = useState(0)
   const [panelOpen, setPanelOpen] = useState(true)
+  const [importDialog, setImportDialog] = useState<{ fresh: boolean } | null>(null)
+  const [scan, setScan] = useState<AgentImportScan | null>(null)
+  const [memory, setMemory] = useState<BannerMemory | null>(() => readBannerMemory(window.localStorage, project.id))
+  const [exported, setExported] = useState<{ path?: string; error?: string } | null>(null)
+  const importRequest = useAppStore((s) => s.importRequest)
+  const importNotice = useAppStore((s) => s.importNotices[project.id])
+  const dismissImportNotice = useAppStore((s) => s.dismissImportNotice)
+  const undoImport = useAppStore((s) => s.undoImport)
   const focusWanted = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
   const root = project.roles.find((r) => r.reportsTo === null)
   const selectedRole = project.roles.find((r) => r.id === selectedRoleId)
   const addParent = selectedRole ?? root
+
+  // Agent files in the folder that the chart has not taken in: re-read when the project or its import state changes.
+  useEffect(() => {
+    let live = true
+    setMemory(readBannerMemory(window.localStorage, project.id))
+    window.orgai.projects
+      .scanAgents(project.path)
+      .then((r) => live && setScan(r))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [project.id, project.path, importDialog])
+
+  // The New project form asks for the review on a fresh chart.
+  useEffect(() => {
+    if (importRequest && importRequest.projectId === project.id) {
+      setImportDialog({ fresh: importRequest.fresh })
+      useAppStore.getState().requestImport(null)
+    }
+  }, [importRequest, project.id])
 
   useEffect(() => {
     if (!undo) return
@@ -287,6 +319,21 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     selectRole(role.id)
   }
 
+  const exportOrg = async (): Promise<void> => {
+    const ok = await confirm({
+      title: 'Export the org chart to the repository?',
+      body: 'This writes one file, .orgai/org.json, in the project folder. Nothing is committed. Another OrgAI can import it with Import agents.',
+      confirmLabel: 'Export to repo'
+    })
+    if (!ok) return
+    try {
+      const r = await window.orgai.projects.exportOrg(project.id)
+      setExported({ path: r.path })
+    } catch (e) {
+      setExported({ error: (e as Error).message })
+    }
+  }
+
   const autoLayout = (): void => {
     const pos = treeLayout(
       project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: 220, height: 96 })),
@@ -298,9 +345,16 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   return (
     <div className="editor" ref={rootRef} onKeyDownCapture={onRootKeyDownCapture}>
       <CanvasFrame frameRef={frameRef}>
+        <div className="frame-top">
         <FrameToolbar label="Org chart actions">
           <Button size="sm" icon={Plus} onClick={addRole}>
             Add role
+          </Button>
+          <Button size="sm" icon={Download} onClick={() => setImportDialog({ fresh: false })} testId="import-agents">
+            Import agents
+          </Button>
+          <Button size="sm" icon={Upload} onClick={() => void exportOrg()} testId="export-org">
+            Export to repo
           </Button>
           <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
             Auto-layout
@@ -315,6 +369,50 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
             </span>
           )}
         </FrameToolbar>
+        <div className="import-notices">
+          {importNotice && importNotice.state !== 'reverted' && (
+            <Banner
+              tone={importNotice.state === 'error' ? 'danger' : 'success'}
+              title={importNotice.summary}
+              label="Agent import"
+              testId="import-notice"
+              onDismiss={() => dismissImportNotice(project.id)}
+              actions={
+                <Button size="sm" loading={importNotice.state === 'busy'} onClick={() => void undoImport(project.id)} testId="import-undo">
+                  {importNotice.state === 'error' ? 'Retry undo' : 'Undo'}
+                </Button>
+              }
+            >
+              {importNotice.error}
+            </Banner>
+          )}
+          {importNotice?.state === 'reverted' && (
+            <Banner tone="info" title="Import undone. The previous chart is back." label="Agent import" onDismiss={() => dismissImportNotice(project.id)} />
+          )}
+          {!importNotice && scan && importBannerVisible(scan.sources.reduce((n, x) => n + x.agentCount, 0), memory) && (
+            <Banner
+              tone="info"
+              label="Agents found"
+              testId="import-found"
+              title={notImportedLine(scan.sources.reduce((n, x) => n + x.agentCount, 0), scan.sources)}
+              onDismiss={() => {
+                writeBannerMemory(window.localStorage, project.id, 'dismissed')
+                setMemory('dismissed')
+              }}
+              actions={
+                <Button size="sm" variant="primary" onClick={() => setImportDialog({ fresh: false })}>
+                  Review import
+                </Button>
+              }
+            />
+          )}
+          {exported && (
+            <Banner tone={exported.error ? 'danger' : 'success'} title={exported.error ? 'Could not export' : 'Exported the org chart'} testId="export-notice" onDismiss={() => setExported(null)}>
+              {exported.error ?? <span className="mono">{exported.path}</span>}
+            </Banner>
+          )}
+        </div>
+        </div>
         <FrameStage>
           <ReactFlow
             nodes={nodes}
@@ -361,6 +459,9 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
           <DraftPanel project={project} />
         )}
       </SidePanel>
+      {importDialog && (
+        <ImportAgentsDialog project={project} defaultMode={importDialog.fresh ? 'replace' : 'merge'} fresh={importDialog.fresh} onClose={() => setImportDialog(null)} />
+      )}
       {dialog}
     </div>
   )

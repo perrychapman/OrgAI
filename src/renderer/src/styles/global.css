@@ -16,6 +16,7 @@
 @import './cards.css';
 @import './usage.css';
 @import './layout.css';
+@import './import.css';
 
 * {
   box-sizing: border-box;

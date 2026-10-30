@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { Bot, Network, Sparkles } from 'lucide-react'
 import type { ConnectionId, Project } from '@shared/types'
-import { CONNECTION_IDS } from '@shared/types'
+import { CONNECTION_IDS, MODEL_TIER_OPTIONS } from '@shared/types'
 import { adapterForProject, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
@@ -15,7 +15,7 @@ import { SettingsCard } from '../settings/SettingsCard'
 import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
-import { familyMismatches, previewRemap, FAMILY_LABEL } from '../../lib/remap'
+import { familyMismatches, previewRemap, roleTier, FAMILY_LABEL } from '../../lib/remap'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 
 const NAME: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
@@ -183,6 +183,21 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         <p className="settings-card-note">
           {rolesOn} {rolesOn === 1 ? 'role uses' : 'roles use'} this connection{everyday ? ` · Everyday tier: ${everyday}` : ''}
         </p>
+        <details className="setting-row-more role-models" data-testid="role-models">
+          <summary>Role models</summary>
+          <ul className="remap-roles flush">
+            {project.roles.map((r) => {
+              const tier = r.model === 'inherit' ? undefined : roleTier(r)
+              return (
+                <li key={r.id}>
+                  <span className="remap-role">{r.name}</span>
+                  <span className="muted">{tier ? MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label : r.model === 'inherit' ? 'Inherit' : 'Custom'}</span>
+                  <span className="mono">{r.model === 'inherit' ? "its parent's model" : r.model}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </details>
       </SettingsCard>
 
       {target === 'litellm' && (

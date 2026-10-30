@@ -44,6 +44,15 @@ import type {
 import { HARNESS_PROJECT_ID, parseRunWindowHash } from '@shared/types'
 
 /** Project tabs: run (Live), history, org (Org chart), settings. projects and appSettings are app-level. */
+/** The Banner after an agent import: what came in, and what Undo restores. */
+export interface ImportNotice {
+  count: number
+  summary: string
+  previousRoles: Role[]
+  state: 'available' | 'busy' | 'reverted' | 'error'
+  error?: string
+}
+
 export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'logs'
@@ -211,6 +220,13 @@ interface AppState {
   /** Show a notice for results. `before` holds the pre-change copies of the projects, for Undo. */
   pushRemapNotice(cause: string, results: RemapResult[], before: Project[]): void
   dismissRemapNotice(id: string): void
+  /** Agent import: a pending request to open the review dialog on the Org chart tab, and the notice after an apply. */
+  importRequest: { projectId: string; fresh: boolean } | null
+  importNotices: Record<string, ImportNotice>
+  requestImport(request: { projectId: string; fresh: boolean } | null): void
+  recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
+  undoImport(projectId: string): Promise<void>
+  dismissImportNotice(projectId: string): void
   undoRemap(noticeId: string, projectId: string): Promise<void>
   /** Save a project right away and replace the store copy with what the main process returns. */
   saveProjectNow(project: Project): Promise<Project>
@@ -434,6 +450,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelsError: {},
   login: null,
   remapNotices: [],
+  importRequest: null,
+  importNotices: {},
 
   defaultConnection: null,
   async loadDefaultConnection() {
@@ -503,6 +521,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissRemapNotice(id) {
     set((s) => ({ remapNotices: s.remapNotices.filter((n) => n.id !== id) }))
+  },
+
+  requestImport(request) {
+    set({ importRequest: request })
+  },
+
+  recordImport(projectId, notice) {
+    set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...notice, state: 'available' } } }))
+  },
+
+  async undoImport(projectId) {
+    const notice = get().importNotices[projectId]
+    const current = get().projects.find((p) => p.id === projectId)
+    if (!notice || !current) return
+    const patch = (p: Partial<ImportNotice>): void => set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...s.importNotices[projectId], ...p } } }))
+    patch({ state: 'busy', error: undefined })
+    try {
+      await get().saveProjectNow({ ...current, roles: notice.previousRoles })
+      patch({ state: 'reverted' })
+    } catch (e) {
+      patch({ state: 'error', error: (e as Error).message })
+    }
+  },
+
+  dismissImportNotice(projectId) {
+    set((s) => {
+      const { [projectId]: _gone, ...importNotices } = s.importNotices
+      return { importNotices }
+    })
   },
 
   async undoRemap(noticeId, projectId) {
