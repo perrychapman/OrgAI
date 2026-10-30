@@ -1,7 +1,10 @@
 import { TOOL_CATALOG, type ToolName } from '@shared/types'
 
-/** Tools given when a file lists none. */
-export const DEFAULT_IMPORT_TOOLS: ToolName[] = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']
+/**
+ * Tools given when a file lists none: read-only. A definition never gets Bash, Edit or Write (or spawning) without
+ * naming them, even where the other harness reads a missing list as "all tools".
+ */
+export const DEFAULT_IMPORT_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep']
 
 const TABLE: Record<string, ToolName[]> = {
   read: ['Read'],

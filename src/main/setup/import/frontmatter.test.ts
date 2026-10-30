@@ -61,3 +61,36 @@ describe('parseYamlDoc', () => {
     expect(modes[1].groups).toEqual(['read', 'browser'])
   })
 })
+
+describe('frontmatter: hostile input', () => {
+  it('a long digit run ending in a non-digit parses fast (no regex backtracking)', () => {
+    const start = Date.now()
+    const r = parseYamlDoc(`count: ${'1'.repeat(250_000)}x`)
+    expect(Date.now() - start).toBeLessThan(1000)
+    expect(r.error).toMatch(/longer than 4000 characters/)
+    expect(typeof (r.data as Record<string, unknown>).count).toBe('string')
+    const flow = `n: [${Array.from({ length: 60 }, () => '9'.repeat(60) + 'x').join(', ')}]`
+    const t = Date.now()
+    const f = parseYamlDoc(flow)
+    expect(Date.now() - t).toBeLessThan(500)
+    expect(f.error).toBeUndefined()
+    expect((f.data as { n: unknown[] }).n).toHaveLength(60)
+  })
+  it('a long run of blank lines inside a plain scalar parses fast', () => {
+    const start = Date.now()
+    const r = parseYamlDoc('a: x\n' + '\n'.repeat(200_000) + '  y')
+    expect(Date.now() - start).toBeLessThan(1000)
+    expect(r.data).toEqual({ a: 'x y' })
+  })
+  it('still reads ordinary numbers and leaves long digit strings as strings', () => {
+    const r = parseYamlDoc(`a: 3\nb: -1.5e3\nc: .5\nd: 2.\ne: ${'7'.repeat(80)}`)
+    expect(r.data).toEqual({ a: 3, b: -1500, c: 0.5, d: 2, e: '7'.repeat(80) })
+  })
+  it('cuts lines over the cap with an error but keeps the rest', () => {
+    const r = parseFrontmatter(`---\nname: x\ndescription: ${'d'.repeat(5000)}\n---\nBody`)
+    expect(r.error).toMatch(/line 2 is longer than 4000/)
+    expect(r.data.name).toBe('x')
+    expect((r.data.description as string).length).toBeLessThan(4000)
+    expect(r.body).toBe('Body')
+  })
+})

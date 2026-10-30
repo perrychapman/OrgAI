@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { agentDefinitionLocations, importKey, scanAgentSources } from './scan'
+import { agentDefinitionLocations, importKey, inGitDir, scanAgentSources } from './scan'
 
 let base: string
 let root: string
@@ -116,6 +116,32 @@ describe('scanAgentSources', () => {
     const r = scanAgentSources(root)
     expect(r.agents.map((a) => a.name)).toEqual(['real'])
     expect(r.scan.warnings.some((w) => /evil\.md.*outside/.test(w))).toBe(true)
+  })
+
+  it('skips a link whose real path lands in .git', () => {
+    put('.git/hooks/agent.md', claude('githook'))
+    try {
+      mkdirSync(join(root, '.claude'))
+      symlinkSync(join(root, '.git', 'hooks'), join(root, '.claude', 'agents'), 'junction')
+    } catch {
+      return
+    }
+    const r = scanAgentSources(root)
+    expect(r.agents).toEqual([])
+    expect(r.scan.warnings.some((w) => /into \.git/.test(w))).toBe(true)
+  })
+
+  it('treats Windows aliases of .git as .git', () => {
+    expect(inGitDir('.git/hooks/a.md')).toBe(true)
+    expect(inGitDir('sub\\.GIT. \\a.md')).toBe(true)
+    expect(inGitDir('GIT~1/a.md')).toBe(true)
+    expect(inGitDir('.github/agents/a.md')).toBe(false)
+    expect(inGitDir('.gitignore')).toBe(false)
+  })
+
+  it('refuses a relative root', () => {
+    put('.claude/agents/a.md', claude('a'))
+    expect(scanAgentSources('relative/root')).toEqual({ scan: { sources: [], instructionFiles: [], warnings: [] }, agents: [] })
   })
 
   it('skips oversized files', () => {

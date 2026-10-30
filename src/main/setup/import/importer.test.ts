@@ -105,7 +105,33 @@ describe('AgentImportService', () => {
 
   it('apply refuses when nothing would be imported', () => {
     const p = make()
-    expect(() => service([p]).apply({ projectId: p.id, mode: 'replace' })).toThrow(/nothing to import/)
+    const s = service([p])
+    const { digest } = s.preview({ projectId: p.id, mode: 'replace' })
+    expect(() => s.apply({ projectId: p.id, mode: 'replace', digest })).toThrow(/nothing to import/)
+  })
+
+  it('apply refuses without a digest', () => {
+    put('.claude/agents/designer.md', claude('designer'))
+    const p = make()
+    const s = service([p])
+    expect(() => s.apply({ projectId: p.id, mode: 'replace' } as never)).toThrow(/Preview the import/)
+    expect(() => s.apply({ projectId: p.id, mode: 'replace', digest: '' })).toThrow(/Preview the import/)
+    expect(() => s.apply({ projectId: p.id, mode: 'replace', digest: 42 } as never)).toThrow(/Preview the import/)
+    expect(saved).toEqual([])
+  })
+
+  it('scan and pathCheckExtras ignore relative paths', () => {
+    put('.claude/agents/a.md', claude('a'))
+    const s = service([])
+    const check = { exists: true, isDirectory: true, isGitRepo: false, suggestedName: 'repo', empty: false }
+    const prev = process.cwd()
+    process.chdir(base)
+    try {
+      expect(s.scan('repo')).toEqual({ sources: [], instructionFiles: [], warnings: [] })
+      expect(s.pathCheckExtras('repo', check)).toEqual({})
+    } finally {
+      process.chdir(prev)
+    }
   })
 
   it('maps models to the project connection and sets the adapter', () => {
@@ -113,7 +139,9 @@ describe('AgentImportService', () => {
     put('.claude/agents/helper.md', claude('helper', 'claude-haiku-4-5'))
     const p = make()
     p.provider = { ...p.provider, connection: 'openai' }
-    const out = service([p]).apply({ projectId: p.id, mode: 'replace' })
+    const s = service([p])
+    const { digest } = s.preview({ projectId: p.id, mode: 'replace' })
+    const out = s.apply({ projectId: p.id, mode: 'replace', digest })
     expect(out.project.provider.id).toBe('codex')
     expect(out.project.roles.map((r) => r.model).sort()).toEqual(['gpt-5', 'gpt-5-nano'])
   })

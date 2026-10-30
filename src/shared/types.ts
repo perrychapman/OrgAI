@@ -1659,13 +1659,25 @@ export interface AgentImportInput {
   sources?: AgentImportSource[]
   mode: AgentImportMode
   choices?: AgentImportChoice[]
-  /**
-   * applyImport only: AgentImportPreview.digest of the preview the user reviewed. When given and the folder's
-   * definitions changed since (another prompt, tool list or model under the same name), apply refuses.
-   * Omitting it opts out of that check, so the UI always sends the digest of the preview it showed.
-   */
+  /** Ignored by previewImport. applyImport takes AgentImportApplyInput, where it is required. */
   digest?: string
 }
+
+/** Most choices one preview or apply accepts; more are refused. */
+export const AGENT_IMPORT_MAX_CHOICES = 200
+
+/**
+ * projects:applyImport input. `digest` is required: the AgentImportPreview.digest of the preview the user reviewed.
+ * When the folder's definitions changed since (another prompt, tool list, model, responsibilities or color under the
+ * same name), apply refuses, and it refuses outright without a digest. The digest covers the folder only: apply
+ * recomputes against the project's current roles, mode and choices, so the UI should re-preview after an org chart edit.
+ */
+export interface AgentImportApplyInput extends AgentImportInput {
+  digest: string
+}
+
+/** Tools that change files or run commands. AgentImportItem.elevatedTools lists the ones an imported role gets. */
+export const AGENT_IMPORT_ELEVATED_TOOLS: readonly ToolName[] = ['Bash', 'Edit', 'Write', 'NotebookEdit']
 
 /**
  * Why an imported role got its model. 'kept': the original is a catalog model of the project's connection.
@@ -1700,6 +1712,17 @@ export interface AgentImportItem {
   promptExcerpt: string
   /** Length of the whole imported prompt (at most 20,000), so the UI can say how much the excerpt leaves out. */
   promptLength: number
+  /**
+   * The whole prompt the role gets (the imported prompt, capped at 20,000 characters, or its description when the
+   * definition has none). Untrusted repo text: render it as plain text and let the user read all of it before applying.
+   */
+  prompt: string
+  /**
+   * The role's elevated grants, for the UI to flag: its tools among AGENT_IMPORT_ELEVATED_TOOLS (Bash, Edit, Write,
+   * NotebookEdit), plus 'canSpawn' when it may spawn agents and 'mcp' when it keeps a replaced role's MCP grants.
+   * Empty for a read-only role.
+   */
+  elevatedTools: string[]
   action: AgentImportAction
   /** For 'replace': the existing role it takes the place of. */
   replacesRoleId?: string
@@ -1803,7 +1826,7 @@ export interface OrgAIApi {
     /** The org chart an import would produce, with models mapped to the project's connection. Saves nothing. */
     previewImport(input: AgentImportInput): Promise<AgentImportPreview>
     /** Re-scan the folder, apply the import (and the choices) and save. Returns the project and the roles it replaced. */
-    applyImport(input: AgentImportInput): Promise<AgentImportApplyResult>
+    applyImport(input: AgentImportApplyInput): Promise<AgentImportApplyResult>
     /** Write the project's org chart to `<project>/.orgai/org.json` (no ids, positions, secrets or MCP specs). */
     exportOrg(projectId: string): Promise<OrgExportResult>
   }

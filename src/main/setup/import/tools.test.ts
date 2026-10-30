@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { mapTools, rooGroupTools } from './tools'
 
 describe('mapTools', () => {
-  it('defaults when no list is given', () => {
-    expect(mapTools(undefined)).toEqual({ tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], dropped: [], canSpawn: false })
+  it('defaults to read-only tools when no list is given', () => {
+    expect(mapTools(undefined)).toEqual({ tools: ['Read', 'Glob', 'Grep'], dropped: [], canSpawn: false })
   })
   it('maps foreign names case-insensitively in catalog order', () => {
     const r = mapTools(['run_shell_command', 'READ_FILE', 'edit', 'search', 'web', 'todo', 'google_web_search', 'MultiEdit'])
@@ -17,7 +17,7 @@ describe('mapTools', () => {
     expect(r.dropped).toEqual(['mcp__github__issues', 'Foo'])
   })
   it('removes denied tools', () => {
-    expect(mapTools(undefined, ['edit', 'bash']).tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(mapTools(undefined, ['grep', 'bash']).tools).toEqual(['Read', 'Glob'])
     expect(mapTools(['Read', 'Write', 'Edit'], ['write']).tools).toEqual(['Read', 'Edit'])
     expect(mapTools(['Read', 'Agent'], ['task']).canSpawn).toBe(false)
   })

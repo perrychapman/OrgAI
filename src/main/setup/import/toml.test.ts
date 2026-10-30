@@ -49,4 +49,10 @@ describe('parseToml on large bad input', () => {
     expect(Date.now() - started).toBeLessThan(2000)
     expect(r.error).toMatch(/^line 1:/)
   })
+  it('stops after 100 bad lines, keeping what came before', () => {
+    const r = parseToml('a = 1\n' + 'x\n'.repeat(150) + 'b = 2\n')
+    expect(r.data).toEqual({ a: 1 })
+    expect(r.error).toMatch(/^line 2:/)
+    expect(parseToml('a = 1\n' + 'x\n'.repeat(50) + 'b = 2\n').data).toEqual({ a: 1, b: 2 })
+  })
 })

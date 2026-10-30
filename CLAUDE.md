@@ -54,8 +54,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   (`agentSources`, `instructionFiles`, `existingProjectId/Name`). Sources: OrgAI export, Claude Code, opencode, Codex,
   Copilot, Gemini CLI, Kiro, Roo; AGENTS.md/CLAUDE.md-style files are listed, never roles. Models map to the project's
   connection (`model.ts`, `importTierForModel` in defaults.ts: kept, tier, or 'everyday' default). Preview and apply
-  re-scan the stored project's folder (the renderer sends choices, never roles) and apply refuses a stale `digest`.
-  The repo is untrusted: realpath-confined regular files only, no process or network, hard caps (see ARCHITECTURE.md
+  re-scan the stored project's folder (the renderer sends choices, at most 200, never roles); apply requires the
+  preview's `digest` (`AgentImportApplyInput`) and refuses a missing or stale one. Items carry the whole `prompt` and
+  `elevatedTools` (Bash, Edit, Write, NotebookEdit, 'canSpawn') for the UI to show. A definition with no tool list
+  gets read-only Read, Glob, Grep; a 'replace' keeps the old role's MCP grants with a "Keeps MCP access" note.
+  The repo is untrusted: absolute roots, realpath-confined regular files outside .git only, no process or network,
+  4,000-char YAML lines and linear parser regexes (timing-tested), hard caps (see ARCHITECTURE.md
   Conventions). Every parser is verified only by fixtures written from the docs, not by files the other harnesses
   produced; Copilot, Gemini, Kiro and Roo are best-effort. No renderer code uses it yet.
 

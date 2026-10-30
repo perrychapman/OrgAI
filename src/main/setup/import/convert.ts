@@ -9,7 +9,7 @@ import type {
   Project,
   Role
 } from '@shared/types'
-import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
+import { AGENT_IMPORT_ELEVATED_TOOLS, AGENT_IMPORT_MAX_CHOICES, AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 import { mapChosenModel, mapImportedModel, type MappedModel, type ModelContext } from './model'
 import { importKey } from './scan'
 import { mapTools } from './tools'
@@ -20,6 +20,26 @@ export const PROMPT_EXCERPT_CHARS = 600
 
 const ROOT_NAME = /(orchestrat|coordinat|\blead\b|-lead$|^lead|manager|supervisor|planner|\bboss\b|\bhead\b|^main$|^primary$)/i
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
+/** Most responsibilities kept per imported role, and the longest one, in characters. */
+export const MAX_RESPONSIBILITIES = 20
+export const MAX_RESPONSIBILITY_CHARS = 300
+
+function cleanResponsibilities(list: unknown): string[] {
+  if (!Array.isArray(list)) return []
+  return list
+    .filter((s): s is string => typeof s === 'string' && !!s.trim())
+    .slice(0, MAX_RESPONSIBILITIES)
+    .map((s) => s.trim().slice(0, MAX_RESPONSIBILITY_CHARS))
+}
+
+/** A role's elevated grants for AgentImportItem.elevatedTools. */
+function elevatedOf(role: Role): string[] {
+  const out: string[] = role.tools.filter((t) => AGENT_IMPORT_ELEVATED_TOOLS.includes(t))
+  if (role.canSpawn) out.push('canSpawn')
+  // MCP grants kept from a replaced role now run under the imported prompt.
+  if (role.mcpServers?.length) out.push('mcp')
+  return out
+}
 
 export interface ConvertInput {
   /** The project's current roles. */
@@ -110,6 +130,9 @@ function findCycle(roles: Role[]): Role | undefined {
 export function convertImport(input: ConvertInput): AgentImportPreview {
   const { existing, agents, mode, model: ctx } = input
   const warnings = [...(input.scanWarnings ?? [])]
+  if (Array.isArray(input.choices) && input.choices.length > AGENT_IMPORT_MAX_CHOICES) {
+    throw new Error(`Too many import choices (${input.choices.length}); at most ${AGENT_IMPORT_MAX_CHOICES} are accepted.`)
+  }
   const choices = new Map((input.choices ?? []).filter((c) => c && typeof c.key === 'string').map((c) => [c.key, c]))
   const keys = keysFor(agents)
   for (const key of choices.keys()) if (!keys.includes(key)) warnings.push(`A choice refers to an agent that is no longer in the folder (${key.slice(0, 120)}); it was ignored.`)
@@ -125,7 +148,7 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
     const mapped = choice?.model !== undefined ? mapChosenModel(choice.model, ctx, agent.name) : mapImportedModel(agent.model, ctx, agent.tier)
     if (mapped.note) notes.push(mapped.note)
     if (mappedTools.dropped.length) notes.push(`Tools with no OrgAI equivalent were dropped: ${mappedTools.dropped.join(', ')}.`)
-    if (agent.tools === undefined && agent.source !== 'orgai') notes.push(`No tool list given, so it gets ${mappedTools.tools.join(', ') || 'no tools'}.`)
+    if (agent.tools === undefined) notes.push('No tools listed: read-only by default.')
     if (agent.prompt.length > PROMPT_EXCERPT_CHARS) notes.push(`The prompt is ${agent.prompt.length.toLocaleString('en-US')} characters; review all of it before applying.`)
     const prompt = agent.prompt.trim() || describe(agent)
     if (!agent.prompt.trim()) notes.push('The definition has no prompt; its description is used.')
@@ -134,7 +157,7 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
       slug: slugify(agent.slug || agent.name),
       name: agent.name.trim().slice(0, 80) || 'Imported role',
       description: describe(agent),
-      responsibilities: (agent.responsibilities ?? []).filter((s) => typeof s === 'string' && s.trim()).slice(0, 20),
+      responsibilities: cleanResponsibilities(agent.responsibilities),
       prompt,
       tools: mappedTools.tools,
       model: mapped.model,
@@ -191,7 +214,11 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
         d.role.id = clash.id
         d.role.reportsTo = clash.reportsTo
         d.role.position = { ...clash.position }
-        if (clash.mcpServers) d.role.mcpServers = [...clash.mcpServers]
+        if (clash.mcpServers?.length) {
+          // The replacement keeps the old role's MCP grants; say so, since the imported file never asked for them.
+          d.role.mcpServers = [...clash.mcpServers]
+          d.notes.push(`Keeps MCP access: ${clash.mcpServers.join(', ')}.`)
+        }
         d.notes.push(`Replaces the existing ${clash.name}.`)
         if (clash === root) root = d.role
         continue
@@ -248,9 +275,9 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
 
   // Spawnable: export lists (by slug) plus every direct report; drop ids that left the chart.
   const ids = new Set(roles.map((r) => r.id))
-  const slugToId = new Map(roles.map((r) => [r.slug, r.id]))
   for (const d of included) {
-    const fromExport = (d.agent.spawnable ?? []).map((s) => exportSlugs.get(slugify(s))?.id ?? slugToId.get(s)).filter((x): x is string => !!x)
+    // Only roles from the same export: a slug never reaches into the existing chart (no cross-team grant by name).
+    const fromExport = (d.agent.spawnable ?? []).map((s) => exportSlugs.get(slugify(s))?.id).filter((x): x is string => !!x)
     // A replacement keeps the spawnable list of the role it replaces (cross-team grants included).
     const kept = d.replacesRoleId ? base.find((r) => r.id === d.replacesRoleId)?.spawnable ?? [] : []
     d.role.spawnable = [...kept, ...fromExport]
@@ -327,6 +354,8 @@ function finish(input: ConvertInput, roles: Role[], drafts: Draft[], replacedRol
       reportsTo: d.action === 'skip' ? null : manager ? manager.slug : null,
       promptExcerpt: d.agent.prompt.slice(0, PROMPT_EXCERPT_CHARS),
       promptLength: d.agent.prompt.length,
+      prompt: d.role.prompt,
+      elevatedTools: elevatedOf(d.role),
       action: d.action,
       ...(d.replacesRoleId ? { replacesRoleId: d.replacesRoleId } : {}),
       slugConflict: d.slugConflict,
@@ -350,7 +379,7 @@ export function importDigest(agents: readonly ImportedAgent[]): string {
   const h = createHash('sha256')
   for (const a of agents) {
     h.update(
-      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.tier, a.primary])
+      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.tier, a.primary, a.responsibilities, a.color])
     )
     h.update('\n')
   }
