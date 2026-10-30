@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo } from 'react'
+import type { CSSProperties } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { BellRing, Folder } from 'lucide-react'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
@@ -22,6 +23,7 @@ import { needsYou } from './lib/runChains'
 import { waitingItems } from './lib/needsYou'
 import { runName, runTag } from './lib/runLabels'
 import { folderName } from './lib/paths'
+import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
 type SectionView = 'run' | 'history' | 'org' | 'settings'
@@ -48,6 +50,16 @@ export default function App(): ReactElement {
   const indexes = useRunIndexes()
   const { collapsed } = useSidebarCollapsed()
   useRunTabShortcuts()
+  // Drag-resizable sidebar: saved width (px) or the 232 px default, clamped so the main area keeps room.
+  const [savedSidebarW, setSavedSidebarW] = usePersistedWidth('orgai.sidebarW')
+  const [winW, setWinW] = useState(() => window.innerWidth)
+  useEffect(() => {
+    const onResize = (): void => setWinW(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  const sidebarMax = maxWidthFor(winW, MAIN_MIN_PX, SIDEBAR_W.min, SIDEBAR_W.max)
+  const sidebarW = clampWidth(savedSidebarW ?? SIDEBAR_W.def, SIDEBAR_W.min, sidebarMax)
 
   useEffect(() => {
     void init()
@@ -92,7 +104,7 @@ export default function App(): ReactElement {
   const showFolder = !!project && !!folder && folder !== project.name
 
   return (
-    <div className="app" data-sidebar={collapsed ? 'rail' : 'full'}>
+    <div className="app" data-sidebar={collapsed ? 'rail' : 'full'} style={{ '--sidebar-w': `${sidebarW}px` } as CSSProperties}>
       <a
         href="#main-content"
         className="skip-link"
@@ -113,7 +125,7 @@ export default function App(): ReactElement {
       >
         Skip to sidebar
       </a>
-      <Sidebar />
+      <Sidebar resize={{ value: sidebarW, min: SIDEBAR_W.min, max: sidebarMax, onChange: setSavedSidebarW, onReset: () => setSavedSidebarW(null) }} />
 
       <main className="main" id="main-content" tabIndex={-1}>
         <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ''}`} onReset={() => setView('projects')}>

@@ -2,16 +2,17 @@
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100%;
 }
 /* Below 1180 px (or by choice, Ctrl/Cmd+B) the sidebar is a rail. */
 .app[data-sidebar='rail'] {
-  grid-template-columns: var(--sidebar-w-collapsed) 1fr;
+  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
 }
 
 /* Sidebar and topbar sit on --surface-1; the one 1 px --border-default is on the edge that touches --surface-0. */
 .sidebar {
+  position: relative;
   background: var(--surface-1);
   border-right: 1px solid var(--border-default);
   display: flex;

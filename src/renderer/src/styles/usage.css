@@ -83,11 +83,3 @@
   color: var(--text-tertiary);
   font-size: var(--text-caption);
 }
-
-/* Footer of the list (as-of time and refresh). */
-.usage-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}

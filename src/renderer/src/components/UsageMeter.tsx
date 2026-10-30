@@ -1,30 +1,28 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import type { RateLimitWindow, UsageStatus } from '@shared/types'
-import { RefreshCw } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { Button } from './ui/Button'
 
-function RefreshButton(): ReactElement {
-  const refreshUsage = useAppStore((s) => s.refreshUsage)
-  const [busy, setBusy] = useState(false)
-  return (
-    <Button
-      size="sm"
-      variant="ghost"
-      icon={RefreshCw}
-      loading={busy}
-      title="Read plan usage now"
-      onClick={() => {
-        setBusy(true)
-        void refreshUsage().finally(() => setBusy(false))
-      }}
-    >
-      Refresh
-    </Button>
-  )
-}
 import { formatUntil } from '../lib/layout'
+
+/** Renderer-side auto-refresh: at most one read per minute, never overlapping, failures included. */
+const REFRESH_EVERY_MS = 60_000
+let lastAttempt = 0
+let inFlight = false
+
+function refreshIfStale(): void {
+  if (inFlight) return
+  const state = useAppStore.getState()
+  const t = Date.now()
+  if (t - lastAttempt < REFRESH_EVERY_MS) return
+  if (state.usage?.available && t - state.usage.updatedAt < REFRESH_EVERY_MS) return
+  if (state.usage?.authMode === 'apiKey') return
+  lastAttempt = t
+  inFlight = true
+  void state.refreshUsage().finally(() => {
+    inFlight = false
+  })
+}
 
 const WARN_AT = 80
 
@@ -87,6 +85,13 @@ export default function UsageMeter(): ReactElement {
     return () => clearInterval(t)
   }, [])
 
+  // Mounted only while the account popover is open: read now if the data is stale, then every minute.
+  useEffect(() => {
+    refreshIfStale()
+    const t = setInterval(refreshIfStale, REFRESH_EVERY_MS)
+    return () => clearInterval(t)
+  }, [])
+
   if (usage?.authMode === 'apiKey') {
     return (
       <div className="usage-meter">
@@ -97,12 +102,8 @@ export default function UsageMeter(): ReactElement {
   if (!usage?.available) {
     return (
       <div className="usage-meter">
-        <div className="usage-empty" title="Plan usage is read at startup, every 10 minutes while idle, and every minute during a run.">
+        <div className="usage-empty" title="Plan usage refreshes on its own.">
           Usage not reported yet
-        </div>
-        <div className="usage-foot">
-          <span className="usage-hint">Read at startup and every 10 minutes.</span>
-          <RefreshButton />
         </div>
       </div>
     )
@@ -133,12 +134,6 @@ export default function UsageMeter(): ReactElement {
         )
       })}
       {usage.overageInUse && <div className="usage-hint">Extra usage in use</div>}
-      <div className="usage-foot">
-        <span className="usage-hint" title={new Date(usage.updatedAt).toLocaleString()}>
-          Updated {new Date(usage.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-        </span>
-        <RefreshButton />
-      </div>
     </div>
   )
 }

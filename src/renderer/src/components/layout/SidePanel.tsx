@@ -2,8 +2,11 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
+import { CANVAS_MIN_PX, PANEL_W, clampWidth, maxWidthFor, usePersistedWidth } from '../../lib/panelWidth'
+import { ResizeHandle } from './ResizeHandle'
 
 const PREF_PREFIX = 'orgai.sidePanel.'
+const WIDTH_PREFIX = 'orgai.sidePanelW.'
 
 function readPref(key: string | undefined): 'open' | 'closed' | null {
   if (!key) return null
@@ -23,6 +26,9 @@ function readPref(key: string | undefined): 'open' | 'closed' | null {
  *
  * `autoCollapseBelow` (px): when the panel's grid is narrower than this on first layout, it starts collapsed. The
  * user's own toggle is saved under `persistKey` (localStorage) and wins over that default from then on.
+ * The panel is drag-resizable (a `ResizeHandle` on its left edge): the width is saved per `persistKey` (shared key
+ * `default` without one) as `orgai.sidePanelW.<key>`, clamped to 280..640 px and so the canvas keeps 360 px. It drives
+ * `--side-panel-w` on the parent grid; with no saved width the grid's own CSS default applies.
  * `revealOn`: when this value changes to a non-null value (a selected node), the panel opens without saving.
  */
 export function SidePanel({
@@ -55,6 +61,32 @@ export function SidePanel({
     return saved ? saved === 'closed' : defaultCollapsed
   })
   const collapsed = open === undefined ? inner : !open
+  const [saved, setSaved] = usePersistedWidth(WIDTH_PREFIX + (persistKey ?? 'default'))
+  const [sizes, setSizes] = useState({ panel: 0, parent: 0 })
+  const max = maxWidthFor(sizes.parent, CANVAS_MIN_PX, PANEL_W.min, PANEL_W.max)
+  // The grid column follows the saved width, re-clamped when the container shrinks (the saved value is kept).
+  useLayoutEffect(() => {
+    const el = ref.current
+    const parent = el?.parentElement
+    if (!el || !parent) return undefined
+    const measure = (): void => setSizes({ panel: el.offsetWidth, parent: parent.clientWidth })
+    measure()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    ro.observe(parent)
+    return () => ro.disconnect()
+  }, [])
+  const applied = saved === null ? null : clampWidth(saved, PANEL_W.min, max)
+  useLayoutEffect(() => {
+    const parent = ref.current?.parentElement
+    if (!parent) return undefined
+    if (applied === null) parent.style.removeProperty('--side-panel-w')
+    else parent.style.setProperty('--side-panel-w', `${applied}px`)
+    return () => {
+      parent.style.removeProperty('--side-panel-w')
+    }
+  }, [applied])
   // With no saved choice the panel follows the width of its grid: collapsed below the threshold, open above it.
   // Measured before paint on mount, then on resize. A toggle by the user saves a choice and ends the following.
   useLayoutEffect(() => {
@@ -110,6 +142,18 @@ export function SidePanel({
         <div className="side-panel-bar">
           <IconButton icon={PanelRightClose} label={`Hide ${label}`} size="sm" expanded onClick={() => setCollapsed(true)} />
         </div>
+      )}
+      {!isCollapsed && collapsible && sizes.panel > 0 && (
+        <ResizeHandle
+          label={`Resize ${label}`}
+          edge="start"
+          value={sizes.panel}
+          min={PANEL_W.min}
+          max={max}
+          onChange={setSaved}
+          onReset={() => setSaved(null)}
+          testId="side-panel-resize"
+        />
       )}
       {/* Stays mounted while collapsed so form state inside it survives. */}
       <div className="side-panel-body" hidden={isCollapsed}>

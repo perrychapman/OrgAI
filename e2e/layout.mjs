@@ -262,6 +262,47 @@ try {
   await sleep(600)
   check(Math.abs((await sideW()) - 232) <= 1, 'the expanded sidebar persists across a reload')
 
+  // Drag handles: the sidebar handle resizes by mouse drag and by arrow key, survives a reload, and double-click resets.
+  const sbHandle = page.locator('[data-testid=sidebar-resize]')
+  const hb = await sbHandle.boundingBox()
+  if (hb) {
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(hb.x + hb.width / 2 + 60, hb.y + hb.height / 2, { steps: 5 })
+    await page.mouse.up()
+  }
+  const dragged = await sideW()
+  check(Math.abs(dragged - 292) <= 2, 'dragging the sidebar handle widens the sidebar', String(dragged))
+  check((await sbHandle.getAttribute('aria-valuenow')) === String(dragged), 'sidebar handle reports its width (aria-valuenow)')
+  await sbHandle.focus()
+  await page.keyboard.press('ArrowLeft')
+  await sleep(100)
+  check(Math.abs((await sideW()) - (dragged - 16)) <= 1, 'ArrowLeft narrows the sidebar by 16 px', String(await sideW()))
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await sleep(600)
+  check(Math.abs((await sideW()) - (dragged - 16)) <= 1, 'the dragged sidebar width persists across a reload', String(await sideW()))
+  await page.locator('[data-testid=sidebar-resize]').dblclick()
+  await sleep(200)
+  check(Math.abs((await sideW()) - 232) <= 1, 'double-clicking the sidebar handle resets the width', String(await sideW()))
+  // The side panel handle (when the live view shows the run panel).
+  const spHandle = page.locator('[data-testid=side-panel-resize]').first()
+  await openProject(page, NAME)
+  await projectTab(page, 'Org chart').click()
+  await sleep(600)
+  log('side panel handles:', await spHandle.count())
+  if (await spHandle.count()) {
+    const panelW = () => page.evaluate(() => Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0))
+    const before = await panelW()
+    await spHandle.focus()
+    await page.keyboard.press('ArrowLeft')
+    await sleep(150)
+    check((await panelW()) - before >= 15, 'ArrowLeft widens the side panel by 16 px', `${before} -> ${await panelW()}`)
+    await spHandle.dblclick()
+    await sleep(150)
+    check(Math.abs((await panelW()) - before) <= 1, 'double-clicking the side panel handle restores the default', `${before} -> ${await panelW()}`)
+  }
+
   // The account row opens a popover with a way to App settings > Connections; Esc closes it and focus returns.
   await page.locator('[data-testid=auth-pill]').click()
   await page.locator('[data-testid=account-popover]').waitFor({ state: 'visible', timeout: 5000 })

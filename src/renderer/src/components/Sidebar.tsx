@@ -15,6 +15,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { tightestWindow, UsageBar } from './UsageMeter'
 import { BrandLockup } from './layout/BrandLockup'
+import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
@@ -47,7 +48,12 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
-export default function Sidebar(): ReactElement {
+export default function Sidebar({
+  resize
+}: {
+  /** Drag-resize wiring from App (width in px, range, change and reset). The handle shows only in the full sidebar. */
+  resize: { value: number; min: number; max: number; onChange: (w: number) => void; onReset: () => void }
+}): ReactElement {
   const projects = useAppStore((s) => s.projects)
   const selectedId = useAppStore((s) => s.selectedProjectId)
   const view = useAppStore((s) => s.view)
@@ -298,6 +304,7 @@ export default function Sidebar(): ReactElement {
           <IconButton icon={Settings} label="App settings" testId="app-settings-button" onClick={() => setView('appSettings')} />
         </span>
       </div>
+      {!rail && <ResizeHandle label="Resize sidebar" edge="end" testId="sidebar-resize" {...resize} />}
     </aside>
   )
 }
