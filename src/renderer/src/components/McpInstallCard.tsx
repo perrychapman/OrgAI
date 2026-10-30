@@ -10,6 +10,7 @@ import { CopyButton } from './ui/CopyButton'
 import { Icon } from './ui/Icon'
 import { Textarea } from './ui/Textarea'
 import { SecretField } from './ui/SecretField'
+import { clampLabel } from '../lib/clampLabel'
 import { pinnedVersionOf } from '../lib/mcpVersion'
 
 /** The exact command line (stdio) or endpoint (http/sse) the server would run, never shortened. */
@@ -31,7 +32,7 @@ function describeOutcome(o: McpInstallOutcome): string {
 export default function McpInstallCard({
   runId,
   request,
-  agentName,
+  agentName: agentNameRaw,
   resolved,
   onDismiss
 }: {
@@ -41,6 +42,7 @@ export default function McpInstallCard({
   resolved?: McpInstallOutcome
   onDismiss?: () => void
 }): ReactElement {
+  const agentName = clampLabel(agentNameRaw)
   const uid = useId()
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [scope, setScope] = useState<'run' | 'project' | 'library'>('run')
@@ -50,7 +52,8 @@ export default function McpInstallCard({
   const [more, setMore] = useState(false)
 
   const { spec } = request
-  const registryName = request.registry?.name ?? spec.registry?.name
+  const registryRaw = request.registry?.name ?? spec.registry?.name
+  const registryName = registryRaw ? clampLabel(registryRaw) : undefined
   const command = installCommand(request)
   const version = pinnedVersionOf(spec)
   const remote = spec.transport !== 'stdio'
@@ -69,6 +72,7 @@ export default function McpInstallCard({
           ? { approved: true, secrets: Object.keys(secrets).length > 0 ? secrets : undefined, note: note.trim() || undefined, scope }
           : { approved: false, note: note.trim() || undefined, scope: 'run' }
       })
+      setSecrets({})
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The answer could not be delivered.')
     } finally {
@@ -88,7 +92,7 @@ export default function McpInstallCard({
         kind="install"
         runId={runId}
         who={agentName}
-        title={spec.name}
+        title={clampLabel(spec.name)}
         noAutoFocus
         headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? 'Approved' : 'Denied'}</Badge>}
         primary={
@@ -109,7 +113,7 @@ export default function McpInstallCard({
     )
   }
 
-  const reason = request.reason.trim()
+  const reason = request.reason.trim().slice(0, 2000)
   const longReason = reason.length > 240 || reason.split('\n').length > 4
 
   return shell(

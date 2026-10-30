@@ -5,6 +5,7 @@ import type { McpAuthStatus, McpAuthTarget, McpServerSource } from '@shared/type
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
+import { clampLabel } from '../../lib/clampLabel'
 import { errMessage } from './mcpHelpers'
 import { relativeTime } from './mcpLibraryHelpers'
 
@@ -34,9 +35,9 @@ export function AuthChip({ auth }: { auth: McpAuthStatus }): ReactElement | null
           Authorization failed
         </Badge>
       )}
-      {auth.state === 'authorized' && auth.account && <span className="muted mcp-auth-detail">as {auth.account}</span>}
+      {auth.state === 'authorized' && auth.account && <span className="muted mcp-auth-detail">as {clampLabel(auth.account, 200)}</span>}
       {expiry && <span className="muted mcp-auth-detail">expires {expiry}</span>}
-      {auth.state === 'error' && auth.error && <span className="invalid-text mcp-auth-detail">{auth.error}</span>}
+      {auth.state === 'error' && auth.error && <span className="invalid-text mcp-auth-detail">{clampLabel(auth.error, 200)}</span>}
     </span>
   )
 }
@@ -81,33 +82,36 @@ export function AuthorizeControl({
       setLast(status)
       if (status.state === 'authorized') {
         setClientId('')
+        setClientSecret('')
         onChanged?.(status)
       } else if (status.state === 'error') onChanged?.(status)
     } catch (e) {
       setError(errMessage(e))
     } finally {
-      setClientSecret('')
       setPending(false)
     }
   }
   const cancel = (): void => {
+    setClientSecret('')
     void window.orgai.mcp.cancelAuthorize(target).catch(() => undefined)
   }
 
-  if (pending)
-    return (
-      <div className="mcp-authorize" data-testid="mcp-authorize-pending">
-        <span className="muted" role="status">
-          Waiting for your browser…
-        </span>
-        <Button size="sm" onClick={cancel}>
-          Cancel
-        </Button>
-      </div>
-    )
-
   return (
-    <div className="mcp-authorize">
+    <div className="mcp-authorize" data-testid={pending ? 'mcp-authorize-pending' : undefined}>
+      <span className="sr-only" aria-live="polite">
+        {pending ? 'Waiting for your browser' : ''}
+      </span>
+      {pending ? (
+        <>
+          <span className="muted" aria-hidden="true">
+            Waiting for your browser…
+          </span>
+          <Button size="sm" onClick={cancel}>
+            Cancel
+          </Button>
+        </>
+      ) : (
+        <>
       {needsClient && (
         <div className="mcp-client-inputs" role="group" aria-label={`OAuth app for ${serverName}`}>
           <p className="muted">This server needs a pre-registered OAuth app. Create one with the provider, then enter its client ID here.</p>
@@ -136,6 +140,8 @@ export function AuthorizeControl({
         <p className="invalid-text mcp-auth-error" role="alert">
           {error}
         </p>
+      )}
+        </>
       )}
     </div>
   )
