@@ -415,6 +415,31 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
 
+  // Re-fit when the canvas container itself changes size (window resize, strip, side panel).
+  const canvasRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let t: ReturnType<typeof setTimeout> | undefined
+    let first = true
+    const ro = new ResizeObserver(() => {
+      if (first) {
+        first = false
+        return
+      }
+      clearTimeout(t)
+      t = setTimeout(() => {
+        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        void fitView({ padding: 0.25, maxZoom: 1, duration: reduced ? 0 : 150 })
+      }, 100)
+    })
+    ro.observe(el)
+    return () => {
+      clearTimeout(t)
+      ro.disconnect()
+    }
+  }, [fitView])
+
   const selectedAgent = run && selectedAgentId ? run.agents[selectedAgentId] : undefined
   const entries = useMemo(
     () => (run && selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
@@ -451,7 +476,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           </>
         )}
       </div>
-      <div className="canvas">
+      <div className="canvas" ref={canvasRef}>
         {showStrip && <RunStrip runs={stripRuns} />}
         {run && (
           <div className="canvas-toolbar" style={showStrip ? { top: 52 } : undefined}>

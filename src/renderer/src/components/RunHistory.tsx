@@ -96,7 +96,7 @@ export default function RunHistory(): ReactElement {
               {r.kind === 'work' && (r.status === 'finished' || r.status === 'error') && (
                 <button
                   type="button"
-                  className="btn sm ghost"
+                  className="btn sm run-retro"
                   title="Have the Architect review this run and revise the org chart where roles struggled"
                   onClick={() => void startRetro(r.id)}
                 >
