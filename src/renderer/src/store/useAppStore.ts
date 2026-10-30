@@ -319,11 +319,9 @@ function showRunPatch(s: AppState, projectId: string, runId: string): Partial<Ap
 /** A run record from the main process as renderer state. Pending cards are not in a record; events fill them. */
 /**
  * Cards still open in the main process, for a window that missed their *.request events (fresh renderer, run window).
- * The cast can be dropped once runs.pendingCards is in preload/index.d.ts (it lands on dev).
  */
 async function seedPendingCards(runId: string): Promise<void> {
-  const api = window.orgai.runs as typeof window.orgai.runs & { pendingCards?: (id: string) => Promise<PendingCards> }
-  if (typeof api.pendingCards !== 'function') return
+  const api = window.orgai.runs
   try {
     const cards = await api.pendingCards(runId)
     // The run may not be in the store yet (record still loading); retry briefly once it is.
