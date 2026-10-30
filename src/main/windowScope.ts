@@ -9,6 +9,11 @@ import type { FocusRunTarget } from '@shared/types'
 /** Ids from the renderer: newId() output (and older hand-made ids) never exceed this or contain other characters. */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 
+/** True for a string id that passes ID_PATTERN (IPC handlers taking a bare run or project id). */
+export function isValidId(id: unknown): id is string {
+  return typeof id === 'string' && ID_PATTERN.test(id)
+}
+
 /** Validate a window:openRun target against the stores. Throws on anything malformed, unknown or mismatched. */
 export function checkRunTarget(
   input: unknown,

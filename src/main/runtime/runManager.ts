@@ -9,6 +9,7 @@ import type {
   McpRegistrySearchResult,
   McpServerSpec,
   MergeDecision,
+  PendingCards,
   MergeReview,
   PermissionDecision,
   PermissionRequest,
@@ -40,7 +41,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, type RunOutcome } from './activity'
-import { cancelPending } from './pendingCards'
+import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
@@ -81,14 +82,14 @@ export function pauseReasonText(window: string | undefined, error?: string): str
 interface ActiveRun {
   summary: RunSummary
   session?: RuntimeSession
-  pending: Map<string, (d: PermissionDecision) => void>
-  pendingProposals: Map<string, (d: ProposalDecision) => void>
-  pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
-  pendingMerges: Map<string, (d: MergeDecision) => void>
+  pending: PendingCardMaps['pending']
+  pendingProposals: PendingCardMaps['pendingProposals']
+  pendingQuestions: PendingCardMaps['pendingQuestions']
+  pendingMerges: PendingCardMaps['pendingMerges']
   /** request_mcp_install cards waiting for mcp:answerInstall. */
-  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision, cancelled?: boolean) => void }>
+  pendingInstalls: PendingCardMaps['pendingInstalls']
   /** request_permission_rules cards waiting for permissions:decideRequest. */
-  pendingRules: Map<string, { request: PermissionRuleRequest; resolve: (d: PermissionRuleDecision) => void }>
+  pendingRules: PendingCardMaps['pendingRules']
   /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
   runRules: string[]
   /** The project's (canonical) path, for saving project-scoped grants. */
@@ -616,6 +617,15 @@ export class RunManager {
       .sort((a, b) => a.startedAt - b.startedAt)
   }
 
+  /**
+   * runs:pendingCards: the decision cards a run is waiting on, the objects its `*.request` events carried, so a
+   * fresh renderer can show them. Empty for an unknown or ended run (the end cancels every card).
+   */
+  pendingCards(runId: string): PendingCards {
+    const active = this.runs.get(runId)
+    return active ? listPending(active) : emptyPending()
+  }
+
   // ---------- cross-run messaging ----------
 
   /**
@@ -803,9 +813,12 @@ export class RunManager {
     const request: PermissionRequest = { ...req, id: newId('perm'), runId: active.summary.id }
     logPermission(active.summary, request)
     return new Promise((resolve) => {
-      active.pending.set(request.id, (decision) => {
-        logPermission(active.summary, request, decision)
-        resolve(decision)
+      active.pending.set(request.id, {
+        request,
+        resolve: (decision) => {
+          logPermission(active.summary, request, decision)
+          resolve(decision)
+        }
       })
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
     })
@@ -813,10 +826,10 @@ export class RunManager {
 
   decide(runId: string, requestId: string, decision: PermissionDecision): void {
     const active = this.runs.get(runId)
-    const resolve = active?.pending.get(requestId)
-    if (!active || !resolve) return
+    const pending = active?.pending.get(requestId)
+    if (!active || !pending) return
     active.pending.delete(requestId)
-    resolve(decision)
+    pending.resolve(decision)
     this.broadcast({ type: 'permission.resolved', runId, requestId })
     this.cardSettled(active)
   }
@@ -828,7 +841,7 @@ export class RunManager {
   ): Promise<ProposalDecision> {
     const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now() } as Proposal
     return new Promise((resolve) => {
-      active.pendingProposals.set(proposal.id, (decision) => {
+      active.pendingProposals.set(proposal.id, { proposal, resolve: (decision) => {
         if (decision.behavior === 'approve') {
           try {
             const updated = this.setup.applyProposal(active.summary.projectId, proposal)
@@ -843,17 +856,17 @@ export class RunManager {
           }
         }
         resolve(decision)
-      })
+      } })
       this.broadcast({ type: 'proposal.request', runId: active.summary.id, proposal })
     })
   }
 
   decideProposal(runId: string, proposalId: string, decision: ProposalDecision): void {
     const active = this.runs.get(runId)
-    const resolve = active?.pendingProposals.get(proposalId)
-    if (!active || !resolve) return
+    const pending = active?.pendingProposals.get(proposalId)
+    if (!active || !pending) return
     active.pendingProposals.delete(proposalId)
-    resolve(decision)
+    pending.resolve(decision)
     this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
     this.cardSettled(active)
   }
@@ -891,17 +904,17 @@ export class RunManager {
   ): Promise<MergeDecision> {
     const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now() }
     return new Promise((resolve) => {
-      active.pendingMerges.set(review.id, resolve)
+      active.pendingMerges.set(review.id, { review, resolve })
       this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
     })
   }
 
   decideMerge(runId: string, reviewId: string, decision: MergeDecision): void {
     const active = this.runs.get(runId)
-    const resolve = active?.pendingMerges.get(reviewId)
-    if (!active || !resolve) return
+    const pending = active?.pendingMerges.get(reviewId)
+    if (!active || !pending) return
     active.pendingMerges.delete(reviewId)
-    resolve(decision)
+    pending.resolve(decision)
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
     this.cardSettled(active)
   }

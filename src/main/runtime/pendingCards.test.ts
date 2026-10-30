@@ -1,19 +1,39 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { McpInstallRequest, PermissionRuleRequest, RunEvent, UserQuestion } from '@shared/types'
-import { cancelPending, type PendingCards } from './pendingCards'
+import type { McpInstallRequest, MergeReview, PermissionRequest, PermissionRuleRequest, Proposal, RunEvent, UserQuestion } from '@shared/types'
+import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
 
-function cards(): { c: PendingCards; resolves: Record<string, ReturnType<typeof vi.fn>> } {
+function cards(): { c: PendingCardMaps; resolves: Record<string, ReturnType<typeof vi.fn>> } {
   const resolves = { perm: vi.fn(), prop: vi.fn(), q: vi.fn(), merge: vi.fn(), install: vi.fn(), rules: vi.fn() }
-  const c: PendingCards = {
-    pending: new Map([['perm-1', resolves.perm]]),
-    pendingProposals: new Map([['prop-1', resolves.prop]]),
+  const c: PendingCardMaps = {
+    pending: new Map([['perm-1', { request: { id: 'perm-1' } as PermissionRequest, resolve: resolves.perm }]]),
+    pendingProposals: new Map([['prop-1', { proposal: { id: 'prop-1' } as Proposal, resolve: resolves.prop }]]),
     pendingQuestions: new Map([['q-1', { question: {} as UserQuestion, resolve: resolves.q }]]),
-    pendingMerges: new Map([['m-1', resolves.merge]]),
+    pendingMerges: new Map([['m-1', { review: { id: 'm-1' } as MergeReview, resolve: resolves.merge }]]),
     pendingInstalls: new Map([['i-1', { request: {} as McpInstallRequest, resolve: resolves.install }]]),
     pendingRules: new Map([['r-1', { request: {} as PermissionRuleRequest, resolve: resolves.rules }]])
   }
   return { c, resolves }
 }
+
+describe('listPending', () => {
+  it('returns the stored request objects per kind', () => {
+    const { c } = cards()
+    const list = listPending(c)
+    expect(list.permissions).toEqual([{ id: 'perm-1' }])
+    expect(list.proposals).toEqual([{ id: 'prop-1' }])
+    expect(list.questions).toHaveLength(1)
+    expect(list.mergeReviews).toEqual([{ id: 'm-1' }])
+    expect(list.ruleRequests).toHaveLength(1)
+    expect(list.mcpInstalls).toHaveLength(1)
+    expect(structuredClone(list)).toEqual(list)
+  })
+
+  it('is empty once the cards are cancelled', () => {
+    const { c } = cards()
+    cancelPending(c, 'run-1', () => {})
+    expect(listPending(c)).toEqual(emptyPending())
+  })
+})
 
 describe('cancelPending', () => {
   it('answers every card, emits one cancelled resolution each and empties the maps', () => {

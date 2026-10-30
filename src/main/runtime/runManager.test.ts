@@ -617,6 +617,69 @@ describe('RunManager with the mock adapter', () => {
   })
 })
 
+describe('RunManager.pendingCards (runs:pendingCards)', () => {
+  const empty = { permissions: [], questions: [], proposals: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] }
+
+  it('lists a pending permission and a pending question, drops each once answered, and is empty after the end', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const script: MockScript = {
+      work: [
+        { type: 'tool', name: 'Edit', input: { file_path: 'a.ts', old_string: 'a', new_string: 'b' }, ask: true, background: true, result: 'ok' },
+        { type: 'harness', name: 'ask_user', args: { question: 'Which?', options: [{ label: 'A' }, { label: 'B' }] } },
+        { type: 'text', text: 'done' }
+      ]
+    }
+    const { m } = manager(p, script)
+    const run = await m.start({ project: p, prompt: 'Go' })
+    const perm = await waitFor(isType('permission.request'))
+    const q = await waitFor(isType('question.request'))
+
+    const cards = m.pendingCards(run.id)
+    expect(cards.permissions).toEqual([perm.request])
+    expect(cards.questions).toEqual([q.question])
+    expect(cards.proposals).toEqual([])
+    expect(structuredClone(cards)).toEqual(cards)
+
+    m.decide(run.id, perm.request.id, { behavior: 'allow' })
+    expect(m.pendingCards(run.id).permissions).toEqual([])
+    expect(m.pendingCards(run.id).questions).toEqual([q.question])
+    m.answerQuestion(run.id, q.question.id, { selected: ['A'] })
+    expect(m.pendingCards(run.id)).toEqual(empty)
+
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    await m.stop(run.id)
+    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    expect(m.pendingCards(run.id)).toEqual(empty)
+  })
+
+  it('is empty for an unknown run and for a run that ended with a card open', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    expect(m.pendingCards('nope')).toEqual(empty)
+    const run = await m.start({ project: p, prompt: 'Change x' })
+    await waitFor(isType('permission.request'))
+    expect(m.pendingCards(run.id).permissions).toHaveLength(1)
+    await m.stop(run.id)
+    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    expect(m.pendingCards(run.id)).toEqual(empty)
+  })
+
+  it("returns a setup run's pending proposal", async () => {
+    const p = makeProject({ path: join(dir, 'repo'), setup: { kind: 'existing', state: 'in_progress' } })
+    const script: MockScript = {
+      setup: [{ type: 'harness', name: 'propose_settings', args: { title: 'S', rationale: 'r', brief: 'b' }, retryOnRevise: false }]
+    }
+    const { m } = manager(p, script)
+    const run = await m.start({ project: p, prompt: 'Set it up', kind: 'setup' })
+    const req = await waitFor(isType('proposal.request'))
+    expect(m.pendingCards(run.id).proposals).toEqual([req.proposal])
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(m.pendingCards(run.id).proposals).toEqual([])
+    await m.stop(run.id)
+    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+  })
+})
+
 describe('RunManager adapter selection, connections and MCP', () => {
   /** A recording adapter whose session stays open until `end()`. */
   function recorder(id: 'claude' | 'codex' | 'mock') {
