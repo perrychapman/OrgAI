@@ -1,15 +1,6 @@
 /* ---------- Permission cards ---------- */
 
-.permissions {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: var(--z-tray);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 360px;
-}
+/* Cards sit in the run's in-flow decisions region (.live-cards), never over the canvas. */
 .permission {
   background: var(--surface-3);
   border: 1px solid var(--warning-border);
@@ -50,22 +41,10 @@
 
 /* ---------- Proposals (setup sessions) ---------- */
 
-.proposals {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
-  z-index: var(--z-sheet);
-  width: 520px;
-  max-width: calc(100% - 24px);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  overflow: auto;
-  pointer-events: none;
+.live-cards .proposal-body {
+  max-height: 30vh;
 }
 .proposal {
-  pointer-events: auto;
   background: var(--surface-3);
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-lg);
@@ -222,16 +201,9 @@
   color: var(--text-secondary);
 }
 
-/* ---------- Usage-limit pause banner: bottom of the canvas, just above the composer ---------- */
+/* ---------- Usage-limit pause banner: first row of the run's decisions region, in flow ---------- */
 
 .pause-banner {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  z-index: var(--z-sheet);
-  max-width: 640px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 6px;

@@ -2,14 +2,16 @@ import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
-import { activeRun, isRunLive, selectedProject, useAppStore, type LogLine } from '../store/useAppStore'
+import { selectedProject, useAppStore, useRunIndexes, type LogLine } from '../store/useAppStore'
+import { runTag } from '../lib/runLabels'
 import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
-import RunHistory from './RunHistory'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 
 interface Props {
+  /** The run this panel shows. */
+  runId: string
   agent: AgentInstance | undefined
   entries: TranscriptEntry[]
   logs: LogLine[]
@@ -100,15 +102,15 @@ function describeInput(input: unknown): string {
   return s.length > 400 ? s.slice(0, 400) + '…' : s
 }
 
-export default function TranscriptPanel({ agent, entries, logs, finished }: Props): ReactElement {
-  const selectedTab = useAppStore((s) => s.sideTab)
+export default function TranscriptPanel({ runId, agent, entries, logs, finished }: Props): ReactElement {
+  const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
-  const partial = useAppStore((s) => (agent ? activeRun(s)?.partial[agent.id] : undefined))
-  const plan = useAppStore((s) => activeRun(s)?.plan)
-  const isWork = useAppStore((s) => activeRun(s)?.summary.kind === 'work')
-  const openRuns = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === s.selectedProjectId && isRunLive(r)).length)
+  const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
+  const plan = useAppStore((s) => s.runs[runId]?.plan)
+  const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
+  const index = useRunIndexes().get(runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
 
@@ -122,6 +124,9 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
   return (
     <>
       <div className="side-header">
+        <span className="run-index" title="The run this panel belongs to">
+          {runTag(index)}
+        </span>
         <h2 title={headerTitle}>{headerTitle}</h2>
         <div className="side-spacer" />
         <div className="tabs">
@@ -136,12 +141,8 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
           <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>
             Logs {logs.some((l) => l.level === 'error') ? '!' : ''}
           </button>
-          <button className={tab === 'runs' ? 'active' : ''} onClick={() => setTab('runs')} title={openRuns > 0 ? `${openRuns} open run${openRuns === 1 ? '' : 's'}` : undefined}>
-            Runs{openRuns > 0 ? ` (${openRuns})` : ''}
-          </button>
         </div>
       </div>
-      {tab === 'runs' && <RunHistory />}
       {tab === 'plan' && <PlanView plan={plan} />}
       {tab === 'transcript' && finished && !agent && <FinishedList group={finished} />}
       {agent && tab === 'transcript' && (
@@ -176,7 +177,7 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
           )}
         </div>
       )}
-      {tab === 'runs' || tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <div className="transcript">
           {!agent && <div className="entry system">Select an agent on the chart to read its transcript.</div>}
           {agent && (

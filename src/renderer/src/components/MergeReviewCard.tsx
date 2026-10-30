@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useState } from 'react'
 import type { MergeDecision, MergeReview } from '@shared/types'
 import DiffView from './DiffView'
+import { ConfirmDialog } from './ui/Dialog'
 
 interface Props {
   review: MergeReview
@@ -13,8 +14,14 @@ export default function MergeReviewCard({ review, onDecide }: Props): ReactEleme
   const [busy, setBusy] = useState(false)
   const [showPatch, setShowPatch] = useState(false)
 
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+
   const decide = (decision: MergeDecision): void => {
-    if (decision.behavior === 'discard' && !confirm(`Discard ${review.agentName}'s changes on ${review.branch}? The branch and its work are deleted.`)) return
+    if (decision.behavior === 'discard' && !confirmDiscard) {
+      setConfirmDiscard(true)
+      return
+    }
+    setConfirmDiscard(false)
     setBusy(true)
     onDecide(decision)
   }
@@ -54,6 +61,15 @@ export default function MergeReviewCard({ review, onDecide }: Props): ReactEleme
           Discard
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmDiscard}
+        title={`Discard ${review.agentName}'s changes?`}
+        body={`The branch ${review.branch} and its work are deleted. This cannot be undone.`}
+        confirmLabel="Discard changes"
+        danger
+        onConfirm={() => decide({ behavior: 'discard' })}
+        onCancel={() => setConfirmDiscard(false)}
+      />
     </div>
   )
 }

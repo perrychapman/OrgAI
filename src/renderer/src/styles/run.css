@@ -200,26 +200,55 @@
 
 /* ---------- Live view ---------- */
 
-.live {
+/* The workspace is a column: run tabs, then the panel. Nothing in it is positioned over the canvas. */
+.run-workspace {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-panel {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-body {
   flex: 1;
   min-height: 0;
   display: grid;
   /* Side column narrows with the main area (cqi of .main), capped at 400px. */
   grid-template-columns: minmax(0, 1fr) clamp(280px, 32cqi, 400px);
-  /* Row 1: in-flow approval cards (zero height when empty), row 2: canvas, row 3: composer. */
+  /* Row 1: in-flow decisions (zero height when empty), row 2: canvas, row 3: composer. */
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
-.live .canvas {
+.run-body .canvas {
   grid-row: 2;
   grid-column: 1;
   min-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-flow {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
 }
 .live-cards {
   grid-row: 1;
   grid-column: 1;
   container-type: inline-size;
   container-name: live-cards;
-  max-height: 40vh;
+  max-height: 50vh;
   overflow-y: auto;
   min-width: 0;
   display: flex;
@@ -231,14 +260,53 @@
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-default);
 }
+.live-cards:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--space-0h));
+}
 .live-cards-count {
   align-self: flex-start;
 }
-.live .side {
+.run-body .side {
   grid-row: 1 / span 3;
   grid-column: 2;
   container-type: inline-size;
   container-name: side;
+}
+
+/* A decision card with the run it belongs to named above it. */
+.decision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.run-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.run-label-word {
+  flex: none;
+}
+.run-label-prompt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The run index (R1, R2...) repeats on the tab, the header, the transcript header and decision cards. */
+.run-index {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
 }
 .composer {
   grid-row: 3;
@@ -341,22 +409,18 @@
   outline-offset: 1px;
 }
 
+/* The legend is a strip under the canvas, in flow: nothing but React Flow's own controls floats over the canvas. */
 .legend {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  max-width: calc(100% - 96px);
-  flex-wrap: wrap;
-  z-index: var(--z-canvas-overlay);
+  flex: none;
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
   font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
-  background: color-mix(in oklab, var(--surface-1) 80%, transparent);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-  backdrop-filter: blur(6px);
+  background: var(--surface-1);
+  border-top: 1px solid var(--border-default);
+  padding: var(--space-1) var(--space-3);
 }
 .legend i {
   display: inline-block;
@@ -365,144 +429,6 @@
   border-radius: var(--radius-full);
   margin-right: 5px;
   vertical-align: middle;
-}
-
-/* ---------- Run strip (several runs per project) ---------- */
-
-.run-strip {
-  container-type: inline-size;
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: var(--z-canvas-overlay);
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  pointer-events: none;
-}
-.run-chip {
-  pointer-events: auto;
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  max-width: min(280px, 70cqw);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--text-caption);
-  white-space: nowrap;
-}
-.run-chip:hover {
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-}
-.run-chip.active {
-  border-color: var(--accent);
-  color: var(--text-primary);
-  background: var(--surface-3);
-}
-.run-chip.waiting {
-  border-color: var(--warning);
-  background: var(--warning-soft);
-  color: var(--text-primary);
-}
-.run-chip:has(:focus-visible) {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.run-chip-main {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1h);
-  min-width: 0;
-  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-2);
-  border: none;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-.run-chip-main:focus-visible {
-  outline: none;
-}
-button.run-chip.new {
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border-style: dashed;
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--text-caption);
-}
-.run-chip .run-status {
-  font-weight: var(--weight-semibold);
-}
-.run-chip .run-kind {
-  font-weight: var(--weight-semibold);
-  color: var(--warning-text);
-}
-.run-chip .run-prompt {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  color: var(--text-tertiary);
-}
-.run-chip .run-cost {
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-}
-@container (max-width: 700px) {
-  .run-chip .run-cost,
-  .run-chip .run-plan {
-    display: none;
-  }
-}
-.run-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-full);
-  flex: none;
-  background: var(--text-tertiary);
-}
-.run-dot.live {
-  background: var(--success);
-  animation: breathe 1.4s ease-in-out infinite;
-}
-.run-dot.idle {
-  background: var(--info);
-}
-.run-dot.danger {
-  background: var(--danger);
-}
-.run-dot.warn {
-  background: var(--warning);
-}
-.run-dot.paused {
-  background: var(--warning);
-}
-.run-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-right: var(--space-1);
-  padding: var(--space-0h);
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  border-radius: var(--radius-full);
-}
-.run-close:hover {
-  color: var(--text-primary);
-  background: var(--border-default);
-}
-.run-close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
 }
 
 /* ---------- Folded "done" groups ---------- */
@@ -578,7 +504,7 @@ button.run-chip.new {
   border-color: var(--border-strong);
 }
 
-/* ---------- Plan progress: toolbar pill and run-strip chip ---------- */
+/* ---------- Plan progress pill in the run header ---------- */
 
 .pill.plan-pill {
   cursor: pointer;
@@ -595,21 +521,4 @@ button.run-chip.new {
 .pill.plan-pill.blocked {
   border-color: var(--warning-border);
   color: var(--warning-text);
-}
-.run-chip .run-plan {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
-}
-.run-chip .run-plan.done {
-  color: var(--success-text);
-}
-.run-chip .run-plan.blocked {
-  color: var(--warning-text);
-}
-
-/* Keep the zoom controls clear of the legend (the fit-view button used to hide under it). */
-.canvas .react-flow__controls {
-  margin-bottom: calc(var(--space-3) + 38px);
 }

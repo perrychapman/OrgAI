@@ -16,6 +16,7 @@ export function Button({
   children,
   title,
   testId,
+  className,
   type = 'button',
   autoFocusDialog
 }: {
@@ -28,11 +29,13 @@ export function Button({
   children: ReactNode
   title?: string
   testId?: string
+  /** Extra class for styling hooks and tests. */
+  className?: string
   type?: 'button' | 'submit'
   /** Dialog focuses this control when it opens. */
   autoFocusDialog?: boolean
 }): ReactElement {
-  const cls = ['btn', variant === 'secondary' ? '' : variant, size === 'sm' ? 'sm' : ''].filter(Boolean).join(' ')
+  const cls = ['btn', variant === 'secondary' ? '' : variant, size === 'sm' ? 'sm' : '', className ?? ''].filter(Boolean).join(' ')
   return (
     <button
       type={type}
