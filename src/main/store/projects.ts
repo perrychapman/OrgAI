@@ -1,9 +1,66 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
-import type { AppSettings, Project, ProjectCreateInput, ProjectPathCheck } from '@shared/types'
-import { HARNESS_PROJECT_ID } from '@shared/types'
-import { isSafeId, newProject, preferEverydayNearLimit, skillEvaluationOf } from '@shared/defaults'
+import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
+import { HARNESS_PROJECT_ID, isModelTier } from '@shared/types'
+import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
+import { validModelId } from '../connections/codexAccount'
+
+/** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
+export type TierContextFor = (connection: ConnectionId) => TierContext | undefined
+
+/** Invalid model values already logged (at most INVALID_MODEL_LOG_MAX), so a value is logged once per process. */
+const loggedInvalidModels = new Set<string>()
+const INVALID_MODEL_LOG_MAX = 200
+
+/** Whether a stored Role.model is acceptable: missing or empty, 'inherit', a tier name, or a valid model id. */
+export function acceptableRoleModel(model: unknown): boolean {
+  if (model === undefined || model === null || model === '') return true
+  if (typeof model !== 'string') return false
+  return model === 'inherit' || isModelTier(model) || validModelId(model)
+}
+
+/**
+ * Replace every Role.model that fails acceptableRoleModel (a hand-edited projects.json or a compromised renderer could
+ * store '--some-cli-flag', which would become the CLI's --model argument): the role's tier through the project's
+ * connection (modelForTier), else 'inherit'. Logs once per invalid value, never echoing it. Pure apart from the log.
+ */
+export function sanitizeRoleModels(
+  project: Project,
+  tierContext?: TierContextFor,
+  log: (message: string) => void = (m) => console.warn(m)
+): { project: Project; changed: boolean } {
+  if (!project || !Array.isArray(project.roles)) return { project, changed: false }
+  let changed = false
+  const roles = project.roles.map((role): Role => {
+    if (!role || typeof role !== 'object' || acceptableRoleModel(role.model)) return role
+    changed = true
+    let connection: ConnectionId = 'anthropic'
+    try {
+      connection = projectConnection(project)
+    } catch {
+      // A malformed provider: keep the anthropic default.
+    }
+    const ctx = tierContext?.(connection) ?? { connection, tierModels: {} }
+    const hit = isModelTier(role.tier) ? modelForTier(role.tier, ctx) : undefined
+    const next: Role = { ...role }
+    if (hit && validModelId(hit.model)) {
+      next.model = hit.model
+      next.tier = hit.tier
+    } else {
+      next.model = 'inherit'
+      delete next.tier
+    }
+    const key = typeof role.model === 'string' ? role.model.slice(0, 256) : `<${typeof role.model}>`
+    if (!loggedInvalidModels.has(key)) {
+      if (loggedInvalidModels.size < INVALID_MODEL_LOG_MAX) loggedInvalidModels.add(key)
+      const name = typeof role.name === 'string' ? role.name.replace(/[^ -~]/g, '?').slice(0, 80) : '(unnamed)'
+      log(`Role "${name}" had an invalid model (not a model id); it now uses ${next.model === 'inherit' ? 'inherit' : `the ${next.tier} tier (${next.model})`}.`)
+    }
+    return next
+  })
+  return changed ? { project: { ...project, roles }, changed } : { project, changed }
+}
 
 /**
  * Keep Project.preferEverydayNearLimit and its deprecated mirror preferSonnetNearLimit in step on a renderer save: an
@@ -88,8 +145,11 @@ export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupK
 export class ProjectStore {
   private file: string
   private projects: Project[] = []
+  private tierContext?: TierContextFor
 
-  constructor(dataDir: string) {
+  /** `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels). */
+  constructor(dataDir: string, opts: { tierContext?: TierContextFor } = {}) {
+    this.tierContext = opts.tierContext
     this.file = join(dataDir, 'projects.json')
     this.load()
     this.migrateAll()
@@ -122,8 +182,9 @@ export class ProjectStore {
     let changed = 0
     this.projects = this.projects.map((p) => {
       const m = migrateProject(p)
-      if (m.changed) changed++
-      return m.project
+      const clean = sanitizeRoleModels(m.project, this.tierContext)
+      if (m.changed || clean.changed) changed++
+      return clean.project
     })
     if (changed) this.persist()
     return changed
@@ -155,13 +216,15 @@ export class ProjectStore {
     else if (opts.prepare) project = opts.prepare(project)
     // Imported agents replace the default chart after the connection is chosen, so their models map to it.
     if (Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) project = opts.importRoles(project, input.importAgents)
+    project = sanitizeRoleModels(project, this.tierContext).project
     this.projects.push(project)
     this.persist()
     return project
   }
 
+  /** Every save (saveFromRenderer, update) passes Role.model through sanitizeRoleModels. */
   save(project: Project): Project {
-    const updated = { ...project, updatedAt: new Date().toISOString() }
+    const updated = { ...sanitizeRoleModels(project, this.tierContext).project, updatedAt: new Date().toISOString() }
     const idx = this.projects.findIndex((p) => p.id === project.id)
     if (idx === -1) this.projects.push(updated)
     else this.projects[idx] = updated

@@ -1,6 +1,7 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
 import { newId } from '@shared/defaults'
+import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
 import {
@@ -102,11 +103,14 @@ const CLAUDE_ALIASES = new Set(['fable', 'opus', 'sonnet', 'haiku'])
 /** How long a restart waits for the old process to exit. */
 const EXIT_WAIT_MS = 3000
 
-/** A model id for Codex from a role's model: undefined for 'inherit' and for bare Claude aliases. */
+/**
+ * A model id for Codex from a role's model: undefined for 'inherit', tier names, bare Claude aliases and any id that
+ * fails validModelId (it would reach the app-server's thread params; a hand-edited project could hold '--flag').
+ */
 export function codexModelFor(model: string | undefined): string | undefined {
-  const m = model?.trim()
+  const m = typeof model === 'string' ? model.trim() : undefined
   if (!m || m === 'inherit' || isModelTier(m.toLowerCase()) || CLAUDE_ALIASES.has(m.toLowerCase())) return undefined
-  return m
+  return validModelId(m) ? m : undefined
 }
 
 function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
@@ -421,7 +425,11 @@ class CodexSession implements RuntimeSession {
 
   private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string): Record<string, unknown> {
     const policy = this.policyFor(role)
-    const model = codexModelFor(role.model) ?? parentModel
+    const own = codexModelFor(role.model)
+    if (!own && typeof role.model === 'string' && role.model.trim() && !validModelId(role.model.trim())) {
+      this.log('warn', `Ignoring the invalid model of ${String(role.name).replace(/[^ -~]/g, "?").slice(0, 80)}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
+    }
+    const model = own ?? (validModelId(parentModel) ? parentModel : undefined)
     return {
       cwd,
       ...(model ? { model } : {}),

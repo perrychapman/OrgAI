@@ -803,4 +803,37 @@ describe('codexModelFor', () => {
     expect(codexModelFor(undefined)).toBeUndefined()
     expect(codexModelFor('gpt-5.1-codex')).toBe('gpt-5.1-codex')
   })
+
+  it('drops ids that fail validModelId (option-like, whitespace, control chars, too long, non-strings)', () => {
+    for (const bad of ['--some-cli-flag', '-m', 'a b', 'new\nline', 'bell\u0007', 'caf\u00e9', 'x'.repeat(201)]) expect(codexModelFor(bad), JSON.stringify(bad)).toBeUndefined()
+    expect(codexModelFor(42 as unknown as string)).toBeUndefined()
+    expect(codexModelFor(' gpt-5.1 ')).toBe('gpt-5.1')
+  })
+
+  it('never sends an invalid role model in thread/start, and logs it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-model-'))
+    const { adapter, servers } = setup()
+    const p = project({ path: dir, isolateWriters: false })
+    p.roles = p.roles.map((r) => (r.reportsTo === null ? { ...r, model: '--config=evil' } : r))
+    const ctx = fakeCtx({ project: p, roles: p.roles, continuationDelayMs: 5 })
+    const session = await adapter.start(ctx)
+    try {
+      await vi.waitFor(() => expect(servers[0].of('thread/start')).toHaveLength(1))
+      expect(servers[0].of('thread/start')[0].params).not.toHaveProperty('model')
+      expect(JSON.stringify(ctx.events)).toContain('Ignoring the invalid model')
+    } finally {
+      await session.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('drops an invalid completion model', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)), completionConnection: () => ({ connection: 'openai' as const, adapter: 'codex' as const, env: { CODEX_HOME: '/h' } }) })
+    const promise = adapter.complete({ system: 's', prompt: 'p', model: '--profile=x' })
+    await vi.waitFor(() => expect(server?.of('turn/start')).toHaveLength(1))
+    expect(server.of('thread/start')[0].params).not.toHaveProperty('model')
+    server.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await promise
+  })
 })

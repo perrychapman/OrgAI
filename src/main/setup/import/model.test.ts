@@ -59,3 +59,25 @@ describe('mapChosenModel', () => {
     expect(() => mapChosenModel('fast', litellm, 'Builder')).toThrow(/Builder/)
   })
 })
+
+describe('invalid model ids from untrusted repo files', () => {
+  it('never keeps an invalid id: it becomes a tier model of the connection', () => {
+    for (const bad of ['--some-cli-flag', '-m', 'a b', 'x'.repeat(201)]) {
+      const m = mapImportedModel(bad, anthropic)
+      expect(m.model, bad).toBe('sonnet')
+      expect(m.tier).toBe('everyday')
+      expect(m.note).not.toContain(bad)
+    }
+    expect(mapImportedModel(42 as unknown as string, anthropic)).toMatchObject({ model: 'sonnet', tier: 'everyday', reason: 'default' })
+  })
+  it('ignores a catalog entry or tier mapping holding an invalid id', () => {
+    const poisoned: ModelContext = {
+      connection: 'litellm',
+      catalog: [...litellmCatalog, { id: '--evil', label: 'x', connection: 'litellm', family: 'claude', adapter: 'claude', tier: 'deep', source: 'discovered' }],
+      tierModels: { deep: '--evil', everyday: 'claude-sonnet-4-5' }
+    }
+    expect(mapImportedModel('--evil', poisoned).model).toBe('claude-sonnet-4-5')
+    expect(mapImportedModel('opus', poisoned)).toMatchObject({ model: 'claude-sonnet-4-5', tier: 'everyday' })
+    expect(() => mapChosenModel('--evil', poisoned, 'Dev')).toThrow(/That model id is not a model/)
+  })
+})

@@ -1,10 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import type { McpServerSpec, PluginSpec, Project, SkillSpec } from '@shared/types'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -220,5 +220,64 @@ describe('creating projects', () => {
     order.length = 0
     store.create({ name: 'Z', path: d, brief: '' }, undefined, { prepare, importRoles })
     expect(order).toEqual(['prepare'])
+  })
+})
+
+describe('Role.model validation', () => {
+  const bad = (model: unknown, tier?: Role['tier']) => role({ id: 'r', slug: 'dev', model: model as string, ...(tier ? { tier } : {}) })
+  const claudeProvider = (connection: Project['provider']['connection'] = 'anthropic'): Project['provider'] => ({ id: 'claude', label: 'Claude', auth: { kind: 'subscription' }, connection })
+
+  it('acceptableRoleModel takes inherit, empty, tier names and valid ids only', () => {
+    for (const ok of [undefined, '', 'inherit', 'deep', 'opus', 'claude-sonnet-4-5', 'openai/gpt-5.1']) expect(acceptableRoleModel(ok), String(ok)).toBe(true)
+    for (const no of ['--some-cli-flag', '-m', 'a b', 'x\ny', 'x'.repeat(201), 42, {}]) expect(acceptableRoleModel(no), JSON.stringify(no)).toBe(false)
+  })
+
+  it('sanitizeRoleModels falls back to the tier through the connection, else inherit, and logs once per value', () => {
+    const log = vi.fn()
+    const p = project({ provider: claudeProvider(), roles: [bad('--evil-a', 'deep'), bad('--evil-b'), role({ id: 'ok', slug: 'ok', model: 'sonnet' })] })
+    const out = sanitizeRoleModels(p, undefined, log)
+    expect(out.changed).toBe(true)
+    expect(out.project.roles[0]).toMatchObject({ model: 'opus', tier: 'deep' })
+    expect(out.project.roles[1].model).toBe('inherit')
+    expect(out.project.roles[1].tier).toBeUndefined()
+    expect(out.project.roles[2].model).toBe('sonnet')
+    expect(log).toHaveBeenCalledTimes(2)
+    expect(log.mock.calls.join(' ')).not.toContain('--evil')
+    sanitizeRoleModels(p, undefined, log)
+    expect(log).toHaveBeenCalledTimes(2)
+    const unchanged = project({ roles: [role({ id: 'ok', slug: 'ok', model: 'sonnet' })] })
+    expect(sanitizeRoleModels(unchanged, undefined, log)).toEqual({ project: unchanged, changed: false })
+  })
+
+  it('uses the connection tier mapping given to it, and refuses an invalid mapped model', () => {
+    const p = project({ provider: claudeProvider('litellm'), roles: [bad('--x1', 'everyday'), bad('--x2', 'deep')] })
+    const tierContext = () => ({ connection: 'litellm' as const, tierModels: { everyday: 'claude-sonnet-4-5', deep: '--mapped-evil' } })
+    const out = sanitizeRoleModels(p, tierContext, () => {}).project
+    expect(out.roles[0]).toMatchObject({ model: 'claude-sonnet-4-5', tier: 'everyday' })
+    // deep maps to an invalid id, so the role inherits rather than passing it on.
+    expect(out.roles[1].model).toBe('inherit')
+  })
+
+  it('saveFromRenderer, update and load never store an invalid model', () => {
+    const dir = dataDir()
+    const store = new ProjectStore(dir)
+    store.save(project({ provider: claudeProvider() }))
+    const saved = store.saveFromRenderer(project({ provider: claudeProvider(), roles: [bad('--some-cli-flag', 'everyday')] }))
+    expect(saved.roles[0]).toMatchObject({ model: 'sonnet', tier: 'everyday' })
+    expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).projects[0].roles[0].model).toBe('sonnet')
+    expect(store.update('p1', (p) => ({ ...p, roles: [bad('a b')] })).roles[0].model).toBe('inherit')
+
+    const dir2 = dataDir()
+    writeFileSync(join(dir2, 'projects.json'), JSON.stringify({ version: 1, projects: [project({ provider: claudeProvider(), roles: [bad('--hand-edited', 'fast')] })] }))
+    expect(new ProjectStore(dir2).get('p1')!.roles[0]).toMatchObject({ model: 'haiku', tier: 'fast' })
+    expect(JSON.parse(readFileSync(join(dir2, 'projects.json'), 'utf8')).projects[0].roles[0].model).toBe('haiku')
+  })
+
+  it('create sanitizes imported roles', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const importRoles = (p: Project): Project => ({ ...p, roles: [bad('--imported', 'deep')] })
+    const p = store.create({ name: 'I', path: d, brief: '', importAgents: ['claude'] }, undefined, { importRoles })
+    expect(p.roles[0]).toMatchObject({ model: 'opus', tier: 'deep' })
   })
 })

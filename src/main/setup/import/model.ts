@@ -1,6 +1,7 @@
 import { ANTHROPIC_BUILTIN_MODELS, importTierForModel } from '@shared/defaults'
 import type { AgentImportModelReason, ConnectionId, ModelRef, ModelTier, ProviderModel } from '@shared/types'
 import { MODEL_TIERS, isModelTier } from '@shared/types'
+import { validModelId } from '../../connections/codexAccount'
 
 /** What the model mapping needs from the project's connection (ConnectionService). */
 export interface ModelContext {
@@ -33,8 +34,9 @@ function nearestTiers(tier: ModelTier): ModelTier[] {
  */
 export function modelForTier(tier: ModelTier, ctx: ModelContext): { model: ModelRef; tier: ModelTier } | undefined {
   for (const t of nearestTiers(tier)) {
-    const mapped = ctx.tierModels[t]?.trim()
-    if (mapped) return { model: mapped, tier: t }
+    const raw = ctx.tierModels[t]
+    const mapped = typeof raw === 'string' ? raw.trim() : ''
+    if (mapped && validModelId(mapped)) return { model: mapped, tier: t }
     if (ctx.connection === 'anthropic') {
       const alias = ANTHROPIC_BUILTIN_MODELS.find((m) => m.tier === t)?.id
       if (alias) return { model: alias, tier: t }
@@ -43,7 +45,9 @@ export function modelForTier(tier: ModelTier, ctx: ModelContext): { model: Model
   return undefined
 }
 
+/** A catalog entry of the connection with this id; never for an id that fails validModelId (the repo is untrusted). */
 function catalogEntry(model: string, ctx: ModelContext): ProviderModel | undefined {
+  if (!validModelId(model)) return undefined
   return ctx.catalog.find((m) => m.connection === ctx.connection && m.id === model)
 }
 
@@ -64,7 +68,7 @@ function viaTier(tier: ModelTier, ctx: ModelContext, reason: AgentImportModelRea
  * - a missing or unrecognised model gets the 'everyday' tier, with a note.
  */
 export function mapImportedModel(original: string | undefined, ctx: ModelContext, exportTier?: ModelTier): MappedModel {
-  const raw = original?.trim() ?? ''
+  const raw = typeof original === 'string' ? original.trim() : ''
   if (raw.toLowerCase() === 'inherit') return { model: 'inherit', reason: 'inherit' }
   if (raw) {
     const hit = catalogEntry(raw, ctx)
@@ -73,7 +77,8 @@ export function mapImportedModel(original: string | undefined, ctx: ModelContext
   const tier = (isModelTier(exportTier) ? exportTier : undefined) ?? importTierForModel(raw)
   if (tier) return viaTier(tier, ctx, 'tier')
   if (!raw) return viaTier('everyday', ctx, 'default', 'No model given; using the everyday tier.')
-  return { ...viaTier('everyday', ctx, 'default', `Model "${raw.slice(0, 80)}" is not recognised; using the everyday tier.`), unknown: true }
+  const shown = validModelId(raw) ? `Model "${raw.slice(0, 80)}" is` : 'The model id is not a valid model name and'
+  return { ...viaTier('everyday', ctx, 'default', `${shown} not recognised; using the everyday tier.`), unknown: true }
 }
 
 /**
@@ -89,5 +94,6 @@ export function mapChosenModel(choice: string, ctx: ModelContext, roleName: stri
     const t = modelForTier(value, ctx)
     if (t && t.tier === value) return { model: t.model, tier: value, reason: 'chosen' }
   }
-  throw new Error(`"${value.slice(0, 80)}" is not a model of the ${ctx.connection} connection, so ${roleName.slice(0, 80)} cannot use it. Pick a model from the list.`)
+  const shown = validModelId(value) ? `"${value.slice(0, 80)}"` : 'That model id'
+  throw new Error(`${shown} is not a model of the ${ctx.connection} connection, so ${roleName.slice(0, 80)} cannot use it. Pick a model from the list.`)
 }
