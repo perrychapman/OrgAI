@@ -22,7 +22,7 @@ An approved UI-overhaul plan is PLANNED but has not landed. It covers Radix Prim
 
 ### Shared contracts
 
-IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remaps, MCP servers, plugins, install requests, IPC names), defaults (adapterForProject, builtin models, tier helpers, MCP secret names), the built-in Architect and MCP assistant roles and setup tool names. Role.skills is PLANNED and not in the contract yet.
+IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remaps, MCP servers, plugins, install requests, IPC names), defaults (adapterForProject, builtin models, tier helpers, MCP secret names), the built-in Architect and MCP assistant roles and setup tool names. RunSummary.endedWithApp is set by RunStore at startup for runs cut by the app quitting. Role.skills is PLANNED and not in the contract yet.
 
 - `src/shared/types.ts`
 - `src/shared/defaults.ts`
@@ -36,6 +36,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Vendor-neutral usage mapping.
 - Image attachments. attachments.ts sanitizes untrusted pasted images: count and size limits, base64 checks, and magic-byte sniffing.
 - Agent tree rules. agentTree.ts resolves a reported agent's parent without creating cycles and repairs cyclic stored records.
+- Worktrees. worktrees.ts pathKey resolves the nearest existing ancestor's realpath (macOS /tmp is /private/tmp). withRepoLock serializes git work per checkout. Both commit-producing git calls (commit, merge) fall back to an OrgAI identity when git has none.
 
 - `src/main/runtime/types.ts`
 - `src/main/runtime/harnessTools.ts`
@@ -107,11 +108,12 @@ McpService covers:
 
 ### Main shell, stores and maintenance
 
-- The app entry. Startup order: installLogging, applyShellPath, stores, SecretStore(safeStorage), ConnectionService, McpService, SetupService, adapters, RunManager, IPC, connections.init(). Then installAppMenu, and createWindow last.
-- IPC handlers, logging and notifications.
+- The app entry. Startup order: ORGAI_DATA_DIR override (app.setPath('userData') + app.setAppLogsPath(<dir>/logs)), app.setName('OrgAI') when unpackaged, installLogging, applyShellPath, stores, SecretStore(safeStorage), ConnectionService, McpService, SetupService, adapters, RunManager, IPC, connections.init(). Then installAppMenu, and createWindow last.
+- ORGAI_DATA_DIR is how e2e and CI keep off the real profile. package.json productName ("OrgAI") names the packaged app.
+- IPC handlers, logging and notifications. log.ts pickLogsDir falls back from the app logs dir to <userData>/logs, then to temp.
 - The idle usage monitor (the Claude plan, plus Codex through extraProbes).
 - JSON stores.
-- shellEnv.ts gives macOS and Linux GUI launches the login shell's PATH. appMenu.ts is the macOS application menu.
+- shellEnv.ts gives macOS and Linux GUI launches the login shell's PATH, per shell: POSIX shells print $PATH, fish uses `string join`, and csh/tcsh/nushell/unknown shells fall back to /bin/zsh on macOS or /bin/bash on Linux. appMenu.ts is the macOS application menu.
 - Leftover-branch maintenance.
 - Run store layout under the data dir: runs.json (index), runs/<runId>.json (record), runs/<runId>/images/<sha256>.<ext>.
 - Secrets live in secrets.json (safeStorage ciphertext) and the model catalog in models.json. OrgAI's own Codex home is <data>/codex.
@@ -151,7 +153,7 @@ The contextBridge API window.orgai and its typings.
 
 ### UI primitives
 
-components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). PLANNED: Radix-based versions, and a components/layout panel shell over react-resizable-panels. Neither exists yet.
+components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, SegmentedControl (native radio group), CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). PLANNED: Radix-based versions, and a components/layout panel shell over react-resizable-panels. Neither exists yet.
 
 - `src/renderer/src/components/ui/`
 
@@ -160,10 +162,16 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - The app shell, projects view, org chart editor, live run view, app and project settings, transcript, usage meter, zustand store and dagre layout.
 - Connections settings (components/connections/).
 - MCP servers, plugins, registry dialog and install cards (components/mcp/).
+- RunStrip.tsx, the strip of a project's runs.
+- lib/platform.ts: navigator-based isMacPlatform, modKeyLabel and examplePath, no IPC.
+- lib/runChains.ts: session chains. Continue is offered only on the chain's newest member.
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`
 - `src/renderer/src/components/mcp/`
+- `src/renderer/src/components/RunStrip.tsx`
+- `src/renderer/src/lib/platform.ts`
+- `src/renderer/src/lib/runChains.ts`
 
 ### Scripts, e2e and packaging
 
@@ -171,12 +179,21 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Icon generation.
 - Electron e2e flows run against out/.
 - electron-builder config, macOS entitlements, and the macOS first-test checklist.
+- electron-builder.yml mac targets carry no arch list (in electron-builder 26 an arch list overrides the --arm64/--x64 CLI flags). Mac artifacts are ${productName}-${version}-${arch}.${ext}.
+- CI and packaging:
+  - .github/workflows/ci.yml: on push to main and pull requests. check job (npm ci, typecheck, test, build, e2e:free) and pack job (electron-builder --dir), both on windows-latest and macos-14.
+  - .github/workflows/release.yml: a v<version> tag, or workflow_dispatch (dry run by default). windows on windows-latest, mac-arm64 on macos-14, mac-x64 on macos-15-intel. Each leg runs on its native runner so npm ci installs the matching darwin-<arch> optional deps. Unsigned unless the CSC_LINK/APPLE_* secrets are set. The publish job drafts a GitHub release.
+  - .github/dependabot.yml: weekly grouped npm and actions updates.
+  - scripts/ci-check-version.mjs: the release tag must equal package.json's version.
 
 - `scripts/`
 - `e2e/`
 - `electron-builder.yml`
 - `build/entitlements.mac.plist`
 - `docs/macos-testing.md`
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `.github/dependabot.yml`
 
 ## Conventions
 
@@ -224,6 +241,8 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Motion respects prefers-reduced-motion.
 - Unit tests are *.test.ts files beside the module they test. They run with vitest in the node environment and never spend tokens.
 - Smoke scripts and the e2e scripts setup, history and worktree spend real tokens. Run them only with explicit approval. e2e:free is safe and must pass after UI changes, with selectors updated in the same change.
+- e2e scripts and CI never touch the real user data directory: they set ORGAI_DATA_DIR.
+- Release builds for each mac arch run on a native runner. Never cross-arch install the native CLIs.
 - New dependencies are pinned to exact versions like the rest of package.json.
 - SDK and provider behaviour claims are verified with a smoke script and recorded in CLAUDE.md with the version, or marked unverified there.
 - Worktree commit and merge belong to the harness. Never register WorktreeCreate or WorktreeRemove hooks just to observe.
@@ -238,12 +257,12 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Typecheck: `npm run typecheck`
 - Unit tests: `npm test`
 - Build: `npm run build`
-- E2E (free, needs build): `npm run build && npm run e2e:free`
+- E2E (free, needs build): `npm run build && npm run e2e:free`. Each script uses a fresh temp data dir, or ORGAI_DATA_DIR if set.
 - E2E (spends tokens): `node e2e/setup.mjs --yes | node e2e/history.mjs --yes | node e2e/worktree.mjs --yes`
 - Smoke, spend tokens, consent required: `node scripts/smoke-codex.mjs --yes`, `node scripts/smoke-litellm.mjs --yes`. Without --yes, smoke-litellm only lists models and is free.
-- Package Windows: `npm run dist`
-- Package unpacked dir: `npm run dist:dir`
-- Package macOS: `npm run dist:mac` (signed when an identity is available) or `npm run dist:mac:unsigned`
+- Package Windows: `npm run dist` or `npm run dist:win`
+- Package unpacked dir, no publish: `npm run pack` (not `npm pack`, which is npm's own tarball command). `npm run dist:dir` also builds an unpacked dir.
+- Package macOS: `npm run dist:mac` (signed when an identity is available) or `npm run dist:mac:unsigned`. Per arch, on a machine of that arch: `npm run dist:mac:arm64`, `npm run dist:mac:x64`
 - Regenerate icon: `npm run icon`
 
 ## Risks and gaps
@@ -255,12 +274,19 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Claude:
   - Calling agents are attributed by tool_use id from extra._meta (the key is unverified), else first-in-first-out per tool name. FIFO can misattribute concurrent calls.
   - Query.setMcpServers for mid-run installs is unverified at runtime.
-- macOS is untested. The user tests on a MacBook with docs/macos-testing.md. Packaging and entitlements are unverified.
+- macOS is untested by hand. The user tests on a MacBook with docs/macos-testing.md. Packaging and entitlements are unverified.
+- The CI and release workflows have not had a first real run yet. Open:
+  - winCodeSign extraction with signAndEditExecutable true on windows-latest.
+  - Whether macos-15-intel is really x64 (the release job checks process.arch).
+  - e2e:free on the mac runners, including a possible Keychain prompt for safeStorage.
+  - Unsigned mac dmg/zip output, and whether hardenedRuntime without an identity causes trouble.
+  - The publish job end to end.
+  - Signed and notarized builds have never been exercised.
+- Electron deprecates sync safeStorage (removed in Electron 46). SecretStore must move to the async API before upgrading.
 - The UI was verified only against stubbed or empty states. The connection and MCP screens have not been run against live services.
 - The UI overhaul shell pass has not landed: Radix, resizable panels, components/layout, the frontend-design skill and Role.skills. When it lands it rewrites App.tsx, LiveRunView.tsx and SettingsView.tsx and must go in as one serialized pass before parallel restyles.
 - Renderer remap previews (lib/remap.ts) are computed in the renderer. projects:previewRemap exists but is not wired into the UI yet.
 - No lint or format tooling, and the renderer has no component tests.
-- No CI configuration. The e2e scripts run against the real %APPDATA%/orgai data directory.
 - The Claude SDK is pinned to 0.3.312. Plan usage relies on an experimental API and can break on upgrade.
 - claude.ts and codex.ts are large hotspots for merge conflicts.
 - No e2e test covers the packaged app.

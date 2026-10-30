@@ -115,6 +115,14 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     the window.
   - These pieces are unit-tested where they are pure. Packaging (`dist:mac`, `dist:mac:unsigned`,
     `build/entitlements.mac.plist`) is unverified.
+  - `ORGAI_DATA_DIR` replaces userData and puts the logs under it. e2e (a fresh temp dir per script) and CI use it to
+    keep off the real profile. package.json `productName: "OrgAI"` names the packaged app (`app.name`, log dir).
+  - The `pathKey` symlink fix (macOS `/tmp` is `/private/tmp`) and the OrgAI identity fallback for commit and merge are
+    unit-tested with a junction/symlink and a git that has no identity config.
+  - CI (`.github/workflows/ci.yml`) runs on windows-latest and macos-14. Release legs run on native-arch runners
+    (macos-14 arm64, macos-15-intel x64). Nothing in CI spends tokens.
+  - The first real CI run has not happened yet. Open items: winCodeSign extraction on windows-latest, macos-15-intel
+    really being x64, e2e:free on mac (a possible Keychain prompt), unsigned dmg/zip with hardenedRuntime, the publish job.
 
 <!-- orgai:architecture -->
 ## Architecture and conventions
