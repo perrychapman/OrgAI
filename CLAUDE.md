@@ -31,6 +31,10 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
+- Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
+  objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
+  learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls
+  it yet.
 - Settings: `AppSettings.appearance` (theme, accent, canvas, reduceMotion; `DEFAULT_APPEARANCE`) and
   `AppSettings.notifications` (the single source of truth; `notifications.setEnabled` in the preload is a deprecated
   mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only

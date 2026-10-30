@@ -29,7 +29,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Projects: projects:checkPath returns ProjectPathCheck (exists, isDirectory, isGitRepo, suggestedName, empty) and never rejects. projects:create validates the path (ProjectStore createPathError) and throws a readable message. ProjectCreateInput.mock creates a project on the mock adapter (provider.id 'mock'). It is accepted only when the mock adapter is registered (ORGAI_MOCK=1).
 - Cards: every *.resolved RunEvent (permission, proposal, question, rules, merge, mcpInstall) may carry `cancelled?: true`. src/main/runtime/pendingCards.ts cancelPending resolves every open card of a run as cancelled. RunManager calls it from emit when a run reaches an outcome or a paused status, and at teardown.
 - Transcript: TranscriptEntry.source 'harness' marks entries the harness wrote (nudges, hand-offs, notices, limit notices). Claude, Codex and mock write them as system blocks with a one-line summary and a detail.
-- Live runs and run windows: runs:listLive (every live run across projects) and window:openRun (FocusRunTarget, opens or focuses a run-scoped window).
+- Live runs and run windows: runs:listLive (every live run across projects), runs:pendingCards (PendingCards: a live run's open cards per kind, built by pendingCards.ts listPending over RunManager's PendingCardMaps) and window:openRun (FocusRunTarget, opens or focuses a run-scoped window; ids are checked with windowScope.ts isValidId plus store lookups).
 
 - `src/shared/types.ts`
 - `src/shared/defaults.ts`
@@ -146,7 +146,7 @@ McpService covers:
 
 ### Preload bridge
 
-The contextBridge API window.orgai and its typings (index.d.ts types window.orgai as OrgAIApi). window.orgai.app.info() returns AppInfo. window.orgai.onSettingsChanged subscribes to the settings:changed push. window.orgai.projects.checkPath(path) returns ProjectPathCheck. window.orgai.notifications.setEnabled is deprecated (see Shared contracts). window.orgai.runs.listLive() returns every live run across projects; window.orgai.window.openRun({ projectId, runId }) opens a run-scoped window.
+The contextBridge API window.orgai and its typings (index.d.ts types window.orgai as OrgAIApi). window.orgai.app.info() returns AppInfo. window.orgai.onSettingsChanged subscribes to the settings:changed push. window.orgai.projects.checkPath(path) returns ProjectPathCheck. window.orgai.notifications.setEnabled is deprecated (see Shared contracts). `runs:pendingCards` (`window.orgai.runs.pendingCards(runId)`) returns a live run's open decision cards as `PendingCards` (the same secret-free objects its `*.request` events carried), or empty arrays for an unknown or ended run. window.orgai.runs.listLive() returns every live run across projects; window.orgai.window.openRun({ projectId, runId }) opens a run-scoped window.
 
 - `src/preload/`
 
@@ -280,6 +280,7 @@ components/layout:
 - Nothing floats over the React Flow canvas except React Flow's own controls. Decision cards live in CanvasFrame's FrameTray. Banners and notices sit in layout regions.
 - No div or span with onClick and no native confirm(): ask through ConfirmDialog / useConfirm. Every control is reachable by keyboard with a visible :focus-visible ring, and every IconButton gets a label.
 - One status vocabulary: run status words come from lib/runStatus.ts, and agent end labels from activity.ts TERMINAL_ACTIVITY. Views do not invent synonyms.
+- A fresh renderer (a second window or a reload) seeds a live run's decision cards from `runs:pendingCards` and then follows the `*.request`/`*.resolved` events. As of 3cde179 the main side and preload exist but no renderer code calls it yet (UX N2 stays open until it does).
 - Harness-written transcript entries (source 'harness') render as quiet system rows with the detail behind a disclosure, never as user or model messages.
 - Appearance is consumed through the <html> attributes and CSS vars that lib/theme.ts sets. Views never read AppSettings.appearance to style themselves.
 - Icons are lucide-react via the Icon wrapper. No Unicode glyphs as icons.
@@ -333,7 +334,7 @@ components/layout:
 - Electron deprecates sync safeStorage (removed in Electron 46). SecretStore must move to the async API before upgrading.
 - The UX Researcher walked the UI on mock data (ORGAI_MOCK=1, a temp ORGAI_DATA_DIR): docs/design/ux-review.md, ux-review-runs.md and ux-review-runs-2.md (at dc86f31, before the brief A run-view merge). ux-review-mcp.md is a code walkthrough of the MCP screens. The connection and MCP screens have not been run against live services. Open items in ux-review-runs-2.md, not re-walked since:
   - N1, the tray outside the canvas frame: the code now renders FrameTray inside CanvasFrame. It needs a re-walk.
-  - N2: a window opened with "Open in new window" does not show the run's pending decision.
+  - N2: a window opened with "Open in new window" does not show the run's pending decision. runs:pendingCards now provides the cards from main, but the renderer does not seed from it yet.
   - N3, N4, N2b: idle nodes read "Waiting for you". Reaching a decision by keyboard takes many Tab presses and focus is lost after answering. A stale tab notice never clears.
   - N5 to N13: tab overflow at 1024, Needs-you density, topbar crowding, runs cut by quitting read Finished, raw message_run JSON in the transcript, and smaller polish.
 - Radix, react-resizable-panels, Role.skills and the frontend-design skill are not in the tree. The light theme is not signed off, so the default theme stays dark.
