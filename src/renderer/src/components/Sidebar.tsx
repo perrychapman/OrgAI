@@ -10,6 +10,7 @@ import { runStatus } from '../lib/runStatus'
 import brandIcon from '../assets/brand/icon.png'
 import UsageMeter from './UsageMeter'
 import { Icon } from './ui/Icon'
+import { Badge } from './ui/Badge'
 
 /** Open runs of a project, the ones that need the user first, then the newest. */
 function openRunsOf(runs: RunState[]): RunState[] {
@@ -28,6 +29,7 @@ export default function Sidebar(): ReactElement {
   const selectProject = useAppStore((s) => s.selectProject)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const auth = useAppStore((s) => s.auth)
+  const mockAdapter = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const runs = useAppStore((s) => s.runs)
   const history = useAppStore((s) => s.historyByProject)
   const viewedByProject = useAppStore((s) => s.activeRunByProject)
@@ -48,6 +50,13 @@ export default function Sidebar(): ReactElement {
         <img className="brand-mark" src={brandIcon} alt="" width={26} height={26} />
         OrgAI
       </div>
+      {mockAdapter && (
+        <div className="sidebar-mock">
+          <Badge tone="warning" testId="mock-mode-badge" title="ORGAI_MOCK is on: runs use the mock adapter">
+            Mock mode: no tokens are spent
+          </Badge>
+        </div>
+      )}
       <div className="sidebar-section">
         <button type="button" className={`nav-item ${view === 'projects' ? 'active' : ''}`} onClick={() => setView('projects')}>
           <Icon icon={LayoutGrid} size="sm" /> Projects
