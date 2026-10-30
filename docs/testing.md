@@ -18,7 +18,7 @@ Electron 45.1.0, electron-vite 6.0.0, Vite 8.3.5, TypeScript 7.0.2, vitest ^3.2.
 ## 2. The free gate
 
 ```sh
-npm run check        # typecheck && test && build && e2e:free (script added by the Runtime Lead)
+npm run check        # typecheck && test && build && e2e:free
 ```
 
 Or each step on its own (always in this order, because e2e uses `out/`):
@@ -26,9 +26,9 @@ Or each step on its own (always in this order, because e2e uses `out/`):
 | command | covers | observed |
 | --- | --- | --- |
 | `npm run typecheck` | `tsc --noEmit` for `tsconfig.node.json` and `tsconfig.web.json` | pass, ~1 s |
-| `npm test` | vitest, node env, `*.test.ts` beside modules: 51 files, 639 passed, 2 skipped (the live `codex app-server` suite, `describe.skipIf(!live)` in `codexAppServer.test.ts`) | pass, ~21 s |
+| `npm test` | vitest, node env, `*.test.ts` beside modules: 52 files, 641 passed, 2 skipped (the live `codex app-server` suite, `describe.skipIf(!live)` in `codexAppServer.test.ts`) | pass, ~21 s |
 | `npm run build` | `electron-vite build` into `out/` (main, preload, renderer) | pass, ~2 s (renderer bundle is ~2 MB) |
-| `npm run e2e:free` | `layout.mjs`, `maintenance.mjs`, `connections.mjs` against `out/` with the mock adapter: 103 PASS, 0 FAIL | pass, ~43 s |
+| `npm run e2e:free` | `layout.mjs`, `maintenance.mjs`, `connections.mjs` against `out/` with the mock adapter: 134 PASS, 0 FAIL | pass, ~43 s |
 
 The e2e scripts print one `PASS`/`FAIL` line per check and exit 1 on any FAIL. A temp data dir is kept (path printed)
 when a check fails. Screenshots go to `e2e/shots/` (gitignored). Nothing in the gate spends tokens or touches your real
@@ -48,11 +48,15 @@ logs, so your real projects and runs are untouched. Delete the directory to rese
 
 ### Putting a project on the mock adapter
 
-- **Today:** create the project in the UI (any form mode; "Skip AI setup" is simplest), quit the app, edit
-  `<data>/projects.json` and set `"provider": { "id": "mock", ... }` on that project (keep the other fields), then start
-  the app again. The `mock` id exists in `ProviderId` and only works with `ORGAI_MOCK=1`.
-- **After this change (not verified here):** a project-settings toggle for the mock adapter lands in the UI. Use it
-  instead of editing JSON.
+- **Toggle (covered by `e2e/connections.mjs`):** create the project in the UI ("Skip AI setup" is simplest), open
+  Project settings > Connection and turn on "Run on the scripted mock adapter (no tokens)". The switch
+  (`data-testid="mock-adapter-toggle"`) appears when the app runs with `ORGAI_MOCK=1`, or when the project is already
+  on the mock adapter. While it is on, the connection cards below it are disabled. Turning it off restores the adapter
+  the project's connection implies (`claude` or `codex`).
+- **Fallback:** quit the app, edit `<data>/projects.json`, set `"provider": { "id": "mock", ... }` on the project (keep
+  the other fields) and start the app again. The `mock` id only works with `ORGAI_MOCK=1`.
+- **Finding the data and logs folders:** App settings > About shows version, platform, packaged or development, and the
+  data and logs folders, each with Copy and Open.
 
 The e2e scripts set `ORGAI_MOCK=1` themselves and drive the same adapter.
 
@@ -105,8 +109,10 @@ window sizes) in dark and light themes.
 4. Long project path: sidebar stays visible, path pill fits, no horizontal page scroll. free. e2e: `layout.mjs`.
 
 ### Setup / Architect
-1. Create a project with AI setup on (mock provider). Expect an Architect run: tool calls, an approval for `Bash`
-   (Allow / Deny), then an architecture proposal card. free (mock). e2e: `setup.mjs` (spends tokens, real Architect).
+1. Create a project with "Skip AI setup", open Project settings > Connection, turn on "Run on the scripted mock adapter
+   (no tokens)", then start the setup (Architect) run. It plays `DEFAULT_SETUP`: `Glob`, a `Bash` call with an approval
+   (Allow / Deny), `propose_architecture`, `propose_org_chart`, `propose_settings` and `complete_setup`. Expect an
+   architecture proposal card. free (mock). e2e: `setup.mjs` (spends tokens, real Architect).
 2. Approve the architecture, request changes on the org chart once, then approve. Expect the proposal to re-run and
    `complete_setup`. free (mock).
 3. Expect applied results: roles in the editor, project settings, and `.orgai/ARCHITECTURE.md` in the repo (plus a
