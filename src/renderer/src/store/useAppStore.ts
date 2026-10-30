@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { useMemo } from 'react'
+import { isOpenStatus } from '../lib/runChains'
 import { describeRemap, type ProjectChanges } from '../lib/remap'
 import type {
   AgentInstance,
@@ -223,6 +225,21 @@ export const runsOfProject = (s: AppState, projectId: string): RunState[] =>
 
 /** Runs of the selected project. Returns a fresh array: use with `useShallow`. */
 export const projectRuns = (s: AppState): RunState[] => (s.selectedProjectId ? runsOfProject(s, s.selectedProjectId) : [])
+
+/**
+ * Summaries of the selected project's runs: the persisted history merged with the live renderer state (which is
+ * fresher), newest first. Used to work out session chains.
+ */
+export function useProjectSummaries(): RunSummary[] {
+  const history = useAppStore((s) => s.history)
+  const runs = useAppStore((s) => s.runs)
+  const projectId = useAppStore((s) => s.selectedProjectId)
+  return useMemo(() => {
+    const byId = new Map<string, RunSummary>(history.map((h) => [h.id, h]))
+    for (const r of Object.values(runs)) if (r.summary.projectId === projectId) byId.set(r.summary.id, r.summary)
+    return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt)
+  }, [history, runs, projectId])
+}
 
 /** Show a run that continues an earlier one (Continue, Resume now). */
 function showContinuation(summary: RunSummary): void {
@@ -712,9 +729,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   dismissRun(runId) {
     set((s) => {
       const projectId = s.runs[runId]?.summary.projectId
+      const dismissedRuns = { ...s.dismissedRuns, [runId]: true as const }
       const activeRunByProject = { ...s.activeRunByProject }
-      if (projectId && activeRunByProject[projectId] === runId) delete activeRunByProject[projectId]
-      return { dismissedRuns: { ...s.dismissedRuns, [runId]: true }, activeRunByProject }
+      if (projectId && activeRunByProject[projectId] === runId) {
+        // Never leave the canvas empty while the project has another run: prefer an open one, else the newest.
+        const rest = runsOfProject(s, projectId).filter((r) => r.summary.id !== runId && !dismissedRuns[r.summary.id])
+        const next = rest.find((r) => isOpenStatus(r.summary.status)) ?? rest[0]
+        if (next) activeRunByProject[projectId] = next.summary.id
+        else delete activeRunByProject[projectId]
+        return { dismissedRuns, activeRunByProject, ...(next ? { selectedAgentId: 'root' } : {}) }
+      }
+      return { dismissedRuns, activeRunByProject }
     })
   },
 

@@ -1,11 +1,12 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import type { AgentInstance, PlanStep, RunPlan, RunSummary, TranscriptEntry } from '@shared/types'
+import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
-import { activeRun, selectedProject, useAppStore, type LogLine } from '../store/useAppStore'
-import { COST_ESTIMATE_HINT, costLabel, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { activeRun, isRunLive, selectedProject, useAppStore, type LogLine } from '../store/useAppStore'
+import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
+import RunHistory from './RunHistory'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 
 interface Props {
@@ -14,90 +15,6 @@ interface Props {
   logs: LogLine[]
   /** When a folded "done" group is selected on the chart, list its reports instead of a transcript. */
   finished?: FinishedGroup
-}
-
-function RunHistory(): ReactElement {
-  const history = useAppStore((s) => s.history)
-  const openRun = useAppStore((s) => s.openRun)
-  const focusComposer = useAppStore((s) => s.focusComposer)
-  const startRetro = useAppStore((s) => s.startRetro)
-  const current = useAppStore(activeRun)
-  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
-  if (history.length === 0) return <div className="entry system">No runs yet for this project.</div>
-  return (
-    <div className="run-history">
-      {history.map((r: RunSummary) => (
-        <button key={r.id} className={`run-row ${current?.summary.id === r.id ? 'active' : ''}`} onClick={() => void openRun(r.id)}>
-          <div className="row" style={{ gap: 6 }}>
-            <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
-            {r.resumedFrom && (
-              <span className="chip" title={`Continued from run ${r.resumedFrom}`}>
-                continued
-              </span>
-            )}
-            <span
-              className={`pill ${r.status === 'error' ? 'danger' : r.status === 'paused' ? 'warn' : r.status === 'finished' ? '' : 'live'}`}
-              style={{ padding: '1px 7px' }}
-              title={r.pauseReason}
-            >
-              <span className="dot" /> {r.status}
-            </span>
-            {r.pausedUntil !== undefined && r.status === 'finished' && (
-              <span className="chip" title={r.pauseReason ?? 'Stopped at a usage limit'}>
-                usage limit
-              </span>
-            )}
-            <span style={{ marginLeft: 'auto', color: 'var(--text-faint)', fontSize: 11 }} title={costLabel(r.totalCostUsd, authMode).title}>
-              {costLabel(r.totalCostUsd, authMode).text}
-            </span>
-            {(r.status === 'finished' || r.status === 'error' || r.status === 'paused') && r.sessionId && (
-              // The row itself is a button, so this is a span acting as one.
-              <span
-                role="button"
-                tabIndex={0}
-                className="btn sm"
-                title="Open this run and continue its session"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void openRun(r.id).then(() => focusComposer())
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' && e.key !== ' ') return
-                  e.preventDefault()
-                  e.stopPropagation()
-                  void openRun(r.id).then(() => focusComposer())
-                }}
-              >
-                Continue
-              </span>
-            )}
-            {r.kind === 'work' && (r.status === 'finished' || r.status === 'error') && (
-              <span
-                role="button"
-                tabIndex={0}
-                className="btn sm ghost"
-                title="Have the Architect review this run and revise the org chart where roles struggled"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void startRetro(r.id)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' && e.key !== ' ') return
-                  e.preventDefault()
-                  e.stopPropagation()
-                  void startRetro(r.id)
-                }}
-              >
-                Retrospective
-              </span>
-            )}
-          </div>
-          <div className="prompt">{r.prompt || 'Image prompt'}</div>
-          <div className="when">{new Date(r.startedAt).toLocaleString()}</div>
-        </button>
-      ))}
-    </div>
-  )
 }
 
 const STEP_ICONS: Record<PlanStep['status'], string> = {
@@ -191,6 +108,7 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
   const partial = useAppStore((s) => (agent ? activeRun(s)?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => activeRun(s)?.plan)
   const isWork = useAppStore((s) => activeRun(s)?.summary.kind === 'work')
+  const openRuns = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === s.selectedProjectId && isRunLive(r)).length)
   // Setup runs have no plan tab; fall back to the transcript there.
   const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
 
@@ -217,8 +135,8 @@ export default function TranscriptPanel({ agent, entries, logs, finished }: Prop
           <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>
             Logs {logs.some((l) => l.level === 'error') ? '!' : ''}
           </button>
-          <button className={tab === 'runs' ? 'active' : ''} onClick={() => setTab('runs')}>
-            Runs
+          <button className={tab === 'runs' ? 'active' : ''} onClick={() => setTab('runs')} title={openRuns > 0 ? `${openRuns} open run${openRuns === 1 ? '' : 's'}` : undefined}>
+            Runs{openRuns > 0 ? ` (${openRuns})` : ''}
           </button>
         </div>
       </div>
