@@ -67,7 +67,7 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
             rows={4}
             value={revision}
             onChange={setRevision}
-            placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to Sonnet."'
+            placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to the fast tier."'
           />
           <div className="row gap-2 wrap">
             <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>

@@ -14,7 +14,7 @@ import { Input } from '../ui/Input'
 import { Select } from '../ui/Select'
 import { SettingsCard } from './SettingsCard'
 
-const SOURCE_LABEL: Record<ModelPriceInfo['source'], string> = { override: 'Override', proxy: 'Proxy', builtin: 'Built-in' }
+const SOURCE_LABEL: Record<ModelPriceInfo['source'], string> = { override: 'Override', proxy: 'Proxy', builtin: 'Built-in', community: 'Community list' }
 
 const FIELDS: { field: Exclude<PriceField, 'model'>; label: string; optional: boolean }[] = [
   { field: 'input', label: 'Input', optional: false },

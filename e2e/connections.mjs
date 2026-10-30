@@ -46,7 +46,7 @@ try {
       for (const name of ['Setup model', 'MCP assistant model']) {
         check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select on the Defaults pane at ${w}x${h} ${theme}`)
       }
-      const note = page.getByText("On other connections a Claude model stands for its tier.", { exact: false })
+      const note = page.getByText("A tier resolves through each project", { exact: false })
       check((await note.count()) === 1, `Assistants note present at ${w}x${h} ${theme}`)
       await note.scrollIntoViewIfNeeded()
       const defOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))

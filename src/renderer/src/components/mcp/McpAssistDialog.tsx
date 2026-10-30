@@ -5,7 +5,7 @@ import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Textarea } from '../ui/Textarea'
 import { errMessage } from './mcpHelpers'
-import { modelDisplayName, useAssistantModel } from '../../lib/assistantModels'
+import { useAssistantModelName } from '../../lib/assistantModels'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
 
@@ -25,7 +25,7 @@ export default function McpAssistDialog({
   description: string
   placeholder: string
 }): ReactElement {
-  const model = useAssistantModel('mcpAssistModel')
+  const model = useAssistantModelName('mcpAssistModel')
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -71,7 +71,7 @@ export default function McpAssistDialog({
         <Textarea id="mcp-assist-text" data-autofocus maxLength={2000} rows={4} value={text} placeholder={placeholder} onChange={setText} />
       </div>
       <p className="muted" data-testid="mcp-assist-model-hint">
-        Runs on {modelDisplayName(model)}.{' '}
+        Runs on {model}.{' '}
         <button
           type="button"
           className="link-btn"
