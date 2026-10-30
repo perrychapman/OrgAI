@@ -350,7 +350,7 @@ export function buildAgents(
       description: role.description,
       prompt: buildRolePrompt(role, ctx.roles, ctx.project, { isSetup, isolation }),
       tools,
-      model: role.model || 'inherit'
+      model: role.model && validModelId(role.model) ? role.model : 'inherit'
     }
     if (mcp.length) def.mcpServers = mcp
     if (role.effort) def.effort = role.effort
@@ -834,8 +834,8 @@ export class ClaudeSession implements RuntimeSession {
   /** The everyday model to spawn this report on instead of its deep/top one while the weekly window is near its limit, if any. */
   private steerToEveryday(target: Role | undefined, toolInput: Record<string, unknown>): { from: string; to: string } | undefined {
     if (this.isSetup || usesProxy(this.ctx) || !preferEverydayNearLimit(this.ctx.project) || this.authMode === 'apiKey') return undefined
-    const explicit = typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : undefined
-    let model = explicit ?? target?.model ?? 'inherit'
+    const explicit = typeof toolInput.model === 'string' && validModelId(toolInput.model) ? toolInput.model : undefined
+    let model = explicit ?? (target?.model && validModelId(target.model) ? target.model : 'inherit')
     if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
     const tierModels = this.ctx.connection?.tierModels
     const deep = target?.tier === 'deep' || target?.tier === 'top' || isDeepOrTopModel(model, tierModels)
@@ -887,6 +887,12 @@ export class ClaudeSession implements RuntimeSession {
         const target = this.rolesBySlug.get(requested)
         const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
         const updates: Record<string, unknown> = {}
+        // A model-chosen model must be a plain model id; anything else is dropped so the role's own model applies.
+        let dropModel = false
+        if ('model' in toolInput && !(typeof toolInput.model === 'string' && validModelId(toolInput.model))) {
+          dropModel = true
+          this.log('warn', `Dropped an invalid model on a spawn of ${requested}.`)
+        }
         // Every report gets a handle so peers and its lead can reach it with SendMessage({to: handle}).
         const { handle, generated } = spawnHandle(this.handles, requested, toolInput.name)
         this.spawnHandles.set(input.tool_use_id, handle)
@@ -897,15 +903,18 @@ export class ClaudeSession implements RuntimeSession {
         }
         // Near the weekly limit, new deep/top reports run on the everyday tier (preferEverydayNearLimit).
         const steer = this.steerToEveryday(target, toolInput)
-        if (steer) {
+        if (steer && validModelId(steer.to)) {
           updates.model = steer.to
+          dropModel = false
           this.log('info', `Spawning ${target?.name ?? requested} on the everyday tier (${steer.to}) instead of ${steer.from}: the weekly usage window is near its limit.`)
         }
-        if (!Object.keys(updates).length) return {}
+        if (!Object.keys(updates).length && !dropModel) return {}
+        const updated: Record<string, unknown> = { ...toolInput, ...updates }
+        if (dropModel) delete updated.model
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            updatedInput: { ...toolInput, ...updates }
+            updatedInput: updated
           }
         }
       }
@@ -1118,7 +1127,10 @@ export class ClaudeSession implements RuntimeSession {
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     const savedRules = listRules(project.path)
     if (savedRules.length) options.allowedTools = savedRules
-    if (this.root.model && this.root.model !== 'inherit') options.model = this.root.model
+    if (this.root.model && this.root.model !== 'inherit') {
+      if (validModelId(this.root.model)) options.model = this.root.model
+      else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
+    }
     if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
     if (this.ctx.resumeSessionId) options.resume = this.ctx.resumeSessionId
     return options
@@ -1614,7 +1626,7 @@ export function buildCompletionOptions(input: CompletionInput): Options {
     mcpServers: {},
     ...EXECUTABLE_OPTION
   }
-  if (input.model) options.model = input.model
+  if (input.model && validModelId(input.model)) options.model = input.model
   options.env = completionEnv(input.connection)
   return options
 }
