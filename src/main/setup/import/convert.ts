@@ -32,6 +32,12 @@ function cleanResponsibilities(list: unknown): string[] {
     .map((s) => s.trim().slice(0, MAX_RESPONSIBILITY_CHARS))
 }
 
+/** Repo-controlled names for a note: each cut to 60 characters, at most 20, then "and N more". */
+function nameList(names: string[]): string {
+  const shown = names.slice(0, 20).map((n) => n.slice(0, 60)).join(', ')
+  return names.length > 20 ? `${shown} and ${names.length - 20} more` : shown
+}
+
 /** A role's elevated grants for AgentImportItem.elevatedTools. */
 function elevatedOf(role: Role): string[] {
   const out: string[] = role.tools.filter((t) => AGENT_IMPORT_ELEVATED_TOOLS.includes(t))
@@ -147,8 +153,8 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
     const mappedTools = mapTools(agent.tools, agent.deniedTools)
     const mapped = choice?.model !== undefined ? mapChosenModel(choice.model, ctx, agent.name) : mapImportedModel(agent.model, ctx, agent.tier)
     if (mapped.note) notes.push(mapped.note)
-    if (mappedTools.dropped.length) notes.push(`Tools with no OrgAI equivalent were dropped: ${mappedTools.dropped.join(', ')}.`)
-    if (mappedTools.ignoredDenied.length) notes.push(`Removed tools with no OrgAI equivalent were ignored: ${mappedTools.ignoredDenied.join(', ')}.`)
+    if (mappedTools.dropped.length) notes.push(`Tools with no OrgAI equivalent were dropped: ${nameList(mappedTools.dropped)}.`)
+    if (mappedTools.ignoredDenied.length) notes.push(`Removed tools with no OrgAI equivalent were ignored: ${nameList(mappedTools.ignoredDenied)}.`)
     if (agent.tools === undefined) {
       const removed = DEFAULT_IMPORT_TOOLS.filter((t) => !mappedTools.tools.includes(t))
       notes.push(removed.length ? `No tools granted: read-only by default, without ${removed.join(', ')}.` : 'No tools listed: read-only by default.')
