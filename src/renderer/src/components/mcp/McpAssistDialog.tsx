@@ -64,7 +64,7 @@ export default function McpAssistDialog({
       )}
       <div className="field mcp-field">
         <label htmlFor="mcp-assist-text">What should agents be able to do?</label>
-        <Textarea id="mcp-assist-text" data-autofocus rows={4} value={text} placeholder={placeholder} onChange={setText} />
+        <Textarea id="mcp-assist-text" data-autofocus maxLength={2000} rows={4} value={text} placeholder={placeholder} onChange={setText} />
       </div>
     </Dialog>
   )

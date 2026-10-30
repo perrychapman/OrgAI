@@ -1,5 +1,6 @@
 import type { McpProposalServer, McpServersProposalPayload } from '@shared/types'
 import { pinnedVersionOf } from './mcpVersion'
+import { clampLabel } from './clampLabel'
 
 export const SKIP_MCP_FEEDBACK = 'Skipped by the user; continue without MCP servers.'
 
@@ -11,10 +12,10 @@ export function proposalScope(payload: Pick<McpServersProposalPayload, 'scope'>)
 
 /** What approving does for one server, in plain words. */
 export function upsertAction(s: McpProposalServer, scope: McpProposalScope): string {
-  if (scope === 'library') return `Add ${s.name} to your library`
-  if (s.libraryId) return `Link ${s.name} from your library`
-  if (s.projectOnly) return `Add ${s.name} to this project`
-  return `Add ${s.name} to the library and this project`
+  if (scope === 'library') return `Add ${clampLabel(s.name)} to your library`
+  if (s.libraryId) return `Link ${clampLabel(s.name)} from your library`
+  if (s.projectOnly) return `Add ${clampLabel(s.name)} to this project`
+  return `Add ${clampLabel(s.name)} to the library and this project`
 }
 
 /** Hostname of a remote URL, or null when it does not parse. */
@@ -39,15 +40,26 @@ export function pinState(s: McpProposalServer): 'pinned' | 'unpinned' | null {
   return pinnedVersionOf(s) ? 'pinned' : 'unpinned'
 }
 
-export function whoCanUse(s: McpProposalServer): string {
+/** Library entries have no role grants, so library scope returns null. With `roleSlugs`, unknown slugs are dropped and an emptied list returns null. */
+export function whoCanUse(s: McpProposalServer, roleSlugs?: string[], scope: McpProposalScope = 'project'): string | null {
+  if (scope === 'library') return null
   if (s.roles === undefined) return 'Every role'
-  return s.roles.length > 0 ? s.roles.join(', ') : 'No roles yet'
+  if (s.roles.length === 0) return 'No roles yet'
+  const known = roleSlugs ? s.roles.filter((r) => roleSlugs.includes(r)) : s.roles
+  return known.length > 0 ? known.map((r) => clampLabel(r)).join(', ') : null
+}
+
+/** Approve-helper wording for an MCP proposal. */
+export function mcpApplyNote(scope: McpProposalScope): string {
+  return scope === 'library'
+    ? 'Approving saves these MCP servers to your MCP library (available to every project). Secrets are entered separately and stored encrypted.'
+    : 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.'
 }
 
 export function removalLabels(payload: McpServersProposalPayload): string[] {
   return (payload.remove ?? []).map((id) => {
     const hit = payload.upsert.find((s) => s.id === id)
-    return `Remove ${hit ? hit.name : id}`
+    return `Remove ${clampLabel(hit ? hit.name : id)}`
   })
 }
 
@@ -55,4 +67,19 @@ export function secretsLine(payload: McpServersProposalPayload, serverId?: strin
   const list = (payload.secrets ?? []).filter((x) => serverId === undefined || x.serverId === serverId)
   if (list.length === 0) return null
   return `You will set ${list.length} ${list.length === 1 ? 'secret' : 'secrets'} after approving: ${list.map((x) => x.name).join(', ')}`
+}
+
+/** Exact command line (stdio) or full URL (http/sse) of a proposed server; null for a plain library link. */
+export function proposalCommand(s: McpProposalServer): string | null {
+  if (s.libraryId) return null
+  if (s.transport === 'stdio') return [s.command ?? '', ...(s.args ?? [])].filter(Boolean).join(' ') || null
+  return s.url || null
+}
+
+/** Where the proposed spec came from. */
+export function proposalSource(s: McpProposalServer): string | null {
+  if (s.libraryId) return null
+  const r = s.registry
+  if (r?.name) return `From the registry: ${clampLabel(r.name)}${r.version ? `@${clampLabel(r.version, 40)}` : ''}`
+  return 'Described by the assistant'
 }

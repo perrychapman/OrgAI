@@ -5,7 +5,9 @@ import type { Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
-import { effectLine, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
+import { CopyButton } from './ui/CopyButton'
+import { clampLabel } from '../lib/clampLabel'
+import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
 import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Badge } from './ui/Badge'
@@ -64,7 +66,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       runId={runId}
       who={who}
       title={`${KIND_LABEL[proposal.kind]}: ${proposal.title}`}
-      helper={APPLY_NOTE[proposal.kind]}
+      helper={proposal.kind === 'mcpServers' ? mcpApplyNote(proposalScope(proposal.payload)) : APPLY_NOTE[proposal.kind]}
       primary={
         !revising ? (
           <Button variant="primary" onClick={approve} disabled={busy}>
@@ -98,7 +100,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
-      {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} />}
+      {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} roleSlugs={currentRoles.map((r) => r.slug)} />}
       {revising && (
         <div className="proposal-feedback">
           <Textarea
@@ -356,7 +358,7 @@ function ClampText({ text }: { text: string }): ReactElement {
   )
 }
 
-function McpServersBody({ payload }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload'] }): ReactElement {
+function McpServersBody({ payload, roleSlugs }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload']; roleSlugs: string[] }): ReactElement {
   const scope = proposalScope(payload)
   const removals = removalLabels(payload)
   return (
@@ -371,8 +373,11 @@ function McpServersBody({ payload }: { payload: Extract<Proposal, { kind: 'mcpSe
       {payload.upsert.map((s) => {
         const pin = pinState(s)
         const secrets = secretsLine(payload, s.id)
+        const cmd = proposalCommand(s)
+        const source = proposalSource(s)
+        const who = whoCanUse(s, roleSlugs, scope)
         return (
-          <div key={s.id} className="mcp-prop-server" data-server={s.name}>
+          <div key={s.id} className="mcp-prop-server" data-server={clampLabel(s.name)}>
             <div className="mcp-prop-head">
               <strong>{upsertAction(s, scope)}</strong>
               {scope === 'project' && s.projectOnly && !s.libraryId && <Badge tone="neutral">Project only</Badge>}
@@ -388,9 +393,18 @@ function McpServersBody({ payload }: { payload: Extract<Proposal, { kind: 'mcpSe
               )}
             </div>
             {s.description && <ClampText text={s.description} />}
+            {source && <div className="mcp-prop-source muted">{source}</div>}
+            {cmd && (
+              <div className="mcpi-command">
+                <div className="code-block" data-testid="mcp-proposal-command" title={cmd}>
+                  {cmd}
+                </div>
+                <CopyButton text={cmd} label={s.transport === 'stdio' ? 'Copy command' : 'Copy URL'} />
+              </div>
+            )}
             <ul className="mcp-prop-effects">
               <li>{effectLine(s)}</li>
-              <li>Who can use it: {whoCanUse(s)}</li>
+              {who && <li>Who can use it: {who}</li>}
               {secrets && <li>{secrets}</li>}
             </ul>
           </div>
