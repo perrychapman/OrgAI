@@ -115,7 +115,8 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   const linked = rest.filter((s) => s.spec.libraryId)
   const local = rest.filter((s) => !s.spec.libraryId)
   const hasConnectedServices = setUpConnectors(connectors).length > 0
-  const warnings = authWarning(all)
+  // Connector-linked servers show their own state and "Finish setup" on the row; the banner is for the rest.
+  const warnings = authWarning(all.filter((s) => !s.spec.connectorId))
   const libraryCount = library?.length ?? 0
 
   const choose = (close: () => void, next: Modal): (() => void) => () => {
