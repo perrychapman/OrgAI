@@ -168,3 +168,18 @@ textarea {
   opacity: 0;
   pointer-events: none;
 }
+
+.error-boundary {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.error-boundary pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
