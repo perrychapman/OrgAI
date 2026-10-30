@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, redactSecrets, resolveCodexBinary } from './codexAppServer'
+import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, maskKeyLike, redactSecrets, resolveCodexBinary } from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
 import { fakeCtx, project } from './testHelpers'
 import { harnessToolsFor } from './harnessTools'
@@ -136,6 +136,17 @@ describe('stderr helpers', () => {
 
   it('redacts every secret, longest first, and ignores very short values', () => {
     expect(redactSecrets('a abcd abcdef', ['abcd', 'abcdef', 'a'])).toBe('a [redacted] [redacted]')
+  })
+
+  it('masks key-like tokens exact redaction cannot match', () => {
+    expect(maskKeyLike('Authorization: Bearer abc.def-123')).toBe('Authorization: Bearer [redacted]')
+    expect(maskKeyLike('bad key sk-proj-AbC123')).toBe('bad key [redacted]')
+    expect(maskKeyLike('OPENAI_API_KEY=xyz12345 and "access_token": "tkn-9999"')).toBe('OPENAI_API_KEY=[redacted] and "access_token": "[redacted]"')
+    expect(maskKeyLike('Error: CODEX_HOME points to "/x", but that path does not exist')).toBe('Error: CODEX_HOME points to "/x", but that path does not exist')
+    const long = `${'a'.repeat(50_000)}token`
+    const t = Date.now()
+    maskKeyLike(long)
+    expect(Date.now() - t).toBeLessThan(500)
   })
 
   it('caps the tail length', async () => {

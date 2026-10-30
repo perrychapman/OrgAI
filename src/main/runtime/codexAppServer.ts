@@ -77,6 +77,22 @@ export function redactSecrets(text: string, secrets: readonly string[]): string 
   return out
 }
 
+/** Characters kept back when a newline-free stderr run is flushed (longer than any key we pass). */
+const STDERR_CARRY = 1_024
+
+/**
+ * Mask key-like tokens exact-value redaction cannot match (a gateway echoing a key fragment, a token codex holds
+ * itself, an inline MCP value): Bearer tokens, sk-/pk-/rk- keys, and key=value / "key": value pairs whose name
+ * says api key, token, secret or password.
+ */
+export function maskKeyLike(text: string): string {
+  return text
+    .replace(/\bBearer\s+[^\s"',;]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk|pk|rk)-[\w.*-]{3,}/gi, '[redacted]')
+    // Bounded quantifiers keep this linear on long lines.
+    .replace(/((?:api[_-]?key|token|secret|password)[\w-]{0,40}"?\s{0,4}[=:]\s{0,4}"?)[^\s"',;]{4,}/gi, '$1[redacted]')
+}
+
 /** The error text for an app-server that exited: the exit code, then its last stderr lines when there are any. */
 export function codexExitMessage(code: number | null | undefined, tail?: string, during?: string): string {
   const head = `codex app-server exited (code ${code ?? 'unknown'})${during ? ` during ${during}` : ''}`
@@ -148,8 +164,9 @@ export class CodexAppServer {
     const binary = this.options.binary ?? resolveCodexBinary()
     if (!binary) throw new Error('The Codex CLI is not installed for this platform (@openai/codex optional dependency missing).')
     // codex app-server exits 1 at once when CODEX_HOME names a folder that does not exist.
-    const home = this.options.env?.CODEX_HOME?.trim()
-    if (home) mkdirSync(home, { recursive: true })
+    // Owner-only: it holds the ChatGPT login (auth.json). The path is used exactly as the child will see it.
+    const home = this.options.env?.CODEX_HOME
+    if (home?.trim()) mkdirSync(home, { recursive: true, mode: 0o700 })
     const env: Record<string, string | undefined> = { ...process.env, ...this.options.env }
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
     const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
@@ -266,7 +283,7 @@ export class CodexAppServer {
   }
 
   private scrub(line: string): string {
-    return redactSecrets(line, this.secrets())
+    return maskKeyLike(redactSecrets(line, this.secrets()))
   }
 
   /** stderr arrives in chunks that can split a line: complete lines go out, the rest waits for the next chunk. */
@@ -279,9 +296,10 @@ export class CodexAppServer {
       this.pushStderrLine(line)
     }
     // A runaway line without newlines is flushed in pieces so the buffer stays bounded.
+    // The last STDERR_CARRY characters stay buffered so a secret is never cut in two by the flush.
     if (this.stderrBuffer.length > STDERR_TAIL_MAX_CHARS * 4) {
-      this.pushStderrLine(this.stderrBuffer)
-      this.stderrBuffer = ''
+      this.pushStderrLine(this.stderrBuffer.slice(0, -STDERR_CARRY))
+      this.stderrBuffer = this.stderrBuffer.slice(-STDERR_CARRY)
     }
   }
 
