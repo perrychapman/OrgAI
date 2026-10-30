@@ -114,7 +114,7 @@ textarea {
   }
 }
 
-/* Reduced motion: system preference or AppearanceSettings.reduceMotion = 'on' (data-motion on <html>). */
+/* Reduced motion: system preference, or AppearanceSettings.reduceMotion = 'on' (data-reduce-motion on <html>, set by lib/theme.ts). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -125,13 +125,20 @@ textarea {
     scroll-behavior: auto !important;
   }
 }
-[data-motion='reduce'] *,
-[data-motion='reduce'] *::before,
-[data-motion='reduce'] *::after {
+[data-reduce-motion='on'] *,
+[data-reduce-motion='on'] *::before,
+[data-reduce-motion='on'] *::after {
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
   scroll-behavior: auto !important;
+}
+/* Spinners and skeletons stop entirely instead of looping at 0.01ms. */
+[data-reduce-motion='on'] .spin,
+[data-reduce-motion='on'] .icon-btn.spin svg,
+[data-reduce-motion='on'] .skeleton,
+[data-reduce-motion='on'] .save-indicator.is-saving svg {
+  animation: none;
 }
 
 /* Safe-command allowlist on the settings proposal card. */
@@ -152,7 +159,7 @@ textarea {
 /* Unattended (auto permission mode) marker in the live toolbar. */
 .pill.unattended {
   color: var(--ok);
-  border-color: rgba(34, 197, 139, 0.45);
+  border-color: var(--success-border);
 }
 
 /* Agent-to-agent messages: a dashed, animated edge distinct from the reporting lines. */

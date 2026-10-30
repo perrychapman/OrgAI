@@ -17,8 +17,11 @@ export function Button({
   title,
   testId,
   type = 'button',
-  autoFocusDialog
+  autoFocusDialog,
+  ariaLabel
 }: {
+  /** Accessible name when the visible text alone is ambiguous (e.g. repeated "Remove" in a list). */
+  ariaLabel?: string
   variant?: ButtonVariant
   size?: 'sm' | 'md'
   icon?: LucideIcon
@@ -40,6 +43,7 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       title={title}
+      aria-label={ariaLabel}
       onClick={onClick}
       data-testid={testId}
       data-autofocus={autoFocusDialog ? '' : undefined}

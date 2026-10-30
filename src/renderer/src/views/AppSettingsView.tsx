@@ -1,21 +1,63 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
-import type { AppSettings, AppSettingsInfo, PermissionMode } from '@shared/types'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, PermissionMode, ThemeMode } from '@shared/types'
 import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
+import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
+import { setAppearance, normalizeHex } from '../lib/theme'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
+import { Checkbox } from '../components/ui/Checkbox'
 import { CopyButton } from '../components/ui/CopyButton'
+import { Input } from '../components/ui/Input'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { Select } from '../components/ui/Select'
+import { SettingRow } from '../components/ui/SettingRow'
+import { Switch } from '../components/ui/Switch'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
 
+const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
+  { value: 'dark', label: 'Dark' },
+  { value: 'light', label: 'Light' },
+  { value: 'system', label: 'System' }
+]
+const PATTERN_OPTIONS: { value: CanvasPattern; label: string }[] = [
+  { value: 'dots', label: 'Dots' },
+  { value: 'grid', label: 'Grid' },
+  { value: 'none', label: 'None' }
+]
+const EDGE_OPTIONS: { value: CanvasEdgeStyle; label: string }[] = [
+  { value: 'curved', label: 'Curved' },
+  { value: 'orthogonal', label: 'Right-angle' },
+  { value: 'straight', label: 'Straight' }
+]
+const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string }[] = [
+  { value: 'system', label: 'Follow system' },
+  { value: 'on', label: 'Always reduce' }
+]
+/** Accent choices; the first is the default. Any other color can be typed as hex. */
+const ACCENT_SWATCHES: { name: string; hex: string }[] = [
+  { name: 'Violet', hex: DEFAULT_APPEARANCE.accent },
+  { name: 'Blue', hex: '#3b82f6' },
+  { name: 'Teal', hex: '#14b8a6' },
+  { name: 'Green', hex: '#22a559' },
+  { name: 'Amber', hex: '#d98e04' },
+  { name: 'Rose', hex: '#e5486a' }
+]
+
+function stripInfo(info: AppSettingsInfo): AppSettings {
+  const { dataDir: _dataDir, appVersion: _appVersion, ...settings } = info
+  return settings
+}
+
 export default function AppSettingsView(): ReactElement {
   const [info, setInfo] = useState<AppSettingsInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [hexDraft, setHexDraft] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
@@ -29,6 +71,10 @@ export default function AppSettingsView(): ReactElement {
       .get()
       .then(setInfo)
       .catch((e: Error) => setError(e.message))
+    // Another window or the sidebar mirror changed a setting: follow it unless we have an unsaved edit.
+    return window.orgai.onSettingsChanged((s) => {
+      if (!pending.current) setInfo(s)
+    })
   }, [])
 
   const flush = async (): Promise<void> => {
@@ -37,8 +83,7 @@ export default function AppSettingsView(): ReactElement {
     timer.current = null
     if (!next) return
     try {
-      const result = await window.orgai.settings.set(next)
-      useAppStore.getState().setSaveStatus({ state: 'saved', at: Date.now() })
+      const result = await useAppStore.getState().trackSave(() => window.orgai.settings.set(next))
       setError(null)
       if (!pending.current) setInfo(result)
       // The auth pill depends on the global provider auth.
@@ -46,7 +91,6 @@ export default function AppSettingsView(): ReactElement {
       useAppStore.setState({ auth })
     } catch (e) {
       setError((e as Error).message)
-      useAppStore.getState().setSaveStatus({ state: 'error', at: Date.now(), message: (e as Error).message })
     }
   }
 
@@ -67,31 +111,40 @@ export default function AppSettingsView(): ReactElement {
         <div className="topbar">
           <h1>Settings</h1>
         </div>
-        <div style={{ padding: 24, color: error ? 'var(--danger)' : 'var(--text-faint)' }}>{error ?? 'Loading…'}</div>
+        <div className={`settings-loading${error ? ' is-error' : ''}`}>{error ?? 'Loading…'}</div>
       </>
     )
   }
 
-  const patch = (p: Partial<AppSettings>): void => {
-    const { dataDir: _dataDir, ...current } = info
-    const next: AppSettings = { ...current, ...p }
-    setInfo({ ...next, dataDir: info.dataDir })
+  /** Queue a save. `immediate` skips the debounce (switches, segmented choices, the theme). */
+  const patch = (p: Partial<AppSettings>, immediate = false): void => {
+    const next: AppSettings = { ...stripInfo(info), ...p }
+    setInfo({ ...next, dataDir: info.dataDir, appVersion: info.appVersion })
     useAppStore.getState().setSaveStatus({ state: 'saving' })
     pending.current = next
     if (timer.current) clearTimeout(timer.current)
-    timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
+    if (immediate) void flush()
+    else timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
   }
 
-  const modelSelect = (value: string, onChange: (v: string) => void, allowInherit: boolean): ReactElement => (
-    <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
-      {CLAUDE_MODEL_OPTIONS.filter((m) => allowInherit || m.value !== 'inherit').map((m) => (
-        <option key={m.value} value={m.value}>
-          {m.label} · {m.hint}
-        </option>
-      ))}
-      {!CLAUDE_MODEL_OPTIONS.some((m) => m.value === value) && <option value={value}>{value}</option>}
-    </select>
-  )
+  const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
+  const patchAppearance = (p: Partial<AppearanceSettings>, canvas?: Partial<AppearanceSettings['canvas']>): void => {
+    const next: AppearanceSettings = { ...appearance, ...p, canvas: { ...appearance.canvas, ...canvas } }
+    setAppearance(next)
+    patch({ appearance: next }, true)
+  }
+
+  const hexValue = hexDraft ?? appearance.accent
+  const hexOk = normalizeHex(hexValue) !== null
+  const setAccent = (hex: string): void => {
+    setHexDraft(null)
+    patchAppearance({ accent: hex })
+  }
+
+  const modelOptions = (value: string, allowInherit: boolean): { value: string; label: string }[] => {
+    const list = CLAUDE_MODEL_OPTIONS.filter((m) => allowInherit || m.value !== 'inherit').map((m) => ({ value: m.value, label: `${m.label} · ${m.hint}` }))
+    return CLAUDE_MODEL_OPTIONS.some((m) => m.value === value) ? list : [...list, { value, label: value }]
+  }
 
   return (
     <>
@@ -100,138 +153,220 @@ export default function AppSettingsView(): ReactElement {
         <div className="spacer" />
         <SaveIndicator />
       </div>
-      <div style={{ padding: 'var(--space-6)', overflow: 'auto', flex: 1, minHeight: 0 }}>
+      <div className="settings-scroll">
         <div className="settings-col">
+          {error && (
+            <p className="field-error" role="alert">
+              {error}
+            </p>
+          )}
           <ConnectionsPanel />
 
-          <div className="side-section-title" style={{ margin: '0 0 10px' }}>
-            Defaults for new projects
-          </div>
-          <div className="grid-2">
-            <div className="field">
-              <label>Orchestrator model</label>
-              {modelSelect(info.defaultRootModel, (defaultRootModel) => patch({ defaultRootModel }), false)}
+          <section className="settings-section" aria-labelledby="appearance-title" data-testid="appearance-section">
+            <div className="section-head">
+              <div>
+                <h2 id="appearance-title">Appearance</h2>
+                <p>Changes apply right away.</p>
+              </div>
             </div>
+            <SettingRow
+              title="Theme"
+              description="System follows your operating system."
+              control={<SegmentedControl label="Theme" value={appearance.theme} options={THEME_OPTIONS} onChange={(theme) => patchAppearance({ theme })} />}
+            />
             <div className="field">
-              <label>Report model</label>
-              {modelSelect(info.defaultReportModel, (defaultReportModel) => patch({ defaultReportModel }), true)}
-            </div>
-            <div className="field">
-              <label>Permission mode</label>
-              <select
-                className="select"
-                value={info.defaultPermissionMode}
-                onChange={(e) => patch({ defaultPermissionMode: e.target.value as PermissionMode })}
-              >
-                {PERMISSION_MODE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
+              <label htmlFor="accent-hex">Accent color</label>
+              <div className="swatches" role="group" aria-label="Accent color presets">
+                {ACCENT_SWATCHES.map((s) => (
+                  <button
+                    key={s.hex}
+                    type="button"
+                    className="swatch"
+                    style={{ '--swatch': s.hex } as CSSProperties}
+                    aria-label={s.name}
+                    title={s.name}
+                    aria-pressed={appearance.accent === s.hex}
+                    onClick={() => setAccent(s.hex)}
+                  />
                 ))}
-              </select>
+              </div>
+              <Input
+                id="accent-hex"
+                mono
+                value={hexValue}
+                invalid={!hexOk}
+                aria-describedby={hexOk ? undefined : 'accent-hex-error'}
+                maxLength={7}
+                spellCheck={false}
+                onChange={(v) => {
+                  setHexDraft(v)
+                  const hex = normalizeHex(v)
+                  if (hex && hex !== appearance.accent) patchAppearance({ accent: hex })
+                }}
+                onBlur={() => setHexDraft(null)}
+              />
+              {!hexOk && (
+                <span className="field-error" id="accent-hex-error">
+                  Use six hex digits, like #7c5cff.
+                </span>
+              )}
             </div>
             <div className="field">
-              <label>Estimated-cost cap per run (API-equivalent USD)</label>
-              <input
-                className="input"
-                type="number"
-                min={0}
-                step={0.5}
-                value={info.defaultMaxBudgetUsd ?? ''}
-                onChange={(e) => patch({ defaultMaxBudgetUsd: e.target.value && Number(e.target.value) > 0 ? Number(e.target.value) : undefined })}
-                placeholder="No cap"
-              />
+              <label>Canvas pattern</label>
+              <SegmentedControl label="Canvas pattern" value={appearance.canvas.pattern} options={PATTERN_OPTIONS} onChange={(pattern) => patchAppearance({}, { pattern })} />
             </div>
             <div className="field">
-              <label>Runs to keep</label>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={5000}
-                value={info.defaultKeepRuns}
-                onChange={(e) => patch({ defaultKeepRuns: Math.max(1, Number(e.target.value) || DEFAULT_KEEP_RUNS) })}
-              />
+              <label>Connection lines</label>
+              <SegmentedControl label="Connection lines" value={appearance.canvas.edges} options={EDGE_OPTIONS} onChange={(edges) => patchAppearance({}, { edges })} />
             </div>
-          </div>
-          <div className="field">
-            <label>Parallel work</label>
-            <label className={`check ${info.defaultIsolateWriters ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
-              <input type="checkbox" checked={info.defaultIsolateWriters} onChange={(e) => patch({ defaultIsolateWriters: e.target.checked })} /> Isolate
-              writing reports in git worktrees
-            </label>
-          </div>
-          <div className="field">
-            <label>Unattended execution</label>
-            <label className={`check ${info.defaultAutoContinue ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
-              <input type="checkbox" checked={info.defaultAutoContinue} onChange={(e) => patch({ defaultAutoContinue: e.target.checked })} /> Keep the
-              orchestrator going until the plan is complete
-            </label>
-            <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
-              <span>Max automatic continues per run</span>
-              <input
-                className="input"
+            <SettingRow
+              title="Tint the canvas with the accent"
+              control={<Switch checked={appearance.canvas.tint} label="Tint the canvas with the accent" onChange={(tint) => patchAppearance({}, { tint })} />}
+            />
+            <SettingRow
+              title="Show the minimap"
+              control={<Switch checked={appearance.canvas.minimap} label="Show the minimap" onChange={(minimap) => patchAppearance({}, { minimap })} />}
+            />
+            <div className="field">
+              <label>Motion</label>
+              <SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />
+            </div>
+          </section>
+
+          <section className="settings-section" aria-labelledby="defaults-title">
+            <div className="section-head">
+              <div>
+                <h2 id="defaults-title">Defaults for new projects</h2>
+                <p>Used when you create a project. Existing projects keep their own settings, which you change in the project&apos;s settings.</p>
+              </div>
+            </div>
+            <div className="grid-2">
+              <div className="field">
+                <label htmlFor="def-root-model">Orchestrator model</label>
+                <Select id="def-root-model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />
+              </div>
+              <div className="field">
+                <label htmlFor="def-report-model">Report model</label>
+                <Select id="def-report-model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />
+              </div>
+              <div className="field">
+                <label htmlFor="def-permission">Permission mode</label>
+                <Select
+                  id="def-permission"
+                  value={info.defaultPermissionMode}
+                  options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                  onChange={(v) => patch({ defaultPermissionMode: v as PermissionMode })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="def-budget">Estimated cost cap per run (API-equivalent USD)</label>
+                <Input
+                  id="def-budget"
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={info.defaultMaxBudgetUsd ?? ''}
+                  placeholder="No cap"
+                  onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="def-keep">Runs to keep</label>
+                <Input
+                  id="def-keep"
+                  type="number"
+                  min={1}
+                  max={5000}
+                  value={info.defaultKeepRuns}
+                  onChange={(v) => patch({ defaultKeepRuns: Math.max(1, Number(v) || DEFAULT_KEEP_RUNS) })}
+                />
+              </div>
+            </div>
+            <Checkbox
+              checked={info.defaultIsolateWriters}
+              onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })}
+              label="Isolate writing reports in git worktrees"
+              description="Parallel work"
+            />
+            <Checkbox
+              checked={info.defaultAutoContinue}
+              onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })}
+              label="Keep the orchestrator going until the plan is complete"
+              description="Unattended execution"
+            />
+            <div className="field">
+              <label htmlFor="def-continues">Max automatic continues per run</label>
+              <Input
+                id="def-continues"
                 type="number"
                 min={0}
                 max={MAX_AUTO_CONTINUES_LIMIT}
-                style={{ width: 90 }}
                 value={info.defaultMaxAutoContinues}
-                onChange={(e) => {
-                  const v = Number(e.target.value)
-                  patch({ defaultMaxAutoContinues: Number.isFinite(v) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(v))) : DEFAULT_MAX_AUTO_CONTINUES })
+                onChange={(v) => {
+                  const n = Number(v)
+                  patch({ defaultMaxAutoContinues: Number.isFinite(n) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(n))) : DEFAULT_MAX_AUTO_CONTINUES })
                 }}
               />
             </div>
-          </div>
-          <div className="field">
-            <label>Subscription limits</label>
-            <label className={`check ${info.defaultPreferSonnetNearLimit ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
-              <input
-                type="checkbox"
-                checked={info.defaultPreferSonnetNearLimit}
-                onChange={(e) => patch({ defaultPreferSonnetNearLimit: e.target.checked })}
-              />{' '}
-              Prefer Sonnet for new reports when the Opus weekly window is above the threshold
-            </label>
-          </div>
-          <p className="muted">These apply when a project is created. Existing projects keep their own settings.</p>
-
-          <div className="side-section-title" style={{ margin: '0 0 10px' }}>
-            Usage
-          </div>
-          <div className="field">
-            <label>Opus weekly threshold (%)</label>
-            <input
-              className="input"
-              type="number"
-              min={1}
-              max={100}
-              style={{ maxWidth: 160 }}
-              value={info.opusGuardThreshold}
-              onChange={(e) => {
-                const v = Number(e.target.value)
-                if (Number.isFinite(v) && v >= 1 && v <= 100) patch({ opusGuardThreshold: v })
-              }}
+            <Checkbox
+              checked={info.defaultPreferSonnetNearLimit}
+              onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
+              label="Prefer Sonnet for new reports when the Opus weekly window is above the threshold"
+              description="Subscription limits"
             />
-            <span className="hint">
-              Projects that prefer Sonnet near the limit spawn Opus reports on Sonnet once the Opus weekly window (or the seven-day window) reaches this.
-            </span>
-          </div>
+          </section>
 
-          <div className="side-section-title" style={{ margin: '0 0 10px' }}>
-            App
-          </div>
-          <div className="field">
-            <label>Notifications</label>
-            <label className={`check ${info.notifications !== false ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
-              <input type="checkbox" checked={info.notifications !== false} onChange={(e) => patch({ notifications: e.target.checked })} /> Notify me
-              when a run needs attention or finishes
-            </label>
-          </div>
+          <section className="settings-section" aria-labelledby="usage-title">
+            <div className="section-head">
+              <div>
+                <h2 id="usage-title">Usage</h2>
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="opus-threshold">Opus weekly threshold (%)</label>
+              <Input
+                id="opus-threshold"
+                type="number"
+                min={1}
+                max={100}
+                value={info.opusGuardThreshold}
+                onChange={(v) => {
+                  const n = Number(v)
+                  if (Number.isFinite(n) && n >= 1 && n <= 100) patch({ opusGuardThreshold: n })
+                }}
+              />
+              <span className="hint">
+                Projects that prefer Sonnet near the limit spawn Opus reports on Sonnet once the Opus weekly window (or the seven-day window) reaches this.
+              </span>
+            </div>
+          </section>
+
+          <section className="settings-section" aria-labelledby="notify-title">
+            <div className="section-head">
+              <div>
+                <h2 id="notify-title">Notifications</h2>
+              </div>
+            </div>
+            <SettingRow
+              title="Notify me when a run needs attention or finishes"
+              description="Shown by your operating system while OrgAI is in the background."
+              control={
+                <Switch
+                  checked={info.notifications !== false}
+                  label="Notify me when a run needs attention or finishes"
+                  testId="notifications-switch"
+                  onChange={(notifications) => patch({ notifications }, true)}
+                />
+              }
+            />
+          </section>
+
           {appInfo && (
-            <section data-testid="about-block" aria-labelledby="about-title">
-              <div className="side-section-title" id="about-title" style={{ margin: '18px 0 10px' }}>
-                About
+            <section className="settings-section" data-testid="about-block" aria-labelledby="about-title">
+              <div className="section-head">
+                <div>
+                  <h2 id="about-title">About</h2>
+                </div>
               </div>
               {appInfo.mockAdapter && (
                 <p>

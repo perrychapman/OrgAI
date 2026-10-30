@@ -7,6 +7,8 @@ import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
+import { Input } from '../ui/Input'
+import { SegmentedControl } from '../ui/SegmentedControl'
 import { FAMILY_LABEL, formatContext, groupByFamily } from '../../lib/remap'
 
 type Filter = 'all' | ModelFamily
@@ -73,26 +75,23 @@ export default function ModelList({
               <div className="model-tools">
                 <div className="search-field">
                   <Icon icon={Search} size="sm" />
-                  <input
+                  <Input
                     type="search"
-                    className="input"
                     aria-label="Search models"
                     placeholder="Search models"
                     value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    onChange={setQuery}
                     onKeyDown={(e) => {
                       if (e.key === 'Escape') setQuery('')
                     }}
                   />
                 </div>
-                <div className="seg" role="radiogroup" aria-label="Filter models by family">
-                  {(['all', 'claude', 'openai', 'other'] as Filter[]).map((f) => (
-                    <label key={f} className={`seg-item ${filter === f ? 'on' : ''}`}>
-                      <input type="radio" name={`${listId}-f`} checked={filter === f} onChange={() => setFilter(f)} />
-                      {f === 'all' ? 'All' : FAMILY_LABEL[f]} <span className="tabular">{counts[f]}</span>
-                    </label>
-                  ))}
-                </div>
+                <SegmentedControl
+                  label="Filter models by family"
+                  value={filter}
+                  options={(['all', 'claude', 'openai', 'other'] as Filter[]).map((f) => ({ value: f, label: `${f === 'all' ? 'All' : FAMILY_LABEL[f]} ${counts[f]}` }))}
+                  onChange={setFilter}
+                />
               </div>
               {filtered.length === 0 ? (
                 <div className="empty-inline">

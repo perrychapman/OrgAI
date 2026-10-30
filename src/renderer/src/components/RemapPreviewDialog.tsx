@@ -51,6 +51,11 @@ export default function RemapPreviewDialog({
         </>
       }
     >
+      {confirmDisabled && disabledReason && (
+        <Banner tone="warning" title="Not available yet">
+          {disabledReason}
+        </Banner>
+      )}
       {error && (
         <Banner tone="danger" title="Could not apply">
           {error}
