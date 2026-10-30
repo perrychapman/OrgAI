@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
-import { PANEL_W, PANEL_WIDE_PX, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
+import { PANEL_W, nextWide, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
 import { ResizeHandle } from './ResizeHandle'
 
 const PREF_PREFIX = 'orgai.sidePanel.'
@@ -108,7 +108,13 @@ export function SidePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoCollapseBelow, persistKey])
   // Parent grids can restyle for a wide panel (the Live view moves the composer into the panel column).
-  const wide = !(collapsible && (collapsed || !budget.fits)) && sizes.panel >= PANEL_WIDE_PX
+  // Hysteresis (wide at 480+, narrow again below 448) so a drag across the threshold does not flicker the layout.
+  const [wasWide, setWasWide] = useState(false)
+  const railed = collapsible && (collapsed || !budget.fits)
+  const wide = !railed && nextWide(wasWide, sizes.panel)
+  useEffect(() => {
+    setWasWide(wide)
+  }, [wide])
   useLayoutEffect(() => {
     const parent = ref.current?.parentElement
     if (!parent) return undefined

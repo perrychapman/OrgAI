@@ -511,9 +511,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (!el || typeof ResizeObserver === 'undefined') return
     let t: ReturnType<typeof setTimeout> | undefined
     let first = true
+    const parent = el.closest('.run-body')
+    let wide = parent?.getAttribute('data-side-wide') === 'true'
     const ro = new ResizeObserver(() => {
       if (first) {
         first = false
+        return
+      }
+      // A wide/narrow panel layout switch moves the composer; it must not re-zoom the chart.
+      const nowWide = parent?.getAttribute('data-side-wide') === 'true'
+      if (nowWide !== wide) {
+        wide = nowWide
         return
       }
       clearTimeout(t)
@@ -649,7 +657,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             <div className="frame-toolbar-end">
               {agents.length > 1 && (
                 <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
-                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" />
+                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" title="Hide finished agents" />
                   <span className="fold-label" aria-hidden="true">
                     <span className="fold-long">Hide finished agents</span>
                     <span className="fold-short">Hide finished</span>
