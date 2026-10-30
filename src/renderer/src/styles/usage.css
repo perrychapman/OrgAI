@@ -86,3 +86,23 @@
 .usage-stale {
   color: var(--warning-text);
 }
+.usage-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.usage-section + .usage-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-2);
+}
+.usage-section-title {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  font-weight: 500;
+}
+.usage-plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

@@ -17,6 +17,8 @@ import { SegmentedControl } from '../ui/SegmentedControl'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { relativeTime } from '../../lib/remap'
 import ModelList from './ModelList'
+import { spendText } from '../../lib/usage'
+import { formatUntil } from '../../lib/layout'
 import TierEditor from './TierEditor'
 
 const META: Record<ConnectionId, { name: string; icon: typeof Bot; hint: string }> = {
@@ -144,20 +146,22 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
     }
   }
 
+  const spend = useAppStore((s) => (id === 'litellm' && info.connection.enabled ? s.usageByConnection.litellm?.spend : undefined))
+  const spendLine = spend ? `Key spend ${spendText(spend)}${spend.resetsAt && spend.resetsAt > Date.now() ? ` · resets in ${formatUntil(spend.resetsAt)}` : ''}` : ''
   const detail = useMemo(() => {
     if (state === 'connected') {
       // One-line summary: auth kind, model count, freshness.
       const conn = info.connection as AnthropicConnection | OpenAIConnection | LiteLLMConnection
       const auth = id === 'litellm' ? 'Proxy key' : (conn as AnthropicConnection).auth.kind === 'apiKey' ? 'API key' : id === 'anthropic' ? 'Claude Code login' : 'ChatGPT sign-in'
       const when = relativeTime(info.status.checkedAt)
-      return [info.status.account, auth, models ? `${models.length} models` : '', when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
+      return [info.status.account, auth, models ? `${models.length} models` : '', spendLine, when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
     }
     if (state === 'connecting') return info.status.detail ?? (id === 'litellm' ? 'Testing the proxy' : 'Waiting for the browser sign-in')
     if (state === 'error') return info.status.detail ?? 'Something went wrong.'
     const usesKey = (info.connection as AnthropicConnection | OpenAIConnection).auth?.kind === 'apiKey'
     if (usesKey && info.status.detail) return `Not connected: ${info.status.detail}`
     return info.status.detail ?? meta.hint
-  }, [state, info.status, info.connection, id, meta.hint, models])
+  }, [state, info.status, info.connection, id, meta.hint, models, spendLine])
 
   return (
     <section ref={card} className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>

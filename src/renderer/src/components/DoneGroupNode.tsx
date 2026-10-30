@@ -5,7 +5,7 @@ import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { MSG_IN, MSG_OUT } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
 import { IconButton } from './ui/IconButton'
-import { formatCost } from '../lib/layout'
+import { useCostLabel } from '../lib/useCostLabel'
 
 /**
  * One compact node standing in for every finished report under a parent, so the canvas
@@ -27,7 +27,8 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
   const { agents, color, parentId, onToggle } = data
   const failed = agents.filter((a) => a.state === 'error').length
   const done = agents.length - failed
-  const cost = agents.reduce((sum, a) => sum + (a.costUsd || 0), 0)
+  const labelCost = useCostLabel()
+  const cost = labelCost(agents.reduce((sum, a) => sum + (a.costUsd || 0), 0))
   const conflicts = agents.filter((a) => a.worktree?.status === 'conflict' || a.worktree?.status === 'held').length
   const names = agents
     .slice(0, 4)
@@ -45,7 +46,7 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
         </span>
         {failed > 0 && <span className="done-failed">{failed} failed</span>}
         {conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
-        {cost > 0 && <span className="done-cost">{formatCost(cost)}</span>}
+        {!cost.hidden && <span className="done-cost" title={cost.title}>{cost.text}</span>}
       </div>
       <span className="done-expand" onClick={(e) => e.stopPropagation()}>
         <IconButton icon={ChevronDown} size="sm" label="Show these reports on the chart" onClick={() => onToggle(parentId)} />
