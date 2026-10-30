@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { MockAdapter, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage } from './types'
@@ -107,6 +107,56 @@ describe('mock adapter MCP and connection recording', () => {
     expect(ctx.requestQuestion).toHaveBeenCalled()
     expect(session.harnessMessages).toEqual([])
     expect(ctx.events.some((e) => e.type === 'log' && /unknown harness tool/.test(e.message))).toBe(false)
+  })
+})
+
+describe('mock adapter harness transcript rows', () => {
+  const systemEntries = (events: RunEvent[]) =>
+    events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'system' ? [e.entry] : []))
+  const waitFor = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
+  }
+
+  it('records a nudge as a harness row with the summary as text and the full instruction as detail', async () => {
+    const ctx = fakeCtx({ autoContinue: true, continuationDelayMs: 1 })
+    const session = (await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'text', text: 'First part done.' }] } }).start(ctx)) as MockSession
+    await waitFor(() => session.harnessMessages.length > 0)
+    await session.stop()
+    await session.finished
+    const full = session.harnessMessages[0]
+    expect(full).toBeTruthy()
+    const row = systemEntries(ctx.events).find((e) => e.block.kind === 'system' && e.block.detail === full)
+    expect(row?.source).toBe('harness')
+    const text = (row?.block as { text: string }).text
+    expect(text).not.toBe(full)
+    expect(text.length).toBeLessThan(full.length)
+  })
+
+  it('marks tellUser lines as harness rows', async () => {
+    const ctx = fakeCtx({ autoContinue: true, maxAutoContinues: 0, continuationDelayMs: 1 })
+    const session = await new MockAdapter({
+      script: { delayMs: 0, work: [{ type: 'plan', goal: 'G', steps: ['A', 'B'] }, { type: 'text', text: 'Step one.' }] }
+    }).start(ctx)
+    await waitFor(() => systemEntries(ctx.events).length > 0)
+    await session.stop()
+    await session.finished
+    const rows = systemEntries(ctx.events)
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every((e) => e.source === 'harness')).toBe(true)
+    expect(rows.some((e) => !('detail' in e.block))).toBe(true)
+  })
+})
+
+describe('mock adapter default MCP-assist script', () => {
+  it('produces an mcpServers proposal that passes validation', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+    expect(ctx.requestProposal).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(ctx.requestProposal).mock.calls[0][0].kind).toBe('mcpServers')
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && /not acceptable/.test(String(e.entry.block.content)))).toBe(false)
   })
 })
 

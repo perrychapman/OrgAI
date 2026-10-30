@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
+  AppSettingsInfo,
   ConnectionEvent,
   ContinueRunInput,
   DraftRequest,
@@ -22,6 +23,7 @@ const api: OrgAIApi = {
     save: (project: Project) => ipcRenderer.invoke(IPC.projectsSave, project),
     remove: (id: string) => ipcRenderer.invoke(IPC.projectsRemove, id),
     pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
+    checkPath: (path: string) => ipcRenderer.invoke(IPC.projectsCheckPath, path),
     remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input),
     previewRemap: (input) => ipcRenderer.invoke(IPC.projectsPreviewRemap, input)
   },
@@ -111,6 +113,11 @@ const api: OrgAIApi = {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
     set: (s: AppSettings) => ipcRenderer.invoke(IPC.settingsSet, s)
   },
+  onSettingsChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, settings: AppSettingsInfo): void => cb(settings)
+    ipcRenderer.on(IPC.settingsChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.settingsChanged, listener)
+  },
   app: {
     openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path),
     openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
@@ -126,6 +133,7 @@ const api: OrgAIApi = {
     refresh: () => ipcRenderer.invoke(IPC.usageRefresh)
   },
   notifications: {
+    /** @deprecated Mirrors into AppSettings.notifications; removed with NotificationsToggle in phase 1. */
     setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
   }
 }

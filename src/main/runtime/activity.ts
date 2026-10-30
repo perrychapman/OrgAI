@@ -1,5 +1,6 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
+import type { AgentInstance, AgentState, RunStatus } from '@shared/types'
 import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
@@ -95,4 +96,41 @@ export function describeTool(name: string, input: unknown, opts: { harness?: boo
     default:
       return `Using ${name}`
   }
+}
+
+// ---------- Terminal labels ----------
+
+/** How a run ended, for agent labels: one vocabulary with the run strip (Finished, Stopped, Failed). */
+export type RunOutcome = 'finished' | 'stopped' | 'failed'
+
+export const TERMINAL_ACTIVITY: Record<RunOutcome, string> = { finished: 'Finished', stopped: 'Stopped', failed: 'Failed' }
+
+/** The outcome of a terminal run.status, or null while the run lives (and for 'paused', which continues later). */
+export function runOutcome(status: RunStatus, userStopped: boolean): RunOutcome | null {
+  if (status === 'error') return 'failed'
+  if (status === 'finished') return userStopped ? 'stopped' : 'finished'
+  return null
+}
+
+/** Still working (not done, not error). */
+export const isLiveAgent = (a: Pick<AgentInstance, 'state'>): boolean => a.state !== 'done' && a.state !== 'error'
+const live = isLiveAgent
+
+/**
+ * How an agent should read once its run ended, so no node keeps saying "Waiting for you" or "Needs approval".
+ * The root always takes the run's label. A report that was cut off (`cutOff`: it was still live when the run
+ * ended, as the caller tracks it; a live `agent` always counts) reads Stopped, or Failed on a failed run; reports
+ * that had already finished keep their own label ("Reported back"). Live states become done (error on a failed
+ * run). Returns the same object when nothing changes.
+ */
+export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunOutcome, rootId: string): AgentInstance {
+  // The label check covers adapters that mark agents done before the terminal status (Codex).
+  const wasLive = cutOff || live(agent) || /^(Needs approval|Waiting for you)/.test(agent.activity)
+  let activity = agent.activity
+  if (agent.id === rootId) activity = TERMINAL_ACTIVITY[outcome]
+  else if (wasLive) activity = outcome === 'failed' ? TERMINAL_ACTIVITY.failed : TERMINAL_ACTIVITY.stopped
+  const state: AgentState = live(agent) ? (outcome === 'failed' ? 'error' : 'done') : agent.state
+  if (activity === agent.activity && state === agent.state) return agent
+  const endedAt = agent.endedAt ?? (state !== agent.state ? Date.now() : undefined)
+  return { ...agent, activity, state, ...(endedAt !== undefined ? { endedAt } : {}) }
 }

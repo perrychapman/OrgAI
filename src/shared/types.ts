@@ -696,6 +696,31 @@ export const RUN_PEER_PROMPT_CHARS = 120
 
 // ---------- App settings (global) ----------
 
+/** 'system' follows the OS (Electron nativeTheme); the renderer resolves it with matchMedia('(prefers-color-scheme: dark)'). */
+export type ThemeMode = 'dark' | 'light' | 'system'
+export const THEME_MODES: readonly ThemeMode[] = ['dark', 'light', 'system']
+export type CanvasPattern = 'dots' | 'grid' | 'none'
+export const CANVAS_PATTERNS: readonly CanvasPattern[] = ['dots', 'grid', 'none']
+export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
+export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
+
+/** App-wide look. Main applies `theme` to nativeTheme.themeSource at startup and on every settings:set. */
+export interface AppearanceSettings {
+  /** Default 'dark' until the light theme is signed off (docs/design/plan.md section 2). */
+  theme: ThemeMode
+  /** Accent color '#rrggbb' (lowercase). Default '#7c5cff'. */
+  accent: string
+  canvas: {
+    pattern: CanvasPattern
+    /** Tint the canvas background with the accent. */
+    tint: boolean
+    edges: CanvasEdgeStyle
+    minimap: boolean
+  }
+  /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
+  reduceMotion: 'system' | 'on'
+}
+
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
 export interface AppSettings {
   defaultPermissionMode: PermissionMode
@@ -714,7 +739,13 @@ export interface AppSettings {
   connections: ProviderConnections
   /** Connection new projects use. Default 'anthropic'. */
   defaultConnection: ConnectionId
+  /**
+   * OS attention notifications on or off. The single source of truth: the main process reads it every time it
+   * decides to notify. Default true.
+   */
   notifications?: boolean
+  /** Theme, accent, canvas and motion. Filled with defaults for settings saved before it existed. */
+  appearance: AppearanceSettings
   /** Weekly-window utilization (percent) above which projects that prefer Sonnet steer Opus spawns to Sonnet. */
   opusGuardThreshold: number
   /** preferSonnetNearLimit for new projects. */
@@ -725,8 +756,15 @@ export interface AppSettings {
   defaultMaxAutoContinues: number
 }
 
-/** What settings:get returns: the settings plus read-only facts about the install. */
-export type AppSettingsInfo = AppSettings & { dataDir: string }
+/**
+ * What settings:get, settings:set and the settings:changed push return: the settings plus read-only facts
+ * about the install. The main process ignores these extra fields when they are echoed back.
+ */
+export type AppSettingsInfo = AppSettings & {
+  dataDir: string
+  /** app.getVersion(). Always filled by main; optional only so renderer code that rebuilds the object compiles. */
+  appVersion?: string
+}
 
 /** Result of auth:status, shown as the sidebar pill. */
 export interface AuthStatusResult {
@@ -1006,13 +1044,23 @@ export type TranscriptBlock =
   | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
   /** `text` may be empty when the message is only images. */
   | { kind: 'user'; text: string; images?: ImageAttachment[] }
-  | { kind: 'system'; text: string }
+  /**
+   * A line from the harness. `text` is what the user reads. `detail`, when present, is the full text the
+   * harness sent to the agent (for example the complete continuation instruction); show it behind a disclosure.
+   */
+  | { kind: 'system'; text: string; detail?: string }
 
 export interface TranscriptEntry {
   id: string
   agentId: string
   at: number
   block: TranscriptBlock
+  /**
+   * 'harness': the harness wrote this entry (a continuation nudge, a report hand-off or a notice it sent to the
+   * orchestrator, a limit notice), not the user or a model. Render it as a system row, outside the reading flow.
+   * Absent on everything else and on records saved before it existed.
+   */
+  source?: 'harness'
 }
 
 /** 'paused': the session ended on a subscription usage limit; it can resume when the window resets. */
@@ -1240,18 +1288,23 @@ export type RunEvent =
   /** Text the agent is streaming right now; '' clears it once the completed message lands. Never persisted. */
   | { type: 'agent.partial'; runId: string; agentId: string; text: string }
   | { type: 'permission.request'; runId: string; request: PermissionRequest }
-  | { type: 'permission.resolved'; runId: string; requestId: string }
+  /**
+   * The card is answered or gone. `cancelled`: the run ended (finished, stopped, failed or paused) before the
+   * user answered; the same flag is on every *.resolved event. RunManager emits these for every pending item
+   * before the terminal run.status, so no card outlives its run.
+   */
+  | { type: 'permission.resolved'; runId: string; requestId: string; cancelled?: true }
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
-  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision }
+  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
   | { type: 'question.request'; runId: string; question: UserQuestion }
-  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer }
+  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true }
   /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */
   | { type: 'rules.request'; runId: string; request: PermissionRuleRequest }
-  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision }
+  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision; cancelled?: true }
   | { type: 'merge.request'; runId: string; review: MergeReview }
-  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision }
+  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision; cancelled?: true }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
   /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
@@ -1281,7 +1334,7 @@ export type RunEvent =
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
-  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome }
+  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome; cancelled?: true }
 
 /**
  * Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked, and of
@@ -1330,6 +1383,31 @@ export interface DraftResult {
 
 // ---------- IPC surface ----------
 
+/** projects:create. Omit setupKind to skip AI setup and start with the default roles. */
+export interface ProjectCreateInput {
+  name: string
+  path: string
+  brief: string
+  setupKind?: SetupKind
+  /**
+   * Run the project on the scripted, token-free mock adapter (provider.id 'mock'). Only accepted when
+   * AppInfo.mockAdapter is true (ORGAI_MOCK=1); otherwise projects:create rejects.
+   */
+  mock?: boolean
+}
+
+/** projects:checkPath. Never rejects; an empty or unreadable path reports exists false. */
+export interface ProjectPathCheck {
+  exists: boolean
+  isDirectory: boolean
+  /** The folder itself holds a .git directory or file (a repository root or a worktree). */
+  isGitRepo: boolean
+  /** The folder's last path segment, '' for a drive root or an empty path. */
+  suggestedName: string
+  /** An existing directory with no entries at all. False when it does not exist. */
+  empty: boolean
+}
+
 /** runs:start. `scaffold` marks a new project's first build run so the setup banner can step aside. */
 export interface StartRunInput {
   projectId: string
@@ -1359,8 +1437,14 @@ export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
     get(id: string): Promise<Project | null>
-    /** Omit setupKind to skip AI setup and start with the default roles. */
-    create(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Promise<Project>
+    /**
+     * Omit setupKind to skip AI setup and start with the default roles. Rejects with a readable message when the
+     * path is empty, names a file, or (setupKind 'existing') does not exist; and when `mock` is set without the
+     * mock adapter.
+     */
+    create(input: ProjectCreateInput): Promise<Project>
+    /** What is at `path` right now, for validating the New project form. Never rejects. */
+    checkPath(path: string): Promise<ProjectPathCheck>
     save(project: Project): Promise<Project>
     remove(id: string): Promise<void>
     pickDirectory(): Promise<string | null>
@@ -1501,7 +1585,10 @@ export interface OrgAIApi {
     refresh(): Promise<UsageStatus | null>
   }
   notifications: {
-    /** Global on/off for OS attention notifications. The renderer persists the choice. */
+    /**
+     * @deprecated Phase 1 removes it with NotificationsToggle. Mirrors into AppSettings.notifications (saved,
+     * then broadcast as settings:changed); use settings.set instead.
+     */
     setEnabled(enabled: boolean): Promise<void>
   }
   auth: {
@@ -1509,8 +1596,14 @@ export interface OrgAIApi {
   }
   settings: {
     get(): Promise<AppSettingsInfo>
+    /** Save. Main applies appearance.theme to nativeTheme, re-reads notifications and broadcasts settings:changed. */
     set(s: AppSettings): Promise<AppSettingsInfo>
   }
+  /**
+   * The saved settings changed (settings:set from any window, the deprecated notifications mirror). Returns an
+   * unsubscribe function.
+   */
+  onSettingsChanged(cb: (settings: AppSettingsInfo) => void): () => void
   app: {
     /** Open a file or folder with the OS default handler. Resolves to an error message, or '' on success. */
     openPath(path: string): Promise<string>
@@ -1546,6 +1639,7 @@ export const IPC = {
   projectsSave: 'projects:save',
   projectsRemove: 'projects:remove',
   projectsPickDir: 'projects:pickDirectory',
+  projectsCheckPath: 'projects:checkPath',
   draftOrgChart: 'draft:orgChart',
   runsStart: 'runs:start',
   runsSend: 'runs:send',
@@ -1571,6 +1665,8 @@ export const IPC = {
   authStatus: 'auth:status',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  /** main -> renderer push channel carrying AppSettingsInfo after every save. */
+  settingsChanged: 'settings:changed',
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
   appSetNotifications: 'app:setNotifications',

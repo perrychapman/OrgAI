@@ -39,6 +39,8 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange } from './continuation'
+import { isLiveAgent, runOutcome, settleAgent, type RunOutcome } from './activity'
+import { cancelPending } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
@@ -84,7 +86,7 @@ interface ActiveRun {
   pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
   pendingMerges: Map<string, (d: MergeDecision) => void>
   /** request_mcp_install cards waiting for mcp:answerInstall. */
-  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision) => void }>
+  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision, cancelled?: boolean) => void }>
   /** request_permission_rules cards waiting for permissions:decideRequest. */
   pendingRules: Map<string, { request: PermissionRuleRequest; resolve: (d: PermissionRuleDecision) => void }>
   /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
@@ -100,6 +102,10 @@ interface ActiveRun {
   limited?: { until?: number; window?: string }
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
+  outcome?: RunOutcome
+  /** Agents still live when the run ended; they read Stopped / Failed however the adapter re-reports them. */
+  cutOff?: Set<string>
   /** The provider session this run resumes; known before the adapter reports summary.sessionId at init. */
   resumeSessionId?: string
   /** The run's own emit (records, persists, logs and broadcasts); send() and stop() route through it so summary.status stays current. */
@@ -326,6 +332,18 @@ export class RunManager {
         const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
         e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
       }
+      const outcome = e.type === 'run.status' && !active.outcome ? runOutcome(e.status, !!active.userStopped) : null
+      if (outcome) {
+        active.outcome = outcome
+        active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
+      }
+      // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
+      if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
+      if (e.type === 'agent.upsert' && active.outcome) {
+        if (isLiveAgent(e.agent)) active.cutOff?.add(e.agent.id)
+        const settled = settleAgent(e.agent, !!active.cutOff?.has(e.agent.id), active.outcome, ROOT_AGENT_ID)
+        if (settled !== e.agent) e = { ...e, agent: settled }
+      }
       if (e.type === 'run.status') {
         summary.status = e.status
         if (e.sessionId) summary.sessionId = e.sessionId
@@ -345,6 +363,13 @@ export class RunManager {
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      // Root and cut-off reports read Finished / Stopped / Failed instead of "Waiting for you".
+      if (outcome) {
+        for (const agent of Object.values(active.record.agents)) {
+          const settled = settleAgent(agent, !!active.cutOff?.has(agent.id), outcome, ROOT_AGENT_ID)
+          if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
+        }
+      }
     }
 
     active.emit = emit
@@ -461,32 +486,8 @@ export class RunManager {
       }
       active.session = await adapter.start(ctx)
       void active.session.finished.finally(() => {
-        for (const resolve of active.pending.values()) resolve({ behavior: 'deny', message: 'Run ended' })
-        active.pending.clear()
-        for (const resolve of active.pendingProposals.values()) resolve({ behavior: 'revise', feedback: 'Run ended' })
-        active.pendingProposals.clear()
-        for (const [questionId, q] of active.pendingQuestions) {
-          q.resolve({ selected: [] })
-          this.broadcast({ type: 'question.resolved', runId: summary.id, questionId, answer: { selected: [] } })
-        }
-        active.pendingQuestions.clear()
-        for (const [requestId, r] of active.pendingRules) {
-          r.resolve({ behavior: 'deny', message: 'Run ended' })
-          this.broadcast({ type: 'rules.resolved', runId: summary.id, requestId, decision: { behavior: 'deny', message: 'Run ended' } })
-        }
-        active.pendingRules.clear()
-        // Unanswered merge reviews keep their branch for later (maintenance panel or a future run).
-        for (const [reviewId, resolve] of active.pendingMerges) {
-          resolve({ behavior: 'hold' })
-          this.broadcast({ type: 'merge.resolved', runId: summary.id, reviewId, decision: { behavior: 'hold' } })
-        }
-        active.pendingMerges.clear()
-        // Unanswered installs are denied; servers approved for this run only (and their secrets) are forgotten.
-        for (const [requestId, p] of active.pendingInstalls) {
-          p.resolve({ approved: false, scope: 'run' })
-          this.broadcast({ type: 'mcpInstall.resolved', runId: summary.id, requestId, outcome: { approved: false, scope: 'run' } })
-        }
-        active.pendingInstalls.clear()
+        cancelPending(active, summary.id, this.broadcast)
+        // Servers approved for this run only (and their secrets) are forgotten.
         active.runServers.clear()
         this.flush(active)
         this.runs.delete(summary.id)
@@ -825,7 +826,7 @@ export class RunManager {
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
-        resolve: (raw) => {
+        resolve: (raw, cancelled) => {
           const decision = this.settleInstall(active, request, raw, getProject(), setProject)
           // Secrets stop here: the agent and the renderer only ever see the outcome.
           const outcome: McpInstallOutcome = {
@@ -834,7 +835,7 @@ export class RunManager {
             ...(decision.note ? { note: decision.note } : {}),
             ...(decision.spec ? { spec: decision.spec } : {})
           }
-          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome })
+          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome, ...(cancelled ? { cancelled: true as const } : {}) })
           resolve(outcome)
         }
       })

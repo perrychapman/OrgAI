@@ -10,7 +10,7 @@ import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
-import { SET_PLAN_NUDGE, limitReachedText } from './continuation'
+import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -305,7 +305,8 @@ describe('RunManager with the mock adapter', () => {
       const req = await waitFor(isType('rules.request'))
       await m.stop(run.id)
       const resolved = await waitFor(isType('rules.resolved'))
-      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' } })
+      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' }, cancelled: true })
+      expect(events.filter(isType('rules.resolved'))).toHaveLength(1)
     })
   })
 
@@ -328,10 +329,21 @@ describe('RunManager with the mock adapter', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p)
     const run = await m.start({ project: p, prompt: 'Change x' })
-    await waitFor(isType('permission.request'))
+    const req = await waitFor(isType('permission.request'))
     await m.stop(run.id)
-    await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    const finished = await waitFor(isType('run.status', (e) => e.status === 'finished'))
     expect(events.some((e) => e.type === 'run.status' && e.status === 'stopping')).toBe(true)
+    // The card is cancelled before the terminal status goes out, exactly once.
+    const resolved = events.filter(isType('permission.resolved'))
+    expect(resolved).toEqual([{ type: 'permission.resolved', runId: run.id, requestId: req.request.id, cancelled: true }])
+    expect(events.indexOf(resolved[0])).toBeLessThan(events.indexOf(finished))
+    // No node keeps saying "Waiting for you" / "Needs approval" once the session ended.
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    const agents = Object.values(m.get(run.id)?.agents ?? {})
+    expect(agents.find((a) => a.id === 'root')).toMatchObject({ state: 'done', activity: 'Stopped' })
+    expect(agents.find((a) => a.id === 'mock-report-1')).toMatchObject({ state: 'done', activity: 'Stopped' })
+    const lastRoot = events.filter(isType('agent.upsert', (e) => e.agent.id === 'root')).at(-1)
+    expect(lastRoot?.agent.activity).toBe('Stopped')
   })
 
   it('applies setup proposals through the SetupService and completes setup', async () => {
@@ -432,11 +444,17 @@ describe('RunManager with the mock adapter', () => {
       const session = adapter.sessions[0]
       expect(session.harnessMessages).toHaveLength(1)
       expect(session.harnessMessages[0]).toBe(
-        'Harness: plan progress 1 of 2 done. Remaining: p2 Verify. Continue with the next step now; mark steps with update_plan as you go. ' +
-          "When every step is done, run the project's verification (build/tests) and call complete_plan. " +
-          'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+        'Harness: plan 1 of 2 done. Remaining: p2 Verify. Continue with the next step; mark steps with update_plan as you go. ' +
+          "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+          'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
       )
-      expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text === session.harnessMessages[0])).toBe(true)
+      expect(
+        events.some(
+          (e) =>
+            e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' &&
+            e.entry.block.detail === session.harnessMessages[0] && e.entry.block.text === 'Continuing: 1 of 2 steps done, next "Verify".'
+        )
+      ).toBe(true)
       expect(events.some((e) => e.type === 'agent.upsert' && e.agent.id === 'root' && e.agent.activity === 'Continuing: Verify')).toBe(true)
       expect(m.get(run.id)?.plan).toMatchObject({ status: 'done', summary: 'Built and verified', autoContinues: 1 })
       expect(events.some((e) => e.type === 'log' && e.message === 'Plan set: Ship it (2 steps).')).toBe(true)
@@ -478,7 +496,7 @@ describe('RunManager with the mock adapter', () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m, adapter } = manager(p, { work: [{ type: 'text', text: 'Done with the first part.' }] }, fast)
       const run = await m.start({ project: p, prompt: 'Go' })
-      await waitFor(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.block.text === SET_PLAN_NUDGE))
+      await waitFor(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.block.detail === SET_PLAN_NUDGE && e.entry.block.text === SET_PLAN_SUMMARY))
       await sleep(60)
       expect(adapter.sessions[0].harnessMessages).toEqual([SET_PLAN_NUDGE])
       await m.stop(run.id)

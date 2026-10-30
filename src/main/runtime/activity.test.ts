@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { describeTool, harnessToolActivity } from './activity'
+import type { AgentInstance } from '@shared/types'
+import { TERMINAL_ACTIVITY, describeTool, harnessToolActivity, runOutcome, settleAgent } from './activity'
 
 describe('describeTool', () => {
   it.each([
@@ -70,5 +71,59 @@ describe('describeTool', () => {
 
   it('does not treat a bare non-harness call as a harness tool', () => {
     expect(describeTool(PROPOSAL_TOOLS.architecture, {})).toBe('Using propose_architecture')
+  })
+})
+
+describe('terminal labels', () => {
+  const agent = (over: Partial<AgentInstance>): AgentInstance => ({
+    id: 'r1',
+    roleId: null,
+    roleSlug: 'engineer',
+    name: 'Engineer',
+    parentId: 'root',
+    spawnToolUseId: null,
+    state: 'done',
+    activity: 'Reported back',
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    startedAt: 1,
+    ...over
+  })
+
+  it('maps terminal statuses to one outcome and ignores live and paused runs', () => {
+    expect(runOutcome('finished', false)).toBe('finished')
+    expect(runOutcome('finished', true)).toBe('stopped')
+    expect(runOutcome('error', true)).toBe('failed')
+    for (const s of ['starting', 'running', 'idle', 'stopping', 'paused'] as const) expect(runOutcome(s, false)).toBeNull()
+  })
+
+  it('gives the root the run label instead of "Waiting for you"', () => {
+    const root = agent({ id: 'root', parentId: null, state: 'idle', activity: 'Waiting for you' })
+    expect(settleAgent(root, false, 'finished', 'root')).toMatchObject({ state: 'done', activity: TERMINAL_ACTIVITY.finished })
+    expect(settleAgent(root, false, 'stopped', 'root').activity).toBe('Stopped')
+    expect(settleAgent({ ...root, state: 'error' }, false, 'failed', 'root')).toMatchObject({ state: 'error', activity: 'Failed' })
+    expect(settleAgent(root, false, 'failed', 'root').state).toBe('error')
+  })
+
+  it('relabels cut-off reports and keeps finished ones', () => {
+    const waiting = agent({ state: 'waiting', activity: 'Needs approval: Editing a.ts' })
+    expect(settleAgent(waiting, false, 'finished', 'root')).toMatchObject({ state: 'done', activity: 'Stopped' })
+    expect(settleAgent(waiting, false, 'failed', 'root')).toMatchObject({ state: 'error', activity: 'Failed' })
+    // Already marked done by the adapter, but the harness saw it live when the run ended.
+    expect(settleAgent(agent({ activity: 'Thinking…' }), true, 'stopped', 'root').activity).toBe('Stopped')
+    // Marked done before the terminal status with a waiting label (Codex order).
+    expect(settleAgent(agent({ activity: 'Needs approval: Editing a.ts' }), false, 'stopped', 'root').activity).toBe('Stopped')
+    const reported = agent({})
+    expect(settleAgent(reported, false, 'stopped', 'root')).toBe(reported)
+  })
+
+  it('sets endedAt only when it settles a live agent and keeps an existing one', () => {
+    expect(settleAgent(agent({ state: 'thinking', activity: 'x' }), false, 'stopped', 'root').endedAt).toBeTypeOf('number')
+    expect(settleAgent(agent({ state: 'thinking', activity: 'x', endedAt: 5 }), false, 'stopped', 'root').endedAt).toBe(5)
+    expect('endedAt' in settleAgent(agent({ activity: 'Waiting for you' }), false, 'stopped', 'root')).toBe(false)
+    // A finished report keeps a label that merely starts with "Waiting".
+    const done = agent({ activity: 'Waiting on the build, then reported' })
+    expect(settleAgent(done, false, 'finished', 'root')).toBe(done)
   })
 })

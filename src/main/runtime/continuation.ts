@@ -23,6 +23,8 @@ export const PLAN_TOOLS = {
 export const DEFAULT_CONTINUATION_DELAY_MS = 1500
 
 export const SET_PLAN_NUDGE = 'Harness: before continuing, call set_plan with the goal and the concrete steps, then start on step 1.'
+/** What the user reads in the transcript for SET_PLAN_NUDGE (the full text is the entry's `detail`). */
+export const SET_PLAN_SUMMARY = 'Continuing: asked the orchestrator to write a plan before it works.'
 
 /** Steps still to do: anything not done or skipped. */
 export function remainingSteps(plan: RunPlan): PlanStep[] {
@@ -67,31 +69,38 @@ export function describePlanChange(previous: RunPlan | undefined, next: RunPlan)
   return `Plan updated: ${progress}.`
 }
 
+/** The instruction sent to the orchestrator when steps remain. The transcript shows continueSummary instead. */
 export function continueNudgeText(plan: RunPlan): string {
   const remaining = remainingSteps(plan)
   const list = remaining.map((s) => `${s.id} ${s.title}${s.status === 'in_progress' ? ' (in progress)' : s.status === 'blocked' ? ' (blocked)' : ''}`).join('; ')
   return (
-    `Harness: plan progress ${finishedCount(plan)} of ${plan.steps.length} done. Remaining: ${list}. ` +
-    'Continue with the next step now; mark steps with update_plan as you go. ' +
-    "When every step is done, run the project's verification (build/tests) and call complete_plan. " +
-    'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+    `Harness: plan ${finishedCount(plan)} of ${plan.steps.length} done. Remaining: ${list}. ` +
+    'Continue with the next step; mark steps with update_plan as you go. ' +
+    "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+    'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
   )
 }
 
 /** Every step is marked done or skipped but complete_plan was never called. */
 export function finishNudgeText(plan: RunPlan): string {
   return (
-    `Harness: plan progress ${finishedCount(plan)} of ${plan.steps.length} done, but the plan is not complete. ` +
+    `Harness: plan ${finishedCount(plan)} of ${plan.steps.length} done but not completed. ` +
     "Run the project's verification (build/tests) and call complete_plan with a summary. " +
-    'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+    'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
   )
 }
 
+/** One human line for a continue nudge, e.g. 'Continuing: 2 of 5 steps done, next "Write tests".' */
+export function continueSummary(plan: RunPlan): string {
+  const done = `${finishedCount(plan)} of ${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'} done`
+  const step = remainingSteps(plan).length ? nextStep(plan) : undefined
+  if (!step) return `Continuing: ${done}, asked the orchestrator to verify and complete the plan.`
+  const title = step.title.length > 80 ? `${step.title.slice(0, 79)}…` : step.title
+  return `Continuing: ${done}, next "${title}".`
+}
+
 export function limitReachedText(max: number): string {
-  return (
-    `The harness stopped continuing the orchestrator automatically: the limit of ${max} automatic continues for this run was reached. ` +
-    'Reply to keep it going, or raise "Max automatic continues per run" in the project settings.'
-  )
+  return `Automatic continues paused: this run reached its limit of ${max}. Reply to keep going, or raise "Max automatic continues per run" in project settings.`
 }
 
 export interface NudgeInput {
@@ -114,7 +123,10 @@ export interface NudgeInput {
 
 export interface NudgeDecision {
   kind: 'continue' | 'set-plan' | 'none'
+  /** The full instruction for the orchestrator. */
   text?: string
+  /** One human line for the transcript (set with `text`). */
+  summary?: string
   /** 'none' because the automatic-continue limit was reached; the harness tells the user. */
   limitReached?: boolean
 }
@@ -135,11 +147,11 @@ export function nudgeBlocked(input: NudgeInput): string | null {
 export function nextNudge(input: NudgeInput): NudgeDecision {
   if (nudgeBlocked(input)) return { kind: 'none' }
   const { plan } = input
-  if (!plan) return input.turnsWithoutPlan === 1 ? { kind: 'set-plan', text: SET_PLAN_NUDGE } : { kind: 'none' }
+  if (!plan) return input.turnsWithoutPlan === 1 ? { kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY } : { kind: 'none' }
   if (plan.status !== 'active') return { kind: 'none' }
   if (plan.autoContinues >= Math.max(0, input.maxAutoContinues)) return { kind: 'none', limitReached: true }
   const text = remainingSteps(plan).length ? continueNudgeText(plan) : finishNudgeText(plan)
-  return { kind: 'continue', text }
+  return { kind: 'continue', text, summary: continueSummary(plan) }
 }
 
 /** What a ContinuationDriver needs from the adapter and the run manager. */
@@ -155,10 +167,13 @@ export interface ContinuationHost {
   rateLimited(): boolean
   stopping(): boolean
   orchestratorBusy(): boolean
-  /** Deliver `text` to the orchestrator as a harness message and show `activity` on the root node. */
-  nudge(text: string, activity: string): void
+  /**
+   * Deliver `text` to the orchestrator as a harness message and show `activity` on the root node. The
+   * transcript entry is `{ kind: 'system', text: summary, detail: text }` with `source: 'harness'`.
+   */
+  nudge(text: string, activity: string, summary: string): void
   log(level: 'info' | 'warn' | 'error', message: string): void
-  /** A system line in the orchestrator's transcript, for the user. */
+  /** A system line in the orchestrator's transcript, for the user (`source: 'harness'`). */
   tellUser(text: string): void
 }
 
@@ -237,17 +252,19 @@ export class ContinuationDriver {
     }
     if (decision.kind === 'none' || !decision.text) return decision
     let activity = 'Planning the work…'
+    let summary = decision.summary ?? decision.text
     if (decision.kind === 'continue' && plan) {
       const updated: RunPlan = { ...plan, autoContinues: plan.autoContinues + 1, updatedAt: Date.now() }
       await this.host.updatePlan(updated)
       const step = nextStep(updated)
       activity = step ? `Continuing: ${step.title}`.slice(0, 90) : 'Continuing: verification'
+      summary = continueSummary(updated)
       this.host.log('info', `Automatic continue ${updated.autoContinues} of ${input.maxAutoContinues}: ${planProgressLabel(updated)} done.`)
     } else {
       this.host.log('info', 'The orchestrator ended a turn without a plan; asking it to set one.')
     }
     if (this.disposed) return decision
-    this.host.nudge(decision.text, activity)
+    this.host.nudge(decision.text, activity, summary)
     return decision
   }
 }
