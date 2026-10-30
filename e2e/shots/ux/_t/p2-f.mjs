@@ -1,0 +1,36 @@
+import { launch, size, shot, theme, sleep, setScript, plain, three } from './p2-common.mjs'
+const { app, page } = await launch()
+const log = (...a) => console.log(...a)
+const start = async (t) => { const ta = page.locator('.composer textarea'); await ta.fill(t); await page.locator('.composer .btn.primary').click() }
+await theme(page, 'dark')
+await size(app, page, 1024, 640)
+await page.locator('.sidebar [data-testid=nav-project]', { hasText: 'Notes API' }).click()
+await page.getByRole('tab', { name: 'Live', exact: true }).click()
+setScript(three); await start('Add rate limiting to the API'); await sleep(6000)
+const state = () => page.evaluate(() => {
+  const sb = document.querySelector('.sidebar'); const side = document.querySelector('.side-panel')
+  const tray = document.querySelector('.frame-tray'); const tr = tray.getBoundingClientRect()
+  const chips = [...document.querySelectorAll('.decision-chip')].map((e) => e.getBoundingClientRect())
+  let overlap = 0; for (let i = 1; i < chips.length; i++) if (chips[i].left < chips[i - 1].right - 1) overlap++
+  const btns = [...tray.querySelectorAll('article button, .decision-card button')].filter((b) => /Allow once|Deny|Submit/.test(b.innerText)).map((b) => { const r = b.getBoundingClientRect(); return `${b.innerText.trim()}:${Math.round(r.top)}-${Math.round(r.bottom)}` })
+  const st = document.querySelector('.frame-stage').getBoundingClientRect()
+  const strip = document.querySelector('[data-testid=run-strip]')
+  const stripBtns = [...strip.querySelectorAll('button')].filter((b) => /Interrupt|End/.test(b.innerText + b.getAttribute('aria-label'))).map((b) => `${(b.innerText || '').trim() || '(icon) ' + b.getAttribute('aria-label')}`)
+  return { vw: innerWidth, sidebar: sb.dataset.collapsed, side: side.dataset.collapsed, stage: `${Math.round(st.width)}x${Math.round(st.height)}`, tray: `${Math.round(tr.left)},${Math.round(tr.top)} ${Math.round(tr.width)}x${Math.round(tr.height)} bottom ${Math.round(tr.bottom)}`, chipOverlaps: overlap, chipScroll: (() => { const l = document.querySelector('.decision-chip')?.parentElement; return l ? `${l.scrollWidth}>${l.clientWidth}` : '' })(), btns, stripBtns, sbfoot: Math.round(document.querySelector('.sidebar-footer').getBoundingClientRect().height) }
+})
+log('S1 1024 default', JSON.stringify(await state()))
+log('rail html', await page.evaluate(() => [...document.querySelectorAll('.sidebar button, .sidebar a')].map((b) => `${b.className.split(' ')[0]}:${b.getAttribute('aria-label') || b.innerText.trim().slice(0, 20)}`).join(' | ')))
+// side expand
+await page.locator('.side-panel button').first().click(); await sleep(600)
+log('S2 1024 rail + side open', JSON.stringify(await state())); await shot(page, '12-s2-1024-side-open-dark')
+await page.locator('.side-panel button').first().click(); await sleep(400)
+await page.keyboard.press('Control+b'); await sleep(600)
+log('S3 1024 sidebar expanded', JSON.stringify(await state())); await shot(page, '12-s3-1024-sidebar-open-dark')
+await page.keyboard.press('Control+b'); await sleep(400)
+await size(app, page, 1280, 800); await sleep(500)
+log('S4 1280x800', JSON.stringify(await state())); await shot(page, '12-s4-1280-dark')
+await size(app, page, 1424, 881); await sleep(500)
+log('S5 1424', JSON.stringify(await state()))
+await page.locator('.side-panel button').first().click(); await sleep(600)
+log('S6 1424 side collapsed (tray beside)', JSON.stringify(await state()))
+await app.close()
