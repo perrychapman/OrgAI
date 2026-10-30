@@ -115,7 +115,8 @@ export function builtinPrice(model: string): ModelPrice | null {
 export function costFor(tokens: TokenUsage, price: ModelPrice): number {
   const cr = price.cacheReadPerMTok ?? price.inputPerMTok
   const cw = price.cacheWritePerMTok ?? price.inputPerMTok
-  return (tokens.input * price.inputPerMTok + tokens.output * price.outputPerMTok + tokens.cacheRead * cr + tokens.cacheWrite * cw) / 1_000_000
+  const usd = (tokens.input * price.inputPerMTok + tokens.output * price.outputPerMTok + tokens.cacheRead * cr + tokens.cacheWrite * cw) / 1_000_000
+  return Number.isFinite(usd) && usd > 0 ? usd : 0
 }
 
 function applyAlias(model: string, ctx: PricingContext): string {

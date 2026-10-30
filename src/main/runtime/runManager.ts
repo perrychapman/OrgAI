@@ -843,12 +843,9 @@ export class RunManager {
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     cancelPending(active, runId, this.broadcast)
     // The final usage goes out and is saved with the record, whatever the throttle still holds.
+    // Always recompute after the timers close so waitingMs / idleMs / limitHoldMs are final (publish skips no-op changes).
     this.closeTimers(active)
-    if (active.usageDirty || !active.summary.usage) this.refreshUsage(active, true)
-    else if (active.usageTimer) {
-      clearTimeout(active.usageTimer)
-      active.usageTimer = undefined
-    }
+    this.refreshUsage(active, true)
     // A stopped run's pending title is dropped; a run that ended on its own may still get its title afterwards.
     if (active.userStopped) active.titleAbort?.abort()
     // Servers approved for this run only (and their secrets) are forgotten.
@@ -1540,7 +1537,8 @@ export class RunManager {
       hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
       resumeSessionId: sessionId,
       resumedFrom: target.id,
-      resumeBaseCostUsd: target.usage?.providerCostUsd ?? target.totalCostUsd,
+      // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
+      resumeBaseCostUsd: target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }

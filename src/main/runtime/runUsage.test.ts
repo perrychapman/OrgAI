@@ -149,6 +149,22 @@ describe('computeRunUsage', () => {
   })
 })
 
+describe('normalizeRunRecord hardening', () => {
+  it('skips a persisted __proto__ agent id instead of setting a prototype', () => {
+    const agents = JSON.parse('{"__proto__": {"id": "x"}}') as Record<string, AgentInstance>
+    agents.root = agent({ id: 'root' })
+    const rec: RunRecord = { summary: runSummary({ startedAt: 1, endedAt: 2, status: 'finished' }), agents, transcript: [], logs: [] }
+    const out = normalizeRunRecord(rec, 5)
+    expect(Object.keys(out.agents)).toEqual(['root'])
+    expect(Object.getPrototypeOf(out.agents)).toBe(Object.prototype)
+  })
+  it('clamps non-finite and negative token counts from an adapter', () => {
+    const a = agent({ id: 'r' })
+    setModelTokens(a, 'm', { input: Number.NaN, output: -5, cacheRead: Infinity, cacheWrite: 3 })
+    expect(a.usage!.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 3 })
+  })
+})
+
 describe('normalizeRunRecord', () => {
   const oldAgent = (id: string, over: Partial<AgentInstance> = {}): AgentInstance => agent({ id, ...over })
   function oldRecord(over: Partial<RunSummary> = {}, agents: AgentInstance[] = []): RunRecord {

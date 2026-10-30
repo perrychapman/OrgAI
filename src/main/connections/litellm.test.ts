@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { fetchLiteLLMModels, normalizeBaseUrl, parseModelIds, parseModelInfo } from './litellm'
+import { LITELLM_MAX_ID_CHARS, LITELLM_MAX_MODELS, buildLiteLLMModels, fetchLiteLLMModels, normalizeBaseUrl, parseModelIds, parseModelInfo } from './litellm'
 
 const fx = (name: string): unknown => JSON.parse(readFileSync(join(__dirname, 'fixtures', name), 'utf8'))
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -61,6 +61,15 @@ describe('proxy prices', () => {
     expect(parseModelInfo(body({ model_info: { input_cost_per_token: '1e-6', output_cost_per_token: 1e-6 } })).get('m')?.price).toBeUndefined()
     expect(parseModelInfo(body({ model_info: { input_cost_per_token: 1, output_cost_per_token: 1e-6 } })).get('m')?.price).toBeUndefined() // $1 per token is over the bound
     expect(parseModelInfo(body({ model_info: { input_cost_per_token: 1e-6, output_cost_per_token: 1e-6, cache_read_input_token_cost: Infinity } })).get('m')?.price).toEqual({ inputPerMTok: 1, outputPerMTok: 1 })
+  })
+  it('treats a 0 / 0 proxy price as no price (unknown, not free)', () => {
+    const body = { data: [{ model_name: 'm', model_info: { input_cost_per_token: 0, output_cost_per_token: 0 } }] }
+    expect(parseModelInfo(body).get('m')?.price).toBeUndefined()
+  })
+  it('caps the models kept from a discovery and skips overlong ids', () => {
+    const ids = [...Array.from({ length: LITELLM_MAX_MODELS + 5 }, (_, i) => `m${i}`), 'x'.repeat(LITELLM_MAX_ID_CHARS + 1)]
+    expect(buildLiteLLMModels(ids, new Map())).toHaveLength(LITELLM_MAX_MODELS)
+    expect(buildLiteLLMModels(['x'.repeat(LITELLM_MAX_ID_CHARS + 1), 'ok'], new Map()).map((m) => m.id)).toEqual(['ok'])
   })
   it('carries prices onto the discovered models', async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request) => (String(url).endsWith('/v1/models') ? json(fx('litellm-models.json')) : json(fx('litellm-model-info.json'))))

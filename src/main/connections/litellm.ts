@@ -127,6 +127,8 @@ function priceFrom(sources: Record<string, unknown>[]): ModelPrice | undefined {
   const input = pick('input_cost_per_token')
   const output = pick('output_cost_per_token')
   if (input === undefined || output === undefined) return undefined
+  // LiteLLM reports 0 / 0 for a model it has no price for: that is unknown, never free.
+  if (input === 0 && output === 0) return undefined
   const price: ModelPrice = { inputPerMTok: input, outputPerMTok: output }
   const read = pick('cache_read_input_token_cost')
   const write = pick('cache_creation_input_token_cost')
@@ -160,11 +162,16 @@ export function parseModelInfo(body: unknown): Map<string, ModelInfoEntry> {
 }
 
 const CHAT_MODES = new Set(['chat', 'completion', 'responses'])
+/** Bounds on untrusted proxy output: models kept per discovery and the longest model id accepted. */
+export const LITELLM_MAX_MODELS = 2000
+export const LITELLM_MAX_ID_CHARS = 200
 
 /** Merge the two endpoints into catalog entries. Non-chat models (embeddings, images, audio) are dropped. */
 export function buildLiteLLMModels(ids: string[], info: Map<string, ModelInfoEntry>): ProviderModel[] {
   const models: ProviderModel[] = []
   for (const id of ids) {
+    if (models.length >= LITELLM_MAX_MODELS) break
+    if (id.length > LITELLM_MAX_ID_CHARS) continue
     const e = info.get(id)
     if (e?.mode && !CHAT_MODES.has(e.mode)) continue
     models.push(makeDiscoveredModel('litellm', { id, litellmProvider: e?.litellmProvider, contextWindow: e?.contextWindow, price: e?.price }))

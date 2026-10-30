@@ -263,6 +263,18 @@ describe('RunManager usage and pricing', () => {
     expect(ctxs[2]!.resumeBaseCostUsd).toBe(0.4)
   })
 
+  it('never subtracts a computed cost from the next provider total', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000)) // computed from the table, no provider cost
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.summaryOf(run.id)!.totalCostUsd).toBeCloseTo(3, 9)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished', sessionId: 's1' })
+    await m.continueRun(p, run.id, 'more')
+    expect(ctxs[1]!.resumeBaseCostUsd).toBe(0)
+  })
+
   it('applies a saved override to the next usage update of a live run', async () => {
     const prices: ModelPriceOverride[] = []
     const { m, p, ctxs } = setup({ appSettings: () => ({ ...defaultSettingsLite(), modelPrices: prices }) })

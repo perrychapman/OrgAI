@@ -39,7 +39,8 @@ export function setModelTokens(agent: AgentInstance, model: string, tokens: Toke
     entry = { model: name, tokens: emptyTokens(), costUsd: null, priceSource: 'unknown' }
     usage.models.push(entry)
   }
-  entry.tokens = { ...tokens }
+  const n = (v: number): number => (Number.isFinite(v) && v > 0 ? v : 0)
+  entry.tokens = { input: n(tokens.input), output: n(tokens.output), cacheRead: n(tokens.cacheRead), cacheWrite: n(tokens.cacheWrite) }
   if (providerCostUsd !== undefined && Number.isFinite(providerCostUsd) && providerCostUsd > 0) entry.providerCostUsd = providerCostUsd
   else delete entry.providerCostUsd
   usage.tokens = usage.models.reduce((acc, m) => addTokens(acc, m.tokens), emptyTokens())
@@ -296,6 +297,11 @@ export function normalizeRunRecord(record: RunRecord, now: number = Date.now()):
   let changed = false
   const agents: Record<string, AgentInstance> = {}
   for (const [id, a] of Object.entries(record.agents ?? {})) {
+    // Persisted JSON: an own "__proto__" key would set the new object's prototype instead of adding an agent.
+    if (id === '__proto__' || id === 'constructor' || id === 'prototype') {
+      changed = true
+      continue
+    }
     if (a.usage) {
       agents[id] = a
     } else {
