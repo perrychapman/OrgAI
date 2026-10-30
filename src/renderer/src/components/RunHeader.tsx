@@ -109,7 +109,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
       )}
       <div className="run-header-actions">
         {summary.kind === 'setup' && (
-          <span className="pill warn">
+          <span className="pill">
             <span className="dot" aria-hidden="true" /> Setup session
           </span>
         )}

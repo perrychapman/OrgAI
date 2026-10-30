@@ -13,7 +13,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   /* The tray row takes what it needs but never the last 120px of the stage; the card body scrolls inside it. */
-  grid-template-rows: auto minmax(120px, 1fr) minmax(0, max-content) auto;
+  grid-template-rows: auto minmax(96px, 1fr) minmax(0, max-content) auto;
   grid-template-areas:
     'toolbar'
     'stage'
@@ -35,7 +35,7 @@
   grid-area: stage;
   position: relative;
   min-width: 0;
-  min-height: 120px;
+  min-height: 0;
 }
 .frame-stage > .react-flow,
 .frame-stage > .empty {
@@ -50,7 +50,8 @@
   gap: var(--space-2);
   padding: var(--space-3);
   overflow: hidden;
-  max-height: 65cqh;
+  /* Share the frame height with the stage: never more than 65% of the frame, and always leave 160px above it. */
+  max-height: min(65cqh, calc(100cqh - 160px));
   min-height: 0;
   background: var(--surface-1);
   border-top: 1px solid var(--border-default);
@@ -74,10 +75,10 @@
   margin-right: var(--space-1h);
   vertical-align: middle;
 }
-/* Wide frame: the tray docks beside the canvas and keeps its own scroll. */
-@container frame (min-width: 900px) {
+/* Wide or short frame: the tray docks beside the canvas and keeps its own scroll. */
+@container frame (min-width: 900px) or (max-height: 420px) {
   .frame-grid:has(> .frame-tray) {
-    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-columns: minmax(0, 1fr) clamp(280px, 40cqi, 360px);
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       'toolbar toolbar'

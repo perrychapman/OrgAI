@@ -452,6 +452,9 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-3);
 }
 .decision-secondary {
   display: flex;
@@ -486,7 +489,7 @@
 .decision-error {
   flex: none;
 }
-@container frame (min-width: 900px) {
+@container frame (min-width: 900px) or (max-height: 420px) {
   .decision-body {
     max-height: none;
   }
