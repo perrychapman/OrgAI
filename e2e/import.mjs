@@ -17,6 +17,9 @@ log('fixture at', repo)
 
 const { app, page, shot } = await launch({ shotPrefix: 'import' })
 try {
+  // E2E_SIZE=1024x640 runs the whole flow in a small window (default: the app's own size).
+  const size = /^(\d+)x(\d+)$/.exec(process.env.E2E_SIZE ?? '')
+  if (size) await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [Number(size[1]), Number(size[2])])
   await gotoProjects(page)
   const form = page.locator('form.card')
   if (!(await form.count())) await page.locator('[data-testid=new-project]').click()
@@ -71,6 +74,34 @@ try {
   check(await again.getByRole('radio', { name: 'Add to the chart' }).isChecked(), 'Import agents from the toolbar defaults to Add')
   await again.getByRole('button', { name: 'Cancel' }).click()
   await again.waitFor({ state: 'detached', timeout: 10_000 })
+
+  // Apply error: the folder changes after the preview, so Import is refused and Refresh preview recovers.
+  await page.locator('[data-testid=import-agents]').click()
+  const stale = page.locator('[data-testid=import-dialog]')
+  await stale.waitFor({ state: 'visible', timeout: 20_000 })
+  await stale.locator('[data-testid=import-row]').first().waitFor({ timeout: 20_000 })
+  const reviewerFile = path.join(repo, '.claude/agents/reviewer.md')
+  fs.writeFileSync(reviewerFile, before.replace('You review code for bugs.', 'You review code for bugs and style.'))
+  await stale.locator('[data-testid=import-apply]').click()
+  const applyError = stale.locator('[data-testid=import-apply-error]')
+  await applyError.waitFor({ timeout: 10_000 })
+  check(/Nothing was imported/.test(await applyError.innerText()), 'a changed folder shows the apply error footer', await applyError.innerText())
+  check(!(await findProject(page, NAME))?.roles.some((r) => r.slug === 'backend-dev'), 'nothing applied after the refused import')
+  await shot('apply-error')
+  await applyError.getByRole('button', { name: 'Refresh preview' }).click()
+  await applyError.waitFor({ state: 'detached', timeout: 10_000 })
+  await stale.locator('[data-testid=import-row]').first().waitFor({ timeout: 20_000 })
+
+  // Undo ends after a chart edit: import again, add a role, and the banner no longer offers Undo.
+  await stale.locator('[data-testid=import-apply]').click()
+  await stale.waitFor({ state: 'detached', timeout: 20_000 })
+  fs.writeFileSync(reviewerFile, before)
+  await notice.waitFor({ timeout: 10_000 })
+  check((await page.locator('[data-testid=import-undo]').count()) === 1, 'Undo is offered right after the import')
+  await page.getByRole('button', { name: 'Add role' }).first().click()
+  await page.locator('[data-testid=import-undo]').waitFor({ state: 'detached', timeout: 10_000 })
+  check(/chart|edit|changed|Undo/i.test(await notice.innerText()), 'banner stays but Undo is gone after a chart edit', await notice.innerText())
+  await shot('undo-expired')
 
   await page.locator('[data-testid=export-org]').click()
   const dlg = page.locator('dialog[open]')
