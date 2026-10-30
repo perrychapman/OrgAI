@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { ClipboardCheck, Ellipsis, ExternalLink, Library, Pencil, Plus, Sparkles, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
 import type { Project, SkillInfo } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { requestAppSettingsSection } from '../../lib/settingsTarget'
+import { requestSkillLibrary } from '../../lib/settingsTarget'
 import { removeConfirmCopy, skillElevatedHint, sourceLabel } from '../../lib/skills'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -21,7 +21,6 @@ import { SkillRoleAccess } from './SkillRoleAccess'
 import { useProjectSkills, type ProjectSkills } from './useSkills'
 
 /** Section id of the App settings skill library; the page falls back to its first pane when it does not know the id. */
-const SKILL_LIBRARY_SECTION = 'appsettings-section-skill-library'
 
 type Modal = { kind: 'form'; editing?: SkillInfo } | { kind: 'link' } | null
 
@@ -42,7 +41,7 @@ export default function SkillsSection({ project }: { project: Project }): ReactE
 
   const openLibrary = (): void => {
     setModal(null)
-    requestAppSettingsSection(SKILL_LIBRARY_SECTION)
+    requestSkillLibrary()
     setView('appSettings')
   }
 
