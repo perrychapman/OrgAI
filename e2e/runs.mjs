@@ -36,13 +36,6 @@ if (process.env.E2E_RUNS_START) {
 await resizeTo(1424, 881, 'full')
 await page.evaluate(() => {
   window.dispatchEvent(new Event('resize'))
-  // Diagnostics: record who persists the sidebar choice (read back in envDiag).
-  const set = Storage.prototype.setItem
-  window.__sidebarSets = []
-  Storage.prototype.setItem = function (k, v) {
-    if (k === 'orgai.sidebar') window.__sidebarSets.push({ v, w: window.innerWidth, stack: String(new Error().stack).split('\n').slice(2, 5).join(' | ').slice(0, 300) })
-    return set.call(this, k, v)
-  }
 })
 const tabsBar = () => page.getByRole('tablist', { name: 'Project sections' })
 const startOnPage = async (text) => {
@@ -288,8 +281,7 @@ try {
   const envDiag = () => page.evaluate(() => ({
     inner: window.innerWidth, outer: window.outerWidth, availW: screen.availWidth, dpr: window.devicePixelRatio,
     ls: Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith('orgai.')).map((k) => [k, localStorage.getItem(k)])),
-    dataSidebar: document.querySelector('.app')?.getAttribute('data-sidebar'),
-    sidebarSets: window.__sidebarSets
+    dataSidebar: document.querySelector('.app')?.getAttribute('data-sidebar')
   }))
   const panelToggle = () => page.locator('.side-panel').getByRole('button').first()
   const trayState = () => page.evaluate(() => {
