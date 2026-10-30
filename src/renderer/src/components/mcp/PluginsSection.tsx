@@ -10,6 +10,7 @@ import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
+import { SettingsSection } from '../settings/SettingsSection'
 import { errMessage } from './mcpHelpers'
 
 const NOT_CLAUDE = 'Plugins work with Claude only. They are ignored on this connection.'
@@ -56,18 +57,18 @@ export default function PluginsSection({ project }: { project: Project }): React
   }
 
   return (
-    <section id="settings-section-plugins" className="mcp-section" aria-labelledby="plugins-title" data-testid="plugins-section">
-      <div className="section-head">
-        <div>
-          <h2 id="plugins-title">Plugins</h2>
-          <p>Claude Code plugin folders loaded into this project&apos;s runs.</p>
-        </div>
-        <div className="section-actions">
-          <Button icon={Plus} loading={busy} onClick={() => void add()}>
-            Add plugin
-          </Button>
-        </div>
-      </div>
+    <SettingsSection
+      id="settings-section-plugins"
+      title="Plugins"
+      description="Claude Code plugin folders for this project."
+      testId="plugins-section"
+      actions={
+        <Button icon={Plus} loading={busy} onClick={() => void add()}>
+          Add plugin
+        </Button>
+      }
+    >
+      <div className="mcp-body">
       {!claude && <Banner tone="info">{NOT_CLAUDE}</Banner>}
       {error && (
         <Banner tone="danger" title="Could not add the plugin">
@@ -78,7 +79,7 @@ export default function PluginsSection({ project }: { project: Project }): React
         <div className="card-block mcp-empty">
           <Icon icon={Puzzle} size="lg" />
           <strong>No plugins</strong>
-          <p className="muted">Add a plugin folder to give Claude agents its skills and commands.</p>
+          <p className="muted">Add a folder to give agents its skills.</p>
         </div>
       ) : (
         <ul className="card-block mcp-list" aria-label="Plugins">
@@ -118,6 +119,7 @@ export default function PluginsSection({ project }: { project: Project }): React
           if (p) void remove(p)
         }}
       />
-    </section>
+      </div>
+    </SettingsSection>
   )
 }
