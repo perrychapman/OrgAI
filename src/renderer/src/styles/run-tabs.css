@@ -283,6 +283,38 @@
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
+.run-header-prompt-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.run-header-prompt-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.run-header-prompt-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* The whole prompt, wrapped and scrollable, on its own row under the header controls. */
+.run-header-fullprompt {
+  flex: 1 1 100%;
+  min-width: 0;
+  max-height: calc(var(--space-16) * 2);
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
 .run-header-meta {
   flex: none;
   white-space: nowrap;
@@ -473,6 +505,17 @@
 .history-table .col-started,
 .history-table .col-cost {
   white-space: nowrap;
+}
+.history-table .run-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-semibold);
+}
+.history-table .prompt.muted {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
 }
 .history-table .prompt {
   display: -webkit-box;

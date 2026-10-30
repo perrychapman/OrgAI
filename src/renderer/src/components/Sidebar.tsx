@@ -6,7 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { waitingItems } from '../lib/needsYou'
 import { needsYou, projectCounts, relativeTime } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { promptLine, runName, runTag } from '../lib/runLabels'
 import { isStoppedRun, runStatus, statusOfRun, statusText } from '../lib/runStatus'
 import brandIcon from '../assets/brand/icon.png'
 import UsageMeter from './UsageMeter'
@@ -107,12 +107,12 @@ export default function Sidebar(): ReactElement {
                     <button
                       type="button"
                       className="nav-run waiting"
-                      title={`${projectName(r.summary.projectId)} · Run ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${it.label}`}
+                      title={`${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${it.label}`}
                       onClick={() => void jumpToDecision(r.summary.projectId, r.summary.id)}
                     >
                       <span className="nav-run-main">
                         <span className="nav-run-where">
-                          {projectName(r.summary.projectId)} · Run <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {shortPrompt(r.summary.prompt, 28)}
+                          {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
                         </span>
                         <span className="nav-run-what">{it.label}</span>
                       </span>
@@ -196,7 +196,7 @@ export default function Sidebar(): ReactElement {
                         >
                           <span className={`run-dot ${st.tone}`} aria-hidden="true" />
                           <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>
-                          <span className="nav-run-title">{shortPrompt(r.summary.prompt, 28)}</span>
+                          <span className="nav-run-title">{runName(r.summary)}</span>
                           <span className="sr-only">{st.word}</span>
                         </button>
                       </li>

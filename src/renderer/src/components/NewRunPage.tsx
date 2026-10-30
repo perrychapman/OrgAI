@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
-import { runTitle } from '../lib/runLabels'
+import { promptLine, runTitle } from '../lib/runLabels'
 import { Button } from './ui/Button'
 import Composer from './Composer'
 import McpAuthNotice from './mcp/McpAuthNotice'
@@ -108,8 +108,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             <ul>
               {others.map((o) => (
                 <li key={o.id}>
-                  <button type="button" className="link-btn" onClick={() => void openRun(o.id)}>
-                    {runTitle(indexes.get(o.id), o.prompt, 60)}
+                  <button type="button" className="link-btn" title={promptLine(o.prompt)} onClick={() => void openRun(o.id)}>
+                    {runTitle(indexes.get(o.id), o)}
                   </button>
                 </li>
               ))}
