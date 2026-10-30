@@ -237,7 +237,7 @@ export async function screenshot(page, name) {
 }
 
 export async function gotoProjects(page) {
-  await page.locator('.sidebar .nav-item', { hasText: 'Projects' }).first().click()
+  await page.locator('.sidebar .nav-item', { hasText: 'Projects' }).or(page.locator('.sidebar [aria-label="All projects"]')).first().click()
   // With no projects the form is open; otherwise it sits behind the topbar "New project" button.
   await page.waitForSelector('form.card, [data-testid=new-project], .project-card', { timeout: 10_000 })
 }
@@ -289,7 +289,7 @@ export async function findProject(page, name) {
 
 /** Open a project from the sidebar. */
 export async function openProject(page, name) {
-  await page.locator('.sidebar .nav-item', { hasText: name }).first().click()
+  await page.locator(`.sidebar [data-testid=nav-project][data-name="${name.replace(/"/g, '\\"')}"]`).first().click()
   await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 10_000 })
 }
 
@@ -376,7 +376,7 @@ export async function driveSetup(page, name, { deadlineMs = 12 * 60_000, decide 
       await ta.press('Enter')
       log('nudged')
     }
-    const status = await page.locator('.topbar .pill .dot').first().locator('..').innerText().catch(() => '')
+    const status = await page.locator('.run-tab[aria-selected=true]').first().innerText().catch(() => '')
     if (/finished|failed|stopped/i.test(status) && !(await page.locator('article.decision-card').count())) {
       log('run ended early, status:', status)
       break
@@ -389,4 +389,14 @@ export async function driveSetup(page, name, { deadlineMs = 12 * 60_000, decide 
 /** Directory holding per-run record files: <userData>/data/runs, where userData is the ORGAI_DATA_DIR the app got. */
 export function runRecordsDir() {
   return path.join(DATA_DIR, 'data', 'runs')
+}
+
+/** A tab of the project topbar (Live, History, Org chart, Settings). */
+export function projectTab(page, name) {
+  return page.getByRole('tablist', { name: 'Project sections' }).getByRole('tab', { name, exact: true })
+}
+
+/** Open App settings through the sidebar gear. */
+export async function openAppSettings(page) {
+  await page.getByRole('button', { name: 'App settings', exact: true }).click()
 }

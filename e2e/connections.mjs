@@ -3,7 +3,7 @@
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, openAppSettings, openProject, projectTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -27,7 +27,7 @@ try {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
 
       // App settings > Connections
-      await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+      await openAppSettings(page)
       await page.getByRole('tab', { name: 'Connections', exact: true }).click()
       await page.waitForSelector('#connections-title', { timeout: 10_000 })
       await sleep(800)
@@ -73,9 +73,9 @@ try {
       await shot(`about-${w}x${h}-${theme}`)
 
       // Project settings
-      await page.locator('.nav-item', { hasText: NAME }).first().click()
-      await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
-      await page.getByRole('button', { name: 'Project settings', exact: true }).click()
+      await openProject(page, NAME)
+      await projectTab(page, 'Org chart').click()
+      await projectTab(page, 'Settings').click()
       await page.getByRole('tab', { name: 'Tools', exact: true }).click()
       await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
       await sleep(600)
@@ -111,7 +111,7 @@ try {
       await shot(`project-connection-${w}x${h}-${theme}`)
 
       // Role inspector model picker
-      await page.getByRole('button', { name: 'Org chart', exact: true }).first().click()
+      await projectTab(page, 'Org chart').click()
       await page.locator('.react-flow__node').first().click()
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
@@ -121,7 +121,7 @@ try {
 
   // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
   try {
-    await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+    await openAppSettings(page)
     await page.getByRole('tab', { name: 'MCP library', exact: true }).click()
     const libSec = page.locator('[data-testid=mcp-library-section]')
     await libSec.waitFor({ timeout: 10_000 })
@@ -140,9 +140,9 @@ try {
     await row.waitFor({ timeout: 10_000 })
     check(/Secrets: \d+ of 1 set/.test((await row.textContent()) ?? ''), 'library row shows the secrets summary')
     await shot('mcp-library-row')
-    await page.locator('.nav-item', { hasText: NAME }).first().click()
-    await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
-    await page.getByRole('button', { name: 'Project settings', exact: true }).click()
+    await openProject(page, NAME)
+    await projectTab(page, 'Org chart').click()
+    await projectTab(page, 'Settings').click()
     await page.getByRole('tab', { name: 'Tools', exact: true }).click()
     await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
     await page.locator('[data-testid=mcp-add-library]').click()
@@ -163,7 +163,7 @@ try {
 
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
   const CANARY = 'sk-e2e-canary-9f3a7c1d'
-  await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+  await openAppSettings(page)
   await page.getByRole('tab', { name: 'Connections', exact: true }).click()
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
   const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
@@ -191,7 +191,7 @@ try {
     await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click()
     await sleep(800)
     check((await page.evaluate(() => window.orgai.connections.list())).find((c) => c.connection.id === 'litellm')?.connection.hasApiKey !== true, 'Remove connection clears the stored key')
-    await page.locator('.nav-item', { hasText: NAME }).first().click()
+    await openProject(page, NAME)
   } else {
     check(false, 'LiteLLM card present')
   }

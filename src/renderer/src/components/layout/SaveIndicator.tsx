@@ -17,12 +17,12 @@ export function SaveIndicator(): ReactElement {
     <span className={`save-indicator is-${status.state}`} role="status" aria-live="polite" data-testid="save-indicator">
       {status.state === 'saving' && (
         <>
-          <Icon icon={LoaderCircle} size="sm" /> Saving…
+          <Icon icon={LoaderCircle} size="sm" /> <span className="save-text">Saving…</span>
         </>
       )}
       {status.state === 'saved' && status.at !== undefined && (
         <>
-          <Icon icon={Check} size="sm" /> Saved {clock(status.at)}
+          <Icon icon={Check} size="sm" /> <span className="save-text" title={`Saved ${clock(status.at)}`}>Saved {clock(status.at)}</span>
         </>
       )}
       {status.state === 'error' && (

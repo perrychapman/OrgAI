@@ -4,7 +4,7 @@
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, makeFixtureRepo, openProject, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, makeFixtureRepo, openProject, projectTab, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -18,7 +18,7 @@ const repo = path.join(base, 'repo')
 makeFixtureRepo('runs', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'runs' })
-const tabsBar = () => page.locator('.topbar .tabs')
+const tabsBar = () => page.getByRole('tablist', { name: 'Project sections' })
 const startOnPage = async (text) => {
   const ta = page.locator('.composer textarea')
   await ta.waitFor({ timeout: 10_000 })
@@ -29,7 +29,7 @@ try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
   check(project?.runMessaging !== true, 'run messaging is off by default')
-  await tabsBar().getByRole('button', { name: 'Live', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.locator('.new-run').waitFor({ timeout: 10_000 })
 
   await startOnPage('First concurrent task')
@@ -101,7 +101,7 @@ try {
   await shot('finished-run')
 
   // History tab lists both runs.
-  await tabsBar().getByRole('button', { name: 'History', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
   await sleep(500)
   const rows = await page.locator('.run-row').count()
   check(rows === 2, 'History tab lists both runs', String(rows))
@@ -116,7 +116,7 @@ try {
       { type: 'text', text: 'Carrying on without the docs server.' }
     ]
   }))
-  await tabsBar().getByRole('button', { name: 'Live', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
   await startOnPage('Needs an MCP server')
@@ -140,7 +140,7 @@ try {
   fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
   const TITLED_PROMPT = 'Please refactor the billing module and add tests'
   const TITLE = 'Please refactor the billing'
-  await tabsBar().getByRole('button', { name: 'Live', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
   await startOnPage(TITLED_PROMPT)
@@ -209,11 +209,11 @@ try {
   await endSession(page)
 
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
-  await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
   await sleep(600)
   const a2 = await page.evaluate(() => {
-    const r = [...document.querySelectorAll('.topbar .tabs button')].find((b) => b.textContent?.trim() === 'Live')?.getBoundingClientRect()
+    const r = [...document.querySelectorAll('[role=tablist][aria-label="Project sections"] [role=tab]')].find((b) => b.textContent?.trim() === 'Live')?.getBoundingClientRect()
     return { top: document.documentElement.scrollTop, live: r ? { t: r.top, b: r.bottom } : null, h: window.innerHeight }
   })
   check(a2.top === 0, 'Maintenance sub-nav leaves the document scrollTop at 0 (A2)', String(a2.top))
@@ -221,7 +221,7 @@ try {
   await shot('settings-maintenance')
 
   // Run messaging switch persists through projects:save.
-  await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Agents', exact: true }).click()
   const sw =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw.waitFor({ timeout: 10_000 })
@@ -232,7 +232,7 @@ try {
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
-  await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
+  await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Agents', exact: true }).click()
   const sw2 =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw2.waitFor({ timeout: 10_000 })

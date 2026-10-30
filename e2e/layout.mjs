@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, openAppSettings, projectTab, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -13,14 +13,14 @@ const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYP
 const NAME = 'E2E layout (orgai test)'
 const NEW_NAME = 'E2E layout new idea (orgai test)'
 
-// A long path stresses the topbar path pill.
+// A long path stresses the topbar folder name.
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-layout-'))
 const repo = path.join(base, 'a-rather-long-directory-name-for-layout-checks', 'and-another-nested-level-to-make-it-longer', 'repo')
 makeFixtureRepo('layout', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'layout' })
 try {
-  log('auth pill:', await page.locator('.sidebar-footer .pill').innerText())
+  log('auth pill:', await page.locator('[data-testid=auth-pill]').innerText())
 
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'existing-repo project created')
@@ -29,14 +29,14 @@ try {
   check((await page.locator('.editor').count()) > 0, 'lands on the org chart editor after create')
   await shot('editor')
 
-  await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+  await projectTab(page, 'Live').click()
   await sleep(800)
   const overflow = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
   check(overflow.sw <= overflow.cw, 'live view has no horizontal page scroll', `${overflow.sw}/${overflow.cw}`)
   check(await page.locator('.sidebar').isVisible(), 'sidebar stays visible with a long path')
-  const pillBox = await page.locator('.topbar .pill', { hasText: 'a-rather-long' }).first().boundingBox()
+  const pillBox = await page.locator('[data-testid=project-folder]').boundingBox()
   const vw = await page.evaluate(() => window.innerWidth)
-  check(!!pillBox && pillBox.x + pillBox.width <= vw, 'path pill fits in the window', JSON.stringify(pillBox))
+  check(!!pillBox && pillBox.x + pillBox.width <= vw, 'folder name fits in the window', JSON.stringify(pillBox))
   const heading = await page.locator('.new-run h2').innerText({ timeout: 5000 }).catch(() => '')
   check(/something to do/i.test(heading), 'empty state invites a first task', heading)
   check((await page.locator('.composer textarea').count()) === 1, 'composer is present')
@@ -66,7 +66,7 @@ try {
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
-  await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+  await projectTab(page, 'Live').click()
   const ta = page.locator('.composer textarea')
   await ta.waitFor({ timeout: 10_000 })
   await ta.evaluate((el, b64) => {
@@ -115,11 +115,11 @@ try {
   await openProject(page, NAME)
   await sleep(800)
   check((await page.locator('.new-run').count()) === 0 && (await page.locator('.run-tab[aria-selected="true"]').count()) === 1, 'a project with history opens on its newest run, not the empty state')
-  await page.locator('.topbar .tabs').getByRole('button', { name: 'History', exact: true }).click()
+  await projectTab(page, 'History').click()
   await sleep(500)
   check((await page.locator('.run-row').count()) >= 1, 'run appears in the History tab after reload')
   if ((await page.locator('.run-row button.run-open').count()) > 0) await page.locator('.run-row button.run-open').first().click()
-  else await page.getByRole('button', { name: 'Live', exact: true }).click()
+  else await projectTab(page, 'Live').click()
   await sleep(1500)
   await page.getByRole('button', { name: 'Transcript', exact: true }).click()
   await sleep(500)
@@ -133,7 +133,7 @@ try {
   await shot('transcript-with-image-reopened')
 
   // Run tabs keyboard model: Ctrl+T opens the New run page as a second tab, Ctrl+W closes it again.
-  await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+  await projectTab(page, 'Live').click()
   await sleep(500)
   check((await page.locator('.run-tabs [role="tablist"] [role="tab"]').count()) === 1, 'one run tab for the reopened run')
   check((await page.locator('.canvas-toolbar').count()) === 0, 'no toolbar floats over the canvas')
@@ -165,13 +165,21 @@ try {
     for (const theme of ['dark', 'light']) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await sleep(300)
-      await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+      await projectTab(page, 'Live').click()
       await sleep(300)
       const m = await page.evaluate(() => {
         const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
         return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, tabs: r('.run-tabs'), header: r('.run-header'), composer: r('.composer') }
       })
       const inside = (b) => !!b && b.l >= -0.5 && b.r <= m.iw + 0.5 && b.t >= -0.5 && b.b <= m.ih + 0.5
+      const shellM = await page.evaluate(() => {
+        const hh = (sel) => document.querySelector(sel)?.getBoundingClientRect().height
+        return { topbar: hh('main .topbar'), brand: hh('.sidebar .brand-lockup'), footer: hh('.sidebar-footer'), side: document.querySelector('.sidebar')?.getBoundingClientRect().width }
+      })
+      check(Math.abs(shellM.topbar - 48) <= 1, `topbar is 48 px high at ${w}x${h} ${theme}`, JSON.stringify(shellM))
+      check(Math.abs(shellM.brand - 48) <= 1, `brand row is 48 px high at ${w}x${h} ${theme}`, JSON.stringify(shellM))
+      check(w < 1180 ? Math.abs(shellM.side - 56) <= 1 : Math.abs(shellM.side - 232) <= 1, `sidebar is ${w < 1180 ? 'a 56 px rail' : '232 px wide'} at ${w}x${h} ${theme}`, JSON.stringify(shellM))
+      if (w >= 1180) check(shellM.footer < 80, `sidebar footer is under 80 px at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
       check(inside(m.tabs), `run tabs inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.tabs))
       check(inside(m.header), `run header inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.header))
@@ -184,7 +192,7 @@ try {
       const ring = await tab.evaluate((el) => { const s = getComputedStyle(el); return { o: s.outlineStyle, ow: s.outlineWidth, bs: s.boxShadow } })
       check((ring.o !== 'none' && parseFloat(ring.ow) > 0) || ring.bs !== 'none', `run tab shows a focus ring at ${w}x${h} ${theme}`, JSON.stringify(ring))
       await shot(`live-run-${w}x${h}-${theme}`)
-      await page.locator('.topbar .tabs').getByRole('button', { name: 'History', exact: true }).click()
+      await projectTab(page, 'History').click()
       await sleep(300)
       const hm = await page.evaluate(() => {
         const b = document.querySelector('.run-row')?.getBoundingClientRect()
@@ -196,8 +204,32 @@ try {
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
+  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Projects.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1600, 1000))
+  await sleep(300)
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await sleep(600)
+  const stops = []
+  await page.evaluate(() => document.querySelector('.skip-link')?.focus())
+  for (let i = 0; i < 4; i++) {
+    if (i > 0) await page.keyboard.press('Tab')
+    stops.push(await page.evaluate(() => (document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent || '').trim()))
+  }
+  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Projects/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Projects', JSON.stringify(stops))
+
+  // The account row opens a popover with a way to App settings > Connections; Esc closes it and focus returns.
+  await page.locator('[data-testid=auth-pill]').click()
+  await page.locator('[data-testid=account-popover]').waitFor({ state: 'visible', timeout: 5000 })
+  check((await page.locator('[data-testid=account-popover]').getByRole('button', { name: /Connections/ }).count()) === 1, 'account popover links to App settings Connections')
+  await shot('account-popover')
+  await page.keyboard.press('Escape')
+  await sleep(200)
+  check(!(await page.locator('[data-testid=account-popover]').isVisible()), 'Esc closes the account popover')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'auth-pill'), 'focus returns to the account row')
+
   // Settings > Appearance: the theme switch flips data-theme on <html>, persists across a reload and reaches a second window.
-  await page.locator('.sidebar .nav-item', { hasText: 'App settings' }).first().click()
+  await openAppSettings(page)
   const appearance = page.locator('[data-testid=appearance-section]')
   await appearance.waitFor({ timeout: 10_000 })
   const themeGroup = appearance.getByRole('radiogroup', { name: 'Theme' })
@@ -226,7 +258,7 @@ try {
       await win2.close().catch(() => {})
     }
   }
-  await page.locator('.sidebar .nav-item', { hasText: 'App settings' }).first().click()
+  await openAppSettings(page)
   await appearance.waitFor({ timeout: 10_000 })
   await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
   await sleep(800)
