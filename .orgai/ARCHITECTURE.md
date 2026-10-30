@@ -67,6 +67,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - `src/main/runtime/worktrees.ts`
 - `src/main/runtime/usage.ts`
 - `src/main/runtime/childEnv.ts` (isolateClaudeEnv: the routing-variable denylist for Claude Code children)
+- `src/main/runtime/builtinModel.ts` (resolveBuiltinModel: the model for the built-in Architect and MCP assistant roles from AppSettings.setupModel / mcpAssistModel, resolved against the run's connection and adapter family; an unusable setting falls back to the connection's deep tier, then the root role's model, then the adapter default, with one run warning)
 - `src/main/runtime/testHelpers.ts`
 
 ### Provider adapters
@@ -219,6 +220,8 @@ components/layout:
 - lib/runChains.ts: session chains. Continue is offered only on the chain's newest member.
 - lib/runStatus.ts is the one status vocabulary: Running, Needs you, Idle, Paused, Finished, Stopped, Failed. The run tabs, sidebar, topbar badge and History use its words and tones.
 - Pure, unit-tested helpers in lib/: needsYou.ts (pending decisions across runs), runLabels.ts (R1, R2 per project), runStatus.ts, peerNotes.ts (cross-run notes), transcriptRows.ts (tool calls as sentences, raw input as an optional detail), orgDiff.ts (the proposal diff), roleOps.ts (role names, add and remove), projectsForm.ts, layout.ts (dagre layout; acyclicParents detaches a role whose reportsTo chain loops), theme.ts.
+- lib/assistantModels.ts: `useAssistantModel('setupModel' | 'mcpAssistModel')` (the saved built-in assistant model, kept current through settings:changed) and `modelDisplayName`. The MCP assist dialog hint and the Org retrospective tooltip use it.
+- App settings pane switching: `requestAppSettingsSection` records the target; a page that is already mounted switches panes on the `orgai:settings-section` window event (dispatched by the MCP assist dialog's "Change in App settings > Defaults" link).
 - Styles: one CSS file per area in styles/, including layout.css (the CanvasFrame and SidePanel grid) and run-tabs.css. RunStrip.tsx, NotificationsToggle.tsx and LogsLink.tsx were removed: run tabs replace the strip, and notifications and logs live in App Settings.
 
 - `src/renderer/src/`
@@ -274,7 +277,8 @@ components/layout:
   - They never cross IPC. Write-only inputs are allowed, and responses carry has-flags only.
   - They are never logged and are redacted from probe output. An API key reaches Codex only through the environment.
 - projects:save (ProjectStore.saveFromRenderer) keeps the stored mcpServers and plugins. Those change only through mcp:* and plugins:*, approved setup or MCP proposals, and installs approved with scope 'project'. Deleting a project deletes its MCP secrets.
-- OrgAI's Codex home is <data>/codex, so it never loads the user's ~/.codex config.
+- OrgAI's Codex home is <data>/codex, so it never loads the user's ~/.codex config. CodexAppServer.start creates CODEX_HOME (recursive, mode 0o700) before spawning, since codex 0.166.0 exits 1 when it is missing (issue #8). An app-server exit error (codexExitMessage) appends a redacted stderr tail: the last 10 non-empty lines, at most 2,000 chars, with exact env secret values redacted and key-like tokens masked (maskKeyLike).
+- Built-in roles (setup Architect, MCP assistant) take their model from AppSettings.setupModel / mcpAssistModel (default 'opus', normalized in store/settings.ts) through runtime/builtinModel.ts resolveBuiltinModel; RunManager logs a fallback warning once per run.
 - The Claude child env is isolated (childEnv.ts isolateClaudeEnv). The Anthropic connection uses only the Claude Code login, CLAUDE_CODE_OAUTH_TOKEN or the project's API key env var. A user's Claude Code gateway config (shell exports or the ~/.claude/settings.json env block) never applies to OrgAI runs; routing variables come only from the run's connection. The denylist is exact names plus families (ANTHROPIC_DEFAULT_*, provider and workload-identity ANTHROPIC_* families, CLAUDE_CODE_USE_*, CLAUDE_CODE_SKIP_*_AUTH, every CLAUDE_CODE_{DISABLE,ENABLE}_* switch except the explicit allows in CLAUDE_CODE_ALLOWED_SWITCHES: telemetry and privacy opt-outs). On a proxy connection (LiteLLM) the inherited ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CONFIG_DIR are dropped too, so only the connection's ANTHROPIC_AUTH_TOKEN authenticates. An authentication failure ends the run failed with activity.ts authFailureMessage, never as the orchestrator's reply. isAuthFailure trusts text only with an error flag from the adapter, except the CLI's exact bare "Invalid API key · Please run /login" reply; adapters set isError only for auth-related error codes or an errored result. The Claude CLI status check finds PATH candidates with execFile (no shell; on Windows System32 where.exe with `$PATH:claude`, run in the temp dir) and never falls back to a bare `claude`.
 - MCP:
   - Claude runs use strictMcpConfig, so only the project's enabled servers and run-scoped installs load.
