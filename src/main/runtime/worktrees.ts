@@ -321,7 +321,13 @@ export async function integrateWorktree(
     }
   }
 
-  return withRepoLock(root, () => mergeInto(root, info, commitMessage, changedFiles))
+  return withRepoLock(root, async () => {
+    // The lock was released during the review: maintenance or another run may have removed the worktree meanwhile.
+    if (!existsSync(wt)) {
+      return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
+    }
+    return mergeInto(root, info, commitMessage, changedFiles)
+  })
 }
 
 /** integrateWorktree's merge step; the caller holds the target's lock. */

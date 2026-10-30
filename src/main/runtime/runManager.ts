@@ -824,7 +824,14 @@ export class RunManager {
     if (!current) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
-    return this.continueRun(project, runId, RESUME_TEXT)
+    try {
+      return await this.continueRun(project, runId, RESUME_TEXT)
+    } catch (e) {
+      // The timer is gone; a run still paused must not claim it will resume by itself.
+      const s = this.summary(runId)
+      if (s?.status === 'paused' && s.autoResume) this.cancelAutoResume(runId)
+      throw e
+    }
   }
 
   /** Keep a paused run paused; the user continues it by hand. */
