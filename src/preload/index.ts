@@ -26,7 +26,11 @@ const api: OrgAIApi = {
     pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
     checkPath: (path: string) => ipcRenderer.invoke(IPC.projectsCheckPath, path),
     remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input),
-    previewRemap: (input) => ipcRenderer.invoke(IPC.projectsPreviewRemap, input)
+    previewRemap: (input) => ipcRenderer.invoke(IPC.projectsPreviewRemap, input),
+    scanAgents: (path: string) => ipcRenderer.invoke(IPC.projectsScanAgents, path),
+    previewImport: (input) => ipcRenderer.invoke(IPC.projectsPreviewImport, input),
+    applyImport: (input) => ipcRenderer.invoke(IPC.projectsApplyImport, input),
+    exportOrg: (projectId: string) => ipcRenderer.invoke(IPC.projectsExportOrg, projectId)
   },
   connections: {
     list: () => ipcRenderer.invoke(IPC.connectionsList),
