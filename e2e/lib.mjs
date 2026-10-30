@@ -238,7 +238,16 @@ export async function screenshot(page, name) {
 
 export async function gotoProjects(page) {
   await page.locator('.sidebar .nav-item', { hasText: 'Projects' }).first().click()
-  await page.waitForSelector('form.card', { timeout: 10_000 })
+  // With no projects the form is open; otherwise it sits behind the topbar "New project" button.
+  await page.waitForSelector('form.card, [data-testid=new-project], .project-card', { timeout: 10_000 })
+}
+
+/** Open the new-project form if it is closed. Returns the form locator. */
+async function openProjectForm(page) {
+  const form = page.locator('form.card')
+  if (!(await form.count())) await page.locator('[data-testid=new-project]').click()
+  await form.waitFor({ timeout: 10_000 })
+  return form
 }
 
 /**
@@ -246,10 +255,10 @@ export async function gotoProjects(page) {
  * mode: 'existing' (repository folder) or 'new' (idea + folder). skipSetup: tick "Skip AI setup" (token-free).
  * Resolves once the app has navigated away from the projects view.
  */
-export async function createProject(page, { mode = 'existing', path: dir, name, brief = '', skipSetup = true }) {
+export async function createProject(page, { mode = 'existing', path: dir, name, brief = '', skipSetup = true, useMock = true }) {
   await gotoProjects(page)
-  const form = page.locator('form.card')
-  await form.getByRole('button', { name: mode === 'new' ? 'New idea' : 'Existing repository', exact: true }).click()
+  const form = await openProjectForm(page)
+  await form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing repository', exact: true }).check({ force: true })
   if (mode === 'new') {
     await form.locator('input[placeholder="My app"]').fill(name)
     await form.locator('textarea').first().fill(brief)
@@ -259,13 +268,16 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
     await form.locator('input[placeholder*="Defaults to the folder name"]').fill(name)
     if (brief) await form.locator('textarea').first().fill(brief)
   }
-  const box = form.locator('input[type="checkbox"]')
-  // The checkbox itself is visually hidden; click its label.
-  if ((await box.isChecked()) !== skipSetup) await form.locator('label.check', { hasText: 'Skip AI setup' }).click()
-  if ((await box.isChecked()) !== skipSetup) throw new Error('could not toggle "Skip AI setup"')
+  // "Set up with the Architect" has the inverse meaning of skipSetup (checked = run setup).
+  const box = form.locator('[data-testid=architect-setup]')
+  if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: 'Set up with the Architect' }).click()
+  if ((await box.isChecked()) === skipSetup) throw new Error('could not toggle "Set up with the Architect"')
+  // The mock checkbox only exists under ORGAI_MOCK=1 and is on by default; useMock: false saves the project with the real adapter.
+  const mock = form.locator('[data-testid=use-mock]')
+  if ((await mock.count()) && (await mock.isChecked()) !== useMock) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
   await form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' }).click()
   // The projects view (and its form) goes away once the project exists and the app navigates to it.
-  await page.waitForSelector('form.card', { state: 'detached', timeout: 120_000 })
+  await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 120_000 })
   return await findProject(page, name)
 }
 
@@ -278,7 +290,7 @@ export async function findProject(page, name) {
 /** Open a project from the sidebar. */
 export async function openProject(page, name) {
   await page.locator('.sidebar .nav-item', { hasText: name }).first().click()
-  await page.waitForSelector('form.card', { state: 'detached', timeout: 10_000 })
+  await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 10_000 })
 }
 
 /** Delete every project card with this name. Returns how many cards remain (0 on success). */
@@ -287,7 +299,8 @@ export async function deleteProject(page, name) {
   for (let i = 0; i < 5; i++) {
     const card = page.locator('.project-card', { hasText: name }).first()
     if (!(await card.count())) break
-    await card.getByRole('button', { name: 'Delete' }).click()
+    await card.getByRole('button', { name: 'Delete', exact: true }).click()
+    await page.getByRole('button', { name: 'Delete project', exact: true }).click()
     await sleep(700)
   }
   return page.locator('.project-card', { hasText: name }).count()
