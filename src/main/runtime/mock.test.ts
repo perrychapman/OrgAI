@@ -252,3 +252,25 @@ describe('mock adapter MCP library steps', () => {
     expect(p.payload.upsert[0]).toMatchObject({ name: 'mock-fs' })
   })
 })
+
+describe('mock adapter complete', () => {
+  const adapter = new MockAdapter({ script: { delayMs: 0 } })
+  const sys = 's'
+  it('derives a title from the first four words inside <message>', async () => {
+    const prompt = 'Instructions\n<message>\nfix the "login" bug, now please\n</message>'
+    expect(await adapter.complete({ system: sys, prompt, kind: 'title' })).toBe('Fix the login bug')
+  })
+  it('uses the whole prompt without markers and returns empty for nothing', async () => {
+    expect(await adapter.complete({ system: sys, prompt: "don't panic", kind: 'title' })).toBe("Don't panic")
+    expect(await adapter.complete({ system: sys, prompt: '!!! ???', kind: 'title' })).toBe('')
+  })
+  it('fails on the failure marker', async () => {
+    await expect(adapter.complete({ system: sys, prompt: '<message>[mock:title-fail]</message>', kind: 'title' })).rejects.toThrow('Mock title failure')
+  })
+  it('still answers drafts with parseable JSON roles', async () => {
+    for (const kind of [undefined, 'draft' as const]) {
+      const out = JSON.parse(await adapter.complete({ system: sys, prompt: 'x', kind }))
+      expect(Array.isArray(out.roles)).toBe(true)
+    }
+  })
+})

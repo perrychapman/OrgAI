@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, completionEnv, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -171,5 +171,17 @@ describe('HarnessCallerTracker', () => {
     const t = new HarnessCallerTracker()
     expect(t.resolve(T, 5)).toBeUndefined()
     expect(t.resolve(T, { 'claudecode/toolUseId': 'zzz' })).toBeUndefined()
+  })
+})
+
+describe('completionEnv', () => {
+  const base = { ANTHROPIC_API_KEY: 'k', PATH: 'p' }
+  it('is undefined without a connection', () => expect(completionEnv(undefined, base)).toBeUndefined())
+  it('merges litellm env and drops ANTHROPIC_API_KEY', () => {
+    const env = completionEnv({ connection: 'litellm', adapter: 'claude', env: { ANTHROPIC_BASE_URL: 'u' } }, base)
+    expect(env).toEqual({ PATH: 'p', ANTHROPIC_BASE_URL: 'u' })
+  })
+  it('keeps ANTHROPIC_API_KEY for anthropic', () => {
+    expect(completionEnv({ connection: 'anthropic', adapter: 'claude', env: {} }, base)?.ANTHROPIC_API_KEY).toBe('k')
   })
 })

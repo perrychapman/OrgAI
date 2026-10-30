@@ -27,7 +27,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
@@ -215,6 +215,14 @@ export function redactSecrets(text: string, secrets: Iterable<string>): string {
 /** True when the run reaches its models through a non-anthropic connection (LiteLLM). */
 export function usesProxy(ctx: Pick<RuntimeContext, 'connection'>): boolean {
   return !!ctx.connection && ctx.connection.connection !== 'anthropic'
+}
+
+/** Environment for a one-shot completion on a run's connection; undefined (SDK default) without one. */
+export function completionEnv(connection: RunConnection | undefined, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> | undefined {
+  if (!connection) return undefined
+  const env: Record<string, string | undefined> = { ...base, ...connection.env }
+  if (connection.connection !== 'anthropic') delete env.ANTHROPIC_API_KEY
+  return env
 }
 
 /** Child-process environment. A non-anthropic connection authenticates with its own token, never ANTHROPIC_API_KEY. */
@@ -1318,6 +1326,8 @@ export class ClaudeAdapter implements RuntimeAdapter {
       ...EXECUTABLE_OPTION
     }
     if (input.model) options.model = input.model
+    const env = completionEnv(input.connection)
+    if (env) options.env = env
     let text = ''
     for await (const msg of query({ prompt: input.prompt, options })) {
       if (msg.type === 'assistant') {
