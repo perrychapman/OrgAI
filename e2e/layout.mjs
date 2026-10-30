@@ -195,6 +195,42 @@ try {
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
+  // Settings > Appearance: the theme switch flips data-theme on <html>, persists across a reload and reaches a second window.
+  await page.locator('.sidebar .nav-item', { hasText: 'Settings' }).first().click()
+  const appearance = page.locator('[data-testid=appearance-section]')
+  await appearance.waitFor({ timeout: 10_000 })
+  const themeGroup = appearance.getByRole('radiogroup', { name: 'Theme' })
+  await themeGroup.locator('label.seg-item', { hasText: 'Light' }).click()
+  await sleep(800)
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'Settings > Appearance Light flips data-theme to light')
+  await shot('settings-appearance-light')
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await sleep(600)
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'the chosen theme persists across a reload')
+  const themeProj = await findProject(page, NAME)
+  const themeRuns = await page.evaluate((id) => window.orgai.runs.list(id), themeProj.id)
+  if (themeRuns.length) {
+    await page.evaluate((t) => window.orgai.window.openRun(t), { projectId: themeProj.id, runId: themeRuns[0].id })
+    let win2
+    for (let i = 0; i < 30 && !win2; i++) {
+      win2 = app.windows().find((w) => w !== page)
+      if (!win2) await sleep(500)
+    }
+    check(!!win2, 'a second window opens for the theme check')
+    if (win2) {
+      await win2.waitForSelector('.sidebar, .run-header', { timeout: 20_000 }).catch(() => {})
+      await sleep(600)
+      check((await win2.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'the second window uses the saved light theme')
+      await win2.close().catch(() => {})
+    }
+  }
+  await page.locator('.sidebar .nav-item', { hasText: 'Settings' }).first().click()
+  await appearance.waitFor({ timeout: 10_000 })
+  await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
+  await sleep(800)
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'Settings > Appearance Dark flips data-theme back to dark')
+
   // New-idea mode, also token-free with setup skipped.
   const created = await createProject(page, { mode: 'new', path: path.join(base, 'new-idea-folder'), name: NEW_NAME, brief: 'A tiny todo app for layout testing.' })
   check(!!created, 'new-idea project created')
