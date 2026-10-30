@@ -72,6 +72,17 @@ export function isBlockingHarnessTool(name: string): boolean {
  */
 export interface HarnessToolCaller {
   agentId?: string
+  /** The calling agent's Role.id when the adapter knows it (Codex: the thread's role; mock). Missing = the root role. */
+  roleId?: string
+}
+
+/** Options for harnessToolsFor. */
+export interface HarnessToolOptions {
+  /**
+   * The adapter loads skills natively (Claude: the Skill tool over a run-scoped plugin), so list_skills / load_skill
+   * are left out. Default false: they are included for work runs that have skills.
+   */
+  nativeSkills?: boolean
 }
 
 export interface HarnessToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
@@ -946,7 +957,7 @@ export const MCP_ASSIST_TOOL_DEFS: HarnessToolDef[] = [listMcpServers, searchMcp
  * The harness tools for a run, by kind. Adapters call this instead of choosing setupTools / workTools
  * themselves, then give each tool to the root, or to the root and every canSpawn role (tool.audience).
  */
-export function harnessToolsFor(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): HarnessTool[] {
+export function harnessToolsFor(ctx: RuntimeContext, hooks: HarnessToolHooks = {}, _options: HarnessToolOptions = {}): HarnessTool[] {
   if (ctx.run.kind === 'setup') return setupTools(ctx, hooks)
   if (ctx.run.kind === 'mcp-assist') return bind(MCP_ASSIST_TOOL_DEFS, ctx, hooks)
   return workTools(ctx, hooks)

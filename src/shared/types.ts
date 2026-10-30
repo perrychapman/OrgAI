@@ -1625,7 +1625,15 @@ export interface UsageStatsQuery {
   kinds?: RunKind[]
   /** Trend bucket size, by local calendar day or ISO week (Monday start). Default 'day'. */
   bucket?: 'day' | 'week'
+  /**
+   * Most rows in UsageStats.runs (the newest runs win). Default USAGE_STATS_DEFAULT_LIMIT (500), clamped to
+   * 1..USAGE_STATS_MAX_LIMIT (2000). Roles, trend and totals cover only the returned rows.
+   */
+  limit?: number
 }
+
+export const USAGE_STATS_DEFAULT_LIMIT = 500
+export const USAGE_STATS_MAX_LIMIT = 2000
 
 /** One run in UsageStats.runs. */
 export interface RunUsageRow {
@@ -1677,6 +1685,8 @@ export interface UsageStats {
   /** Everything in `runs` summed (roles/models merged; wallMs summed). */
   totals: RunUsage
   generatedAt: number
+  /** More runs matched than `limit`; the oldest were left out. */
+  truncated?: true
 }
 
 // ---------- Runs ----------
@@ -2631,6 +2641,57 @@ export interface OrgAIApi {
   }
   /** The library changed (any mcpLibrary:* mutation, authorize, revoke, promote). Returns an unsubscribe function. */
   onMcpLibraryChanged(cb: (entries: McpLibraryInfo[]) => void): () => void
+  /** Project skills, repo import and skill evaluation. Every mutation returns the saved project. */
+  skills: {
+    /** The project's skills (linked ones refreshed from the library) with their role grants. */
+    list(projectId: string): Promise<SkillInfo[]>
+    /** SKILL.md and the file list of one project skill (a linked one reads the library entry's files). */
+    read(input: { projectId: string; skillId: string }): Promise<SkillContent>
+    /** Write a new project skill (source 'user'). Rejects on an invalid or duplicate name, or a too long body. */
+    create(input: SkillCreateInput): Promise<SkillMutationResult>
+    /** Rewrite SKILL.md, toggle enabled or replace the granted roles. A linked skill takes only enabled and roleIds. */
+    update(input: SkillUpdateInput): Promise<SkillMutationResult>
+    /** Remove a project skill and its files and drop it from every Role.skills. A linked skill is only unlinked. */
+    remove(input: { projectId: string; skillId: string }): Promise<SkillMutationResult>
+    /** Add a library entry to the project by reference. Rejects when the project already has a skill of that name. */
+    linkLibrary(input: SkillLinkLibraryInput): Promise<SkillMutationResult>
+    /** Copy a project-only skill into the library and relink it. Rejects when the library already has that name. */
+    promote(input: { projectId: string; skillId: string }): Promise<SkillMutationResult>
+    /**
+     * Scan the project's folder (SKILL_REPO_ROOTS, untrusted, read-only, token-free) and show what an import would do.
+     * Saves nothing. Never rejects for a missing root.
+     */
+    previewImport(input: SkillImportInput): Promise<SkillImportPreview>
+    /** Re-scan, check the preview's digest, copy the chosen skills into OrgAI and grant them. */
+    applyImport(input: SkillImportApplyInput): Promise<SkillImportApplyResult>
+    /** Restore the skills, files and grants an applyImport replaced. Rejects when the undo expired. */
+    undoImport(input: { projectId: string; undoId: string }): Promise<SkillMutationResult>
+    /**
+     * Run the skill evaluation now: deterministic checks over the skills and the newest runs, plus (only with
+     * Project.skillEvaluation.enabled and within its tokenBudget) a one-shot model call drafting up to 3 suggestions.
+     * Persists and returns the report. Never applies anything.
+     */
+    evaluate(projectId: string): Promise<SkillEvaluationReport>
+    /** The last persisted report, or null. */
+    lastEvaluation(projectId: string): Promise<SkillEvaluationReport | null>
+    /** Create a project skill (source 'suggestion') from a suggestion of the last report, on the user's explicit call. */
+    applySuggestion(input: SkillApplySuggestionInput): Promise<SkillMutationResult>
+  }
+  /** The app-wide skill library. Every mutation also broadcasts skillLibrary:changed. */
+  skillLibrary: {
+    list(): Promise<SkillLibraryInfo[]>
+    read(input: { libraryId: string }): Promise<SkillContent>
+    /** Write a new library entry from a draft. Name unique within the library. */
+    create(draft: SkillDraft): Promise<SkillLibraryInfo[]>
+    /** Copy one skill folder (SKILL.md at its top; untrusted, same caps and checks as the repo import) into the library. */
+    addFromFolder(input: SkillLibraryFolderInput): Promise<SkillLibraryInfo[]>
+    /** Rewrite an entry's SKILL.md (resource files kept). Linked projects see it on their next read. */
+    update(input: { libraryId: string; draft: SkillDraft }): Promise<SkillLibraryInfo[]>
+    /** Delete an entry and its files, unlink it from every project and drop the Role.skills grants to those links. */
+    remove(input: { libraryId: string }): Promise<SkillLibraryInfo[]>
+  }
+  /** The skill library changed. Returns an unsubscribe function. */
+  onSkillLibraryChanged(cb: (entries: SkillLibraryInfo[]) => void): () => void
   plugins: {
     /** Add or replace one plugin. Returns the saved project. */
     upsert(input: PluginUpsertInput): Promise<Project>
@@ -2858,5 +2919,26 @@ export const IPC = {
   runsPendingCards: 'runs:pendingCards',
   runsUsageStats: 'runs:usageStats',
   modelsPrices: 'models:prices',
-  windowOpenRun: 'window:openRun'
+  windowOpenRun: 'window:openRun',
+  skillsList: 'skills:list',
+  skillsRead: 'skills:read',
+  skillsCreate: 'skills:create',
+  skillsUpdate: 'skills:update',
+  skillsRemove: 'skills:remove',
+  skillsLinkLibrary: 'skills:linkLibrary',
+  skillsPromote: 'skills:promote',
+  skillsPreviewImport: 'skills:previewImport',
+  skillsApplyImport: 'skills:applyImport',
+  skillsUndoImport: 'skills:undoImport',
+  skillsEvaluate: 'skills:evaluate',
+  skillsLastEvaluation: 'skills:lastEvaluation',
+  skillsApplySuggestion: 'skills:applySuggestion',
+  skillLibraryList: 'skillLibrary:list',
+  skillLibraryRead: 'skillLibrary:read',
+  skillLibraryCreate: 'skillLibrary:create',
+  skillLibraryAddFromFolder: 'skillLibrary:addFromFolder',
+  skillLibraryUpdate: 'skillLibrary:update',
+  skillLibraryRemove: 'skillLibrary:remove',
+  /** main -> renderer push channel carrying SkillLibraryInfo[] after every library change. */
+  skillLibraryChanged: 'skillLibrary:changed'
 } as const

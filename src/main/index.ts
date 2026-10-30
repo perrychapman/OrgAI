@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'el
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent } from '@shared/types'
+import type { AppSettings, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
 import { HARNESS_PROJECT_ID, IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
@@ -18,6 +18,8 @@ import { ConnectionService } from './connections/service'
 import { McpService } from './mcp/service'
 import { harnessProject } from './mcp/assist'
 import { McpLibraryStore } from './store/mcpLibrary'
+import { SkillService } from './skills/service'
+import { SkillEvaluationService } from './skills/evaluation'
 import { applyShellPath } from './shellEnv'
 import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
@@ -81,6 +83,12 @@ function broadcast(event: RunEvent): void {
 function broadcastMcpLibrary(entries: McpLibraryInfo[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.mcpLibraryChanged, entries)
+  }
+}
+
+function broadcastSkillLibrary(entries: SkillLibraryInfo[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.skillLibraryChanged, entries)
   }
 }
 
@@ -224,6 +232,12 @@ app.whenReady().then(() => {
     // Library changes that save a project (unlink on remove, promote) reach every window like a run's project update.
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
   })
+  const skills = new SkillService({
+    dataDir,
+    projects,
+    onLibraryChanged: broadcastSkillLibrary,
+    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
+  })
   const setup = new SetupService(projects, {
     removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
     mcp: {
@@ -280,7 +294,17 @@ app.whenReady().then(() => {
       prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
       libraryEntries: () => mcp.libraryEntries(),
       searchRegistry: (input) => mcp.registrySearch(input)
-    }
+    },
+    skills
+  })
+  const rm = runManager
+  const skillEvaluation = new SkillEvaluationService({
+    dataDir,
+    project: (projectId) => projects.get(projectId),
+    listRuns: (projectId) => rm.list(projectId),
+    getRun: (runId) => rm.get(runId),
+    skills,
+    complete: (project, input) => rm.completeForProject(project, input)
   })
   registerIpc({
     projects,
@@ -298,7 +322,9 @@ app.whenReady().then(() => {
       modelContext: (id) => connections.importModelContext(id),
       withAdapter: (project) => connections.withAdapter(project),
       onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
-    })
+    }),
+    skills,
+    skillEvaluation
   })
   connections.init()
   app.on('before-quit', () => connections.dispose())

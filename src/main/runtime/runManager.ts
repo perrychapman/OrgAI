@@ -43,7 +43,8 @@ import { IntervalTimer, buildUsageStats, computeRunUsage, legacySummaryUsage, no
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
 import { MCP_ASSIST_MODEL_LABEL, SETUP_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -319,6 +320,19 @@ export interface RunManagerOptions {
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
   }
+  /** Project skills for work runs (SkillService, RuntimeContext.skills). Missing = runs have no skills. */
+  skills?: SkillRunSource
+}
+
+/** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
+export interface ProjectCompletionInput {
+  system: string
+  prompt: string
+  kind: NonNullable<CompletionInput['kind']>
+  /** Which tier of the project's connection answers. 'fast' uses RunManagerOptions.fastModel like run titles. */
+  tier: 'fast' | 'everyday'
+  signal?: AbortSignal
+  onUsage?: CompletionInput['onUsage']
 }
 
 /** The install-card fields a user may edit before approving; everything else stays as the agent requested it. */
@@ -434,6 +448,15 @@ export class RunManager {
   /** The adapter a project's runs use (also used by the org chart drafter). Does not check role mismatches. */
   adapterFor(project: Project): RuntimeAdapter {
     return this.choose(project, 'setup').adapter
+  }
+
+  /**
+   * A one-shot completion (no tools) on the project's adapter and connection, with the tier's model. For helpers that
+   * are not runs (skill evaluation). Resolves with the text and the model used.
+   * CONTRACT STUB: the Runtime Engineer implements it (same connection and model choice as run titles).
+   */
+  async completeForProject(_project: Project, _input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
+    throw new Error('Not implemented yet')
   }
 
   /**

@@ -8,6 +8,7 @@ import type {
   FocusRunTarget,
   McpLibraryInfo,
   OrgAIApi,
+  SkillLibraryInfo,
   PermissionDecision,
   Project,
   RunEvent,
@@ -78,6 +79,34 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, entries: McpLibraryInfo[]): void => cb(entries)
     ipcRenderer.on(IPC.mcpLibraryChanged, listener)
     return () => ipcRenderer.removeListener(IPC.mcpLibraryChanged, listener)
+  },
+  skills: {
+    list: (projectId) => ipcRenderer.invoke(IPC.skillsList, projectId),
+    read: (input) => ipcRenderer.invoke(IPC.skillsRead, input),
+    create: (input) => ipcRenderer.invoke(IPC.skillsCreate, input),
+    update: (input) => ipcRenderer.invoke(IPC.skillsUpdate, input),
+    remove: (input) => ipcRenderer.invoke(IPC.skillsRemove, input),
+    linkLibrary: (input) => ipcRenderer.invoke(IPC.skillsLinkLibrary, input),
+    promote: (input) => ipcRenderer.invoke(IPC.skillsPromote, input),
+    previewImport: (input) => ipcRenderer.invoke(IPC.skillsPreviewImport, input),
+    applyImport: (input) => ipcRenderer.invoke(IPC.skillsApplyImport, input),
+    undoImport: (input) => ipcRenderer.invoke(IPC.skillsUndoImport, input),
+    evaluate: (projectId) => ipcRenderer.invoke(IPC.skillsEvaluate, projectId),
+    lastEvaluation: (projectId) => ipcRenderer.invoke(IPC.skillsLastEvaluation, projectId),
+    applySuggestion: (input) => ipcRenderer.invoke(IPC.skillsApplySuggestion, input)
+  },
+  skillLibrary: {
+    list: () => ipcRenderer.invoke(IPC.skillLibraryList),
+    read: (input) => ipcRenderer.invoke(IPC.skillLibraryRead, input),
+    create: (draft) => ipcRenderer.invoke(IPC.skillLibraryCreate, draft),
+    addFromFolder: (input) => ipcRenderer.invoke(IPC.skillLibraryAddFromFolder, input),
+    update: (input) => ipcRenderer.invoke(IPC.skillLibraryUpdate, input),
+    remove: (input) => ipcRenderer.invoke(IPC.skillLibraryRemove, input)
+  },
+  onSkillLibraryChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, entries: SkillLibraryInfo[]): void => cb(entries)
+    ipcRenderer.on(IPC.skillLibraryChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.skillLibraryChanged, listener)
   },
   plugins: {
     upsert: (input) => ipcRenderer.invoke(IPC.pluginsUpsert, input),
