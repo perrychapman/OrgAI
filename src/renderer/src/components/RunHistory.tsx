@@ -48,7 +48,7 @@ export default function RunHistory(): ReactElement {
       {summaries.length === 0 ? (
         <div className="history-empty">
           <Icon icon={HistoryIcon} size="lg" />
-          <p>No runs yet. Start one from the Live tab.</p>
+          <p>No runs yet. Give the team a goal on the Live tab; every run you start is kept here.</p>
         </div>
       ) : shown.length === 0 ? (
         <div className="history-empty">
@@ -59,19 +59,18 @@ export default function RunHistory(): ReactElement {
           <table className="history-table" aria-label="Runs of this project">
             <thead>
               <tr>
-                <th scope="col">Run</th>
-                <th scope="col">Status</th>
                 <th scope="col" className="col-prompt">
                   Prompt
                 </th>
-                <th scope="col" className="col-kind">
-                  Kind
-                </th>
-                <th scope="col" className="col-started">
-                  Started
-                </th>
+                <th scope="col">Status</th>
                 <th scope="col" className="col-cost">
                   Cost
+                </th>
+                <th scope="col" className="col-started">
+                  Age
+                </th>
+                <th scope="col" className="col-kind">
+                  Kind
                 </th>
                 <th scope="col">
                   <span className="sr-only">Actions</span>
@@ -133,17 +132,9 @@ function HistoryRow({
   const open = isOpenStatus(r.status)
   return (
     <tr className={`run-row ${viewed ? 'active' : ''}`}>
-      <td>
-        <span className="run-index">{runTag(index)}</span>
-      </td>
-      <td>
-        <span className={`pill run-status ${status.tone}`} title={r.pauseReason ?? status.note}>
-          <span className="dot" aria-hidden="true" /> {status.word}
-        </span>
-      </td>
       <td className="col-prompt">
         <div className="prompt" title={promptLine(r.prompt)}>
-          {promptLine(r.prompt)}
+          <span className="run-index">{runTag(index)}</span> {promptLine(r.prompt)}
         </div>
         {(predecessor || r.resumedFrom || successor || chainLength > 1) && (
           <div className="run-chain">
@@ -171,14 +162,19 @@ function HistoryRow({
           </div>
         )}
       </td>
-      <td className="col-kind">
-        <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
+      <td>
+        <span className={`pill run-status ${status.tone}`} title={r.pauseReason ?? status.note}>
+          <span className="dot" aria-hidden="true" /> {status.word}
+        </span>
+      </td>
+      <td className="col-cost" title={cost.title}>
+        {cost.text}
       </td>
       <td className="col-started" title={started.toLocaleString()}>
         {relativeTime(r.startedAt)}
       </td>
-      <td className="col-cost" title={cost.title}>
-        {cost.text}
+      <td className="col-kind">
+        <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
       </td>
       <td>
         <div className="run-row-actions">

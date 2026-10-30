@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import type { AgentInstance } from '@shared/types'
+import { Button } from './ui/Button'
 import { formatCost, formatElapsed, initials } from '../lib/layout'
 
 export interface FinishedGroup {
@@ -27,13 +28,13 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
         <span>
           {group.agents.length} finished report{group.agents.length === 1 ? '' : 's'} under {group.parentName}
         </span>
-        <button className="btn ghost sm" onClick={group.onExpand}>
+        <Button variant="ghost" size="sm" onClick={group.onExpand}>
           Show on chart
-        </button>
+        </Button>
       </div>
       {sorted.map((a) => (
-        <button key={a.id} className="finished-row" onClick={() => group.onPick(a.id)}>
-          <span className="avatar" style={{ ['--role' as string]: a.worktree?.status === 'conflict' ? 'var(--danger)' : 'var(--border-strong)', width: 24, height: 24, fontSize: 9 }}>
+        <button type="button" key={a.id} className="finished-row" onClick={() => group.onPick(a.id)}>
+          <span className="avatar" style={{ ['--role' as string]: a.worktree?.status === 'conflict' ? 'var(--danger)' : 'var(--border-strong)' }}>
             {initials(a.name)}
           </span>
           <span className="finished-body">

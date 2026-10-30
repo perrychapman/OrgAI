@@ -1,23 +1,29 @@
 /* ---------- Transcript ---------- */
 
 .transcript {
-  padding: 10px 12px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  font-size: var(--text-small);
+  gap: var(--space-3);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
 }
+/* Entries are not boxes by default: assistant text flows, only the user's messages and cross-run notes are bubbles. */
 .entry {
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
   white-space: pre-wrap;
   word-break: break-word;
 }
 .entry.user {
   background: var(--accent-soft);
-  border-color: var(--accent-soft-border);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+.panel-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
 }
 .entry-images {
   display: flex;
@@ -65,36 +71,66 @@
 .entry.thinking {
   color: var(--text-secondary);
   font-style: italic;
-  border-style: dashed;
+  font-size: var(--text-small);
+  border-left: 2px solid var(--border-default);
+  padding-left: var(--space-3);
 }
+/* Compact one-line rows: tool calls, tool results and harness lines. */
 .entry.tool_use,
-.entry.tool_result {
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-}
-.entry.tool_result {
+.entry.tool_result,
+.entry.system {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
   color: var(--text-secondary);
-  max-height: 220px;
-  overflow: auto;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  white-space: normal;
 }
-.entry.tool_result.error {
-  border-color: var(--danger-border);
+.entry.tool_use > svg,
+.entry.tool_result > svg,
+.entry.system > svg {
+  flex: none;
+  margin-top: var(--space-0h);
+  color: var(--text-tertiary);
+}
+.entry.tool_result.error,
+.entry.tool_result.error > svg {
   color: var(--danger-text);
+}
+.tool-main {
+  min-width: 0;
+  flex: 1;
+}
+.tool-label {
+  overflow-wrap: anywhere;
 }
 .entry .tag {
   font-size: var(--text-small);
   color: var(--text-secondary);
   font-weight: var(--weight-semibold);
-  font-family: var(--font-sans);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
   display: flex;
   justify-content: space-between;
-}
-.entry.system {
-  color: var(--text-tertiary);
-  font-size: var(--text-caption);
+  gap: var(--space-2);
 }
 
+.agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.agent-meta > span + span::before {
+  content: '·';
+  margin-right: var(--space-3);
+  color: var(--text-tertiary);
+}
+/* Shared with the proposal card's key/value block. */
 .agent-summary {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border-default);
@@ -113,11 +149,14 @@
 .logs {
   font-family: var(--font-mono);
   font-size: var(--text-caption);
-  padding: 10px 12px;
+  padding: var(--space-3);
   color: var(--text-secondary);
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+.log-time {
+  opacity: 0.6;
 }
 .logs .warn {
   color: var(--warning-text);
@@ -132,6 +171,10 @@
 .entry.user,
 .entry.system {
   white-space: normal;
+}
+.entry.user .md,
+.entry.text .md {
+  font-size: var(--text-body);
 }
 .md > :first-child {
   margin-top: 0;
@@ -209,25 +252,39 @@
   margin: 10px 0;
 }
 .entry.system .md {
-  font-size: var(--text-caption);
-}
-.entry.system.harness {
-  border-style: dashed;
+  font-size: var(--text-small);
 }
 .entry-detail summary {
   cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+.entry-detail summary:hover {
   color: var(--text-secondary);
+}
+.entry-detail summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .entry-detail pre {
   margin: var(--space-1) 0 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: calc(var(--space-16) * 4);
+  overflow: auto;
   font-family: var(--font-mono);
   font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
 }
 
 /* Cross-run notes: never styled like the user's own messages. The receiver row has a left rule in the accent. */
 .entry.peer {
   white-space: normal;
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
 }
 .entry.peer .peer-body {
   white-space: pre-wrap;
@@ -246,8 +303,8 @@
 
 /* Text an agent is still streaming; replaced by the final entry when its message completes. */
 .entry.text.streaming {
-  border-style: dashed;
-  border-color: color-mix(in oklab, var(--border-default) 50%, var(--accent) 50%);
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-3);
 }
 
 
@@ -303,6 +360,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.finished-row .avatar {
+  width: var(--space-6);
+  height: var(--space-6);
+  font-size: var(--text-caption);
+  flex: none;
 }
 .finished-meta {
   font-family: var(--font-mono);
@@ -371,9 +434,8 @@
 }
 .plan-icon {
   flex: none;
-  width: 16px;
-  text-align: center;
-  font-weight: var(--weight-semibold);
+  display: inline-flex;
+  margin-top: var(--space-0h);
   color: var(--text-tertiary);
 }
 .plan-step.in_progress .plan-icon {
@@ -395,13 +457,12 @@
   color: var(--text-primary);
   word-break: break-word;
 }
-.plan-id {
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
+.plan-pills {
+  gap: var(--space-1h);
+  flex-wrap: wrap;
 }
 .plan-owner {
-  margin-left: 6px;
+  margin-left: var(--space-2);
   font-size: var(--text-caption);
   color: var(--text-tertiary);
 }
@@ -413,6 +474,25 @@
   border-top: 1px solid var(--border-default);
   padding-top: 8px;
   color: var(--text-secondary);
+}
+
+/* Per-agent tab and per-run tabs sit in separate groups with a gap between them. */
+.side-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+.side-tabs .tabs + .tabs {
+  position: relative;
+}
+.side-tabs .tabs + .tabs::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--space-2) * -1 - 1px);
+  top: var(--space-1);
+  bottom: var(--space-1);
+  border-left: 1px solid var(--border-strong);
 }
 
 /* Side-panel header: the agent name gets the full width when the tabs do not fit beside it. */
@@ -427,6 +507,13 @@
     flex: 1 1 calc(100% - var(--space-10));
   }
   .live-panel .side-header .side-spacer {
+    display: none;
+  }
+  .live-panel .side-header .side-tabs {
+    flex-wrap: wrap;
+    gap: var(--space-1h);
+  }
+  .live-panel .side-header .side-tabs .tabs + .tabs::before {
     display: none;
   }
 }
