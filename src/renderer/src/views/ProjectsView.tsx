@@ -5,6 +5,7 @@ import type { ProjectPathCheck, SetupKind } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
+import { cleanIpcError } from '../lib/ipcError'
 import { examplePath } from '../lib/platform'
 import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../lib/agentImport'
 import { effectiveName, newProjectConnectionNote, pathStatus, submitBlocker } from '../lib/projectsForm'
@@ -76,6 +77,11 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
   const agentTotal = totalAgents(current)
   const hasAgents = agentTotal > 0
   const choice = effectiveSetupChoice(hasAgents, picked, architect)
+  const repoHint = !hasAgents || choice === 'architect'
+    ? 'The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.'
+    : choice === 'import'
+      ? 'The agent files are read, not changed. You review the roles before they join the chart.'
+      : 'Nothing in the folder is modified.'
   const blocker = submitBlocker({ kind, name, path, brief, status })
 
   const setPathValue = (v: string): void => {
@@ -87,9 +93,20 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
     if (dir) setPathValue(dir)
   }
 
-  const submit = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault()
+  const existingId = current?.existingProjectId
+  const openExisting = (): void => {
+    useAppStore.getState().selectProject(existingId ?? null)
+    useAppStore.getState().setView('run')
+  }
+
+  const submit = async (e: React.FormEvent | null, duplicate = false): Promise<void> => {
+    e?.preventDefault()
     if (blocker || busy) return
+    // A folder that is already a project opens it; a duplicate is a separate, deliberate choice.
+    if (existingId && !duplicate) {
+      openExisting()
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -113,7 +130,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         h.focus({ preventScroll: true })
       })
     } catch (err) {
-      setError((err as Error).message)
+      setError(cleanIpcError(err))
       document.getElementById(ids.path)?.focus()
     } finally {
       setBusy(false)
@@ -156,17 +173,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
       )}
       {current?.existingProjectId && (
         <span id={ids.dupMsg} className="field-msg warn" data-testid="already-project">
-          This folder is already a project: {current.existingProjectName}.{' '}
-          <button
-            type="button"
-            className="link-btn"
-            onClick={() => {
-              useAppStore.getState().selectProject(current.existingProjectId ?? null)
-              useAppStore.getState().setView('run')
-            }}
-          >
-            Open it
-          </button>
+          This folder is already a project: {current.existingProjectName}.
         </span>
       )}
       <span className="hint">{hint}</span>
@@ -217,17 +224,19 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         </>
       ) : (
         <>
-          {pathField('Repository folder', examplePath('repo'), 'The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.')}
+          {pathField('Repository folder', examplePath('repo'), repoHint)}
           {nameField('Defaults to the folder name')}
-          <div className="field">
-            <label htmlFor={ids.brief}>Anything the Architect should know? (optional)</label>
-            <Textarea
-              id={ids.brief}
-              value={brief}
-              onChange={setBrief}
-              placeholder="e.g. the kind of work you mostly do here, areas to leave alone, or team conventions not written down."
-            />
-          </div>
+          {(!hasAgents || choice === 'architect') && (
+            <div className="field">
+              <label htmlFor={ids.brief}>Anything the Architect should know? (optional)</label>
+              <Textarea
+                id={ids.brief}
+                value={brief}
+                onChange={setBrief}
+                placeholder="e.g. the kind of work you mostly do here, areas to leave alone, or team conventions not written down."
+              />
+            </div>
+          )}
         </>
       )}
 
@@ -241,6 +250,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
                 {importChoiceLabel(c, agentTotal)}
               </label>
             ))}
+            {choice === 'import' && <span className="hint">The project is created first; you review the roles next. Nothing is added until you import.</span>}
           </fieldset>
         ) : (
           <Checkbox
@@ -251,7 +261,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
             testId="architect-setup"
           />
         )}
-        {mockAvailable && <Checkbox checked={useMock} onChange={setUseMock} label="Use the mock adapter (no tokens are spent)" testId="use-mock" />}
+        {mockAvailable && <div className="form-mock"><Checkbox checked={useMock} onChange={setUseMock} label="Use the mock adapter (no tokens are spent)" testId="use-mock" /></div>}
       </div>
 
       <p className="form-connection muted" data-testid="new-project-connection">
@@ -276,8 +286,13 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
 
       <div className="row form-submit">
         <Button type="submit" variant="primary" loading={busy} disabled={!!blocker}>
-          {setupSubmitLabel(choice, busy)}
+          {existingId ? `Open ${current?.existingProjectName ?? 'project'}` : setupSubmitLabel(choice, busy)}
         </Button>
+        {existingId && (
+          <Button onClick={() => void submit(null, true)} disabled={!!blocker || busy}>
+            {setupSubmitLabel(choice, busy)} anyway
+          </Button>
+        )}
         {blocker && !busy && (
           <span id={ids.why} className="hint">
             {blocker}

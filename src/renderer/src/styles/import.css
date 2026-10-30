@@ -126,24 +126,6 @@
 }
 .import-prompt-toggle {
   align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-0h) var(--space-1);
-  border: 0;
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--text-small);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.import-prompt-toggle:hover {
-  color: var(--text-primary);
-}
-.import-prompt-toggle:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
 }
 .import-prompt pre {
   margin: 0;
@@ -185,4 +167,32 @@
 }
 .role-models .remap-roles {
   margin-top: var(--space-2);
+}
+.role-models > summary {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.import-mode-line {
+  margin: calc(var(--space-1) * -1) 0 0;
+}
+.import-foot-error {
+  margin-right: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--danger-text);
+  border-radius: var(--radius-sm);
+}
+.import-foot-error:focus-visible,
+.import-prompt pre:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.form-mock {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
 }

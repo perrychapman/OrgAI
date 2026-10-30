@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowRight, ChevronDown, ChevronRight, FileSearch } from 'lucide-react'
 import type { AgentImportAction, AgentImportItem, AgentImportMode, AgentImportPreview, AgentImportScan, Project } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
@@ -7,14 +7,17 @@ import { projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import {
   buildChoices,
+  elevatedLabels,
   importButtonLabel,
   importCount,
   importedSummary,
   managerSlug,
+  modeLine,
   sourceLabel,
   writeBannerMemory,
   type ImportEdit
 } from '../../lib/agentImport'
+import { cleanIpcError } from '../../lib/ipcError'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
@@ -24,9 +27,6 @@ import { EmptyState } from '../ui/EmptyState'
 import { Icon } from '../ui/Icon'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { Select } from '../ui/Select'
-
-/** The contract also carries the full prompt and the elevated tools; read them defensively until every build has them. */
-type Item = AgentImportItem & { prompt?: string; elevatedTools?: string[] }
 
 const MODES: { value: AgentImportMode; label: string; title: string }[] = [
   { value: 'merge', label: 'Add to the chart', title: 'Keep the current roles and add the imported ones' },
@@ -40,27 +40,28 @@ const CONN_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM'
 function ImportRow({
   item,
   preview,
-  project,
   edit,
   modelOptions,
   onEdit
 }: {
-  item: Item
+  item: AgentImportItem
   preview: AgentImportPreview
-  project: Project
   edit: ImportEdit | undefined
   modelOptions: { value: string; label: string }[]
   onEdit: (patch: ImportEdit) => void
 }): ReactElement {
   const uid = useId()
-  const [open, setOpen] = useState(false)
+  // A role with elevated grants opens its prompt: the user should read what gets commands or file access.
+  const [open, setOpen] = useState(item.elevatedTools.length > 0)
   const included = item.action !== 'skip'
   const roles = preview.roles.filter((r) => r.id !== item.roleId)
   const manager = managerSlug(item, preview.roles)
-  const full = item.prompt && item.prompt.length >= item.promptExcerpt.length ? item.prompt : item.promptExcerpt
+  const full = item.prompt
   const hidden = Math.max(0, item.promptLength - full.length)
+  const importedIds = new Set(preview.items.map((i) => i.roleId))
+  const rootName = preview.roles.find((r) => r.reportsTo === null && r.id !== item.roleId)?.name
   const models = modelOptions.some((o) => o.value === item.model) ? modelOptions : [{ value: item.model, label: item.model }, ...modelOptions]
-  const elevated = item.elevatedTools ?? []
+  const elevated = elevatedLabels(item.elevatedTools)
   return (
     <li className={`import-row${included ? '' : ' is-skipped'}`} data-testid="import-row" data-slug={item.slug}>
       <div className="import-row-head">
@@ -68,11 +69,11 @@ function ImportRow({
         <span className="chip">{sourceLabel(item.source)}</span>
         <span className="mono muted import-slug">{item.slug}</span>
         {item.slugConflict && <span className="chip warn">Name already used</span>}
-        {elevated.length > 0 && (
-          <span className="chip warn" title={`Elevated: ${elevated.join(', ')}`}>
-            Can run commands or edit files
+        {elevated.map((label) => (
+          <span key={label} className="chip warn">
+            {label}
           </span>
-        )}
+        ))}
       </div>
       {item.description && <p className="import-desc muted">{item.description}</p>}
       <div className="import-fields">
@@ -84,7 +85,10 @@ function ImportRow({
             <Select
               id={`${uid}-rt`}
               value={manager}
-              options={[{ value: '', label: 'Not set', disabled: true }, ...roles.map((r) => ({ value: r.slug, label: r.name }))]}
+              options={[
+                { value: '', label: rootName ?? 'Top level', disabled: true },
+                ...roles.map((r) => ({ value: r.slug, label: importedIds.has(r.id) ? `${r.name} (imported)` : r.name }))
+              ]}
               onChange={(reportsTo) => onEdit({ reportsTo })}
               disabled={!included}
             />
@@ -134,6 +138,7 @@ function ImportRow({
         ) : (
           <span className="muted">No tools granted.</span>
         )}
+        {item.tools.includes('Edit') && item.tools.includes('Write') && <span className="muted">Edit includes Write in OrgAI.</span>}
         {item.toolsDropped.length > 0 && (
           <span className="import-dropped" title="OrgAI has no equivalent for these tools, so the role will not have them.">
             Not available in OrgAI: {item.toolsDropped.join(', ')}
@@ -141,13 +146,16 @@ function ImportRow({
         )}
       </div>
       {item.notes.length > 0 && <p className="hint">{item.notes.join(' ')}</p>}
-      <button type="button" className="import-prompt-toggle" aria-expanded={open} aria-controls={`${uid}-prompt`} onClick={() => setOpen((v) => !v)}>
-        <Icon icon={open ? ChevronDown : ChevronRight} size="sm" />
-        {open ? 'Hide prompt' : 'Read prompt'}
-      </button>
+      <div className="import-prompt-toggle">
+        <Button variant="ghost" size="sm" icon={open ? ChevronDown : ChevronRight} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide prompt' : 'Read prompt'}
+        </Button>
+      </div>
       {open && (
         <div id={`${uid}-prompt`} className="import-prompt">
-          <pre>{full}</pre>
+          <pre tabIndex={0} role="region" aria-label={`Prompt of ${item.name}`}>
+            {full}
+          </pre>
           <p className="hint">
             {hidden > 0 ? `${hidden} more characters. ` : ''}The full prompt is imported as-is. You can edit it afterwards in the role inspector.
           </p>
@@ -177,6 +185,7 @@ export default function ImportAgentsDialog({
   const [preview, setPreview] = useState<AgentImportPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [applyError, setApplyError] = useState<string | null>(null)
+  const applyErrorRef = useRef<HTMLSpanElement>(null)
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState(false)
   const [refresh, setRefresh] = useState(0)
@@ -192,6 +201,10 @@ export default function ImportAgentsDialog({
     if (!connectionsLoaded) void loadConnections()
     if (!catalog) void loadModels(connection)
   }, [connectionsLoaded, catalog, connection, loadConnections, loadModels])
+
+  useEffect(() => {
+    if (applyError) applyErrorRef.current?.focus()
+  }, [applyError])
 
   useEffect(() => {
     let live = true
@@ -219,12 +232,16 @@ export default function ImportAgentsDialog({
         setPreview(p)
         setError(null)
       })
-      .catch((e) => live && setError((e as Error).message))
+      .catch((e) => {
+        if (!live) return
+        setPreview(null)
+        setError(cleanIpcError(e))
+      })
       .finally(() => live && setLoading(false))
     return () => {
       live = false
     }
-  }, [scan, hasSources, project.id, mode, choices, refresh])
+  }, [scan, hasSources, project.id, project.roles, mode, choices, refresh])
 
   const modelOptions = useMemo(() => {
     const tierModels = info?.connection.tierModels ?? {}
@@ -249,7 +266,7 @@ export default function ImportAgentsDialog({
 
   const apply = async (): Promise<void> => {
     if (!preview || count === 0 || applying) return
-    if (mode === 'replace' && !fresh && preview.replacedRoleIds.length > 0) {
+    if (!fresh && preview.replacedRoleIds.length > 0) {
       const names = preview.replacedRoleIds.map((id) => project.roles.find((r) => r.id === id)?.name ?? id)
       const ok = await confirm({
         title: `Replace ${names.length} role${names.length === 1 ? '' : 's'}?`,
@@ -267,24 +284,37 @@ export default function ImportAgentsDialog({
       useAppStore.getState().recordImport(project.id, {
         count,
         summary: importedSummary(count, [...new Set(preview.items.filter((i) => i.action !== 'skip').map((i) => i.source))]),
-        previousRoles: result.previousRoles
+        previousRoles: result.previousRoles,
+        importedRoles: result.project.roles
       })
       writeBannerMemory(window.localStorage, project.id, 'imported')
       onClose()
     } catch (e) {
-      setApplyError((e as Error).message)
+      setApplyError(cleanIpcError(e))
     } finally {
       setApplying(false)
     }
   }
 
   const mock = project.provider?.id === 'mock'
+  // The instruction-files banner says it once; keep the roll-up line out of the list.
+  const warnings = (preview?.warnings ?? []).filter((w) => !(preview && preview.instructionFiles.length > 0 && /instruction file/i.test(w)))
+  const flat = (preview?.items ?? []).some((i) => i.source !== 'orgai')
   const footer = (
     <>
-      <span className="import-foot-note muted">Nothing is written until you import. Your files are not changed.</span>
+      {applyError ? (
+        <span className="import-foot-error" role="alert" tabIndex={-1} ref={applyErrorRef} data-testid="import-apply-error">
+          <strong>Nothing was imported.</strong> {applyError}
+          <Button size="sm" onClick={() => { setApplyError(null); setRefresh((n) => n + 1) }}>
+            Refresh preview
+          </Button>
+        </span>
+      ) : (
+        <span className="import-foot-note muted">Nothing is written until you import. Your files are not changed.</span>
+      )}
       <Button onClick={onClose}>Cancel</Button>
       <Button variant="primary" onClick={() => void apply()} disabled={!preview || count === 0 || loading} loading={applying} testId="import-apply">
-        {importButtonLabel(count)}
+        {importButtonLabel(count, mode)}
       </Button>
     </>
   )
@@ -310,33 +340,23 @@ export default function ImportAgentsDialog({
               {scan.sources.map((s) => (
                 <li key={s.source}>
                   <strong>{s.label}</strong> <span className="muted">{s.agentCount} agent{s.agentCount === 1 ? '' : 's'}</span>
-                  <span className="mono muted import-files">{s.files.join(', ')}</span>
+                  <span className="mono muted import-files" title={s.files.join('\n')}>
+                    {s.files.length > 1 ? `${s.files.length} files` : s.files[0]}
+                  </span>
                 </li>
               ))}
             </ul>
             <SegmentedControl label="Import mode" value={mode} options={MODES} onChange={setMode} />
+            {preview && <p className="hint import-mode-line">{modeLine(mode, count, project.roles.length)}</p>}
             {error && (
               <Banner tone="danger" title="Could not build the preview">
                 {error}
               </Banner>
             )}
-            {applyError && (
-              <Banner
-                tone="danger"
-                title="Nothing was imported"
-                actions={
-                  <Button size="sm" onClick={() => { setApplyError(null); setRefresh((n) => n + 1) }}>
-                    Refresh preview
-                  </Button>
-                }
-              >
-                {applyError}
-              </Banner>
-            )}
-            {preview && preview.warnings.length > 0 && (
-              <Banner tone="warning" title={`${preview.warnings.length} thing${preview.warnings.length === 1 ? '' : 's'} to check`} testId="import-warnings">
+            {warnings.length > 0 && (
+              <Banner tone="warning" title={`${warnings.length} thing${warnings.length === 1 ? '' : 's'} to check`} testId="import-warnings">
                 <ul className="import-warn-list">
-                  {preview.warnings.map((w, i) => (
+                  {warnings.map((w, i) => (
                     <li key={i}>{w}</li>
                   ))}
                 </ul>
@@ -350,16 +370,15 @@ export default function ImportAgentsDialog({
             {preview && (
               <>
                 <p className="hint">
-                  Models are mapped to {mock ? "the connection's tiers (this project runs on the mock adapter)" : `${CONN_NAME[preview.connection]}'s tiers`}. Sources
-                  without a hierarchy report to the orchestrator. Change either below.
+                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${CONN_NAME[preview.connection]}'s tiers`}
+                  {flat ? '; roles without a hierarchy report to the orchestrator' : ''}. Change either below.
                 </p>
                 <ul className="import-roles" aria-busy={loading}>
                   {preview.items.map((item) => (
                     <ImportRow
                       key={item.key}
-                      item={item as Item}
+                      item={item}
                       preview={preview}
-                      project={project}
                       edit={edits[item.key]}
                       modelOptions={modelOptions}
                       onEdit={(patch) => edit(item.key, patch)}

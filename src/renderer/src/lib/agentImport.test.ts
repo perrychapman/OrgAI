@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   buildChoices,
   effectiveSetupChoice,
+  elevatedLabels,
   foundLine,
+  modeLine,
   importBannerVisible,
   importButtonLabel,
   importCount,
@@ -43,7 +45,7 @@ describe('setup choice', () => {
     expect(effectiveSetupChoice(false, null, false)).toBe('default')
   })
   it('labels the submit button', () => {
-    expect(setupSubmitLabel('import', false)).toBe('Review import')
+    expect(setupSubmitLabel('import', false)).toBe('Create project and review import')
     expect(setupSubmitLabel('architect', false)).toBe('Create and start setup')
     expect(setupSubmitLabel('default', false)).toBe('Create project')
   })
@@ -60,6 +62,10 @@ describe('choices and counts', () => {
     expect(importCount({ items: [{ action: 'add' }, { action: 'skip' }, { action: 'replace' }] as never })).toBe(2)
     expect(importButtonLabel(1)).toBe('Import 1 role')
     expect(importButtonLabel(3)).toBe('Import 3 roles')
+    expect(importButtonLabel(3, 'replace')).toBe('Replace chart with 3 roles')
+    expect(modeLine('merge', 3, 4)).toBe('Adds 3 roles next to the 4 you have.')
+    expect(modeLine('replace', 3, 1)).toBe('Replaces your 1 role with these 3.')
+    expect(elevatedLabels(['Bash', 'Edit', 'Write', 'canSpawn'])).toEqual(['Runs commands', 'Edits files', 'Can start other agents'])
   })
   it('matches a manager by slug, id or name', () => {
     const roles = [{ id: 'r1', slug: 'orchestrator', name: 'Orchestrator' }]

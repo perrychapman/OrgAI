@@ -1,5 +1,5 @@
 // Token-free (mock adapter). A fixture repo holds two Claude Code agent files and AGENTS.md. Drives the New project
-// form (found line, setup choice, "Review import"), the review dialog, the apply banner with Undo, the Org chart
+// form (found line, setup choice, "Create project and review import"), the review dialog, the apply banner with Undo, the Org chart
 // "Import agents" and "Export to repo" actions, and checks the repository stays untouched except for the export.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -31,7 +31,7 @@ try {
   check((await radios.count()) === 3, 'three setup choices replace the Architect checkbox')
   check((await form.locator('[data-testid=architect-setup]').count()) === 0, 'no Architect checkbox when agents exist')
   await shot('form')
-  await form.getByRole('button', { name: 'Review import' }).click()
+  await form.getByRole('button', { name: 'Create project and review import' }).click()
 
   const dialog = page.locator('[data-testid=import-dialog]')
   await dialog.waitFor({ state: 'visible', timeout: 60_000 })
@@ -47,9 +47,9 @@ try {
   await shot('review')
   // Untick one role: the count follows main's preview.
   await dialog.locator('[data-testid=import-include]').nth(1).uncheck({ force: true })
-  await dialog.getByRole('button', { name: 'Import 1 role', exact: true }).waitFor({ timeout: 10_000 })
+  await dialog.getByRole('button', { name: 'Replace chart with 1 role', exact: true }).waitFor({ timeout: 10_000 })
   await dialog.locator('[data-testid=import-include]').nth(1).check({ force: true })
-  await dialog.getByRole('button', { name: 'Import 2 roles', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Replace chart with 2 roles', exact: true }).click()
   await dialog.waitFor({ state: 'detached', timeout: 20_000 })
 
   const notice = page.locator('[data-testid=import-notice]')
