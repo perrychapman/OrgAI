@@ -157,7 +157,9 @@ export class CommunityPrices {
    */
   async refresh(staleAfterMs = DAY_MS): Promise<boolean> {
     if (this.disposed || this.busy || !this.deps.enabled()) return false
-    if (this.prices && this.fetchedAt && this.now() - this.fetchedAt < staleAfterMs) return false
+    // A fetchedAt in the future (skew, tampered file) counts as stale.
+    const age = this.now() - this.fetchedAt
+    if (this.prices && this.fetchedAt && age >= 0 && age < staleAfterMs) return false
     this.busy = true
     try {
       const f = this.deps.fetch ?? fetch

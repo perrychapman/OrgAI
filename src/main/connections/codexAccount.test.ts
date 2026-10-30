@@ -64,4 +64,26 @@ describe('codexAccount', () => {
     expect(rpc.calls).toHaveLength(2)
     expect(parseModelPage(null)).toEqual({ models: [], nextCursor: null })
   })
+
+  it('drops bad ids, caps text and caps the total', async () => {
+    const page = parseModelPage({
+      data: [
+        { model: 'ok', displayName: 'N'.repeat(500), description: 'd'.repeat(500) },
+        { model: 'a'.repeat(201) },
+        { model: 'has space' },
+        { model: 'café' }
+      ]
+    })
+    expect(page.models.map((m) => m.id)).toEqual(['ok'])
+    expect(page.models[0].label).toHaveLength(300)
+    expect(page.models[0].description).toHaveLength(300)
+    const rpc = fakeRpc({
+      'model/list': (p: unknown) => {
+        const n = Number((p as { cursor?: string }).cursor ?? 0)
+        return { data: Array.from({ length: 1000 }, (_, i) => ({ model: `m${n}-${i}` })), nextCursor: String(n + 1) }
+      }
+    })
+    expect(await listModels(rpc)).toHaveLength(2000)
+    expect(rpc.calls).toHaveLength(2)
+  })
 })
