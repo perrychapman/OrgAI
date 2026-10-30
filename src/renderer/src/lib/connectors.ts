@@ -151,3 +151,11 @@ export function removeConsequence(usedBy: { projectName: string }[], what: 'disc
     ? `This signs OrgAI out of the service on this computer. ${who}`
     : `This removes the service and its saved sign-in or token from this computer. ${who}`
 }
+
+/** Cut untrusted text to at most n characters, ending in an ellipsis when it was cut. */
+export function clampText(s: string, n: number): string {
+  if (n <= 0) return ''
+  const chars = Array.from(s)
+  if (chars.length <= n) return s
+  return `${chars.slice(0, n - 1).join('')}…`
+}

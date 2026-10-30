@@ -11,22 +11,15 @@ import { Switch } from '../ui/Switch'
 import { RoleAccess, RoleChecklist } from '../mcp/RoleAccess'
 import { errMessage } from '../mcp/mcpHelpers'
 import { linkedServerFor, setUpConnectors, useInProjectBlocker } from '../mcp/mcpLibraryHelpers'
-import { accessWords, connectorInitial, stateChip } from '../../lib/connectors'
+import { accessWords, stateChip } from '../../lib/connectors'
 import { useAppStore } from '../../store/useAppStore'
 import ConnectorDialog from './ConnectorDialog'
+import { ConnectorLogo } from './ConnectorLogo'
 
 /** The access words for a connector's variant ("Can read" / "Can read and change"). */
 export function connectorAccess(info: ConnectorInfo): string {
   const v = info.connector.variants.find((x) => x.id === (info.variant ?? info.connector.defaultVariant)) ?? info.connector.variants[0]
   return v ? accessWords(v) : ''
-}
-
-export function ConnectorLogo({ info }: { info: ConnectorInfo }): ReactElement {
-  return (
-    <span className="cs-logo" aria-hidden="true">
-      {connectorInitial(info.connector)}
-    </span>
-  )
 }
 
 /**
@@ -203,7 +196,7 @@ function ConnectedServiceRow({
       }}
     >
       <div className="cs-main">
-        <ConnectorLogo info={info} />
+        <ConnectorLogo def={connector} />
         <div className="cs-id">
           <span className="mcp-name">{connector.name}</span>
           <span className="cs-access">{connectorAccess(info)}</span>

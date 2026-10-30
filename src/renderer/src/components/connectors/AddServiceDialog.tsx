@@ -8,7 +8,8 @@ import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { linkedServerFor } from '../mcp/mcpLibraryHelpers'
 import { stateChip, CATEGORY_LABELS } from '../../lib/connectors'
-import { ConnectorLogo, UseInProjectDialog, connectorAccess } from './ConnectedServices'
+import { UseInProjectDialog, connectorAccess } from './ConnectedServices'
+import { ConnectorLogo } from './ConnectorLogo'
 import ConnectorDialog from './ConnectorDialog'
 
 export type OtherWay = 'assist' | 'link' | 'registry' | 'form'
@@ -37,6 +38,7 @@ export default function AddServiceDialog({
   onOther: (way: OtherWay) => void
 }): ReactElement {
   const [step, setStep] = useState<Step>({ kind: 'list' })
+  const [lastPicked, setLastPicked] = useState<string | null>(null)
 
   if (step.kind === 'connect') {
     return (
@@ -55,6 +57,7 @@ export default function AddServiceDialog({
   }
 
   const pick = (info: ConnectorInfo): void => {
+    setLastPicked(info.connector.id)
     if (info.state === 'connected') setStep({ kind: 'use', info })
     else setStep({ kind: 'connect', info })
   }
@@ -94,11 +97,11 @@ export default function AddServiceDialog({
                   className="svc-pick"
                   data-testid="add-service-option"
                   data-connector={info.connector.id}
-                  data-autofocus={i === 0 ? '' : undefined}
+                  data-autofocus={(lastPicked ? info.connector.id === lastPicked : i === 0) ? '' : undefined}
                   disabled={used}
                   onClick={() => pick(info)}
                 >
-                  <ConnectorLogo info={info} />
+                  <ConnectorLogo def={info.connector} />
                   <span className="svc-pick-text">
                     <span className="mcp-name">{info.connector.name}</span>
                     <span className="muted svc-pick-desc">{info.connector.description}</span>

@@ -3,6 +3,7 @@ import type { ConnectorInfo } from '@shared/types'
 import { CONNECTORS } from '@shared/connectors'
 import {
   accessWords,
+  clampText,
   connectMissing,
   connectorInitial,
   filterConnectors,
@@ -75,5 +76,14 @@ describe('connectors lib', () => {
   it('consequence names projects', () => {
     expect(removeConsequence([{ projectName: 'Acme' }], 'remove')).toContain('Acme will lose access')
     expect(removeConsequence([], 'disconnect')).toContain('No project')
+  })
+})
+
+describe('clampText', () => {
+  it('keeps short text and clamps long text with an ellipsis', () => {
+    expect(clampText('abc', 5)).toBe('abc')
+    expect(clampText('abcdef', 4)).toBe('abc…')
+    expect(Array.from(clampText('x'.repeat(500), 200))).toHaveLength(200)
+    expect(clampText('abc', 0)).toBe('')
   })
 })
