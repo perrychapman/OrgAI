@@ -7,7 +7,9 @@ import type {
   McpInstallRequest,
   McpRegistrySearchInput,
   McpRegistrySearchResult,
+  McpLibraryEntry,
   McpServerSpec,
+  McpServersProposalPayload,
   MergeDecision,
   MergeReview,
   PermissionDecision,
@@ -30,7 +32,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { adapterForProject, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
-import { DEFAULT_MAX_AUTO_CONTINUES, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
 import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
@@ -223,8 +225,14 @@ export interface RunManagerOptions {
   mcp?: {
     enabledServers(project: Project): McpServerSpec[]
     resolve(projectId: string, spec: McpServerSpec, extra?: Record<string, string>): ResolvedMcpServer
-    persistInstall(projectId: string, spec: McpServerSpec, secrets: Record<string, string>): Project
+    persistInstall(projectId: string, spec: McpServerSpec, secrets: Record<string, string>, scope?: 'project' | 'library'): Project
     searchRegistry(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
+    /** The project with linked servers refreshed from the library (links whose entry is gone disabled). */
+    withLibrary?(project: Project): Project
+    /** Refresh expiring OAuth tokens before servers start; resolves with the names still without a usable token. */
+    prepareForRun?(projectId: string, specs: McpServerSpec[]): Promise<string[]>
+    /** The app-wide MCP library (secret-free), for setup-like runs. */
+    libraryEntries?(): McpLibraryEntry[]
   }
 }
 
@@ -322,10 +330,15 @@ export class RunManager {
     images: rawImages,
     notice
   }: StartInput): Promise<RunSummary> {
+    // The virtual harness project exists only for the library MCP assistant.
+    if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
+    // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
+    project = this.options.mcp?.withLibrary?.(project) ?? project
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     const { adapter, choice } = this.choose(project, kind)
     const connection = this.options.resolveConnection?.(project, choice)
-    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project)
+    const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
+    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries())
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     const summary: RunSummary = {
       id: newId('run'),
@@ -446,6 +459,28 @@ export class RunManager {
       for (const n of spec.secretHeaders ?? []) if (extra?.[n]) headers[n] = extra[n]
       return { spec, env, headers }
     }
+    /** Servers already warned about in this run: one warning each. */
+    const warnedAuth = new Set<string>()
+    /** Refresh expiring OAuth tokens before servers resolve; warn once per server that still has no usable token. */
+    const prepareServers = async (specs: McpServerSpec[]): Promise<void> => {
+      if (!mcp?.prepareForRun || !specs.length) return
+      let names: string[] = []
+      try {
+        names = await mcp.prepareForRun(live.id, specs)
+      } catch (e) {
+        log.warn(`MCP OAuth preparation failed: ${(e as Error).message}`)
+      }
+      for (const name of names) {
+        if (warnedAuth.has(name)) continue
+        warnedAuth.add(name)
+        emit({
+          type: 'log',
+          runId: summary.id,
+          level: 'warn',
+          message: `MCP server "${name}" needs authorization: open Settings > MCP servers and choose Authorize. It starts without credentials in this run.`
+        })
+      }
+    }
     try {
       // A new project's folder may not exist yet, and the provider needs a real cwd.
       mkdirSync(project.path, { recursive: true })
@@ -482,16 +517,22 @@ export class RunManager {
         requestMcpInstall: (req) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
+        ...(setupLike ? { mcpLibrary: libraryEntries } : {}),
         resolveMcpSecrets: async (serverId) => {
           const spec = allServers().find((s) => s.id === serverId)
           if (!spec) return { env: {}, headers: {} }
+          await prepareServers([spec])
           const r = resolveOne(spec)
           return {
             env: Object.fromEntries((spec.secretEnv ?? []).filter((n) => r.env[n] !== undefined).map((n) => [n, r.env[n]])),
             headers: Object.fromEntries((spec.secretHeaders ?? []).filter((n) => r.headers[n] !== undefined).map((n) => [n, r.headers[n]]))
           }
         },
-        resolvedMcpServers: async () => allServers().map(resolveOne),
+        resolvedMcpServers: async () => {
+          const specs = allServers()
+          await prepareServers(specs)
+          return specs.map(resolveOne)
+        },
         plugins: () => (setupLike ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
         requestQuestion: (req) => this.requestQuestion(active, req),
         requestPermissionRules: (req) => this.requestRules(active, req),
@@ -779,9 +820,15 @@ export class RunManager {
       active.pendingProposals.set(proposal.id, (decision) => {
         if (decision.behavior === 'approve') {
           try {
-            const updated = this.setup.applyProposal(active.summary.projectId, proposal)
-            onApplied?.(updated)
-            this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            if (active.summary.projectId === HARNESS_PROJECT_ID) {
+              // The harness project is virtual: its proposals change the MCP library only, never a stored project.
+              if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload)
+            } else {
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal)
+              onApplied?.(updated)
+              this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            }
           } catch (e) {
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
@@ -947,7 +994,7 @@ export class RunManager {
 
   /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
   private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
-    const scope = raw?.scope === 'project' ? 'project' : 'run'
+    const scope = raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
     const spec: McpServerSpec = raw.spec ?? request.spec
@@ -959,9 +1006,9 @@ export class RunManager {
       const v = raw.secrets?.[n]
       if (typeof v === 'string' && v) secrets[n] = v
     }
-    if (scope === 'project' && this.options.mcp) {
+    if (scope !== 'run' && this.options.mcp) {
       try {
-        const saved = this.options.mcp.persistInstall(project.id, spec, secrets)
+        const saved = this.options.mcp.persistInstall(project.id, spec, secrets, scope)
         setProject(saved)
         this.broadcast({ type: 'project.updated', runId: active.summary.id, project: saved })
       } catch (e) {
@@ -970,7 +1017,7 @@ export class RunManager {
     } else {
       active.runServers.set(spec.id, { spec, secrets })
     }
-    return { approved: true, scope: scope === 'project' && this.options.mcp ? 'project' : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec: raw.spec } : {}) }
+    return { approved: true, scope: scope !== 'run' && this.options.mcp ? scope : 'run', ...(note ? { note } : {}), ...(raw.spec ? { spec: raw.spec } : {}) }
   }
 
   /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */

@@ -218,7 +218,14 @@ app.whenReady().then(() => {
     // Library changes that save a project (unlink on remove, promote) reach every window like a run's project update.
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
   })
-  const setup = new SetupService(projects, { removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId) })
+  const setup = new SetupService(projects, {
+    removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
+    mcp: {
+      libraryEntries: () => mcp.libraryEntries(),
+      applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
+      applyLibraryProposal: (payload) => mcp.applyLibraryProposal(payload)
+    }
+  })
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
   const codexCompletion = (): RunConnection | undefined => {
@@ -246,7 +253,10 @@ app.whenReady().then(() => {
     mcp: {
       enabledServers: (project) => mcp.enabledServers(project),
       resolve: (projectId, spec, extra) => mcp.resolve(projectId, spec, extra),
-      persistInstall: (projectId, spec, values) => mcp.persistInstall(projectId, spec, values),
+      persistInstall: (projectId, spec, values, scope) => mcp.persistInstall(projectId, spec, values, scope),
+      withLibrary: (project) => mcp.withLibrary(project),
+      prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
+      libraryEntries: () => mcp.libraryEntries(),
       searchRegistry: (input) => mcp.registrySearch(input)
     }
   })
