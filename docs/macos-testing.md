@@ -22,6 +22,12 @@ npm run typecheck && npm test && npm run build
 
 `npm run dev` from Terminal, then check: the window opens, the menu bar shows OrgAI / Edit / View / Window, Cmd+C / Cmd+V / Cmd+A work in a text field, Cmd+Q quits, closing the window keeps the app in the Dock and clicking the Dock icon reopens it, and the dark and light themes both render.
 
+Dev runs use the app name OrgAI, so dev logs land in `~/Library/Logs/OrgAI`. To test against a scratch data dir instead of your real one, set `ORGAI_DATA_DIR`: when set, user data and logs live under that directory.
+
+```sh
+ORGAI_DATA_DIR=/tmp/orgai-scratch npm run dev
+```
+
 ## 4. Packaged app, launched from Finder
 
 ```sh
@@ -69,6 +75,10 @@ node scripts/smoke-images.mjs
 node scripts/smoke-usage.mjs
 node scripts/smoke-mcp-tools.mjs
 ```
+
+## CI (landing in this change)
+
+GitHub Actions builds unsigned mac `.dmg`/`.zip` artifacts for arm64 and x64 when a `v*` tag is pushed (`release.yml`), and runs typecheck, tests, build and `e2e:free` on macOS and Windows (`ci.yml`). The CI artifacts are unsigned: right-click the app and choose Open, and if macOS says it is damaged run `xattr -dr com.apple.quarantine /Applications/OrgAI.app`.
 
 ## What to send back
 

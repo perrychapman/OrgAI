@@ -26,6 +26,16 @@ npm run typecheck
 
 Requires Node 22+ and a logged-in Claude Code CLI (`claude auth status`) or `ANTHROPIC_API_KEY`.
 
+## Platforms
+
+- **Windows**: tested.
+- **macOS**: not yet run by hand; follow the first-run checklist in `docs/macos-testing.md`. CI builds are unsigned (right-click > Open).
+- **Linux**: AppImage is configured but untested.
+
+## CI
+
+`.github/workflows/ci.yml` runs `npm ci`, `npm run typecheck`, `npm test`, `npm run build` and `npm run e2e:free` on macOS and Windows. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds release artifacts.
+
 ## Layout
 
 ```
@@ -40,7 +50,7 @@ src/main/           Electron main process
   setup/profile.ts  token-free repository profile (tree, manifests, docs, git log)
   setup/service.ts  setup prompts, applying approved proposals, writing .orgai/ARCHITECTURE.md
   ai/draft.ts       quick org chart drafter (prompt + JSON -> roles)
-  store/            JSON stores under %APPDATA%/orgai/data (projects, run index, one record per run)
+  store/            JSON stores under the app data dir (`%APPDATA%/orgai/data` on Windows, `~/Library/Application Support/orgai/data` on macOS; `ORGAI_DATA_DIR` overrides) (projects, run index, one record per run)
 src/shared/setup.ts the built-in Architect role and proposal tool names
 src/preload/        contextBridge API (window.orgai)
 src/renderer/       React UI: projects, org chart editor, live run view

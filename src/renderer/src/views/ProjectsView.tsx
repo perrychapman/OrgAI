@@ -4,6 +4,7 @@ import type { SetupKind } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
+import { examplePath } from '../lib/platform'
 
 export default function ProjectsView(): ReactElement {
   const projects = useAppStore((s) => s.projects)
@@ -139,7 +140,7 @@ export default function ProjectsView(): ReactElement {
               <div className="field">
                 <label>Folder to create it in</label>
                 <div className="row">
-                  <input className="input" value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\\path\\to\\new-folder" />
+                  <input className="input" value={path} onChange={(e) => setPath(e.target.value)} placeholder={examplePath('new-folder')} />
                   <button type="button" className="btn" onClick={pick}>
                     Browse
                   </button>
@@ -152,7 +153,7 @@ export default function ProjectsView(): ReactElement {
               <div className="field">
                 <label>Repository folder</label>
                 <div className="row">
-                  <input className="input" value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\\path\\to\\repo" />
+                  <input className="input" value={path} onChange={(e) => setPath(e.target.value)} placeholder={examplePath('repo')} />
                   <button type="button" className="btn" onClick={pick}>
                     Browse
                   </button>
