@@ -1059,11 +1059,12 @@ class CapturingAdapter extends MockAdapter {
   }
 }
 
-function multiManager(script: MockScript = {}) {
+/** `projects`: the saved projects RunManager resolves (resolveProject), so tests can flip settings mid-run. */
+function multiManager(script: MockScript = {}, projects?: Map<string, Project>) {
   const setup = fakeSetup(makeProject())
   const store = new RunStore(join(dir, 'data'))
   const adapter = new CapturingAdapter({ script: { delayMs: 0, ...script } })
-  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100)
+  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, projects ? { resolveProject: (id) => projects.get(id) } : {})
   const tool = (runId: string, name: string, args?: unknown): Promise<string> => {
     const t = harnessToolsFor(adapter.ctxs.get(runId)!).find((x) => x.name === name)!
     return t.call(args)
@@ -1137,15 +1138,20 @@ describe('cross-run messaging', () => {
   const idleScript: MockScript = { work: [{ type: 'text', text: 'working' }], setup: [{ type: 'text', text: 'asking' }] }
   const idle = (id: string) => waitFor(isType('run.status', (e) => e.runId === id && e.status === 'idle'))
 
-  async function two() {
-    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
-    const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b') })
-    const h = multiManager(idleScript)
+  /** Runs a (project Alpha) and b (project Beta); both projects have runMessaging on unless told otherwise. */
+  async function two(messaging: { pa?: boolean; pb?: boolean } = {}) {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a'), runMessaging: messaging.pa ?? true })
+    const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b'), runMessaging: messaging.pb ?? true })
+    const projects = new Map<string, Project>([
+      [pa.id, pa],
+      [pb.id, pb]
+    ])
+    const h = multiManager(idleScript, projects)
     const a = await h.m.start({ project: pa, prompt: 'Build\nthe API' })
     const b = await h.m.start({ project: pb, prompt: 'Build the UI' })
     await idle(a.id)
     await idle(b.id)
-    return { ...h, pa, pb, a, b }
+    return { ...h, projects, pa, pb, a, b }
   }
 
   it('delivers a message, emits run.message on both runs and records transcript blocks', async () => {
@@ -1163,12 +1169,14 @@ describe('cross-run messaging', () => {
 
     const sysTexts = (id: string): string[] => m.get(id)!.transcript.filter((t) => t.block.kind === 'system').map((t) => (t.block as { text: string }).text)
     expect(sysTexts(a.id)).toContain(`Sent to run ${b.id} (Beta: Build the UI): I am editing src/api.ts`)
-    expect(sysTexts(b.id)).toContain(`Message from run ${a.id} (Alpha: Build the API): I am editing src/api.ts`)
+    expect(sysTexts(b.id)).toContain(`Note from run ${a.id} (Alpha: Build the API), from its orchestrator: I am editing src/api.ts`)
 
     await m.stopAll()
     await vi.waitFor(() => expect(m.liveRunCount()).toBe(0))
     expect(sysTexts(a.id).some((t) => t.startsWith('Sent to run'))).toBe(true)
-    expect(sysTexts(b.id).some((t) => t.startsWith('Message from run'))).toBe(true)
+    expect(sysTexts(b.id).some((t) => t.startsWith('Note from run'))).toBe(true)
+    // The receiver's row never looks like the user typed it.
+    expect(m.get(b.id)!.transcript.filter((t) => t.block.kind === 'user').map((t) => (t.block as { text: string }).text)).not.toContain('I am editing src/api.ts')
   })
 
   it('answers not-found, not-live and refused', async () => {
@@ -1187,9 +1195,9 @@ describe('cross-run messaging', () => {
     const { m, adapter, a, b, pa } = await two()
     const s = await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
     const ctxS = adapter.ctxs.get(s.id)!
-    expect(await ctxS.messageRun!(a.id, 'hi')).toBe('refused')
+    expect(await ctxS.messageRun!(a.id, 'hi')).toEqual({ result: 'refused', refusal: 'not-work' })
     expect(ctxS.listRuns!()).toEqual([])
-    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, '   ')).toBe('refused')
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, '   ')).toEqual({ result: 'refused', refusal: 'empty' })
     await m.stopAll()
   })
 
@@ -1206,12 +1214,49 @@ describe('cross-run messaging', () => {
     await m.stopAll()
   })
 
-  it('stops a sender at the per-run message limit', async () => {
-    const { m, tool, a, b } = await two()
+  it('caps each direction of a run pair', async () => {
+    const { m, tool, a, b, pa } = await two()
+    const c = await m.start({ project: pa, prompt: 'Third run' })
+    await idle(c.id)
     for (let i = 0; i < RUN_MESSAGE_LIMIT; i++) expect(await tool(a.id, 'message_run', { runId: b.id, message: `m${i}` })).toMatch(/^DELIVERED/)
-    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'one more' })).toMatch(/^REFUSED/)
-    // The other direction has its own budget.
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'one more' })).toMatch(/^REFUSED: message cap reached.*report to the user/)
+    // The other direction, and another pair, have their own budgets.
     expect(await tool(b.id, 'message_run', { runId: a.id, message: 'reply' })).toMatch(/^DELIVERED/)
+    expect(await tool(a.id, 'message_run', { runId: c.id, message: 'hi c' })).toMatch(/^DELIVERED/)
+    await m.stopAll()
+  })
+
+  it('is opt-in per project: both projects must allow it, and the refusal names the one that does not', async () => {
+    const { m, adapter, tool, a, b, projects, pa, pb } = await two({ pb: false })
+    const out = await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })
+    expect(out).toMatch(/^REFUSED: cross-run messaging is off for "Beta"\./)
+    expect(out).toContain('"Let runs message each other" in Project settings')
+    expect(await adapter.ctxs.get(b.id)!.messageRun!(a.id, 'hi')).toEqual({ result: 'refused', refusal: 'messaging-off', offProjects: ['Beta'] })
+    expect(adapter.bySession.get(b.id)!.peerMessages).toEqual([])
+    expect(events.filter(isType('run.message'))).toEqual([])
+    // list_runs still shows the run, with its messaging flag.
+    expect((await tool(a.id, 'list_runs')).split('\n').find((l) => l.startsWith(b.id))).toContain('| off |')
+    // Turning it on in the saved project applies to the live runs at once.
+    projects.set(pb.id, { ...pb, runMessaging: true })
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^DELIVERED/)
+    // Both off: both are named.
+    projects.set(pa.id, { ...pa, runMessaging: false })
+    projects.set(pb.id, { ...pb, runMessaging: false })
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'hi')).toEqual({ result: 'refused', refusal: 'messaging-off', offProjects: ['Alpha', 'Beta'] })
+    await m.stopAll()
+  })
+
+  it('needs only the shared flag within one project, and defaults to off', async () => {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    const projects = new Map<string, Project>([[pa.id, pa]])
+    const { m, tool } = multiManager(idleScript, projects)
+    const a1 = await m.start({ project: pa, prompt: 'one' })
+    const a2 = await m.start({ project: pa, prompt: 'two' })
+    await idle(a1.id)
+    await idle(a2.id)
+    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
+    projects.set(pa.id, { ...pa, runMessaging: true })
+    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^DELIVERED/)
     await m.stopAll()
   })
 

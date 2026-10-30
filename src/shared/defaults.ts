@@ -21,6 +21,13 @@ import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
+/** Project.runMessaging when unset: cross-run messaging is opt-in per project. */
+export const DEFAULT_RUN_MESSAGING = false
+
+/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default off). */
+export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
+  return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
+}
 /** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
 export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
 export const MAX_SUBAGENT_DEPTH_LIMIT = 5

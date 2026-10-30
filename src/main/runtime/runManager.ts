@@ -29,10 +29,10 @@ import type {
   RunSummary,
   UserQuestion
 } from '@shared/types'
-import { adapterForProject, mcpSecretNames, modelFamily, newId } from '@shared/defaults'
+import { adapterForProject, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
 import { DEFAULT_MAX_AUTO_CONTINUES, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
-import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageResult, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -108,13 +108,15 @@ interface ActiveRun {
   projectName: string
   /** Name of the root role (its orchestrator), for list_runs. */
   rootRole: string
-  /** Cross-run messages this run has sent (see RUN_MESSAGE_LIMIT). */
-  messagesSent: number
+  /** Cross-run messages this run has sent, per target run id (see RUN_MESSAGE_LIMIT). */
+  messagesSent: Map<string, number>
+  /** Project.runMessaging when the run started; used when the current project cannot be resolved. */
+  messagingAtStart: boolean
 }
 
 /**
- * The most message_run messages one run may send. A hard stop so two orchestrators cannot ping-pong forever
- * (each message wakes the other, whose reply wakes the first).
+ * The most message_run messages one run may send to one other run (so each direction of a run pair has its own cap).
+ * A hard stop so two orchestrators cannot ping-pong forever (each message wakes the other, whose reply wakes the first).
  */
 export const RUN_MESSAGE_LIMIT = 40
 
@@ -308,7 +310,8 @@ export class RunManager {
       emit: () => {},
       projectName: project.name,
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
-      messagesSent: 0,
+      messagesSent: new Map(),
+      messagingAtStart: runMessagingOn(project),
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
     }
@@ -564,23 +567,36 @@ export class RunManager {
         prompt: excerpt(a.summary.prompt, RUN_PEER_PROMPT_CHARS),
         startedAt: a.summary.startedAt,
         rootRole: a.rootRole,
-        live: true
+        live: true,
+        messaging: this.messagingOn(a)
       }))
   }
 
   /** message_run: see RuntimeContext.messageRun. Both runs record the exchange through their own emit. */
-  private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageResult> {
+  private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageOutcome> {
     const text = (typeof rawText === 'string' ? rawText : '').trim().slice(0, RUN_MESSAGE_MAX_CHARS)
-    if (!text || isSetupLikeRun(sender.summary.kind) || targetId === sender.summary.id) return 'refused'
+    if (isSetupLikeRun(sender.summary.kind)) return { result: 'refused', refusal: 'not-work' }
+    if (targetId === sender.summary.id) return { result: 'refused', refusal: 'self' }
+    if (!text) return { result: 'refused', refusal: 'empty' }
     const target = this.runs.get(targetId)
     const stored = target ? undefined : this.store.get(targetId)
-    if (!target && !stored) return 'not-found'
-    if (isSetupLikeRun((target?.summary ?? stored!).kind)) return 'refused'
-    if (sender.messagesSent >= RUN_MESSAGE_LIMIT) return 'refused'
+    if (!target && !stored) return { result: 'not-found' }
+    const targetSummary = target?.summary ?? stored!
+    if (isSetupLikeRun(targetSummary.kind)) return { result: 'refused', refusal: 'not-work' }
+    // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
+    const off: string[] = []
+    if (!this.messagingOn(sender)) off.push(sender.projectName)
+    if (targetSummary.projectId !== sender.summary.projectId) {
+      const targetOn = target ? this.messagingOn(target) : runMessagingOn(this.options.resolveProject?.(targetSummary.projectId))
+      if (!targetOn) off.push(target?.projectName ?? this.options.resolveProject?.(targetSummary.projectId)?.name ?? targetSummary.projectId)
+    }
+    if (off.length) return { result: 'refused', refusal: 'messaging-off', offProjects: off }
+    const sent = sender.messagesSent.get(targetId) ?? 0
+    if (sent >= RUN_MESSAGE_LIMIT) return { result: 'refused', refusal: 'cap' }
     const session = target?.session
-    if (!target || !isOpenStatus(target.summary.status) || !session?.receive) return 'not-live'
+    if (!target || !isOpenStatus(target.summary.status) || !session?.receive) return { result: 'not-live' }
 
-    sender.messagesSent++
+    sender.messagesSent.set(targetId, sent + 1)
     const at = Date.now()
     const from = sender.summary
     const to = target.summary
@@ -594,7 +610,7 @@ export class RunManager {
     sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Messaged run ${to.id} (${target.projectName}).` })
     // The recipient's block goes first so its transcript reads in order even if receive() wakes the root at once.
     target.emit({ type: 'run.message', runId: to.id, direction: 'in', peerRunId: from.id, peerProjectId: from.projectId, peerProjectName: sender.projectName, peerPrompt: fromPrompt, text, at })
-    block(target, `Message from run ${from.id} (${sender.projectName}: ${fromPrompt}): ${text}`)
+    block(target, `Note from run ${from.id} (${sender.projectName}: ${fromPrompt}), from its orchestrator: ${text}`)
     target.emit({ type: 'log', runId: to.id, level: 'info', message: `Received a message from run ${from.id} (${sender.projectName}).` })
     try {
       await session.receive({ fromRunId: from.id, fromProjectName: sender.projectName, fromPrompt, text })
@@ -602,9 +618,15 @@ export class RunManager {
       const message = (e as Error).message
       sender.emit({ type: 'log', runId: from.id, level: 'warn', message: `Run ${to.id} could not receive the message: ${message}` })
       target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Could not take the message from run ${from.id}: ${message}` })
-      return 'not-live'
+      return { result: 'not-live' }
     }
-    return 'delivered'
+    return { result: 'delivered' }
+  }
+
+  /** Project.runMessaging of a run's project, read from the current saved project when possible. */
+  private messagingOn(a: ActiveRun): boolean {
+    const current = this.options.resolveProject?.(a.summary.projectId)
+    return current ? runMessagingOn(current) : a.messagingAtStart
   }
 
   summaryOf(runId: string): RunSummary | undefined {

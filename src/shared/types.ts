@@ -400,6 +400,12 @@ export interface Project {
   autoContinue?: boolean
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
+  /**
+   * Cross-run messaging opt-in ("Let runs message each other" in Project settings). message_run is refused unless
+   * the sender's and the target's projects both have it on. Missing = DEFAULT_RUN_MESSAGING (off); read it with
+   * runMessagingOn() from defaults.ts. Saved through projects:save like other settings.
+   */
+  runMessaging?: boolean
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -1063,6 +1069,8 @@ export interface RunPeer {
   rootRole: string
   /** True while the run's session is open (it can receive a message_run). */
   live: boolean
+  /** The peer's project has runMessaging on. message_run also needs the caller's project to have it on. */
+  messaging: boolean
 }
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'

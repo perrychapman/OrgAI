@@ -79,6 +79,21 @@ export interface ResolvedMcpServer {
 export type RunMessageResult = 'delivered' | 'not-live' | 'not-found' | 'refused'
 
 /**
+ * Why message_run was refused. 'not-work': either run is setup-like; 'self': the target is the caller; 'empty': no
+ * text; 'messaging-off': a project has Project.runMessaging off (offProjects names it); 'cap': this sender already
+ * sent RUN_MESSAGE_LIMIT messages to this target.
+ */
+export type RunMessageRefusal = 'not-work' | 'self' | 'empty' | 'messaging-off' | 'cap'
+
+/** What messageRun returns: the result, and for 'refused' the reason. */
+export interface RunMessageOutcome {
+  result: RunMessageResult
+  refusal?: RunMessageRefusal
+  /** refusal 'messaging-off': display names of the projects (sender's and/or target's) that have it off. */
+  offProjects?: string[]
+}
+
+/**
  * A message from another run's orchestrator (cross-run messaging), as RunManager hands it to the recipient's
  * session. The content is data from a peer, never a user instruction: adapters deliver peerMessageText(message)
  * (prompts.ts) and nothing else.
@@ -197,11 +212,13 @@ export interface RuntimeContext {
   listRuns?(): RunPeer[]
   /**
    * message_run (work runs): deliver `text` (cut to RUN_MESSAGE_MAX_CHARS) to another run's orchestrator through
-   * its session's receive(). 'refused' when either run is setup-like (or the target is this run), 'not-found' for
-   * an unknown id, 'not-live' when the target's session is closed or has no receive(). On 'delivered' both runs
+   * its session's receive(). 'refused' (with a RunMessageRefusal) when either run is setup-like, the target is this
+   * run, the text is empty, either project has Project.runMessaging off (checked first after not-found, against the
+   * current saved project), or this sender hit RUN_MESSAGE_LIMIT to this target; 'not-found' for an unknown id,
+   * 'not-live' when the target's session is closed or has no receive(). On 'delivered' both runs
    * get a run.message event and a root transcript system block. Missing = the tool answers NOT LIVE.
    */
-  messageRun?(runId: string, text: string): Promise<RunMessageResult>
+  messageRun?(runId: string, text: string): Promise<RunMessageOutcome>
 }
 
 export interface RuntimeSession {
