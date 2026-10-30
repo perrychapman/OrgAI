@@ -29,6 +29,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Projects: projects:checkPath returns ProjectPathCheck (exists, isDirectory, isGitRepo, suggestedName, empty) and never rejects. projects:create validates the path (ProjectStore createPathError) and throws a readable message. ProjectCreateInput.mock creates a project on the mock adapter (provider.id 'mock'). It is accepted only when the mock adapter is registered (ORGAI_MOCK=1).
 - Cards: every *.resolved RunEvent (permission, proposal, question, rules, merge, mcpInstall) may carry `cancelled?: true`. src/main/runtime/pendingCards.ts cancelPending resolves every open card of a run as cancelled. RunManager calls it from emit when a run reaches an outcome or a paused status, and at teardown.
 - Transcript: TranscriptEntry.source 'harness' marks entries the harness wrote (nudges, hand-offs, notices, limit notices). Claude, Codex and mock write them as system blocks with a one-line summary and a detail.
+- Run titles: RunSummary.title (optional, at most RUN_TITLE_MAX_CHARS = 32 characters) is a short AI summary of a work run's first message, and RunEvent `{ type: 'run.title', runId, title }` announces it, at most once per run and possibly after the run ended. Both ride the existing runs:list / runs:get / runs:listLive and run-event paths, so no IPC or preload change was needed. It is absent until generated and stays absent when generation fails or is skipped. The UI falls back to the prompt.
 - Live runs and run windows: runs:listLive (every live run across projects), runs:pendingCards (PendingCards: a live run's open cards per kind, built by pendingCards.ts listPending over RunManager's PendingCardMaps) and window:openRun (FocusRunTarget, opens or focuses a run-scoped window; ids are checked with windowScope.ts isValidId plus store lookups).
 
 - `src/shared/types.ts`
@@ -46,6 +47,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Agent tree rules. agentTree.ts resolves a reported agent's parent without creating cycles and repairs cyclic stored records.
 - Concurrency. Any number of runs may be live at once, in one project and across projects, on every adapter: RunManager keys runs by id, ContinuationDriver and adapter sessions keep per-instance state, and each Codex session starts its own app-server. The only refusal is continueRun's "Session already open" for one provider session chain. RunManager.liveRuns() backs runs:listLive.
 - Cross-run messaging. Work-run roots get list_runs and message_run (RUN_HARNESS_TOOLS). RunManager implements RuntimeContext.listRuns / messageRun and delivers through the target's RuntimeSession.receive(), which every adapter routes through its harness-message path (peerMessageText in prompts.ts frames the text as peer data). Delivery goes through the target's inbox: RunManager holds peer messages while the run waits on its user (see Conventions) and flushes them oldest first, one chained flush at a time. Both runs get a run.message event (direction out/in) and a root transcript system block ("Sent to run …" / "Queued for run …" / "Note from run …", marked TranscriptEntry.source 'harness').
+- Run titles. RunManager.start fires src/main/ai/runTitle.ts generateRunTitle after the 'starting' status for every work run with prompt text. Setup-like runs, image-only prompts and the harness's auto-resume message (RESUME_TEXT, which carries the continued run's title) are skipped. The call is a one-shot RuntimeAdapter.complete with `kind: 'title'`, the run's RunConnection and the fast model from RunManagerOptions.fastModel (index.ts: ConnectionService.fastModel). It has a 20 s timeout and cleanTitle cleans the answer. The result is stored on the summary (index and record) and broadcast as run.title. A continuation passes the continued run's title, or a prompt excerpt, as context (`continues`). CompletionInput carries `kind` ('draft' | 'title') and `connection`: Claude merges `connection.env` (claude.ts completionEnv), Codex uses the connection instead of its completionConnection, and the mock answers 'title' with the first four words of the `<message>` text.
 - Worktrees. worktrees.ts pathKey resolves the nearest existing ancestor's realpath (macOS /tmp is /private/tmp). withRepoLock serializes git work per checkout. Both commit-producing git calls (commit, merge) fall back to an OrgAI identity when git has none.
 
 - `src/main/runtime/types.ts`
@@ -116,6 +118,7 @@ McpService covers:
 - Applying approved proposals, including MCP server proposals. Removed servers lose their secrets.
 - Writing .orgai/ARCHITECTURE.md.
 - A quick org chart drafter.
+- Run titles (ai/runTitle.ts: the system prompt, generateRunTitle and the pure cleanTitle).
 
 - `src/main/setup/`
 - `src/main/ai/`
@@ -283,6 +286,7 @@ components/layout:
   - One live run per provider session. RunManager.continueRun refuses with "Session already open: run <id> ..." while a chain member is live, including a continuation whose init has not arrived.
   - A continuation resumes the chain's newest ended run, whichever run the user picked, and logs which run it continued.
   - Runs the store finds still live at startup were cut by the app quitting or crashing. They become finished with endedWithApp and stay continuable.
+- Run titles are advisory. Nothing awaits them, a failure is logged once at info level and leaves the title unset, and a run is never titled twice. The one-shot completion uses the connection's fast tier: tierModels.fast, else 'haiku' on the Claude adapter, else the adapter's default. The user's message is sent as `<message>` data and never as instructions.
 - Git operations on one checkout are serialized through worktrees.withRepoLock (keyed by pathKey of the merge target). integrateWorktree, commitLeftovers, discardWorktree and prepareRepo take it; a merge review waits outside the lock, and different checkouts never block each other.
 - SDK spawns go through the adapter's EXECUTABLE_OPTION, and the native CLIs stay in asarUnpack.
 - Renderer layout goes through components/layout and components/ui. Responsive behaviour comes from container queries (container-type on layout regions).
@@ -356,6 +360,7 @@ components/layout:
 - The Claude SDK is pinned to 0.3.312. Plan usage relies on an experimental API and can break on upgrade.
 - claude.ts and codex.ts are large hotspots for merge conflicts.
 - Cross-run messaging: delivery of a peer message to a Claude orchestrator mid-turn is assumed from the existing notifyOrchestrator path and not smoke-tested; Codex delivery is tested only against a fake app-server. RunManager holds peer messages for an interrupted, usage-limited or card-blocked run, but RuntimeSession.receive() itself is ungated, so any new caller must go through RunManager. The per-pair and inbound caps bound but do not prevent token spend between many runs.
+- Run titles: the live fast-model call (haiku on Anthropic, a LiteLLM fast model through completionEnv, Codex with a run connection) has no smoke test. Only unit tests on the mock and fakes cover it. Every work run spends one small fast-model completion.
 - Concurrent Codex runs share one CODEX_HOME at <data>/codex (src/main/connections/service.ts). Whether two app-servers race on auth refresh or the session database is unverified.
 - The windows run with `sandbox: false` because the preload is ESM (out/preload/index.mjs) and Electron cannot sandbox an ESM preload. The fix is building the preload as CommonJS and enabling the sandbox.
 - No e2e test covers the packaged app.

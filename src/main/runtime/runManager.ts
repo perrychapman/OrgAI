@@ -48,6 +48,7 @@ import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext } from '../mcp/assist'
+import { generateRunTitle } from '../ai/runTitle'
 
 /** The path as the file system spells it (true case on Windows). Falls back to the input when it cannot be resolved. */
 export function canonicalPath(p: string): string {
@@ -240,6 +241,11 @@ export interface RunManagerOptions {
   catalog?: () => ProviderModel[]
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
+  /**
+   * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = 'haiku' on the
+   * Claude adapter, the adapter's default model elsewhere.
+   */
+  fastModel?: (project: Project, choice: AdapterChoice) => string | undefined
   /** MCP servers and secrets (McpService). Missing = runs have no MCP servers and cannot install any. */
   mcp?: {
     enabledServers(project: Project): McpServerSpec[]
@@ -315,6 +321,10 @@ export interface StartInput {
   images?: ImageAttachment[]
   /** An info line logged on the new run right after it starts. */
   notice?: string
+  /** A title carried over from the run being continued (auto-resume); no new title is generated. */
+  title?: string
+  /** Continuations: the continued run's title (or prompt excerpt), given to the title model as context. */
+  titleContext?: string
 }
 
 export class RunManager {
@@ -384,7 +394,9 @@ export class RunManager {
     resumeBaseCostUsd,
     plan: carriedPlan,
     images: rawImages,
-    notice
+    notice,
+    title: carriedTitle,
+    titleContext
   }: StartInput): Promise<RunSummary> {
     // The virtual harness project exists only for the library MCP assistant.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
@@ -406,6 +418,7 @@ export class RunManager {
       totalCostUsd: 0
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
+    if (carriedTitle && kind === 'work') summary.title = carriedTitle
     const active: ActiveRun = {
       summary,
       pending: new Map(),
@@ -483,6 +496,17 @@ export class RunManager {
     emit({ type: 'run.status', runId: summary.id, status: 'starting' })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
+    // Advisory title from the fast model; never awaited, never fails the run.
+    // The harness's own resume message is never titled (the continued run's title is carried instead).
+    if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
+      void this.titleRun(active, adapter, {
+        prompt,
+        cwd: project.path,
+        model: this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined),
+        connection,
+        ...(titleContext ? { continues: titleContext } : {})
+      })
+    }
 
     const updatePlan = async (plan: RunPlan): Promise<void> => {
       const previous = active.record.plan
@@ -653,6 +677,36 @@ export class RunManager {
     this.store.prune(this.keepRunsFor)
   }
 
+  /**
+   * Generate the run's title and publish it: summary (index and record), then run.title. Runs after the session may
+   * have ended; a run already deleted (project removed, pruned) is left alone. Never throws.
+   */
+  private async titleRun(
+    active: ActiveRun,
+    adapter: RuntimeAdapter,
+    input: { prompt: string; cwd: string; model?: string; connection?: RunConnection; continues?: string }
+  ): Promise<void> {
+    const runId = active.summary.id
+    try {
+      const title = await generateRunTitle(adapter, input, (message) => log.info(`Run ${runId}: no title (${message})`))
+      if (!title) return
+      const live = this.runs.get(runId) === active
+      if (!live && !this.store.get(runId)) return
+      active.summary.title = title
+      this.store.upsert(active.summary)
+      if (live) {
+        active.emit({ type: 'run.title', runId, title })
+      } else {
+        // The session already ended and its record was flushed; record.summary is active.summary, so save it again.
+        this.flush(active)
+        logRunEvent(active.summary, { type: 'run.title', runId, title })
+        this.broadcast({ type: 'run.title', runId, title })
+      }
+    } catch (e) {
+      log.warn(`Run ${runId}: title failed: ${(e as Error).message}`)
+    }
+  }
+
   private recordEvent(active: ActiveRun, e: RunEvent): void {
     const r = active.record
     switch (e.type) {
@@ -670,6 +724,10 @@ export class RunManager {
         break
       case 'plan.updated':
         r.plan = e.plan
+        break
+      case 'run.title':
+        // record.summary is the live summary object; this only schedules the save.
+        r.summary.title = e.title
         break
       default:
         return
@@ -1239,6 +1297,11 @@ export class RunManager {
       prompt,
       images,
       kind: target.kind,
+      // The harness's own resume message is not a new task: keep the title of the run it continues.
+      // A follow-up is titled with the task it continues as context, so it stays recognisable.
+      ...(prompt === RESUME_TEXT.trim() && target.title
+        ? { title: target.title }
+        : { titleContext: target.title ?? excerpt(target.prompt, 200) }),
       hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
       resumeSessionId: sessionId,
       resumedFrom: target.id,

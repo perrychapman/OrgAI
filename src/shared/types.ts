@@ -817,7 +817,7 @@ export const RUN_MESSAGE_MAX_CHARS = 4000
 /** RunPeer.prompt and run.message peerPrompt: one line, at most this many characters. */
 export const RUN_PEER_PROMPT_CHARS = 120
 /** RunSummary.title and the run.title event: at most this many characters (cut on a word boundary with …). */
-export const RUN_TITLE_MAX_CHARS = 48
+export const RUN_TITLE_MAX_CHARS = 32
 
 // ---------- App settings (global) ----------
 

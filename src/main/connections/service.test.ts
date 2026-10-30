@@ -148,6 +148,22 @@ describe('ConnectionService litellm', () => {
   })
 })
 
+describe('fastModel', () => {
+  it('uses each connection\'s fast tier, haiku on Anthropic and Claude, nothing for the mock', () => {
+    const ctx = setup()
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'anthropic' })).toBe('haiku')
+    expect(ctx.service.fastModel({ adapter: 'codex', connection: 'openai' })).toBe('gpt-5-nano')
+    expect(ctx.service.fastModel({ adapter: 'mock', connection: 'anthropic' })).toBeUndefined()
+    // LiteLLM without a fast tier: the Claude adapter falls back to the haiku alias, Codex to its default.
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('haiku')
+    expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBeUndefined()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { fast: 'claude-haiku-4-5' } } } })
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('claude-haiku-4-5')
+    expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBe('claude-haiku-4-5')
+  })
+})
+
 describe('runConnection', () => {
   it('builds the litellm env for the claude adapter and the codex config for codex', async () => {
     const ctx = setup()

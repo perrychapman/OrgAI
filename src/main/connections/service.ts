@@ -590,6 +590,18 @@ export class ConnectionService {
     return { ...base, env }
   }
 
+  /**
+   * The fast-tier model for one-shot helpers (run titles) on a run's connection: the connection's tierModels.fast,
+   * with 'haiku' as the Anthropic fallback. The mock adapter has none. On LiteLLM + Claude the run's env also maps
+   * the haiku alias to the same model (ANTHROPIC_DEFAULT_HAIKU_MODEL).
+   */
+  fastModel(choice: Pick<AdapterChoice, 'adapter' | 'connection'>): string | undefined {
+    if (choice.adapter === 'mock') return undefined
+    const fast = this.deps.settings.get().connections[choice.connection]?.tierModels.fast?.trim()
+    if (fast) return fast
+    return choice.connection === 'anthropic' || choice.adapter === 'claude' ? 'haiku' : undefined
+  }
+
   // ---------- usage, boot, shutdown ----------
 
   /** Codex (ChatGPT) plan limits, or null when OpenAI is off, not on a ChatGPT login or not signed in. */
