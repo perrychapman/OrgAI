@@ -146,4 +146,13 @@ describe('discovery bounds', () => {
     expect(buildLiteLLMModels(ids, new Map())).toHaveLength(LITELLM_MAX_MODELS)
     expect(buildLiteLLMModels(['x'.repeat(LITELLM_MAX_ID_CHARS + 1), 'ok'], new Map()).map((m) => m.id)).toEqual(['ok'])
   })
+
+  it('drops ids with whitespace, control chars, non-ASCII or a leading dash', () => {
+    expect(buildLiteLLMModels([...['has space', 'tab\there', 'bell\u0007', 'new\nline', '--help', '-m', 'caf\u00e9', 'x'.repeat(201), ''], 'openai/gpt-ok'], new Map()).map((m) => m.id)).toEqual(['openai/gpt-ok'])
+  })
+
+  it('runs /model/info prices through sanitizeModelPrice (ceiling applied)', () => {
+    expect(parsePrice({ input_cost_per_token: 1e9, output_cost_per_token: 1e-6 })).toBeUndefined()
+    expect(parsePrice({ input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, cache_read_input_token_cost: 1e9 })).toEqual({ inputPerToken: 1e-6, outputPerToken: 2e-6 })
+  })
 })

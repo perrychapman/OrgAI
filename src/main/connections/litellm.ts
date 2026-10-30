@@ -1,5 +1,7 @@
 import type { ModelPrice, ProviderModel, UsageSpend } from '@shared/types'
 import { makeDiscoveredModel } from './catalog'
+import { validModelId } from './codexAccount'
+import { sanitizeModelPrice } from '../runtime/pricing'
 
 /**
  * LiteLLM proxy discovery. UNVERIFIED against a live proxy (written from LiteLLM's documented API):
@@ -123,12 +125,13 @@ export function parsePrice(info: Record<string, unknown>): ModelPrice | undefine
   if (input === undefined && output === undefined) return undefined
   const cacheRead = amount(info.cache_read_input_token_cost)
   const cacheCreation = amount(info.cache_creation_input_token_cost)
-  return {
+  // sanitizeModelPrice applies the per-token ceiling and returns a fresh object (untrusted proxy data).
+  return sanitizeModelPrice({
     inputPerToken: input ?? 0,
     outputPerToken: output ?? 0,
     ...(cacheRead !== undefined ? { cacheReadPerToken: cacheRead } : {}),
     ...(cacheCreation !== undefined ? { cacheCreationPerToken: cacheCreation } : {})
-  }
+  })
 }
 
 /** Per-model details from a /model/info body, keyed by model_name. */
@@ -168,7 +171,8 @@ export function buildLiteLLMModels(ids: string[], info: Map<string, ModelInfoEnt
   const models: ProviderModel[] = []
   for (const id of ids) {
     if (models.length >= LITELLM_MAX_MODELS) break
-    if (id.length > LITELLM_MAX_ID_CHARS) continue
+    // validModelId: at most LITELLM_MAX_ID_CHARS (200), printable, no whitespace or control chars, no leading '-'.
+    if (!validModelId(id)) continue
     const e = info.get(id)
     if (e?.mode && !CHAT_MODES.has(e.mode)) continue
     models.push(

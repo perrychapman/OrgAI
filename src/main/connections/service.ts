@@ -87,6 +87,9 @@ type Tiers = Partial<Record<ModelTier, ModelRef>>
 const sameTiers = (a: Tiers, b: Tiers): boolean => JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b))
 const sortKeys = (o: Tiers): [string, string | undefined][] => Object.entries(o).sort(([x], [y]) => x.localeCompare(y))
 
+/** discover(): a ChatGPT connection with no signed-in account has nothing to discover (not an error). */
+const SIGNED_OUT = 'signed-out' as const
+
 const PROVIDER_LABEL: Record<ConnectionId, string> = { anthropic: 'Claude', openai: 'Codex (ChatGPT)', litellm: 'LiteLLM' }
 
 /**
@@ -198,7 +201,7 @@ export class ConnectionService {
     for (const id of ids) {
       try {
         const found = await this.discover(id)
-        if (found) results.push(...this.applyCatalog(id, found, ['catalog']))
+        if (Array.isArray(found)) results.push(...this.applyCatalog(id, found, ['catalog']))
       } catch (e) {
         this.setStatus(id, { state: 'error', detail: this.safeMessage(e), checkedAt: this.now() })
       }
@@ -207,8 +210,17 @@ export class ConnectionService {
     return this.models(query)
   }
 
-  /** Ask the connection for its models. null = this connection has nothing to discover right now. */
-  private async discover(id: ConnectionId): Promise<ProviderModel[] | null> {
+  /**
+   * Ask the connection for its models, keeping only entries whose id passes validModelId (every provider's ids are
+   * untrusted and flow into options.model and ANTHROPIC_DEFAULT_*_MODEL). null = nothing was discovered;
+   * SIGNED_OUT = a ChatGPT connection without an account (nothing to discover, not an error).
+   */
+  private async discover(id: ConnectionId): Promise<ProviderModel[] | null | typeof SIGNED_OUT> {
+    const found = await this.discoverRaw(id)
+    return Array.isArray(found) ? found.filter((m) => validModelId(m.id)) : found
+  }
+
+  private async discoverRaw(id: ConnectionId): Promise<ProviderModel[] | null | typeof SIGNED_OUT> {
     if (id === 'litellm') {
       const conn = this.deps.settings.get().connections.litellm
       const key = this.deps.secrets.get(LITELLM_KEY)
@@ -220,8 +232,9 @@ export class ConnectionService {
       if (this.deps.settings.get().connections.openai.auth.kind !== 'chatgpt') return null
       const list = await this.withCodex(async (rpc) => {
         const account = await readAccount(rpc)
-        return account.account ? listModels(rpc) : []
+        return account.account ? listModels(rpc) : null
       })
+      if (!list) return SIGNED_OUT
       return list.map((m) => {
         const base = makeDiscoveredModel('openai', { id: m.id, label: m.label, family: 'openai', hint: m.description })
         // The id gives a tier for the known families; otherwise the provider's description, and its recommended
@@ -242,6 +255,8 @@ export class ConnectionService {
    * An empty OpenAI list is ignored so the placeholders stay.
    */
   private applyCatalog(id: ConnectionId, found: ProviderModel[], reasons: RemapReason[]): RemapResult[] {
+    // Central id check (discover() already filters; this guards any other caller).
+    found = found.filter((m) => validModelId(m.id))
     if (id === 'openai' && found.length === 0) return []
     const before = this.catalogFor(id)
     const beforeIds = before.map((m) => m.id).join('\n')
@@ -441,7 +456,7 @@ export class ConnectionService {
     if (status.state === 'connected') {
       try {
         const found = await this.discover(id)
-        const results = found ? this.applyCatalog(id, found, ['connected', 'catalog']) : this.reapplyTiers(id)
+        const results = Array.isArray(found) ? this.applyCatalog(id, found, ['connected', 'catalog']) : this.reapplyTiers(id)
         this.broadcastRemaps(results)
       } catch (e) {
         this.setStatus(id, { state: 'error', detail: this.safeMessage(e), checkedAt: this.now() })
@@ -799,7 +814,8 @@ export class ConnectionService {
         try {
           const found = await this.discover(id)
           if (this.disposed) continue
-          if (found?.length) results.push(...this.applyCatalog(id, found, ['catalog']))
+          if (found === SIGNED_OUT) delete this.modelsErrors[id]
+          else if (found?.length) results.push(...this.applyCatalog(id, found, ['catalog']))
           else this.modelsErrors[id] = 'No models returned'
         } catch (e) {
           const message = this.safeMessage(e)

@@ -5,6 +5,27 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
 
+describe('tier model validation', () => {
+  it('drops renderer or file tier models that are not valid model ids', () => {
+    const tierModels = { top: '--help', deep: ' opus ', everyday: 'has space', fast: 'bell\u0007' }
+    const s = normalizeSettings({ connections: { anthropic: { tierModels }, litellm: { tierModels: { deep: 'x'.repeat(201), fast: 'openai/gpt-ok' } } } } as never)
+    expect(s.connections.anthropic.tierModels).toEqual({ deep: 'opus' })
+    expect(s.connections.litellm.tierModels).toEqual({ fast: 'openai/gpt-ok' })
+  })
+
+  it('SettingsStore.set drops them too', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-set-'))
+    try {
+      const store = new SettingsStore(dir)
+      const base = store.get()
+      store.set({ ...base, connections: { ...base.connections, openai: { ...base.connections.openai, tierModels: { deep: '-c', fast: 'gpt-mini' } } } })
+      expect(store.get().connections.openai.tierModels).toEqual({ fast: 'gpt-mini' })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('modelPrices', () => {
   const price = { inputPerToken: 1e-6, outputPerToken: 2e-6 }
 

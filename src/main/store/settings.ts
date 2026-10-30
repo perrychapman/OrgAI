@@ -14,6 +14,7 @@ import type {
 import { CANVAS_EDGE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
 import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections } from '@shared/defaults'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
+import { validModelId } from '../connections/codexAccount'
 
 const oneOf = <T extends string>(options: readonly T[], v: unknown, fallback: T): T =>
   (options as readonly unknown[]).includes(v) ? (v as T) : fallback
@@ -91,7 +92,9 @@ function tierModels(v: unknown, fallback: Partial<Record<ModelTier, ModelRef>>):
   if (!v || typeof v !== 'object') return { ...fallback }
   const out: Partial<Record<ModelTier, ModelRef>> = {}
   for (const [tier, model] of Object.entries(v as Record<string, unknown>)) {
-    if (isModelTier(tier) && typeof model === 'string' && model.trim()) out[tier] = model.trim()
+    // Renderer or file data that becomes options.model / ANTHROPIC_DEFAULT_*_MODEL: invalid ids are dropped.
+    const id = typeof model === 'string' ? model.trim() : ''
+    if (isModelTier(tier) && id && validModelId(id)) out[tier] = id
   }
   return out
 }
