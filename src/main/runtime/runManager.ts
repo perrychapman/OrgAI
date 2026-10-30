@@ -1,5 +1,7 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import type {
+  UsageStats,
+  UsageStatsQuery,
   AppSettings,
   AdapterChoice,
   ImageAttachment,
@@ -811,6 +813,12 @@ export class RunManager {
   pendingCards(runId: string): PendingCards {
     const active = this.runs.get(runId)
     return active ? listPending(active) : emptyPending()
+  }
+
+  /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */
+  usageStats(query: UsageStatsQuery): UsageStats {
+    void query
+    throw new Error('runs:usageStats is not implemented yet')
   }
 
   // ---------- cross-run messaging ----------

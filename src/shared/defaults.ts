@@ -16,6 +16,7 @@ import type {
   ProviderModel,
   Role,
   SetupKind,
+  TokenUsage,
   ToolName
 } from './types'
 import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
@@ -480,4 +481,29 @@ export function rootRole(project: Project): Role | undefined {
 export const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/
 export function isSafeId(x: unknown): x is string {
   return typeof x === 'string' && SAFE_ID.test(x)
+}
+
+// ---------- Usage metrics and pricing ----------
+
+/** Most entries in AppSettings.modelPrices. */
+export const MODEL_PRICE_OVERRIDES_MAX = 200
+/** Longest model id in a price override. */
+export const MODEL_PRICE_ID_MAX_CHARS = 200
+/** Highest accepted price, USD per million tokens (a sanity bound for overrides and proxy prices). */
+export const MODEL_PRICE_MAX_PER_MTOK = 10_000
+
+/** A zeroed TokenUsage (a fresh object each call). */
+export function emptyTokens(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+}
+
+/** All four token kinds summed. */
+export function totalTokens(t: TokenUsage): number {
+  return t.input + t.output + t.cacheRead + t.cacheWrite
+}
+
+/** Share of prompt tokens served from the cache: cacheRead / (input + cacheRead + cacheWrite), 0-1. null without prompt tokens. */
+export function cacheHitRate(t: TokenUsage): number | null {
+  const prompt = t.input + t.cacheRead + t.cacheWrite
+  return prompt > 0 ? t.cacheRead / prompt : null
 }
