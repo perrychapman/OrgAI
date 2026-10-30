@@ -41,6 +41,25 @@ import { searchRegistry } from './registry'
 import { testServer } from './probe'
 import { OAuthError, authStatusFrom, canonicalResource, redactOAuth, refreshTokens, runAuthorization } from './oauth'
 import { LIBRARY_ID, assertValidLibraryEntry, assertValidSpec, sameDefinition, validateLibraryEntry, validateSpec } from './validate'
+import { CONNECTORS, connectorById, connectorVariant } from '@shared/connectors'
+import {
+  MOCK_CONNECTOR_ACCOUNT,
+  MOCK_CONNECTOR_TOKEN,
+  buildConnectorEntry,
+  connectorOf,
+  connectorState,
+  mockConnectorTest,
+  oauthPresetFor,
+  tokenHeaderValue
+} from './connectors'
+import type { ConnectorAddInput, ConnectorInfo, ConnectorTokenInput } from '@shared/types'
+
+/** Connector fields are written by the main process only (connectors:add): drop whatever an input carries. */
+function noConnector<T extends { connectorId?: string; connectorVariant?: string }>(x: T): T {
+  if (!x || typeof x !== 'object' || (!('connectorId' in x) && !('connectorVariant' in x))) return x
+  const { connectorId: _c, connectorVariant: _v, ...rest } = x
+  return rest as T
+}
 
 /** The OAuth functions McpService calls; tests inject fakes. */
 export interface McpOAuthFns {
@@ -111,6 +130,8 @@ export class McpService {
   private onProjectChanged?: (project: Project) => void
   private oauth: McpOAuthFns
   private now: () => number
+  /** ORGAI_MOCK=1: connector entries authorize and test without network (see mockAuthorize). Never set otherwise. */
+  private mock: boolean
   /** One interactive authorization per owner; a new call aborts the previous. */
   private flows = new Map<string, AbortController>()
   /** In-flight refreshes per owner: refresh tokens rotate, so a second concurrent refresh would be fatal. */
@@ -133,7 +154,10 @@ export class McpService {
     /** Tests inject fakes for the OAuth flow and refresh. */
     oauth?: Partial<McpOAuthFns>
     now?: () => number
+    /** index.ts passes process.env.ORGAI_MOCK === '1': connector authorize/test then run without network. */
+    mock?: boolean
   }) {
+    this.mock = deps.mock === true
     this.projects = deps.projects
     this.secrets = deps.secrets
     this.library = deps.library
@@ -225,7 +249,12 @@ export class McpService {
   private commitEntry(incoming: McpLibraryEntry, opts: { applied?: boolean } = {}): McpLibraryEntry {
     const lib = this.lib()
     const prev = lib.get(incoming.id)
-    const entry: McpLibraryEntry = withOAuth({ ...incoming, source: normalSource(incoming.source) }, undefined)
+    const entry: McpLibraryEntry = withOAuth({ ...noConnector(incoming), source: normalSource(incoming.source) }, undefined)
+    // A connector entry stays one only while it still connects exactly as its preset says.
+    if (prev?.connectorId && sameDefinition(prev, entry)) {
+      entry.connectorId = prev.connectorId
+      if (prev.connectorVariant) entry.connectorVariant = prev.connectorVariant
+    }
     const owner: McpSecretOwner = { libraryId: entry.id }
     if (prev) this.retarget(owner, prev, entry, opts.applied === true)
     if (prev?.oauth && sameEndpoint(prev, entry)) entry.oauth = prev.oauth
@@ -258,6 +287,10 @@ export class McpService {
     const lib = this.lib()
     const others = lib.list().filter((e) => e.id !== entry?.id)
     assertValidLibraryEntry(entry, others)
+    const prev = lib.get(entry.id)
+    if (prev?.connectorId && !sameDefinition(prev, entry)) {
+      throw new Error(`${prev.name} is a connector: its address, headers and secret slots come from the preset. Remove it and add a custom server to change them.`)
+    }
     const saved = this.commitEntry(entry)
     this.relinkProjects(saved)
     this.notifyLibrary()
@@ -301,6 +334,8 @@ export class McpService {
   async libraryTest(input: { libraryId: string }): Promise<McpTestResult> {
     const entry = this.lib().get(input.libraryId)
     if (!entry) throw new Error('Library entry not found')
+    const mocked = this.mockTest(entry)
+    if (mocked) return mocked
     await this.refreshIfNeeded({ libraryId: entry.id })
     return testServer(this.resolveSpec({ libraryId: entry.id }, { ...entry, enabled: true }), 20_000, this.fetchImpl)
   }
@@ -348,7 +383,7 @@ export class McpService {
     }
     if (input.spec?.libraryId || input.spec?.source === 'library') throw new Error('Use mcp:linkLibrary to add a server from the library.')
     assertValidSpec(input.spec, existing)
-    const spec: McpServerSpec = withOAuth({ ...input.spec, source: normalSource(input.spec.source) }, undefined)
+    const spec: McpServerSpec = withOAuth({ ...noConnector(input.spec), source: normalSource(input.spec.source) }, undefined)
     if (stored) this.retarget({ projectId: project.id, serverId: stored.id }, stored, spec, false)
     if (stored?.oauth && sameEndpoint(stored, spec)) spec.oauth = stored.oauth
     const next = stored ? existing.map((s) => (s.id === spec.id ? spec : s)) : [...existing, spec]
@@ -395,6 +430,9 @@ export class McpService {
     const spec = (project.project.mcpServers ?? []).find((s) => s.id === input.serverId)
     if (!spec) throw new Error('MCP server not found')
     if (project.missing.has(spec.id)) throw new Error(`${spec.name} was removed from your MCP library.`)
+    const entry = spec.libraryId ? this.library?.get(spec.libraryId) : undefined
+    const mocked = entry ? this.mockTest(entry) : undefined
+    if (mocked) return mocked
     await this.refreshIfNeeded(this.ownerOf(input.projectId, spec))
     return testServer(this.resolve(input.projectId, spec), 20_000, this.fetchImpl)
   }
@@ -427,7 +465,7 @@ export class McpService {
     const spec = existing.find((s) => s.id === input.serverId)
     if (!spec) throw new Error('MCP server not found')
     if (spec.libraryId) throw new Error(`${spec.name} is already part of your MCP library.`)
-    const entry = libraryEntryFromSpec({ ...spec, source: normalSource(spec.source) }, newId('mcpl'))
+    const entry = libraryEntryFromSpec({ ...noConnector(spec), source: normalSource(spec.source) }, newId('mcpl'))
     assertValidLibraryEntry(entry, lib.list())
     const from = mcpSecretPrefix(project.id, spec.id)
     const to = mcpLibraryPrefix(entry.id)
@@ -524,16 +562,35 @@ export class McpService {
     const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : ''
     const enteredSecret = typeof input.clientSecret === 'string' && input.clientSecret ? input.clientSecret : undefined
     const secretOf = (): string | undefined => this.secrets.get(mcpOwnerOAuthKey(ref.owner, 'clientSecret'))
+    const connector = connectorOf(ref.spec)
+    const preset = oauthPresetFor(ref.spec)
     try {
+      if (connector?.variant.auth.kind === 'token') {
+        throw new OAuthError('authorization', `${connector.def.name} uses a ${connector.variant.auth.label.toLowerCase()}, not OAuth. Paste it instead.`)
+      }
       if (clientId || enteredSecret) {
         if (enteredSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), enteredSecret)
         const cur = ref.spec.oauth
         ref.saveOAuth({
           ...(cur ?? {}),
           ...(clientId ? { clientId, clientSource: 'manual' as const } : {}),
+          // A preset's issuer ties the entered client to that authorization server, so a retry can reuse it.
+          ...(clientId && preset?.issuer && !cur?.authorizationServer ? { authorizationServer: preset.issuer } : {}),
           ...(enteredSecret ? { hasClientSecret: true } : {})
         })
       }
+      if (connector?.variant.auth.kind === 'oauthClient') {
+        const cfg = this.refFromOwner(ref.owner)?.spec.oauth
+        const needsSecret = connector.variant.auth.clientSecret === 'required'
+        if (!cfg?.clientId || (needsSecret && !enteredSecret && !secretOf())) {
+          throw new OAuthError(
+            'registration',
+            `${connector.def.name} needs your own OAuth app: enter its client id${needsSecret ? ' and client secret' : ''}, then authorize again.`,
+            true
+          )
+        }
+      }
+      if (this.mock && connector) return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
       const config = this.refFromOwner(ref.owner)?.spec.oauth
       // Only a newly entered secret goes as clientSecret; the stored one is reused only for its own authorization server.
       const storedSecret = enteredSecret ? undefined : secretOf()
@@ -546,7 +603,8 @@ export class McpService {
         fetch: this.fetchImpl,
         openExternal: this.openExternal,
         signal: ac.signal,
-        now: this.now
+        now: this.now,
+        ...(preset ? { preset } : {})
       })
       if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
       // Re-read the owner: the entry may have been edited while the browser was open.
@@ -621,7 +679,18 @@ export class McpService {
     if (!Number.isFinite(expires) || expires - this.now() > MCP_OAUTH_REFRESH_SKEW_MS) return
     const clientSecret = this.secrets.get(mcpOwnerOAuthKey(owner, 'clientSecret'))
     try {
-      const tokens = await this.oauth.refreshTokens(cfg, { refreshToken, ...(clientSecret ? { clientSecret } : {}) }, this.fetchImpl, this.now)
+      const preset = oauthPresetFor(ref.spec)
+      const tokens = await this.oauth.refreshTokens(
+        cfg,
+        {
+          refreshToken,
+          ...(clientSecret ? { clientSecret } : {}),
+          ...(preset?.sendResource === false ? { sendResource: false } : {}),
+          ...(preset?.tokenResponse ? { tokenResponse: preset.tokenResponse } : {})
+        },
+        this.fetchImpl,
+        this.now
+      )
       this.secrets.set(mcpOwnerOAuthKey(owner, 'accessToken'), tokens.accessToken)
       if (tokens.refreshToken) this.secrets.set(mcpOwnerOAuthKey(owner, 'refreshToken'), tokens.refreshToken)
       const { expiresAt: _old, ...rest } = cfg
@@ -663,6 +732,93 @@ export class McpService {
     if (!spec.libraryId) return spec
     const entry = this.library?.get(spec.libraryId)
     return entry ? linkedSpec(entry, spec) : spec
+  }
+
+  // ---------- connectors ----------
+
+  /** The library entry made from a connector, if any (the first one; connectors:add keeps it unique). */
+  private connectorEntry(connectorId: string): McpLibraryEntry | undefined {
+    return this.libraryEntries().find((e) => e.connectorId === connectorId)
+  }
+
+  /** connectors:list: every preset in catalog order with its library entry and gallery state. */
+  connectorsList(): ConnectorInfo[] {
+    const all = this.projects.list()
+    return CONNECTORS.map((def) => {
+      const entry = this.connectorEntry(def.id)
+      if (!entry) return { connector: structuredClone(def), state: 'available' as const }
+      const info = this.libraryInfo(entry, all)
+      const variant = connectorVariant(def, entry.connectorVariant)
+      return { connector: structuredClone(def), library: info, variant: variant.id, state: connectorState(variant, info) }
+    })
+  }
+
+  /**
+   * connectors:add: create the library entry from the catalog. Only the connector id and a variant id are read
+   * from the input. Idempotent: an existing entry for the connector is returned unchanged.
+   */
+  connectorsAdd(input: ConnectorAddInput): McpLibraryInfo {
+    const def = connectorById(input?.connectorId)
+    if (!def) throw new Error('Unknown connector.')
+    const lib = this.lib()
+    const existing = this.connectorEntry(def.id)
+    if (existing) return this.libraryInfo(existing, this.projects.list())
+    const variant = connectorVariant(def, typeof input.variant === 'string' ? input.variant : undefined)
+    const entries = lib.list()
+    const entry = buildConnectorEntry(def, variant, newId('mcpl'), entries.map((e) => e.name), new Date(this.now()))
+    assertValidLibraryEntry(entry, entries)
+    const saved = lib.save(entry)
+    this.notifyLibrary()
+    return this.libraryInfo(saved, this.projects.list())
+  }
+
+  /** connectors:setToken: store (or clear with null) a 'token' connector's secret header, prefix added. */
+  connectorsSetToken(input: ConnectorTokenInput): McpLibraryInfo {
+    const def = connectorById(input?.connectorId)
+    if (!def) throw new Error('Unknown connector.')
+    const entry = this.connectorEntry(def.id)
+    if (!entry) throw new Error(`Add ${def.name} first.`)
+    const auth = connectorVariant(def, entry.connectorVariant).auth
+    if (auth.kind !== 'token') throw new Error(`${def.name} signs in with OAuth; use Authorize instead.`)
+    if (!(entry.secretHeaders ?? []).includes(auth.header)) throw new Error(`${def.name} has no ${auth.header} slot. Remove it and add it again.`)
+    const key = mcpOwnerSecretKey({ libraryId: entry.id }, 'header', auth.header)
+    if (input.token === null) this.secrets.delete(key)
+    else if (typeof input.token === 'string') this.secrets.set(key, tokenHeaderValue(auth, input.token))
+    else throw new Error('The token must be text.')
+    this.notifyLibrary()
+    return this.libraryInfo(entry, this.projects.list())
+  }
+
+  /** ORGAI_MOCK=1 only: a connector entry's test without network; undefined otherwise. */
+  private mockTest(entry: McpLibraryEntry): McpTestResult | undefined {
+    if (!this.mock) return undefined
+    const c = connectorOf(entry)
+    if (!c) return undefined
+    return mockConnectorTest(c.def, c.variant, this.libraryInfo(entry, this.projects.list()))
+  }
+
+  /**
+   * ORGAI_MOCK=1 only: authorize a connector entry without discovery, browser or network. Stores a fake access
+   * token (no refresh token, no expiry) and account mock@example.com. The entered client id was saved above.
+   */
+  private mockAuthorize(ref: AuthRef, manualClient: boolean, enteredClientId: string): McpAuthStatus {
+    const cur = this.refFromOwner(ref.owner)?.spec.oauth
+    const preset = oauthPresetFor(ref.spec)
+    const config: McpOAuthConfig = {
+      resource: resourceOf(ref.spec.url),
+      authorizationServer: preset?.issuer ?? 'https://mock.invalid',
+      ...(preset?.scopes ? { scopes: [...preset.scopes] } : {}),
+      clientId: enteredClientId || cur?.clientId || 'mock-client',
+      clientSource: manualClient ? 'manual' : 'dcr',
+      hasClientSecret: !!cur?.hasClientSecret,
+      authorizedAt: new Date(this.now()).toISOString(),
+      account: MOCK_CONNECTOR_ACCOUNT
+    }
+    ref.saveOAuth(config)
+    this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), MOCK_CONNECTOR_TOKEN)
+    this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), null)
+    this.lastErrors.delete(mcpOwnerPrefix(ref.owner))
+    return this.statusFor(ref.owner, config)
   }
 
   // ---------- plugins ----------
@@ -751,7 +907,7 @@ export class McpService {
     if (existing.some((s) => s.id === spec?.id) || this.library?.get(spec?.id)) throw new Error('A server with that id already exists.')
     assertValidSpec(spec, existing)
     // OAuth configs are written by the main process only, after an authorization; an install never brings one.
-    const saved: McpServerSpec = withOAuth({ ...spec, source: spec.source === 'registry' ? 'registry' : 'agent' }, undefined)
+    const saved: McpServerSpec = withOAuth({ ...noConnector(spec), source: spec.source === 'registry' ? 'registry' : 'agent' }, undefined)
     if (scope === 'library') {
       const lib = this.lib()
       const entry = libraryEntryFromSpec(saved, newId('mcpl'))
@@ -793,7 +949,7 @@ export class McpService {
     const problems: string[] = []
     const commits: McpLibraryEntry[] = []
     for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
-      const base = libraryEntryFromSpec({ ...raw, enabled: true, source: normalSource(raw.source === 'library' ? 'user' : raw.source) }, raw.id)
+      const base = libraryEntryFromSpec({ ...noConnector(raw), enabled: true, source: normalSource(raw.source === 'library' ? 'user' : raw.source) }, raw.id)
       const match = planned.find((e) => e.id === raw.id) ?? planned.find((e) => e.name === raw.name)
       const id = match?.id ?? (typeof raw.id === 'string' && LIBRARY_ID.test(raw.id) ? raw.id : newId('mcpl'))
       const entry: McpLibraryEntry = withOAuth({ ...base, id, addedAt: match?.addedAt ?? (raw.addedAt || now) }, undefined)
@@ -862,7 +1018,7 @@ export class McpService {
         continue
       }
       const spec: McpServerSpec = withOAuth(
-        { ...raw, enabled, ...(roles ? { roles } : {}), source: normalSource(raw.source), addedAt: current?.addedAt ?? (raw.addedAt || now) } as McpServerSpec,
+        { ...noConnector(raw), enabled, ...(roles ? { roles } : {}), source: normalSource(raw.source), addedAt: current?.addedAt ?? (raw.addedAt || now) } as McpServerSpec,
         current && sameEndpoint(current, raw) ? current.oauth : undefined
       )
       delete (spec as { projectOnly?: boolean }).projectOnly

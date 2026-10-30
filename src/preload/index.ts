@@ -79,6 +79,11 @@ const api: OrgAIApi = {
     ipcRenderer.on(IPC.mcpLibraryChanged, listener)
     return () => ipcRenderer.removeListener(IPC.mcpLibraryChanged, listener)
   },
+  connectors: {
+    list: () => ipcRenderer.invoke(IPC.connectorsList),
+    add: (input) => ipcRenderer.invoke(IPC.connectorsAdd, input),
+    setToken: (input) => ipcRenderer.invoke(IPC.connectorsSetToken, input)
+  },
   plugins: {
     upsert: (input) => ipcRenderer.invoke(IPC.pluginsUpsert, input),
     remove: (input) => ipcRenderer.invoke(IPC.pluginsRemove, input)
