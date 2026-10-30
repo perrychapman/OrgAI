@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
 import { MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
-import { composeFirstMessage } from './prompts'
+import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { matchingRule } from './ruleMatch'
@@ -188,6 +188,8 @@ export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
   readonly harnessMessages: string[] = []
+  /** Raw messages from other runs delivered through receive(), in order. For tests. */
+  readonly peerMessages: PeerMessage[] = []
   /** What a real adapter would grant: role slug -> names of the MCP servers that role may use. For tests. */
   readonly mcpServersByRole: Record<string, string[]> = {}
   /** The enabled plugins the session would load. For tests. */
@@ -281,6 +283,13 @@ export class MockSession implements RuntimeSession {
     this.continuation.hold()
     this.interrupted = true
     this.poke()
+  }
+
+  /** A message from another run: delivered like a harness message, but RunManager writes the transcript block. */
+  async receive(message: PeerMessage): Promise<void> {
+    if (this.stopped) return
+    this.peerMessages.push(message)
+    this.deliverHarness(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
   async stop(): Promise<void> {
@@ -398,9 +407,9 @@ export class MockSession implements RuntimeSession {
   }
 
   /** A harness message for the orchestrator (the Claude adapter's notifyOrchestrator path). */
-  private deliverHarness(text: string, activity: string): void {
+  private deliverHarness(text: string, activity: string, opts: { transcript?: boolean } = {}): void {
     this.harnessMessages.push(text)
-    this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+    if (opts.transcript !== false) this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
     const root = this.agents.get(ROOT_AGENT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_AGENT_ID, 'thinking', activity)
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
