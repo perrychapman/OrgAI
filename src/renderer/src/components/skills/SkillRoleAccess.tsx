@@ -38,21 +38,60 @@ export function SkillRoleChecklist({
   )
 }
 
+/** Inline role picker for an add flow: nothing is preselected, and it says what that means. */
+export function SkillRolePicker({
+  roles,
+  value,
+  onChange,
+  label,
+  legend = 'Who can load it?'
+}: {
+  roles: Role[]
+  value: string[]
+  onChange: (next: string[]) => void
+  label: string
+  legend?: string
+}): ReactElement {
+  return (
+    <fieldset className="mcp-vars skill-role-picker" data-testid="skill-role-picker">
+      <legend>{legend}</legend>
+      <SkillRoleChecklist roles={roles} value={value} onChange={onChange} label={label} />
+      {roles.length > 0 && (
+        <span className={value.length === 0 ? 'hint skill-role-warn' : 'hint'} data-testid="skill-role-hint">
+          {value.length === 0
+            ? 'Until you choose roles, no agent loads it.'
+            : `${value.length} ${value.length === 1 ? 'role' : 'roles'} will be able to load it.`}
+        </span>
+      )}
+    </fieldset>
+  )
+}
+
 /** "Roles: Writer, QA" button that discloses the checklist in flow. Esc closes and returns focus to the button. */
 export function SkillRoleAccess({
   skillName,
   roles,
   grantedTo,
   onChange,
-  disabled
+  disabled,
+  open: controlledOpen,
+  onOpenChange
 }: {
   skillName: string
   roles: Role[]
   grantedTo: string[]
   onChange: (next: string[]) => void
   disabled?: boolean
+  /** Controlled mode: the row opens this control from its "Choose roles" action. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }): ReactElement {
-  const [open, setOpen] = useState(false)
+  const [innerOpen, setInnerOpen] = useState(false)
+  const open = controlledOpen ?? innerOpen
+  const setOpen = (next: boolean): void => {
+    setInnerOpen(next)
+    onOpenChange?.(next)
+  }
   const btn = useRef<HTMLButtonElement>(null)
   const panel = useId()
   const summary = grantSummary({ grantedTo }, roles)
@@ -80,7 +119,7 @@ export function SkillRoleAccess({
         aria-expanded={open}
         aria-controls={open ? panel : undefined}
         disabled={disabled}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
       >
         <span className="mcp-link-text">{summary}</span>
         <Icon icon={ChevronDown} size="xs" />

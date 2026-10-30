@@ -6,7 +6,7 @@ import { totalTokens } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { formatTokens, sumCosts, unpricedModels, type CostInput } from '../lib/cost'
 import { requestModelPrice } from '../lib/settingsTarget'
-import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, skillRows, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
+import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, skillLoadsFromTranscript, skillRows, timeRows, tokenRows, type AgentRow } from '../lib/usageView'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
 import { Button } from './ui/Button'
@@ -150,24 +150,31 @@ function AgentTable({ rows, selectedId, onSelect }: { rows: AgentRow[]; selected
   )
 }
 
-function SkillsLoaded({ run }: { run: RunUsage }): ReactElement | null {
-  const rows = skillRows(run)
+function SkillsLoaded({ rows }: { rows: ReturnType<typeof skillRows> }): ReactElement | null {
   if (rows.length === 0) return null
   return (
-    <section className="usage-skills" data-testid="usage-skills" aria-label="Skills loaded">
-      <h4 className="usage-skills-title">Skills loaded</h4>
-      <dl className="usage-skills-list">
+    <table className="usage-table" data-testid="usage-skills">
+      <caption>Skills loaded</caption>
+      <thead>
+        <tr>
+          <th scope="col">Skill</th>
+          <th scope="col" className="num">Loads</th>
+          <th scope="col" className="num opt">By</th>
+        </tr>
+      </thead>
+      <tbody>
         {rows.map((r) => (
-          <div key={r.skillId} className="usage-skill" data-testid="usage-skill">
-            <dt title={r.name}>{r.name}</dt>
-            <dd>
-              {r.loadsText}
-              {r.roles && <span className="usage-sub">{r.roles}</span>}
-            </dd>
-          </div>
+          <tr key={r.skillId} data-testid="usage-skill">
+            <th scope="row" title={r.name}>{r.name}</th>
+            <td className="num">{r.loadsText}</td>
+            <td className="num opt">
+              {r.agentsText || r.roles}
+              {r.agentsText && r.roles && <span className="usage-sub">{r.roles}</span>}
+            </td>
+          </tr>
         ))}
-      </dl>
-    </section>
+      </tbody>
+    </table>
   )
 }
 
@@ -209,10 +216,16 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
   const usage = useAppStore((s) => s.runs[runId]?.summary.usage)
   const agents = useAppStore((s) => s.runs[runId]?.agents)
   const selectAgent = useAppStore((s) => s.selectAgent)
+  const transcript = useAppStore((s) => s.runs[runId]?.transcript)
   const rows = useMemo(() => (agents ? agentRows(agents) : []), [agents])
   // The root is selected by default, so it shows the whole run; any other agent scopes the tab to itself.
   const scoped = agent && agent.id !== 'root' && agent.parentId ? agent : undefined
   const scopedRow = scoped ? agentRow(scoped) : undefined
+  const skills = useMemo(() => {
+    if (!usage) return []
+    const seen = skillLoadsFromTranscript(transcript ?? [], scoped?.id)
+    return skillRows(usage, seen, !!scoped)
+  }, [usage, transcript, scoped])
 
   if (!usage && rows.length === 0) {
     return (
@@ -264,8 +277,8 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
         </>
       )}
       {rows.length > 0 && <AgentTable rows={rows} selectedId={scoped?.id} onSelect={selectAgent} />}
+      <SkillsLoaded rows={skills} />
       {usage && !scoped && <RoleTable run={usage} rows={rows} />}
-      {usage && !scoped && <SkillsLoaded run={usage} />}
       {scoped && scopedRow ? <Totals row={scopedRow} part="more" /> : usage ? <Totals run={usage} part="more" /> : null}
     </div>
   )

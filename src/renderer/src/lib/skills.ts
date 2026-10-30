@@ -51,7 +51,10 @@ export function usedByLine(usedBy: SkillLibraryInfo['usedBy']): string {
   if (usedBy.length === 0) return 'Not used by any project'
   const byProject = new Map<string, { name: string; roles: string[] }>()
   for (const u of usedBy) {
-    const hit = byProject.get(u.projectId) ?? { name: u.projectName, roles: [] }
+    const hit = byProject.get(u.projectId) ?? {
+      name: u.projectName,
+      roles: []
+    }
     for (const r of u.roleNames) if (!hit.roles.includes(r)) hit.roles.push(r)
     byProject.set(u.projectId, hit)
   }
@@ -97,7 +100,11 @@ export function draftProblems(draft: SkillDraft): DraftProblems {
     : draft.body.length > SKILL_BODY_MAX_CHARS
       ? `The instructions are too long (at most ${SKILL_BODY_MAX_CHARS.toLocaleString('en-US')} characters).`
       : null
-  return { name: skillNameProblem(draft.name), description: skillDescriptionProblem(draft.description), body }
+  return {
+    name: skillNameProblem(draft.name),
+    description: skillDescriptionProblem(draft.description),
+    body
+  }
 }
 
 export function hasDraftProblems(p: DraftProblems): boolean {
@@ -109,7 +116,10 @@ export function skillElevatedHint(scripts: string[]): string | null {
   return scripts.length > 0 ? 'Includes scripts; may run shell commands' : null
 }
 
-const SEVERITY_RANK: Record<SkillFinding['severity'], number> = { warning: 0, info: 1 }
+const SEVERITY_RANK: Record<SkillFinding['severity'], number> = {
+  warning: 0,
+  info: 1
+}
 
 /** Sort key: warnings first. */
 export function severityOrder(severity: SkillFinding['severity']): number {
@@ -147,7 +157,14 @@ export function appliedCount(suggestions: SkillSuggestion[]): number {
 export function evaluationSummary(report: Pick<SkillEvaluationReport, 'at' | 'findings' | 'suggestions'>, now: number = Date.now()): string {
   const d = new Date(report.at)
   const sameYear = d.getFullYear() === new Date(now).getFullYear()
-  const when = d.toLocaleString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: '2-digit', minute: '2-digit', hour12: false })
+  const when = d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
   const parts = [`Checked ${when}`, plural(report.findings.length, 'finding'), plural(report.suggestions.length, 'suggestion')]
   const applied = appliedCount(report.suggestions)
   if (applied > 0) parts.push(`${applied} applied`)
@@ -212,7 +229,11 @@ export function defaultIncluded(item: Pick<SkillImportItem, 'action' | 'nameConf
 export function buildSkillChoices(edits: Record<string, SkillImportEdit>): SkillImportChoice[] {
   return Object.entries(edits)
     .slice(0, AGENT_IMPORT_MAX_CHOICES)
-    .map(([key, e]) => ({ key, include: e.include ?? true, ...(e.roleIds !== undefined ? { roleIds: e.roleIds } : {}) }))
+    .map(([key, e]) => ({
+      key,
+      include: e.include ?? true,
+      ...(e.roleIds !== undefined ? { roleIds: e.roleIds } : {})
+    }))
 }
 
 export function skillImportButtonLabel(count: number): string {
@@ -245,4 +266,153 @@ export function skillActivityText(name: string): string {
 /** Paths of a skill's files that look like scripts (a scripts/ folder or a runnable extension). Feeds `skillElevatedHint`. */
 export function skillScriptPaths(files: readonly { path: string }[] | undefined): string[] {
   return (files ?? []).map((f) => f.path).filter((p) => /(^|\/)scripts\//i.test(p) || /\.(sh|bash|zsh|ps1|bat|cmd|py|js|mjs|cjs|ts|rb|pl)$/i.test(p))
+}
+
+// ---------- Evaluation results ----------
+
+/** "2 findings, 1 suggestion" (zero parts left out); "no findings" when both are zero. */
+export function evaluationCounts(report: Pick<SkillEvaluationReport, 'findings' | 'suggestions'>): string {
+  const parts: string[] = []
+  if (report.findings.length > 0) parts.push(plural(report.findings.length, 'finding'))
+  if (report.suggestions.length > 0) parts.push(plural(report.suggestions.length, 'suggestion'))
+  return parts.length > 0 ? parts.join(', ') : 'no findings'
+}
+
+/** Label of the Last evaluation disclosure: "Show 2 findings, 1 suggestion" / "Hide 2 findings, 1 suggestion". */
+export function evaluationToggleLabel(report: Pick<SkillEvaluationReport, 'findings' | 'suggestions'> | null, open: boolean): string {
+  if (!report) return open ? 'Hide' : 'Show'
+  return `${open ? 'Hide' : 'Show'} ${evaluationCounts(report)}`
+}
+
+/** Live-region text after an evaluation: "Evaluation finished, 2 findings, 1 suggestion". */
+export function evaluationAnnouncement(report: Pick<SkillEvaluationReport, 'findings' | 'suggestions'>): string {
+  return `Evaluation finished, ${plural(report.findings.length, 'finding')}, ${plural(report.suggestions.length, 'suggestion')}`
+}
+
+/** Suggestions still waiting for a decision: not applied and not dismissed. */
+export function openSuggestionCount(report: Pick<SkillEvaluationReport, 'suggestions'> | null, dismissed: ReadonlySet<string> = new Set()): number {
+  return (report?.suggestions ?? []).filter((s) => !s.appliedSkillId && !dismissed.has(s.id)).length
+}
+
+/** Evidence lines of a finding. Count and runs are one line ("Seen 3 times in 3 runs"), not two that state the same fact. */
+export function evidenceLines(e: SkillFinding['evidence'] | undefined): string[] {
+  if (!e) return []
+  const lines: string[] = []
+  if (e.paths?.length) lines.push(`Missing paths: ${e.paths.join(', ')}`)
+  if (e.sequence?.length) lines.push(`Tool sequence: ${e.sequence.join(' > ')}`)
+  if (typeof e.similarity === 'number') lines.push(`Similarity: ${Math.round(e.similarity * 100)}%`)
+  const runs = e.runIds?.length ?? 0
+  if (typeof e.count === 'number') {
+    const times = `Seen ${e.count} ${e.count === 1 ? 'time' : 'times'}`
+    lines.push(times)
+  } else if (runs > 0 && !e.sequence?.length) {
+    lines.push(`In ${plural(runs, 'run')}`)
+  }
+  return lines
+}
+
+// ---------- Role access ----------
+
+/** True when the skill is on but no role of the project may load it, so no agent ever gets it. */
+export function loadableByNoRole(info: Pick<SkillInfo, 'spec' | 'grantedTo' | 'libraryMissing'>, roles: Pick<Role, 'id'>[]): boolean {
+  if (!info.spec.enabled || info.libraryMissing) return false
+  const known = new Set(roles.map((r) => r.id))
+  return !info.grantedTo.some((id) => known.has(id))
+}
+
+export type SkillAddVerb = 'created' | 'added' | 'applied' | 'imported'
+
+/** Success notice after a skill is added. It says so when no role can load it. */
+export function skillAddedNotice(name: string, verb: SkillAddVerb, roleCount: number): { tone: 'success' | 'warning'; title: string; body: string } {
+  if (roleCount > 0) {
+    return {
+      tone: 'success',
+      title: `${name} ${verb}.`,
+      body: `${plural(roleCount, 'role')} can load it.`
+    }
+  }
+  return {
+    tone: 'warning',
+    title: `${name} ${verb}.`,
+    body: 'No role can load it yet. Until you choose roles, no agent loads it.'
+  }
+}
+
+/** Notice after Promote to library. */
+export function promotedNotice(name: string): string {
+  return `${name} is now in the library. Edits happen there.`
+}
+
+/** Badge text for a project skill: a linked one is just "Library", the rest name where they came from. */
+export function projectProvenance(spec: Pick<SkillInfo['spec'], 'libraryId' | 'source'>): string {
+  return spec.libraryId ? 'Library' : sourceLabel(spec.source)
+}
+
+/** Projects that use a library skill, each once, with the roles holding it ("Used by" as a list). */
+export function usedByList(usedBy: SkillLibraryInfo['usedBy']): { projectId: string; projectName: string; roles: string[] }[] {
+  const byProject = new Map<string, { projectId: string; projectName: string; roles: string[] }>()
+  for (const u of usedBy) {
+    const hit = byProject.get(u.projectId) ?? {
+      projectId: u.projectId,
+      projectName: u.projectName,
+      roles: []
+    }
+    for (const r of u.roleNames) if (!hit.roles.includes(r)) hit.roles.push(r)
+    byProject.set(u.projectId, hit)
+  }
+  return [...byProject.values()]
+}
+
+/** One line per project that loses a library skill: "Atlas: Writer and QA lose access." (roles from usedBy[].roleNames). */
+export function libraryRemoveLines(usedBy: SkillLibraryInfo['usedBy']): string[] {
+  return usedByList(usedBy).map((p) =>
+    p.roles.length > 0 ? `${p.projectName}: ${joinWords(p.roles)} ${p.roles.length === 1 ? 'loses' : 'lose'} access.` : `${p.projectName}: no role holds it.`
+  )
+}
+
+// ---------- Import wording ----------
+
+/** Banner sentence with the counts named once: "Skills in .claude/skills: 2 can be imported, 1 cannot." */
+export function importBannerLine(importable: number, refused: number, roots: string[]): string {
+  const where = roots.length > 0 ? ` in ${joinWords(roots)}` : ''
+  return `Skills${where}: ${importable} can be imported${refused > 0 ? `, ${refused} cannot` : ''}.`
+}
+
+/** Quiet line kept after an import: "1 skill in the repository cannot be imported." */
+export function refusedSkillsLine(count: number): string {
+  return `${plural(count, 'skill')} in the repository cannot be imported.`
+}
+
+/** The keys named by an importer note ("Dropped frontmatter keys: allowed-tools, hooks."), or []. */
+export function droppedKeysOf(notes: readonly string[]): string[] {
+  for (const n of notes) {
+    const m = /^Dropped frontmatter keys: ([^\n]+?)\.?$/.exec(n)
+    if (m) {
+      return m[1]
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean)
+    }
+  }
+  return []
+}
+
+/** "deploy-check: dropped allowed-tools, hooks, which OrgAI does not run". */
+export function droppedKeysLine(name: string, keys: string[]): string {
+  return `${name}: dropped ${keys.join(', ')}, which OrgAI does not run`
+}
+
+// ---------- Body refusal ----------
+
+/** True for the server's refusal of a body that runs shell commands when loaded. */
+export function isBodyRefusal(message: string): boolean {
+  return message.includes('Runs shell commands when loaded')
+}
+
+/** Splits text so !`...` can be shown in a code span. */
+export function codeSpans(text: string): { text: string; code: boolean }[] {
+  return text
+    .split(/(!`[^`]*`)/)
+    .filter((t) => t.length > 0)
+    .map((t) => ({ text: t, code: /^!`[^`]*`$/.test(t) }))
 }

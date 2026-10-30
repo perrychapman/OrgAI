@@ -1,9 +1,9 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { BookOpen, FolderPlus, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import type { SkillDraft, SkillLibraryInfo } from '@shared/types'
 import { SKILL_BODY_MAX_CHARS } from '@shared/types'
-import { draftProblems, hasDraftProblems, skillElevatedHint, skillScriptPaths, sourceLabel, usedByLine } from '../../lib/skills'
+import { draftProblems, hasDraftProblems, libraryRemoveLines, skillElevatedHint, skillScriptPaths, sourceLabel, usedByList } from '../../lib/skills'
 import { cleanIpcError } from '../../lib/ipcError'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -40,17 +40,23 @@ export default function SkillLibrarySection(): ReactElement {
   }
 
   const remove = async (info: SkillLibraryInfo): Promise<void> => {
-    const projects = [...new Set(info.usedBy.map((u) => u.projectName))]
+    const lines = libraryRemoveLines(info.usedBy)
     const ok = await confirm({
       title: `Remove ${info.entry.name} from the library?`,
-      body: (
-        <p>
-          {projects.length > 0
-            ? `${projects.join(', ')} will lose this skill and any role access to it.`
-            : 'No project uses this skill.'}{' '}
-          Its files are deleted from the library.
-        </p>
-      ),
+      body:
+        lines.length > 0 ? (
+          <div className="stack-2" data-testid="skill-library-remove-body">
+            <p>These projects lose the skill, and the roles named lose their access to it:</p>
+            <ul className="skill-remove-list">
+              {lines.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+            <p>Its files are deleted from the library.</p>
+          </div>
+        ) : (
+          <p>No project uses this skill. Its files are deleted from the library.</p>
+        ),
       confirmLabel: 'Remove from library',
       danger: true
     })
@@ -138,6 +144,7 @@ export default function SkillLibrarySection(): ReactElement {
 function LibraryRow({ info, onEdit, onRemove }: { info: SkillLibraryInfo; onEdit: () => void; onRemove: () => void }): ReactElement {
   const { entry } = info
   const hint = skillElevatedHint(skillScriptPaths(entry.files))
+  const used = usedByList(info.usedBy)
   return (
     <li className="mcp-row skill-lib-row" data-testid="skill-library-row" data-name={entry.name} data-id={entry.id}>
       <div className="skill-lib-main">
@@ -155,9 +162,23 @@ function LibraryRow({ info, onEdit, onRemove }: { info: SkillLibraryInfo; onEdit
               {hint}
             </Badge>
           )}
-          <span className="muted" data-testid="skill-library-used-by">
-            {usedByLine(info.usedBy)}
-          </span>
+        </div>
+        <div className="skill-used-by" data-testid="skill-library-used-by">
+          {used.length === 0 ? (
+            <span className="muted">Not used by any project</span>
+          ) : (
+            <>
+              <span className="muted">Used by</span>
+              <ul>
+                {used.map((p) => (
+                  <li key={p.projectId}>
+                    <span>{p.projectName}</span>
+                    {p.roles.length > 0 && <span className="muted"> · {p.roles.join(', ')}</span>}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
         <div className="skill-lib-actions">
           <Button size="sm" icon={Pencil} ariaLabel={`Edit ${entry.name}`} onClick={onEdit}>
@@ -183,19 +204,29 @@ function LibraryForm({
   takenNames: string[]
   onClose: () => void
 }): ReactElement {
-  const [draft, setDraft] = useState<SkillDraft>({ name: editing?.entry.name ?? '', description: editing?.entry.description ?? '', body: '' })
+  const [draft, setDraft] = useState<SkillDraft>({
+    name: editing?.entry.name ?? '',
+    description: editing?.entry.description ?? '',
+    body: ''
+  })
   const [loading, setLoading] = useState(!!editing)
   const [touched, setTouched] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const id = useId()
+  const loadedBody = useRef('')
+  const { confirm, dialog } = useConfirm()
 
   useEffect(() => {
     if (!editing) return undefined
     let live = true
     lib
       .read(editing.entry.id)
-      .then((c) => live && setDraft((d) => ({ ...d, body: c.body })))
+      .then((c) => {
+        if (!live) return
+        loadedBody.current = c.body
+        setDraft((d) => ({ ...d, body: c.body }))
+      })
       .catch((e) => live && setError(cleanIpcError(e)))
       .finally(() => live && setLoading(false))
     return () => {
@@ -227,87 +258,108 @@ function LibraryForm({
     }
   }
 
+  const dirty = editing
+    ? draft.name !== editing.entry.name || draft.description !== editing.entry.description || (!loading && draft.body !== loadedBody.current)
+    : draft.name !== '' || draft.description !== '' || draft.body !== ''
+  // Esc, the backdrop, the close button and Cancel all ask before they throw away typed work.
+  const requestClose = async (): Promise<void> => {
+    if (saving) return
+    if (dirty) {
+      const ok = await confirm({
+        title: 'Discard your changes?',
+        body: 'What you typed in this form is not saved.',
+        confirmLabel: 'Discard',
+        danger: true
+      })
+      if (!ok) return
+    }
+    onClose()
+  }
+
   return (
-    <Dialog
-      open
-      onClose={onClose}
-      size="lg"
-      title={editing ? `Edit ${editing.entry.name}` : 'New skill'}
-      description="A skill is a SKILL.md: a name, when to use it, and the instructions."
-      testId="skill-library-form"
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={saving || loading} onClick={() => void save()}>
-            {editing ? 'Save skill' : 'Create skill'}
-          </Button>
-        </>
-      }
-    >
-      <div className="stack-3 skill-lib-form">
-        {error && (
-          <Banner tone="danger" title="Could not save the skill">
-            {error}
-          </Banner>
-        )}
-        <div className="field">
-          <label htmlFor={`${id}-name`}>Name</label>
-          <Input
-            id={`${id}-name`}
-            data-autofocus
-            mono
-            value={draft.name}
-            invalid={show && !!nameProblem}
-            aria-describedby={show && nameProblem ? `${id}-name-err` : undefined}
-            onChange={(v) => set({ name: v })}
-          />
-          {show && nameProblem && (
-            <span id={`${id}-name-err`} className="invalid-text">
-              {nameProblem}
-            </span>
+    <>
+      <Dialog
+        open
+        onClose={() => void requestClose()}
+        size="lg"
+        title={editing ? `Edit ${editing.entry.name}` : 'New skill'}
+        description="A skill is a SKILL.md: a name, when to use it, and the instructions."
+        testId="skill-library-form"
+        footer={
+          <>
+            <Button onClick={() => void requestClose()}>Cancel</Button>
+            <Button variant="primary" disabled={saving || loading} onClick={() => void save()}>
+              {editing ? 'Save skill' : 'Create skill'}
+            </Button>
+          </>
+        }
+      >
+        <div className="stack-3 skill-lib-form">
+          {error && (
+            <Banner tone="danger" title="Could not save the skill">
+              {error}
+            </Banner>
           )}
+          <div className="field">
+            <label htmlFor={`${id}-name`}>Name</label>
+            <Input
+              id={`${id}-name`}
+              data-autofocus
+              mono
+              value={draft.name}
+              invalid={show && !!nameProblem}
+              aria-describedby={show && nameProblem ? `${id}-name-err` : undefined}
+              onChange={(v) => set({ name: v })}
+            />
+            {show && nameProblem && (
+              <span id={`${id}-name-err`} className="invalid-text">
+                {nameProblem}
+              </span>
+            )}
+          </div>
+          <div className="field">
+            <label htmlFor={`${id}-desc`}>Description</label>
+            <Textarea
+              id={`${id}-desc`}
+              rows={2}
+              value={draft.description}
+              invalid={show && !!problems.description}
+              aria-describedby={show && problems.description ? `${id}-desc-err` : undefined}
+              onChange={(v) => set({ description: v })}
+              placeholder="When should an agent use this skill?"
+            />
+            {show && problems.description && (
+              <span id={`${id}-desc-err`} className="invalid-text">
+                {problems.description}
+              </span>
+            )}
+          </div>
+          <div className="field">
+            <label htmlFor={`${id}-body`}>Instructions</label>
+            <Textarea
+              id={`${id}-body`}
+              mono
+              rows={10}
+              value={draft.body}
+              disabled={loading}
+              invalid={show && !!problems.body}
+              aria-describedby={show && problems.body ? `${id}-body-err` : `${id}-body-hint`}
+              onChange={(v) => set({ body: v })}
+            />
+            {show && problems.body ? (
+              <span id={`${id}-body-err`} className="invalid-text">
+                {problems.body}
+              </span>
+            ) : (
+              <span id={`${id}-body-hint`} className="hint">
+                Markdown, at most {SKILL_BODY_MAX_CHARS.toLocaleString('en-US')} characters ({draft.body.length.toLocaleString('en-US')} used).
+                {editing && editing.entry.files.length > 1 ? ' The skill’s other files are kept as they are.' : ''}
+              </span>
+            )}
+          </div>
         </div>
-        <div className="field">
-          <label htmlFor={`${id}-desc`}>Description</label>
-          <Textarea
-            id={`${id}-desc`}
-            rows={2}
-            value={draft.description}
-            invalid={show && !!problems.description}
-            aria-describedby={show && problems.description ? `${id}-desc-err` : undefined}
-            onChange={(v) => set({ description: v })}
-            placeholder="When should an agent use this skill?"
-          />
-          {show && problems.description && (
-            <span id={`${id}-desc-err`} className="invalid-text">
-              {problems.description}
-            </span>
-          )}
-        </div>
-        <div className="field">
-          <label htmlFor={`${id}-body`}>Instructions</label>
-          <Textarea
-            id={`${id}-body`}
-            mono
-            rows={10}
-            value={draft.body}
-            disabled={loading}
-            invalid={show && !!problems.body}
-            aria-describedby={show && problems.body ? `${id}-body-err` : `${id}-body-hint`}
-            onChange={(v) => set({ body: v })}
-          />
-          {show && problems.body ? (
-            <span id={`${id}-body-err`} className="invalid-text">
-              {problems.body}
-            </span>
-          ) : (
-            <span id={`${id}-body-hint`} className="hint">
-              Markdown, at most {SKILL_BODY_MAX_CHARS.toLocaleString('en-US')} characters ({draft.body.length.toLocaleString('en-US')} used).
-              {editing && editing.entry.files.length > 1 ? ' The skill’s other files are kept as they are.' : ''}
-            </span>
-          )}
-        </div>
-      </div>
-    </Dialog>
+      </Dialog>
+      {dialog}
+    </>
   )
 }
