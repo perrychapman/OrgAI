@@ -159,6 +159,10 @@
   color: var(--warning-text);
   border-color: var(--warning-border);
 }
+.chip.warn {
+  color: var(--warning-text);
+  border-color: var(--warning-border);
+}
 .chip.danger {
   color: var(--danger-text);
   border-color: var(--danger-border);
@@ -169,6 +173,26 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
   padding: 16px;
+}
+
+.card.danger {
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+/* Validation line under a field; the tone is carried by words as well as color. */
+.field-msg {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.field-msg.error {
+  color: var(--danger-text);
+}
+.field-msg.warn {
+  color: var(--warning-text);
+}
+.field-msg.ok {
+  color: var(--success-text);
 }
 
 .empty {
