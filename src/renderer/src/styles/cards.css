@@ -478,18 +478,28 @@
   overflow: auto;
 }
 .decision-stepper {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
+.decision-stepper-title {
+  margin-right: auto;
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.decision-stepper .icon-btn {
+  min-width: 32px;
+  min-height: 32px;
+}
 
 /* The tray gives a card whatever height is left; the body is the one scroller, the footer never leaves. */
 .decision-error {
   flex: none;
 }
-@container frame (min-width: 900px) or (max-height: 420px) {
+@container frame (min-width: 760px) or (max-height: 420px) {
   .decision-body {
     max-height: none;
   }

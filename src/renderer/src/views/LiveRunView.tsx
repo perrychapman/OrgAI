@@ -153,6 +153,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
   const { fitView } = useReactFlow()
   const setView = useAppStore((s) => s.setView)
+  const stopRun = useAppStore((s) => s.stopRun)
   const messageColor = useCssVar('--edge-message')
   const neutralRoleColor = useCssVar(NEUTRAL_ROLE_TOKEN)
   const borderStrong = useCssVar('--border-strong')
@@ -523,7 +524,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       key: p.id,
       node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => decide(p.id, d)} />
     })),
-    ...cardItems.filter((it) => it.outcome).map((it) => ({
+    ...cardItems.map((it) => ({
       key: it.request.id,
       node: (
         <McpInstallCard
@@ -543,10 +544,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const newestPending = decisionItems.length - 1
   const selectedDecision = pickedAt >= 0 ? pickedAt : newestPending
   const shownKey = decisionItems[selectedDecision]?.key ?? null
-  // Pin the card on screen: a request arriving later never swaps it away from under the user (the stepper shows it).
-  useEffect(() => {
+  // The newest decision is shown until the user touches the tray; then that card stays put when later requests arrive.
+  const pinShown = (): void => {
     if (shownKey && shownKey !== pickedDecision) setPickedDecision(shownKey)
-  }, [shownKey, pickedDecision])
+  }
   const step = (to: number): void => {
     decisionFocus.suppress = true
     setPickedDecision(decisionItems[to].key)
@@ -558,7 +559,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (d.behavior === 'approve') setApprovedKinds((k) => (k.includes(p.kind) ? k : [...k, p.kind]))
   }
 
-  const setupDone = isSetupRun && project.setup?.state === 'complete' && status === 'finished'
+  const setupDone = isSetupRun && project.setup?.state === 'complete' && (status === 'finished' || status === 'idle')
 
   return (
     <div className="run-view">
@@ -569,9 +570,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           testId="setup-complete"
           title={`Setup complete: ${[project.setup?.architecturePath ? 'architecture' : '', `${project.roles.length} role${project.roles.length === 1 ? '' : 's'}`, approvedKinds.includes('settings') ? 'settings applied' : ''].filter(Boolean).join(', ')}`}
           actions={
-            <Button size="sm" onClick={() => setView('org')}>
-              View org chart
-            </Button>
+            <>
+              <Button size="sm" variant="primary" onClick={() => setView('org')}>
+                View org chart
+              </Button>
+              {sessionOpen && (
+                <Button size="sm" onClick={() => void stopRun()} title="Ends the setup session.">
+                  End session
+                </Button>
+              )}
+            </>
           }
         >
           The Architect is done. Review or adjust what it set up on the Org chart tab.
@@ -629,14 +637,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             <>
               {decisionItems.length > 1 && (
                 <div className="decision-stepper" role="group" aria-label="Pending decisions">
-                  <IconButton icon={ChevronLeft} label="Previous decision" size="sm" disabled={selectedDecision === 0} onClick={() => step(selectedDecision - 1)} />
+                  <span className="decision-stepper-title">Decisions</span>
+                  <IconButton icon={ChevronLeft} label="Previous decision" disabled={selectedDecision === 0} onClick={() => step(selectedDecision - 1)} />
                   <span aria-live="polite">
                     {selectedDecision + 1} of {decisionItems.length}
                   </span>
-                  <IconButton icon={ChevronRight} label="Next decision" size="sm" disabled={selectedDecision === decisionItems.length - 1} onClick={() => step(selectedDecision + 1)} />
+                  <IconButton icon={ChevronRight} label="Next decision" disabled={selectedDecision === decisionItems.length - 1} onClick={() => step(selectedDecision + 1)} />
                 </div>
               )}
-              <div key={decisionItems[selectedDecision].key} className="decision">
+              <div key={decisionItems[selectedDecision].key} className="decision" onPointerDownCapture={pinShown} onKeyDownCapture={pinShown}>
                 {decisionItems[selectedDecision].node}
               </div>
             </>
