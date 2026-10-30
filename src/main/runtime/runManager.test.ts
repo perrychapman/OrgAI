@@ -2507,6 +2507,33 @@ describe('skills in runs', () => {
     await vi.waitFor(() => expect(m.summaryOf(run.id)?.usage?.skills).toEqual([{ skillId: 'sk1', name: 'pdf-fill', loads: 2, roles: [] }]))
   })
 
+  it('sets the loading agent activity to "Using skill <name>" and broadcasts the upsert', async () => {
+    const { p, m, ctxs } = build([skill()])
+    const run = await m.start({ project: p, prompt: 'work' })
+    const ctx = ctxs[0]!
+    const base: AgentInstance = {
+      id: ROOT_AGENT_ID, roleId: null, roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null,
+      state: 'tool', activity: 'Thinking', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1
+    }
+    ctx.emit({ type: 'agent.upsert', runId: run.id, agent: base })
+    ctx.emit({ type: 'agent.upsert', runId: run.id, agent: { ...base, id: 'a1', parentId: ROOT_AGENT_ID, state: 'done', activity: 'Reported back' } })
+    events.length = 0
+    ctx.emit(used(run.id))
+    // The run skill's own name, not the event's.
+    const upserts = events.filter(isType('agent.upsert'))
+    expect(upserts).toHaveLength(1)
+    expect(upserts[0]!.agent).toMatchObject({ id: ROOT_AGENT_ID, activity: 'Using skill pdf-fill', state: 'tool' })
+    expect(events.findIndex((e) => e.type === 'agent.upsert')).toBeLessThan(events.findIndex((e) => e.type === 'skill.used'))
+    expect(m.get(run.id)?.agents[ROOT_AGENT_ID]?.activity).toBe('Using skill pdf-fill')
+    // Same label again: no repeat upsert. A finished agent and an unknown skill keep their labels.
+    events.length = 0
+    ctx.emit(used(run.id))
+    ctx.emit(used(run.id, { agentId: 'a1' }))
+    ctx.emit(used(run.id, { skillId: 'ghost' }))
+    expect(events.filter(isType('agent.upsert'))).toHaveLength(0)
+    expect(events.filter(isType('skill.used'))).toHaveLength(2)
+  })
+
   it('caps counted loads per run', async () => {
     const { p, m, ctxs } = build([skill()])
     const run = await m.start({ project: p, prompt: 'work' })

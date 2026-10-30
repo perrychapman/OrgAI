@@ -6,7 +6,7 @@ import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Propos
 import { ROOT_AGENT_ID, type RunMessageOutcome, type RunSkill } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
-import { INTEGRATE_TOOL, answerText, harnessToolsFor, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor, isBlockingHarnessTool, isInsideDir, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
 import { pendingWorktrees } from './worktrees'
@@ -774,6 +774,35 @@ describe('list_skills and load_skill', () => {
     expect(big).toContain('Truncated: only the first 64 KB')
     expect(big.length).toBeLessThan(65 * 1024 + 200)
     expect(await load.call({ name: 'pdf-fill', file: 'bin.dat' }, { roleId: 'r-eng' })).toMatch(/binary file/)
+  })
+
+  it('caps the SKILL.md it returns at 64 KB and still emits skill.used', async () => {
+    expect(SKILL_MD_RETURN_MAX_BYTES).toBe(64 * 1024)
+    writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: pdf-fill\ndescription: d\n---\n${'y'.repeat(100 * 1024)}`)
+    const { tools, ctx } = toolsFor([mkSkill()])
+    const text = await byName(tools, 'load_skill').call({ name: 'pdf-fill' }, { roleId: 'r-eng' })
+    expect(text).toContain('[Truncated: SKILL.md is longer than the limit.]')
+    expect(text.length).toBeLessThan(64 * 1024 + 500)
+    expect(ctx.events.filter((e) => e.type === 'skill.used')).toHaveLength(1)
+  })
+
+  it('reads a file whose name merely starts with ".."', async () => {
+    writeFileSync(path.join(skillDir, '..notes.md'), 'dotted')
+    const { tools } = toolsFor([mkSkill({ files: [{ path: 'SKILL.md' }, { path: '..notes.md' }] as RunSkill['files'] })])
+    expect(await byName(tools, 'load_skill').call({ name: 'pdf-fill', file: '..notes.md' }, { roleId: 'r-eng' })).toBe('dotted')
+  })
+})
+
+describe('isInsideDir', () => {
+  const base = path.resolve('/skills/a')
+  it('is true only strictly inside the parent', () => {
+    expect(isInsideDir(base, path.join(base, 'SKILL.md'))).toBe(true)
+    expect(isInsideDir(base, path.join(base, '..notes.md'))).toBe(true)
+    expect(isInsideDir(base, path.join(base, 'sub', 'x'))).toBe(true)
+    expect(isInsideDir(base, base)).toBe(false)
+    expect(isInsideDir(base, path.resolve('/skills'))).toBe(false)
+    expect(isInsideDir(base, path.resolve('/skills/b/x'))).toBe(false)
+    expect(isInsideDir(base, path.resolve('/skills/a-other/x'))).toBe(false)
   })
 })
 

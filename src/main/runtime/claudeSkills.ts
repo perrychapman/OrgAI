@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { SKILL_MAX_FILE_BYTES } from '@shared/types'
+import { shellInjectionProblem } from '../skills/skillMd'
 import type { RunSkill } from './types'
 
 /**
@@ -24,9 +25,6 @@ export interface SkillPlugin {
 }
 
 export const qualifiedSkillName = (pluginName: string, name: string): string => `${pluginName}:${name}`
-
-/** Claude Code's inline shell injection: !`cmd` anywhere, or a fenced block opened with ```! (or ~~~!). */
-const SHELL_INJECTION = /!`[^`\n]*`|^[ \t]*(?:```|~~~)!/m
 
 /** A SKILL.md body with its frontmatter removed. Only the body is ever re-emitted. */
 export function skillBody(markdown: string): string {
@@ -80,7 +78,7 @@ function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): 
       mkdirSync(dirname(dest), { recursive: true })
       if (file.path === 'SKILL.md') {
         const text = readFileSync(source, 'utf8')
-        if (SHELL_INJECTION.test(skillBody(text))) throw new Error('SKILL.md uses shell injection (!`command`), which OrgAI does not run')
+        if (shellInjectionProblem(skillBody(text))) throw new Error('SKILL.md uses shell injection (!`command`), which OrgAI does not run')
         writeFileSync(dest, sanitizedSkillMd(skill, text))
       } else copyFileSync(source, dest)
     }
@@ -93,9 +91,41 @@ function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): 
   }
 }
 
+export const SKILL_TEMP_PREFIX = 'orgai-skills-'
+export const SKILL_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Remove run skill dirs a crash left in the temp dir. Only real directories with the prefix and an mtime older
+ * than maxAgeMs go (another OrgAI instance may share the temp dir with live runs). Never throws; returns the count.
+ */
+export function sweepStaleSkillDirs(opts: { dir?: string; now?: number; maxAgeMs?: number } = {}): number {
+  const dir = opts.dir ?? tmpdir()
+  const cutoff = (opts.now ?? Date.now()) - (opts.maxAgeMs ?? SKILL_TEMP_MAX_AGE_MS)
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const name of names) {
+    if (!name.startsWith(SKILL_TEMP_PREFIX)) continue
+    try {
+      const full = join(dir, name)
+      const st = lstatSync(full)
+      if (!st.isDirectory() || st.isSymbolicLink() || st.mtimeMs >= cutoff) continue
+      rmSync(full, { recursive: true, force: true })
+      removed++
+    } catch {
+      // skip this entry
+    }
+  }
+  return removed
+}
+
 /** Build the run-scoped plugin directory. Skills that fail validation are logged through `warn` and left out. */
 export function buildSkillPlugin(skills: RunSkill[], runId: string, warn: (message: string) => void = () => {}): SkillPlugin {
-  const path = mkdtempSync(join(tmpdir(), 'orgai-skills-'))
+  const path = mkdtempSync(join(tmpdir(), SKILL_TEMP_PREFIX))
   const pluginName = `orgai-${randomBytes(4).toString('hex')}`
   const names = new Map<string, RunSkill>()
   let removed = false

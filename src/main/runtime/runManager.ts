@@ -53,7 +53,7 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked } from './continuation'
-import { isLiveAgent, runOutcome, settleAgent, type RunOutcome } from './activity'
+import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
@@ -900,6 +900,12 @@ export class RunManager {
     if (slug && !count.roles.includes(slug)) count.roles.push(slug)
     a.skillCounts.set(skill.id, count)
     a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: e.agentId, at: e.at, source: 'harness', block: { kind: 'system', text: `Loaded skill ${skill.name}` } } })
+    // The node reads "Using skill <name>" until the adapter's next activity; never after the run ended.
+    const agent = a.record.agents[e.agentId]
+    if (agent && !a.outcome) {
+      const updated = withSkillActivity(agent, skill.name)
+      if (updated !== agent) a.emit({ type: 'agent.upsert', runId: a.summary.id, agent: updated })
+    }
     return true
   }
 
