@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { needsYou } from '../lib/runChains'
+import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
 import { describeRemap, type ProjectChanges } from '../lib/remap'
 import type {
@@ -316,6 +317,27 @@ function showRunPatch(s: AppState, projectId: string, runId: string): Partial<Ap
 }
 
 /** A run record from the main process as renderer state. Pending cards are not in a record; events fill them. */
+/**
+ * Cards still open in the main process, for a window that missed their *.request events (fresh renderer, run window).
+ * The cast can be dropped once runs.pendingCards is in preload/index.d.ts (it lands on dev).
+ */
+async function seedPendingCards(runId: string): Promise<void> {
+  const api = window.orgai.runs as typeof window.orgai.runs & { pendingCards?: (id: string) => Promise<PendingCards> }
+  if (typeof api.pendingCards !== 'function') return
+  try {
+    const cards = await api.pendingCards(runId)
+    // The run may not be in the store yet (record still loading); retry briefly once it is.
+    for (let i = 0; i < 20 && !useAppStore.getState().runs[runId]; i++) await new Promise((r) => setTimeout(r, 100))
+    useAppStore.setState((s) => {
+      const run = s.runs[runId]
+      if (!run) return {}
+      return { runs: { ...s.runs, [runId]: { ...run, ...mergePendingCards(run, cards) } } }
+    })
+  } catch {
+    /* unknown run or old main process: events still fill the store */
+  }
+}
+
 function stateFromRecord(record: Omit<RunState, 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'partial' | 'messages' | 'mcpInstalls' | 'mcpResolved'>): RunState {
   return { ...record, permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
@@ -688,6 +710,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const live = await window.orgai.runs.listLive()
       for (const summary of live) {
+        void seedPendingCards(summary.id)
         if (get().runs[summary.id]) continue
         const record = await window.orgai.runs.get(summary.id)
         if (!record) continue
@@ -701,7 +724,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setTabNotice(message) {
     set({ tabNotice: message })
-    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 5000)
+    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 4000)
   },
 
   async startRun(prompt, opts) {
@@ -1024,6 +1047,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     await get().openRun(runId)
+    await seedPendingCards(runId)
   },
 
   async fillSummary(runId) {

@@ -112,9 +112,9 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           <h2 id="pconn-title">Connection</h2>
           <p>
             Where this project&apos;s agents get their models. Sign-in and keys are set once in{' '}
-            <button type="button" className="link-btn" onClick={() => setView('appSettings')}>
+            <Button variant="ghost" size="sm" onClick={() => setView('appSettings')}>
               Settings &gt; Connections
-            </button>
+            </Button>
             .
           </p>
         </div>

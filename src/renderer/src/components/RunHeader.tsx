@@ -6,7 +6,7 @@ import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '
 import { costLabel, planProgress } from '../lib/layout'
 import { needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { autoContinueState, isStoppedRun, runStatus } from '../lib/runStatus'
+import { autoContinueState, isStoppedRun, runStatus, statusText } from '../lib/runStatus'
 import { Button } from './ui/Button'
 import { Icon } from './ui/Icon'
 import { Switch } from './ui/Switch'
@@ -79,7 +79,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
       <div className="run-header-id">
         <span className="run-index">{tag}</span>
         <span className={`pill run-status ${status.tone}`} title={status.note}>
-          <span className="dot" aria-hidden="true" /> {status.word}
+          <span className="dot" aria-hidden="true" /> {statusText(status)}
         </span>
         {auto.active && (
           <span className="run-header-auto">
@@ -109,7 +109,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
       )}
       <div className="run-header-actions">
         {summary.kind === 'setup' && (
-          <span className="pill warn">
+          <span className="pill">
             <span className="dot" aria-hidden="true" /> Setup session
           </span>
         )}

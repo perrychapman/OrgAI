@@ -526,3 +526,12 @@
   font-weight: var(--weight-semibold);
   cursor: default;
 }
+
+/* N5: a hidden tab has an unread note or a draft. */
+.run-tab-more-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--info-text);
+  flex: none;
+}

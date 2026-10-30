@@ -88,7 +88,7 @@ export default function UsageMeter(): ReactElement {
         const pct = r.window.utilization
         const level = r.limited ? 'danger' : (pct ?? 0) >= WARN_AT || usage.status === 'allowed_warning' ? 'warn' : ''
         return (
-          <div key={r.key} className={`usage-row ${level}`}>
+          <div key={r.key} className={`usage-row ${level}`} title={r.window.resetsAt !== null ? `${r.label}: resets ${new Date(r.window.resetsAt).toLocaleString()}` : undefined}>
             <div className="usage-head">
               <span>{r.label}</span>
               <span className="usage-pct">{pct === null ? '–' : `${Math.round(pct)}%`}</span>

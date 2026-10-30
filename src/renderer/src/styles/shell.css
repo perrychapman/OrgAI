@@ -354,3 +354,30 @@
   color: var(--text-primary);
   box-shadow: var(--inset-border-strong);
 }
+
+/* N7: the save indicator shrinks (and ellipsizes) before it can run under the section tabs. */
+.topbar .save-indicator {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* N6: on a short sidebar the Needs-you block shows three items and a "+n more" line. */
+.sidebar {
+  container: sidebar / size;
+}
+.nav-needs-more {
+  display: none;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+@container sidebar (max-height: 700px) {
+  .nav-needs .nav-needs-item:nth-child(n + 4) {
+    display: none;
+  }
+  .nav-needs-more {
+    display: block;
+  }
+}

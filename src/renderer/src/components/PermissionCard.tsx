@@ -1,7 +1,6 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
 import type { PermissionRequest } from '@shared/types'
-import DecisionCard from './DecisionCard'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
@@ -11,7 +10,7 @@ interface Props {
   request: PermissionRequest
   /** Display name of the asking agent. */
   who: string
-  onDecide: (decision: PermissionChoice) => void
+  onDecide: (decision: PermissionChoice) => void | Promise<void>
 }
 
 const MAX_LINES = 8
@@ -70,17 +69,17 @@ export function previewLines(toolName: string, input: unknown): PreviewLine[] {
 
 /** A tool call the policy did not pre-approve. One click allows it once; scope buttons appear when rules can be saved. */
 export default function PermissionCard({ runId, request, who, onDecide }: Props): ReactElement {
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit } = useDecisionAnswer()
   const send = (d: PermissionChoice): void => {
     if (busy) return
-    setBusy(true)
-    onDecide(d)
+    void submit(() => onDecide(d))
   }
   const canScope = (request.suggestions?.length ?? 0) > 0
   const lines = previewLines(request.toolName, request.input)
   return (
     <DecisionCard
       kind="permission"
+      error={error}
       runId={runId}
       who={who}
       title={`wants to use ${request.toolName}`}

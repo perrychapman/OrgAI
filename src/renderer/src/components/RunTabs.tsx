@@ -58,7 +58,7 @@ export function useRunTabShortcuts(): void {
         if (st.draftPage[pid]) st.closeDraft()
         return
       }
-      if (isRunLive(run)) useAppStore.setState({ tabNotice: 'A working run stays open. End its session first.' })
+      if (isRunLive(run)) st.setTabNotice('A working run stays open. End its session first.')
       else st.dismissRun(run.summary.id)
     }
     window.addEventListener('keydown', onKey)
@@ -178,12 +178,18 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const visibleIds = new Set(visible.map((t) => t.id))
   const hidden = items.filter((t) => !visibleIds.has(t.id))
   const hiddenWaiting = hidden.filter((t) => t.run && needsYou(t.run)).length
+  const hiddenMarked = hidden.some((t) => view(t).unread > 0 || view(t).hasDraft)
 
   // Roving tabindex: the selected tab is the stop, arrows move it.
   const [roving, setRoving] = useState(selectedId)
   const tabRefs = useRef(new Map<string, HTMLButtonElement>())
   const refocus = useRef(false)
   useEffect(() => setRoving(selectedId), [selectedId])
+  // The "stays open" notice belongs to the tab it was raised on; switching tabs clears it.
+  useEffect(() => {
+    const s = useAppStore.getState()
+    if (s.tabNotice === 'A working run stays open. End its session first.') useAppStore.setState({ tabNotice: null })
+  }, [selectedId])
   useEffect(() => {
     if (!refocus.current) return
     refocus.current = false
@@ -392,11 +398,12 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
             className={`run-tab-more ${hiddenWaiting > 0 ? 'waiting' : ''}`}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            aria-label={`${hidden.length} more run${hidden.length === 1 ? '' : 's'}${hiddenWaiting > 0 ? `, ${hiddenWaiting} waiting for you` : ''}`}
+            aria-label={`${hidden.length} more run${hidden.length === 1 ? '' : 's'}${hiddenWaiting > 0 ? `, ${hiddenWaiting} waiting for you` : ''}${hiddenMarked ? ', some with unread notes or drafts' : ''}`}
             title="More runs"
             onClick={() => setMenuOpen((o) => !o)}
           >
             +{hidden.length}
+            {hiddenMarked && <span className="run-tab-more-dot" aria-hidden="true" />}
             <Icon icon={ChevronDown} size="xs" />
           </button>
           {menuOpen && (

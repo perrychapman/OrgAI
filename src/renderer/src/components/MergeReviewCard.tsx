@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { MergeDecision, MergeReview } from '@shared/types'
-import DecisionCard from './DecisionCard'
+import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import DiffView from './DiffView'
 import { Button } from './ui/Button'
 import { ConfirmDialog } from './ui/Dialog'
@@ -10,20 +10,19 @@ import { ConfirmDialog } from './ui/Dialog'
 interface Props {
   runId: string
   review: MergeReview
-  onDecide: (decision: MergeDecision) => void
+  onDecide: (decision: MergeDecision) => void | Promise<void>
 }
 
 /** A finished report's branch waiting for the user: merge it, hold it for later, or discard it. */
 export default function MergeReviewCard({ runId, review, onDecide }: Props): ReactElement {
-  const [busy, setBusy] = useState(false)
+  const { busy, error, submit } = useDecisionAnswer()
   const [showPatch, setShowPatch] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   const decide = (decision: MergeDecision): void => {
     if (busy) return
     setConfirmDiscard(false)
-    setBusy(true)
-    onDecide(decision)
+    void submit(() => onDecide(decision))
   }
 
   const files = review.changedFiles
@@ -31,6 +30,7 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
     <>
       <DecisionCard
         kind="merge"
+        error={error}
         runId={runId}
         who={review.agentName}
         title="changes ready to merge"
