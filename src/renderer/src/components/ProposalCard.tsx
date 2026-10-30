@@ -1,9 +1,11 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useState } from 'react'
-import { Minus, Pencil, Plus } from 'lucide-react'
+import { Check, Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
 import type { Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
+import { useAppStore } from '../store/useAppStore'
+import { effectLine, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
 import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Badge } from './ui/Badge'
@@ -39,6 +41,12 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
   const [revising, setRevising] = useState(false)
   const [feedback, setFeedback] = useState('')
   const { busy, error, submit } = useDecisionAnswer()
+  const isSetup = useAppStore((st) => st.runs[runId]?.summary.kind === 'setup')
+  const canSkip = isSetup && proposal.kind === 'mcpServers'
+
+  const skip = (): void => {
+    void submit(() => onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK }))
+  }
 
   const approve = (): void => {
     void submit(() => onDecide({ behavior: 'approve' }))
@@ -70,9 +78,16 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       }
       secondary={
         !revising ? (
-          <Button onClick={() => setRevising(true)} disabled={busy}>
-            Request changes
-          </Button>
+          <>
+            <Button onClick={() => setRevising(true)} disabled={busy}>
+              Request changes
+            </Button>
+            {canSkip && (
+              <Button onClick={skip} disabled={busy} testId="mcp-proposal-skip">
+                Skip
+              </Button>
+            )}
+          </>
         ) : (
           <Button variant="ghost" onClick={() => setRevising(false)} disabled={busy}>
             Back
@@ -342,44 +357,52 @@ function ClampText({ text }: { text: string }): ReactElement {
 }
 
 function McpServersBody({ payload }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload'] }): ReactElement {
-  const remove = payload.remove ?? []
-  const secrets = payload.secrets ?? []
+  const scope = proposalScope(payload)
+  const removals = removalLabels(payload)
   return (
     <div className="mcp-prop">
+      <div className="mcp-prop-scope">
+        <Badge tone="info" testId="mcp-proposal-scope">
+          {scope === 'library' ? 'Library' : 'This project'}
+        </Badge>
+        <span className="mcp-prop-scope-note">{scope === 'library' ? 'Changes your MCP library' : 'Changes this project’s MCP servers'}</span>
+      </div>
       <ClampText text={payload.rationale} />
       {payload.upsert.map((s) => {
-        const target = s.transport === 'stdio' ? [s.command ?? '', ...(s.args ?? [])].join(' ').trim() : (s.url ?? '')
-        const slots = secrets.filter((x) => x.serverId === s.id).map((x) => x.name)
-        const secretNames = slots.length > 0 ? slots : [...(s.secretEnv ?? []), ...(s.secretHeaders ?? [])]
+        const pin = pinState(s)
+        const secrets = secretsLine(payload, s.id)
         return (
           <div key={s.id} className="mcp-prop-server" data-server={s.name}>
             <div className="mcp-prop-head">
-              <strong>{s.name}</strong>
-              <span className="chip">{s.transport}</span>
-              {s.registry && <span className="chip">{`${s.registry.registryType} ${s.registry.identifier}@${s.registry.version}`}</span>}
+              <strong>{upsertAction(s, scope)}</strong>
+              {scope === 'project' && s.projectOnly && !s.libraryId && <Badge tone="neutral">Project only</Badge>}
+              {pin === 'pinned' && (
+                <Badge tone="success" icon={Check}>
+                  Pinned
+                </Badge>
+              )}
+              {pin === 'unpinned' && (
+                <Badge tone="danger" icon={TriangleAlert}>
+                  Version not pinned
+                </Badge>
+              )}
             </div>
             {s.description && <ClampText text={s.description} />}
-            <div className="code-block">{target}</div>
-            <div className="mono-dim">roles: {s.roles === undefined ? 'every role' : s.roles.length > 0 ? s.roles.join(', ') : 'none'}</div>
-            {s.env && Object.keys(s.env).length > 0 && (
-              <div className="mono-dim">
-                env:{' '}
-                {Object.entries(s.env)
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join(', ')}
-              </div>
-            )}
-            {secretNames.length > 0 && <div className="mono-dim">secrets to set after approving: {secretNames.join(', ')}</div>}
+            <ul className="mcp-prop-effects">
+              <li>{effectLine(s)}</li>
+              <li>Who can use it: {whoCanUse(s)}</li>
+              {secrets && <li>{secrets}</li>}
+            </ul>
           </div>
         )
       })}
-      {remove.length > 0 && (
-        <Section title="Remove">
-          <div className="proposal-rules">
-            {remove.map((id) => (
-              <code key={id}>{id}</code>
+      {removals.length > 0 && (
+        <Section title="Removals">
+          <ul className="mcp-prop-effects">
+            {removals.map((r) => (
+              <li key={r}>{r}</li>
             ))}
-          </div>
+          </ul>
         </Section>
       )}
     </div>

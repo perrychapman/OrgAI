@@ -40,7 +40,7 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
-import { parseRunWindowHash } from '@shared/types'
+import { HARNESS_PROJECT_ID, parseRunWindowHash } from '@shared/types'
 
 /** Project tabs: run (Live), history, org (Org chart), settings. projects and appSettings are app-level. */
 export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
@@ -116,8 +116,21 @@ function emptyRun(summary: RunSummary): RunState {
   return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: [], partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
 
+/** Where an MCP deep link should land after the view switches (cleared by the receiving section). */
+export type McpFocus = { kind: 'library'; libraryId?: string } | { kind: 'server'; projectId: string; serverId?: string }
+
 interface AppState {
   projects: Project[]
+  /** The virtual project that hosts library assistant runs. It is never in `projects`. */
+  harnessProject: Project | null
+  mcpFocus: McpFocus | null
+  /** Show the app settings MCP library, optionally on one entry. */
+  openMcpLibrary(libraryId?: string): void
+  /** Show a project's settings on its MCP servers section, optionally on one server. */
+  openProjectMcp(projectId: string, serverId?: string): void
+  clearMcpFocus(): void
+  /** Start the library-level MCP assistant (a harness run); resolves with its summary. */
+  startLibraryAssist(instruction?: string): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
   saveStatus: SaveStatus
@@ -271,7 +284,7 @@ function debouncedSave(project: Project): void {
 }
 
 export const selectedProject = (s: AppState): Project | undefined =>
-  s.projects.find((p) => p.id === s.selectedProjectId)
+  s.selectedProjectId === HARNESS_PROJECT_ID && s.harnessProject ? s.harnessProject : s.projects.find((p) => p.id === s.selectedProjectId)
 
 /** The run the workspace shows. Undefined on the New run page. */
 export const activeRun = (s: AppState): RunState | undefined => {
@@ -377,6 +390,8 @@ function showContinuation(summary: RunSummary): void {
 
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
+  harnessProject: null,
+  mcpFocus: null,
   selectedProjectId: null,
   view: 'projects',
   saveStatus: { state: 'idle' },
@@ -748,6 +763,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().loadProjects()
   },
 
+  openMcpLibrary(libraryId) {
+    set({ view: 'appSettings', mcpFocus: { kind: 'library', libraryId } })
+  },
+
+  openProjectMcp(projectId, serverId) {
+    if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    set({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId } })
+  },
+
+  clearMcpFocus() {
+    set({ mcpFocus: null })
+  },
+
+  async startLibraryAssist(instruction) {
+    const summary = await window.orgai.mcp.startAssist({ scope: 'library', instruction })
+    set((s) => ({
+      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } }
+    }))
+    return summary
+  },
+
   async startMcpAssist(instruction) {
     const project = selectedProject(get())
     if (!project) return
@@ -1042,7 +1078,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async focusRun(projectId, runId) {
-    if (!get().projects.some((p) => p.id === projectId)) return
+    if (projectId === HARNESS_PROJECT_ID) {
+      // The harness project is virtual: it is not in projects:list, so load it on demand.
+      if (!get().harnessProject) {
+        const harness = await window.orgai.projects.get(HARNESS_PROJECT_ID).catch(() => null)
+        if (!harness) return
+        set({ harnessProject: harness })
+      }
+    } else if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     await get().openRun(runId)
     await seedPendingCards(runId)

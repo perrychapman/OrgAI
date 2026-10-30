@@ -19,6 +19,7 @@ import { SettingsNav, type SettingsNavItem } from '../components/settings/Settin
 import { useSectionNav } from '../components/settings/useSectionNav'
 import { APP_SETTINGS_SECTIONS, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
+import McpLibrarySection from '../components/mcp/McpLibrarySection'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -56,6 +57,7 @@ const SECTIONS: SettingsNavItem[] = [
   { id: APP_SETTINGS_SECTIONS.appearance, label: 'Appearance' },
   { id: APP_SETTINGS_SECTIONS.notifications, label: 'Notifications' },
   { id: APP_SETTINGS_SECTIONS.connections, label: 'Connections' },
+  { id: APP_SETTINGS_SECTIONS.mcpLibrary, label: 'MCP library' },
   { id: APP_SETTINGS_SECTIONS.defaults, label: 'Defaults for new projects' },
   { id: APP_SETTINGS_SECTIONS.about, label: 'About' }
 ]
@@ -192,6 +194,7 @@ export default function AppSettingsView(): ReactElement {
             </p>
           )}
           <section id="appsettings-section-appearance" className="settings-section" aria-labelledby="appearance-title" data-testid="appearance-section">
+
             <div className="section-head">
               <div>
                 <h2 id="appearance-title">Appearance</h2>
@@ -283,6 +286,7 @@ export default function AppSettingsView(): ReactElement {
           <div id="appsettings-section-connections">
           <ConnectionsPanel />
           </div>
+          <McpLibrarySection />
           <div id="appsettings-section-defaults" className="settings-block-stack">
           <section className="settings-section" aria-labelledby="defaults-title">
             <div className="section-head">

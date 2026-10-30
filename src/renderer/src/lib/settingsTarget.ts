@@ -5,6 +5,7 @@ export const APP_SETTINGS_SECTIONS = {
   appearance: 'appsettings-section-appearance',
   notifications: 'appsettings-section-notifications',
   connections: 'appsettings-section-connections',
+  mcpLibrary: 'appsettings-section-mcp-library',
   defaults: 'appsettings-section-defaults',
   about: 'appsettings-section-about'
 } as const

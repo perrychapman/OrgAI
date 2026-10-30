@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Key, Search, TriangleAlert } from 'lucide-react'
-import type { McpMutationResult, McpRegistryEntry, McpServerInfo, Project } from '@shared/types'
+import type { McpRegistryEntry, McpServerInfo } from '@shared/types'
 import { isValidMcpServerName } from '@shared/defaults'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -12,6 +12,7 @@ import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
 import { RoleChecklist } from './RoleAccess'
+import type { McpWriter } from './mcpWriter'
 import {
   REGISTRY_SUGGESTIONS,
   SECURITY_SECRETS,
@@ -30,16 +31,14 @@ type Load = { state: 'idle' } | { state: 'loading' } | { state: 'error'; message
 
 /** Add MCP server from registry: search, pick a pinned package or remote, fill env vars, add. */
 export default function RegistryDialog({
-  project,
+  writer,
   servers,
   onClose,
-  onResult,
   onAddManually
 }: {
-  project: Project
+  writer: McpWriter
   servers: McpServerInfo[]
   onClose: () => void
-  onResult: (result: McpMutationResult) => void
   onAddManually: () => void
 }): ReactElement {
   const [query, setQuery] = useState('')
@@ -68,7 +67,7 @@ export default function RegistryDialog({
   }, [query])
 
   return (
-    <Dialog open onClose={onClose} title="Add MCP server from registry" size="lg" testId="mcp-registry">
+    <Dialog open onClose={onClose} title={writer.roles ? 'Add MCP server from registry' : 'Add MCP server to the library from the registry'} size="lg" testId="mcp-registry">
       <div className={`mcp-reg${picked ? ' has-pick' : ''}`}>
         <div className="mcp-reg-list">
           <div className="field mcp-field">
@@ -103,10 +102,9 @@ export default function RegistryDialog({
           <Detail
             key={picked.name}
             entry={picked}
-            project={project}
+            writer={writer}
             servers={servers}
             onBack={() => setPicked(null)}
-            onResult={onResult}
             onDone={onClose}
           />
         )}
@@ -278,17 +276,15 @@ function ResultRow({
 
 function Detail({
   entry,
-  project,
+  writer,
   servers,
   onBack,
-  onResult,
   onDone
 }: {
   entry: McpRegistryEntry
-  project: Project
+  writer: McpWriter
   servers: McpServerInfo[]
   onBack: () => void
-  onResult: (result: McpMutationResult) => void
   onDone: () => void
 }): ReactElement {
   const options = useMemo(() => registryOptions(entry).filter((o) => !o.blocked), [entry])
@@ -296,13 +292,13 @@ function Detail({
   const [optKey, setOptKey] = useState(options[0]?.key)
   const option: RegistryOption | undefined = options.find((o) => o.key === optKey)
   const [name, setName] = useState(() => slugName(entry.name, taken))
-  const [roles, setRoles] = useState<string[]>(() => allRoleSlugs(project.roles))
+  const [roles, setRoles] = useState<string[]>(() => allRoleSlugs(writer.roles ?? []))
   const [values, setValues] = useState<Record<string, string>>({})
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [touched, setTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [base] = useState(() => newServerBase('', project.roles).id)
+  const [base] = useState(() => newServerBase('', writer.roles ?? []).id)
   const nameId = useId()
 
   const nameError = !name ? 'Enter a name.' : !isValidMcpServerName(name) ? 'Use lowercase letters, numbers and single hyphens.' : taken.includes(name) ? 'Another server already uses this name.' : null
@@ -319,15 +315,13 @@ function Detail({
     setBusy(true)
     setError(null)
     try {
-      let result = await window.orgai.mcp.upsert({ projectId: project.id, spec })
-      onResult(result)
+      await writer.upsert(spec)
       const failed: string[] = []
       for (const v of option.vars.filter((x) => x.isSecret)) {
         const value = secrets[v.name]
         if (value === undefined) continue
         try {
-          result = await window.orgai.mcp.setSecret({ projectId: project.id, serverId: spec.id, kind: option.varKind, name: v.name, value })
-          onResult(result)
+          await writer.setSecret(spec.id, option.varKind, v.name, value)
         } catch (e) {
           failed.push(`${v.name}: ${errMessage(e)}`)
         }
@@ -440,10 +434,12 @@ function Detail({
           )}
         </fieldset>
       )}
-      <fieldset className="mcp-vars">
-        <legend>Role access</legend>
-        <RoleChecklist roles={project.roles} value={roles} onChange={setRoles} label="Role access" />
-      </fieldset>
+      {writer.roles && (
+        <fieldset className="mcp-vars">
+          <legend>Role access</legend>
+          <RoleChecklist roles={writer.roles} value={roles} onChange={setRoles} label="Role access" />
+        </fieldset>
+      )}
       <p className="muted">
         {securityPhrase(spec.transport)} {SECURITY_SECRETS}
       </p>

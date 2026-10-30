@@ -313,3 +313,26 @@ Heights: at 640 px window height the Connections cards collapse their Models gro
 ## 11. e2e hooks to provide
 
 `data-testid`: `connection-card` with `data-provider="anthropic|openai|litellm"`, `connection-status` (text), `connection-refresh`, `tier-select` with `data-tier`, `remap-notice`, `remap-undo` with `data-project`, `project-connection` (radio cards), `role-model-select`, `role-tier-badge`, `mcp-row` with `data-server`, `mcp-test`, `mcp-test-result`, `secret-field` with `data-name` and `data-state="set|notSet"`, `mcp-install-card`, `mcp-install-command`. Button names kept verbatim: `Connect`, `Test and connect`, `Apply mapping`, `Review changes`, `Apply and update roles`, `Undo`, `Add from registry`, `Add manually`, `Configure with AI`, `Test`, `Approve`, `Deny`.
+
+
+## 12. MCP library, linked servers and authorization
+
+Two levels: the **MCP library** (App settings, section "MCP library", between Connections and Defaults) defines servers once with their credentials and sign-in; a **project** links entries by reference (`McpServerSpec.libraryId`, shown with a Library badge) or keeps project-only servers. Edits in the library reach every linking project; a linked row edits only enabled and roles.
+
+### 12.1 Library rows
+Name, target (mono), description, "Runs on this machine" / "Remote server", source badge, auth chip, "Secrets: n of m set" (disclosure with SecretField per slot, write-only), "Used by N projects" (disclosure listing project names) or "Not used by any project". Actions: Authorize (remote servers), Test, menu: Edit, Remove authorization, Remove from library (ConfirmDialog naming the projects that lose it). Header: primary Add from registry, Add manually, Configure with AI (starts `mcp.startAssist({ scope: 'library' })` and opens the run window for the harness project; an in-flow Banner "An assistant run is configuring your library" with Open run shows while it is live). The same RegistryDialog and McpServerForm write to the library through `mcpWriter.ts` (no role access there).
+
+### 12.2 Authorization states (AuthChip, always icon + text)
+notRequired: nothing. notAuthorized: "Not authorized" + Authorize. authorized: "Authorized", "as <account>", "expires in 3 days". expired: "Expired" + Reauthorize. error: "Authorization failed" + the error text + Try again. `needsClientId`: inline write-only Client ID and Client secret (optional) inputs with the note that the server needs a pre-registered OAuth app; the secret is cleared from state after the call. Pending: "Waiting for your browser..." with Cancel (`mcp.cancelAuthorize`). A Test that returns `needsAuthorization` shows "Needs authorization" with a primary Authorize and a "Use a token instead" button (opens the form, where an Authorization header can be added); linked rows authorize through `{ libraryId }`.
+
+### 12.3 Project MCP servers
+Groups "From your library" and "Only in this project". Linked row: enable Switch, role access, Library badge, status mirrored from `info.auth` and `info.missingSecrets` ("Secrets not set in the library ... Open in library"), `libraryMissing` as a warning row; menu: Open in library, Unlink. Project-only row: Edit, Duplicate, Add to library (`mcp.promote`), Remove. Add cluster: primary Add from library (McpLinkDialog: pick one unlinked entry; who can use it defaults to nobody and at least one role or All roles is required, least privilege), then Add from registry, Add manually, Configure with AI. A non-blocking warning Banner lists enabled remote servers that are not authorized or expired at the top of the section and on the New run page, with a button that moves to the row.
+
+### 12.4 Install card and proposal card
+Install card scope radio: This run only (default), This project, This project and library ("Saved to your MCP library and enabled for this project"). Proposal card (mcpServers): scope badge (Library / This project), each server as "Link <name> from your library", "Add <name> to the library and this project", "Add <name> to this project" (Project only badge) or "Add <name> to your library"; plain-language effect lines (runs code on this machine / connects to remote host, pinned or not, who can use it, secrets to set). In setup runs a secondary Skip sends revise with "Skipped by the user; continue without MCP servers."
+
+### 12.5 Harness assistant runs
+Library assistant runs belong to the virtual project `HARNESS_PROJECT_ID`. The renderer loads it with `projects.get('harness')` (store `harnessProject`), never from `projects.list`. The run window shows the title "MCP library assistant", Live and History tabs, and a Back to MCP library button; with no roles the run view and its proposal cards still work.
+
+### 12.6 e2e hooks
+`mcp-library-section`, `mcp-library-row` (`data-server`, `data-id`), `mcp-library-authorize`, `mcp-auth-status` (`data-state`), `mcp-link-dialog`, `mcp-link-confirm`, `mcp-row-library-badge`, `mcp-add-library`, `mcp-promote`, `mcp-auth-warning`, `mcp-auth-notice`, `mcp-install-scope-library`, `mcp-proposal-skip`, `harness-back`.

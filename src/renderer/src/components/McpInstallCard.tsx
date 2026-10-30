@@ -20,7 +20,7 @@ export function installCommand(request: McpInstallRequest): string {
 }
 
 function describeOutcome(o: McpInstallOutcome): string {
-  if (o.approved) return o.scope === 'project' ? 'Approved for this project' : 'Approved for this run'
+  if (o.approved) return o.scope === 'library' ? 'Approved for this project and your library' : o.scope === 'project' ? 'Approved for this project' : 'Approved for this run'
   return o.note ? `Denied. Note sent: ${o.note}` : 'Denied'
 }
 
@@ -43,7 +43,7 @@ export default function McpInstallCard({
 }): ReactElement {
   const uid = useId()
   const [secrets, setSecrets] = useState<Record<string, string>>({})
-  const [scope, setScope] = useState<'run' | 'project'>('run')
+  const [scope, setScope] = useState<'run' | 'project' | 'library'>('run')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -217,12 +217,13 @@ export default function McpInstallCard({
             <legend className="mcpi-label">Scope</legend>
             {(
               [
-                ['run', 'This run only', 'Removed when the run ends'],
-                ['project', 'This project', 'Saved to MCP servers in project settings, source Agent']
+                ['run', 'This run only', 'Available until this run ends, then removed.'],
+                ['project', 'This project', 'Saved to this project’s MCP servers and kept for later runs.'],
+                ['library', 'This project and library', 'Saved to your MCP library and enabled for this project.']
               ] as const
             ).map(([value, name, desc]) => (
               <label key={value} className={`mcpi-radio ${scope === value ? 'on' : ''}`}>
-                <input type="radio" name={`${uid}-scope`} value={value} checked={scope === value} onChange={() => setScope(value)} />
+                <input type="radio" data-testid={`mcp-install-scope-${value}`} name={`${uid}-scope`} value={value} checked={scope === value} onChange={() => setScope(value)} />
                 <span>
                   <span className="mcpi-radio-name">{name}</span>
                   <span className="mcpi-radio-desc">{desc}</span>
