@@ -178,14 +178,13 @@ export function isHarnessTool(name: string | undefined): boolean {
 export function humanizeToolResult(toolName: string | undefined, content: string, isError: boolean): ResultRow | null {
   const text = content.trim()
   if (!text && !isError) return null
-  const multi = text.length > 100 || text.includes('
-')
+  const multi = text.length > 100 || text.includes('\n')
   if (isError) return { label: `Failed: ${resultSummary(text, true)}`, full: multi ? text : null }
   if (isHarnessTool(toolName)) {
     const bare = bareToolName(toolName!)
     let label: string | undefined
-    if (/^(approved|granted)/i.test(text)) label = 'Approved'
-    else if (/^(denied|rejected|declined)/i.test(text)) label = 'Denied'
+    if (/^(approved|granted)\b/i.test(text)) label = 'Approved'
+    else if (/^(denied|rejected|declined)\b/i.test(text)) label = 'Denied'
     else if (bare === 'ask_user') label = 'Answered'
     else if (bare === 'complete_plan') label = 'Plan marked complete'
     else if (bare === 'mark_blocked') label = 'Blocker reported'

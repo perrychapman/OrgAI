@@ -48,14 +48,11 @@ describe('humanizeToolResult', () => {
   })
   it('drops empty output but never an error', () => {
     expect(humanizeToolResult('Bash', '', false)).toBeNull()
-    expect(humanizeToolResult('Bash', '  
-', false)).toBeNull()
+    expect(humanizeToolResult('Bash', '  \n', false)).toBeNull()
     expect(humanizeToolResult('Bash', '', true)?.label).toBe('Failed: The tool failed')
   })
   it('leaves other tools alone', () => {
     expect(humanizeToolResult('Bash', 'ok', false)).toEqual({ label: 'ok', full: null })
-    expect(humanizeToolResult(undefined, 'a
-b', false)).toEqual({ label: 'a', full: 'a
-b' })
+    expect(humanizeToolResult(undefined, 'a\nb', false)).toEqual({ label: 'a', full: 'a\nb' })
   })
 })

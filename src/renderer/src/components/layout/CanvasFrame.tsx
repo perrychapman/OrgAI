@@ -6,7 +6,7 @@ import type { ReactElement, ReactNode, Ref } from 'react'
  *   <CanvasFrame>
  *     <FrameToolbar>...</FrameToolbar>   row above the canvas (actions, status pills, run strip)
  *     <FrameStage>...</FrameStage>       the React Flow canvas or an empty state
- *     <FrameTray>...</FrameTray>         docked decision tray; below the stage, beside it from 900px of frame width
+ *     <FrameTray>...</FrameTray>         docked decision tray; below the stage, beside it from 760px of frame width
  *     <FrameFooter>...</FrameFooter>     legend or hint row under the stage
  *   </CanvasFrame>
  *

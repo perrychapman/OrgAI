@@ -12,8 +12,8 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  /* The tray row takes what it needs but never the last 120px of the stage; the card body scrolls inside it. */
-  grid-template-rows: auto minmax(96px, 1fr) minmax(0, max-content) auto;
+  /* The stage keeps at least 40% of the frame; the tray takes what it needs up to 60% and its card body scrolls. */
+  grid-template-rows: auto minmax(max(96px, 40cqh), 1fr) minmax(0, max-content) auto;
   grid-template-areas:
     'toolbar'
     'stage'
@@ -50,8 +50,8 @@
   gap: var(--space-2);
   padding: var(--space-3);
   overflow: hidden;
-  /* Share the frame height with the stage: never more than 65% of the frame, and always leave 160px above it. */
-  max-height: min(65cqh, calc(100cqh - 160px));
+  /* Share the frame height with the stage: never more than 60% of the frame. */
+  max-height: min(60cqh, calc(100cqh - 160px));
   min-height: 0;
   background: var(--surface-1);
   border-top: 1px solid var(--border-default);
@@ -76,7 +76,7 @@
   vertical-align: middle;
 }
 /* Wide or short frame: the tray docks beside the canvas and keeps its own scroll. */
-@container frame (min-width: 900px) or (max-height: 420px) {
+@container frame (min-width: 760px) or (max-height: 420px) {
   .frame-grid:has(> .frame-tray) {
     grid-template-columns: minmax(0, 1fr) clamp(280px, 40cqi, 360px);
     grid-template-rows: auto minmax(0, 1fr) auto;
@@ -166,8 +166,8 @@
   }
 }
 
-/* Stacked tray (frame narrower than 900px): the legend gives its row back to the card while a decision is pending. */
-@container frame (max-width: 899px) {
+/* Stacked tray (frame narrower than 760px): the legend gives its row back to the card while a decision is pending. */
+@container frame (max-width: 759px) {
   .frame-grid:has(> .frame-tray) .frame-footer {
     display: none;
   }
