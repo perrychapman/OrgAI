@@ -164,7 +164,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
           <span>Drag from a node's bottom handle to another node to make it a report.</span>
         </FrameFooter>
       </CanvasFrame>
-      <SidePanel label={selectedRole ? 'Role inspector' : 'AI draft'}>
+      <SidePanel label={selectedRole ? 'role inspector' : 'AI draft panel'}>
         {selectedRole ? <RoleInspector project={project} role={selectedRole} /> : <DraftPanel project={project} />}
       </SidePanel>
     </div>

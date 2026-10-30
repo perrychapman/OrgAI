@@ -74,7 +74,7 @@
 }
 /* Wide frame: the tray docks beside the canvas and keeps its own scroll. */
 @container frame (min-width: 900px) {
-  .frame-grid {
+  .frame-grid:has(> .frame-tray) {
     grid-template-columns: minmax(0, 1fr) 360px;
     grid-template-areas:
       'toolbar toolbar'
@@ -116,6 +116,9 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.side-panel-body[hidden] {
+  display: none;
 }
 .side-rail {
   display: flex;

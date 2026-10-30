@@ -26,20 +26,20 @@ export function SidePanel({
   const isCollapsed = collapsible && collapsed
   return (
     <aside className="side side-panel" aria-label={label} data-collapsed={isCollapsed ? 'true' : 'false'} data-testid={testId}>
-      {isCollapsed ? (
+      {isCollapsed && (
         <div className="side-rail">
-          <IconButton icon={PanelRightOpen} label={`Show ${label.toLowerCase()}`} size="sm" expanded={false} onClick={() => setCollapsed(false)} />
+          <IconButton icon={PanelRightOpen} label={`Show ${label}`} size="sm" expanded={false} onClick={() => setCollapsed(false)} />
         </div>
-      ) : (
-        <>
-          {collapsible && (
-            <div className="side-panel-bar">
-              <IconButton icon={PanelRightClose} label={`Hide ${label.toLowerCase()}`} size="sm" expanded onClick={() => setCollapsed(true)} />
-            </div>
-          )}
-          <div className="side-panel-body">{children}</div>
-        </>
       )}
+      {!isCollapsed && collapsible && (
+        <div className="side-panel-bar">
+          <IconButton icon={PanelRightClose} label={`Hide ${label}`} size="sm" expanded onClick={() => setCollapsed(true)} />
+        </div>
+      )}
+      {/* Stays mounted while collapsed so form state inside it survives. */}
+      <div className="side-panel-body" hidden={isCollapsed}>
+        {children}
+      </div>
     </aside>
   )
 }

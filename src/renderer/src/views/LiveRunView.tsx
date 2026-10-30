@@ -850,7 +850,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         </button>
       </div>
 
-      <SidePanel label="Run panel">
+      <SidePanel label="run panel">
         <TranscriptPanel agent={selectedAgent} entries={entries} logs={run?.logs ?? []} finished={finishedGroup} />
       </SidePanel>
     </div>

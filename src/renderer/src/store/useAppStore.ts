@@ -211,13 +211,14 @@ let unsubscribeEvents: (() => void) | null = null
 const summaryLookups = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function debouncedSave(project: Project): void {
+  useAppStore.getState().setSaveStatus({ state: 'saving' })
   const t = saveTimers.get(project.id)
   if (t) clearTimeout(t)
   saveTimers.set(
     project.id,
     setTimeout(() => {
       saveTimers.delete(project.id)
-      void window.orgai.projects.save(project)
+      void useAppStore.getState().trackSave(() => window.orgai.projects.save(project)).catch(() => undefined)
     }, 350)
   )
 }
