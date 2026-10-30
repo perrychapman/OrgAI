@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { connectionOrder, currentConnection, runCostLabel, spendLabel, spendLevel, spendText } from './usage'
+import { connectionOrder, currentConnection, runCostLabel, spendLabel, spendLevel, spendPct, spendText } from './usage'
 import { formatCost } from './layout'
 
 const s = (usd: number, budgetUsd: number | null) => ({ usd, budgetUsd, resetsAt: null, budgetDuration: null, keyAlias: null })
@@ -31,5 +31,19 @@ describe('usage', () => {
     expect(runCostLabel(0, 'litellm', 'unknown', formatCost).hidden).toBe(true)
     expect(runCostLabel(0.5, undefined, 'apiKey', formatCost).text).toBe('$0.50')
     expect(runCostLabel(0.5, 'anthropic', 'subscription', formatCost).text).toBe('≈$0.50')
+  })
+  it('handles no-budget, zero-budget and over-budget spend', () => {
+    expect(spendPct(s(5, null))).toBeNull()
+    expect(spendPct(s(5, 0))).toBeNull()
+    expect(spendLevel(s(5, 0))).toBe('')
+    expect(spendText(s(60, 50))).toBe('$60.00 of $50.00')
+    expect(spendLevel(s(60, 50))).toBe('danger')
+    expect(spendLevel(s(40, 50))).toBe('warn')
+  })
+  it('lists only available connections besides the current one', () => {
+    const off = { available: false } as never
+    const ok = { available: true } as never
+    expect(connectionOrder('anthropic', { anthropic: ok, litellm: off, openai: off })).toEqual(['anthropic'])
+    expect(connectionOrder('anthropic', { litellm: ok })).toEqual(['anthropic', 'litellm'])
   })
 })
