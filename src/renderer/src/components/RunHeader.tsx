@@ -82,7 +82,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
             unattended
           </span>
         )}
-        <span className="pill">
+        <span className="pill run-agents">
           {agentCount} agent{agentCount === 1 ? '' : 's'}
         </span>
         {run.plan && progress && (
@@ -105,7 +105,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
             onClick={onToggleCollapse}
             title={collapseFinished ? 'Finished reports fold into one node per parent. Click to show them all.' : 'Click to fold finished reports into one node per parent.'}
           >
-            {collapseFinished ? `Folding finished${finishedCount ? ` (${finishedCount})` : ''}` : 'Showing all'}
+            <span className="fold-label">{collapseFinished ? `Folding finished${finishedCount ? ` (${finishedCount})` : ''}` : 'Showing all'}</span>
           </Button>
         )}
         {sessionOpen && (

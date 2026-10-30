@@ -1,9 +1,8 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
-import { isRunLive, newRunDraftKey, runsOfProject, useAppStore, useRunIndexes } from '../store/useAppStore'
-import { useShallow } from 'zustand/react/shallow'
+import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
 import { runTitle } from '../lib/runLabels'
 import { Button } from './ui/Button'
 import Composer from './Composer'
@@ -20,7 +19,15 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const startSetup = useAppStore((s) => s.startSetup)
   const openRun = useAppStore((s) => s.openRun)
   const focusToken = useAppStore((s) => s.composerFocusToken)
-  const others = useAppStore(useShallow((s) => runsOfProject(s, project.id).filter(isRunLive).map((r) => ({ id: r.summary.id, prompt: r.summary.prompt }))))
+  const runs = useAppStore((s) => s.runs)
+  const others = useMemo(
+    () =>
+      Object.values(runs)
+        .filter((r) => r.summary.projectId === project.id && isRunLive(r))
+        .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
+        .map((r) => ({ id: r.summary.id, prompt: r.summary.prompt })),
+    [runs, project.id]
+  )
   const indexes = useRunIndexes()
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)

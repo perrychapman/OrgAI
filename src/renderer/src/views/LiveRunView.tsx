@@ -454,7 +454,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               <div className="pause-when">
                 Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
               </div>
-              <div className="row" style={{ gap: 8 }}>
+              <div className="row" style={{ gap: 'var(--space-2)' }}>
                 {(sessionOpen || canContinue) && (
                   <Button variant="primary" size="sm" onClick={() => focusComposer()}>
                     Answer
@@ -698,7 +698,7 @@ function PauseBanner({ runId }: { runId: string }): ReactElement | null {
           : `Auto-resume is off.${until ? ` The window resets at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` : ''} Continue it from the composer when you are ready.`}
       </div>
       {error && <div className="pause-error">{error}</div>}
-      <div className="row" style={{ gap: 8 }}>
+      <div className="row" style={{ gap: 'var(--space-2)' }}>
         <Button variant="primary" size="sm" disabled={busy} onClick={() => void act(() => resumeNow(runId))}>
           Resume now
         </Button>

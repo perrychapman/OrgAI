@@ -282,22 +282,14 @@
   min-width: 0;
 }
 .run-label {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-1);
-  min-width: 0;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
-}
-.run-label-word {
-  flex: none;
-}
-.run-label-prompt {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
 }
 /* The run index (R1, R2...) repeats on the tab, the header, the transcript header and decision cards. */
 .run-index {

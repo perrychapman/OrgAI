@@ -334,6 +334,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                     <span className="run-tab-index">{v.tag}</span>
                     <span className="run-tab-title">{v.title}</span>
                     {v.waiting && <Icon icon={CircleAlert} size="xs" label="Waiting for you" />}
+                    {!v.waiting && v.hasDraft && <Icon icon={Pencil} size="xs" label="Unsent draft" />}
                   </button>
                 )
               })}

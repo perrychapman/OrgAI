@@ -112,7 +112,17 @@
 }
 
 .sidebar-projects {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+}
+/* Status pills in the topbar keep their words; the path pill shrinks instead. */
+.topbar .pill.run-status {
+  flex-shrink: 0;
+}
+.nav-needs .nav-runs {
+  max-height: calc(var(--space-16) * 2);
+  overflow-y: auto;
 }
 .sidebar-empty {
   padding: var(--space-1h) var(--space-3);
