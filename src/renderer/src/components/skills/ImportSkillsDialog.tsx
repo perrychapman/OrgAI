@@ -1,9 +1,10 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FileSearch } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileSearch, TriangleAlert } from 'lucide-react'
 import type { Project, SkillImportApplyResult, SkillImportItem, SkillImportPreview } from '@shared/types'
 import { SKILL_REPO_ROOTS } from '@shared/types'
-import { buildSkillChoices, skillElevatedHint, skillImportButtonLabel, type SkillImportEdit } from '../../lib/skills'
+import { buildSkillChoices, droppedKeysLine, droppedKeysOf, skillElevatedHint, skillImportButtonLabel, type SkillImportEdit } from '../../lib/skills'
+import { Icon } from '../ui/Icon'
 import { cleanIpcError } from '../../lib/ipcError'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -27,6 +28,16 @@ const ACTION_LABEL: Record<SkillImportItem['action'], string> = {
 
 const isActive = (i: SkillImportItem): boolean => i.action === 'add' || i.action === 'update'
 
+/** What the import dialog learned that the apply result does not carry; the notice keeps it visible afterwards. */
+export interface ImportFollowUp {
+  /** "deploy-check: dropped allowed-tools, hooks, which OrgAI does not run" per imported skill that lost keys. */
+  dropped: string[]
+  /** Skills the importer refused (shown quietly after the import). */
+  refused: number
+  /** Names of added skills no role was chosen for. */
+  withoutRoles: string[]
+}
+
 function SkillRow({
   item,
   roles,
@@ -42,13 +53,22 @@ function SkillRow({
   const [bodyOpen, setBodyOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const included = isActive(item)
-  const locked = item.nameConflict === true || item.action === 'unchanged'
+  // A duplicate ('skip') cannot be turned on: the importer always prefers the earlier root, so a checkbox would do nothing.
+  const locked = item.nameConflict === true || item.action === 'unchanged' || item.action === 'skip'
   const elevated = skillElevatedHint(item.scripts)
   const roleIds = edit?.roleIds ?? []
+  const hintId = `${uid}-lock`
   return (
     <li className={`skill-import-row${included ? '' : ' is-skipped'}`} data-testid="skill-import-item" data-key={item.key}>
       <div className="import-row-head">
-        <Checkbox checked={included} disabled={locked} onChange={(include) => onEdit({ include })} label={<strong>{item.name}</strong>} testId="skill-import-include" />
+        <Checkbox
+          checked={included}
+          disabled={locked}
+          onChange={(include) => onEdit({ include })}
+          label={<strong>{item.name}</strong>}
+          title={locked && item.action === 'skip' ? 'Skipped because another skill has the same name' : undefined}
+          testId="skill-import-include"
+        />
         <span className={`chip${item.action === 'update' ? ' warn' : ''}`}>{ACTION_LABEL[item.action]}</span>
         <span className="chip mono">{item.root}</span>
         {item.nameConflict && <span className="chip warn">Name already used</span>}
@@ -57,12 +77,23 @@ function SkillRow({
       </div>
       {item.description && <p className="import-desc muted">{item.description}</p>}
       {item.nameConflict && <p className="hint">Another skill in this project already has this name, so it cannot be added.</p>}
-      {item.duplicateOf && <p className="hint">{item.duplicateOf} has the same name and wins. Include this one to use it instead.</p>}
+      {item.duplicateOf && (
+        <p className="hint" id={hintId} data-testid="skill-import-duplicate-hint">
+          Skipped. {item.duplicateOf} has the same name and is imported instead. To use this one, rename or remove the other in the repository.
+        </p>
+      )}
       {item.notes.length > 0 && (
         <ul className="skill-import-notes hint">
-          {item.notes.map((n, i) => (
-            <li key={i}>{n}</li>
-          ))}
+          {item.notes.map((n, i) => {
+            const keys = droppedKeysOf([n])
+            return keys.length > 0 ? (
+              <li key={i} className="skill-note-warn" data-testid="skill-import-dropped">
+                <Icon icon={TriangleAlert} size="xs" /> Dropped {keys.join(', ')}, which OrgAI does not run.
+              </li>
+            ) : (
+              <li key={i}>{n}</li>
+            )
+          })}
         </ul>
       )}
       {elevated && (
@@ -102,17 +133,22 @@ function SkillRow({
       )}
       {item.action === 'add' && roles.length > 0 && (
         <fieldset className="skill-import-roles">
-          <legend>Give to roles</legend>
+          <legend>Who can load it?</legend>
           <div className="skill-import-role-list">
             {roles.map((r) => (
               <Checkbox
                 key={r.id}
                 checked={roleIds.includes(r.id)}
-                onChange={(on) => onEdit({ roleIds: on ? [...roleIds, r.id] : roleIds.filter((x) => x !== r.id) })}
+                onChange={(on) =>
+                  onEdit({
+                    roleIds: on ? [...roleIds, r.id] : roleIds.filter((x) => x !== r.id)
+                  })
+                }
                 label={r.name}
               />
             ))}
           </div>
+          {included && roleIds.length === 0 && <span className="hint skill-role-warn">Until you choose roles, no agent loads it.</span>}
         </fieldset>
       )}
       {item.action === 'update' && <p className="hint">Existing role grants are kept.</p>}
@@ -128,7 +164,7 @@ export default function ImportSkillsDialog({
   onClose
 }: {
   project: Project
-  onApplied: (result: SkillImportApplyResult) => void
+  onApplied: (result: SkillImportApplyResult, followUp: ImportFollowUp) => void
   onClose: () => void
 }): ReactElement {
   const [edits, setEdits] = useState<Record<string, SkillImportEdit>>({})
@@ -187,14 +223,43 @@ export default function ImportSkillsDialog({
     setApplying(true)
     setApplyError(null)
     try {
-      const result = await window.orgai.skills.applyImport({ projectId: project.id, choices, digest: preview.digest })
-      onApplied(result)
+      const result = await window.orgai.skills.applyImport({
+        projectId: project.id,
+        choices,
+        digest: preview.digest
+      })
+      const dropped = active.flatMap((i) => {
+        const keys = droppedKeysOf(i.notes)
+        return keys.length > 0 ? [droppedKeysLine(i.name, keys)] : []
+      })
+      const withoutRoles = active.filter((i) => i.action === 'add' && (edits[i.key]?.roleIds ?? []).length === 0).map((i) => i.name)
+      onApplied(result, {
+        dropped,
+        refused: preview.invalid.length,
+        withoutRoles
+      })
       onClose()
     } catch (e) {
       setApplyError(cleanIpcError(e))
     } finally {
       setApplying(false)
     }
+  }
+
+  // Choices (include or role edits) are the only typed work; Esc, the backdrop and Cancel ask before they drop them.
+  const dirty = Object.keys(edits).length > 0
+  const requestClose = async (): Promise<void> => {
+    if (applying) return
+    if (dirty) {
+      const ok = await confirm({
+        title: 'Discard your choices?',
+        body: 'The skills you ticked and the roles you picked are not imported.',
+        confirmLabel: 'Discard',
+        danger: true
+      })
+      if (!ok) return
+    }
+    onClose()
   }
 
   const items = preview?.items ?? []
@@ -218,7 +283,7 @@ export default function ImportSkillsDialog({
       ) : (
         <span className="import-foot-note muted">Nothing is written until you import. Your files are not changed.</span>
       )}
-      <Button onClick={onClose}>Cancel</Button>
+      <Button onClick={() => void requestClose()}>Cancel</Button>
       <Button variant="primary" onClick={() => void apply()} disabled={!preview || count === 0 || loading} loading={applying} testId="skill-import-apply">
         {skillImportButtonLabel(count)}
       </Button>
@@ -227,7 +292,15 @@ export default function ImportSkillsDialog({
 
   return (
     <>
-      <Dialog open onClose={onClose} title="Import skills" description="Review the skills found in this folder before they join the project." size="lg" footer={footer} testId="skill-import-dialog">
+      <Dialog
+        open
+        onClose={() => void requestClose()}
+        title="Import skills"
+        description="Review the skills found in this folder before they join the project."
+        size="lg"
+        footer={footer}
+        testId="skill-import-dialog"
+      >
         <div className="import-body">
           {error && (
             <Banner tone="danger" title="Could not build the preview">
@@ -249,7 +322,11 @@ export default function ImportSkillsDialog({
             />
           )}
           {preview && preview.warnings.length > 0 && (
-            <Banner tone="warning" title={`${preview.warnings.length} thing${preview.warnings.length === 1 ? '' : 's'} to check`} testId="skill-import-warnings">
+            <Banner
+              tone="warning"
+              title={`${preview.warnings.length} thing${preview.warnings.length === 1 ? '' : 's'} to check`}
+              testId="skill-import-warnings"
+            >
               <ul className="import-warn-list">
                 {preview.warnings.map((w, i) => (
                   <li key={i}>{w}</li>
@@ -266,12 +343,14 @@ export default function ImportSkillsDialog({
           )}
           {invalid.length > 0 && (
             <section className="skill-import-invalid" data-testid="skill-import-invalid" aria-label="Skills that cannot be imported">
-              <h3 className="skill-import-invalid-title">Cannot be imported</h3>
+              <h3 className="skill-import-invalid-title">
+                <Icon icon={TriangleAlert} size="sm" /> Cannot be imported ({invalid.length})
+              </h3>
               <ul>
                 {invalid.map((i) => (
-                  <li key={i.repoPath}>
-                    <span className="mono">{i.repoPath}</span>
-                    <span className="muted">{i.reason}</span>
+                  <li key={i.repoPath} data-testid="skill-import-invalid-item">
+                    <span className="mono skill-import-invalid-path">{i.repoPath}</span>
+                    <span>{i.reason}</span>
                   </li>
                 ))}
               </ul>

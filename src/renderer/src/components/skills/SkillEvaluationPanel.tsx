@@ -1,12 +1,20 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { CircleCheck, Info, TriangleAlert } from 'lucide-react'
-import type { Project, SkillEvaluationReport, SkillFinding, SkillInfo, SkillSuggestion } from '@shared/types'
+import { ChevronRight, CircleCheck, Info, Pencil, Undo2, TriangleAlert } from 'lucide-react'
+import type { Project, SkillEvaluationReport, SkillInfo, SkillSuggestion } from '@shared/types'
 import { SKILL_EVAL_MAX_BUDGET, SKILL_EVAL_MIN_BUDGET, skillEvaluationOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { formatTokens } from '../../lib/cost'
-import { evaluationSummary, skippedReasonText, sortFindings } from '../../lib/skills'
+import {
+  evaluationAnnouncement,
+  evaluationSummary,
+  evaluationToggleLabel,
+  evidenceLines,
+  openSuggestionCount,
+  skippedReasonText,
+  sortFindings
+} from '../../lib/skills'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -17,14 +25,14 @@ import { Switch } from '../ui/Switch'
 import { ClampedNumber } from '../settings/ClampedNumber'
 import { SettingsCard } from '../settings/SettingsCard'
 import { SettingsGroup } from '../settings/SettingsSection'
-import { SkillRoleChecklist } from './SkillRoleAccess'
+import { SkillRolePicker } from './SkillRoleAccess'
 import type { ProjectSkills } from './useSkills'
 
 export interface SkillEvaluationState {
   report: SkillEvaluationReport | null
   evaluating: boolean
   error: string | null
-  /** Bumps each time an evaluation finishes, so the panel can open its disclosure. */
+  /** Bumps each time an evaluation finishes, so the panel can open its disclosure and move focus to the results. */
   finished: number
   run: () => Promise<void>
   reload: () => Promise<void>
@@ -77,27 +85,33 @@ export function useSkillEvaluation(projectId: string): SkillEvaluationState {
   return { report, evaluating, error, finished, run, reload }
 }
 
-const plainEvidence = (f: SkillFinding): string[] => {
-  const e = f.evidence
-  if (!e) return []
-  const lines: string[] = []
-  if (e.paths?.length) lines.push(`Missing paths: ${e.paths.join(', ')}`)
-  if (e.sequence?.length) lines.push(`Tool sequence: ${e.sequence.join(' > ')}`)
-  if (typeof e.similarity === 'number') lines.push(`Similarity: ${Math.round(e.similarity * 100)}%`)
-  if (typeof e.count === 'number') lines.push(`Seen ${e.count} ${e.count === 1 ? 'time' : 'times'}`)
-  if (e.runIds?.length) lines.push(`${e.runIds.length} ${e.runIds.length === 1 ? 'run' : 'runs'}`)
-  return lines
+const reducedMotion = (): boolean =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true || document.documentElement.getAttribute('data-reduce-motion') === 'on'
+
+/** What the panel tells the section when a suggestion became a skill. */
+export interface SuggestionApplied {
+  skillId: string | null
+  name: string
+  roleCount: number
 }
 
 /** Evaluation settings (off by default) and the last report with its findings and suggestions. All skill text is shown as plain text. */
 export default function SkillEvaluationPanel({
   project,
   skillsApi,
-  evaluation
+  evaluation,
+  onEditSkill,
+  onApplied,
+  onShowSkill
 }: {
   project: Project
   skillsApi: ProjectSkills
   evaluation: SkillEvaluationState
+  /** Opens the skill's form (or its library entry when it is linked). */
+  onEditSkill: (info: SkillInfo) => void
+  onApplied: (applied: SuggestionApplied) => void
+  /** Scrolls to and flashes a skill row. */
+  onShowSkill: (skillId: string) => void
 }): ReactElement {
   const uid = useId()
   const updateProject = useAppStore((s) => s.updateProject)
@@ -105,16 +119,45 @@ export default function SkillEvaluationPanel({
   const { report, evaluating, error, finished, reload } = evaluation
   const [open, setOpen] = useState(false)
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
-  const names = new Map(skillsApi.skills.map((s: SkillInfo) => [s.spec.id, s.spec.name]))
+  const [announcement, setAnnouncement] = useState('')
+  const heading = useRef<HTMLHeadingElement>(null)
+  const autoOpened = useRef<number | null>(null)
+  const infos = new Map(skillsApi.skills.map((s: SkillInfo) => [s.spec.id, s]))
   const save = (next: Partial<typeof settings>): void => updateProject({ ...project, skillEvaluation: { ...settings, ...next } })
 
+  // A restored result opens by default while a suggestion still waits for a decision, so Apply is visible on return.
   useEffect(() => {
-    if (finished > 0) setOpen(true)
+    if (!report || autoOpened.current === report.at) return
+    autoOpened.current = report.at
+    if (openSuggestionCount(report) > 0) setOpen(true)
+  }, [report])
+
+  // A fresh run: open the results, announce them and move focus to their heading (the Evaluate button was busy, not removed).
+  useEffect(() => {
+    if (finished === 0 || !report) return
+    setOpen(true)
+    setAnnouncement(evaluationAnnouncement(report))
+    const t = window.setTimeout(() => {
+      heading.current?.focus({ preventScroll: true })
+      heading.current?.scrollIntoView({
+        block: 'start',
+        behavior: reducedMotion() ? 'auto' : 'smooth'
+      })
+    }, 0)
+    return () => window.clearTimeout(t)
+    // Only a new finish counts, not a later report reload after Apply.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished])
   useEffect(() => setDismissed(new Set()), [report?.at])
 
   const reason = report ? skippedReasonText(report.skippedReason, report.error) : null
-  const visibleSuggestions = (report?.suggestions ?? []).filter((s) => s.appliedSkillId || !dismissed.has(s.id))
+  // Counts follow what the user still sees: a dismissed suggestion no longer counts.
+  const counted = report
+    ? {
+        ...report,
+        suggestions: report.suggestions.filter((s) => s.appliedSkillId || !dismissed.has(s.id))
+      }
+    : null
   const spent = report && (report.modelAssisted || report.tokensUsed > 0)
 
   return (
@@ -160,16 +203,25 @@ export default function SkillEvaluationPanel({
           {error}
         </Banner>
       )}
+      <p className="sr-only" role="status" aria-live="polite" data-testid="skill-eval-live">
+        {evaluating ? 'Evaluating skills' : announcement}
+      </p>
       {evaluating && (
-        <p className="muted" role="status">
+        <p className="muted" aria-hidden="true">
           Evaluating skills
         </p>
       )}
 
       <details className="skill-eval" data-testid="skill-eval-last" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
-          <span className="skill-eval-title">Last evaluation</span>
-          <span className="muted">{report ? evaluationSummary(report) : 'Not run yet'}</span>
+          <Icon icon={ChevronRight} size="sm" />
+          <h4 className="skill-eval-title" tabIndex={-1} ref={heading} data-testid="skill-eval-heading">
+            Last evaluation
+          </h4>
+          <span className="muted skill-eval-when">{counted ? evaluationSummary(counted) : 'Not run yet'}</span>
+          <span className="skill-eval-toggle" data-testid="skill-eval-toggle">
+            {evaluationToggleLabel(counted, open)}
+          </span>
         </summary>
         <div className="skill-eval-body">
           {!report ? (
@@ -181,9 +233,16 @@ export default function SkillEvaluationPanel({
                 {spent ? (
                   <>
                     {' '}
-                    {formatTokens(report.tokensUsed)} tokens{report.tokensEstimated ? ' (estimated)' : ''} of {formatTokens(report.tokenBudget)}
+                    {formatTokens(report.tokensUsed)} tokens
+                    {report.tokensEstimated ? ' (estimated)' : ''} of {formatTokens(report.tokenBudget)}
                     {report.model ? `, ${report.model}` : ''}, cost{' '}
-                    <Cost value={{ costUsd: report.costUsd, costSource: report.costUsd === null ? 'unknown' : 'computed' }} />.
+                    <Cost
+                      value={{
+                        costUsd: report.costUsd,
+                        costSource: report.costUsd === null ? 'unknown' : 'computed'
+                      }}
+                    />
+                    .
                   </>
                 ) : null}
               </p>
@@ -196,8 +255,8 @@ export default function SkillEvaluationPanel({
               ) : (
                 <ul className="skill-findings" aria-label="Findings">
                   {sortFindings(report.findings).map((f) => {
-                    const lines = plainEvidence(f)
-                    const about = f.skillIds.map((id) => names.get(id)).filter(Boolean)
+                    const lines = evidenceLines(f.evidence)
+                    const about = f.skillIds.map((id) => infos.get(id)).filter((i): i is SkillInfo => !!i)
                     return (
                       <li key={f.id} className="skill-finding" data-testid="skill-finding" data-kind={f.kind}>
                         <Badge tone={f.severity === 'warning' ? 'attention' : 'info'} icon={f.severity === 'warning' ? TriangleAlert : Info}>
@@ -206,12 +265,27 @@ export default function SkillEvaluationPanel({
                         <div className="skill-finding-main">
                           <span className="mcp-name">{f.title}</span>
                           <span className="skill-text">{f.detail}</span>
-                          {about.length > 0 && <span className="muted">Skills: {about.join(', ')}</span>}
                           {lines.map((l) => (
                             <span key={l} className="muted skill-text">
                               {l}
                             </span>
                           ))}
+                          {about.length > 0 && (
+                            <span className="skill-actions">
+                              {about.map((info) => (
+                                <Button
+                                  key={info.spec.id}
+                                  size="sm"
+                                  icon={Pencil}
+                                  testId="skill-finding-edit"
+                                  ariaLabel={`Edit ${info.spec.name}${info.spec.libraryId ? ' in the library' : ''}`}
+                                  onClick={() => onEditSkill(info)}
+                                >
+                                  Edit {info.spec.name}
+                                </Button>
+                              ))}
+                            </span>
+                          )}
                         </div>
                       </li>
                     )
@@ -219,18 +293,44 @@ export default function SkillEvaluationPanel({
                 </ul>
               )}
 
-              {visibleSuggestions.length > 0 && (
+              {report.suggestions.length > 0 && (
                 <ul className="skill-findings" aria-label="Suggested skills">
-                  {visibleSuggestions.map((s) => (
-                    <Suggestion
-                      key={s.id}
-                      suggestion={s}
-                      project={project}
-                      skillsApi={skillsApi}
-                      onApplied={() => void reload()}
-                      onDismiss={() => setDismissed((d) => new Set(d).add(s.id))}
-                    />
-                  ))}
+                  {report.suggestions.map((s) =>
+                    !s.appliedSkillId && dismissed.has(s.id) ? (
+                      <li key={s.id} className="skill-finding skill-dismissed" data-testid="skill-suggestion-dismissed" data-name={s.draft.name}>
+                        <span className="muted">Dismissed {s.draft.name}.</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={Undo2}
+                          testId="skill-suggestion-undismiss"
+                          ariaLabel={`Undo dismiss of ${s.draft.name}`}
+                          onClick={() =>
+                            setDismissed((d) => {
+                              const next = new Set(d)
+                              next.delete(s.id)
+                              return next
+                            })
+                          }
+                        >
+                          Undo
+                        </Button>
+                      </li>
+                    ) : (
+                      <Suggestion
+                        key={s.id}
+                        suggestion={s}
+                        project={project}
+                        skillsApi={skillsApi}
+                        onApplied={(applied) => {
+                          void reload()
+                          onApplied(applied)
+                        }}
+                        onShowSkill={onShowSkill}
+                        onDismiss={() => setDismissed((d) => new Set(d).add(s.id))}
+                      />
+                    )
+                  )}
                 </ul>
               )}
             </>
@@ -246,16 +346,17 @@ function Suggestion({
   project,
   skillsApi,
   onApplied,
+  onShowSkill,
   onDismiss
 }: {
   suggestion: SkillSuggestion
   project: Project
   skillsApi: ProjectSkills
-  onApplied: () => void
+  onApplied: (applied: SuggestionApplied) => void
+  onShowSkill: (skillId: string) => void
   onDismiss: () => void
 }): ReactElement {
   const [roles, setRoles] = useState<string[]>([])
-  const [pickRoles, setPickRoles] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const applied = !!s.appliedSkillId
@@ -264,9 +365,17 @@ function Suggestion({
     setBusy(true)
     setError(null)
     try {
-      const result = await window.orgai.skills.applySuggestion({ projectId: project.id, suggestionId: s.id, ...(roles.length ? { roleIds: roles } : {}) })
+      const result = await window.orgai.skills.applySuggestion({
+        projectId: project.id,
+        suggestionId: s.id,
+        ...(roles.length ? { roleIds: roles } : {})
+      })
       skillsApi.apply(result)
-      onApplied()
+      onApplied({
+        skillId: result.skills.find((i) => i.spec.name === s.draft.name)?.spec.id ?? null,
+        name: s.draft.name,
+        roleCount: roles.length
+      })
     } catch (e) {
       setError(cleanIpcError(e))
     } finally {
@@ -287,26 +396,40 @@ function Suggestion({
           <summary>Show instructions</summary>
           <pre className="skill-pre">{s.draft.body}</pre>
         </details>
+        {applied && s.appliedSkillId && (
+          <div className="skill-actions">
+            <Button
+              size="sm"
+              testId="skill-suggestion-show"
+              ariaLabel={`Show the skill ${s.draft.name}`}
+              onClick={() => onShowSkill(s.appliedSkillId as string)}
+            >
+              Show skill
+            </Button>
+          </div>
+        )}
         {!applied && (
           <>
-            {pickRoles && <SkillRoleChecklist roles={project.roles} value={roles} onChange={setRoles} label={`Roles for ${s.draft.name}`} />}
+            <SkillRolePicker roles={project.roles} value={roles} onChange={setRoles} label={`Roles for ${s.draft.name}`} />
             {error && (
               <p className="invalid-text" role="alert">
                 {error}
               </p>
             )}
             <div className="skill-actions">
-              <Button size="sm" variant="primary" loading={busy} testId="skill-suggestion-apply" ariaLabel={`Apply ${s.draft.name}`} onClick={() => void apply()}>
+              <Button
+                size="sm"
+                variant="primary"
+                loading={busy}
+                testId="skill-suggestion-apply"
+                ariaLabel={`Apply ${s.draft.name}`}
+                onClick={() => void apply()}
+              >
                 Apply
               </Button>
               <Button size="sm" disabled={busy} testId="skill-suggestion-dismiss" ariaLabel={`Dismiss ${s.draft.name}`} onClick={onDismiss}>
                 Dismiss
               </Button>
-              {project.roles.length > 0 && (
-                <button type="button" className="mcp-link" aria-expanded={pickRoles} onClick={() => setPickRoles((p) => !p)}>
-                  {roles.length ? `${roles.length} ${roles.length === 1 ? 'role' : 'roles'} will get it` : 'Choose roles (optional)'}
-                </button>
-              )}
             </div>
           </>
         )}

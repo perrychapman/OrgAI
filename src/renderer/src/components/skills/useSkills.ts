@@ -8,7 +8,7 @@ export interface ProjectSkills {
   loading: boolean
   error: string | null
   reload: () => Promise<void>
-  /** Each mutation applies the result (list + project in the store) and rethrows a cleaned Error on failure (also in `error`). */
+  /** Each mutation applies the result (list + project in the store) and throws a cleaned Error on failure (`error` is for load failures only). */
   create: (draft: SkillDraft, roleIds?: string[]) => Promise<SkillMutationResult>
   update: (input: Omit<SkillUpdateInput, 'projectId'>) => Promise<SkillMutationResult>
   remove: (skillId: string) => Promise<SkillMutationResult>
@@ -58,15 +58,13 @@ export function useProjectSkills(projectId: string): ProjectSkills {
 
   const mutate = useCallback(
     async (fn: () => Promise<SkillMutationResult>): Promise<SkillMutationResult> => {
-      setError(null)
       try {
         const result = await fn()
         apply(result)
         return result
       } catch (e) {
-        const message = cleanIpcError(e)
-        setError(message)
-        throw new Error(message)
+        // The caller shows the failure next to what it was doing; the list-level banner is for load errors only.
+        throw new Error(cleanIpcError(e))
       }
     },
     [apply]

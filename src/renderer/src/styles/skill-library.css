@@ -58,3 +58,141 @@
   gap: var(--space-1);
   padding-left: var(--space-6);
 }
+
+/* ---------- Skills toolbar, notices, flash (components/skills/SkillsSection) ---------- */
+.skill-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-4);
+}
+.skill-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.btn.is-busy {
+  cursor: progress;
+  color: var(--text-secondary);
+}
+.skill-row-roles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.skill-row-roles > .mcp-role-access {
+  min-width: 0;
+}
+.skill-row.is-flash {
+  animation: skill-flash 1.8s ease-out;
+}
+@keyframes skill-flash {
+  from {
+    background: var(--accent-soft);
+  }
+  to {
+    background: transparent;
+  }
+}
+.skill-role-warn {
+  color: var(--warning-text);
+}
+.skill-code {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+.skill-eval-title {
+  margin: 0;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.skill-eval-title:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.skill-dismissed {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.skill-notice-details {
+  margin-top: var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.skill-notice-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.skill-notice-details > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.skill-notice-details.warn {
+  color: var(--warning-text);
+}
+.skill-notice-details ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-6);
+}
+.skill-note-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  color: var(--warning-text);
+  list-style: none;
+}
+.skill-refused-line {
+  margin: 0;
+  font-size: var(--text-small);
+}
+.skill-import-invalid {
+  border-color: var(--warning-border);
+}
+.skill-import-invalid-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--warning-text);
+}
+.skill-import-invalid-path {
+  font-size: var(--text-mono);
+  color: var(--text-primary);
+}
+.skill-used-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.skill-used-by ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+.skill-remove-list {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+/* The role fieldset is the last block of a long form: keep its legend and hint clear of the dialog edge. */
+.dialog-body:has(.skill-role-picker) {
+  padding-bottom: var(--space-6);
+}

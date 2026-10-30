@@ -552,12 +552,39 @@
 .skill-eval > summary {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-1) var(--space-3);
   padding: var(--space-3);
+  border-radius: var(--radius-md);
   cursor: pointer;
+  list-style: none;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
+}
+.skill-eval > summary::-webkit-details-marker {
+  display: none;
+}
+.skill-eval > summary:hover {
+  background: var(--surface-3);
+}
+.skill-eval > summary > svg {
+  flex: none;
+  color: var(--text-secondary);
+  transition: transform var(--dur-fast) ease;
+}
+.skill-eval[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.skill-eval-when {
+  min-width: 0;
+}
+.skill-eval-toggle {
+  margin-left: auto;
+  color: var(--accent-text);
+  font-weight: var(--weight-semibold);
+}
+.skill-eval > summary:hover .skill-eval-toggle {
+  text-decoration: underline;
 }
 .skill-eval > summary:focus-visible,
 .skill-body-preview > summary:focus-visible {
