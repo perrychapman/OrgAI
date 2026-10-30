@@ -48,7 +48,7 @@ try {
         await sleep(600)
         await page.reload()
         await page.waitForSelector('.nav-item', { timeout: 15_000 })
-        await page.locator('.nav-item', { hasText: 'App settings' }).first().click()
+        await openAppSettings(page)
         await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
         const after = await page.getByRole('combobox', { name: 'Default connection', exact: true }).inputValue()
         check(after === 'openai', 'default connection persists after reload', after)

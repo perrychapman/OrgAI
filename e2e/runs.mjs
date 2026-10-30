@@ -90,6 +90,10 @@ try {
   await permCards.first().waitFor({ timeout: 15_000 }).catch(() => {})
   const permBefore = await permCards.count()
   check(permBefore >= 1, 'a pending permission card is shown before End session', String(permBefore))
+  if (permBefore >= 1) {
+    const needsRow = page.locator('[data-testid=needs-you-row]')
+    check((await needsRow.count()) >= 1, 'the Needs you row appears in the sidebar while a decision is pending')
+  }
   await endSession(page)
   await sleep(500)
   const permAfter = await permCards.count()

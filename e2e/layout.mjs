@@ -180,6 +180,7 @@ try {
       check(Math.abs(shellM.brand - 48) <= 1, `brand row is 48 px high at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       check(w < 1180 ? Math.abs(shellM.side - 56) <= 1 : Math.abs(shellM.side - 232) <= 1, `sidebar is ${w < 1180 ? 'a 56 px rail' : '232 px wide'} at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       if (w >= 1180) check(shellM.footer < 80, `sidebar footer is under 80 px at ${w}x${h} ${theme}`, JSON.stringify(shellM))
+      check((await page.locator('main .topbar .badge').count()) === 0, `no status badge in the topbar on Live at ${w}x${h} ${theme}`)
       check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
       check(inside(m.tabs), `run tabs inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.tabs))
       check(inside(m.header), `run header inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.header))
@@ -217,6 +218,27 @@ try {
     stops.push(await page.evaluate(() => (document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent || '').trim()))
   }
   check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Projects/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Projects', JSON.stringify(stops))
+
+  // Ctrl/Cmd+B toggles the sidebar between the 232 px column and the 56 px rail, and the choice survives a reload.
+  const sideW = () => page.evaluate(() => Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0))
+  const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
+  await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
+  const wide = await sideW()
+  await page.keyboard.press(`${mod}+b`)
+  await sleep(400)
+  const narrow = await sideW()
+  check(Math.abs(wide - 232) <= 1 && Math.abs(narrow - 56) <= 1, 'Ctrl/Cmd+B collapses the sidebar to the rail', `${wide} -> ${narrow}`)
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await sleep(600)
+  check(Math.abs((await sideW()) - 56) <= 1, 'the collapsed sidebar persists across a reload', String(await sideW()))
+  await page.keyboard.press(`${mod}+b`)
+  await sleep(400)
+  check(Math.abs((await sideW()) - 232) <= 1, 'Ctrl/Cmd+B expands the sidebar again', String(await sideW()))
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await sleep(600)
+  check(Math.abs((await sideW()) - 232) <= 1, 'the expanded sidebar persists across a reload')
 
   // The account row opens a popover with a way to App settings > Connections; Esc closes it and focus returns.
   await page.locator('[data-testid=auth-pill]').click()
