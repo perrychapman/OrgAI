@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { connectionOrder, currentConnection, runCostLabel, spendLabel, spendLevel, spendPct, spendText } from './usage'
-import { formatCost } from './layout'
+import { connectionOrder, currentConnection, spendLabel, spendLevel, spendPct, spendText } from './usage'
 
 const s = (usd: number, budgetUsd: number | null) => ({ usd, budgetUsd, resetsAt: null, budgetDuration: null, keyAlias: null })
 
@@ -24,13 +23,6 @@ describe('usage', () => {
     const ok = { available: true } as never
     expect(connectionOrder('litellm', { anthropic: ok, litellm: ok })).toEqual(['litellm', 'anthropic'])
     expect(connectionOrder('openai', {})).toEqual(['openai'])
-  })
-  it('labels cost by the run connection', () => {
-    expect(runCostLabel(0.5, 'litellm', 'subscription', formatCost).text).toBe('≈$0.50 est.')
-    expect(runCostLabel(0.5, 'openai', 'apiKey', formatCost).hidden).toBe(true)
-    expect(runCostLabel(0, 'litellm', 'unknown', formatCost).hidden).toBe(true)
-    expect(runCostLabel(0.5, undefined, 'apiKey', formatCost).text).toBe('$0.50')
-    expect(runCostLabel(0.5, 'anthropic', 'subscription', formatCost).text).toBe('≈$0.50')
   })
   it('handles no-budget, zero-budget and over-budget spend', () => {
     expect(spendPct(s(5, null))).toBeNull()

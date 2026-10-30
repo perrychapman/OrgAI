@@ -833,3 +833,12 @@ button.brand-lockup-expand:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+
+/* Cost: tabular figures; unknown reads as quiet text, never as a number. */
+.cost {
+  font-variant-numeric: tabular-nums;
+}
+.cost-unknown,
+.cost-none {
+  color: var(--text-tertiary);
+}

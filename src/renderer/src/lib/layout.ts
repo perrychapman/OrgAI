@@ -82,13 +82,6 @@ export function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
-export function formatCost(usd: number): string {
-  if (usd === 0) return '$0.00'
-  if (usd < 0.01) return `$${usd.toFixed(4)}`
-  return `$${usd.toFixed(2)}`
-}
-
-
 /** "3h 12m", "12m", "<1m" until `at` (epoch ms). */
 /** Plan progress: steps done or skipped, out of all steps. */
 export function planProgress(plan: { steps: { status: string }[] }): { done: number; total: number } {
