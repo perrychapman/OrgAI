@@ -1483,7 +1483,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       release?.({ value: undefined as never, done: true })
     }
     try {
-      const q = query({ prompt: never, options: { cwd: process.cwd(), settingSources: [], abortController: abort, tools: [], env: isolateClaudeEnv(process.env), ...EXECUTABLE_OPTION } })
+      const q = query({ prompt: never, options: probeQueryOptions(abort, isolateClaudeEnv(process.env)) })
       // Drain the stream in the background so the process keeps running until we abort it.
       const drain = (async () => {
         try {
@@ -1532,7 +1532,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
         const key = process.env[auth.envVar]
         if (key) env.ANTHROPIC_API_KEY = key
       }
-      const q = query({ prompt: never, options: { cwd: process.cwd(), settingSources: [], abortController: abort, tools: [], env, ...EXECUTABLE_OPTION } })
+      const q = query({ prompt: never, options: probeQueryOptions(abort, env) })
       const drain = (async () => {
         try {
           for await (const _ of q as AsyncIterable<unknown>) void _
@@ -1587,6 +1587,11 @@ export class ClaudeAdapter implements RuntimeAdapter {
     if (isAuthFailure({ text })) throw new Error(authFailureMessage(input.connection?.connection))
     return text
   }
+}
+
+/** Options for the token-free discovery and usage probes. strictMcpConfig + empty mcpServers keep repo and user-scope MCP servers from starting. */
+export function probeQueryOptions(abort: AbortController, env: Record<string, string | undefined>): Options {
+  return { cwd: process.cwd(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...EXECUTABLE_OPTION }
 }
 
 /** Query options for one-shot completions. strictMcpConfig + empty mcpServers keep a cloned repo's .mcp.json from loading. */
