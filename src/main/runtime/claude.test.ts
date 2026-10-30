@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -301,6 +301,17 @@ describe('linkAbortSignal', () => {
     const ac = new AbortController()
     ac.abort()
     expect(() => linkAbortSignal(ac.signal)).toThrow('Completion cancelled')
+  })
+})
+
+describe('probeQueryOptions', () => {
+  it('loads no settings, tools or MCP servers', () => {
+    const o = probeQueryOptions(new AbortController(), { A: '1' })
+    expect(o.settingSources).toEqual([])
+    expect(o.tools).toEqual([])
+    expect(o.strictMcpConfig).toBe(true)
+    expect(o.mcpServers).toEqual({})
+    expect(o.env).toEqual({ A: '1' })
   })
 })
 
