@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import type { McpTestResult } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
+import { parseWwwAuthenticate, redactOAuth } from './oauth'
 
 /**
  * Starts an MCP server (or connects to it) just far enough to list its tools: initialize, initialized
@@ -35,7 +36,14 @@ function secretValues(r: ResolvedMcpServer): string[] {
 export function redact(text: string, secrets: string[]): string {
   let out = text
   for (const s of secrets) out = out.split(s).join('[redacted]')
-  return out
+  return redactOAuth(out, secrets)
+}
+
+/** A 401 from a remote server: carries the WWW-Authenticate header for the result. */
+class AuthRequiredError extends Error {
+  constructor(readonly challenge: string) {
+    super('This server needs authorization. Use Authorize.')
+  }
 }
 
 /** Kill a process and everything it started. */
@@ -223,6 +231,10 @@ class HttpClient implements RpcClient {
     const res = await this.post({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) })
     const session = res.headers.get('mcp-session-id')
     if (session) this.session = session
+    if (res.status === 401) {
+      await res.text().catch(() => '')
+      throw new AuthRequiredError(res.headers.get('www-authenticate') ?? '')
+    }
     if (!res.ok) {
       const text = (await res.text().catch(() => '')).slice(0, 300)
       throw new Error(`HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}${text ? `: ${text}` : ''}`)
@@ -312,6 +324,12 @@ export async function testServer(resolved: ResolvedMcpServer, timeoutMs = 20_000
     const details = await Promise.race([handshake(client), timeout])
     return { ok: true, tools: details.map((t) => t.name), toolDetails: details, durationMs: Date.now() - started }
   } catch (e) {
+    if (e instanceof AuthRequiredError) {
+      const params = parseWwwAuthenticate(e.challenge).map((c) => c.params)
+      const found = params.map((p) => p.resource_metadata ?? p.authorization_uri ?? p.realm).find((v) => v)
+      const authorizationServer = found ? redact(found, secrets) : undefined
+      return { ok: false, needsAuthorization: true, ...(authorizationServer ? { authorizationServer } : {}), error: e.message, durationMs: Date.now() - started }
+    }
     let message = redact((e as Error).message, secrets)
     const tail = stdio?.stderrTail()
     if (tail) message += `\n${tail}`
