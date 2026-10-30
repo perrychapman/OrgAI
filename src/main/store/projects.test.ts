@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { McpServerSpec, PluginSpec, Project } from '@shared/types'
+import type { McpServerSpec, PluginSpec, Project, SkillSpec } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
 import { ProjectStore, checkProjectPath, cleanProjectPath, createPathError, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
@@ -44,6 +44,42 @@ describe('ProjectStore.saveFromRenderer', () => {
     expect(store.get('new')).toBeFalsy()
     expect(() => store.saveFromRenderer(project({ id: '../x' }))).toThrow('Invalid project id')
     expect(() => store.saveFromRenderer(project({ id: 'harness' }))).toThrow(/harness/)
+  })
+})
+
+describe('ProjectStore.saveFromRenderer skills', () => {
+  const spec = (id: string): SkillSpec => ({ id, name: id, description: 'd', enabled: true, source: 'user', digest: 'x', files: [], addedAt: 't', updatedAt: 't' })
+  const withGrants = (skills: string[] | undefined) => orgRoles(skills)
+  function orgRoles(skills: string[] | undefined) {
+    const p = project()
+    return p.roles.map((r) => (r.id === 'r-eng' && skills ? { ...r, skills } : r))
+  }
+
+  it('keeps the stored skills over a stale renderer copy and drops unknown grants (deduped)', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project({ skills: [spec('s1'), spec('s2')], roles: withGrants(['s1']) }))
+    const saved = store.saveFromRenderer(project({ skills: [], roles: withGrants(['s1', 's1', 's2', 'ghost']) }))
+    expect(saved.skills?.map((s) => s.id)).toEqual(['s1', 's2'])
+    expect(saved.roles.find((r) => r.id === 'r-eng')?.skills).toEqual(['s1', 's2'])
+    expect(saved.roles.find((r) => r.id === 'r-lead')?.skills).toBeUndefined()
+  })
+
+  it('does not invent skills and removes every grant when the store has none', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project())
+    const saved = store.saveFromRenderer(project({ skills: [spec('s1')], roles: withGrants(['s1']) }))
+    expect(saved.skills).toBeUndefined()
+    expect(saved.roles.find((r) => r.id === 'r-eng')?.skills).toEqual([])
+  })
+
+  it('normalizes skillEvaluation and accepts old projects without skills', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project())
+    expect(store.saveFromRenderer(project()).skillEvaluation).toBeUndefined()
+    const saved = store.saveFromRenderer(project({ skillEvaluation: { enabled: true, tokenBudget: 5 } }))
+    expect(saved.skillEvaluation).toEqual({ enabled: true, tokenBudget: 1000 })
+    const bad = store.saveFromRenderer(project({ skillEvaluation: { enabled: 'yes', tokenBudget: 'lots' } as never }))
+    expect(bad.skillEvaluation).toEqual({ enabled: false, tokenBudget: 20000 })
   })
 })
 
