@@ -198,6 +198,12 @@ export default function ProjectConnection({ project }: { project: Project }): Re
             })}
           </ul>
         </details>
+        <p className="settings-card-note" data-testid="model-prices-link">
+          Model prices are set in App settings.{' '}
+          <button type="button" className="link-btn" onClick={openConnections}>
+            Open model prices
+          </button>
+        </p>
       </SettingsCard>
 
       {target === 'litellm' && (
