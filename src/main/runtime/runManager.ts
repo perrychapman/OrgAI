@@ -147,6 +147,8 @@ interface QueuedPeerMessage {
   at: number
   /** Set once a delivery was attempted: true when the session took it, false when it could not. */
   delivered?: boolean
+  /** The session's receive() did not settle within RUN_MESSAGE_RECEIVE_TIMEOUT_MS (delivered is false). */
+  timedOut?: boolean
 }
 
 /**
@@ -160,6 +162,12 @@ export const RUN_MESSAGE_INBOUND_LIMIT = 100
 
 /** The most peer messages held for one run while it waits on its user; beyond this message_run answers 'busy'. */
 export const RUN_MESSAGE_QUEUE_LIMIT = 20
+
+/**
+ * How long one peer delivery may wait on the recipient session's receive(). A receive that never settles would
+ * otherwise stall the run's flush chain: the sender's message_run and every later peer message to that run.
+ */
+export const RUN_MESSAGE_RECEIVE_TIMEOUT_MS = 30_000
 
 /** Cards waiting for the user on a run (permission, proposal, question, merge review, install, rules). */
 function pendingCount(a: ActiveRun): number {
@@ -691,6 +699,8 @@ export class RunManager {
     target.inbox.push(message)
     await this.flushInbox(target)
     if (message.delivered === true) return { result: 'delivered' }
+    // The session never answered: busy if the run is still live, otherwise just gone.
+    if (message.timedOut) return this.runs.get(targetId) === target ? { result: 'refused', refusal: 'timeout' } : { result: 'not-live' }
     // Still waiting: the run became blocked before its turn came. Gone without an attempt: the run ended.
     if (message.delivered === undefined && target.inbox.includes(message)) return { result: 'queued' }
     return { result: 'not-live' }
@@ -718,14 +728,29 @@ export class RunManager {
     target.emit({ type: 'run.message', runId: to.id, direction: 'in', peerRunId: m.fromRunId, peerProjectId: m.fromProjectId, peerProjectName: m.fromProjectName, peerPrompt: m.fromPrompt, text: m.text, at })
     systemBlock(target, at, `Note from run ${m.fromRunId} (${m.fromProjectName}: ${m.fromPrompt}), from its orchestrator: ${m.text}`)
     target.emit({ type: 'log', runId: to.id, level: 'info', message: `Received a message from run ${m.fromRunId} (${m.fromProjectName}).` })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), RUN_MESSAGE_RECEIVE_TIMEOUT_MS)
+    })
     try {
-      await session.receive({ fromRunId: m.fromRunId, fromProjectName: m.fromProjectName, fromPrompt: m.fromPrompt, text: m.text })
+      const receiving = session.receive({ fromRunId: m.fromRunId, fromProjectName: m.fromProjectName, fromPrompt: m.fromPrompt, text: m.text })
+      // A receive that settles after the timeout must not surface as an unhandled rejection.
+      receiving.catch(() => undefined)
+      if ((await Promise.race([receiving.then(() => 'ok' as const), timeout])) === 'timeout') {
+        m.timedOut = true
+        const secs = Math.round(RUN_MESSAGE_RECEIVE_TIMEOUT_MS / 1000)
+        sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} did not accept the message within ${secs}s; it may be busy.` })
+        target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Taking the message from run ${m.fromRunId} did not finish within ${secs}s; moving on.` })
+        return false
+      }
       return true
     } catch (e) {
       const message = (e as Error).message
       sender?.emit({ type: 'log', runId: m.fromRunId, level: 'warn', message: `Run ${to.id} could not receive the message: ${message}` })
       target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Could not take the message from run ${m.fromRunId}: ${message}` })
       return false
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -1018,11 +1043,12 @@ export class RunManager {
     active.emit({ type: 'run.status', runId, status: 'running' })
     // The user's message lifts an interrupt's hold (as ContinuationDriver.userMessage does in the adapter); peer
     // messages held meanwhile follow it, so the orchestrator reads the user first. A usage-limit hold lifts too.
-    // Both are cleared only once the session took the message: a failed send leaves the run held.
+    // Both are cleared only once the session took the message: a failed send leaves the run held. The user's send
+    // never waits on peer delivery: the flush runs on its own (flushInbox catches and logs its errors).
     await active.session.send(text, images.length ? images : undefined)
     active.held = false
     active.limitHold = false
-    await this.flushInbox(active)
+    void this.flushInbox(active)
   }
 
   /** Interrupt the turn. Until the user's next message, peer messages are held (as automatic continues are). */
