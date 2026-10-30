@@ -1,6 +1,20 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { anthropicStatus, claudeAuthStatus, claudeCandidatePaths, dedupeByRealpath, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+import { anthropicStatus, candidateLaunch, claudeAuthStatus, claudeCandidatePaths, dedupeByRealpath, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+
+describe('candidateLaunch', () => {
+  it('runs every non-shim candidate without a shell, metacharacters included', () => {
+    expect(candidateLaunch('/usr/local/bin/claude', 'darwin')).toEqual({ bin: '/usr/local/bin/claude', shell: false })
+    expect(candidateLaunch('/tmp/a;rm -rf x/claude', 'linux')).toEqual({ bin: '/tmp/a;rm -rf x/claude', shell: false })
+    expect(candidateLaunch('C:\\Users\\me\\.local\\bin\\claude.exe', 'win32')).toEqual({ bin: 'C:\\Users\\me\\.local\\bin\\claude.exe', shell: false })
+  })
+  it('uses a shell only for Windows .cmd/.bat shims and drops shims with shell metacharacters', () => {
+    expect(candidateLaunch('C:\\Program Files (x86)\\nodejs\\claude.cmd', 'win32')).toEqual({ bin: 'C:\\Program Files (x86)\\nodejs\\claude.cmd', shell: true })
+    for (const bad of ['C:\\a&calc\\claude.cmd', 'C:\\%PATH%\\claude.bat', 'C:\\a"b\\claude.cmd', 'C:\\a|b\\claude.cmd']) {
+      expect(candidateLaunch(bad, 'win32')).toBeNull()
+    }
+  })
+})
 
 describe('claudeCandidatePaths', () => {
   it('lists the native installer and Homebrew locations that exist on macOS', () => {

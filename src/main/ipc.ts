@@ -217,7 +217,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
         envVarSet
       }
     }
-    return { ...(await claudeAuthStatus()), mode: 'subscription' }
+    // Only the AuthStatusResult fields cross IPC.
+    const s = await claudeAuthStatus()
+    return { loggedIn: s.loggedIn, method: s.method, detail: s.detail, mode: 'subscription' }
   })
 
   // settings.set() notifies SettingsStore listeners: index.ts applies the theme and broadcasts settings:changed.

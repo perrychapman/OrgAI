@@ -65,6 +65,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - `src/main/runtime/runManager.ts`
 - `src/main/runtime/worktrees.ts`
 - `src/main/runtime/usage.ts`
+- `src/main/runtime/childEnv.ts` (isolateClaudeEnv: the routing-variable denylist for Claude Code children)
 - `src/main/runtime/testHelpers.ts`
 
 ### Provider adapters
@@ -94,7 +95,9 @@ ConnectionService covers:
 - tier mapping and project remaps, including the projects:previewRemap dry run
 - the per-run RunConnection, and Codex plan usage
 
-anthropicAuth.ts runs `claude auth status` and lists candidate claude binaries.
+- default connection at creation: prepareNewProject puts a new project on AppSettings.defaultConnection when creationConnection (defaults.ts) finds it usable and it maps every tier the roles use, else on anthropic (projects:create passes it to ProjectStore.create; mock and existing projects are untouched)
+
+anthropicAuth.ts runs `claude --setting-sources project auth status` (the bundled CLI first, then PATH candidates) with the isolated child env in os.tmpdir(), so the status reflects what OrgAI's runs can use, and lists candidate claude binaries.
 
 - `src/main/connections/`
 
@@ -259,6 +262,7 @@ components/layout:
   - They are never logged and are redacted from probe output. An API key reaches Codex only through the environment.
 - projects:save (ProjectStore.saveFromRenderer) keeps the stored mcpServers and plugins. Those change only through mcp:* and plugins:*, approved setup or MCP proposals, and installs approved with scope 'project'. Deleting a project deletes its MCP secrets.
 - OrgAI's Codex home is <data>/codex, so it never loads the user's ~/.codex config.
+- The Claude child env is isolated (childEnv.ts isolateClaudeEnv). The Anthropic connection uses only the Claude Code login, CLAUDE_CODE_OAUTH_TOKEN or the project's API key env var. A user's Claude Code gateway config (shell exports or the ~/.claude/settings.json env block) never applies to OrgAI runs; routing variables come only from the run's connection. An authentication failure ends the run failed with activity.ts authFailureMessage, never as the orchestrator's reply.
 - MCP:
   - Claude runs use strictMcpConfig, so only the project's enabled servers and run-scoped installs load.
   - Agents add servers only through request_mcp_install. It needs exact pinned versions and the user's approval on an install card.
@@ -337,6 +341,10 @@ components/layout:
   - All Codex, LiteLLM and MCP-registry wire shapes come from docs and schemas until smoke-codex and smoke-litellm run with your consent.
   - The device-code expiry field is a guess.
 - Claude:
+  - Env isolation and the truthful Anthropic status are unit-tested; no live run has confirmed which credential the bundled CLI picks with the isolated env, nor the live shape of an auth failure (assistant `error: 'authentication_failed'` comes from the 0.3.312 typings). `--setting-sources project` on `auth status` was checked token-free against a temp CLAUDE_CONFIG_DIR only.
+  - settingSources ['project'] still loads the project repo's .claude/settings.json, whose env block (ANTHROPIC_BASE_URL and the like) or apiKeyHelper is applied by the CLI after OrgAI builds the child env. A hostile repo could reroute a run and capture its credential. Pre-existing; needs flag-level overrides or dropping 'project'.
+  - Possible next step: a dedicated CLAUDE_CONFIG_DIR under the data dir for full isolation (it would also move the login and Keychain entry, so the user would log in inside OrgAI).
+  - Other secrets in OrgAI's own environment (OPENAI_API_KEY, GITHUB_TOKEN and the like) still reach the Claude child and agent Bash; the denylist only covers routing.
   - Calling agents are attributed by tool_use id from extra._meta (the key is unverified), else first-in-first-out per tool name. FIFO can misattribute concurrent calls.
   - Query.setMcpServers for mid-run installs is unverified at runtime.
 - macOS is untested by hand. The user tests on a MacBook with docs/macos-testing.md. Packaging and entitlements are unverified.

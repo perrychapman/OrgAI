@@ -521,8 +521,16 @@ export class ConnectionService {
     const settings = this.deps.settings.get()
     const id = creationConnection(settings)
     if (id === 'anthropic') return project
+    const tierModels = settings.connections[id].tierModels
+    // A tiered role without a mapping would keep its Anthropic alias, which the other connection cannot serve.
+    // Stay on Anthropic then; the user maps the tier in Settings > Connections and switches the project.
+    const unmapped = project.roles.some((r) => r.tier && r.model !== 'inherit' && !tierModels[r.tier]?.trim())
+    if (unmapped) {
+      console.warn(`New project stays on Anthropic: the ${id} connection has no model for every tier the roles use.`)
+      return project
+    }
     const provider = { ...project.provider, connection: id, label: connectionProviderLabel(id, settings.providerAuth) }
-    return this.remapOne({ ...project, provider }, id, settings.connections[id].tierModels, undefined, 'switched').project
+    return this.remapOne({ ...project, provider }, id, tierModels, undefined, 'switched').project
   }
 
   private withAdapter(project: Project): Project {

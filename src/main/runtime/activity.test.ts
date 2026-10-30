@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance } from '@shared/types'
-import { TERMINAL_ACTIVITY, authFailureMessage, describeTool, harnessToolActivity, isAuthFailure, runOutcome, settleAgent } from './activity'
+import { TERMINAL_ACTIVITY, authFailureMessage, describeTool, harnessToolActivity, isAuthFailure, runOutcome, scrubAuthDetail, settleAgent } from './activity'
 
 describe('isAuthFailure', () => {
   it('trusts the SDK error code', () => {
@@ -13,14 +13,27 @@ describe('isAuthFailure', () => {
     expect(isAuthFailure({ text: 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}' })).toBe(true)
     expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token or refresh your existing token.' })).toBe(true)
   })
-  it('counts a bare 401 or unauthorized only on an error result', () => {
-    expect(isAuthFailure({ text: 'API Error: 401 Unauthorized' })).toBe(false)
-    expect(isAuthFailure({ text: 'API Error: 401 Unauthorized', isError: true })).toBe(true)
+  it('counts auth words, a 401 or unauthorized anywhere only on an error result', () => {
+    expect(isAuthFailure({ text: 'Request failed: HTTP 401 Unauthorized' })).toBe(false)
+    expect(isAuthFailure({ text: 'Request failed: HTTP 401 Unauthorized', isError: true })).toBe(true)
+    expect(isAuthFailure({ text: 'Proxy said: authentication_error', isError: true })).toBe(true)
+  })
+  it('never flags a short reply or title that only mentions the words', () => {
+    expect(isAuthFailure({ text: 'Fix invalid API key handling' })).toBe(false)
+    expect(isAuthFailure({ text: 'The docs say: "Invalid API key · Please run /login" means you are logged out.' })).toBe(false)
   })
   it('never flags an ordinary or long answer', () => {
     expect(isAuthFailure({ text: 'Done. I added the login page.' })).toBe(false)
     expect(isAuthFailure({ text: `${'x'.repeat(500)} invalid api key` })).toBe(false)
     expect(isAuthFailure({})).toBe(false)
+  })
+})
+
+describe('scrubAuthDetail', () => {
+  it('masks key-like tokens and bearer values and keeps one capped line', () => {
+    const out = scrubAuthDetail('401: Received API Key = sk-...1234,\nAuthorization: Bearer abc.def key pk-live_xyz')
+    expect(out).toBe('401: Received API Key = ***, Authorization: Bearer *** key ***')
+    expect(scrubAuthDetail('x'.repeat(900))).toHaveLength(400)
   })
 })
 

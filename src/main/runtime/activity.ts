@@ -137,25 +137,41 @@ export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunO
 
 // ---------- Authentication failures ----------
 
-/** Phrases the Claude Code CLI (and gateways behind it) use when a request is refused for bad or missing auth. */
-const AUTH_FAILURE_STRONG = /invalid api key|please run \/login|authentication_error|invalid bearer token|oauth token (?:has )?expired|invalid x-api-key/i
-/** Weaker signals, trusted only on an error result: an HTTP 401 or "unauthorized". */
-const AUTH_FAILURE_WEAK = /\b401\b|unauthori[sz]ed/i
+/**
+ * How the Claude Code CLI's own auth-failure text starts ("Invalid API key · Please run /login", "API Error: 401
+ * {...authentication_error...}"). Anchored, so a model reply that merely mentions API keys never matches.
+ */
+const AUTH_FAILURE_LEAD = /^(?:invalid api key|please run \/login|api error: 401\b|oauth token (?:has )?expired|failed to authenticate|invalid bearer token)/i
+/** Anywhere in the text, trusted only when the adapter knows the turn errored (`isError`). */
+const AUTH_FAILURE_ANYWHERE = /invalid api key|please run \/login|authentication_error|invalid bearer token|oauth token (?:has )?expired|invalid x-api-key|\b401\b|unauthori[sz]ed/i
 /** Longer text is a model's own answer, which may well discuss API keys. */
 const AUTH_FAILURE_MAX_CHARS = 400
 
 /**
  * True when a turn's outcome is an authentication failure rather than a reply: the SDK's assistant error code
- * 'authentication_failed', or short text with the CLI's auth wording ("Invalid API key · Please run /login",
- * authentication_error). A 401 or "unauthorized" counts only when the adapter knows the turn errored (`isError`).
- * Vendor-neutral: adapters pass what their SDK reports.
+ * 'authentication_failed', short text that STARTS with the CLI's auth wording, or (only when the adapter knows the
+ * turn errored, `isError`) short text containing auth wording, a 401 or "unauthorized". Vendor-neutral: adapters
+ * pass what their SDK reports.
  */
 export function isAuthFailure(input: { errorCode?: string | null; text?: string | null; isError?: boolean }): boolean {
   if (input.errorCode === 'authentication_failed') return true
   const text = (input.text ?? '').trim()
   if (!text || text.length > AUTH_FAILURE_MAX_CHARS) return false
-  if (AUTH_FAILURE_STRONG.test(text)) return true
-  return !!input.isError && AUTH_FAILURE_WEAK.test(text)
+  if (AUTH_FAILURE_LEAD.test(text)) return true
+  return !!input.isError && AUTH_FAILURE_ANYWHERE.test(text)
+}
+
+/**
+ * Raw provider text for a harness transcript detail: key-like tokens (sk-..., pk-..., Bearer ...) masked, because
+ * gateways echo a masked key fragment that exact-value redaction cannot match. One line, at most 400 characters.
+ */
+export function scrubAuthDetail(text: string): string {
+  return text
+    .replace(/\bBearer\s+\S+/gi, 'Bearer ***')
+    .replace(/\b(?:sk|pk|rk)-[\w.*-]{3,}/gi, '***')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, AUTH_FAILURE_MAX_CHARS)
 }
 
 /**

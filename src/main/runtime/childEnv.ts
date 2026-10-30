@@ -13,7 +13,7 @@
  *
  * Kept: everything else (PATH, HOME, locale, HTTP(S)_PROXY / NO_PROXY, SSL certs, tool env), plus two
  * legitimate auth sources for the Anthropic connection:
- * - CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token` login), and
+ * - CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token` login; CLAUDE_CODE_OAUTH_REFRESH_TOKEN likewise), and
  * - CLAUDE_CONFIG_DIR (where the user's Claude Code login lives; the Keychain entry is derived from it).
  * ANTHROPIC_API_KEY is kept only when the caller says so (`keepApiKey`: the Anthropic connection on an API-key
  * project). On a proxy connection (`proxy`: LiteLLM) ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are removed
@@ -30,6 +30,7 @@ export const CLAUDE_ROUTING_VARS: readonly string[] = [
   'ANTHROPIC_PROFILE',
   'ANTHROPIC_FEDERATION_RULE_ID',
   'ANTHROPIC_ORGANIZATION_ID',
+  'ANTHROPIC_UNIX_SOCKET',
   // Model selection
   'ANTHROPIC_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
@@ -49,7 +50,7 @@ export const CLAUDE_ROUTING_VARS: readonly string[] = [
 /** Families of routing variables: tier model overrides, provider switches, provider endpoints and auth skips. */
 export const CLAUDE_ROUTING_PATTERNS: readonly RegExp[] = [
   /^ANTHROPIC_DEFAULT_[A-Z0-9_]+$/, // ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL and their _NAME/_DESCRIPTION
-  /^ANTHROPIC_(BEDROCK|VERTEX|FOUNDRY)_[A-Z0-9_]+$/,
+  /^ANTHROPIC_(BEDROCK|VERTEX|FOUNDRY|AWS)_[A-Z0-9_]+$/,
   /^CLAUDE_CODE_USE_[A-Z0-9_]+$/, // CLAUDE_CODE_USE_BEDROCK / _VERTEX / _FOUNDRY / _ANTHROPIC_AWS
   /^CLAUDE_CODE_SKIP_[A-Z0-9_]+_AUTH$/,
   /^VERTEX_REGION_[A-Z0-9_]+$/
@@ -81,7 +82,7 @@ export function isolateClaudeEnv(base: NodeJS.ProcessEnv, opts: IsolateClaudeEnv
     const n = name.toUpperCase()
     if (isClaudeRoutingVar(n)) continue
     if (n === 'ANTHROPIC_API_KEY' && (opts.proxy || !opts.keepApiKey)) continue
-    if (n === 'CLAUDE_CODE_OAUTH_TOKEN' && opts.proxy) continue
+    if ((n === 'CLAUDE_CODE_OAUTH_TOKEN' || n === 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN') && opts.proxy) continue
     out[name] = value
   }
   return out

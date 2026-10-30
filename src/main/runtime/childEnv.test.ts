@@ -9,6 +9,7 @@ const leaky = {
   NO_PROXY: 'localhost',
   CLAUDE_CONFIG_DIR: '/Users/me/.claude-work',
   CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok',
+  CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh-tok',
   ANTHROPIC_API_KEY: 'sk-inherited',
   ANTHROPIC_BASE_URL: 'http://my-gateway:4000',
   ANTHROPIC_AUTH_TOKEN: 'gateway-key',
@@ -38,6 +39,8 @@ const leaky = {
   CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
   AWS_BEARER_TOKEN_BEDROCK: 'aws',
   CLOUD_ML_REGION: 'us',
+  ANTHROPIC_UNIX_SOCKET: '/tmp/s',
+  ANTHROPIC_AWS_WORKSPACE_ID: 'w',
   VERTEX_REGION_CLAUDE_4_0_OPUS: 'us',
   UNSET: undefined
 }
@@ -46,7 +49,7 @@ const kept = { PATH: '/bin', HOME: '/Users/me', LANG: 'en_US.UTF-8', HTTPS_PROXY
 
 describe('isolateClaudeEnv', () => {
   it('strips every routing, model, gateway and cloud-provider variable and keeps the rest', () => {
-    expect(isolateClaudeEnv(leaky)).toEqual({ ...kept, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok' })
+    expect(isolateClaudeEnv(leaky)).toEqual({ ...kept, CLAUDE_CODE_OAUTH_TOKEN: 'oauth-tok', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh-tok' })
   })
 
   it('keeps ANTHROPIC_API_KEY only when asked (Anthropic connection, API-key project)', () => {

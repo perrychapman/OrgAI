@@ -235,6 +235,18 @@ describe('prepareNewProject', () => {
     expect(out.provider).toMatchObject({ id: 'codex', connection: 'litellm' })
   })
 
+  it('stays on anthropic when litellm has no model for a tier the roles use', async () => {
+    const ctx = setup()
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const s = ctx.settings.get()
+    const { fast: _fast, ...partial } = s.connections.litellm.tierModels
+    void _fast
+    ctx.settings.set({ ...s, defaultConnection: 'litellm', connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: partial } } })
+    const p = fresh(ctx.settings)
+    expect(ctx.service.prepareNewProject(p)).toEqual(p)
+  })
+
   it('falls back to anthropic when litellm is not usable', () => {
     const ctx = setup()
     ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })

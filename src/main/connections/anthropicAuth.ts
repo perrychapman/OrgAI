@@ -44,8 +44,13 @@ export const defaultRunCli: RunCli = (bin, args, opts) =>
       resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 })
     const base = { timeout: opts.timeout, windowsHide: true, env: opts.env, cwd: opts.cwd }
     if (opts.shell) {
-      const quoted = /\s/.test(bin) ? `"${bin}"` : bin
-      exec(`${quoted} ${args.join(' ')}`, base, (err, stdout, stderr) => done(err, stdout, stderr))
+      // Only Windows .cmd/.bat shims get here (candidateLaunch), already checked for shell metacharacters; the
+      // args are constants. Always quoted.
+      if (SHELL_UNSAFE.test(bin)) {
+        resolve({ stdout: '', stderr: 'unsafe path', code: 1 })
+        return
+      }
+      exec(`"${bin}" ${args.join(' ')}`, base, (err, stdout, stderr) => done(err, stdout, stderr))
     } else {
       execFile(bin, args, base, (err, stdout, stderr) => done(err, stdout, stderr))
     }
@@ -64,10 +69,24 @@ export function bundledClaudeBinary(): string | undefined {
   }
 }
 
+/** Characters cmd.exe would still interpret inside double quotes, plus other metacharacters. Parentheses stay allowed ("Program Files (x86)"). */
+const SHELL_UNSAFE = /["%!&|<>^`$;\r\n]/
+
+/**
+ * How to launch a PATH candidate: directly (execFile) everywhere except Windows .cmd / .bat shims, which need a
+ * shell. A shim whose path holds shell metacharacters is dropped (null) rather than risk command injection.
+ */
+export function candidateLaunch(bin: string, platform: NodeJS.Platform = process.platform): { bin: string; shell: boolean } | null {
+  const shim = platform === 'win32' && /\.(cmd|bat)$/i.test(bin)
+  if (!shim) return { bin, shell: false }
+  return SHELL_UNSAFE.test(bin) ? null : { bin, shell: true }
+}
+
 async function defaultCandidates(): Promise<{ bin: string; shell: boolean }[]> {
   const bundled = bundledClaudeBinary()
   const path = await listClaudeBinaries()
-  return [...(bundled ? [{ bin: bundled, shell: false }] : []), ...path.filter((p) => p !== bundled).map((bin) => ({ bin, shell: true }))]
+  const rest = path.filter((p) => p !== bundled).map((p) => candidateLaunch(p)).filter((c): c is { bin: string; shell: boolean } => !!c)
+  return [...(bundled ? [{ bin: bundled, shell: false }] : []), ...rest]
 }
 
 /**
