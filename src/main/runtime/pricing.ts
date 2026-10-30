@@ -386,7 +386,7 @@ export function sanitizeModelPrice(raw: unknown): ModelPrice | undefined {
   return out
 }
 
-const SOURCE_ORDER: Record<ResolvedSource, number> = { override: 0, proxy: 1, builtin: 2 }
+const SOURCE_ORDER: Record<ResolvedSource, number> = { override: 0, proxy: 1, builtin: 2, community: 3 }
 
 /** models:prices. */
 export function listModelPrices(query: ModelPricesQuery | undefined, overrides: readonly ModelPriceOverride[], catalog: readonly ProviderModel[]): ModelPriceInfo[] {

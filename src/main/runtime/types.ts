@@ -1,5 +1,7 @@
 import type {
   ConnectionId,
+  ModelRef,
+  ModelTier,
   ImageAttachment,
   McpInstallDecision,
   McpInstallRequest,
@@ -77,6 +79,27 @@ export interface RunConnection {
    * the Claude adapter then keeps the CLI's own rates). Not secret.
    */
   pricing?: Record<string, ModelPrice>
+  /**
+   * The connection's tier mapping at run start (AppSettings.connections[connection].tierModels), for tier-driven
+   * choices inside a run: steering deep/top spawns to the everyday tier near a plan limit, and mapping the tier names
+   * of proposed org chart roles. Missing on mock runs. Not secret.
+   */
+  tierModels?: Partial<Record<ModelTier, ModelRef>>
+  /** Ids of the connection's catalog at run start (ConnectionService.catalog), for validating proposed role models. */
+  models?: ModelRef[]
+}
+
+/**
+ * One model an adapter reports without a run (RuntimeAdapter.listModels). Claude: the SDK's supportedModels()
+ * (ModelInfo value / displayName / description), read after init with no prompt sent.
+ */
+export interface AdapterModelInfo {
+  /** What Role.model would hold ('opus', 'sonnet[1m]', a full id...). Never the CLI's 'default' pseudo-entry. */
+  id: ModelRef
+  label?: string
+  description?: string
+  /** The concrete model the id currently resolves to, when the provider says (ModelInfo.resolvedModel). */
+  resolvedModel?: string
 }
 
 /** An MCP server spec with its secret values filled in, ready for an adapter. Never emit, log or persist. */
@@ -179,7 +202,10 @@ export interface RuntimeContext {
    * continues automatically at `until`.
    */
   rateLimited(info: { until?: number; window?: string }): void
-  /** Weekly-window percent at or above which projects with preferSonnetNearLimit spawn Opus reports on Sonnet. */
+  /**
+   * Weekly-window percent at or above which projects with preferEverydayNearLimit (defaults.ts helper; legacy
+   * preferSonnetNearLimit honoured) spawn deep- and top-tier reports on the everyday tier (connection.tierModels).
+   */
   opusGuardThreshold?: number
   /** Work runs: the orchestrator's plan, if it set one (plan tools, continuation). */
   getPlan(): RunPlan | undefined
@@ -310,4 +336,10 @@ export interface RuntimeAdapter {
    * Must not spend tokens.
    */
   probeUsage?(auth: ProviderAuth): Promise<UsageStatus | null>
+  /**
+   * The models the provider offers this login right now, without a run and without spending tokens (Claude: a query
+   * whose prompt never yields, supportedModels(), then abort; same pattern as probeUsage). null when the provider
+   * cannot say (old SDK, timeout, error). Never throws. ConnectionService turns the list into catalog entries.
+   */
+  listModels?(auth: ProviderAuth): Promise<AdapterModelInfo[] | null>
 }

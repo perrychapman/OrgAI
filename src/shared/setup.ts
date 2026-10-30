@@ -38,7 +38,7 @@ Use ask_user when the user must choose between options; use prose for open-ended
 Org chart design principles:
 - Exactly one root orchestrator (reportsTo null). Every other role reports to exactly one manager. A manager's spawnable list is normally its direct reports.
 - Purpose-built roles with tight responsibilities and only the tools they need. Reviewers and researchers are read-only.
-- Right-size the model: "opus" for orchestration, architecture and hard debugging; "sonnet" for implementation, testing and review; "haiku" for lookups, summaries and mechanical chores. "fable" only for the single hardest reasoning role when truly needed.
+- Right-size the model by tier, never by vendor model name: "deep" for orchestration, architecture and hard debugging; "everyday" for implementation, testing and review; "fast" for lookups, summaries and mechanical chores; "top" only for the single hardest reasoning role when truly needed. The project's connection maps each tier to its own model. Name an exact model id only when your context lists it as available and the user asked for it.
 - Three to seven roles is typical. Add a middle layer only for clearly separate domains, such as frontend and backend.
 - Prompts are system prompts: second person, concrete, 60 to 160 words, describing how the role works and how it reports back. Reference the architecture document so roles follow the agreed conventions.
 - Keep parallel work safe: tell implementers to stay within the files of their brief and to report every file they touched.
@@ -53,7 +53,10 @@ export interface BuiltinRoleModel {
   tier?: ModelTier
 }
 
-/** The built-in role that runs setup sessions. Default model 'opus' (no tier), as before AppSettings.setupModel. */
+/**
+ * The built-in role that runs setup sessions. RunManager always passes the model resolved from AppSettings.setupModel
+ * (runtime/builtinModel.ts); without one it inherits the adapter's default model (no vendor alias).
+ */
 export function architectRole(choice?: BuiltinRoleModel): Role {
   return {
     id: newId('role'),
@@ -68,7 +71,7 @@ export function architectRole(choice?: BuiltinRoleModel): Role {
     ],
     prompt: ARCHITECT_PROMPT,
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Bash'],
-    model: choice?.model ?? 'opus',
+    model: choice?.model ?? 'inherit',
     ...(choice?.tier ? { tier: choice.tier } : {}),
     canSpawn: false,
     spawnable: [],
@@ -131,8 +134,8 @@ export function mcpAssistantRole(choice?: BuiltinRoleModel): Role {
     ],
     prompt: MCP_ASSISTANT_PROMPT,
     tools: ['Read', 'Glob', 'Grep', 'WebFetch'],
-    model: choice?.model ?? 'opus',
-    ...(choice ? (choice.tier ? { tier: choice.tier } : {}) : { tier: 'deep' as const }),
+    model: choice?.model ?? 'inherit',
+    ...(choice?.tier ? { tier: choice.tier } : {}),
     canSpawn: false,
     spawnable: [],
     reportsTo: null,

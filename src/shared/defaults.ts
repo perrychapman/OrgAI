@@ -20,7 +20,7 @@ import type {
   TokenUsage,
   ToolName
 } from './types'
-import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
+import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, isModelTier } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -56,7 +56,12 @@ const builtin = (
   list: { id: string; label: string; hint: string; tier: ModelTier }[]
 ): ProviderModel[] => list.map((m) => ({ ...m, connection, family, adapter, source: 'builtin' }))
 
-/** Anthropic's models as Claude Code aliases, one per tier. Always in the catalog for the anthropic connection. */
+/**
+ * Anthropic's models as Claude Code aliases, one per tier: the anthropic connection's cold-start catalog and its
+ * default tierModels (aliases float to the newest model of their family in the CLI). Discovery (the Claude adapter's
+ * listModels, i.e. the SDK's supportedModels) adds whatever the CLI offers, new families included; these stay in the
+ * catalog so roles saved with them remain valid.
+ */
 export const ANTHROPIC_BUILTIN_MODELS: readonly ProviderModel[] = builtin('anthropic', 'claude', 'claude', [
   { id: 'fable', label: 'Fable', hint: 'Most capable, highest cost', tier: 'top' },
   { id: 'opus', label: 'Opus', hint: 'Deep reasoning, orchestration, architecture', tier: 'deep' },
@@ -82,11 +87,79 @@ export function builtinModels(connection: ConnectionId): ProviderModel[] {
   return []
 }
 
-/** Fill a tier mapping from a catalog: the first model suggested for each tier. Tiers with none are left out. */
+/**
+ * Fill a tier mapping from a catalog: for each tier, the first model the provider marks recommended, else the first
+ * model suggested for it (catalog order: discovered lists come newest or most recommended first). Tiers with none are
+ * left out.
+ */
 export function defaultTierModels(models: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
   const out: Partial<Record<ModelTier, ModelRef>> = {}
+  for (const m of models) if (m.tier && m.recommended && !out[m.tier]) out[m.tier] = m.id
   for (const m of models) if (m.tier && !out[m.tier]) out[m.tier] = m.id
   return out
+}
+
+/** Tiers ordered by closeness to `tier`, the tier itself first (ties: the more capable one first). */
+export function nearestTiers(tier: ModelTier): ModelTier[] {
+  const i = MODEL_TIERS.indexOf(tier)
+  return [...MODEL_TIERS].sort((a, b) => Math.abs(MODEL_TIERS.indexOf(a) - i) - Math.abs(MODEL_TIERS.indexOf(b) - i))
+}
+
+/** What tier resolution needs from one connection. */
+export interface TierContext {
+  connection: ConnectionId
+  /** The connection's tier mapping (AppSettings.connections[connection].tierModels). */
+  tierModels: Partial<Record<ModelTier, ModelRef>>
+  /** The connection's catalog, when known; entries of other connections are ignored. Default: its builtin list. */
+  catalog?: readonly ProviderModel[]
+}
+
+/**
+ * The model a tier gets on a connection: its tierModels entry, else the catalog's suggestion for the tier (recommended
+ * first, then catalog order; the builtin list when no catalog is given), trying the nearest tiers in turn. undefined
+ * when nothing at all maps. `tier` is the tier actually used.
+ */
+export function modelForTier(tier: ModelTier, ctx: TierContext): { model: ModelRef; tier: ModelTier } | undefined {
+  const catalog = (ctx.catalog ?? builtinModels(ctx.connection)).filter((m) => m.connection === ctx.connection)
+  const suggested = defaultTierModels(catalog)
+  for (const t of nearestTiers(tier)) {
+    const model = ctx.tierModels[t]?.trim() || suggested[t]
+    if (model) return { model, tier: t }
+  }
+  return undefined
+}
+
+/** The tier a model setting names: a tier name, or a legacy Claude alias (fable, opus, sonnet, haiku). */
+export function settingTier(value: string | undefined): ModelTier | undefined {
+  const v = value?.trim().toLowerCase() ?? ''
+  if (isModelTier(v)) return v
+  return Object.hasOwn(CLAUDE_ALIAS_TIERS, v) ? CLAUDE_ALIAS_TIERS[v] : undefined
+}
+
+/**
+ * Resolve a ModelSetting (AppSettings.defaultRootModel and friends) on a connection. A tier name, or a legacy Claude
+ * alias standing for its tier, maps through modelForTier (the nearest mapped tier when its own is unmapped; on the
+ * anthropic connection an alias that maps nowhere stays as it is). 'inherit' stays. A concrete id is returned as it is,
+ * with its catalog tier (or tierForModel). undefined only for an empty value or a tier nothing maps.
+ */
+export function resolveModelSetting(value: string | undefined, ctx: TierContext): { model: ModelRef; tier?: ModelTier } | undefined {
+  const v = value?.trim() ?? ''
+  if (!v) return undefined
+  if (v === 'inherit') return { model: 'inherit' }
+  const tier = settingTier(v)
+  if (tier) {
+    const hit = modelForTier(tier, ctx)
+    if (hit) return hit
+    return isModelTier(v.toLowerCase()) ? undefined : { model: v, tier }
+  }
+  const entry = (ctx.catalog ?? []).find((m) => m.connection === ctx.connection && m.id === v)
+  const known = entry?.tier ?? tierForModel(v)
+  return { model: v, ...(known ? { tier: known } : {}) }
+}
+
+/** Whether a project steers deep- and top-tier spawns to the everyday tier near the plan limit (legacy field honoured). */
+export function preferEverydayNearLimit(project: Pick<Project, 'preferEverydayNearLimit' | 'preferSonnetNearLimit'> | null | undefined): boolean {
+  return (project?.preferEverydayNearLimit ?? project?.preferSonnetNearLimit) === true
 }
 
 const CLAUDE_ALIAS_TIERS: Record<string, ModelTier> = { fable: 'top', opus: 'deep', sonnet: 'everyday', haiku: 'fast' }
@@ -273,17 +346,19 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultMaxBudgetUsd: undefined,
   defaultKeepRuns: DEFAULT_KEEP_RUNS,
   defaultIsolateWriters: true,
-  defaultRootModel: 'opus',
-  defaultReportModel: 'sonnet',
-  setupModel: 'opus',
-  mcpAssistModel: 'opus',
+  defaultRootModel: 'deep',
+  defaultReportModel: 'everyday',
+  setupModel: 'deep',
+  mcpAssistModel: 'deep',
   providerAuth: { kind: 'subscription' },
   connections: defaultConnections(),
   defaultConnection: 'anthropic',
   notifications: true,
   appearance: DEFAULT_APPEARANCE,
   opusGuardThreshold: 80,
+  defaultPreferEverydayNearLimit: false,
   defaultPreferSonnetNearLimit: false,
+  communityPrices: true,
   defaultAutoContinue: true,
   defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES
 }
@@ -333,9 +408,12 @@ const FULL: ToolName[] = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']
 
 /**
  * A sensible starting org for a coding project: one orchestrator with three
- * purpose-built reports. The AI drafter can replace or revise it.
+ * purpose-built reports. The AI drafter can replace or revise it. Each role is defined by its tier; the model is that
+ * tier's model on the given connection (modelForTier), 'inherit' when the connection maps no tier at all. Default: the
+ * anthropic connection's builtin tier mapping.
  */
-export function defaultRoles(): Role[] {
+export function defaultRoles(ctx: TierContext = { connection: 'anthropic', tierModels: {} }): Role[] {
+  const modelOf = (tier: ModelTier): { model: ModelRef; tier?: ModelTier } => modelForTier(tier, ctx) ?? { model: 'inherit' }
   const orchestrator: Role = {
     id: newId('role'),
     slug: 'orchestrator',
@@ -351,8 +429,7 @@ export function defaultRoles(): Role[] {
     prompt: `You are the lead engineer and orchestrator for this project.
 Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
     tools: FULL,
-    model: 'opus',
-    tier: 'deep',
+    ...modelOf('deep'),
     canSpawn: true,
     spawnable: [],
     reportsTo: null,
@@ -372,8 +449,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     ],
     prompt: `You are a senior software engineer. Implement exactly the task you are given. Read the surrounding code first, follow existing conventions, and run the relevant build or tests before you report. Report what you changed, file by file, and anything you could not verify.`,
     tools: FULL,
-    model: 'sonnet',
-    tier: 'everyday',
+    ...modelOf('everyday'),
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -393,8 +469,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     ],
     prompt: `You are a meticulous code reviewer. You may read anything but must not modify files. Review the described change for correctness bugs, security problems, and missed edge cases. Report findings ranked by severity with file and line references, and say explicitly when you find nothing.`,
     tools: READ_ONLY,
-    model: 'sonnet',
-    tier: 'everyday',
+    ...modelOf('everyday'),
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -414,8 +489,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     ],
     prompt: `You are a research specialist. Find and summarize the information requested, citing file paths or URLs. Be concise and concrete. Do not modify files.`,
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
-    model: 'haiku',
-    tier: 'fast',
+    ...modelOf('fast'),
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -428,11 +502,16 @@ Plan before acting. Delegate implementation, review and testing to your speciali
 
 export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }, settings?: AppSettings): Project {
   const now = new Date().toISOString()
-  let roles = defaultRoles()
   if (settings) {
-    roles = roles.map((r) => {
-      const model = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
-      return { ...r, model, tier: tierForModel(model) }
+    // New projects start on anthropic; ConnectionService.prepareNewProject then moves them to the default connection
+    // (a 'switched' remap re-resolves every tiered role there).
+    const ctx: TierContext = { connection: 'anthropic', tierModels: settings.connections.anthropic.tierModels }
+    const roles = defaultRoles(ctx).map((r) => {
+      const setting = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
+      const resolved = resolveModelSetting(setting, ctx)
+      if (!resolved) return r
+      const { tier: _tier, ...rest } = r
+      return { ...rest, model: resolved.model, ...(resolved.tier ? { tier: resolved.tier } : {}) }
     })
     const auth = settings.providerAuth.kind === 'apiKey' ? { kind: 'apiKey' as const, envVar: settings.providerAuth.envVar } : { kind: 'subscription' as const }
     return {
@@ -447,7 +526,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
       maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
-      preferSonnetNearLimit: settings.defaultPreferSonnetNearLimit,
+      preferEverydayNearLimit: settings.defaultPreferEverydayNearLimit,
       autoContinue: settings.defaultAutoContinue,
       maxAutoContinues: settings.defaultMaxAutoContinues,
       roles,
