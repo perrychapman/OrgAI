@@ -1,7 +1,8 @@
 import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
+import { Plus } from 'lucide-react'
 import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, PermissionMode, ThemeMode } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { CLAUDE_MODEL_OPTIONS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
@@ -11,15 +12,17 @@ import { CopyButton } from '../components/ui/CopyButton'
 import { Input } from '../components/ui/Input'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { Select } from '../components/ui/Select'
-import { SettingRow } from '../components/ui/SettingRow'
+import { Icon } from '../components/ui/Icon'
+import { SettingRow, settingDescId } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
 import type { SettingsNavItem } from '../components/settings/SettingsNav'
+import { ClampedNumber } from '../components/settings/ClampedNumber'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
 import { SETTINGS_COPY } from '../lib/settingsCopy'
-import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, takeAppSettingsSection } from '../lib/settingsTarget'
+import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 
@@ -83,6 +86,10 @@ export default function AppSettingsView(): ReactElement {
   const [error, setError] = useState<string | null>(null)
   const [hexDraft, setHexDraft] = useState<string | null>(null)
   const [customRequested, setCustomRequested] = useState(false)
+  const focusHex = useRef(false)
+  const [highlightUsage, setHighlightUsage] = useState(false)
+  // Set by a deep link; the first render that has the page loaded moves focus to the pane heading.
+  const pendingFocus = useRef<{ usage: boolean } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
@@ -92,12 +99,38 @@ export default function AppSettingsView(): ReactElement {
   useEffect(() => {
     const target = takeAppSettingsSection()
     const next = target ? appPaneForSection(target) : undefined
-    if (next) setPane(next)
+    if (next) {
+      setPane(next)
+      pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage }
+    }
   }, [])
   // "Open in library" lands on the MCP library pane; the section there then scrolls to the entry.
   useEffect(() => {
     if (mcpFocus?.kind === 'library') setPane(APP_SETTINGS_PANES.mcpLibrary)
   }, [mcpFocus])
+  const ready = info !== null
+  useEffect(() => {
+    const pf = pendingFocus.current
+    if (!pf || !ready) return
+    pendingFocus.current = null
+    focusPaneHeading({ preventScroll: pf.usage })
+    if (pf.usage) {
+      document.getElementById(APP_SETTINGS_SECTIONS.usage)?.scrollIntoView({ block: 'center' })
+      setHighlightUsage(true)
+    }
+  }, [ready, pane])
+  // The usage row's highlight is brief; the attribute is cleared so it never lingers or replays.
+  useEffect(() => {
+    if (!highlightUsage) return
+    const t = setTimeout(() => setHighlightUsage(false), 2200)
+    return () => clearTimeout(t)
+  }, [highlightUsage])
+  // The Custom swatch revealed the hex field: move focus into it.
+  useEffect(() => {
+    if (!focusHex.current) return
+    focusHex.current = false
+    document.getElementById('accent-hex')?.focus()
+  })
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   useEffect(() => {
     void loadAppInfo()
@@ -174,7 +207,14 @@ export default function AppSettingsView(): ReactElement {
   }
 
   // The hex field stays hidden unless asked for or the current accent is not a preset.
-  const customOpen = customRequested || !ACCENT_SWATCHES.some((sw) => sw.hex === appearance.accent)
+  const isPreset = ACCENT_SWATCHES.some((sw) => sw.hex === appearance.accent)
+  const customOpen = customRequested || !isPreset
+  const openCustom = (): void => {
+    const el = document.getElementById('accent-hex')
+    if (el) el.focus()
+    else focusHex.current = true
+    setCustomRequested(true)
+  }
   const hexValue = hexDraft ?? appearance.accent
   const hexOk = normalizeHex(hexValue) !== null
   /** Apply the typed color on Enter or blur, not on every keystroke. */
@@ -185,6 +225,7 @@ export default function AppSettingsView(): ReactElement {
   }
   const setAccent = (hex: string): void => {
     setHexDraft(null)
+    setCustomRequested(false)
     patchAppearance({ accent: hex })
   }
 
@@ -237,14 +278,29 @@ export default function AppSettingsView(): ReactElement {
                             onClick={() => setAccent(s.hex)}
                           />
                         ))}
+                        <button
+                          type="button"
+                          className="accent-swatch custom"
+                          aria-label="Custom colour"
+                          title="Custom colour"
+                          aria-pressed={!isPreset}
+                          aria-expanded={customOpen}
+                          aria-controls="accent-hex"
+                          onClick={openCustom}
+                        >
+                          <Icon icon={Plus} size="sm" />
+                        </button>
                       </div>
                     }
                     hint={
                       customOpen ? (
                         <span className="accent-custom">
+                          <label htmlFor="accent-hex" className="accent-custom-label">
+                            Hex
+                          </label>
                           <Input
                             id="accent-hex"
-                            aria-labelledby="accent-title"
+                            aria-label="Custom accent hex"
                             mono
                             value={hexValue}
                             invalid={!hexOk}
@@ -263,11 +319,7 @@ export default function AppSettingsView(): ReactElement {
                             </span>
                           )}
                         </span>
-                      ) : (
-                        <button type="button" className="link-btn" onClick={() => setCustomRequested(true)}>
-                          Custom…
-                        </button>
-                      )
+                      ) : undefined
                     }
                   />
                   <SettingRow
@@ -319,133 +371,131 @@ export default function AppSettingsView(): ReactElement {
             </SettingsSection>
           </>
         )}
-        {pane === 'connections' && (
-          <div id={APP_SETTINGS_SECTIONS.connections}>
-            <ConnectionsPanel />
-          </div>
-        )}
+        {pane === 'connections' && <ConnectionsPanel />}
         {pane === 'mcp-library' && <McpLibrarySection />}
         {pane === 'defaults' && (
-          <SettingsSection
-            id={APP_SETTINGS_SECTIONS.defaults}
-            title="Defaults for new projects"
-            description="Applied when a project is created. Existing projects keep their own settings."
-          >
-            <SettingsCard>
-              <SettingRow
-                title="Orchestrator model"
-                width="select"
-                control={<Select label="Orchestrator model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
-                hint={modelHint(info.defaultRootModel)}
-              />
-              <SettingRow
-                title="Report model"
-                width="select"
-                control={<Select label="Report model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
-                hint={modelHint(info.defaultReportModel)}
-              />
-              <SettingRow
-                title={SETTINGS_COPY.permissionMode.label}
-                description={SETTINGS_COPY.permissionMode.description}
-                more={SETTINGS_COPY.permissionMode.more}
-                width="select"
-                control={
-                  <Select
-                    label={SETTINGS_COPY.permissionMode.label}
-                    value={info.defaultPermissionMode}
-                    options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: PERMISSION_SHORT[o.value] }))}
-                    onChange={(v) => patch({ defaultPermissionMode: v as PermissionMode })}
-                  />
-                }
-                hint={PERMISSION_MODE_OPTIONS.find((o) => o.value === info.defaultPermissionMode)?.label.replace(/^[^:]*: /, '')}
-              />
-              <SettingRow
-                title={SETTINGS_COPY.costCap.label}
-                description={SETTINGS_COPY.costCap.description}
-                more={SETTINGS_COPY.costCap.more}
-                width="number"
-                control={
-                  <Input
-                    aria-label={SETTINGS_COPY.costCap.label}
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    value={info.defaultMaxBudgetUsd ?? ''}
-                    placeholder="No cap"
-                    onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
-                  />
-                }
-              />
-              <SettingRow
-                title={SETTINGS_COPY.keepRuns.label}
-                description={SETTINGS_COPY.keepRuns.description}
-                more={SETTINGS_COPY.keepRuns.more}
-                width="number"
-                control={
-                  <Input
-                    aria-label={SETTINGS_COPY.keepRuns.label}
-                    type="number"
-                    min={1}
-                    max={5000}
-                    value={info.defaultKeepRuns}
-                    onChange={(v) => patch({ defaultKeepRuns: Math.max(1, Number(v) || DEFAULT_KEEP_RUNS) })}
-                  />
-                }
-              />
-              <SettingRow
-                title={SETTINGS_COPY.isolateWriters.label}
-                description={SETTINGS_COPY.isolateWriters.description}
-                more={SETTINGS_COPY.isolateWriters.more}
-                control={<Switch checked={info.defaultIsolateWriters} label={SETTINGS_COPY.isolateWriters.label} onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })} />}
-              />
-              <SettingRow
-                title={SETTINGS_COPY.autoContinue.label}
-                description={SETTINGS_COPY.autoContinue.description}
-                more={SETTINGS_COPY.autoContinue.more}
-                control={<Switch checked={info.defaultAutoContinue} label={SETTINGS_COPY.autoContinue.label} onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })} />}
-              />
-              <SettingRow
-                title={SETTINGS_COPY.maxAutoContinues.label}
-                description={SETTINGS_COPY.maxAutoContinues.description}
-                width="number"
-                control={
-                  <Input
-                    aria-label={SETTINGS_COPY.maxAutoContinues.label}
-                    type="number"
-                    min={0}
-                    max={MAX_AUTO_CONTINUES_LIMIT}
-                    value={info.defaultMaxAutoContinues}
-                    onChange={(v) => {
-                      const n = Number(v)
-                      patch({ defaultMaxAutoContinues: Number.isFinite(n) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(n))) : DEFAULT_MAX_AUTO_CONTINUES })
-                    }}
-                  />
-                }
-              />
-              <SettingRow
-                title={SETTINGS_COPY.preferSonnet.label}
-                description={SETTINGS_COPY.preferSonnet.description}
-                more={SETTINGS_COPY.preferSonnet.more}
-                control={
-                  <Switch
-                    checked={info.defaultPreferSonnetNearLimit}
-                    label={SETTINGS_COPY.preferSonnet.label}
-                    onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
-                  />
-                }
-              />
-            </SettingsCard>
-            <div id={APP_SETTINGS_SECTIONS.usage}>
-              <SettingsGroup title="Usage">
-                <SettingsCard>
+          <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="For new projects. Existing ones keep their own.">
+            <SettingsGroup title="Models">
+              <SettingsCard>
+                <SettingRow
+                  title="Orchestrator model"
+                  width="select"
+                  control={<Select label="Orchestrator model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
+                />
+                <SettingRow
+                  title="Report model"
+                  width="select"
+                  control={<Select label="Report model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
+                />
+              </SettingsCard>
+            </SettingsGroup>
+            <SettingsGroup title="Safety">
+              <SettingsCard>
+                <SettingRow
+                  id="default-mode-row"
+                  title={SETTINGS_COPY.permissionMode.label}
+                  description={PERMISSION_MODE_OPTIONS.find((o) => o.value === info.defaultPermissionMode)?.label.replace(/^[^:]*: /, '')}
+                  width="select"
+                  control={
+                    <Select
+                      label={SETTINGS_COPY.permissionMode.label}
+                      describedBy={settingDescId('default-mode-row')}
+                      value={info.defaultPermissionMode}
+                      options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: PERMISSION_SHORT[o.value] }))}
+                      onChange={(v) => patch({ defaultPermissionMode: v as PermissionMode })}
+                    />
+                  }
+                />
+                <SettingRow
+                  id="default-cost-row"
+                  title={SETTINGS_COPY.costCap.label}
+                  description={SETTINGS_COPY.costCap.description}
+                  width="number"
+                  control={
+                    <Input
+                      aria-label={SETTINGS_COPY.costCap.label}
+                      aria-describedby={settingDescId('default-cost-row')}
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={info.defaultMaxBudgetUsd ?? ''}
+                      placeholder="No cap"
+                      onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
+                    />
+                  }
+                />
+                <SettingRow
+                  title={SETTINGS_COPY.keepRuns.label}
+                  width="number"
+                  control={<ClampedNumber label={SETTINGS_COPY.keepRuns.label} min={1} max={5000} value={info.defaultKeepRuns} onCommit={(defaultKeepRuns) => patch({ defaultKeepRuns })} />}
+                />
+              </SettingsCard>
+            </SettingsGroup>
+            <SettingsGroup title="Behaviour">
+              <SettingsCard>
+                <SettingRow
+                  id="default-auto-row"
+                  title={SETTINGS_COPY.autoContinue.label}
+                  description={SETTINGS_COPY.autoContinue.description}
+                  control={
+                    <Switch
+                      checked={info.defaultAutoContinue}
+                      label={SETTINGS_COPY.autoContinue.label}
+                      describedBy={settingDescId('default-auto-row')}
+                      onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })}
+                    />
+                  }
+                />
+                <SettingRow
+                  title={SETTINGS_COPY.maxAutoContinues.label}
+                  width="number"
+                  control={
+                    <ClampedNumber
+                      label={SETTINGS_COPY.maxAutoContinues.label}
+                      min={0}
+                      max={MAX_AUTO_CONTINUES_LIMIT}
+                      value={info.defaultMaxAutoContinues}
+                      onCommit={(defaultMaxAutoContinues) => patch({ defaultMaxAutoContinues })}
+                    />
+                  }
+                />
+                <SettingRow
+                  id="default-iso-row"
+                  title={SETTINGS_COPY.isolateWriters.label}
+                  description={SETTINGS_COPY.isolateWriters.description}
+                  control={
+                    <Switch
+                      checked={info.defaultIsolateWriters}
+                      label={SETTINGS_COPY.isolateWriters.label}
+                      describedBy={settingDescId('default-iso-row')}
+                      onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })}
+                    />
+                  }
+                />
+                <SettingRow
+                  id="default-sonnet-row"
+                  title={SETTINGS_COPY.preferSonnet.label}
+                  description={SETTINGS_COPY.preferSonnet.description}
+                  control={
+                    <Switch
+                      checked={info.defaultPreferSonnetNearLimit}
+                      label={SETTINGS_COPY.preferSonnet.label}
+                      describedBy={settingDescId('default-sonnet-row')}
+                      onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
+                    />
+                  }
+                />
+                <div id={APP_SETTINGS_SECTIONS.usage} className="settings-highlightable" data-highlight={highlightUsage || undefined}>
                   <SettingRow
+                    id="default-opus-row"
                     title={SETTINGS_COPY.opusThreshold.label}
                     description={SETTINGS_COPY.opusThreshold.description}
-                    more={SETTINGS_COPY.opusThreshold.more}
                     width="number"
                     control={
                       <Input
+                        id="default-opus-threshold"
                         aria-label={`${SETTINGS_COPY.opusThreshold.label} (%)`}
+                        aria-describedby={settingDescId('default-opus-row')}
                         type="number"
                         min={1}
                         max={100}
@@ -457,9 +507,9 @@ export default function AppSettingsView(): ReactElement {
                       />
                     }
                   />
-                </SettingsCard>
-              </SettingsGroup>
-            </div>
+                </div>
+              </SettingsCard>
+            </SettingsGroup>
           </SettingsSection>
         )}
         {pane === 'about' && appInfo && (

@@ -496,9 +496,13 @@
 /* Accent "Custom" hex field (App settings > Appearance) */
 .accent-custom {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--space-1);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-2);
+}
+.accent-custom-label {
+  color: var(--text-secondary);
 }
 .accent-custom .input {
   width: 96px;

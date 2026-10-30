@@ -48,21 +48,12 @@ export function appPaneForSection(id: string): AppSettingsPane | undefined {
   return APP_SECTION_PANE[id]
 }
 
-const PROJECT_SECTION_PANE: Record<string, ProjectSettingsPane> = {
-  'settings-section-general': 'general',
-  'settings-section-permissions': 'agents',
-  'settings-section-rules': 'agents',
-  'settings-section-behaviour': 'agents',
-  'settings-section-limits': 'limits',
-  'settings-section-connection': 'connection',
-  'settings-section-mcp': 'tools',
-  'settings-section-plugins': 'tools',
-  'settings-section-maintenance': 'maintenance'
-}
-
-/** The project Settings pane that contains a section id; undefined when unknown. */
-export function projectPaneForSection(id: string): ProjectSettingsPane | undefined {
-  return PROJECT_SECTION_PANE[id]
+/**
+ * Move focus to the active pane's heading (`SettingsPage` renders it with tabIndex -1) after a deep link switched
+ * panes, so a keyboard user continues from the new pane instead of from the page top.
+ */
+export function focusPaneHeading(opts?: { preventScroll?: boolean }): void {
+  document.querySelector<HTMLElement>('.settings-pane-title')?.focus({ preventScroll: opts?.preventScroll ?? false })
 }
 
 /** Ask the App settings page to open on the pane holding a section the next time it mounts (e.g. "App settings > Connections"). */

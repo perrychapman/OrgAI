@@ -175,11 +175,9 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       )}
 
       <SettingsCard>
-        <SettingRow
-          title="Roles on this connection"
-          description={everyday ? `Everyday tier: ${everyday}` : undefined}
-          control={<span className="tabular">{rolesOn}</span>}
-        />
+        <p className="settings-card-note">
+          {rolesOn} {rolesOn === 1 ? 'role uses' : 'roles use'} this connection{everyday ? ` · Everyday tier: ${everyday}` : ''}
+        </p>
       </SettingsCard>
 
       {target === 'litellm' && (

@@ -134,14 +134,34 @@
   justify-content: space-between;
   gap: var(--space-3);
 }
-.settings-section-title,
-.settings-col .section-head h2,
-.settings-col .section-head h3 {
-  margin: 0;
+/* Pane heading (h2, the tab name) is the first tier; section titles (h3) sit one tier below it. */
+.settings-pane-title {
+  margin: 0 0 calc(var(--space-4) * -1);
   font-size: var(--text-title-lg);
   line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
+  border-radius: var(--radius-xs);
+}
+.settings-pane-title:focus {
+  outline: none;
+}
+.settings-pane-title:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+.settings-section-title,
+.settings-col .section-head h2,
+.settings-col .section-head h3 {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+/* A section whose only content in the header was its (hidden) repeated title has no header at all. */
+.settings-section-head:has(> .settings-section-heading > .settings-section-title.sr-only):not(:has(.settings-section-lead, .settings-section-actions)) {
+  display: none;
 }
 .settings-section-lead,
 .section-head p {
@@ -237,7 +257,16 @@
   width: 120px;
 }
 .setting-row.w-select .setting-row-control {
-  width: 240px;
+  width: 100%;
+}
+/* Select rows keep label left and control right down to a narrow column: the text gives way before the row wraps. */
+.setting-row.w-select > .setting-row-text,
+.setting-row.w-number > .setting-row-text {
+  flex-basis: 140px;
+}
+.setting-row.w-select > .setting-row-side {
+  flex: 0 1 240px;
+  min-width: 170px;
 }
 .setting-row.w-number .setting-row-control > .input,
 .setting-row.w-number .setting-row-control > .select,
@@ -259,8 +288,9 @@
 .setting-row.w-full .setting-row-hint {
   text-align: left;
 }
-@container settings-col (max-width: 479px) {
-  .setting-row-side {
+@container settings-col (max-width: 419px) {
+  .setting-row-side,
+  .setting-row.w-select > .setting-row-side {
     flex: 1 1 100%;
     align-items: flex-start;
   }
@@ -274,22 +304,26 @@
 }
 
 /* "Learn more": native disclosure under the description. */
-.setting-row-more {
+.setting-row-more,
+.rule-examples {
   margin-top: var(--space-1);
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
-.setting-row-more > summary {
+.setting-row-more > summary,
+.rule-examples > summary {
   display: inline-block;
   cursor: pointer;
   color: var(--accent-text);
   border-radius: var(--radius-xs);
 }
-.setting-row-more > summary:focus-visible {
+.setting-row-more > summary:focus-visible,
+.rule-examples > summary:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.setting-row-more-body {
+.setting-row-more-body,
+.rule-examples-body {
   margin-top: var(--space-1);
   color: var(--text-secondary);
 }
@@ -331,6 +365,18 @@
 .accent-swatch[aria-pressed='true'] {
   border-color: var(--text-primary);
   box-shadow: 0 0 0 2px var(--surface-0);
+}
+.accent-swatch.custom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.accent-swatch.custom[aria-pressed='true'] {
+  border-style: solid;
+  color: var(--text-primary);
 }
 .accent-swatch:focus-visible {
   outline: 2px solid var(--focus-ring);
@@ -399,4 +445,16 @@
 .danger-zone-text {
   margin: 0;
   color: var(--text-primary);
+}
+
+/* Brief highlight of a row a deep link scrolled to (the attribute is cleared after a moment; no motion, so nothing to reduce). */
+.settings-highlightable[data-highlight] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent-soft-border);
+  border-radius: var(--radius-md);
+}
+.rule-examples-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }

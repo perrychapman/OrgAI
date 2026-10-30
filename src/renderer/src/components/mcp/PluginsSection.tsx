@@ -69,56 +69,56 @@ export default function PluginsSection({ project }: { project: Project }): React
       }
     >
       <div className="mcp-body">
-      {!claude && <Banner tone="info">{NOT_CLAUDE}</Banner>}
-      {error && (
-        <Banner tone="danger" title="Could not add the plugin">
-          {error}
-        </Banner>
-      )}
-      {plugins.length === 0 ? (
-        <div className="card-block mcp-empty">
-          <Icon icon={Puzzle} size="lg" />
-          <strong>No plugins</strong>
-          <p className="muted">Add a folder to give agents its skills.</p>
-        </div>
-      ) : (
-        <ul className="card-block mcp-list" aria-label="Plugins">
-          {plugins.map((p) => (
-            <li key={p.id} className={`mcp-row${p.enabled && claude ? '' : ' off'}`} data-testid="plugin-row" data-plugin={p.name} aria-disabled={!claude || undefined}>
-              <div className="mcp-row-main plugin">
-                <Switch checked={p.enabled} label={`Enable ${p.name}`} disabled={!claude} title={claude ? undefined : NOT_CLAUDE} onChange={(v) => void toggle(p, v)} />
-                <div className="mcp-row-id">
-                  <span className="mcp-name">{p.name}</span>
-                  <span className="mono mcp-target" title={p.path}>
-                    {p.path}
-                  </span>
+        {!claude && <Banner tone="info">{NOT_CLAUDE}</Banner>}
+        {error && (
+          <Banner tone="danger" title="Could not add the plugin">
+            {error}
+          </Banner>
+        )}
+        {plugins.length === 0 ? (
+          <div className="card-block mcp-empty">
+            <Icon icon={Puzzle} size="lg" />
+            <strong>No plugins</strong>
+            <p className="muted">Add a folder to give agents its skills.</p>
+          </div>
+        ) : (
+          <ul className="card-block mcp-list" aria-label="Plugins">
+            {plugins.map((p) => (
+              <li key={p.id} className={`mcp-row${p.enabled && claude ? '' : ' off'}`} data-testid="plugin-row" data-plugin={p.name} aria-disabled={!claude || undefined}>
+                <div className="mcp-row-main plugin">
+                  <Switch checked={p.enabled} label={`Enable ${p.name}`} disabled={!claude} title={claude ? undefined : NOT_CLAUDE} onChange={(v) => void toggle(p, v)} />
+                  <div className="mcp-row-id">
+                    <span className="mcp-name">{p.name}</span>
+                    <span className="mono mcp-target" title={p.path}>
+                      {p.path}
+                    </span>
+                  </div>
+                  <div className="mcp-row-actions">
+                    <IconButton icon={Trash2} label={`Remove ${p.name}`} size="sm" onClick={() => setRemoving(p)} />
+                  </div>
                 </div>
-                <div className="mcp-row-actions">
-                  <IconButton icon={Trash2} label={`Remove ${p.name}`} size="sm" onClick={() => setRemoving(p)} />
-                </div>
-              </div>
-              {rowError[p.id] && (
-                <p className="invalid-text mcp-row-error" role="alert">
-                  {rowError[p.id]}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <ConfirmDialog
-        open={removing !== null}
-        title={`Remove ${removing?.name ?? 'plugin'}?`}
-        body={<p>The plugin folder stays on disk. Agents stop loading it.</p>}
-        confirmLabel="Remove plugin"
-        danger
-        onCancel={() => setRemoving(null)}
-        onConfirm={() => {
-          const p = removing
-          setRemoving(null)
-          if (p) void remove(p)
-        }}
-      />
+                {rowError[p.id] && (
+                  <p className="invalid-text mcp-row-error" role="alert">
+                    {rowError[p.id]}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        <ConfirmDialog
+          open={removing !== null}
+          title={`Remove ${removing?.name ?? 'plugin'}?`}
+          body={<p>The plugin folder stays on disk. Agents stop loading it.</p>}
+          confirmLabel="Remove plugin"
+          danger
+          onCancel={() => setRemoving(null)}
+          onConfirm={() => {
+            const p = removing
+            setRemoving(null)
+            if (p) void remove(p)
+          }}
+        />
       </div>
     </SettingsSection>
   )
