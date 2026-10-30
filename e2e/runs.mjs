@@ -98,6 +98,8 @@ try {
     // Tray placement at 1024x640: under the stage (never beside it), the stage keeps 55 percent of the frame, cards go compact.
     const prevSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
+    await page.waitForFunction(() => Math.abs(window.innerWidth - 1024) <= 1, null, { timeout: 10_000 }).catch(() => {})
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')))
     await sleep(700)
     const tm = await page.evaluate(() => {
       const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
@@ -228,8 +230,13 @@ try {
   await page.locator('.decision-chip').nth(2).waitFor({ timeout: 20_000 }).catch(() => {})
   await sleep(1500)
   const prev3 = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
+  // Resize events are delivered with the rendering lifecycle, so an unfocused or occluded CI window can lag behind its
+  // CSS layout. Wait for the new width, then dispatch a resize ourselves so JS-driven layout (the sidebar rail)
+  // agrees with the CSS.
   const setSize = async (w, h) => {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')))
     await sleep(800)
   }
   const panelToggle = () => page.locator('.side-panel').getByRole('button').first()
@@ -284,7 +291,8 @@ try {
     }))
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify(await geo()))
     const g0 = await geo()
-    const hb = await handle.boundingBox()
+    await handle.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+    const hb = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
     check(!!hb, 'the run view side panel has a resize handle with a live run')
     if (hb) {
       const y = hb.y + hb.height / 2
@@ -295,7 +303,7 @@ try {
       await sleep(200)
       const g1 = await geo()
       check(g1.panel - g0.panel >= 30, 'dragging the run side panel handle left widens the panel', `${g0.panel} -> ${g1.panel}`)
-      const hb2 = await handle.boundingBox()
+      const hb2 = (await handle.boundingBox({ timeout: 3000 }).catch(() => null)) ?? hb
       await page.mouse.move(hb2.x + hb2.width / 2, y)
       await page.mouse.down()
       await page.mouse.move(hb2.x + hb2.width / 2 - 900, y, { steps: 8 })
