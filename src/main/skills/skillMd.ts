@@ -13,9 +13,13 @@ export function normalizeDescription(description: string): string {
 /** Why a body is refused when it uses Claude Code's dynamic shell injection, or null. */
 export const SHELL_INJECTION_REASON = 'Runs shell commands when loaded (!`...`), which OrgAI does not allow.'
 
-/** Claude Code runs !`command` inline and ```! fenced blocks when a skill loads. Linear: no nested quantifiers. */
+/**
+ * Claude Code runs !`command` inline and ```! fenced blocks when a skill loads. Refused broadly: "!`", "```!" or
+ * "~~~!" anywhere in the text (multi-line, mid-line and longer fences included), not only the exact forms the CLI
+ * is known to run today. The one check for every skill path (store, scan, suggestions, claudeSkills). Linear.
+ */
 export function shellInjectionProblem(body: string): string | null {
-  if (/!`[^`\n]*`/.test(body) || /^[ \t]*(?:`{3,}|~{3,})!/m.test(body)) return SHELL_INJECTION_REASON
+  if (body.includes('!`') || body.includes('```!') || body.includes('~~~!')) return SHELL_INJECTION_REASON
   return null
 }
 

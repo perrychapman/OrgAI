@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SKILL_BODY_MAX_CHARS } from '@shared/types'
-import { composeSkillMd, draftProblem, parseSkillMd, skillFromMd, validDraft } from './skillMd'
+import { SHELL_INJECTION_REASON, composeSkillMd, draftProblem, parseSkillMd, shellInjectionProblem, skillFromMd, validDraft } from './skillMd'
 
 describe('composeSkillMd / parseSkillMd', () => {
   it('round trips a description with quotes, colons and unicode', () => {
@@ -82,5 +82,13 @@ describe('safe SKILL.md', () => {
       expect(draftProblem({ name: 'x', description: 'Use for x.', body })).toMatch(/Runs shell commands/)
     }
     expect(draftProblem({ name: 'x', description: 'Use for x.', body: 'Say hi! `code` is fine' })).toBeNull()
+  })
+  it('refuses multi-line, mid-line and longer-fence shell injection', () => {
+    const forms = ['Run !`git\nstatus` now', 'Run !`', 'text ```! ls', 'x ~~~!\nls\n~~~', '````!\nls\n````', '~~~~!', 'a!`b']
+    for (const body of forms) {
+      expect(shellInjectionProblem(body), body).toBe(SHELL_INJECTION_REASON)
+      expect(draftProblem({ name: 'x', description: 'Use for x.', body })).toMatch(/Runs shell commands/)
+    }
+    for (const body of ['Wow! `code`', '```ts\n!x\n```', '~~~\n!\n~~~']) expect(shellInjectionProblem(body), body).toBeNull()
   })
 })
