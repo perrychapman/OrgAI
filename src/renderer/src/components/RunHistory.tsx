@@ -138,8 +138,8 @@ function HistoryRow({
       <td className="col-prompt">
         {r.title ? (
           <>
-            <div className="run-name" title={r.title}>
-              <span className="run-index">{runTag(index)}</span> {r.title}
+            <div className="run-name" title={runName(r)}>
+              <span className="run-index">{runTag(index)}</span> {runName(r)}
             </div>
             <div className="prompt muted" title={promptLine(r.prompt)}>
               {promptLine(r.prompt)}

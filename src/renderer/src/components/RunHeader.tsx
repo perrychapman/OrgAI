@@ -109,7 +109,7 @@ export default function RunHeader({ run, project, agentCount, collapseFinished, 
             className="run-header-prompt-toggle"
             aria-expanded={promptShown}
             aria-controls={promptId}
-            title={promptShown ? 'Hide the full prompt' : 'Show the full prompt'}
+            title={promptShown ? 'Hide prompt' : 'Show prompt'}
             onClick={() => setShownFor(promptShown ? null : summary.id)}
           >
             <Icon icon={promptShown ? ChevronDown : ChevronRight} size="xs" />
