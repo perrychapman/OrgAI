@@ -1,5 +1,6 @@
 {
   "name": "orgai",
+  "productName": "OrgAI",
   "version": "0.1.0",
   "description": "A provider-agnostic harness that runs a project's org chart of AI agents and visualizes the work live.",
   "main": "./out/main/index.js",
