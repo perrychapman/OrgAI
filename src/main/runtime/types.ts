@@ -263,6 +263,24 @@ export interface CompletionInput {
   prompt: string
   cwd?: string
   model?: string
+  /**
+   * What the completion is for. 'draft' (default): the org chart drafter, answered with JSON. 'title': a run title
+   * (src/main/ai/runTitle.ts), answered with one short line. Adapters only use it where they must (the mock answers
+   * deterministically per kind).
+   */
+  kind?: 'draft' | 'title'
+  /**
+   * How to reach the models, as RunManager resolved it for a run (env, API key, base URL, Codex home). Claude merges
+   * `connection.env` over the process environment (and drops ANTHROPIC_API_KEY on a non-anthropic connection, like
+   * a run does); Codex uses it instead of its completionConnection. Missing = the adapter's default route.
+   * Holds secrets: never log, emit or persist it.
+   */
+  connection?: RunConnection
+  /**
+   * Aborted when the caller gives up (the run-title timeout). Adapters stop the completion's query or process and
+   * reject. Missing = the completion runs to its own end.
+   */
+  signal?: AbortSignal
 }
 
 /**

@@ -816,6 +816,8 @@ export type RunHarnessToolName = (typeof RUN_HARNESS_TOOLS)[keyof typeof RUN_HAR
 export const RUN_MESSAGE_MAX_CHARS = 4000
 /** RunPeer.prompt and run.message peerPrompt: one line, at most this many characters. */
 export const RUN_PEER_PROMPT_CHARS = 120
+/** RunSummary.title and the run.title event: at most this many characters (cut on a word boundary with …). */
+export const RUN_TITLE_MAX_CHARS = 32
 
 // ---------- App settings (global) ----------
 
@@ -1242,6 +1244,13 @@ export interface RunSummary {
    * It stays continuable.
    */
   endedWithApp?: true
+  /**
+   * Work runs: a short AI summary of the run's first message (one line, at most RUN_TITLE_MAX_CHARS characters),
+   * written by the connection's fast model shortly after the run starts (a run.title event announces it). Absent
+   * until generated, and for good when generation failed or was skipped (setup-like runs, image-only prompts).
+   * Advisory only: the UI falls back to `prompt`.
+   */
+  title?: string
 }
 
 /**
@@ -1427,6 +1436,11 @@ export type RunEvent =
       pauseReason?: string
       autoResume?: boolean
     }
+  /**
+   * The run's AI-generated title (RunSummary.title) arrived. Sent at most once per run, work runs only, possibly
+   * after the run ended. The summary in runs:list / runs:get carries it from then on.
+   */
+  | { type: 'run.title'; runId: string; title: string }
   | { type: 'agent.upsert'; runId: string; agent: AgentInstance }
   | { type: 'agent.remove'; runId: string; agentId: string }
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }

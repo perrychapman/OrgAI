@@ -40,6 +40,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only
   in `lib/theme.ts` (`initTheme` in `main.tsx`) as `data-theme`, `data-canvas-*`, `data-reduce-motion` and `--canvas-*`
   on `<html>`. Views never read appearance settings themselves.
+- Run titles: `RunSummary.title` (at most `RUN_TITLE_MAX_CHARS` = 32) and the `run.title` event come from
+  `src/main/ai/runTitle.ts`. RunManager fires it for work runs with prompt text and never awaits it. It is a one-shot
+  `complete({ kind: 'title', model: fast tier, connection })` with a 20 s timeout, cleaned by `cleanTitle`. A failure
+  leaves the title unset, and the UI falls back to the prompt. Continuations get the earlier run's title as context.
+  Auto-resume (`RESUME_TEXT`) keeps the earlier title. The mock answers `kind: 'title'` with the first 4 words of the
+  `<message>` text, and `[mock:title-fail]` makes it throw. The live fast-model call is unverified (no smoke script).
 - Projects: `projects:checkPath` (`ProjectPathCheck`) never rejects. `projects:create` validates the path, and
   `ProjectCreateInput.mock` is accepted only with `ORGAI_MOCK=1`.
 
