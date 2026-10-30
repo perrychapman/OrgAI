@@ -41,9 +41,11 @@ const squash = (s: string): string => s.replace(/\s+/g, ' ').trim()
 const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g
 /**
  * Zero-width and bidi mark/override/isolate characters (incl. the Arabic letter mark and Mongolian vowel separator),
- * variation selectors and tag characters: removed outright.
+ * soft hyphen, Hangul/Khmer/braille fillers, deprecated format controls, interlinear annotation marks, variation
+ * selectors and tag characters: removed outright.
  */
-const INVISIBLE = /[\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFE00-\uFE0F\uFEFF\u{E0000}-\u{E007F}]/gu
+const INVISIBLE =
+  /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u2800\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB\u{E0000}-\u{E007F}]/gu
 /** Scripts written without spaces between words: an over-long title is cut mid-text instead of rejected. */
 const NO_SPACE_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}]/u
 

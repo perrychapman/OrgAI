@@ -1941,6 +1941,31 @@ describe('run titles', () => {
     expect(signal?.aborted).toBe(true)
   })
 
+  it('removing a project aborts a title still pending for one of its ended runs', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let signal: AbortSignal | undefined
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: (i) => {
+        signal = i.signal
+        return new Promise<string>(() => {})
+      },
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    await m.removeProject('some-other-project')
+    expect(signal?.aborted).toBe(false)
+    await m.removeProject(p.id)
+    expect(signal?.aborted).toBe(true)
+  })
+
   it('a title that lands after the project was deleted writes nothing', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     let release!: (t: string) => void

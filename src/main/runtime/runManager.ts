@@ -332,8 +332,8 @@ export interface StartInput {
 export class RunManager {
   private runs = new Map<string, ActiveRun>()
   /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
-  /** Every pending title query, live run or not; stopAll aborts them all. */
-  private titleAborts = new Set<AbortController>()
+  /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
+  private titleAborts = new Map<AbortController, string>()
   private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
@@ -348,10 +348,11 @@ export class RunManager {
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
   async removeProject(projectId: string): Promise<void> {
+    // Pending titles of the project's runs, live or already ended, are cancelled.
+    for (const [a, pid] of this.titleAborts) if (pid === projectId) a.abort()
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
         r.userStopped = true
-        r.titleAbort?.abort()
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         this.runs.delete(r.summary.id)
@@ -700,7 +701,7 @@ export class RunManager {
     const scrub = (m: string): string => secrets.reduce((acc, s) => acc.split(s).join('[redacted]'), m).replace(/\s+/g, ' ').slice(0, 200)
     const abort = new AbortController()
     active.titleAbort = abort
-    this.titleAborts.add(abort)
+    this.titleAborts.set(abort, active.summary.projectId)
     try {
       const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title || abort.signal.aborted) return
@@ -1257,7 +1258,7 @@ export class RunManager {
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
     for (const r of this.runs.values()) r.userStopped = true
     // Titles still pending for runs that already ended are cancelled too (app quit).
-    for (const a of this.titleAborts) a.abort()
+    for (const a of this.titleAborts.keys()) a.abort()
     await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
     for (const r of this.runs.values()) this.flush(r)
   }

@@ -50,6 +50,7 @@ describe('cleanTitle', () => {
     expect(cleanTitle('Fix؜ login᠎ bug', PROMPT)).toBe('Fix login bug')
     expect(cleanTitle('Add️ dark︀ mode', PROMPT)).toBe('Add dark mode')
     expect(cleanTitle('Add dark mode\u{E0001}\u{E0069}\u{E0067}\u{E007F}', PROMPT)).toBe('Add dark mode')
+    expect(cleanTitle('ㅤFix­ login⁪ bug⠀￹', PROMPT)).toBe('Fix login bug')
   })
 
   it('cuts an over-long title in a script without spaces, on code points', () => {
