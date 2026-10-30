@@ -8,7 +8,7 @@ import { needsYou, statusLabel } from '../lib/runChains'
 import { Icon } from './ui/Icon'
 
 function dotClass(status: RunStatus): string {
-  if (status === 'running' || status === 'starting') return 'live'
+  if (status === 'running' || status === 'starting') return 'is-running'
   if (status === 'idle' || status === 'stopping') return 'idle'
   if (status === 'error') return 'danger'
   if (status === 'paused') return 'paused'

@@ -10,6 +10,7 @@ import { ConfirmDialog, Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
+import { Textarea } from '../ui/Textarea'
 import McpServerForm from './McpServerForm'
 import RegistryDialog from './RegistryDialog'
 import { RoleAccess } from './RoleAccess'
@@ -210,14 +211,13 @@ function AssistDialog({ open, onClose }: { open: boolean; onClose: () => void })
       )}
       <div className="field mcp-field">
         <label htmlFor="mcp-assist-text">What should agents be able to do?</label>
-        <textarea
+        <Textarea
           id="mcp-assist-text"
-          className="textarea"
           data-autofocus
           rows={4}
           value={text}
           placeholder="Search the web, read GitHub issues..."
-          onChange={(e) => setText(e.target.value)}
+          onChange={setText}
         />
       </div>
     </Dialog>
@@ -245,7 +245,7 @@ function McpRow({
   const [focusResult, setFocusResult] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const run = useRef(0)
-  const moreBtn = useRef<HTMLButtonElement>(null)
+  const pointer = useRef(false)
   const target = launchTarget(spec)
   const secrets = secretStatuses(info)
   const needsSecret = info.missingSecrets.length > 0
@@ -285,7 +285,6 @@ function McpRow({
     run.current++
     setTesting(false)
   }
-  const failed = result && !result.ok ? result.error?.split('\n').filter(Boolean)[0] : undefined
 
   const sourceBadge =
     spec.source === 'registry' ? (
@@ -308,7 +307,7 @@ function McpRow({
       onKeyDown={(e) => {
         if (e.key === 'Escape' && menu) {
           setMenu(false)
-          moreBtn.current?.focus()
+          e.currentTarget.querySelector<HTMLElement>('.mcp-row-actions [aria-expanded]')?.focus()
         } else if (e.key === 'Escape' && testing) cancelTest()
       }}
     >
@@ -347,33 +346,26 @@ function McpRow({
               Cancel
             </Button>
           ) : (
-            <button
-              type="button"
-              className="btn sm"
-              data-testid="mcp-test"
-              aria-label="Test"
-              title={`Test ${spec.name}`}
-              onClick={(e) => test(e.detail === 0)}
-            >
-              Test
-            </button>
+            <span onPointerDown={() => (pointer.current = true)} className="mcp-test-btn">
+              <Button
+                size="sm"
+                testId="mcp-test"
+                title={`Test ${spec.name}`}
+                onClick={() => {
+                  test(!pointer.current)
+                  pointer.current = false
+                }}
+              >
+                Test
+              </Button>
+            </span>
           )}
           {testing && (
             <span className="muted" role="status">
               Testing
             </span>
           )}
-          <button
-            ref={moreBtn}
-            type="button"
-            className="icon-btn size-sm"
-            aria-label={`More actions for ${spec.name}`}
-            title="More actions"
-            aria-expanded={menu}
-            onClick={() => setMenu((m) => !m)}
-          >
-            <Icon icon={Ellipsis} size="sm" />
-          </button>
+          <IconButton icon={Ellipsis} label={`More actions for ${spec.name}`} size="sm" expanded={menu} onClick={() => setMenu((m) => !m)} />
         </div>
       </div>
       {menu && (
@@ -416,7 +408,6 @@ function McpRow({
           {error}
         </p>
       )}
-      {failed && !error && <p className="invalid-text mcp-row-error">Failed to start: {failed}</p>}
       {result && <TestResultPanel serverName={spec.name} result={result} focusOnMount={focusResult} />}
       <ConfirmDialog
         open={confirm}

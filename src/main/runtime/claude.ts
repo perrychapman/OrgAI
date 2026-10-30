@@ -27,7 +27,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
@@ -35,7 +35,7 @@ import { PartialText } from './claudePartial'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
-import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
@@ -447,7 +447,7 @@ class ClaudeSession implements RuntimeSession {
         return !!root && root.state !== 'idle' && root.state !== 'done'
       },
       nudge: (text, activity, summary) => {
-        this.notifyOrchestrator(text, activity, summary)
+        this.notifyOrchestrator(text, activity, { summary })
         this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
@@ -486,6 +486,12 @@ class ClaudeSession implements RuntimeSession {
     } catch (e) {
       this.log('warn', `Interrupt failed: ${(e as Error).message}`)
     }
+  }
+
+  /** A message from another run's orchestrator. RunManager writes the transcript block, so none is written here. */
+  async receive(message: PeerMessage): Promise<void> {
+    if (this.abort.signal.aborted) return
+    this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
   async stop(): Promise<void> {
@@ -570,9 +576,11 @@ class ClaudeSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…', summary?: string): void {
+  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string } = {}): void {
     this.input.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
-    this.transcript(ROOT_ID, { kind: 'system', text: summary ?? text, ...(summary ? { detail: text } : {}) }, { source: 'harness' })
+    if (opts.transcript !== false) {
+      this.transcript(ROOT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
+    }
     const root = this.agents.get(ROOT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
   }

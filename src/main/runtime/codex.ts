@@ -1,6 +1,6 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, type CodexAppServerOptions } from './codexAppServer'
 import {
   METHOD,
@@ -41,7 +41,7 @@ import {
 } from './codexAgents'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolHooks } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
-import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
@@ -237,6 +237,12 @@ class CodexSession implements RuntimeSession {
     await this.interruptAll()
   }
 
+  /** A message from another run's orchestrator. RunManager writes the transcript block, so none is written here. */
+  async receive(message: PeerMessage): Promise<void> {
+    if (this.ending) return
+    this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
   async stop(): Promise<void> {
     if (this.ending) return
     this.ending = true
@@ -329,14 +335,17 @@ class CodexSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…'): void {
-    this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean } = {}): void {
+    if (opts.transcript !== false) this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
     const rootAgent = this.agents.get(ROOT_AGENT_ID)
     if (rootAgent && (rootAgent.state === 'idle' || rootAgent.state === 'done')) {
       this.setState(ROOT_AGENT_ID, 'thinking', activity)
       this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
     }
-    if (!this.rootThreadId) return
+    if (!this.rootThreadId) {
+      this.log('warn', 'A harness message for the orchestrator was dropped: the root thread does not exist yet.')
+      return
+    }
     void this.sendToThread(this.rootThreadId, text).catch((e) => this.log('warn', `Could not deliver a harness message to the orchestrator: ${(e as Error).message}`))
   }
 

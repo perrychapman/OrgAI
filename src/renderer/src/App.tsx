@@ -4,6 +4,11 @@ import { activeRun, selectedProject, useAppStore } from './store/useAppStore'
 import NotificationsToggle from './components/NotificationsToggle'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
+import OrgChartView from './views/OrgChartView'
+import { LayoutGrid, Settings as SettingsIcon } from 'lucide-react'
+import { Icon } from './components/ui/Icon'
+import { SaveIndicator } from './components/layout/SaveIndicator'
+import brandIcon from './assets/brand/icon.png'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import LogsLink from './components/LogsLink'
@@ -33,15 +38,15 @@ export default function App(): ReactElement {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">O</span>
+          <img className="brand-mark" src={brandIcon} alt="" width={26} height={26} />
           OrgAI
         </div>
         <div className="sidebar-section">
           <button className={`nav-item ${view === 'projects' ? 'active' : ''}`} onClick={() => setView('projects')}>
-            <span>▦</span> Projects
+            <Icon icon={LayoutGrid} size="sm" /> Projects
           </button>
           <button className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} onClick={() => setView('appSettings')}>
-            <span>⚙</span> Settings
+            <Icon icon={SettingsIcon} size="sm" /> Settings
           </button>
         </div>
         <div className="sidebar-label">Workspaces</div>
@@ -49,7 +54,7 @@ export default function App(): ReactElement {
           {projects.length === 0 && <div style={{ padding: '6px 10px', color: 'var(--text-faint)' }}>No projects yet</div>}
           {projects.map((p) => {
             const counts = projectCounts(allRuns, p.id)
-            const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'live' : ''
+            const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'is-running' : ''
             const summary = [counts.open > 0 ? `${counts.open} open` : '', counts.needsYou > 0 ? `${counts.needsYou} needs you` : ''].filter(Boolean).join(' · ')
             return (
               <button
@@ -107,21 +112,36 @@ export default function App(): ReactElement {
               </span>
               <div className="spacer" />
               {run && (
-                <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'live' : run.summary.status === 'error' ? 'danger' : run.summary.status === 'paused' ? 'warn' : 'ok'}`}>
+                <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'is-running' : run.summary.status === 'error' ? 'danger' : run.summary.status === 'paused' ? 'warn' : 'ok'}`}>
                   <span className="dot" /> {run.summary.kind === 'setup' ? 'setup · ' : ''}
                   {run.summary.endedWithApp && run.summary.status === 'finished' ? 'ended when OrgAI closed' : run.summary.status}
                 </span>
               )}
-              <div className="tabs">
-                <button className={view === 'run' ? 'active' : ''} onClick={() => setView('run')}>
+              <SaveIndicator />
+              <div className="tabs" role="group" aria-label="Project sections">
+                <button className={view === 'run' ? 'active' : ''} aria-current={view === 'run' ? 'page' : undefined} onClick={() => setView('run')}>
                   Live
                 </button>
-                <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
-                  Org chart &amp; settings
+                <button className={view === 'org' ? 'active' : ''} aria-current={view === 'org' ? 'page' : undefined} onClick={() => setView('org')}>
+                  Org chart
+                </button>
+                <button
+                  className={view === 'settings' ? 'active' : ''}
+                  aria-current={view === 'settings' ? 'page' : undefined}
+                  aria-label="Project settings"
+                  onClick={() => setView('settings')}
+                >
+                  Settings
                 </button>
               </div>
             </div>
-            {view === 'settings' ? <SettingsView project={project} /> : <LiveRunView project={project} />}
+            {view === 'settings' ? (
+              <SettingsView project={project} />
+            ) : view === 'org' ? (
+              <OrgChartView project={project} />
+            ) : (
+              <LiveRunView project={project} />
+            )}
           </>
         )}
         </ErrorBoundary>

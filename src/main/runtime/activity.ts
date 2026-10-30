@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance, AgentState, RunStatus } from '@shared/types'
-import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
+import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
 /**
@@ -26,7 +26,9 @@ export const HARNESS_TOOL_ACTIVITY: Record<string, string> = {
   [MCP_HARNESS_TOOLS.searchRegistry]: 'Searching the MCP registry…',
   [MCP_HARNESS_TOOLS.requestInstall]: 'Asking you to add an MCP server…',
   [MCP_HARNESS_TOOLS.proposeServers]: 'Proposing MCP servers…',
-  [PERMISSION_HARNESS_TOOLS.request]: 'Asking you for a permission rule…'
+  [PERMISSION_HARNESS_TOOLS.request]: 'Asking you for a permission rule…',
+  [RUN_HARNESS_TOOLS.list]: 'Checking other runs…',
+  [RUN_HARNESS_TOOLS.message]: 'Messaging another run…'
 }
 
 /** Short, single-line, length-capped text from untrusted tool input. */

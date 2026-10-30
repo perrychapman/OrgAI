@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionEvent, RunEvent } from '@shared/types'
-import { IPC } from '@shared/types'
+import type { AppSettings, ConnectionEvent, FocusRunTarget, RunEvent } from '@shared/types'
+import { IPC, runWindowHash } from '@shared/types'
+import { scopedWindow } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
 import { UsageMonitor } from './usageMonitor'
@@ -76,10 +77,40 @@ function broadcastConnection(event: ConnectionEvent): void {
   }
 }
 
-function createWindow(): void {
+/**
+ * Every open window and its run scope: undefined = a main (unscoped) window, a target = a window opened with
+ * window:openRun for that run. Windows share every broadcast; the scope only decides what the renderer shows
+ * (it reads location.hash, `#/run/<projectId>/<runId>`, see runWindowHash) and which window a notification focuses.
+ */
+const windowScopes = new Map<BrowserWindow, FocusRunTarget | undefined>()
+
+/** Live windows with their scopes, for the window pickers in windowScope.ts. */
+function liveWindowScopes(): [BrowserWindow, FocusRunTarget | undefined][] {
+  return [...windowScopes].filter(([w]) => !w.isDestroyed())
+}
+
+function showWindow(win: BrowserWindow): void {
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+/** window:openRun (already validated): focus the window scoped to this run, or open one. */
+function openRunWindow(target: FocusRunTarget): void {
+  const existing = scopedWindow(liveWindowScopes(), target.runId)
+  if (existing) showWindow(existing)
+  else createWindow(target)
+}
+
+/**
+ * The one window factory. Every window, main or run-scoped, gets the same preload and security settings
+ * (contextIsolation, the external-link handler). A run-scoped window loads the renderer with the hash
+ * `#/run/<projectId>/<runId>`.
+ */
+function createWindow(scope?: FocusRunTarget): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: scope ? 1280 : 1440,
+    height: scope ? 840 : 920,
     minWidth: 1024,
     minHeight: 680,
     show: false,
@@ -95,6 +126,8 @@ function createWindow(): void {
     }
   })
 
+  windowScopes.set(win, scope)
+  win.on('closed', () => windowScopes.delete(win))
   win.on('ready-to-show', () => win.show())
   notifier?.attach(win)
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -102,11 +135,14 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  const hash = scope ? runWindowHash(scope) : ''
   if (process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(process.env.ELECTRON_RENDERER_URL)
+    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}${hash}`)
   } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+    // loadFile takes the fragment without its leading '#'.
+    void win.loadFile(join(__dirname, '../renderer/index.html'), hash ? { hash: hash.slice(1) } : undefined)
   }
+  return win
 }
 
 app.whenReady().then(() => {
@@ -170,7 +206,8 @@ app.whenReady().then(() => {
     settings,
     connections,
     mcp,
-    adapterIds: Object.keys(adapters)
+    adapterIds: Object.keys(adapters),
+    openRunWindow
   })
   connections.init()
   app.on('before-quit', () => connections.dispose())
@@ -182,6 +219,7 @@ app.whenReady().then(() => {
       return { projectId: summary.projectId, kind: summary.kind, autoContinue: project?.autoContinue !== false, maxAutoContinues: project?.maxAutoContinues }
     },
     projectName: (projectId) => projects.get(projectId)?.name,
+    windows: liveWindowScopes,
     // AppSettings.notifications is the single source of truth, read fresh at every decision.
     enabled: () => settings.get().notifications !== false
   })

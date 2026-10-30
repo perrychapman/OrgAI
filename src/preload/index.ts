@@ -75,7 +75,12 @@ const api: OrgAIApi = {
     continue: (input: ContinueRunInput) => ipcRenderer.invoke(IPC.runsContinue, input),
     decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
-    cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId)
+    cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
+    listLive: () => ipcRenderer.invoke(IPC.runsListLive)
+  },
+  window: {
+    // Only the two ids cross; main validates them against the stores before opening anything.
+    openRun: (target: FocusRunTarget) => ipcRenderer.invoke(IPC.windowOpenRun, { projectId: target?.projectId, runId: target?.runId })
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),

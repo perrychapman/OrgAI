@@ -82,10 +82,9 @@
   color: var(--danger-text);
 }
 .entry .tag {
-  font-size: var(--text-caption);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
   font-family: var(--font-sans);
   margin-bottom: 4px;
   display: flex;
