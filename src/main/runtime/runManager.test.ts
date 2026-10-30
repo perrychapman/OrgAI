@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
-import type { RuntimeAdapter, RuntimeContext } from './types'
-import { RESUME_TEXT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
-import { MockAdapter, type MockScript } from './mock'
+import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import { RESUME_TEXT, RUN_MESSAGE_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { MockAdapter, type MockScript, type MockSession } from './mock'
+import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
@@ -1042,6 +1043,185 @@ describe('RunManager session chains', () => {
     await waitFor(isType('run.status', (e) => e.runId === b.id && e.status === 'idle'))
     const next = await m.continueRun(p, a.id, 'more A')
     expect(next.resumedFrom).toBe(a.id)
+    await m.stopAll()
+  })
+})
+
+/** A MockAdapter that remembers each run's RuntimeContext and session. */
+class CapturingAdapter extends MockAdapter {
+  readonly ctxs = new Map<string, RuntimeContext>()
+  readonly bySession = new Map<string, MockSession>()
+  override async start(ctx: RuntimeContext): Promise<RuntimeSession> {
+    this.ctxs.set(ctx.run.id, ctx)
+    const session = await super.start(ctx)
+    this.bySession.set(ctx.run.id, session as MockSession)
+    return session
+  }
+}
+
+function multiManager(script: MockScript = {}) {
+  const setup = fakeSetup(makeProject())
+  const store = new RunStore(join(dir, 'data'))
+  const adapter = new CapturingAdapter({ script: { delayMs: 0, ...script } })
+  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100)
+  const tool = (runId: string, name: string, args?: unknown): Promise<string> => {
+    const t = harnessToolsFor(adapter.ctxs.get(runId)!).find((x) => x.name === name)!
+    return t.call(args)
+  }
+  return { m, store, adapter, tool }
+}
+
+describe('concurrent runs', () => {
+  const ask: MockScript = { work: [{ type: 'tool', name: 'Bash', input: { command: 'ls' }, ask: true }] }
+
+  it('runs three work runs at once across two projects with independent permission cards', async () => {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b') })
+    const { m } = multiManager(ask)
+    const a1 = await m.start({ project: pa, prompt: 'A one' })
+    const a2 = await m.start({ project: pa, prompt: 'A two' })
+    const b1 = await m.start({ project: pb, prompt: 'B one' })
+    const ids = [a1.id, a2.id, b1.id]
+    const cards = new Map<string, string>()
+    for (const id of ids) {
+      const req = await waitFor(isType('permission.request', (e) => e.runId === id))
+      cards.set(id, req.request.id)
+    }
+    expect(m.liveRuns().map((r) => r.id).sort()).toEqual([...ids].sort())
+    expect(m.liveRunCount()).toBe(3)
+    for (const id of ids) expect(events.filter(isType('transcript', (e) => e.runId === id && e.entry.block.kind === 'user'))).toHaveLength(1)
+
+    // Deciding one card leaves the others pending.
+    m.decide(a1.id, cards.get(a1.id)!, { behavior: 'allow' })
+    await waitFor(isType('permission.resolved', (e) => e.runId === a1.id))
+    expect(events.some((e) => e.type === 'permission.resolved' && e.runId !== a1.id)).toBe(false)
+    m.decide(b1.id, cards.get(b1.id)!, { behavior: 'deny', message: 'no' })
+    await waitFor(isType('permission.resolved', (e) => e.runId === b1.id))
+    expect(events.some((e) => e.type === 'permission.resolved' && e.runId === a2.id)).toBe(false)
+
+    // Stopping one run leaves the other two live.
+    await m.stop(a2.id)
+    await vi.waitFor(() => expect(m.summaryOf(a2.id)).toBeUndefined())
+    expect(m.liveRuns().map((r) => r.id).sort()).toEqual([a1.id, b1.id].sort())
+    await m.stopAll()
+  })
+
+  it('removes a run whose adapter fails to start from the live runs', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const failing = { start: async () => Promise.reject(new Error('no binary')) } as unknown as RuntimeAdapter
+    const m = new RunManager({ mock: failing }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'x' })
+    expect(m.liveRunCount()).toBe(0)
+    expect(m.liveRuns()).toEqual([])
+    expect(m.summary(run.id)).toMatchObject({ status: 'error', error: 'no binary' })
+  })
+
+  it('keeps summary.status current through send() and stop()', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'x' })
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    expect(m.liveRuns()[0].status).toBe('idle')
+    const sent = m.send(run.id, 'more')
+    expect(m.liveRuns()[0].status).toBe('running')
+    await sent
+    const stopped = m.stop(run.id)
+    expect(m.summaryOf(run.id)?.status).toBe('stopping')
+    await stopped
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+  })
+})
+
+describe('cross-run messaging', () => {
+  const idleScript: MockScript = { work: [{ type: 'text', text: 'working' }], setup: [{ type: 'text', text: 'asking' }] }
+  const idle = (id: string) => waitFor(isType('run.status', (e) => e.runId === id && e.status === 'idle'))
+
+  async function two() {
+    const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b') })
+    const h = multiManager(idleScript)
+    const a = await h.m.start({ project: pa, prompt: 'Build\nthe API' })
+    const b = await h.m.start({ project: pb, prompt: 'Build the UI' })
+    await idle(a.id)
+    await idle(b.id)
+    return { ...h, pa, pb, a, b }
+  }
+
+  it('delivers a message, emits run.message on both runs and records transcript blocks', async () => {
+    const { m, adapter, tool, a, b } = await two()
+    const out = await tool(a.id, 'message_run', { runId: b.id, message: '  I am editing src/api.ts  ' })
+    expect(out).toMatch(/^DELIVERED/)
+    const sentMsg = events.find(isType('run.message', (e) => e.runId === a.id))!
+    expect(sentMsg).toMatchObject({ direction: 'out', peerRunId: b.id, peerProjectId: 'pb', peerProjectName: 'Beta', peerPrompt: 'Build the UI', text: 'I am editing src/api.ts' })
+    const gotMsg = events.find(isType('run.message', (e) => e.runId === b.id))!
+    expect(gotMsg).toMatchObject({ direction: 'in', peerRunId: a.id, peerProjectId: 'pa', peerProjectName: 'Alpha', peerPrompt: 'Build the API' })
+
+    const session = adapter.bySession.get(b.id)!
+    expect(session.peerMessages).toEqual([{ fromRunId: a.id, fromProjectName: 'Alpha', fromPrompt: 'Build the API', text: 'I am editing src/api.ts' }])
+    expect(session.harnessMessages).toHaveLength(1)
+
+    const sysTexts = (id: string): string[] => m.get(id)!.transcript.filter((t) => t.block.kind === 'system').map((t) => (t.block as { text: string }).text)
+    expect(sysTexts(a.id)).toContain(`Sent to run ${b.id} (Beta: Build the UI): I am editing src/api.ts`)
+    expect(sysTexts(b.id)).toContain(`Message from run ${a.id} (Alpha: Build the API): I am editing src/api.ts`)
+
+    await m.stopAll()
+    await vi.waitFor(() => expect(m.liveRunCount()).toBe(0))
+    expect(sysTexts(a.id).some((t) => t.startsWith('Sent to run'))).toBe(true)
+    expect(sysTexts(b.id).some((t) => t.startsWith('Message from run'))).toBe(true)
+  })
+
+  it('answers not-found, not-live and refused', async () => {
+    const { m, tool, a, b, pa } = await two()
+    expect(await tool(a.id, 'message_run', { runId: 'run-nope', message: 'hi' })).toMatch(/^NOT FOUND/)
+    expect(await tool(a.id, 'message_run', { runId: a.id, message: 'hi' })).toMatch(/^REFUSED/)
+    const s = await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
+    expect(await tool(a.id, 'message_run', { runId: s.id, message: 'hi' })).toMatch(/^REFUSED/)
+    await m.stop(b.id)
+    await vi.waitFor(() => expect(m.summaryOf(b.id)).toBeUndefined())
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^NOT LIVE/)
+    await m.stopAll()
+  })
+
+  it('refuses a setup-like sender and an empty message', async () => {
+    const { m, adapter, a, b, pa } = await two()
+    const s = await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
+    const ctxS = adapter.ctxs.get(s.id)!
+    expect(await ctxS.messageRun!(a.id, 'hi')).toBe('refused')
+    expect(ctxS.listRuns!()).toEqual([])
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, '   ')).toBe('refused')
+    await m.stopAll()
+  })
+
+  it('list_runs excludes the caller and setup runs and includes other projects', async () => {
+    const { m, tool, a, b, pa } = await two()
+    await m.start({ project: pa, prompt: 'setup', kind: 'setup' })
+    const out = await tool(a.id, 'list_runs')
+    const rows = out.split('\n').filter((l) => l.startsWith(b.id))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toContain(b.id)
+    expect(rows[0]).toContain('Beta')
+    expect(rows[0]).toContain('Build the UI')
+    expect(out).not.toContain(a.id)
+    await m.stopAll()
+  })
+
+  it('stops a sender at the per-run message limit', async () => {
+    const { m, tool, a, b } = await two()
+    for (let i = 0; i < RUN_MESSAGE_LIMIT; i++) expect(await tool(a.id, 'message_run', { runId: b.id, message: `m${i}` })).toMatch(/^DELIVERED/)
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'one more' })).toMatch(/^REFUSED/)
+    // The other direction has its own budget.
+    expect(await tool(b.id, 'message_run', { runId: a.id, message: 'reply' })).toMatch(/^DELIVERED/)
+    await m.stopAll()
+  })
+
+  it('warns on both runs and answers not-live when receive throws', async () => {
+    const { m, adapter, tool, a, b } = await two()
+    adapter.bySession.get(b.id)!.receive = async () => {
+      throw new Error('boom')
+    }
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'hi' })).toMatch(/^NOT LIVE/)
+    expect(events.filter(isType('log', (e) => e.level === 'warn')).map((e) => e.runId).sort()).toEqual([a.id, b.id].sort())
     await m.stopAll()
   })
 })

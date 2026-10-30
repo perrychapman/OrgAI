@@ -23,15 +23,16 @@ import type {
   Role,
   RunEvent,
   RunKind,
+  RunPeer,
   RunPlan,
   RunRecord,
   RunSummary,
   UserQuestion
 } from '@shared/types'
 import { adapterForProject, mcpSecretNames, modelFamily, newId } from '@shared/defaults'
-import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
-import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageResult, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -101,6 +102,25 @@ interface ActiveRun {
   userStopped?: boolean
   /** The provider session this run resumes; known before the adapter reports summary.sessionId at init. */
   resumeSessionId?: string
+  /** The run's own emit (records, persists, logs and broadcasts); send() and stop() route through it so summary.status stays current. */
+  emit: (e: RunEvent) => void
+  /** Display name of the project, for cross-run messages. */
+  projectName: string
+  /** Name of the root role (its orchestrator), for list_runs. */
+  rootRole: string
+  /** Cross-run messages this run has sent (see RUN_MESSAGE_LIMIT). */
+  messagesSent: number
+}
+
+/**
+ * The most message_run messages one run may send. A hard stop so two orchestrators cannot ping-pong forever
+ * (each message wakes the other, whose reply wakes the first).
+ */
+export const RUN_MESSAGE_LIMIT = 40
+
+/** A session that is open and not being stopped: the run can still receive a message. */
+function isOpenStatus(status: RunSummary['status']): boolean {
+  return status === 'starting' || status === 'running' || status === 'idle'
 }
 
 /** Statuses of a run whose session is open (or opening). */
@@ -139,10 +159,10 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
   return [...byId.values()].filter((r) => ids.has(r.id))
 }
 
-/** A prompt shortened for messages: one line, at most 60 characters. */
-function excerpt(prompt: string): string {
+/** A prompt shortened for messages: one line, at most `max` (default 60) characters. */
+function excerpt(prompt: string, max = 60): string {
   const line = prompt.replace(/\s+/g, ' ').trim()
-  return line.length > 60 ? `${line.slice(0, 60)}…` : line
+  return line.length > max ? `${line.slice(0, max)}…` : line
 }
 
 export interface RunManagerOptions {
@@ -285,6 +305,10 @@ export class RunManager {
       runRules: [],
       projectPath: project.path,
       runServers: new Map(),
+      emit: () => {},
+      projectName: project.name,
+      rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
+      messagesSent: 0,
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
     }
@@ -320,6 +344,7 @@ export class RunManager {
       this.broadcast(e)
     }
 
+    active.emit = emit
     emit({ type: 'run.status', runId: summary.id, status: 'starting' })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
@@ -376,6 +401,8 @@ export class RunManager {
         resumeSessionId,
         resumeBaseCostUsd,
         emit,
+        listRuns: () => this.listRunsFor(active),
+        messageRun: (targetId, text) => this.messageRun(active, targetId, text),
         ...(connection ? { connection } : {}),
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
@@ -465,6 +492,9 @@ export class RunManager {
     } catch (e) {
       emit({ type: 'run.status', runId: summary.id, status: 'error', error: (e as Error).message })
       this.flush(active)
+      // No session will ever finish this run; it must not count as live.
+      this.runs.delete(summary.id)
+      this.store.prune(this.keepRunsFor)
     }
     return summary
   }
@@ -515,6 +545,66 @@ export class RunManager {
       .filter((a) => LIVE_STATUSES.has(a.summary.status))
       .map((a) => ({ ...a.summary }))
       .sort((a, b) => a.startedAt - b.startedAt)
+  }
+
+  // ---------- cross-run messaging ----------
+
+  /** list_runs: every other live work run, across projects, oldest first. A setup-like caller sees none. */
+  private listRunsFor(self: ActiveRun): RunPeer[] {
+    if (isSetupLikeRun(self.summary.kind)) return []
+    return [...this.runs.values()]
+      .filter((a) => a !== self && a.summary.kind === 'work' && isOpenStatus(a.summary.status))
+      .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
+      .map((a) => ({
+        runId: a.summary.id,
+        projectId: a.summary.projectId,
+        projectName: a.projectName,
+        kind: a.summary.kind,
+        status: a.summary.status,
+        prompt: excerpt(a.summary.prompt, RUN_PEER_PROMPT_CHARS),
+        startedAt: a.summary.startedAt,
+        rootRole: a.rootRole,
+        live: true
+      }))
+  }
+
+  /** message_run: see RuntimeContext.messageRun. Both runs record the exchange through their own emit. */
+  private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageResult> {
+    const text = (typeof rawText === 'string' ? rawText : '').trim().slice(0, RUN_MESSAGE_MAX_CHARS)
+    if (!text || isSetupLikeRun(sender.summary.kind) || targetId === sender.summary.id) return 'refused'
+    const target = this.runs.get(targetId)
+    const stored = target ? undefined : this.store.get(targetId)
+    if (!target && !stored) return 'not-found'
+    if (isSetupLikeRun((target?.summary ?? stored!).kind)) return 'refused'
+    if (sender.messagesSent >= RUN_MESSAGE_LIMIT) return 'refused'
+    const session = target?.session
+    if (!target || !isOpenStatus(target.summary.status) || !session?.receive) return 'not-live'
+
+    sender.messagesSent++
+    const at = Date.now()
+    const from = sender.summary
+    const to = target.summary
+    const fromPrompt = excerpt(from.prompt, RUN_PEER_PROMPT_CHARS)
+    const toPrompt = excerpt(to.prompt, RUN_PEER_PROMPT_CHARS)
+    const block = (a: ActiveRun, text: string): void =>
+      a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, block: { kind: 'system', text } } })
+
+    sender.emit({ type: 'run.message', runId: from.id, direction: 'out', peerRunId: to.id, peerProjectId: to.projectId, peerProjectName: target.projectName, peerPrompt: toPrompt, text, at })
+    block(sender, `Sent to run ${to.id} (${target.projectName}: ${toPrompt}): ${text}`)
+    sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Messaged run ${to.id} (${target.projectName}).` })
+    // The recipient's block goes first so its transcript reads in order even if receive() wakes the root at once.
+    target.emit({ type: 'run.message', runId: to.id, direction: 'in', peerRunId: from.id, peerProjectId: from.projectId, peerProjectName: sender.projectName, peerPrompt: fromPrompt, text, at })
+    block(target, `Message from run ${from.id} (${sender.projectName}: ${fromPrompt}): ${text}`)
+    target.emit({ type: 'log', runId: to.id, level: 'info', message: `Received a message from run ${from.id} (${sender.projectName}).` })
+    try {
+      await session.receive({ fromRunId: from.id, fromProjectName: sender.projectName, fromPrompt, text })
+    } catch (e) {
+      const message = (e as Error).message
+      sender.emit({ type: 'log', runId: from.id, level: 'warn', message: `Run ${to.id} could not receive the message: ${message}` })
+      target.emit({ type: 'log', runId: to.id, level: 'warn', message: `Could not take the message from run ${from.id}: ${message}` })
+      return 'not-live'
+    }
+    return 'delivered'
   }
 
   summaryOf(runId: string): RunSummary | undefined {
@@ -769,7 +859,7 @@ export class RunManager {
     if (!active?.session) throw new Error('Run is not active')
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(text, images)) throw new Error('Nothing to send')
-    this.broadcast({ type: 'run.status', runId, status: 'running' })
+    active.emit({ type: 'run.status', runId, status: 'running' })
     await active.session.send(text, images.length ? images : undefined)
   }
 
@@ -781,7 +871,7 @@ export class RunManager {
     const active = this.runs.get(runId)
     if (!active?.session) return
     active.userStopped = true
-    this.broadcast({ type: 'run.status', runId, status: 'stopping' })
+    active.emit({ type: 'run.status', runId, status: 'stopping' })
     await active.session.stop()
   }
 

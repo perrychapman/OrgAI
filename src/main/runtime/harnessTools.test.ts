@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal } from '@shared/types'
+import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal, RunPeer } from '@shared/types'
+import type { RunMessageResult } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { PERMISSION_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, answerText, harnessToolsFor, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
@@ -178,7 +179,9 @@ describe('plan tools', () => {
       'list_mcp_servers',
       'search_mcp_registry',
       'request_mcp_install',
-      'request_permission_rules'
+      'request_permission_rules',
+      'list_runs',
+      'message_run'
     ])
     expect(names.filter((n) => !isBlockingHarnessTool(n))).toEqual([
       'set_plan',
@@ -187,7 +190,9 @@ describe('plan tools', () => {
       'mark_blocked',
       'integrate_worktrees',
       'list_mcp_servers',
-      'search_mcp_registry'
+      'search_mcp_registry',
+      'list_runs',
+      'message_run'
     ])
     expect(setupTools(fakeCtx()).map((t) => t.name)).not.toContain('set_plan')
   })
@@ -472,5 +477,59 @@ describe('request_permission_rules', () => {
     const none = fakeCtx()
     delete (none as Partial<typeof none>).requestPermissionRules
     expect(await tool(none).call({ rules: ['Bash(gh:*)'], reason: 'r' })).toMatch(/^DENIED: this run cannot grant permission rules\./)
+  })
+})
+
+describe('cross-run tools', () => {
+  const peer = (over: Partial<RunPeer> = {}): RunPeer => ({
+    runId: 'run-b',
+    projectId: 'p2',
+    projectName: 'Beta',
+    kind: 'work',
+    status: 'running',
+    prompt: 'Build the UI',
+    startedAt: Date.UTC(2026, 0, 2, 3, 4, 5),
+    rootRole: 'Lead',
+    live: true,
+    ...over
+  })
+
+  it('exist only in work runs, for the root, and return at once', () => {
+    for (const name of ['list_runs', 'message_run']) {
+      const t = byName(workTools(fakeCtx()), name)
+      expect(t.audience).toBe('root')
+      expect(isBlockingHarnessTool(name)).toBe(false)
+      expect(setupTools(fakeCtx()).map((x) => x.name)).not.toContain(name)
+      expect(harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) })).map((x) => x.name)).not.toContain(name)
+    }
+    expect(byName(workTools(fakeCtx()), 'message_run').description).toMatch(/information/)
+    expect(byName(workTools(fakeCtx()), 'message_run').description).toMatch(/asynchronously/)
+  })
+
+  it('list_runs prints a compact table with sanitized data', async () => {
+    const ctx = fakeCtx({ listRuns: () => [peer({ projectName: 'Be<ta>\nX', prompt: 'do <b>it</b>\tnow' })] })
+    const text = await byName(workTools(ctx), 'list_runs').call(undefined)
+    expect(text).toContain('runId | project | status | orchestrator | started | prompt')
+    expect(text).toContain('run-b | Be‹ta› X | running | Lead | 2026-01-02T03:04:05.000Z | do ‹b›it‹/b› now')
+    expect(text).toContain('<runs>')
+  })
+
+  it('list_runs says so when nothing is live or the context cannot list', async () => {
+    expect(await byName(workTools(fakeCtx({ listRuns: () => [] })), 'list_runs').call(undefined)).toBe('No other runs are live.')
+    expect(await byName(workTools(fakeCtx()), 'list_runs').call(undefined)).toBe('Listing other runs is not available in this run.')
+  })
+
+  it('message_run maps each result to one line', async () => {
+    const run = async (result: RunMessageResult): Promise<string> => {
+      const messageRun = vi.fn(async () => result)
+      const text = await byName(workTools(fakeCtx({ messageRun })), 'message_run').call({ runId: ' run-b ', message: 'hello' })
+      expect(messageRun).toHaveBeenCalledWith('run-b', 'hello')
+      return text
+    }
+    expect(await run('delivered')).toMatch(/^DELIVERED/)
+    expect(await run('not-live')).toMatch(/^NOT LIVE/)
+    expect(await run('not-found')).toMatch(/^NOT FOUND: .*list_runs/)
+    expect(await run('refused')).toMatch(/^REFUSED/)
+    expect(await byName(workTools(fakeCtx()), 'message_run').call({ runId: 'x', message: 'y' })).toMatch(/^NOT LIVE/)
   })
 })

@@ -47,6 +47,12 @@ describe('describeTool', () => {
     expect(harnessToolActivity('mark_blocked')).toBe('Marking the plan blocked…')
   })
 
+  it('labels the cross-run tools', () => {
+    expect(harnessToolActivity('list_runs')).toBe('Checking other runs…')
+    expect(harnessToolActivity('message_run')).toBe('Messaging another run…')
+    expect(describeTool('message_run', { runId: 'r' }, { harness: true })).toBe('Messaging another run…')
+  })
+
   it('labels the MCP harness tools, naming the server or query when given', () => {
     expect(harnessToolActivity('list_mcp_servers')).toBe('Checking the MCP servers…')
     expect(harnessToolActivity('search_mcp_registry')).toBe('Searching the MCP registry…')
