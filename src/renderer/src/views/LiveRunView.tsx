@@ -27,6 +27,7 @@ import QuestionCard from '../components/QuestionCard'
 import RunStrip, { useStripRuns } from '../components/RunStrip'
 import MergeReviewCard from '../components/MergeReviewCard'
 import { costLabel, formatUntil, planProgress, treeLayout } from '../lib/layout'
+import { ancestorsOf, hasLiveDescendant, normalizeParents } from '../lib/agentTree'
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
@@ -131,7 +132,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   }
 
   const agentsById = run?.agents
-  const agents = useMemo(() => (agentsById ? Object.values(agentsById) : []), [agentsById])
+  const agents = useMemo(() => (agentsById ? normalizeParents(Object.values(agentsById)) : []), [agentsById])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
       project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? '#646d84',
@@ -164,27 +165,19 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const { visibleAgents, groups } = useMemo(() => {
     if (!collapseFinished) return { visibleAgents: agents, groups: new Map<string, AgentInstance[]>() }
     const byId = new Map(agents.map((a) => [a.id, a]))
-    const hasLiveDescendant = (id: string): boolean =>
-      agents.some((c) => c.parentId === id && (!isSettled(c, now) || hasLiveDescendant(c.id)))
+    const settledNow = (c: AgentInstance): boolean => isSettled(c, now)
     const groups = new Map<string, AgentInstance[]>()
     const visibleAgents: AgentInstance[] = []
     for (const a of agents) {
       const parentVisible = !a.parentId || byId.has(a.parentId)
       const foldable =
-        a.parentId !== null && parentVisible && isSettled(a, now) && !hasLiveDescendant(a.id) && !expandedGroups[a.parentId as string]
+        a.parentId !== null && parentVisible && isSettled(a, now) && !hasLiveDescendant(agents, a.id, settledNow) && !expandedGroups[a.parentId as string]
       if (foldable) groups.set(a.parentId as string, [...(groups.get(a.parentId as string) ?? []), a])
       else visibleAgents.push(a)
     }
     // Hide the subtree under a folded report too; the list in the side panel still reaches them.
     const folded = new Set([...groups.values()].flat().map((a) => a.id))
-    const hiddenUnder = (a: AgentInstance): boolean => {
-      let p = a.parentId
-      while (p) {
-        if (folded.has(p)) return true
-        p = byId.get(p)?.parentId ?? null
-      }
-      return false
-    }
+    const hiddenUnder = (a: AgentInstance): boolean => ancestorsOf(byId, a.id).some((p) => folded.has(p))
     return { visibleAgents: visibleAgents.filter((a) => !hiddenUnder(a)), groups }
   }, [agents, collapseFinished, expandedGroups, now])
 

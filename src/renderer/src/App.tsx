@@ -7,6 +7,7 @@ import SettingsView from './views/SettingsView'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import LogsLink from './components/LogsLink'
+import ErrorBoundary from './components/ui/ErrorBoundary'
 import UsageMeter from './components/UsageMeter'
 
 export default function App(): ReactElement {
@@ -92,6 +93,7 @@ export default function App(): ReactElement {
       </aside>
 
       <main className="main">
+        <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ""}`} onReset={() => setView("projects")}>
         {view === 'appSettings' ? (
           <AppSettingsView />
         ) : view === 'projects' || !project ? (
@@ -122,6 +124,7 @@ export default function App(): ReactElement {
             {view === 'settings' ? <SettingsView project={project} /> : <LiveRunView project={project} />}
           </>
         )}
+        </ErrorBoundary>
       </main>
     </div>
   )
