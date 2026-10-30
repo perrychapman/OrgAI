@@ -136,6 +136,78 @@ try {
   check((await page.getByText('Carrying on without the docs server.').count()) >= 1, 'the run proceeds after the MCP request is denied')
   await endSession(page)
 
+  // AI run titles (mock adapter: the title is the first 4 words of the prompt, capitalised).
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
+  const TITLED_PROMPT = 'Please refactor the billing module and add tests'
+  const TITLE = 'Please refactor the billing'
+  await tabsBar().getByRole('button', { name: 'Live', exact: true }).click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage(TITLED_PROMPT)
+  await page.locator('.run-header').waitFor({ timeout: 15_000 })
+  const projNow = await findProject(page, NAME)
+  const summaryFor = async (needle) => (await page.evaluate((id) => window.orgai.runs.list(id), projNow.id)).find((r) => r.prompt.includes(needle))
+  let titled
+  for (let i = 0; i < 30 && !titled?.title; i++) {
+    titled = await summaryFor('billing module')
+    if (!titled?.title) await sleep(300)
+  }
+  check(titled?.title === TITLE, 'the mock run title is the first four words of the prompt, persisted on RunSummary', String(titled?.title))
+  const titledTab = page.locator('.run-tablist [role="tab"]', { hasText: TITLE })
+  await titledTab.first().waitFor({ timeout: 10_000 }).catch(() => {})
+  const tabText = ((await titledTab.first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(tabText.includes(TITLE) && !tabText.includes('module'), 'the run tab shows the 4-word title, not the prompt', tabText)
+  const tabTip = (await titledTab.first().getAttribute('title').catch(() => '')) ?? ''
+  check(tabTip.includes(TITLED_PROMPT), 'the run tab tooltip still carries the full prompt', tabTip)
+  const head = ((await page.locator('.run-header-prompt').first().innerText()) || '').replace(/\s+/g, ' ').trim()
+  check(head === TITLE, 'the run header heading shows the title', head)
+  const promptToggle = page.locator('.run-header .run-header-prompt-toggle')
+  check((await promptToggle.getAttribute('aria-expanded')) === 'false', 'the Show prompt toggle starts collapsed')
+  check(!(await page.locator('.run-header').innerText()).includes('add tests'), 'the full prompt is hidden until asked for')
+  await promptToggle.click()
+  await sleep(200)
+  check((await promptToggle.getAttribute('aria-expanded')) === 'true' && (await page.locator('.run-header').innerText()).includes(TITLED_PROMPT), 'Show prompt reveals the full prompt text')
+  await promptToggle.click()
+  check((await promptToggle.getAttribute('aria-expanded')) === 'false', 'Hide prompt collapses it again')
+  const sbToggle = page.locator('.sidebar button.nav-chevron').first()
+  if ((await sbToggle.getAttribute('aria-expanded')) !== 'true') await sbToggle.click()
+  await sleep(200)
+  const sbRow = (await page.locator('.sidebar .nav-runs .nav-run-title').allInnerTexts()).map((t) => t.trim())
+  check(sbRow.includes(TITLE), 'the sidebar row shows the title', sbRow.join(' | '))
+  await shot('run-title')
+
+  // A run window (new window, fresh renderer) loads the persisted title.
+  await page.evaluate((t) => window.orgai.window.openRun(t), { projectId: projNow.id, runId: titled.id })
+  let win3
+  for (let i = 0; i < 30 && !win3; i++) {
+    win3 = app.windows().find((w) => w !== page)
+    if (!win3) await sleep(500)
+  }
+  if (win3) {
+    await win3.waitForSelector('.run-header', { timeout: 20_000 }).catch(() => {})
+    await sleep(500)
+    const heading = ((await win3.locator('.run-header-prompt').first().innerText().catch(() => '')) || '').trim()
+    check(heading === TITLE, 'a run opened in a new window still shows the title', heading)
+    const wt = await win3.title()
+    check(wt.includes(TITLE), 'the run window document title carries the run title', wt)
+    await win3.close().catch(() => {})
+  } else check(false, 'a run window opened for the titled run')
+  await endSession(page)
+
+  // A failed title generation falls back to the prompt excerpt.
+  const FAIL_PROMPT = 'Do [mock:title-fail] something with a long enough prompt to be cut'
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage(FAIL_PROMPT)
+  await page.locator('.run-header').waitFor({ timeout: 15_000 })
+  await sleep(2500)
+  const failed = await summaryFor('title-fail')
+  check(!!failed && !failed.title, 'a failed title generation leaves RunSummary.title unset', String(failed?.title))
+  const failTab = page.locator('.run-tablist [role="tab"]', { hasText: 'title-fail' })
+  const failText = ((await failTab.first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(failText.includes('Do [mock:title-fail] something'), 'a run without a title shows the prompt excerpt on its tab', failText)
+  await endSession(page)
+
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('button', { name: 'Project settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
