@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal } from '@shared/types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
+import { PERMISSION_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, answerText, harnessToolsFor, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
@@ -40,7 +41,7 @@ describe('setupTools', () => {
   it('lists the proposal tools by bare name', () => {
     const names = setupTools(fakeCtx()).map((t) => t.name)
     // propose_org_change belongs to work runs, not setup.
-    const setupNames = Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange)
+    const setupNames = [...Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange), PERMISSION_HARNESS_TOOLS.request]
     expect(names.sort()).toEqual(setupNames.sort())
     expect(names).not.toContain(INTEGRATE_TOOL)
     expect(names).not.toContain(PROPOSAL_TOOLS.orgChange)
@@ -176,7 +177,8 @@ describe('plan tools', () => {
       'propose_org_change',
       'list_mcp_servers',
       'search_mcp_registry',
-      'request_mcp_install'
+      'request_mcp_install',
+      'request_permission_rules'
     ])
     expect(names.filter((n) => !isBlockingHarnessTool(n))).toEqual([
       'set_plan',
@@ -268,10 +270,17 @@ describe('MCP tools', () => {
     remotes: []
   }
 
-  it('the three agent-facing tools are for spawners, the rest for the root', () => {
+  it('the three agent-facing tools are for spawners, request_permission_rules for everyone, the rest for the root', () => {
     const tools = workTools(fakeCtx())
     const audiences = Object.fromEntries(tools.map((t) => [t.name, t.audience]))
-    expect(audiences).toMatchObject({ list_mcp_servers: 'spawners', search_mcp_registry: 'spawners', request_mcp_install: 'spawners', set_plan: 'root', ask_user: 'root' })
+    expect(audiences).toMatchObject({
+      list_mcp_servers: 'spawners',
+      search_mcp_registry: 'spawners',
+      request_mcp_install: 'spawners',
+      request_permission_rules: 'all',
+      set_plan: 'root',
+      ask_user: 'root'
+    })
   })
 
   it('list_mcp_servers reports the run servers as data', async () => {
@@ -398,7 +407,7 @@ describe('MCP tools', () => {
     const assistCtx = (over = {}) => fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), ...over })
 
     it('mcp-assist runs get list, search, propose and ask_user only', () => {
-      expect(harnessToolsFor(assistCtx()).map((t) => t.name)).toEqual(['list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'ask_user'])
+      expect(harnessToolsFor(assistCtx()).map((t) => t.name)).toEqual(['list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'ask_user', 'request_permission_rules'])
     })
 
     it('validates, builds ids and secret slots, and returns the decision text', async () => {
@@ -431,5 +440,37 @@ describe('MCP tools', () => {
       const bad = await byName(harnessToolsFor(ctx), 'propose_mcp_servers').call({ title: 't', rationale: 'r', upsert: [], remove: ['ghost'] })
       expect(bad).toContain('no server "ghost"')
     })
+  })
+})
+
+describe('request_permission_rules', () => {
+  const tool = (ctx = fakeCtx()) => byName(workTools(ctx), 'request_permission_rules')
+
+  it('blocks on the user and reports a grant for the run or the project', async () => {
+    const ctx = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'grant' as const, scope: 'run' as const })) })
+    const text = await tool(ctx).call({ rules: [' Bash(gh repo create:*) ', 'Bash(git push:*)', 'Bash(gh repo create:*)'], reason: 'Publish the repo' }, { agentId: 'a1' })
+    expect(text).toBe('GRANTED (this run only): Bash(gh repo create:*), Bash(git push:*). Retry the blocked call now.')
+    expect(ctx.requestPermissionRules).toHaveBeenCalledWith({ agentId: 'a1', rules: ['Bash(gh repo create:*)', 'Bash(git push:*)'], reason: 'Publish the repo' })
+    const project = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'grant' as const, scope: 'project' as const })) })
+    expect(await tool(project).call({ rules: ['WebSearch'], reason: 'r' })).toMatch(/^GRANTED \(saved for this project\): WebSearch\./)
+    expect(vi.mocked(project.requestPermissionRules).mock.calls[0][0].agentId).toBe('root')
+  })
+
+  it('reports a denial with the user note, and refuses to retry', async () => {
+    const ctx = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'deny' as const, message: 'Use the existing remote' })) })
+    const text = await tool(ctx).call({ rules: ['Bash(gh:*)'], reason: 'r' })
+    expect(text).toMatch(/^DENIED: Use the existing remote\. Do not retry the call or work around the denial/)
+    const bare = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'deny' as const })) })
+    expect(await tool(bare).call({ rules: ['Bash(gh:*)'], reason: 'r' })).toMatch(/^DENIED\. Do not retry/)
+  })
+
+  it('rejects malformed rules before asking, and answers DENIED when the run cannot grant rules', async () => {
+    const ctx = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'grant' as const, scope: 'run' as const })) })
+    expect(await tool(ctx).call({ rules: ['gh repo create', 'Bash(gh:*)'], reason: 'r' })).toMatch(/^Invalid rule: gh repo create\./)
+    expect(ctx.requestPermissionRules).not.toHaveBeenCalled()
+    await expect(tool(ctx).call({ rules: [], reason: 'r' })).rejects.toThrow()
+    const none = fakeCtx()
+    delete (none as Partial<typeof none>).requestPermissionRules
+    expect(await tool(none).call({ rules: ['Bash(gh:*)'], reason: 'r' })).toMatch(/^DENIED: this run cannot grant permission rules\./)
   })
 })

@@ -355,7 +355,7 @@ class CodexSession implements RuntimeSession {
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
-    const harness = this.harness.filter((t) => isRoot || (role.canSpawn && t.audience === 'spawners'))
+    const harness = this.harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
     const network = networkToolNames(role, { setupLike: this.setupLike })
     return {
       specs: [...harness.map(dynamicToolSpec), ...networkToolSpecs(network)],
@@ -712,7 +712,7 @@ class CodexSession implements RuntimeSession {
       return toolResponse(out.text, out.success)
     }
     const tool = this.harnessByCodexName.get(call.tool)
-    if (!tool || !(agentId === ROOT_AGENT_ID || (role.canSpawn && tool.audience === 'spawners'))) return toolResponse(`Unknown tool ${call.tool}.`, false)
+    if (!tool || !(agentId === ROOT_AGENT_ID || tool.audience === 'all' || (role.canSpawn && tool.audience === 'spawners'))) return toolResponse(`Unknown tool ${call.tool}.`, false)
     if (isBlockingHarnessTool(tool.name)) this.setState(agentId, 'waiting', describeTool(tool.name, call.arguments, { harness: true }))
     try {
       const text = await tool.call(call.arguments, { agentId })
@@ -761,7 +761,8 @@ class CodexSession implements RuntimeSession {
       this.log('info', `Declined a command in ${this.ctx.project.permissionMode} mode: ${req.command.slice(0, 120)}`)
       return { decision: 'decline' }
     }
-    const rules = [...listRules(this.ctx.project.path), ...this.sessionRules]
+    // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
+    const rules = [...(this.ctx.allowedRules?.() ?? listRules(this.ctx.project.path)), ...this.sessionRules]
     if (req.command && matchesBashRule(req.command, rules)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
     const { decision, granted } = await this.ask(agentId, 'Bash', input)

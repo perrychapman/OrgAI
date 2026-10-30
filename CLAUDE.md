@@ -55,6 +55,14 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     therefore follows resumedFrom links and sessionId both (`runManager.sessionChain`). Verified by unit tests only.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
+  - A `PreToolUse` hook answering `permissionDecision: 'allow'` bypasses the permission system in every mode
+    (verified in `scripts/smoke-permission-hook.mjs` on haiku under `dontAsk`: the first Bash call was denied, the
+    in-process MCP tool got through on the hook alone, and the retried Bash call ran with zero `canUseTool` calls).
+    `dontAsk` still runs trivially safe commands such as `echo` without any rule. This is how live permission grants
+    work: `request_permission_rules` (every agent) blocks on a card; a grant lands in `RuntimeContext.allowedRules()`
+    (saved file rules re-read plus run grants) and the Claude hook allows matching calls through `ruleMatch.ts`,
+    so no session restart is needed. `updatedPermissions` can only be returned from `canUseTool`, which the
+    classifier never reaches for a call it denies outright.
 - Worktree isolation (verified with `scripts/smoke-worktree.mjs`): `isolation: "worktree"` on an Agent call can be
   injected from `PreToolUse` via `updatedInput`. The CLI creates `<repo>/.claude/worktrees/agent-<id>` on branch
   `worktree-agent-<id>` from HEAD, confines Edit/Write to it, and leaves it behind uncommitted when the subagent

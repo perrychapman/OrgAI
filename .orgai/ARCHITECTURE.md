@@ -45,6 +45,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - `src/main/runtime/continuation.ts`
 - `src/main/runtime/integration.ts`
 - `src/main/runtime/permissionRules.ts`
+- `src/main/runtime/ruleMatch.ts`
 - `src/main/runtime/network.ts`
 - `src/main/runtime/attachments.ts`
 - `src/main/runtime/agentTree.ts`
@@ -203,7 +204,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Keep `npm run typecheck` clean for both tsconfigs. Paths are ./-relative with aliases @shared and @renderer. Never add baseUrl.
 - Every type that crosses IPC is defined in src/shared/types.ts and must be structured-clone safe. Wire new IPC in this order: shared types, main/ipc.ts, preload/index.ts and index.d.ts, then the renderer.
 - The renderer only consumes normalized RunEvents and ConnectionEvents. Vendor SDK details never leave runtime/<provider>*.ts.
-- Adapters contain only event mapping and hook mechanics. Shared behaviour goes in harnessTools.ts, prompts.ts, activity.ts, integration.ts, permissionRules.ts, network.ts, continuation.ts or usage.ts, and mock.ts is updated to match.
+- Adapters contain only event mapping and hook mechanics. Shared behaviour goes in harnessTools.ts, prompts.ts, activity.ts, integration.ts, permissionRules.ts, ruleMatch.ts, network.ts, continuation.ts or usage.ts, and mock.ts is updated to match.
 - Connections and adapters are separate. The connections are anthropic, openai and litellm, and the adapters are claude and codex.
   - Anthropic always runs on Claude and OpenAI always on Codex.
   - On LiteLLM the root role's model family picks the adapter (adapterForProject).

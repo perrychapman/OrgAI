@@ -68,9 +68,10 @@ describe('runChains', () => {
       { summary: r('2', 2, { status: 'running' }), proposals: [{}] },
       { summary: r('3', 3, { status: 'running' }), plan: { status: 'blocked' } },
       { summary: r('4', 4, { status: 'running' }), plan: { status: 'active' } },
-      { summary: r('5', 5, { status: 'paused' }), questions: [{}] }
+      { summary: r('5', 5, { status: 'paused' }), questions: [{}] },
+      { summary: r('6', 6, { status: 'running' }), ruleRequests: [{}] }
     ]
-    expect(projectCounts(list, 'p')).toEqual({ open: 4, needsYou: 3 })
+    expect(projectCounts(list, 'p')).toEqual({ open: 5, needsYou: 4 })
     expect(projectCounts(list, 'none')).toEqual({ open: 0, needsYou: 0 })
   })
   it('labels statuses in plain words, with endedWithApp beating paused and waiting beating all', () => {

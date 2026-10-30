@@ -8,6 +8,7 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
   const [rules, setRules] = useState<string[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -21,6 +22,21 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  const add = async (): Promise<void> => {
+    const rule = draft.trim()
+    if (!rule) return
+    setBusy(rule)
+    setError(null)
+    try {
+      setRules(await window.orgai.permissions.add({ projectId: project.id, rule }))
+      setDraft('')
+    } catch (e) {
+      setError((e as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, ''))
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const remove = async (rule: string): Promise<void> => {
     setBusy(rule)
@@ -63,12 +79,31 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
           ))}
         </div>
       )}
-      <div className="row" style={{ marginTop: 6 }}>
+      <div className="row" style={{ marginTop: 8, gap: 8 }}>
+        <input
+          className="input"
+          value={draft}
+          disabled={busy !== null}
+          placeholder="Bash(gh repo create:*)"
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void add()
+          }}
+          style={{ flex: 1, fontFamily: 'var(--font-mono)' }}
+        />
+        <button className="btn sm" onClick={() => void add()} disabled={busy !== null || !draft.trim()}>
+          Add rule
+        </button>
         <button className="btn ghost sm" onClick={() => void refresh()} disabled={busy !== null}>
           Refresh
         </button>
-        <span className="hint">Stored under permissions.allow in .claude/settings.local.json and applied to every new run. Changes reach runs started afterwards.</span>
       </div>
+      <span className="hint">
+        Stored under permissions.allow in .claude/settings.local.json. Rules apply to every new run and, through the harness, to runs of this project that
+        are already open. Forms: Tool(prefix:*) for a command prefix, Tool(exact command), or a bare tool name. Agents that hit a denial can also ask for a
+        rule from the live view.
+      </span>
       {error && <span className="hint" style={{ color: 'var(--danger)' }}>{error}</span>}
     </div>
   )

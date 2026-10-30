@@ -160,6 +160,15 @@ scripts/            SDK smoke tests (cost well under a cent each)
   harness drops bare shell rules and destructive commands from a proposal before saving. A bare tool name such as
   `WebSearch` approves the whole tool before any prompt; the rules panel labels such rules *whole tool*.
 - Setup sessions run the Architect in `acceptEdits`, or in `auto` when the project is unattended.
+- **Agents ask for rules instead of hitting walls.** When the policy denies a call (the `auto` classifier refuses
+  `gh repo create --public`, say), any agent calls `request_permission_rules` with the narrowest rules and a reason.
+  A *Permission request* card shows who asks, the rules (flagged when broad or destructive) and the reason:
+  **Allow for this run** grants them until the run ends, **Always allow (project)** also saves them to the project,
+  **Deny** sends your optional note back. A grant applies at once, with no restart: the harness itself allows
+  matching calls (`src/main/runtime/ruleMatch.ts`: bare tool names, `Bash(prefix:*)` as whole words, exact commands,
+  and `&&`/`;` chains whose every part is covered; pipes, redirects and substitutions still go through the provider).
+- **Edit rules in the app.** Project settings → *Saved permission rules* lists, adds and removes rules; additions reach
+  runs that are already open on the project as well as new ones.
 - Every permission request and its outcome (tool, summary, decision, scope) is written to the main log at info level.
 
 ## Agent network

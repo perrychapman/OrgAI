@@ -29,6 +29,7 @@ import type {
   ProposalDecision,
   ProviderConnection,
   ProviderModel,
+  PermissionRuleDecision,
   QuestionAnswer,
   RemapModelsInput,
   RemapModelsOutput,
@@ -50,7 +51,8 @@ import { claudeAuthStatus } from './connections/anthropicAuth'
 import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { log, logPath, logsDir } from './log'
-import { listRules, removeRule } from './runtime/permissionRules'
+import { addRules, listRules, removeRule } from './runtime/permissionRules'
+import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo } from './appInfo'
 
 export interface IpcServices {
@@ -205,6 +207,18 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (!project) throw new Error('Project not found')
     return removeRule(project.path, input.rule)
   })
+  ipcMain.handle(IPC.permissionsAdd, (_e, input: { projectId: string; rule: string }) => {
+    const project = projects.get(input.projectId)
+    if (!project) throw new Error('Project not found')
+    const rule = String(input.rule ?? '').trim()
+    if (!isValidRule(rule)) throw new Error('A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(gh:*)')
+    return addRules(project.path, [rule])
+  })
+  ipcMain.handle(
+    IPC.permissionsDecideRequest,
+    (_e, input: { runId: string; requestId: string; decision: PermissionRuleDecision }) =>
+      runs.decideRules(input.runId, input.requestId, input.decision)
+  )
 
   registerConnectionIpc(projects, connections)
   registerMcpIpc(projects, runs, mcp)

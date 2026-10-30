@@ -8,6 +8,8 @@ import { specFromRegistry, validateSpec, type RegistryChoice } from '../mcp/vali
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { pendingWorktrees } from './worktrees'
 import { PLAN_TOOLS, finishedCount, remainingSteps } from './continuation'
+import { PERMISSION_HARNESS_TOOLS, type PermissionRuleDecision } from '@shared/types'
+import { isValidRule } from './ruleMatch'
 
 /**
  * The harness's own tools, defined once for every provider. Each definition is a name, a description,
@@ -41,9 +43,10 @@ export interface HarnessToolHooks {
 
 /**
  * Which agents get a harness tool. 'root' (the default): the root role only. 'spawners': the root and every
- * role with canSpawn (the MCP tools list_mcp_servers, search_mcp_registry, request_mcp_install).
+ * role with canSpawn (the MCP tools list_mcp_servers, search_mcp_registry, request_mcp_install). 'all': every
+ * role (request_permission_rules, since any agent can hit a policy denial).
  */
-export type HarnessToolAudience = 'root' | 'spawners'
+export type HarnessToolAudience = 'root' | 'spawners' | 'all'
 
 /** Harness tools that return at once; every other harness tool waits on the user (the node shows "waiting"). */
 const NON_BLOCKING_TOOLS = new Set<string>([
@@ -698,9 +701,50 @@ export const proposeMcpServers = defineTool({
   }
 })
 
-export const SETUP_TOOL_DEFS: HarnessToolDef[] = [proposeArchitecture, proposeOrgChart, proposeSettings, askUser, completeSetup]
+/** The text request_permission_rules returns for a decision. */
+export function ruleDecisionText(d: PermissionRuleDecision, rules: string[]): string {
+  if (d.behavior === 'grant') {
+    return `GRANTED ${d.scope === 'project' ? '(saved for this project)' : '(this run only)'}: ${rules.join(', ')}. Retry the blocked call now.`
+  }
+  return (
+    `DENIED${d.message?.trim() ? `: ${d.message.trim()}` : ''}. Do not retry the call or work around the denial; ` +
+    'find another route, or report the block (mark_blocked if you are the orchestrator, a message to your lead otherwise).'
+  )
+}
+
+/**
+ * Any agent: a policy denial is a request to make, not a wall to climb. Blocks until the user decides; a grant is
+ * in force before the tool returns (the adapter allows matching calls itself), so the agent simply retries.
+ */
+export const requestPermissionRules = defineTool({
+  name: PERMISSION_HARNESS_TOOLS.request,
+  audience: 'all',
+  description:
+    'A tool call was denied by the permission policy: ask the user to allow calls matching permission rules such as Bash(gh repo create:*) or Bash(git push:*). ' +
+    'Blocks until they decide. GRANTED means retry the call now; DENIED means do not retry or work around it. Ask once per rule.',
+  inputSchema: z.object({
+    rules: z
+      .array(z.string())
+      .min(1)
+      .max(8)
+      .describe('The narrowest rules that cover the call: Tool(prefix:*) for a shell command prefix, Tool(exact command), or a bare tool name'),
+    reason: z.string().describe('One line: what the call does and why the task needs it')
+  }),
+  async handler(ctx, { rules, reason }, hooks, caller) {
+    const clean = [...new Set(rules.map((r) => r.trim()).filter(Boolean))]
+    const bad = clean.filter((r) => !isValidRule(r))
+    if (bad.length) return `Invalid rule${bad.length === 1 ? '' : 's'}: ${bad.join(', ')}. Use Tool(prefix:*), Tool(exact command) or a bare tool name.`
+    if (!clean.length) return 'Invalid request: no rules given.'
+    if (!ctx.requestPermissionRules) return ruleDecisionText({ behavior: 'deny', message: 'this run cannot grant permission rules' }, clean)
+    const decision = await ctx.requestPermissionRules({ agentId: caller.agentId ?? ROOT_AGENT_ID, rules: clean, reason: reason.trim() })
+    hooks.onDecided?.()
+    return ruleDecisionText(decision, clean)
+  }
+})
+
+export const SETUP_TOOL_DEFS: HarnessToolDef[] = [proposeArchitecture, proposeOrgChart, proposeSettings, askUser, completeSetup, requestPermissionRules]
 /** Work runs: plan tools, ask_user, the merge-retry tool, org chart revisions and the MCP tools. */
-export const WORK_TOOL_DEFS: HarnessToolDef[] = [setPlan, updatePlan, completePlan, markBlocked, askUser, integrateWorktrees, proposeOrgChange, listMcpServers, searchMcpRegistry, requestMcpInstall]
+export const WORK_TOOL_DEFS: HarnessToolDef[] = [setPlan, updatePlan, completePlan, markBlocked, askUser, integrateWorktrees, proposeOrgChange, listMcpServers, searchMcpRegistry, requestMcpInstall, requestPermissionRules]
 
 export function setupTools(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): HarnessTool[] {
   return bind(SETUP_TOOL_DEFS, ctx, hooks)
@@ -711,7 +755,7 @@ export function workTools(ctx: RuntimeContext, hooks: HarnessToolHooks = {}): Ha
 }
 
 /** MCP assistant runs ('mcp-assist'): the server list, registry search, the proposal tool and ask_user. */
-export const MCP_ASSIST_TOOL_DEFS: HarnessToolDef[] = [listMcpServers, searchMcpRegistry, proposeMcpServers, askUser]
+export const MCP_ASSIST_TOOL_DEFS: HarnessToolDef[] = [listMcpServers, searchMcpRegistry, proposeMcpServers, askUser, requestPermissionRules]
 
 /**
  * The harness tools for a run, by kind. Adapters call this instead of choosing setupTools / workTools

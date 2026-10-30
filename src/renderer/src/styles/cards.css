@@ -83,6 +83,9 @@
 .proposal.kind-question {
   border-color: var(--warning-border);
 }
+.proposal.kind-rules {
+  border-color: var(--warning-border);
+}
 .proposal.merge-review {
   border-color: var(--warning-border);
 }
@@ -260,4 +263,30 @@
 }
 .pause-error {
   color: var(--danger-text);
+}
+
+/* request_permission_rules cards */
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rules-row {
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.rules-row code {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  word-break: break-all;
+}
+.rules-reason {
+  margin-top: 10px;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
 }

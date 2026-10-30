@@ -9,6 +9,8 @@ import type {
   MergeDecision,
   MergeReview,
   PermissionDecision,
+  PermissionRuleDecision,
+  PermissionRuleRequest,
   PermissionRequest,
   PluginSpec,
   Project,
@@ -108,6 +110,16 @@ export interface RuntimeContext {
   completeSetup(summary: string): Promise<void>
   /** Ask the user a multiple-choice question (ask_user). Resolves with their answer (empty if the run ends first). */
   requestQuestion(req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>): Promise<QuestionAnswer>
+  /**
+   * request_permission_rules: an agent asks for rules after a policy denial. Resolves with the user's decision; a
+   * grant is already in allowedRules() when it resolves. Missing = the tool answers DENIED.
+   */
+  requestPermissionRules?(req: Omit<PermissionRuleRequest, 'id' | 'runId' | 'createdAt' | 'flagged'>): Promise<PermissionRuleDecision>
+  /**
+   * Every allow rule in force right now: the project's saved rules (re-read, so the rules panel applies live) plus
+   * rules granted for this run. Adapters allow matching calls themselves (ruleMatch.ts) so grants need no restart.
+   */
+  allowedRules?(): string[]
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
   /**

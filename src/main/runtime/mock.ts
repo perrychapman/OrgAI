@@ -10,6 +10,7 @@ import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, sugges
 import { composeFirstMessage } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
+import { matchingRule } from './ruleMatch'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -582,7 +583,9 @@ export class MockSession implements RuntimeSession {
       const suggestions = chooseSuggestions(step.name, input, undefined)
       const rules = allowRuleStrings(suggestions)
       const saved = new Set([...listRules(this.ctx.project.path), ...this.sessionRules])
-      const preApproved = rules.length > 0 && rules.every((r) => saved.has(r))
+      // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
+      const live = this.ctx.allowedRules?.() ?? []
+      const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
       if (!preApproved) {
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(

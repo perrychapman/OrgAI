@@ -12,6 +12,8 @@ import type {
   MergeReview,
   PermissionDecision,
   PermissionRequest,
+  PermissionRuleDecision,
+  PermissionRuleRequest,
   Project,
   Proposal,
   ProposalDecision,
@@ -36,6 +38,8 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange } from './continuation'
+import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
+import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext } from '../mcp/assist'
 
@@ -80,6 +84,12 @@ interface ActiveRun {
   pendingMerges: Map<string, (d: MergeDecision) => void>
   /** request_mcp_install cards waiting for mcp:answerInstall. */
   pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision) => void }>
+  /** request_permission_rules cards waiting for permissions:decideRequest. */
+  pendingRules: Map<string, { request: PermissionRuleRequest; resolve: (d: PermissionRuleDecision) => void }>
+  /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
+  runRules: string[]
+  /** The project's (canonical) path, for saving project-scoped grants. */
+  projectPath: string
   /** Servers approved with scope 'run': kept in memory (secret values included) until the run ends. */
   runServers: Map<string, { spec: McpServerSpec; secrets: Record<string, string> }>
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
@@ -271,6 +281,9 @@ export class RunManager {
       pendingQuestions: new Map(),
       pendingMerges: new Map(),
       pendingInstalls: new Map(),
+      pendingRules: new Map(),
+      runRules: [],
+      projectPath: project.path,
       runServers: new Map(),
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
@@ -388,6 +401,8 @@ export class RunManager {
         resolvedMcpServers: async () => allServers().map(resolveOne),
         plugins: () => (setupLike ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
         requestQuestion: (req) => this.requestQuestion(active, req),
+        requestPermissionRules: (req) => this.requestRules(active, req),
+        allowedRules: () => [...new Set([...listRules(project.path), ...active.runRules])],
         noteArchitectureUpdated: async () => {
           const updated = this.setup.markArchitectureUpdated(project.id)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
@@ -400,7 +415,12 @@ export class RunManager {
         getPlan: () => active.record.plan,
         updatePlan,
         pendingInteractions: () =>
-          active.pending.size + active.pendingProposals.size + active.pendingQuestions.size + active.pendingMerges.size + active.pendingInstalls.size,
+          active.pending.size +
+          active.pendingProposals.size +
+          active.pendingQuestions.size +
+          active.pendingMerges.size +
+          active.pendingInstalls.size +
+          active.pendingRules.size,
         autoContinue: project.autoContinue !== false,
         maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
@@ -420,6 +440,11 @@ export class RunManager {
           this.broadcast({ type: 'question.resolved', runId: summary.id, questionId, answer: { selected: [] } })
         }
         active.pendingQuestions.clear()
+        for (const [requestId, r] of active.pendingRules) {
+          r.resolve({ behavior: 'deny', message: 'Run ended' })
+          this.broadcast({ type: 'rules.resolved', runId: summary.id, requestId, decision: { behavior: 'deny', message: 'Run ended' } })
+        }
+        active.pendingRules.clear()
         // Unanswered merge reviews keep their branch for later (maintenance panel or a future run).
         for (const [reviewId, resolve] of active.pendingMerges) {
           resolve({ behavior: 'hold' })
@@ -602,6 +627,67 @@ export class RunManager {
     active.pendingMerges.delete(reviewId)
     resolve(decision)
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+  }
+
+  // ---------- permission rule requests ----------
+
+  private requestRules(
+    active: ActiveRun,
+    req: Omit<PermissionRuleRequest, 'id' | 'runId' | 'createdAt' | 'flagged'>
+  ): Promise<PermissionRuleDecision> {
+    const rules = [...new Set(req.rules.map((r) => r.trim()).filter((r) => isValidRule(r)))]
+    const request: PermissionRuleRequest = {
+      ...req,
+      rules,
+      flagged: rules.filter((r) => isUnsafeAllowRule(r)),
+      id: newId('rule'),
+      runId: active.summary.id,
+      createdAt: Date.now()
+    }
+    if (!rules.length) return Promise.resolve({ behavior: 'deny', message: 'no valid rules' })
+    return new Promise((resolve) => {
+      active.pendingRules.set(request.id, { request, resolve })
+      this.broadcast({ type: 'rules.request', runId: active.summary.id, request })
+    })
+  }
+
+  /**
+   * Answer a request_permission_rules card. A grant is in force before the agent's tool call returns: run
+   * scope adds the rules to the run (allowedRules), project scope also saves them to the settings file. The user
+   * chose the rules knowingly, so flagged (destructive) rules are saved too.
+   */
+  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision): void {
+    const active = this.runs.get(runId)
+    const pending = active?.pendingRules.get(requestId)
+    if (!active || !pending) return
+    active.pendingRules.delete(requestId)
+    const { rules } = pending.request
+    let clean: PermissionRuleDecision
+    if (decision?.behavior === 'grant') {
+      const scope = decision.scope === 'project' ? 'project' : 'run'
+      clean = { behavior: 'grant', scope }
+      for (const r of rules) if (!active.runRules.includes(r)) active.runRules.push(r)
+      if (scope === 'project') {
+        try {
+          addRules(active.projectPath, rules)
+        } catch (e) {
+          clean = { behavior: 'grant', scope: 'run' }
+          this.broadcast({ type: 'log', runId, level: 'warn', message: `Could not save the rules to the project (${(e as Error).message}); they apply to this run only.` })
+        }
+      }
+      this.broadcast({
+        type: 'log',
+        runId,
+        level: 'info',
+        message: `Allowed ${rules.join(', ')} ${clean.scope === 'project' ? 'for this project' : 'for this run'} at the request of ${pending.request.agentId}.`
+      })
+    } else {
+      const message = typeof decision?.message === 'string' && decision.message.trim() ? decision.message.trim() : undefined
+      clean = message ? { behavior: 'deny', message } : { behavior: 'deny' }
+      this.broadcast({ type: 'log', runId, level: 'info', message: `Denied the permission request for ${rules.join(', ')}.` })
+    }
+    pending.resolve(clean)
+    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
   }
 
   // ---------- MCP install requests ----------

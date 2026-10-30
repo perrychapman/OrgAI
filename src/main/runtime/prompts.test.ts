@@ -77,8 +77,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, MCP guidance, brief
-    expect(parts).toHaveLength(10)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, MCP guidance, permission requests, brief
+    expect(parts).toHaveLength(11)
   })
 
   it('tells only the work-run orchestrator to plan and work unattended', () => {

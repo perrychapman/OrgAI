@@ -25,6 +25,8 @@ import type {
   ImageAttachment,
   Proposal,
   ProposalDecision,
+  PermissionRuleDecision,
+  PermissionRuleRequest,
   QuestionAnswer,
   Role,
   RunEvent,
@@ -57,6 +59,8 @@ export interface RunState {
   proposals: Proposal[]
   /** Open ask_user questions from the Architect. */
   questions: UserQuestion[]
+  /** Open request_permission_rules cards. */
+  ruleRequests: PermissionRuleRequest[]
   /** Finished reports waiting for the user to merge, hold or discard their branch. */
   mergeReviews: MergeReview[]
   logs: LogLine[]
@@ -87,7 +91,7 @@ export interface RemapNoticeState {
 const MAX_MESSAGES = 100
 
 function emptyRun(summary: RunSummary): RunState {
-  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], mergeReviews: [], logs: [], partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
+  return { summary, agents: {}, transcript: [], permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: [], partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
 
 interface AppState {
@@ -178,6 +182,8 @@ interface AppState {
   decide(requestId: string, decision: PermissionDecision): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
   answerQuestion(questionId: string, answer: QuestionAnswer): Promise<void>
+  /** Answer a request_permission_rules card. */
+  decideRules(requestId: string, decision: PermissionRuleDecision): Promise<void>
   decideMerge(reviewId: string, decision: MergeDecision): Promise<void>
   handleEvent(e: RunEvent): void
   /** Replace a placeholder summary (created by an event of an unknown run) with the real one. */
@@ -482,7 +488,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId)
       if (!record) return
       set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} } }
+        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} } }
       }))
     }
     set((s) => ({ activeRunByProject: { ...s.activeRunByProject, [project.id]: runId }, selectedAgentId: 'root', view: 'run', composerMode: 'reply' }))
@@ -587,6 +593,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   async decideProposal(proposalId, decision) {
     const run = activeRun(get())
     if (run) await window.orgai.setup.decide({ runId: run.summary.id, proposalId, decision })
+  },
+
+  async decideRules(requestId, decision) {
+    const run = activeRun(get())
+    if (run) await window.orgai.permissions.decideRequest({ runId: run.summary.id, requestId, decision })
   },
 
   async answerQuestion(questionId, answer) {
@@ -701,6 +712,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'question.resolved':
           run.questions = (run.questions ?? []).filter((q) => q.id !== e.questionId)
+          break
+        case 'rules.request':
+          run.ruleRequests = [...(run.ruleRequests ?? []), e.request]
+          break
+        case 'rules.resolved':
+          run.ruleRequests = (run.ruleRequests ?? []).filter((r) => r.id !== e.requestId)
           break
         case 'merge.request':
           run.mergeReviews = [...(run.mergeReviews ?? []), e.review]

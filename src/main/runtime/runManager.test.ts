@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -243,6 +243,69 @@ describe('RunManager with the mock adapter', () => {
     expect(record?.summary.status).toBe('finished')
     expect(Object.values(record?.agents ?? {}).every((a) => a.state === 'done')).toBe(true)
     expect(record?.transcript.length).toBe(events.filter((e) => e.type === 'transcript').length)
+  })
+
+  describe('permission rule requests', () => {
+    const script = (command: string): MockScript => ({
+      work: [
+        { type: 'harness', name: 'request_permission_rules', args: { rules: ['Bash(gh:*)', 'Bash(git push:*)'], reason: 'Publish the repo' } },
+        { type: 'tool', name: 'Bash', input: { command }, ask: true, result: 'published' }
+      ]
+    })
+
+    it('a grant for the run lets the retried call through without a card and stays out of the settings file', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, script('gh repo create a/b --public && git push -u origin main'))
+      const run = await m.start({ project: p, prompt: 'Publish' })
+      const req = await waitFor(isType('rules.request'))
+      expect(req.request).toMatchObject({ agentId: 'root', rules: ['Bash(gh:*)', 'Bash(git push:*)'], reason: 'Publish the repo', flagged: ['Bash(git push:*)'] })
+      m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'run' })
+      await waitFor(isType('rules.resolved'))
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      const blocks = events.filter(isType('transcript')).map((e) => e.entry.block)
+      expect(blocks.find((b) => b.kind === 'tool_result' && /GRANTED \(this run only\)/.test(String(b.content)))).toBeTruthy()
+      expect(blocks.find((b) => b.kind === 'tool_result' && b.content === 'published')).toBeTruthy()
+      expect(events.some((e) => e.type === 'permission.request')).toBe(false)
+      expect(existsSync(join(p.path, '.claude', 'settings.local.json'))).toBe(false)
+      expect(events.some((e) => e.type === 'log' && /Allowed Bash\(gh:\*\), Bash\(git push:\*\) for this run/.test(e.message))).toBe(true)
+      await m.stop(run.id)
+    })
+
+    it('a project grant saves the rules to .claude/settings.local.json', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, script('gh repo view'))
+      const run = await m.start({ project: p, prompt: 'Publish' })
+      const req = await waitFor(isType('rules.request'))
+      m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'project' })
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      const saved = JSON.parse(readFileSync(join(p.path, '.claude', 'settings.local.json'), 'utf8')) as { permissions: { allow: string[] } }
+      expect(saved.permissions.allow).toEqual(['Bash(gh:*)', 'Bash(git push:*)'])
+      expect(events.filter(isType('transcript')).some((e) => e.entry.block.kind === 'tool_result' && /GRANTED \(saved for this project\)/.test(String(e.entry.block.content)))).toBe(true)
+      await m.stop(run.id)
+    })
+
+    it('a denial reaches the agent with the note, and the next call still asks', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, script('gh repo view'))
+      const run = await m.start({ project: p, prompt: 'Publish' })
+      const req = await waitFor(isType('rules.request'))
+      m.decideRules(run.id, req.request.id, { behavior: 'deny', message: 'Keep it private' })
+      const perm = await waitFor(isType('permission.request'))
+      expect(perm.request.toolName).toBe('Bash')
+      expect(events.filter(isType('transcript')).some((e) => e.entry.block.kind === 'tool_result' && /^DENIED: Keep it private\./.test(String(e.entry.block.content)))).toBe(true)
+      await m.stop(run.id)
+      await waitFor(isType('run.status', (e) => e.status === 'finished'))
+    })
+
+    it('stopping the run denies an open request', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, script('gh repo view'))
+      const run = await m.start({ project: p, prompt: 'Publish' })
+      const req = await waitFor(isType('rules.request'))
+      await m.stop(run.id)
+      const resolved = await waitFor(isType('rules.resolved'))
+      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' } })
+    })
   })
 
   it('reports a denied permission to the model as an error result', async () => {

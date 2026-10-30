@@ -674,6 +674,9 @@ export const MCP_HARNESS_TOOLS = {
 } as const
 export type McpHarnessToolName = (typeof MCP_HARNESS_TOOLS)[keyof typeof MCP_HARNESS_TOOLS]
 
+/** Harness tool every agent gets: ask the user for permission rules after a policy denial. */
+export const PERMISSION_HARNESS_TOOLS = { request: 'request_permission_rules' } as const
+
 // ---------- App settings (global) ----------
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
@@ -1115,6 +1118,25 @@ export type PermissionSuggestion =
 
 export type PermissionDecision = { behavior: 'allow'; scope?: PermissionScope } | { behavior: 'deny'; message: string }
 
+/**
+ * An agent's request for permission rules after the policy denied a call (request_permission_rules). Granting
+ * applies at once to the live run (the harness allows matching calls itself) and, with scope 'project', saves
+ * the rules to `.claude/settings.local.json` for future runs.
+ */
+export interface PermissionRuleRequest {
+  id: string
+  runId: string
+  agentId: string
+  /** Rules as written, e.g. "Bash(gh repo create:*)". */
+  rules: string[]
+  reason: string
+  /** Rules the harness flags as broad or destructive (a bare shell tool, a wildcard, rm, git push, sudo...). */
+  flagged: string[]
+  createdAt: number
+}
+
+export type PermissionRuleDecision = { behavior: 'grant'; scope: 'run' | 'project' } | { behavior: 'deny'; message?: string }
+
 // ---------- Subscription usage ----------
 
 /** One plan usage window. */
@@ -1186,6 +1208,9 @@ export type RunEvent =
   | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision }
   | { type: 'question.request'; runId: string; question: UserQuestion }
   | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer }
+  /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */
+  | { type: 'rules.request'; runId: string; request: PermissionRuleRequest }
+  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision }
   | { type: 'merge.request'; runId: string; review: MergeReview }
   | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision }
   /** The main process changed the project (an approved proposal, setup completion). */
@@ -1370,6 +1395,10 @@ export interface OrgAIApi {
     list(projectId: string): Promise<string[]>
     /** Remove one saved allow rule; returns the remaining rules. */
     remove(input: { projectId: string; rule: string }): Promise<string[]>
+    /** Save one allow rule (validated); returns the full list. Live runs of the project honour it at once. */
+    add(input: { projectId: string; rule: string }): Promise<string[]>
+    /** Answer a request_permission_rules card. */
+    decideRequest(input: { runId: string; requestId: string; decision: PermissionRuleDecision }): Promise<void>
   }
   onRunEvent(cb: (event: RunEvent) => void): () => void
   /** A clicked OS notification asks the renderer to show this run. */
@@ -1458,6 +1487,8 @@ export const IPC = {
   appInfo: 'app:info',
   permissionsList: 'permissions:list',
   permissionsRemove: 'permissions:remove',
+  permissionsAdd: 'permissions:add',
+  permissionsDecideRequest: 'permissions:decideRequest',
   projectsRemapModels: 'projects:remapModels',
   projectsPreviewRemap: 'projects:previewRemap',
   connectionsList: 'connections:list',

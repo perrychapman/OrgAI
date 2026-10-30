@@ -26,6 +26,7 @@ import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
+import RuleRequestCard from '../components/RuleRequestCard'
 import RunStrip, { useStripRuns } from '../components/RunStrip'
 import MergeReviewCard from '../components/MergeReviewCard'
 import { costLabel, formatUntil, planProgress, treeLayout } from '../lib/layout'
@@ -87,6 +88,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
   const composerFocusToken = useAppStore((s) => s.composerFocusToken)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const answerQuestion = useAppStore((s) => s.answerQuestion)
+  const decideRules = useAppStore((s) => s.decideRules)
   const composerMode = useAppStore((s) => s.composerMode)
   const setComposerMode = useAppStore((s) => s.setComposerMode)
   const stripRuns = useStripRuns()
@@ -568,8 +570,11 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
           </div>
         )}
 
-        {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0) && (
+        {run && (run.proposals.length > 0 || (run.questions?.length ?? 0) > 0 || (run.ruleRequests?.length ?? 0) > 0) && (
           <div className="proposals" style={{ top: showStrip ? 96 : 56 }}>
+            {(run.ruleRequests ?? []).map((r) => (
+              <RuleRequestCard key={r.id} request={r} who={run.agents[r.agentId]?.name ?? r.agentId} onDecide={(d) => void decideRules(r.id, d)} />
+            ))}
             {(run.questions ?? []).map((q) => (
               <QuestionCard key={q.id} question={q} onAnswer={(a) => void answerQuestion(q.id, a)} />
             ))}
@@ -588,7 +593,7 @@ function LiveRunInner({ project }: { project: Project }): ReactElement {
         )}
 
         {run && run.permissions.length > 0 && (
-          <div className="permissions" style={run.proposals.length || run.questions?.length || run.mergeReviews?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : { top: showStrip ? 96 : 56 }}>
+          <div className="permissions" style={run.proposals.length || run.questions?.length || run.ruleRequests?.length || run.mergeReviews?.length ? { right: 'auto', left: 12, top: showStrip ? 96 : 56 } : { top: showStrip ? 96 : 56 }}>
             {run.permissions.map((p) => (
               <div key={p.id} className="permission">
                 <div className="who">{run.agents[p.agentId]?.name ?? p.agentId} wants to use {p.toolName}</div>

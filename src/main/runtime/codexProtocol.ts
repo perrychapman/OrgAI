@@ -348,33 +348,8 @@ export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLi
 
 // ---------- saved allow rules ----------
 
-const SHELL_CONTROL = /[;&|`<>\n\r]|\$\(/
-
-/** The inner command of `bash -lc '...'` / `pwsh -Command "..."` style wrappers; the input when it is not wrapped. */
-export function unwrapShellCommand(command: string): string {
-  const c = command.trim()
-  const m = /^(?:"[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(['"])([\s\S]*)\1$/i.exec(c)
-  return m ? m[2].trim() : c
-}
-
-/**
- * True when a saved `Bash(prefix:*)` / `Bash(exact)` rule (permissionRules.listRules) covers the command.
- * Commands with shell control operators never match a prefix rule (`npm test && rm -rf x`).
- */
-export function matchesBashRule(command: string, rules: string[]): boolean {
-  const cmd = unwrapShellCommand(command)
-  if (!cmd || SHELL_CONTROL.test(cmd)) return false
-  for (const rule of rules) {
-    const m = /^(?:Bash|PowerShell)\((.*)\)$/.exec(rule.trim())
-    if (!m) continue
-    const body = m[1].trim()
-    if (body.endsWith(':*')) {
-      const prefix = body.slice(0, -2).trim()
-      if (prefix && (cmd === prefix || cmd.startsWith(`${prefix} `))) return true
-    } else if (body === cmd) return true
-  }
-  return false
-}
+// The matcher is vendor-neutral and shared with the Claude adapter's PreToolUse hook.
+export { matchesBashRule, unwrapShellCommand } from './ruleMatch'
 
 // ---------- dynamic tools ----------
 

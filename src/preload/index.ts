@@ -90,7 +90,9 @@ const api: OrgAIApi = {
   },
   permissions: {
     list: (projectId: string) => ipcRenderer.invoke(IPC.permissionsList, projectId),
-    remove: (input) => ipcRenderer.invoke(IPC.permissionsRemove, input)
+    remove: (input) => ipcRenderer.invoke(IPC.permissionsRemove, input),
+    add: (input) => ipcRenderer.invoke(IPC.permissionsAdd, input),
+    decideRequest: (input) => ipcRenderer.invoke(IPC.permissionsDecideRequest, input)
   },
   onRunEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: RunEvent): void => cb(event)

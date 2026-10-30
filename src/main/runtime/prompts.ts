@@ -115,6 +115,15 @@ export function unattendedText(): string {
   )
 }
 
+/** Every work-run role: a policy denial is a request to make, not a wall to climb. */
+export function permissionRequestText(): string {
+  return (
+    'If the permission policy denies a tool call you need, do not work around it and do not retry it unchanged. ' +
+    'Call request_permission_rules with the narrowest rules that cover the call (for example "Bash(gh repo create:*)" or "Bash(git push:*)") and a one-line reason; ' +
+    'the user allows or denies it in the app and the result says whether to retry. Ask once per rule. If denied, find another route or report the block.'
+  )
+}
+
 /** For the root orchestrator and canSpawn leads: reach for external systems through MCP servers, asking the user once. */
 export function mcpInstallText(): string {
   return (
@@ -157,6 +166,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     if (role.reportsTo === null) parts.push(unattendedText())
     if (role.reportsTo === null) parts.push(orgChangeText())
     if (role.reportsTo === null || role.canSpawn) parts.push(mcpInstallText())
+    parts.push(permissionRequestText())
     const brief = briefText(project.brief)
     if (brief) parts.push(brief)
   }

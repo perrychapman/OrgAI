@@ -124,7 +124,7 @@ describe('dynamic tool specs', () => {
   it('turns every harness tool into a function spec with a JSON schema from zod', () => {
     const tools = harnessToolsFor(fakeCtx())
     const specs = tools.map(dynamicToolSpec)
-    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install'])
+    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'request_permission_rules'])
     const setPlan = specs[0]
     expect(setPlan).toMatchObject({ type: 'function' })
     const schema = setPlan.inputSchema as { type: string; required: string[]; properties: Record<string, { type?: string }> }

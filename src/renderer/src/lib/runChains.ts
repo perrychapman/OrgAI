@@ -62,13 +62,15 @@ interface CountedRun {
   permissions?: readonly unknown[]
   proposals?: readonly unknown[]
   questions?: readonly unknown[]
+  ruleRequests?: readonly unknown[]
   plan?: { status: string }
 }
 
-/** An open run that is waiting for the user: an unanswered card, a question or a blocked plan. */
+/** An open run that is waiting for the user: an unanswered card, a question, a permission request or a blocked plan. */
 export const needsYou = (r: CountedRun): boolean =>
   isOpenStatus(r.summary.status) &&
-  ((r.permissions?.length ?? 0) + (r.proposals?.length ?? 0) + (r.questions?.length ?? 0) > 0 || r.plan?.status === 'blocked')
+  ((r.permissions?.length ?? 0) + (r.proposals?.length ?? 0) + (r.questions?.length ?? 0) + (r.ruleRequests?.length ?? 0) > 0 ||
+    r.plan?.status === 'blocked')
 
 /** Open runs and runs that need the user, per project. */
 export function projectCounts(runs: readonly CountedRun[], projectId: string): { open: number; needsYou: number } {

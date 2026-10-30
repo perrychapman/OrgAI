@@ -7,6 +7,7 @@ import {
   tool,
   type AgentDefinition,
   type HookCallback,
+  type HookJSONOutput,
   type McpSdkServerConfigWithInstance,
   type McpServerConfig,
   type SdkPluginConfig,
@@ -32,6 +33,7 @@ import { isGitRepo } from './worktrees'
 import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
 import { PartialText } from './claudePartial'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
+import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -244,7 +246,7 @@ export function buildAgents(
   for (const role of ctx.roles) {
     const tools: string[] = [...role.tools]
     const isRoot = role.reportsTo === null
-    for (const t of harness) if (isRoot || (role.canSpawn && t.audience === 'spawners')) tools.push(`${ORGAI_TOOL_PREFIX}${t.name}`)
+    for (const t of harness) if (isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners')) tools.push(`${ORGAI_TOOL_PREFIX}${t.name}`)
     if (role.canSpawn) tools.push(SPAWN_TOOL)
     // A lead addresses its running reports by handle, so it always gets the messaging tools on work runs.
     if (role.canSpawn && !isSetup) for (const t of [MESSAGE_TOOL, LIST_AGENTS_TOOL]) if (!tools.includes(t)) tools.push(t)
@@ -685,6 +687,9 @@ class ClaudeSession implements RuntimeSession {
   }
 
   private buildHooks(): Options['hooks'] {
+    const hookAllow = (reason: string): HookJSONOutput => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason }
+    })
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
@@ -754,6 +759,15 @@ class ClaudeSession implements RuntimeSession {
       const harness = input.tool_name.startsWith(ORGAI_TOOL_PREFIX)
       const state = harness && isBlockingHarnessTool(input.tool_name.slice(ORGAI_TOOL_PREFIX.length)) ? 'waiting' : 'tool'
       this.setState(agentId, state, describe(input.tool_name, toolInput))
+      // A hook 'allow' bypasses the permission system (mode, classifier and canUseTool alike; verified in
+      // scripts/smoke-permission-hook.mjs). The harness's own tools carry their approval inside their round-trip,
+      // and rules granted while the run is live (request_permission_rules, the rules panel) apply without a restart.
+      if (harness) return hookAllow('OrgAI harness tool')
+      const rules = this.ctx.allowedRules?.()
+      if (rules?.length) {
+        const hit = matchingRule(input.tool_name, toolInput, rules)
+        if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
+      }
       return {}
     }
 
