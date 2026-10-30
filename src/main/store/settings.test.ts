@@ -5,6 +5,83 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth } from './settings'
 
+describe('modelPrices', () => {
+  const price = { inputPerToken: 1e-6, outputPerToken: 2e-6 }
+
+  it('defaults to an empty list and ignores non-arrays', () => {
+    expect(normalizeSettings({}).modelPrices).toEqual([])
+    expect(normalizeSettings({ modelPrices: { model: 'x', price } } as never).modelPrices).toEqual([])
+    expect(normalizeSettings({ modelPrices: 'x' } as never).modelPrices).toEqual([])
+  })
+
+  it('keeps valid entries as fresh plain objects and trims the model', () => {
+    const input = [{ model: '  gpt-5 ', connection: 'litellm', price: { ...price, cacheReadPerToken: 1e-7, evil: 1 }, extra: true }]
+    const out = normalizeSettings({ modelPrices: input as never }).modelPrices!
+    expect(out).toEqual([{ model: 'gpt-5', connection: 'litellm', price: { inputPerToken: 1e-6, outputPerToken: 2e-6, cacheReadPerToken: 1e-7 } }])
+    expect(out[0]).not.toBe(input[0])
+    expect(out[0]!.price).not.toBe(input[0]!.price)
+  })
+
+  it('drops invalid entries', () => {
+    const bad = [
+      null, 'x', 4, [], { price },
+      { model: '', price }, { model: '   ', price }, { model: 'x'.repeat(201), price }, { model: 5, price },
+      { model: 'a', price: { inputPerToken: -1, outputPerToken: 1e-6 } },
+      { model: 'b', price: { inputPerToken: 1e-6, outputPerToken: Number.NaN } },
+      { model: 'c', price: { inputPerToken: 1e-6, outputPerToken: 0.010001 } },
+      { model: 'd', price: { inputPerToken: 1e-6 } },
+      { model: 'e', price: null },
+      { model: 'f', connection: 'nope', price }
+    ]
+    expect(normalizeSettings({ modelPrices: bad as never }).modelPrices).toEqual([])
+    expect(normalizeSettings({ modelPrices: [{ model: 'ok', price: { ...price, cacheCreationPerToken: -1 } }] as never }).modelPrices).toEqual([{ model: 'ok', price }])
+  })
+
+  it('dedupes by normalized model and connection, the last one winning', () => {
+    const p = (n: number) => ({ inputPerToken: n * 1e-6, outputPerToken: n * 1e-6 })
+    const out = normalizeSettings({
+      modelPrices: [
+        { model: 'Claude-Sonnet-4-5', price: p(1) },
+        { model: 'anthropic/claude-sonnet-4-5-20250929', price: p(2) },
+        { model: 'claude-sonnet-4-5', connection: 'litellm', price: p(3) }
+      ] as never
+    }).modelPrices!
+    expect(out).toEqual([
+      { model: 'anthropic/claude-sonnet-4-5-20250929', price: p(2) },
+      { model: 'claude-sonnet-4-5', connection: 'litellm', price: p(3) }
+    ])
+  })
+
+  it('caps the list', () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({ model: `m${i}`, price }))
+    expect(normalizeSettings({ modelPrices: many as never }).modelPrices).toHaveLength(200)
+  })
+
+  it('does not copy prototype keys', () => {
+    const polluted = JSON.parse('{"model":"x","price":{"inputPerToken":1e-6,"outputPerToken":2e-6,"__proto__":{"polluted":1}},"__proto__":{"polluted":1}}')
+    const out = normalizeSettings({ modelPrices: [polluted] as never }).modelPrices!
+    expect(out).toHaveLength(1)
+    expect(Object.keys(out[0]!.price)).toEqual(['inputPerToken', 'outputPerToken'])
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('persists through the store, keeps them when a save leaves them out, and clears with an empty list', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-set-'))
+    try {
+      const store = new SettingsStore(dir)
+      store.set({ modelPrices: [{ model: 'gpt-5', price }, { model: 'bad', price: { inputPerToken: -1, outputPerToken: 1e-6 } }] })
+      expect(store.get().modelPrices).toEqual([{ model: 'gpt-5', price }])
+      expect(new SettingsStore(dir).get().modelPrices).toEqual([{ model: 'gpt-5', price }])
+      store.set({ notifications: false })
+      expect(store.get().modelPrices).toEqual([{ model: 'gpt-5', price }])
+      store.set({ modelPrices: [] })
+      expect(store.get().modelPrices).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('normalizeSettings', () => {
   it('defaults to the unattended permission mode', () => {
     expect(normalizeSettings(null).defaultPermissionMode).toBe('auto')

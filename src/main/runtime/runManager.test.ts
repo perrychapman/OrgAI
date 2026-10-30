@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, RunEvent, RunSummary, TokenUsage } from '@shared/types'
+import { setModelTokens } from './runUsage'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
 import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
@@ -171,6 +172,346 @@ describe('RunManager image attachments', () => {
     expect(ctxs[2].images).toBeUndefined()
   })
 })
+
+describe('RunManager usage and pricing', () => {
+  const tok = (input = 0, output = 0, cacheRead = 0, cacheWrite = 0): TokenUsage => ({ input, output, cacheRead, cacheWrite })
+  const agentWith = (over: Partial<AgentInstance> = {}): AgentInstance => ({
+    id: 'root', roleId: 'r-lead', roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null, state: 'thinking', activity: 'Working',
+    inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: Date.now(), ...over
+  })
+  const usageEvents = (): Extract<RunEvent, { type: 'run.usage' }>[] => events.filter((e): e is Extract<RunEvent, { type: 'run.usage' }> => e.type === 'run.usage')
+
+  function setup(options: RunManagerOptions = {}) {
+    const ctxs: RuntimeContext[] = []
+    const sends: string[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        return { send: async (t) => void sends.push(t), interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100, options)
+    return { m, p, store, ctxs, sends }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('prices an agent upsert into a copy and mirrors the cost', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith({ model: 'claude-sonnet-4-5' })
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000, 0, 1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent).not.toBe(a)
+    expect(a.usage!.costUsd).toBeNull() // the adapter's object is untouched
+    expect(a.costUsd).toBe(0)
+    expect(up.agent.usage!.costUsd).toBeCloseTo(3.3, 9)
+    expect(up.agent.usage!.costSource).toBe('computed')
+    expect(up.agent.costUsd).toBeCloseTo(3.3, 9)
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3.3, 9)
+    expect(m.summaryOf(run.id)).toMatchObject({ totalCostUsd: expect.closeTo(3.3, 9) })
+    expect(m.summaryOf(run.id)!.usage).toMatchObject({ costSource: 'computed', agents: 1 })
+  })
+
+  it('builds usage for an agent the adapter gave none and sets producedNothing from the final state', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'computed' })
+    expect(up.agent.usage!.legacy).toBeUndefined()
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', state: 'done', result: 'fine' }) })
+    const again = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(again.agent.usage!.producedNothing).toBeUndefined()
+  })
+
+  it('reports an unpriced model as unknown with a legacy cost of 0', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'mock-unpriced', tok(100, 50))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    const s = m.summaryOf(run.id)!
+    expect(s.totalCostUsd).toBe(0)
+    expect(s.usage).toMatchObject({ costUsd: null, costSource: 'unknown' })
+    expect(m.get(run.id)!.agents.root!.costUsd).toBe(0)
+  })
+
+  it('uses the provider total from run.cost and keeps it as the continuation base', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(10), 0.75)
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    ctxs[0]!.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 1.25 })
+    expect(m.summaryOf(run.id)).toMatchObject({ totalCostUsd: 1.25 })
+    expect(m.summaryOf(run.id)!.usage).toMatchObject({ costSource: 'provider', costUsd: 1.25, providerCostUsd: 1.25 })
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished', sessionId: 's1' })
+    await m.continueRun(p, run.id, 'more')
+    expect(ctxs[1]!.resumeBaseCostUsd).toBe(1.25)
+    // an older record without usage falls back to totalCostUsd
+    const legacy = runSummary({ id: 'old', projectId: p.id, status: 'finished', sessionId: 's9', totalCostUsd: 0.4 })
+    ;(m as unknown as { store: RunStore }).store.upsert(legacy)
+    await m.continueRun(p, 'old', 'again')
+    expect(ctxs[2]!.resumeBaseCostUsd).toBe(0.4)
+  })
+
+  it('never subtracts a computed cost from the next provider total', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000)) // computed from the table, no provider cost
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.summaryOf(run.id)!.totalCostUsd).toBeCloseTo(3, 9)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished', sessionId: 's1' })
+    await m.continueRun(p, run.id, 'more')
+    expect(ctxs[1]!.resumeBaseCostUsd).toBe(0)
+  })
+
+  it('applies a saved override to the next usage update of a live run', async () => {
+    const prices: ModelPriceOverride[] = []
+    const { m, p, ctxs } = setup({ appSettings: () => ({ ...defaultSettingsLite(), modelPrices: prices }) })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3, 9)
+    prices.push({ model: 'claude-sonnet-4-5', price: { inputPerToken: 1e-4, outputPerToken: 1e-4 } })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(100, 9)
+    expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('override')
+  })
+
+  it('prices an alias through the connection env (LiteLLM tier remap)', async () => {
+    const { m, p, ctxs } = setup({
+      resolveConnection: () => ({ connection: 'anthropic', adapter: 'claude', env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-5' } })
+    })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'opus', tok(1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(5, 9)
+  })
+
+  it('drops a run.usage an adapter sends', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const before = usageEvents().length
+    ctxs[0]!.emit({ type: 'run.usage', runId: run.id, usage: m.summaryOf(run.id)!.usage! })
+    expect(usageEvents().length).toBe(before)
+  })
+
+  it('throttles run.usage to one per second with a trailing event, and publishes the end at once', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const { m, p, store, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    expect(usageEvents()).toHaveLength(1) // the starting status goes out at once
+    const a = agentWith({ result: 'ok' })
+    for (let i = 1; i <= 5; i++) {
+      setModelTokens(a, 'claude-sonnet-4-5', tok(i * 1000))
+      ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    }
+    expect(usageEvents()).toHaveLength(1)
+    // the summary is current even while the event is held
+    expect(m.summaryOf(run.id)!.usage!.tokens.input).toBe(5000)
+    vi.advanceTimersByTime(999)
+    expect(usageEvents()).toHaveLength(1)
+    vi.advanceTimersByTime(1)
+    expect(usageEvents()).toHaveLength(2)
+    expect(usageEvents()[1]!.usage.tokens.input).toBe(5000)
+    expect(store.get(run.id)!.usage!.tokens.input).toBe(5000)
+    vi.advanceTimersByTime(5000)
+    expect(usageEvents()).toHaveLength(2) // nothing changed, nothing sent
+
+    setModelTokens(a, 'claude-sonnet-4-5', tok(9000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(usageEvents()).toHaveLength(3) // the throttle window has passed: sent at once
+    setModelTokens(a, 'claude-sonnet-4-5', tok(9000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a }) // held
+    vi.advanceTimersByTime(10)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    expect(usageEvents()).toHaveLength(4)
+    const last = usageEvents().at(-1)!.usage
+    expect(last.tokens.input).toBe(9000)
+    expect(last.wallMs).toBeGreaterThan(0)
+    vi.advanceTimersByTime(5000)
+    expect(usageEvents()).toHaveLength(4) // the held timer was cleared
+    expect(store.get(run.id)).toMatchObject({ status: 'finished', usage: { tokens: { input: 9000 } } })
+  })
+
+  it('flushes held usage when the session finishes', async () => {
+    const ctxs: RuntimeContext[] = []
+    let end!: () => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>((r) => (end = r)) }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    setModelTokens(a, 'claude-sonnet-4-5', tok(2))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    end()
+    await sleep(5)
+    expect(usageEvents().at(-1)!.usage.tokens.input).toBe(2)
+    expect(store.getRecord(run.id)!.summary.usage!.tokens.input).toBe(2)
+    expect(m.liveRunCount()).toBe(0)
+  })
+
+  it('times waiting on cards, idle and a usage-limit hold', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000_000)
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]!
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'running' })
+
+    // two overlapping cards count once
+    void ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'a' })
+    vi.advanceTimersByTime(1000)
+    void ctx.requestQuestion({ agentId: 'root', question: 'q?', options: [{ label: 'a' }, { label: 'b' }], allowMultiple: false, allowFreeText: false })
+    vi.advanceTimersByTime(1000)
+    const perm = events.find((e) => e.type === 'permission.request') as Extract<RunEvent, { type: 'permission.request' }>
+    m.decide(run.id, perm.request.id, { behavior: 'allow' })
+    vi.advanceTimersByTime(1000) // the question is still open
+    const q = events.find((e) => e.type === 'question.request') as Extract<RunEvent, { type: 'question.request' }>
+    m.answerQuestion(run.id, q.question.id, { selected: ['a'] })
+    vi.advanceTimersByTime(4000) // nothing open now
+    expect(m.summaryOf(run.id)!.usage).toBeDefined()
+
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'idle' })
+    vi.advanceTimersByTime(2500)
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'running' })
+
+    ctx.rateLimited?.({})
+    vi.advanceTimersByTime(3000)
+    await m.send(run.id, 'continue')
+    vi.advanceTimersByTime(7000)
+
+    // a card still open at the end is cancelled and stops counting
+    void ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'late' })
+    vi.advanceTimersByTime(1500)
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    vi.advanceTimersByTime(60_000)
+
+    const u = m.summaryOf(run.id)!.usage!
+    expect(u.waitingMs).toBe(3000 + 1500)
+    expect(u.idleMs).toBe(2500)
+    expect(u.limitHoldMs).toBe(3000)
+  })
+
+  it('closes an open usage-limit hold when the run ends', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000_000)
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.rateLimited?.({})
+    vi.advanceTimersByTime(2000)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished' }) // becomes paused: the session ended on a limit
+    vi.advanceTimersByTime(10_000)
+    expect(m.summaryOf(run.id)).toMatchObject({ status: 'paused' })
+    expect(m.summaryOf(run.id)!.usage!.limitHoldMs).toBe(2000)
+  })
+
+  it('counts the plan nudges', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'plan.updated', runId: run.id, plan: { goal: 'g', steps: [], status: 'active', autoContinues: 3, updatedAt: 1 } })
+    expect(m.summaryOf(run.id)!.usage!.nudges).toBe(3)
+  })
+
+  it('normalizes a stored record saved before usage tracking on get', () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p)
+    store.upsert(runSummary({ id: 'old', projectId: p.id, status: 'finished', totalCostUsd: 0.2 }))
+    store.saveRecord({
+      summary: runSummary({ id: 'old', projectId: p.id, status: 'finished', totalCostUsd: 0.2 }),
+      agents: { root: agentWith({ inputTokens: 500, outputTokens: 50, costUsd: 0.2 }) },
+      transcript: [],
+      logs: []
+    })
+    const rec = m.get('old')!
+    expect(rec.agents.root!.usage).toMatchObject({ legacy: true, costUsd: 0.2 })
+    expect(rec.summary.usage).toMatchObject({ legacy: true, providerCostUsd: 0.2, costUsd: 0.2 })
+    expect(store.get('old')!.usage).toBeUndefined() // get() does not write back
+  })
+})
+
+describe('RunManager.usageStats', () => {
+  const tok = (input = 0): TokenUsage => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 })
+
+  it('builds stats over legacy and current runs, writing legacy usage back once', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, {})
+    const day = (d: number): number => new Date(2026, 9, d, 12).getTime()
+    const legacyAgent: AgentInstance = { id: 'root', roleId: null, roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null, state: 'done', activity: '', inputTokens: 1000, outputTokens: 100, costUsd: 0.5, startedAt: day(1), result: 'x' }
+    store.upsert(runSummary({ id: 'l1', projectId: p.id, status: 'finished', startedAt: day(1), totalCostUsd: 0.5 }))
+    store.saveRecord({ summary: runSummary({ id: 'l1', projectId: p.id, status: 'finished', startedAt: day(1), totalCostUsd: 0.5 }), agents: { root: legacyAgent }, transcript: [], logs: [] })
+    // no record on disk at all
+    store.upsert(runSummary({ id: 'l2', projectId: p.id, status: 'finished', startedAt: day(2), totalCostUsd: 0.25 }))
+    // a current run
+    store.upsert(runSummary({ id: 'c1', projectId: p.id, status: 'finished', startedAt: day(2) + 1000, totalCostUsd: 1, usage: { ...computeEmpty(), tokens: tok(7), costUsd: 1, costSource: 'computed' } }))
+    // other kind and other project
+    store.upsert(runSummary({ id: 's1', projectId: p.id, kind: 'setup', status: 'finished', startedAt: day(3) }))
+    store.upsert(runSummary({ id: 'x1', projectId: 'other', status: 'finished', startedAt: day(3) }))
+
+    const stats = m.usageStats({ projectId: p.id })
+    expect(stats.runs.map((r) => r.runId)).toEqual(['c1', 'l2', 'l1'])
+    const l1 = stats.runs.find((r) => r.runId === 'l1')!.usage
+    expect(l1).toMatchObject({ legacy: true, costUsd: 0.5, agents: 1 })
+    expect(l1.tokens.input).toBe(1000)
+    expect(stats.runs.find((r) => r.runId === 'l2')!.usage).toMatchObject({ legacy: true, costUsd: 0.25, agents: 0 })
+    expect(stats.trend.map((t) => t.bucket)).toEqual(['2026-10-01', '2026-10-02'])
+    expect(stats.totals.costUsd).toBeCloseTo(1.75, 9)
+
+    // written back to the index once
+    expect(store.get('l1')!.usage).toMatchObject({ legacy: true })
+    expect(store.get('l2')!.usage).toMatchObject({ legacy: true })
+    const stamp = store.get('l1')!.usage!.updatedAt
+    await sleep(3)
+    m.usageStats({ projectId: p.id })
+    expect(store.get('l1')!.usage!.updatedAt).toBe(stamp)
+
+    expect(m.usageStats({ projectId: p.id, kinds: ['setup'] }).runs.map((r) => r.runId)).toEqual(['s1'])
+    // a bad query is sanitized instead of throwing
+    const odd = m.usageStats({ projectId: p.id, since: Number.NaN, until: 'x' as never, kinds: ['bogus'] as never, bucket: 'month' as never })
+    expect(odd.runs).toHaveLength(3)
+  })
+
+  it('includes a live run with fresh usage', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, adapter } = manager(p, { delayMs: 50 })
+    void adapter
+    const run = await m.start({ project: p, prompt: 'live' })
+    const stats = m.usageStats({ projectId: p.id })
+    expect(stats.runs.map((r) => r.runId)).toContain(run.id)
+    await m.stop(run.id)
+  })
+})
+
+function computeEmpty() {
+  return { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, costSource: 'none' as const, models: [], roles: [], wallMs: 0, turns: 0, toolCalls: 0, retries: 0, agents: 0, agentsWithoutResult: 0, noResultTokens: 0, nudges: 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, updatedAt: 0 }
+}
+
+function defaultSettingsLite() {
+  return { setupModel: 'opus', mcpAssistModel: 'opus', connections: defaultConnections({ kind: 'subscription' }) }
+}
 
 describe('RunManager with the mock adapter', () => {
   it('names reports by handle and turns agent messages into events and transcript lines', async () => {

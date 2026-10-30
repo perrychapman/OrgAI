@@ -44,7 +44,8 @@ const api: OrgAIApi = {
   },
   models: {
     list: (query) => ipcRenderer.invoke(IPC.modelsList, query),
-    refresh: (query) => ipcRenderer.invoke(IPC.modelsRefresh, query)
+    refresh: (query) => ipcRenderer.invoke(IPC.modelsRefresh, query),
+    prices: (query) => ipcRenderer.invoke(IPC.modelsPrices, query)
   },
   onConnectionEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: ConnectionEvent): void => cb(event)
@@ -99,7 +100,8 @@ const api: OrgAIApi = {
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
-    pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId)
+    pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
+    usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query)
   },
   window: {
     // Only the two ids cross; main validates them against the stores before opening anything.

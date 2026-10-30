@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import type { ImageAttachment, RunRecord, RunSummary, TranscriptEntry } from '@shared/types'
+import type { ImageAttachment, RunRecord, RunSummary, RunUsage, TranscriptEntry } from '@shared/types'
 import { RunStore } from './runs'
 
 let dataDir: string
@@ -236,5 +236,21 @@ describe('RunStore image store', () => {
     s.saveRecord(record(run('orphan'), { transcript: [userEntry('e1', [{ mediaType: 'image/png', data: PNG }])] }))
     expect(s.sweepOrphans()).toBe(2) // orphan.json and orphan/
     expect(recordFiles()).toEqual(['new', 'new.json'])
+  })
+})
+
+describe('RunStore usage', () => {
+  it('keeps usage with the summary and fills several missing ones in one write', () => {
+    const usage: RunUsage = { tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }, costUsd: 1, costSource: 'computed', models: [], roles: [], wallMs: 1, turns: 0, toolCalls: 0, retries: 0, agents: 1, agentsWithoutResult: 0, noResultTokens: 0, nudges: 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, updatedAt: 1 }
+    const store = new RunStore(dataDir)
+    store.upsert(run('old'))
+    store.upsert(run('new', { usage }))
+    expect(new RunStore(dataDir).get('new')!.usage).toEqual(usage)
+    expect(new RunStore(dataDir).get('old')!.usage).toBeUndefined()
+    store.setUsage([{ id: 'old', usage: { ...usage, updatedAt: 9 } }, { id: 'new', usage: { ...usage, updatedAt: 9 } }, { id: 'ghost', usage }])
+    const again = new RunStore(dataDir)
+    expect(again.get('old')!.usage?.updatedAt).toBe(9)
+    expect(again.get('new')!.usage?.updatedAt).toBe(1) // existing usage is kept
+    expect(again.get('ghost')).toBeNull()
   })
 })

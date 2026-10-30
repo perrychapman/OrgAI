@@ -286,6 +286,57 @@ describe('mock adapter auth failure', () => {
   })
 })
 
+describe('mock adapter usage reporting', () => {
+  type Agent = Extract<RunEvent, { type: 'agent.upsert' }>['agent']
+  async function agentsOf(prompt: string): Promise<{ ctx: ReturnType<typeof fakeCtx>; last: Map<string, Agent> }> {
+    const ctx = fakeCtx({ prompt })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(true), { timeout: 5000 })
+    const last = new Map<string, Agent>()
+    for (const e of ctx.events) if (e.type === 'agent.upsert') last.set(e.agent.id, e.agent)
+    await session.stop()
+    await session.finished
+    return { ctx, last }
+  }
+  const lastCost = (ctx: ReturnType<typeof fakeCtx>): number => ([...ctx.events].reverse().find((e) => e.type === 'run.cost') as { totalCostUsd: number }).totalCostUsd
+
+  it('reports per-model tokens with cache, turns, tool calls and a retry; provider cost by default', async () => {
+    const { ctx, last } = await agentsOf('do it')
+    const root = last.get(ROOT_AGENT_ID)!
+    expect(root.usage?.models[0]).toMatchObject({ model: 'claude-opus-4-5' })
+    expect(root.usage?.models[0]?.providerCostUsd).toBeGreaterThan(0)
+    expect(root.usage?.tokens.cacheRead).toBeGreaterThan(0)
+    expect(root.usage?.tokens.cacheWrite).toBeGreaterThan(0)
+    expect(root.usage?.turns).toBeGreaterThan(0)
+    expect(root.usage?.toolCalls).toBeGreaterThan(0)
+    expect(root.usage?.retries).toBe(1)
+    expect(last.get('mock-report-1')?.usage?.models[0]).toMatchObject({ model: 'claude-sonnet-4-5' })
+    const providerTotal = [...last.values()].reduce((s, a) => s + (a.usage?.models.reduce((x, m) => x + (m.providerCostUsd ?? 0), 0) ?? 0), 0)
+    expect(lastCost(ctx)).toBeCloseTo(providerTotal, 10)
+  })
+
+  it('has a report that spent tokens and produced nothing, on an unpriced model', async () => {
+    const { last } = await agentsOf('do it')
+    const silent = last.get('mock-report-2')!
+    expect(silent.state).toBe('done')
+    expect(silent.result).toBeFalsy()
+    expect(silent.usage?.tokens.output).toBeGreaterThan(0)
+    expect(silent.usage?.models[0]).toMatchObject({ model: 'mock-unpriced' })
+    expect(silent.usage?.models[0]?.providerCostUsd).toBeUndefined()
+  })
+
+  it('[mock:no-price] leaves every agent unpriced with no provider cost', async () => {
+    const { last, ctx } = await agentsOf('do it [mock:no-price]')
+    for (const a of last.values()) expect(a.usage?.models.every((m) => m.model === 'mock-unpriced' && m.providerCostUsd === undefined)).toBe(true)
+    expect(lastCost(ctx)).toBe(0)
+  })
+
+  it('[mock:computed-cost] reports a priced model without provider cost', async () => {
+    const { last } = await agentsOf('do it [mock:computed-cost]')
+    for (const a of last.values()) expect(a.usage?.models.every((m) => m.model === 'claude-sonnet-4-5' && m.providerCostUsd === undefined)).toBe(true)
+  })
+})
+
 describe('mock adapter complete', () => {
   const adapter = new MockAdapter({ script: { delayMs: 0 } })
   const sys = 's'

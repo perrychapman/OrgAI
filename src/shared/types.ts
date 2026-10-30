@@ -192,8 +192,9 @@ export interface ProviderModel {
   /** 'builtin' = shipped with OrgAI; 'discovered' = listed by the connection at runtime. */
   source: 'builtin' | 'discovered'
   /**
-   * Token prices, when the connection reports them (LiteLLM /model/info `model_info.*_cost_per_token`). Used for
-   * run cost estimates on that connection. Absent = unknown price (the run's cost for this model stays 0).
+   * Token prices, when the connection reports them (LiteLLM /model/info `model_info.*_cost_per_token`). The
+   * 'proxy' step of run pricing (pricing.ts), via RunConnection.pricing. Absent = no proxy price; the built-in table
+   * (pricing.ts BUILTIN_PRICES) or an override may still price the model, else its cost is unknown (null).
    */
   price?: ModelPrice
   /** LiteLLM: the upstream model the proxy routes this name to (litellm_params.model, e.g. "anthropic/claude-sonnet-4-5"). */
@@ -201,8 +202,9 @@ export interface ProviderModel {
 }
 
 /**
- * USD per token of one model, as a LiteLLM proxy reports it in /model/info (UNVERIFIED against a live proxy).
- * inputPerToken prices uncached input. A missing cache price falls back to inputPerToken. 0 = free (local models).
+ * USD per token of one model. Used for LiteLLM /model/info prices (UNVERIFIED against a live proxy), the built-in
+ * table (pricing.ts) and user overrides (AppSettings.modelPrices). inputPerToken prices uncached input. A missing cache
+ * price falls back to inputPerToken. 0 = free (local models).
  */
 export interface ModelPrice {
   inputPerToken: number
@@ -908,6 +910,13 @@ export interface AppSettings {
   defaultAutoContinue: boolean
   /** maxAutoContinues for new projects. */
   defaultMaxAutoContinues: number
+  /**
+   * The user's per-model prices; they win over every other price (provider-reported included). Normalized on load and
+   * save (store/settings.ts): invalid entries dropped, at most MODEL_PRICE_OVERRIDES_MAX entries, prices finite,
+   * >= 0 and at most MODEL_PRICE_MAX_PER_TOKEN. Missing = none. Changes apply to agents priced after the save (live
+   * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
+   */
+  modelPrices?: ModelPriceOverride[]
 }
 
 /**
@@ -1068,6 +1077,258 @@ export interface QuestionAnswer {
   text?: string
 }
 
+// ---------- Usage metrics and pricing ----------
+
+/**
+ * Token counts split the way providers price them. `input` is UNCACHED input only: cache reads and cache writes are
+ * separate (Claude reports them separately; Codex/OpenAI `inputTokens` include cached tokens, so the adapter
+ * subtracts `cachedInputTokens`). OpenAI reports no cache writes (always 0). Reasoning tokens count as output.
+ * Total prompt tokens = input + cacheRead + cacheWrite. Cache hit rate: cacheHitRate() in defaults.ts.
+ */
+export interface TokenUsage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+/**
+ * Where a model's cost came from. Resolution order per model (pricing.ts): 'override' (AppSettings.modelPrices) >
+ * 'provider' (the provider reported a cost > 0, e.g. the Claude SDK's costUSD) > 'proxy' (the LiteLLM proxy's
+ * /model/info price) > 'builtin' (OrgAI's price table) > 'unknown' (tokens but no price: cost is null, never $0).
+ */
+export type PriceSource = 'override' | 'provider' | 'proxy' | 'builtin' | 'unknown'
+
+/**
+ * How trustworthy an aggregated cost is. 'provider': every priced token was priced by the provider. 'computed': at
+ * least one model was priced by OrgAI (override, proxy or built-in table). 'unknown': tokens were spent but no model
+ * had a price (costUsd null; show "unknown", not $0). 'none': nothing spent yet (costUsd 0).
+ * When some models are priced and some are not, the source is the priced ones' and `costPartial` is true: the cost
+ * is a lower bound.
+ */
+export type CostSource = 'provider' | 'computed' | 'unknown' | 'none'
+
+/** A user's price for one model (AppSettings.modelPrices). */
+export interface ModelPriceOverride {
+  /**
+   * The model id as runs report it (e.g. 'claude-sonnet-4-5', 'anthropic/claude-sonnet-4-5', 'gpt-5'). Matched
+   * case-insensitively; a trailing date stamp (-20250929) or [1m] suffix is ignored on both sides. At most
+   * MODEL_PRICE_ID_MAX_CHARS characters.
+   */
+  model: string
+  /** Only for runs on this connection. Missing = every connection. A connection-scoped entry wins. */
+  connection?: ConnectionId
+  price: ModelPrice
+}
+
+/** One model's effective price, as listed by models:prices for a settings table. */
+export interface ModelPriceInfo {
+  model: string
+  /** Set for proxy prices and connection-scoped overrides. */
+  connection?: ConnectionId
+  price: ModelPrice
+  /** 'override' | 'proxy' | 'builtin' (never 'provider' or 'unknown'). */
+  source: Exclude<PriceSource, 'provider' | 'unknown'>
+}
+
+/** models:prices input. Omit `connection` for every connection. */
+export interface ModelPricesQuery {
+  connection?: ConnectionId
+}
+
+/** One model's share of an agent's (or run's, or role's) usage. */
+export interface ModelUsageEntry {
+  /**
+   * The model id actually used, as the provider reported it (Claude: assistant message.model, which already is the
+   * tier-remapped id on LiteLLM; Codex: the thread's model). An alias ('opus') only when nothing better was reported;
+   * pricing then resolves it through the run connection's ANTHROPIC_DEFAULT_*_MODEL / tierModels.
+   */
+  model: string
+  tokens: TokenUsage
+  /**
+   * Adapter-reported cost for these tokens, when the provider gives one (> 0). Written by adapters; RunManager
+   * reads it during pricing. Absent on Codex and on LiteLLM Claude runs (the CLI reports 0 there).
+   */
+  providerCostUsd?: number
+  /** Filled by RunManager (pricing.ts): null when no price is known. */
+  costUsd: number | null
+  /** Filled by RunManager (pricing.ts). */
+  priceSource: PriceSource
+}
+
+/**
+ * Usage of one agent. Adapters write `models[].model`, `models[].tokens`, `models[].providerCostUsd`, `turns`,
+ * `toolCalls` and `retries` (putting `costUsd: null, priceSource: 'unknown'` on new model entries); RunManager prices
+ * it on every agent.upsert and fills `tokens`, `costUsd`, `costSource`, `costPartial` and the model entries' cost
+ * fields, and mirrors `costUsd ?? 0` into AgentInstance.costUsd. Persisted with the agent in the run record.
+ */
+export interface AgentUsage {
+  /** Sum over `models`. */
+  tokens: TokenUsage
+  models: ModelUsageEntry[]
+  /** null = unknown (tokens spent, no price). */
+  costUsd: number | null
+  costSource: CostSource
+  /** Some models had no price: costUsd is a lower bound. */
+  costPartial?: true
+  /**
+   * Model responses. Claude: distinct assistant message ids (one per API request). Codex: completed turns of the
+   * agent's thread (app-server reports no per-request count). Granularity therefore differs by adapter.
+   */
+  turns: number
+  /** Tool calls the agent made (tool_use blocks / Codex tool items), harness tools included. */
+  toolCalls: number
+  /** API retries the provider reported (Claude system api_retry; Codex error with willRetry). */
+  retries: number
+  /**
+   * The agent ended (state done or error) without result text: its tokens count as RunUsage.noResultTokens. Filled by
+   * RunManager on every agent.upsert (absent = false); agentProducedNothing() in defaults.ts derives the same from an
+   * AgentInstance. Drives the UI's "no result" dim.
+   */
+  producedNothing?: true
+  /**
+   * Normalized from a record saved before usage tracking: tokens.input holds the old inputTokens (cache included,
+   * cacheRead/cacheWrite 0), turns/toolCalls/retries are 0 and cost is the stored costUsd (> 0: 'provider') or
+   * unknown. Show such numbers as approximate.
+   */
+  legacy?: true
+}
+
+/** Usage of one role within a run, or across runs (UsageStats.roles). */
+export interface RoleUsage {
+  /** null for agents without a role (built-in roles, unknown subagent types). */
+  roleId: string | null
+  roleSlug: string
+  /** The role's display name as the agents carried it (AgentInstance.name of the first agent, without a -n suffix). */
+  roleName: string
+  /** Agent instances of this role. */
+  agents: number
+  tokens: TokenUsage
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+  turns: number
+  toolCalls: number
+  retries: number
+  /** Sum of the agents' wall time (endedAt or now, minus startedAt), ms. Agents overlap, so this can exceed the run's. */
+  agentWallMs: number
+  /** Agents that ended (state done or error) with no result text. */
+  agentsWithoutResult: number
+  /** Tokens (all four kinds) those agents spent. */
+  noResultTokens: number
+  /** Distinct models used. */
+  models: string[]
+}
+
+/**
+ * Usage of one run, computed by RunManager (runUsage.ts) from its agents and its own timers. Lives on
+ * RunSummary.usage (index and record), so it survives restarts and trend queries read only the index.
+ */
+export interface RunUsage {
+  tokens: TokenUsage
+  /**
+   * Best known cost of the run. 'provider': the provider's run total when it reported one (Claude total_cost_usd,
+   * resume base subtracted), else the agents' sum. Otherwise the sum of the agents' costs. null = unknown.
+   */
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+  /**
+   * The adapter's last run.cost total (the provider's own figure for this run, resume base subtracted), when it sent
+   * one. RunManager passes it as resumeBaseCostUsd when the session is continued. Informational for the UI.
+   */
+  providerCostUsd?: number
+  /** Per model across all agents. */
+  models: ModelUsageEntry[]
+  /** Per role. */
+  roles: RoleUsage[]
+  /** endedAt (or now while live) minus startedAt, ms. */
+  wallMs: number
+  turns: number
+  toolCalls: number
+  retries: number
+  /** Agent instances in the run, root included. */
+  agents: number
+  agentsWithoutResult: number
+  noResultTokens: number
+  /** Automatic continues the harness sent (RunPlan.autoContinues of this run; 0 without a plan). */
+  nudges: number
+  /** Time with at least one decision card open (permission, question, proposal, rules, merge, MCP install), ms. */
+  waitingMs: number
+  /** Time held on a usage limit (from the provider's limit report until the user's next send or the run's end), ms. */
+  limitHoldMs: number
+  /** Time the run spent in status 'idle' (the orchestrator's turn ended, waiting for the user), ms. */
+  idleMs: number
+  /** See AgentUsage.legacy: computed from a record saved before usage tracking. */
+  legacy?: true
+  updatedAt: number
+}
+
+/** runs:usageStats input. */
+export interface UsageStatsQuery {
+  projectId: string
+  /** Only runs started at or after this time (epoch ms). */
+  since?: number
+  /** Only runs started before this time (epoch ms). */
+  until?: number
+  /** Run kinds to include. Default ['work']. */
+  kinds?: RunKind[]
+  /** Trend bucket size, by local calendar day or ISO week (Monday start). Default 'day'. */
+  bucket?: 'day' | 'week'
+}
+
+/** One run in UsageStats.runs. */
+export interface RunUsageRow {
+  runId: string
+  kind: RunKind
+  status: RunStatus
+  /** RunSummary.title when set. */
+  title?: string
+  /** The prompt on one line, at most 120 characters. */
+  prompt: string
+  startedAt: number
+  endedAt?: number
+  resumedFrom?: string
+  usage: RunUsage
+}
+
+/** One trend bucket in UsageStats.trend. */
+export interface UsageTrendPoint {
+  /** Local date of the bucket start, YYYY-MM-DD (a Monday for 'week'). */
+  bucket: string
+  /** Epoch ms of the bucket start (local midnight). */
+  start: number
+  runs: number
+  tokens: TokenUsage
+  /** Sum of the known run costs in the bucket; null when no run in it had a known cost. */
+  costUsd: number | null
+  /** Runs in the bucket whose cost is unknown or partial. */
+  costUnknownRuns: number
+  turns: number
+  toolCalls: number
+  nudges: number
+  retries: number
+  wallMs: number
+  waitingMs: number
+  noResultTokens: number
+}
+
+/**
+ * runs:usageStats result: per-run rows (newest first), per-role rows across those runs, trend buckets (oldest
+ * first, only buckets with runs) and totals. Built from persisted summaries; summaries saved before usage tracking
+ * are normalized from their records once (RunUsage.legacy) and written back to the index.
+ */
+export interface UsageStats {
+  projectId: string
+  runs: RunUsageRow[]
+  /** RoleUsage summed across runs, keyed by roleId (else roleSlug); `agents` counts instances across runs. */
+  roles: (RoleUsage & { runs: number })[]
+  trend: UsageTrendPoint[]
+  /** Everything in `runs` summed (roles/models merged; wallMs summed). */
+  totals: RunUsage
+  generatedAt: number
+}
+
 // ---------- Runs ----------
 
 export type AgentState =
@@ -1093,9 +1354,17 @@ export interface AgentInstance {
   /** One-line description of what the agent is doing right now. */
   activity: string
   model?: string
+  /** Total prompt tokens (uncached input + cache read + cache write). Kept for older readers; see `usage`. */
   inputTokens: number
   outputTokens: number
+  /** usage.costUsd, or 0 when unknown. Kept for older readers; use usage.costUsd / usage.costSource to say "unknown". */
   costUsd: number
+  /**
+   * Token, cost, turn and tool-call metrics (see AgentUsage for who fills what). Always present on agents read
+   * through runs:get and on agent.upsert events from RunManager; optional because adapters may omit it before their
+   * first usage report.
+   */
+  usage?: AgentUsage
   startedAt: number
   endedAt?: number
   /** Last text the agent produced (truncated for the node card). */
@@ -1263,7 +1532,14 @@ export interface RunSummary {
   sessionId?: string
   startedAt: number
   endedAt?: number
+  /** usage.costUsd, or 0 when unknown. Kept for older readers; use usage.costUsd / usage.costSource. */
   totalCostUsd: number
+  /**
+   * Run usage metrics (RunUsage), kept current by RunManager while the run is live and persisted with the summary.
+   * Absent until the first computation, and on summaries saved before usage tracking until runs:get or
+   * runs:usageStats normalizes them.
+   */
+  usage?: RunUsage
   error?: string
   /** Set when this run continues an earlier run's SDK session; the earlier run's id. */
   resumedFrom?: string
@@ -1524,7 +1800,13 @@ export type RunEvent =
    * before the terminal run.status, so no card outlives its run.
    */
   | { type: 'permission.resolved'; runId: string; requestId: string; cancelled?: true }
+  /** Adapters report the provider's run total here; RunManager stores the priced total on the summary. Kept for older readers. */
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
+  /**
+   * The run's usage metrics changed (RunSummary.usage). Emitted by RunManager only (adapters never send it), at most
+   * about once per second while live, and once more when the run ends. Agent-level usage rides agent.upsert.
+   */
+  | { type: 'run.usage'; runId: string; usage: RunUsage }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
   | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
@@ -1925,6 +2207,11 @@ export interface OrgAIApi {
     list(query?: ModelsQuery): Promise<ProviderModel[]>
     /** Re-discover models (LiteLLM /v1/models and /model/info, Codex model/list) and return the new catalog. */
     refresh(query?: ModelsQuery): Promise<ProviderModel[]>
+    /**
+     * Every price OrgAI knows, for a pricing table: user overrides, LiteLLM proxy prices from the catalog and the
+     * built-in table, each with its source. An overridden model is listed once per source.
+     */
+    prices(query?: ModelPricesQuery): Promise<ModelPriceInfo[]>
   }
   /** Connection status, login progress, catalog changes and remaps. Returns an unsubscribe function. */
   onConnectionEvent(cb: (event: ConnectionEvent) => void): () => void
@@ -2047,6 +2334,11 @@ export interface OrgAIApi {
      * Empty arrays for an unknown or ended run.
      */
     pendingCards(runId: string): Promise<PendingCards>
+    /**
+     * Usage per run, per role and as trend buckets for one project, from persisted run summaries. Rejects for an
+     * unknown project. Never spends tokens.
+     */
+    usageStats(query: UsageStatsQuery): Promise<UsageStats>
   }
   window: {
     /**
@@ -2208,5 +2500,7 @@ export const IPC = {
   pluginsRemove: 'plugins:remove',
   runsListLive: 'runs:listLive',
   runsPendingCards: 'runs:pendingCards',
+  runsUsageStats: 'runs:usageStats',
+  modelsPrices: 'models:prices',
   windowOpenRun: 'window:openRun'
 } as const

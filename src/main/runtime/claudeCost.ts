@@ -72,6 +72,26 @@ export function rateFor(rates: CostRates, model: string | undefined): number {
   return rates.blended
 }
 
+/** Per-model sums of an agent's messages: token counts (Anthropic categories) and, with rates, the SDK-derived cost. */
+export function sumByModel(
+  messages: Iterable<{ model?: string; mix: TokenMix }>,
+  rates: CostRates | null,
+  fallbackModel = 'unknown'
+): Map<string, { mix: TokenMix; costUsd: number | null }> {
+  const out = new Map<string, { mix: TokenMix; costUsd: number | null }>()
+  for (const m of messages) {
+    const key = m.model || fallbackModel
+    const e = out.get(key) ?? { mix: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, costUsd: rates ? 0 : null }
+    e.mix.input += m.mix.input
+    e.mix.output += m.mix.output
+    e.mix.cacheRead += m.mix.cacheRead
+    e.mix.cacheCreation += m.mix.cacheCreation
+    if (rates) e.costUsd = (e.costUsd ?? 0) + weighted(m.mix) * rateFor(rates, m.model || undefined)
+    out.set(key, e)
+  }
+  return out
+}
+
 /** Cost of an agent's messages: each message's weighted tokens at its model's rate. */
 export function costOf(messages: Iterable<{ model?: string; mix: TokenMix }>, rates: CostRates): number {
   let usd = 0

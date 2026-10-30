@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path'
 import { adapterForProject, builtinModels, connectionProviderLabel, creationConnection, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS } from '@shared/types'
 import type {
+  ModelPriceInfo,
+  ModelPricesQuery,
   AdapterChoice,
   ConnectionEvent,
   ConnectionId,
@@ -25,6 +27,7 @@ import type {
   UsageStatus
 } from '@shared/types'
 import { CodexAppServer, codexHomeDir } from '../runtime/codexAppServer'
+import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
 import { LITELLM_KEY, type SecretStore } from '../store/secrets'
 import type { SettingsStore } from '../store/settings'
@@ -103,9 +106,14 @@ export class ConnectionService {
       for (const id of CONNECTION_IDS) {
         const list = parsed.models?.[id]
         if (Array.isArray(list)) {
-          this.discovered[id] = list.filter(
-            (m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && (m as ProviderModel).connection === id
-          )
+          this.discovered[id] = list
+            .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && (m as ProviderModel).connection === id)
+            .map((m) => {
+              // A stored price is untrusted file data: keep it only when it is valid, as a fresh object.
+              const { price: stored, ...rest } = m
+              const price = sanitizeModelPrice(stored)
+              return price ? { ...rest, price } : rest
+            })
         }
       }
     } catch (e) {
@@ -141,6 +149,11 @@ export class ConnectionService {
     if (query?.connection) return this.catalogFor(query.connection)
     const s = this.deps.settings.get()
     return CONNECTION_IDS.filter((id) => s.connections[id].enabled).flatMap((id) => this.catalogFor(id))
+  }
+
+  /** models:prices: user overrides, LiteLLM proxy prices and the built-in table (pricing.ts listModelPrices). */
+  prices(query?: ModelPricesQuery): ModelPriceInfo[] {
+    return listModelPrices(query, this.deps.settings.get().modelPrices ?? [], CONNECTION_IDS.flatMap((id) => this.catalogFor(id)))
   }
 
   /** Re-discover models (LiteLLM, Codex) and return the new catalog. A failed discovery keeps the old catalog and sets an error status. */

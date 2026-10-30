@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { buildLiteLLMModels, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl, parseKeyInfo, parseModelIds, parseModelInfo, parsePrice } from './litellm'
+import { LITELLM_MAX_ID_CHARS, LITELLM_MAX_MODELS, buildLiteLLMModels, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl, parseKeyInfo, parseModelIds, parseModelInfo, parsePrice } from './litellm'
 
 const fx = (name: string): unknown => JSON.parse(readFileSync(join(__dirname, 'fixtures', name), 'utf8'))
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -137,5 +137,13 @@ describe('fetchLiteLLMModels', () => {
     const fetchImpl = vi.fn()
     await expect(fetchLiteLLMModels('http://evil.example.com', 'k', fetchImpl as unknown as typeof fetch)).rejects.toThrow()
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('discovery bounds', () => {
+  it('caps the models kept from a discovery and skips overlong ids', () => {
+    const ids = Array.from({ length: LITELLM_MAX_MODELS + 5 }, (_, i) => `m${i}`)
+    expect(buildLiteLLMModels(ids, new Map())).toHaveLength(LITELLM_MAX_MODELS)
+    expect(buildLiteLLMModels(['x'.repeat(LITELLM_MAX_ID_CHARS + 1), 'ok'], new Map()).map((m) => m.id)).toEqual(['ok'])
   })
 })

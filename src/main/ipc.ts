@@ -37,6 +37,10 @@ import type {
   McpUpsertInput,
   MergeDecision,
   ModelsQuery,
+  ModelPriceInfo,
+  ModelPricesQuery,
+  UsageStats,
+  UsageStatsQuery,
   PermissionDecision,
   PluginUpsertInput,
   Project,
@@ -206,6 +210,11 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (!isValidId(runId)) throw new Error('Invalid run id')
     return runs.pendingCards(runId)
   })
+  ipcMain.handle(IPC.runsUsageStats, (_e, query: UsageStatsQuery): UsageStats => {
+    const q = query && typeof query === 'object' ? query : ({} as UsageStatsQuery)
+    if (!isValidId(q.projectId) || !projectOrHarness(q.projectId)) throw new Error('Project not found')
+    return runs.usageStats(q)
+  })
   ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
     const target = checkRunTarget(input, {
       project: (id) => projectOrHarness(id),
@@ -310,6 +319,11 @@ function registerConnectionIpc(projects: ProjectStore, connections: ConnectionSe
   ipcMain.handle(IPC.connectionsLogout, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.logout(id))
   ipcMain.handle(IPC.modelsList, (_e, query?: ModelsQuery): ProviderModel[] => connections.models(query))
   ipcMain.handle(IPC.modelsRefresh, (_e, query?: ModelsQuery): Promise<ProviderModel[]> => connections.refresh(query))
+  ipcMain.handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => {
+    const connection = query && typeof query === 'object' ? query.connection : undefined
+    if (connection !== undefined && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
+    return connections.prices(connection ? { connection } : undefined)
+  })
   ipcMain.handle(IPC.projectsRemapModels, (_e, input: RemapModelsInput): RemapModelsOutput => {
     if (!projects.get(input.projectId)) throw new Error('Project not found')
     return connections.remapModels(input)
