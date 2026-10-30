@@ -1,5 +1,25 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
+import {
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
+  Circle,
+  CircleDot,
+  FileText,
+  HelpCircle,
+  Info,
+  ListChecks,
+  MessageSquare,
+  MinusCircle,
+  Search,
+  ShieldQuestion,
+  Sparkles,
+  SquareTerminal,
+  Wrench,
+  XCircle,
+  type LucideIcon
+} from 'lucide-react'
 import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { selectedProject, useAppStore, useRunIndexes, type LogLine } from '../store/useAppStore'
@@ -9,6 +29,9 @@ import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgre
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
+import { Checkbox } from './ui/Checkbox'
+import { Icon } from './ui/Icon'
+import { autoContinueLine, humanizeToolUse, resultSummary, type ToolKind } from '../lib/transcriptRows'
 
 interface Props {
   /** The run this panel shows. */
@@ -20,20 +43,34 @@ interface Props {
   finished?: FinishedGroup
 }
 
-const STEP_ICONS: Record<PlanStep['status'], string> = {
-  pending: '○',
-  in_progress: '●',
-  done: '✓',
-  blocked: '!',
-  skipped: '–'
+const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
+  pending: Circle,
+  in_progress: CircleDot,
+  done: CheckCircle2,
+  blocked: AlertTriangle,
+  skipped: MinusCircle
+}
+
+const TOOL_ICONS: Record<ToolKind, LucideIcon> = {
+  ask: HelpCircle,
+  plan: ListChecks,
+  propose: Sparkles,
+  permission: ShieldQuestion,
+  edit: FileText,
+  read: FileText,
+  run: SquareTerminal,
+  search: Search,
+  agent: Bot,
+  message: MessageSquare,
+  other: Wrench
 }
 
 const STEP_LABELS: Record<PlanStep['status'], string> = {
-  pending: 'pending',
-  in_progress: 'in progress',
-  done: 'done',
-  blocked: 'blocked',
-  skipped: 'skipped'
+  pending: 'Not started',
+  in_progress: 'In progress',
+  done: 'Done',
+  blocked: 'Blocked',
+  skipped: 'Skipped'
 }
 
 /** The orchestrator's plan: goal, steps with status, and how the automatic continuation stands. */
@@ -42,41 +79,42 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
   if (!plan) {
     return (
       <div className="plan-view">
-        <div className="entry system">
-          No plan yet. On work runs the orchestrator starts by calling set_plan; the harness then keeps it going until every step is done.
-        </div>
+        <p className="panel-note">No plan yet. On work runs the orchestrator writes a plan first; it appears here, and OrgAI keeps the run going until every step is done.</p>
       </div>
     )
   }
   const { done, total } = planProgress(plan)
   const max = project?.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
   const auto = project?.autoContinue !== false
+  const cont = autoContinueLine(auto, plan.autoContinues, max)
+  const status = plan.status === 'active' ? 'In progress' : plan.status === 'done' ? 'Done' : 'Blocked'
   return (
     <div className="plan-view">
       <div className="plan-head">
         <div className="plan-goal">{plan.goal}</div>
-        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        <div className="row plan-pills">
           <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'is-running'}`}>
-            <span className="dot" /> {plan.status === 'active' ? 'in progress' : plan.status}
+            <span className="dot" /> {status}
           </span>
           <span className="pill">
-            {done}/{total} steps
+            {done} of {total} steps done
           </span>
-          <span className="pill" title={auto ? 'Times the harness re-engaged the orchestrator automatically in this run' : 'Automatic continue is off for this project'}>
-            {auto ? `auto-continued ${plan.autoContinues} of ${max}` : 'auto-continue off'}
+          <span className="pill" title={cont.explain}>
+            {cont.pill}
           </span>
         </div>
+        <p className="panel-note">{cont.explain}</p>
       </div>
       {plan.status === 'blocked' && plan.blockedReason && <div className="plan-blocked">Blocked: {plan.blockedReason}</div>}
       <ol className="plan-steps">
         {plan.steps.map((s) => (
           <li key={s.id} className={`plan-step ${s.status}`}>
-            <span className="plan-icon" title={STEP_LABELS[s.status]} aria-label={STEP_LABELS[s.status]}>
-              {STEP_ICONS[s.status]}
+            <span className="plan-icon" title={STEP_LABELS[s.status]} role="img" aria-label={STEP_LABELS[s.status]}>
+              <Icon icon={STEP_ICONS[s.status]} size="sm" />
             </span>
             <div className="plan-body">
               <div className="plan-title">
-                <span className="plan-id">{s.id}</span> {s.title}
+                {s.title}
                 {s.owner && <span className="plan-owner">{s.owner}</span>}
               </div>
               {s.note && <div className="plan-note">{s.note}</div>}
@@ -113,14 +151,41 @@ function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement
   )
 }
 
-function describeInput(input: unknown): string {
-  if (input && typeof input === 'object') {
-    const i = input as Record<string, unknown>
-    const key = ['command', 'file_path', 'pattern', 'query', 'url', 'prompt', 'description'].find((k) => typeof i[k] === 'string')
-    if (key) return `${key}: ${String(i[key]).slice(0, 400)}`
-  }
-  const s = JSON.stringify(input)
-  return s.length > 400 ? s.slice(0, 400) + '…' : s
+function ToolUseRow({ name, input }: { name: string; input: unknown }): ReactElement {
+  const row = humanizeToolUse(name, input)
+  return (
+    <div className="entry tool_use">
+      <Icon icon={TOOL_ICONS[row.kind]} size="sm" />
+      <div className="tool-main">
+        <div className="tool-label">{row.label}</div>
+        {row.details && row.details !== '{}' && (
+          <details className="entry-detail">
+            <summary>Show details</summary>
+            <pre>{row.details}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ToolResultRow({ content, isError }: { content: string; isError: boolean }): ReactElement {
+  const text = content || '(empty)'
+  const multi = text.length > 100 || text.includes('\n')
+  return (
+    <div className={`entry tool_result${isError ? ' error' : ''}`}>
+      <Icon icon={isError ? XCircle : CheckCircle2} size="sm" />
+      <div className="tool-main">
+        <div className="tool-label">{isError ? `Failed: ${resultSummary(text, true)}` : resultSummary(text, false)}</div>
+        {multi && (
+          <details className="entry-detail">
+            <summary>Show output</summary>
+            <pre>{text}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export default function TranscriptPanel({ runId, agent, entries, logs, finished }: Props): ReactElement {
@@ -141,7 +206,8 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
 
   const visible = showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')
 
-  const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
+  const headerTitle = tab === 'transcript' ? (agent ? agent.name : finished ? 'Finished reports' : 'Transcript') : tab === 'plan' ? 'Plan' : 'Logs'
+  const hasErrors = logs.some((l) => l.level === 'error')
   return (
     <>
       <div className="side-header">
@@ -150,63 +216,48 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
         </span>
         <h2 title={headerTitle}>{headerTitle}</h2>
         <div className="side-spacer" />
-        <div className="tabs">
-          <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>
-            Transcript
-          </button>
-          {(isWork || plan) && (
-            <button className={tab === 'plan' ? 'active' : ''} onClick={() => setTab('plan')} title={plan ? `Plan: ${plan.status}` : 'No plan yet'}>
-              Plan {plan?.status === 'blocked' ? '!' : ''}
+        <div className="side-tabs">
+          <div className="tabs" role="group" aria-label="This agent">
+            <button type="button" className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')} title="What the selected agent said and did">
+              Transcript
             </button>
-          )}
-          <button className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>
-            Logs {logs.some((l) => l.level === 'error') ? '!' : ''}
-          </button>
+          </div>
+          <div className="tabs" role="group" aria-label={`Run ${runTag(index)}`} title={`These tabs cover the whole run ${runTag(index)}`}>
+            {(isWork || plan) && (
+              <button type="button" className={tab === 'plan' ? 'active' : ''} onClick={() => setTab('plan')} title={plan ? `Plan: ${plan.status}` : 'No plan yet'}>
+                Plan{plan?.status === 'blocked' ? ' !' : ''}
+              </button>
+            )}
+            <button type="button" className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>
+              Logs{hasErrors ? ' !' : ''}
+            </button>
+          </div>
         </div>
       </div>
       {tab === 'plan' && <PlanView plan={plan} />}
       {tab === 'transcript' && finished && !agent && <FinishedList group={finished} />}
       {agent && tab === 'transcript' && (
-        <div className="agent-summary">
-          <span className="k">Role</span>
-          <span className="v">{agent.roleSlug}</span>
-          <span className="k">Model</span>
-          <span className="v">{agent.model ?? '—'}</span>
-          <span className="k">State</span>
-          <span className="v">{agent.state}</span>
-          <span className="k">Elapsed</span>
-          <span className="v">{formatElapsed(agent.startedAt, agent.endedAt)}</span>
-          <span className="k">Tokens</span>
-          <span className="v">
+        <div className="agent-meta" aria-label="Agent details">
+          <span title={`Role: ${agent.roleSlug}`}>{agent.roleSlug}</span>
+          <span>{agent.model ?? 'model unknown'}</span>
+          <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>
-          {agent.costUsd > 0 && (
-            <>
-              <span className="k">Cost</span>
-              <span className="v" title={COST_ESTIMATE_HINT}>
-                {formatCost(agent.costUsd)} (API-equivalent estimate)
-              </span>
-            </>
-          )}
+          {agent.costUsd > 0 && <span title={COST_ESTIMATE_HINT}>{formatCost(agent.costUsd)} est.</span>}
+          <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>
+          <span>{agent.state}</span>
           {agent.worktree && (
-            <>
-              <span className="k">Worktree</span>
-              <span className="v" title={agent.worktree.path}>
-                {agent.worktree.branch} · {agent.worktree.status}
-              </span>
-            </>
+            <span title={agent.worktree.path}>
+              {agent.worktree.branch} · {agent.worktree.status}
+            </span>
           )}
         </div>
       )}
       {tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <div className="transcript">
-          {!agent && <div className="entry system">Select an agent on the chart to read its transcript.</div>}
-          {agent && (
-            <label className={`check ${showThinking ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }}>
-              <input type="checkbox" checked={showThinking} onChange={(e) => setShowThinking(e.target.checked)} /> Show thinking
-            </label>
-          )}
-          {agent && visible.length === 0 && !partial && <div className="entry system">Nothing yet.</div>}
+          {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
+          {agent && <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />}
+          {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
           {visible.map((e) => {
             const b = e.block
             switch (b.kind) {
@@ -234,36 +285,26 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
                   </div>
                 )
               case 'tool_use':
-                return (
-                  <div key={e.id} className="entry tool_use">
-                    <div className="tag">
-                      <span>{b.name}</span>
-                    </div>
-                    {describeInput(b.input)}
-                  </div>
-                )
+                return <ToolUseRow key={e.id} name={b.name} input={b.input} />
               case 'tool_result':
-                return (
-                  <div key={e.id} className={`entry tool_result ${b.isError ? 'error' : ''}`}>
-                    <div className="tag">
-                      <span>{b.isError ? 'tool error' : 'tool result'}</span>
-                    </div>
-                    {b.content || '(empty)'}
-                  </div>
-                )
+                return <ToolResultRow key={e.id} content={b.content} isError={b.isError} />
               case 'system': {
                 const peer = parsePeerNote(b.text)
                 if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
-                // Harness lines (nudges, hand-offs, limit notices) are system rows with the full text behind a disclosure.
+                const harness = e.source === 'harness'
+                // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
                 return (
-                  <div key={e.id} className={`entry system${e.source === 'harness' ? ' harness' : ''}`}>
-                    <Markdown text={b.text} />
-                    {b.detail && (
-                      <details className="entry-detail">
-                        <summary>Full text sent to the agent</summary>
-                        <pre>{b.detail}</pre>
-                      </details>
-                    )}
+                  <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
+                    <Icon icon={harness ? Info : MessageSquare} size="sm" />
+                    <div className="tool-main">
+                      <Markdown text={b.text} />
+                      {b.detail && (
+                        <details className="entry-detail">
+                          <summary>Show instruction</summary>
+                          <pre>{b.detail}</pre>
+                        </details>
+                      )}
+                    </div>
                   </div>
                 )
               }
@@ -281,7 +322,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           {logs.length === 0 && <span>No log lines yet.</span>}
           {logs.map((l, i) => (
             <div key={i} className={l.level}>
-              <span style={{ opacity: 0.6 }}>{new Date(l.at).toLocaleTimeString()} </span>
+              <span className="log-time">{new Date(l.at).toLocaleTimeString()} </span>
               {l.message}
             </div>
           ))}

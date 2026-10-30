@@ -26,9 +26,9 @@ Or each step on its own (always in this order, because e2e uses `out/`):
 | command | covers | observed |
 | --- | --- | --- |
 | `npm run typecheck` | `tsc --noEmit` for `tsconfig.node.json` and `tsconfig.web.json` | pass, ~1 s |
-| `npm test` | vitest, node env, `*.test.ts` beside modules: 52 files, 641 passed, 2 skipped (the live `codex app-server` suite, `describe.skipIf(!live)` in `codexAppServer.test.ts`) | pass, ~21 s |
+| `npm test` | vitest, node env, `*.test.ts` beside modules: 65 files, 773 passed, 2 skipped (the live `codex app-server` suite, `describe.skipIf(!live)` in `codexAppServer.test.ts`) | pass, ~21 s |
 | `npm run build` | `electron-vite build` into `out/` (main, preload, renderer) | pass, ~2 s (renderer bundle is ~2 MB) |
-| `npm run e2e:free` | `layout.mjs`, `maintenance.mjs`, `connections.mjs` against `out/` with the mock adapter: 134 PASS, 0 FAIL | pass, ~43 s |
+| `npm run e2e:free` | `layout.mjs`, `runs.mjs` (two concurrent runs, tabs, New run page, finished-run choice, sidebar, History, run-messaging Switch, run window title), `maintenance.mjs`, `connections.mjs` against `out/` with the mock adapter: 173 PASS, 0 FAIL | pass, ~43 s |
 
 The e2e scripts print one `PASS`/`FAIL` line per check and exit 1 on any FAIL. A temp data dir is kept (path printed)
 when a check fails. Screenshots go to `e2e/shots/` (gitignored). Nothing in the gate spends tokens or touches your real
