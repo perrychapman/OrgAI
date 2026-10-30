@@ -3,6 +3,10 @@ import { useState } from 'react'
 import type { Project } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
+import { Button } from './ui/Button'
+import { Checkbox } from './ui/Checkbox'
+import { Textarea } from './ui/Textarea'
+import { useConfirm } from './ui/ConfirmDialog'
 
 export default function DraftPanel({ project }: { project: Project }): ReactElement {
   const drafting = useAppStore((s) => s.drafting)
@@ -12,17 +16,27 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
   const applyDraft = useAppStore((s) => s.applyDraft)
   const discardDraft = useAppStore((s) => s.discardDraft)
   const startSetup = useAppStore((s) => s.startSetup)
+  const { confirm, dialog } = useConfirm()
   const [instruction, setInstruction] = useState('')
-  const [mode, setMode] = useState<'replace' | 'revise'>('revise')
+  const [startFresh, setStartFresh] = useState(false)
   const [architectBusy, setArchitectBusy] = useState(false)
   const [revision, setRevision] = useState('')
 
   const reviseWithArchitect = async (): Promise<void> => {
+    const text = revision.trim()
+    if (!text) {
+      const ok = await confirm({
+        title: 'Review the whole project?',
+        body: 'With nothing written, the Architect reviews the repository and revises the architecture document, org chart and settings. Starts an Architect session (spends tokens).',
+        confirmLabel: 'Start full review'
+      })
+      if (!ok) return
+    }
     setArchitectBusy(true)
     try {
       await startSetup(
-        revision.trim()
-          ? `Revise this project's org chart and setup: ${revision.trim()}`
+        text
+          ? `Revise this project's org chart and setup: ${text}`
           : 'Review this project and revise its architecture document, org chart and settings where they no longer fit the code.'
       )
       setRevision('')
@@ -36,104 +50,98 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
       <div className="side-header">
         <h2>Design the org chart with AI</h2>
       </div>
-      <div className="side-body">
-        <div className="draft-box" style={{ marginTop: 0, marginBottom: 14 }}>
-          <strong>Revise with the Architect</strong>
-          <div className="rationale">
+      <div className="side-body stack-3">
+        <section className="draft-box stack-2" aria-labelledby="draft-architect">
+          <h3 className="side-section-title" id="draft-architect">
+            Revise with the Architect
+          </h3>
+          <p className="rationale">
             Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles on the
             live view for you to approve. Leave it empty for a full review.
             {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
-          </div>
-          <textarea
-            className="textarea"
-            style={{ minHeight: 90, marginBottom: 10 }}
+          </p>
+          <Textarea
+            aria-label="What should change"
+            rows={4}
             value={revision}
-            onChange={(e) => setRevision(e.target.value)}
+            onChange={setRevision}
             placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to Sonnet."'
           />
-          <button className="btn primary" disabled={architectBusy} onClick={() => void reviseWithArchitect()}>
-            {architectBusy ? (
-              <>
-                <span className="spinner" /> Starting…
-              </>
-            ) : (
-              'Revise with the Architect'
-            )}
-          </button>
-        </div>
-        <div className="side-section-title">Quick draft (no repository access)</div>
-        <p style={{ margin: '0 0 10px', color: 'var(--text-dim)', fontSize: 12.5 }}>
-          A one-shot drafter that works from your description alone, without reading the repository or asking for approval.
-        </p>
-        <div className="field">
-          <textarea
-            className="textarea"
-            style={{ minHeight: 110 }}
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            placeholder={
-              project.brief
-                ? 'e.g. "Add a dedicated test engineer and a database specialist; keep the reviewer read-only."'
-                : 'e.g. "Next.js + Postgres SaaS. Mostly feature work and bug fixes, occasional migrations. I want a strict reviewer."'
-            }
-          />
-        </div>
-        <div className="row" style={{ marginBottom: 10 }}>
-          <label className={`check ${mode === 'revise' ? 'on' : ''}`}>
-            <input type="radio" checked={mode === 'revise'} onChange={() => setMode('revise')} /> Revise current chart
-          </label>
-          <label className={`check ${mode === 'replace' ? 'on' : ''}`}>
-            <input type="radio" checked={mode === 'replace'} onChange={() => setMode('replace')} /> Start fresh
-          </label>
-        </div>
-        <button
-          className="btn primary"
-          disabled={drafting || (!instruction.trim() && !project.brief.trim())}
-          onClick={() => void draftOrgChart({ instruction: instruction.trim() || 'Design an org chart that fits the project brief.', mode })}
-        >
-          {drafting ? (
-            <>
-              <span className="spinner" /> Drafting…
-            </>
-          ) : (
-            'Draft org chart'
-          )}
-        </button>
-        {draftError && (
-          <div className="draft-box" style={{ borderColor: 'rgba(255,107,107,0.5)', color: 'var(--danger)' }}>
-            {draftError}
+          <div className="row gap-2 wrap">
+            <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>
+              {architectBusy ? 'Starting…' : 'Revise with the Architect'}
+            </Button>
+            <span className="hint">Starts an Architect session (spends tokens).</span>
           </div>
-        )}
+        </section>
+
+        <details className="disclosure">
+          <summary>Advanced: quick draft</summary>
+          <div className="stack-2 disclosure-body">
+            <p className="hint">
+              A one-shot drafter that works from your description alone, without reading the repository or asking for approval.
+            </p>
+            <Textarea
+              aria-label="Describe the team you want"
+              rows={5}
+              value={instruction}
+              onChange={setInstruction}
+              placeholder={
+                project.brief
+                  ? 'e.g. "Add a dedicated test engineer and a database specialist; keep the reviewer read-only."'
+                  : 'e.g. "Next.js + Postgres SaaS. Mostly feature work and bug fixes, occasional migrations. I want a strict reviewer."'
+              }
+            />
+            <Checkbox checked={startFresh} onChange={setStartFresh} label="Start fresh" description="Replace the current chart instead of revising it." />
+            <div>
+              <Button
+                loading={drafting}
+                disabled={!instruction.trim() && !project.brief.trim()}
+                onClick={() =>
+                  void draftOrgChart({
+                    instruction: instruction.trim() || 'Design an org chart that fits the project brief.',
+                    mode: startFresh ? 'replace' : 'revise'
+                  })
+                }
+              >
+                {drafting ? 'Drafting…' : 'Draft org chart'}
+              </Button>
+            </div>
+          </div>
+        </details>
+
+        {draftError && <div className="draft-box is-error">{draftError}</div>}
         {draftResult && (
-          <div className="draft-box">
+          <section className="draft-box stack-2" aria-label="Draft proposal">
             <strong>Proposal: {draftResult.roles.length} roles</strong>
-            <div className="rationale">{draftResult.rationale}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+            <p className="rationale">{draftResult.rationale}</p>
+            <div className="stack-2">
               {draftResult.roles.map((r) => (
-                <div key={r.id} className="row" style={{ fontSize: 12.5 }}>
-                  <span className="avatar" style={{ ['--role' as string]: r.color, width: 22, height: 22, fontSize: 9 }}>
+                <div key={r.id} className="row draft-role">
+                  <span className="avatar sm" style={{ ['--role' as string]: r.color }} aria-hidden="true">
                     {initials(r.name)}
                   </span>
-                  <span style={{ fontWeight: 600 }}>{r.name}</span>
+                  <span className="draft-role-name">{r.name}</span>
                   <span className="chip">{r.model}</span>
                   {r.canSpawn && <span className="chip">leads {r.spawnable.length}</span>}
-                  <span style={{ color: 'var(--text-faint)', marginLeft: 'auto', fontSize: 11 }}>
-                    {r.reportsTo ? `→ ${draftResult.roles.find((x) => x.id === r.reportsTo)?.name ?? ''}` : 'root'}
+                  <span className="draft-role-parent">
+                    {r.reportsTo ? `Reports to ${draftResult.roles.find((x) => x.id === r.reportsTo)?.name ?? 'unknown'}` : 'Root'}
                   </span>
                 </div>
               ))}
             </div>
-            <div className="row">
-              <button className="btn primary" onClick={applyDraft}>
+            <div className="row gap-2">
+              <Button variant="primary" onClick={applyDraft}>
                 Apply to project
-              </button>
-              <button className="btn ghost" onClick={discardDraft}>
+              </Button>
+              <Button variant="ghost" onClick={discardDraft}>
                 Discard
-              </button>
+              </Button>
             </div>
-          </div>
+          </section>
         )}
       </div>
+      {dialog}
     </>
   )
 }

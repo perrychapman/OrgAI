@@ -135,7 +135,7 @@
   border-radius: var(--radius-full);
   background: var(--text-tertiary);
 }
-.run-dot.live {
+.run-dot.is-running {
   background: var(--success);
   animation: breathe 1.4s ease-in-out infinite;
 }
@@ -150,7 +150,7 @@
   background: var(--danger);
 }
 @media (prefers-reduced-motion: reduce) {
-  .run-dot.live {
+  .run-dot.is-running {
     animation: none;
   }
 }
@@ -228,6 +228,17 @@
 .run-tab-menuitem:hover {
   background: var(--surface-2);
   color: var(--text-primary);
+}
+.run-tab-ctx {
+  position: fixed;
+}
+.run-tab-menuitem:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+.run-tab-badge .badge-unread {
+  display: inline-flex;
+  color: var(--info-text);
 }
 .run-tabs-notice {
   flex: 0 1 auto;

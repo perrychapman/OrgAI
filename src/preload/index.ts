@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
+  AppSettingsInfo,
   ConnectionEvent,
   ContinueRunInput,
   DraftRequest,
@@ -22,6 +23,7 @@ const api: OrgAIApi = {
     save: (project: Project) => ipcRenderer.invoke(IPC.projectsSave, project),
     remove: (id: string) => ipcRenderer.invoke(IPC.projectsRemove, id),
     pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
+    checkPath: (path: string) => ipcRenderer.invoke(IPC.projectsCheckPath, path),
     remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input),
     previewRemap: (input) => ipcRenderer.invoke(IPC.projectsPreviewRemap, input)
   },
@@ -73,7 +75,12 @@ const api: OrgAIApi = {
     continue: (input: ContinueRunInput) => ipcRenderer.invoke(IPC.runsContinue, input),
     decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
-    cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId)
+    cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
+    listLive: () => ipcRenderer.invoke(IPC.runsListLive)
+  },
+  window: {
+    // Only the two ids cross; main validates them against the stores before opening anything.
+    openRun: (target: FocusRunTarget) => ipcRenderer.invoke(IPC.windowOpenRun, { projectId: target?.projectId, runId: target?.runId })
   },
   setup: {
     start: (input) => ipcRenderer.invoke(IPC.setupStart, input),
@@ -106,6 +113,11 @@ const api: OrgAIApi = {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
     set: (s: AppSettings) => ipcRenderer.invoke(IPC.settingsSet, s)
   },
+  onSettingsChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, settings: AppSettingsInfo): void => cb(settings)
+    ipcRenderer.on(IPC.settingsChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.settingsChanged, listener)
+  },
   app: {
     openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path),
     openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
@@ -121,6 +133,7 @@ const api: OrgAIApi = {
     refresh: () => ipcRenderer.invoke(IPC.usageRefresh)
   },
   notifications: {
+    /** @deprecated Mirrors into AppSettings.notifications; removed with NotificationsToggle in phase 1. */
     setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
   }
 }

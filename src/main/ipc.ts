@@ -12,6 +12,7 @@ import type {
   ConnectionStatus,
   ContinueRunInput,
   DraftRequest,
+  FocusRunTarget,
   McpAnswerInstallInput,
   McpAssistInput,
   McpMutationResult,
@@ -26,6 +27,8 @@ import type {
   PermissionDecision,
   PluginUpsertInput,
   Project,
+  ProjectCreateInput,
+  ProjectPathCheck,
   ProposalDecision,
   ProviderConnection,
   ProviderModel,
@@ -36,7 +39,6 @@ import type {
   RemapResult,
   RunSummary,
   SendRunInput,
-  SetupKind,
   StartRunInput
 } from '@shared/types'
 import { CONNECTION_IDS, IPC } from '@shared/types'
@@ -53,7 +55,9 @@ import { draftOrgChart } from './ai/draft'
 import { log, logPath, logsDir } from './log'
 import { addRules, listRules, removeRule } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
-import { buildAppInfo } from './appInfo'
+import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
+import { checkProjectPath } from './store/projects'
+import { checkRunTarget } from './windowScope'
 
 export interface IpcServices {
   projects: ProjectStore
@@ -65,14 +69,21 @@ export interface IpcServices {
   mcp: McpService
   /** Ids of the adapters handed to RunManager; `app:info` reports `mockAdapter` from it. */
   adapterIds: readonly string[]
+  /**
+   * window:openRun after validation: focus the window already scoped to this run, or open a new one at
+   * `#/run/<projectId>/<runId>` (index.ts window factory).
+   */
+  openRunWindow(target: FocusRunTarget): void
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, openRunWindow }: IpcServices): void {
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projects.get(id))
-  ipcMain.handle(IPC.projectsCreate, (_e, input: { name: string; path: string; brief: string; setupKind?: SetupKind }) =>
-    projects.create(input, settings.get())
+  // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
+  ipcMain.handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
+    projects.create(input, settings.get(), { mockAvailable: adapterIds.includes('mock') })
   )
+  ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => checkProjectPath(path))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   ipcMain.handle(IPC.projectsSave, (_e, project: Project) => projects.saveFromRenderer(project))
   ipcMain.handle(IPC.projectsRemove, async (_e, id: string) => {
@@ -150,6 +161,14 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.runsInterrupt, (_e, runId: string) => runs.interrupt(runId))
   ipcMain.handle(IPC.runsStop, (_e, runId: string) => runs.stop(runId))
   ipcMain.handle(IPC.runsList, (_e, projectId: string) => runs.list(projectId))
+  ipcMain.handle(IPC.runsListLive, (): RunSummary[] => runs.liveRuns())
+  ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
+    const target = checkRunTarget(input, {
+      project: (id) => projects.get(id),
+      runProject: (runId) => runs.summary(runId)?.projectId
+    })
+    openRunWindow(target)
+  })
   ipcMain.handle(
     IPC.runsDecide,
     (_e, input: { runId: string; requestId: string; decision: PermissionDecision }) =>
@@ -181,13 +200,17 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     return { ...(await claudeAuthStatus()), mode: 'subscription' }
   })
 
-  const settingsInfo = (): AppSettingsInfo => ({ ...settings.get(), dataDir: settings.dataDir })
+  // settings.set() notifies SettingsStore listeners: index.ts applies the theme and broadcasts settings:changed.
+  const settingsInfo = (): AppSettingsInfo => buildSettingsInfo(settings.get(), { dataDir: settings.dataDir, appVersion: app.getVersion() })
   ipcMain.handle(IPC.settingsGet, () => settingsInfo())
   ipcMain.handle(IPC.settingsSet, (_e, next: AppSettings) => {
-    // Drop the read-only field if the renderer echoed it back.
-    const { dataDir: _ignored, ...rest } = next as AppSettings & { dataDir?: string }
-    settings.set(rest)
+    settings.set(stripSettingsInfo(next))
     return settingsInfo()
+  })
+  // Deprecated (phase 1 removes NotificationsToggle): a mirror of AppSettings.notifications, the only source the
+  // notifier reads.
+  ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean): void => {
+    settings.set({ ...settings.get(), notifications: !!enabled })
   })
   ipcMain.handle(IPC.appOpenPath, (_e, path: string) => shell.openPath(path))
   ipcMain.handle(IPC.appLogPath, () => logPath())

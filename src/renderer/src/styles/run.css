@@ -221,57 +221,33 @@
   display: flex;
   flex-direction: column;
 }
+
+/* Row 1: CanvasFrame (stage, tray, footer), row 2: composer. The side panel spans both rows. */
 .run-body {
   flex: 1;
   min-height: 0;
   display: grid;
   /* Side column narrows with the main area (cqi of .main), capped at 400px. */
   grid-template-columns: minmax(0, 1fr) clamp(280px, 32cqi, 400px);
-  /* Row 1: in-flow decisions (zero height when empty), row 2: canvas, row 3: composer. */
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
-.run-body .canvas {
-  grid-row: 2;
-  grid-column: 1;
-  min-height: 200px;
-  display: flex;
-  flex-direction: column;
+.run-body:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: minmax(0, 1fr) 40px;
 }
-.canvas-flow {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-}
-.live-cards {
+.run-body > .canvas-frame {
   grid-row: 1;
   grid-column: 1;
-  container-type: inline-size;
-  container-name: live-cards;
-  max-height: 50vh;
-  overflow-y: auto;
-  min-width: 0;
+  min-height: 200px;
+}
+.run-body > .side-panel {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+}
+.live-panel {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  background: var(--surface-1);
-}
-.live-cards:not(:empty) {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
-}
-.live-cards:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: calc(-1 * var(--space-0h));
-}
-.live-cards-count {
-  align-self: flex-start;
-}
-.run-body .side {
-  grid-row: 1 / span 3;
-  grid-column: 2;
-  container-type: inline-size;
-  container-name: side;
 }
 
 /* A decision card with the run it belongs to named above it. */
@@ -301,7 +277,7 @@
   color: var(--text-primary);
 }
 .composer {
-  grid-row: 3;
+  grid-row: 2;
   grid-column: 1;
   border-top: 1px solid var(--border-default);
   background: var(--surface-1);
@@ -401,27 +377,6 @@
   outline-offset: 1px;
 }
 
-/* The legend is a strip under the canvas, in flow: nothing but React Flow's own controls floats over the canvas. */
-.legend {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
-  background: var(--surface-1);
-  border-top: 1px solid var(--border-default);
-  padding: var(--space-1) var(--space-3);
-}
-.legend i {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  margin-right: 5px;
-  vertical-align: middle;
-}
 
 /* ---------- Folded "done" groups ---------- */
 

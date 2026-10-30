@@ -61,7 +61,7 @@ describe('runStatus', () => {
     expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Finished', note: 'Ended when OrgAI closed' })
   })
   it('maps words to tones', () => {
-    expect(runStatus('running').tone).toBe('live')
+    expect(runStatus('running').tone).toBe('is-running')
     expect(runStatus('error').tone).toBe('danger')
     expect(runStatus('finished').tone).toBe('ok')
   })

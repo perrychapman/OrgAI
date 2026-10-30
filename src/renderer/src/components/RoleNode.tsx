@@ -13,7 +13,7 @@ function RoleNodeView({ data, selected }: NodeProps<RoleFlowNode>): ReactElement
       {role.reportsTo !== null && <Handle type="target" position={Position.Top} />}
       <div className="head">
         <div className="avatar">{initials(role.name)}</div>
-        <div style={{ minWidth: 0 }}>
+        <div className="head-text">
           <div className="name">{role.name}</div>
           <div className="slug">{role.slug}</div>
         </div>

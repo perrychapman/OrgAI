@@ -2,6 +2,8 @@
 
 Status: proposal, awaiting approval of the decisions in section 11. Findings behind it are in `ui-review.md`; the build order is in `plan.md`.
 
+Revision 2 (UX review): section 12 supersedes earlier sections wherever they differ (tab names, the sheet and floating tray for decisions, the sidebar footer, the status vocabulary). Findings are cited as `ux-review.md` IDs (H5, M4 and so on).
+
 Related: connections, model remap, the model picker, MCP servers and plugins, and the live MCP install approval are specified in `providers-and-mcp.md`.
 
 Goal from the user: the app should feel **modern and clean**, and controls and data that are currently poorly organized should be grouped and easy to find.
@@ -58,7 +60,7 @@ Header (one row, 52 px) then a tab bar:
 | Breadcrumb | `Projects / <name>` (the first part links back). |
 | Working directory | Mono text, middle-truncated, with a copy icon button and tooltip of the full path. Not a pill. |
 | Run status | A single `Badge` (dot + label) for the viewed run, from the single vocabulary: `Working`, `Waiting for you`, `Idle`, `Paused`, `Finished`, `Failed`. The topbar badge uses `needsYou` (project-wide: it shows `Waiting for you` when any run of the project needs the user, otherwise the viewed run's status). Outside the run header this is the only place status is repeated. |
-| Tabs (Radix Tabs, underline style) | `Live` · `History` · `Org chart & settings`. `History` is a top-level project tab (UX review `ux-review-runs.md`, option D); the side panel no longer has a `Runs` tab. |
+| Tabs (Radix Tabs, underline style) | `Live` · `History` · `Org chart` · `Settings` (section 12.2 adds Org chart and Settings as separate tabs). `History` is a top-level project tab (UX review `ux-review-runs.md`, option D); the side panel no longer has a `Runs` tab. |
 
 Rules: tabs are real `role=tablist`, arrow-key navigable, deep-linkable through the store (`projectTab`). The tab names follow the shipped app (`Live`, `Org chart & settings`); this supersedes the earlier proposal to rename them `Run` / `Org chart` / `Settings`.
 
@@ -132,7 +134,7 @@ Settings that exist in both scopes (permission mode, cost cap, runs to keep, iso
   - **Decision cards always name the run**: `Run R2: Add caching` in the card header, so a card is never ambiguous when several runs wait.
   - At 1024x640 row 1 shows about five tabs then `+n`, and the prompt column of the header truncates first; at 1600 px all tabs show their full 24-character prompt and the header shows the start time inline.
 - **Canvas controls** (React Flow `Controls`) gain a `Fold finished (n)` toggle button and a `Legend` popover button, replacing the always-visible legend. The legend shows icon + color + label for each state.
-- **Attention (decisions)**, three tiers, one visual family (`DecisionCard`: icon, title, agent, body, footer actions):
+- **Attention (decisions)**: superseded by section 12.1 (one docked tray, one anatomy; no floating tray, no sheet). The text below is kept only as history:
   - *Permission requests*: compact cards stacked in a **tray** docked to the top-right of the canvas, width 360, max three visible then `+n more` (opens the Inbox tab). Actions: primary `Allow once`, a split `Allow ▾` menu (`For this session`, `Always for this project`) shown only when suggestions exist, and `Deny`. The rule labels (`ruleLabels`) show inside the menu items.
   - *Proposals, questions and merge reviews*: open in a **right-anchored sheet** (560 px, non-modal Radix Dialog) over the side panel, never over the canvas. If the user dismisses it (`Review later` or `Esc`), it collapses into a banner on the run bar (`Architect proposal waiting · Review`) and a badge on the `Inbox` tab; the agents stay blocked as today.
   - Every item appears in the **Inbox** tab of the side panel (badge count). Opening Inbox is how the user finds anything dismissed.
@@ -562,3 +564,145 @@ Naming of buttons whose accessible names are relied on (`End session`, `Approve`
 | D10 | Do not ship a density setting (comfortable only) in v1. | Agree. |
 | D11 | Remove the sidebar notifications checkbox and `Logs` button; move to Settings. Remove the `notifications.setEnabled` IPC call from the renderer (main keeps the channel for now). | Yes; also fixes the dead-setting bug (H3). |
 | D12 | Create the brand SVGs in this overhaul (Brief 0) and regenerate `build/icon.png` from them, or only add SVGs that match the existing icon. | Add SVGs matching the existing icon; regenerate only if the glyph is refined. |
+
+## 12. Revision 2: decisions from the UX review
+
+Adaptation note. OrgAI is a dense desktop tool, not a marketing surface: no hero areas, no illustrations, no decorative gradients outside the brand mark. Restraint over flourish: one accent, status color only for status, hierarchy from size, weight and spacing. Monospace is allowed for ids, paths, branch names and aligned figures (`.tabular`). The `frontend-design` skill (vendored, unmodified) supplies the process (plan, review against the brief, revise); its "bold aesthetic" guidance is deliberately narrowed to this note.
+
+### 12.1 Decision cards and the docked decision tray (ux-review H5, M4, M5, M15)
+
+Layering rule (one, no exceptions): nothing floats over the canvas. Decision cards live in the **decision tray**, a normal grid area of `CanvasFrame` (section 12.8). The tray is below the canvas when the frame container is narrower than 900 px (`cq-md`) and beside the canvas (right of it, left of the side panel's edge, 360 px wide) at 900 px and wider. The tray is absent when nothing is pending, so the canvas gets the full area back. The sheet and the top-right floating tray of 2.5 are removed. The canvas stays visible beside or above the card, so the user sees the agent and the decision together (H5).
+
+Card anatomy (the same for every kind; component `DecisionCard`):
+
+| Region | Content | Rules |
+| --- | --- | --- |
+| Header | Kind chip (leading), who asks (agent avatar and name), what in one line (title-sm, one line, ellipsis, full text in the body) | Never scrolls away. Chip uses `Badge` tone from the table below. |
+| Body | The detail: diff or first lines of tool input (M5), rule text, question and options, proposal summary, merge diff stat | `max-height: min(40cqh, 320px)`, `overflow: auto`, own scroll. Scope explanations are visible helper text (`--text-small`, `--text-secondary`), never a tooltip. |
+| Footer | Primary, secondary scopes, Deny | Always visible (flex child outside the scrolling body). Primary leftmost, then a secondary `Allow ▾` menu button where scopes exist, Deny rightmost. |
+
+Several cards: the tray shows one card at a time with a `1 of 3` stepper in the header row of the tray (Prev / Next `IconButton`s, `aria-label` set) rather than a stack, so footer buttons stay in a fixed position. The newest card is selected; resolving a card selects the next. When a card appears, focus moves to its primary button; on resolve, focus returns to the composer (M15). The tray has `role="region"`, `aria-label="Decisions"` and `aria-live="polite"`.
+
+Buttons: Primary = `Button primary`. Secondary scopes = `Button secondary` (or its menu). Deny = `Button danger-ghost` in every kind, same label `Deny` (or the kind's refuse label below), same position. Never a solid red button.
+
+One vocabulary:
+
+| Kind | Chip (tone) | Primary | Secondary | Deny |
+| --- | --- | --- | --- | --- |
+| Permission request | `Permission` (warning) | `Allow once` | `Allow ▾`: `For this session`, `Always for this project` | `Deny` |
+| Rule request | `Rule` (warning) | `Allow for this run` | `Always for this project` | `Deny` |
+| Question | `Question` (info) | `Send answer` | `Skip` is not offered: the agent waits; free-text option is in the body | none (the question has no refuse; footer shows only Primary) |
+| Org-chart or settings proposal | `Proposal` (accent) | `Approve` | `Request changes` (opens feedback field, then `Send feedback`) | `Reject` |
+| MCP install | `MCP install` (warning) | `Approve install` | `Approve for this run only` where supported | `Deny` |
+| Merge review | `Merge` (info) | `Merge into main checkout` | `View diff` (toggles body diff) | `Discard` (confirm via `ConfirmDialog`) |
+
+Button names relied on by e2e (`Approve`, `Request changes`, `Send feedback`, `Merge into main checkout`, `Discard`) stay verbatim as the accessible names; `Approve install` is matched by prefix `Approve`. Question copy uses the asking agent's name: "Lead is waiting for your answer" (M2). Terminal runs clear every pending card from the tray (H4); a card whose run ended is never rendered.
+
+### 12.2 Project tab model (M11, M12, L3, L4, L10, H8)
+
+| Level | Items | Notes |
+| --- | --- | --- |
+| Project tabs (underline, in the project header) | `Live` · `Org chart` · `Settings` | Replaces `Run` / `Org chart` / `History` / `Settings` of 2.2 and the old `Org chart & settings` label. `Live` is the default. |
+| `Live` | canvas, tray, composer, side panel with tabs `Agent` · `Plan` · `Log` · `Runs` | The run list stays in the side panel `Runs` tab and always shows its count (`Runs (6)`, M6); the empty state adds `Recent runs` (last 3, Open / Continue). A separate `History` tab is dropped. |
+| `Org chart` | editor canvas, inspector, AI draft panel | The AI draft panel (`Revise with the Architect`, `Quick draft`) exists only here and only as the side panel's no-selection state (L3, L4). One primary action; Quick draft sits under an `Advanced` disclosure. |
+| `Settings` | project settings with left sub-nav: General, Permissions, Limits, Connection, MCP and plugins, Maintenance | No AI panel (M12). Destructive actions in a `Danger zone` group (L11). |
+| App settings (gear in the sidebar footer, full page, `Back`, `Esc`) | Appearance, Notifications, Connections, Defaults for new projects, About | `Notifications` moves here as the single `AppSettings.notifications` switch; the sidebar toggle is removed (H8). `Logs` (open folder) moves into About. Connections (Anthropic, OpenAI, LiteLLM) is a page here; project settings `Connection` only picks one and links to it. Appearance reachable from here fixes H2. |
+
+The sidebar footer keeps only the account card and the gear. Two things named "Logs" no longer exist at app level (L10).
+
+### 12.3 Org-chart proposal diff (M1)
+
+The proposal card body (kind `Proposal`) shows the proposed chart against the current one, never "replaces the chart" alone.
+
+| Change | Marker (icon and text, not color alone) | Row style | Copy |
+| --- | --- | --- | --- |
+| Added | `Plus` icon, `Added` badge (success) | `--success-soft` background, `--success-text` name | `Added: Reviewer · reports to Lead · Sonnet` |
+| Removed | `Minus` icon, `Removed` badge (danger), name struck through | `--danger-soft` background, `--danger-text` | `Removed: Researcher (was reporting to Lead)` |
+| Changed | `Pencil` icon, `Changed` badge (warning) | `--warning-soft` background; changed fields listed below the name as `field: old -> new` in `--text-mono` | `Changed: Implementer · model Sonnet -> Opus · reports to Lead -> Orchestrator` |
+| Unchanged | no marker | plain; collapsed into `4 unchanged roles` disclosure | |
+
+Order: summary line first (`2 added, 1 removed, 1 changed`, `--text-body-strong`), then Added, Changed, Removed, then the unchanged disclosure. Matching is by role slug; a rename is shown as Changed with `name: old -> new`. The footer follows the Proposal row in 12.1. After approval on a setup run, a result banner sits above the canvas: `Setup complete: architecture, 2 roles, settings applied` with `View org chart` (M1).
+
+### 12.4 Run-status vocabulary (H4, H7, M7, M17)
+
+One vocabulary, six words. Every surface renders from this table through a single `runStatus(run, pending)` mapping; no surface invents labels.
+
+| Status | Meaning | Tone | Icon | Class |
+| --- | --- | --- | --- | --- |
+| Running | an agent is working | info | spinner dot | `is-running` |
+| Needs you | blocked on a decision or question | warning | hand | `is-needs-you` |
+| Idle | session open, nothing running, waiting for the next message | neutral | dot | `is-idle` |
+| Finished | session ended normally | success | check | `is-finished` |
+| Stopped | ended by the user (interrupt then end) or the limits | neutral | square | `is-stopped` |
+| Failed | ended with an error | danger | alert | `is-failed` |
+
+Surfaces: topbar pill (viewed run; all six), run strip (only live runs plus the viewed one; Running, Needs you, Idle; `+N more` opens the Runs tab, M7), node activity (the root node reads `Finished` or `Stopped` on an ended run, never "Waiting for you"; during a run the activity string is detail, the status word is the ring and the badge), Runs tab rows (all six, non-interactive chip; the `Viewing` chip is a plain tag, M17). Sidebar dots use Running, Needs you, Idle.
+
+Pill markup: `class="pill is-running"` etc. (a modifier named `is-*`). Never `.live`: that is a layout class (`.live { flex: 1; display: grid }`) and caused the stretched pill (H7). The `pill` base is `display: inline-flex; width: fit-content; max-width: 100%`, so a pill never stretches in a grid or flex column.
+
+### 12.5 Autosave feedback (M10)
+
+One indicator in the topbar, right side, left of the account actions, driven by a global `saveStatus` slice in the store: `{ state: 'idle' | 'saving' | 'saved' | 'error', at?: number, message?: string }`. Every settings surface (org chart edits, project settings, role inspector, app settings, connections) sets it through one `trackSave(promise)` helper.
+
+| State | Text | Style |
+| --- | --- | --- |
+| idle | nothing rendered (reserved width, no layout jump) | |
+| saving | `Saving…` with a spinner | `--text-secondary` |
+| saved | `Saved 10:21` (local HH:MM), stays until the next change | `--text-secondary`, check icon |
+| error | `Could not save` plus a `Retry` ghost button; message in a tooltip and `aria-live="assertive"` | `--danger-text` |
+
+Surfaces no longer render their own "Saved" text. The indicator is `aria-live="polite"`.
+
+### 12.6 Labels, type scale and spacing utilities
+
+No uppercase labels anywhere. Section titles and group headings are sentence case, `--text-small`, `--weight-semibold`, `--text-secondary` (replaces `MAINTENANCE`, `DEFAULTS FOR NEW PROJECTS`, `QUICK DRAFT`, role chips; L5, M12). No `text-transform: uppercase`, no letter-spacing for labels.
+
+Type scale with roles (sizes in px, floor 12 for readable content per L5; `--text-caption` 11 is only for non-essential meta that is always paired with a larger label):
+
+| Token | Size / line | Role |
+| --- | --- | --- |
+| `--text-caption` | 11 / 16 | node footer figures, badge counts (never sentences) |
+| `--text-small` | 12 / 18 | descriptions, helper text, section titles (semibold), chips |
+| `--text-body` | 13 / 20 | default text, controls, transcript |
+| `--text-title-sm` | 14 / 20 | card titles, panel headers |
+| `--text-title` | 16 / 24 | dialog titles, page section titles |
+| `--text-title-lg` | 20 / 28 | page titles, empty-state titles |
+| `--text-mono` | 12 / 18 | ids, paths, branch names, aligned figures |
+
+`--text-display` is not used by any view. Weights: `--weight-regular` 400, `--weight-medium` 500, `--weight-semibold` 600.
+
+Spacing scale is the 4 px grid of 4.2. Utilities for layout, so views stop using inline styles: `.stack-1` `.stack-2` `.stack-3` `.stack-4` (vertical flex column, `gap` = `--space-1`, `--space-2`, `--space-3`, `--space-4`) and `.row` (horizontal flex, `align-items: center`, `gap: var(--space-2)`, wraps with `.row-wrap`).
+
+New token to add to `tokens.css` (UI lead): `--edge-message`, the colour of message edges between agents on the live canvas, distinct from `--edge`. Dark `#5d8bd6` (about 5.5:1 on surface-0), light `#2f67b4` (about 5.3:1 on surface-0); both clear the 3:1 non-text minimum, UI lead to verify. Plus the status-pill state set (`--state-*` already exist) and `--weight-*`.
+
+### 12.7 Layers, container breakpoints and panel sizes
+
+Layers (z-index): canvas 0, canvas controls 5 (inside the frame, docked to canvas corners only), side panel and tray 6, popover and menu 40, dialog 50, toast 60. `--z-sheet` is retired; nothing else floats.
+
+Container breakpoints (container queries on the `CanvasFrame` and `SidePanel` containers, not the window):
+
+| Name | Container width | Behaviour |
+| --- | --- | --- |
+| `cq-sm` | under 640 px | tray below the canvas; side panel collapsed to a rail; toolbar actions icon-only |
+| `cq-md` | 640 to 899 px | tray below the canvas; side panel overlays nothing, sits beside at 280 px |
+| `cq-lg` | 900 to 1279 px | tray beside the canvas (360 px); side panel 320 to 400 px |
+| `cq-xl` | 1280 px and up | tray beside, side panel 400 px, toolbar with labels |
+
+Panel sizes: sidebar 232 / rail 56; project header 52; run bar 44; side panel `clamp(280px, 28cqi, 440px)`, collapsible via a handle (persisted); tray 360; tray body cap 320 px; composer min 72.
+
+Hierarchy by view, in reading order:
+
+| View | 1024 x 640 (sidebar collapsed to the rail, side panel collapsed unless a node is selected) | 1600 x 900 |
+| --- | --- | --- |
+| Live | 1 canvas (about 700 px wide) and tray below it when a decision exists; 2 status pill and run bar; 3 composer; side panel opens as a 280 px column on selection and takes the tray's place only if the user opens it | 1 canvas; 2 tray beside it (360) when present; 3 side panel 400 always open; 4 run bar and composer |
+| Org chart | canvas full width; inspector or AI panel replaces the canvas's right 280 px only while a role is selected | canvas, inspector 360 always docked, AI panel in the same slot |
+| Settings | sub-nav collapses to a top select; one 720 px column | sub-nav 200 + content 720, extra space left empty |
+| Projects | grid 2 columns (min 280) | grid 4 columns |
+
+### 12.8 Layout regions API and new primitives
+
+`components/layout/CanvasFrame`: a CSS grid with named areas, container-type `inline-size`. Slots: `toolbar` (top row, in flow, 44 px), `canvas` (fills, `min-height: 0`), `tray` (decision tray, rendered only when it has children; placement per 12.1). No slot is absolutely positioned. `components/layout/SidePanel`: props `title`, `collapsed`, `onCollapsedChange`, `width` (clamped), `children`; header with a collapse `IconButton`; when collapsed it is a 40 px rail with its tab icons.
+
+New primitives (all in `components/ui`, tokens only, both themes): `ConfirmDialog` (replaces the five `confirm()` calls: delete project, remove role, discard branch x2, remove OrgAI files; title names the object, destructive button repeats the verb, focus on Cancel; `useConfirm()` promise helper), `Input`, `Textarea` (with `invalid` and an error line bound by `aria-describedby`, M13), `Checkbox` (native input kept in the DOM), `IconButton` (the `aria-label` prop is required by type; tooltip repeats it). Booleans use `Switch`, not the `.check` pill (M18).
+
+Also (UX findings, decided here): project cards are real `button` or `a` elements, a skip link precedes the sidebar, org-chart nodes open the inspector on Enter or Space (H6, M15); `Add role` asks `Reports to` and states side effects in the inspector (M8); an empty New project Name derives from the folder (H1); `Mock adapter` checkbox appears in the New project form when `AppInfo.mockAdapter` is true, with a persistent `Mock mode: no tokens are spent` badge in the shell (M3).

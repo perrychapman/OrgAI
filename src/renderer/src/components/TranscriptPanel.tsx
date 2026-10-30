@@ -4,6 +4,7 @@ import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { selectedProject, useAppStore, useRunIndexes, type LogLine } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
+import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
@@ -55,7 +56,7 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
       <div className="plan-head">
         <div className="plan-goal">{plan.goal}</div>
         <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-          <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'live'}`}>
+          <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'is-running'}`}>
             <span className="dot" /> {plan.status === 'active' ? 'in progress' : plan.status}
           </span>
           <span className="pill">
@@ -88,6 +89,26 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
           <Markdown text={plan.summary} />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * A cross-run note. Peer text is untrusted: it is shown as plain text (never Markdown) and the row is styled so it
+ * cannot be mistaken for something the user typed.
+ */
+function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement {
+  const index = useRunIndexes().get(note.runId)
+  const incoming = note.direction === 'in'
+  return (
+    <div className={`entry peer ${incoming ? 'peer-in' : 'peer-out'}`}>
+      <div className="tag">
+        <span>
+          {incoming ? 'Note from run' : 'To run'} <span className="run-index">{runTag(index)}</span> ({note.peer})
+        </span>
+        <span>{incoming ? new Date(at).toLocaleTimeString() : `Delivered ${new Date(at).toLocaleTimeString()}`}</span>
+      </div>
+      <div className="peer-body">{note.body}</div>
     </div>
   )
 }
@@ -230,12 +251,22 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
                     {b.content || '(empty)'}
                   </div>
                 )
-              case 'system':
+              case 'system': {
+                const peer = parsePeerNote(b.text)
+                if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
+                // Harness lines (nudges, hand-offs, limit notices) are system rows with the full text behind a disclosure.
                 return (
-                  <div key={e.id} className="entry system">
+                  <div key={e.id} className={`entry system${e.source === 'harness' ? ' harness' : ''}`}>
                     <Markdown text={b.text} />
+                    {b.detail && (
+                      <details className="entry-detail">
+                        <summary>Full text sent to the agent</summary>
+                        <pre>{b.detail}</pre>
+                      </details>
+                    )}
                   </div>
                 )
+              }
             }
           })}
           {agent && partial && (

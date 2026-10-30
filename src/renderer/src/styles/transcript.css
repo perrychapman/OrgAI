@@ -82,10 +82,9 @@
   color: var(--danger-text);
 }
 .entry .tag {
-  font-size: var(--text-caption);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
   font-family: var(--font-sans);
   margin-bottom: 4px;
   display: flex;
@@ -211,6 +210,38 @@
 }
 .entry.system .md {
   font-size: var(--text-caption);
+}
+.entry.system.harness {
+  border-style: dashed;
+}
+.entry-detail summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.entry-detail pre {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+
+/* Cross-run notes: never styled like the user's own messages. The receiver row has a left rule in the accent. */
+.entry.peer {
+  white-space: normal;
+}
+.entry.peer .peer-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.entry.peer-in {
+  background: var(--info-soft);
+  border-color: var(--info-border);
+  border-left: var(--space-1) solid var(--info);
+}
+.entry.peer-out {
+  border-style: dashed;
 }
 
 /* Text an agent is still streaming; replaced by the final entry when its message completes. */
@@ -389,13 +420,13 @@
   flex: 1;
 }
 @container side (max-width: 360px) {
-  .side-header {
+  .live-panel .side-header {
     flex-wrap: wrap;
   }
-  .side-header h2 {
+  .live-panel .side-header h2 {
     flex: 1 1 calc(100% - var(--space-10));
   }
-  .side-header .side-spacer {
+  .live-panel .side-header .side-spacer {
     display: none;
   }
 }

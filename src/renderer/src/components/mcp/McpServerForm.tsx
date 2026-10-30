@@ -5,9 +5,13 @@ import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTransport, Pro
 import { isValidMcpServerName, newId } from '@shared/defaults'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
+import { Checkbox } from '../ui/Checkbox'
 import { Dialog } from '../ui/Dialog'
 import { IconButton } from '../ui/IconButton'
+import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
+import { SegmentedControl } from '../ui/SegmentedControl'
+import { Textarea } from '../ui/Textarea'
 import { RoleChecklist } from './RoleAccess'
 import { SECURITY_SECRETS, allRoleSlugs, errMessage, securityPhrase } from './mcpHelpers'
 
@@ -208,16 +212,16 @@ export default function McpServerForm({
       )}
       <div className="field mcp-field">
         <label htmlFor={`${baseId}-name`}>Name</label>
-        <input
+        <Input
           id={`${baseId}-name`}
-          className={`input mono-input${touched.name && errors.name ? ' invalid' : ''}`}
+          mono
+          invalid={touched.name && !!errors.name}
           value={name}
           autoComplete="off"
           spellCheck={false}
           data-autofocus
-          aria-invalid={touched.name && !!errors.name}
           aria-describedby={`${baseId}-name-h`}
-          onChange={(e) => setName(e.target.value)}
+          onChange={setName}
           onBlur={() => touch('name')}
         />
         <span id={`${baseId}-name-h`} className={`hint${touched.name && errors.name ? ' invalid-text' : ''}`}>
@@ -226,46 +230,37 @@ export default function McpServerForm({
       </div>
 
       <div className="field mcp-field">
-        <span className="mcp-label" id={`${baseId}-tr`}>
-          Transport
-        </span>
-        <div className="mcp-segmented" role="radiogroup" aria-labelledby={`${baseId}-tr`}>
-          {TRANSPORTS.map((t) => (
-            <label key={t} className={`check${transport === t ? ' on' : ''}`}>
-              <input type="radio" name={`${baseId}-transport`} checked={transport === t} onChange={() => setTransport(t)} />
-              {t}
-            </label>
-          ))}
-        </div>
+        <span className="mcp-label">Transport</span>
+        <SegmentedControl label="Transport" value={transport} options={TRANSPORTS.map((t) => ({ value: t, label: t }))} onChange={setTransport} />
       </div>
 
       {transport === 'stdio' ? (
         <>
           <div className="field mcp-field">
             <label htmlFor={`${baseId}-cmd`}>Command</label>
-            <input
+            <Input
               id={`${baseId}-cmd`}
-              className={`input mono-input${touched.command && errors.command ? ' invalid' : ''}`}
+              mono
+              invalid={touched.command && !!errors.command}
               value={command}
               placeholder="npx"
               autoComplete="off"
               spellCheck={false}
-              aria-invalid={touched.command && !!errors.command}
-              onChange={(e) => setCommand(e.target.value)}
+              onChange={setCommand}
               onBlur={() => touch('command')}
             />
             {touched.command && errors.command && <span className="hint invalid-text">{errors.command}</span>}
           </div>
           <div className="field mcp-field">
             <label htmlFor={`${baseId}-args`}>Arguments</label>
-            <textarea
+            <Textarea
               id={`${baseId}-args`}
-              className="textarea mono"
+              mono
               value={argsText}
               rows={4}
               spellCheck={false}
               placeholder={'-y\n@scope/server@1.2.3'}
-              onChange={(e) => setArgsText(e.target.value)}
+              onChange={setArgsText}
             />
             <span className="hint">One argument per line.</span>
           </div>
@@ -273,15 +268,15 @@ export default function McpServerForm({
       ) : (
         <div className="field mcp-field">
           <label htmlFor={`${baseId}-url`}>URL</label>
-          <input
+          <Input
             id={`${baseId}-url`}
-            className={`input mono-input${touched.url && errors.url ? ' invalid' : ''}`}
+            mono
+            invalid={touched.url && !!errors.url}
             value={url}
             placeholder="https://example.com/mcp"
             autoComplete="off"
             spellCheck={false}
-            aria-invalid={touched.url && !!errors.url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={setUrl}
             onBlur={() => touch('url')}
           />
           {touched.url && errors.url && <span className="hint invalid-text">{errors.url}</span>}
@@ -296,15 +291,15 @@ export default function McpServerForm({
           const label = transport === 'stdio' ? 'variable' : 'header'
           return (
             <div key={r.rid} className="mcp-var-row">
-              <input
-                className={`input mono-input${touched[errKey] && errors[errKey] ? ' invalid' : ''}`}
+              <Input
+                mono
+                invalid={touched[errKey] && !!errors[errKey]}
                 value={r.name}
                 placeholder="NAME"
                 aria-label={`Name of ${label} ${i + 1}`}
-                aria-invalid={touched[errKey] && !!errors[errKey]}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(e) => patchRow(r.rid, { name: e.target.value })}
+                onChange={(value) => patchRow(r.rid, { name: value })}
                 onBlur={() => touch(errKey)}
               />
               <div className="mcp-var-value">
@@ -330,20 +325,17 @@ export default function McpServerForm({
                     }}
                   />
                 ) : (
-                  <input
-                    className="input mono-input"
+                  <Input
+                    mono
                     value={r.value}
                     aria-label={`Value of ${r.name || `${label} ${i + 1}`}`}
                     autoComplete="off"
                     spellCheck={false}
-                    onChange={(e) => patchRow(r.rid, { value: e.target.value })}
+                    onChange={(value) => patchRow(r.rid, { value })}
                   />
                 )}
               </div>
-              <label className={`check${r.secret ? ' on' : ''}`}>
-                <input type="checkbox" checked={r.secret} disabled={isSaved(r)} onChange={(e) => patchRow(r.rid, { secret: e.target.checked, value: '' })} />
-                Secret
-              </label>
+              <Checkbox label="Secret" checked={r.secret} disabled={isSaved(r)} onChange={(secret) => patchRow(r.rid, { secret, value: '' })} />
               <IconButton icon={Trash2} label={`Remove ${label} ${r.name || i + 1}`} size="sm" onClick={() => setRows((rs) => rs.filter((x) => x.rid !== r.rid))} />
               {touched[errKey] && errors[errKey] && <span className="hint invalid-text mcp-var-err">{errors[errKey]}</span>}
             </div>

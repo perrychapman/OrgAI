@@ -241,6 +241,19 @@ describe('CodexAdapter session', () => {
     expect(user).toHaveLength(3)
   })
 
+  it('delivers a message from another run to the root without a transcript block', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const before = ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'system').length
+    await session.receive!({ fromRunId: 'run-9', fromProjectName: 'Other', fromPrompt: 'Do other', text: 'Ping from afar' })
+    await vi.waitFor(() => expect(s.of('turn/steer')).toHaveLength(1))
+    expect(JSON.stringify(s.of('turn/steer')[0].params)).toContain('Ping from afar')
+    expect(ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'system')).toHaveLength(before)
+  })
+
   it('refuses spawns the org chart forbids', async () => {
     const roles = [role({ id: 'r-lead', slug: 'lead', canSpawn: true, spawnable: ['r-a'] }), role({ id: 'r-a', slug: 'a', reportsTo: 'r-lead' }), role({ id: 'r-b', slug: 'b', reportsTo: 'r-lead' })]
     const { adapter, servers } = setup()

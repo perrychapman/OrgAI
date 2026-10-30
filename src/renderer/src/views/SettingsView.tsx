@@ -1,198 +1,26 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { MaintenanceResult, PendingWorktree, WorktreeDiff } from '@shared/types'
 import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import {
-  ReactFlow,
-  Background,
-  BackgroundVariant,
-  Controls,
-  MarkerType,
-  type Connection,
-  type Edge,
-  type NodeChange,
-  type NodeMouseHandler
-} from '@xyflow/react'
-import type { PermissionMode, Project, Role } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import type { PermissionMode, Project } from '@shared/types'
+import { Switch } from '../components/ui/Switch'
+import { runMessagingOn, MAX_AUTO_CONTINUES_LIMIT,MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
-import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
-import RoleInspector from '../components/RoleInspector'
 import DiffView from '../components/DiffView'
-import DraftPanel from '../components/DraftPanel'
 import ProjectConnection from '../components/connections/ProjectConnection'
 import RemapNotices from '../components/RemapNotices'
 import McpSection from '../components/mcp/McpSection'
 import PluginsSection from '../components/mcp/PluginsSection'
-import { treeLayout } from '../lib/layout'
 import PermissionRulesPanel from '../components/PermissionRulesPanel'
 
-const nodeTypes = { role: RoleNode }
-
+/** Project settings tab. The org chart and the AI draft panel live on the Org chart tab (OrgChartView). */
 export default function SettingsView({ project }: { project: Project }): ReactElement {
-  const tab = useAppStore((s) => s.settingsTab)
-  const setTab = useAppStore((s) => s.setSettingsTab)
-  const selectedRoleId = useAppStore((s) => s.selectedRoleId)
-  const selectRole = useAppStore((s) => s.selectRole)
-  const updateRoles = useAppStore((s) => s.updateRoles)
   const updateProject = useAppStore((s) => s.updateProject)
-
-  const nodes: RoleFlowNode[] = useMemo(
-    () =>
-      project.roles.map((role) => ({
-        id: role.id,
-        type: 'role',
-        position: role.position,
-        selected: role.id === selectedRoleId,
-        data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length }
-      })),
-    [project.roles, selectedRoleId]
-  )
-
-  const edges: Edge[] = useMemo(
-    () =>
-      project.roles
-        .filter((r) => r.reportsTo && project.roles.some((x) => x.id === r.reportsTo))
-        .map((r) => {
-          const parent = project.roles.find((x) => x.id === r.reportsTo)!
-          const allowed = parent.canSpawn && parent.spawnable.includes(r.id)
-          return {
-            id: `e-${parent.id}-${r.id}`,
-            source: parent.id,
-            target: r.id,
-            style: { stroke: allowed ? r.color : 'var(--text-faint)', strokeDasharray: allowed ? undefined : '4 4' },
-            markerEnd: { type: MarkerType.ArrowClosed, color: allowed ? r.color : '#646d84' },
-            label: allowed ? undefined : 'not delegable',
-            labelStyle: { fill: '#9aa3b8', fontSize: 10 },
-            labelBgStyle: { fill: '#11141c' }
-          }
-        }),
-    [project.roles]
-  )
-
-  const onNodesChange = useCallback(
-    (changes: NodeChange<RoleFlowNode>[]) => {
-      const moves = changes.filter((c) => c.type === 'position' && c.position)
-      if (moves.length) {
-        updateRoles(project.id, (roles) =>
-          roles.map((r) => {
-            const m = moves.find((c) => c.type === 'position' && c.id === r.id)
-            return m && m.type === 'position' && m.position ? { ...r, position: m.position } : r
-          })
-        )
-      }
-    },
-    [project.id, updateRoles]
-  )
-
-  const onConnect = useCallback(
-    (c: Connection) => {
-      if (!c.source || !c.target || c.source === c.target) return
-      updateRoles(project.id, (roles) =>
-        roles.map((r) => {
-          if (r.id === c.target) return { ...r, reportsTo: c.source }
-          if (r.id === c.source) return { ...r, canSpawn: true, spawnable: [...new Set([...r.spawnable, c.target as string])] }
-          return { ...r, spawnable: r.spawnable.filter((id) => id !== c.target) }
-        })
-      )
-    },
-    [project.id, updateRoles]
-  )
-
-  const onNodeClick: NodeMouseHandler<RoleFlowNode> = useCallback((_e, node) => selectRole(node.id), [selectRole])
-
-  const addRole = (): void => {
-    const root = project.roles.find((r) => r.reportsTo === null)
-    const selected = project.roles.find((r) => r.id === selectedRoleId)
-    const manager = selected ?? root
-    const name = `New role ${project.roles.length + 1}`
-    const role: Role = {
-      id: newId('role'),
-      slug: slugify(name),
-      name,
-      description: 'Describe when a manager should delegate to this role.',
-      responsibilities: [],
-      prompt: 'You are a specialist. Complete the assigned task and report back concisely.',
-      tools: ['Read', 'Glob', 'Grep'],
-      model: 'sonnet',
-      canSpawn: false,
-      spawnable: [],
-      reportsTo: manager?.id ?? null,
-      position: { x: (manager?.position.x ?? 0) + 120, y: (manager?.position.y ?? 0) + 210 },
-      color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length]
-    }
-    updateRoles(project.id, (roles) => [
-      ...roles.map((r) => (r.id === manager?.id ? { ...r, canSpawn: true, spawnable: [...r.spawnable, role.id] } : r)),
-      role
-    ])
-    selectRole(role.id)
-  }
-
-  const autoLayout = (): void => {
-    const pos = treeLayout(
-      project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: 220, height: 96 })),
-      { nodesep: 60, ranksep: 110 }
-    )
-    updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
-  }
-
-  const selectedRole = project.roles.find((r) => r.id === selectedRoleId)
-
-  if (tab === 'project') {
-    return (
-      <div className="editor">
-        <div style={{ padding: 24, overflow: 'auto' }}>
-          <div className="tabs" style={{ marginBottom: 18 }}>
-            <button onClick={() => setTab('org')}>Org chart</button>
-            <button className="active">Project settings</button>
-          </div>
-          <ProjectSettings project={project} onChange={updateProject} />
-          <MaintenancePanel project={project} />
-        </div>
-        <div className="side">
-          <DraftPanel project={project} />
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="editor">
-      <div className="canvas">
-        <div className="canvas-toolbar">
-          <div className="tabs">
-            <button className="active">Org chart</button>
-            <button onClick={() => setTab('project')}>Project settings</button>
-          </div>
-          <button className="btn" onClick={addRole}>
-            + Add role
-          </button>
-          <button className="btn" onClick={autoLayout}>
-            Auto-layout
-          </button>
-        </div>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onConnect={onConnect}
-          onNodeClick={onNodeClick}
-          onPaneClick={() => selectRole(null)}
-          fitView
-          fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
-          proOptions={{ hideAttribution: true }}
-          deleteKeyCode={null}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1f2432" />
-          <Controls showInteractive={false} />
-        </ReactFlow>
-        <div className="legend">
-          <span>Drag from a node's bottom handle to another node to make it a report.</span>
-        </div>
-      </div>
-      <div className="side">
-        {selectedRole ? <RoleInspector project={project} role={selectedRole} /> : <DraftPanel project={project} />}
+    <div className="editor single">
+      <div style={{ padding: 24, overflow: 'auto' }}>
+        <ProjectSettings project={project} onChange={updateProject} />
+        <MaintenancePanel project={project} />
       </div>
     </div>
   )
@@ -427,6 +255,15 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: (p
             {project.permissionMode === 'auto'
               ? 'Unattended mode still asks when the classifier is unsure; saved rules below never ask.'
               : 'Prompts appear as approval cards in the live view.'}
+          </span>
+        </div>
+        <div className="field">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <label id="run-messaging-label">Let runs message each other</label>
+            <Switch checked={runMessagingOn(project)} label="Let runs message each other" onChange={(next) => patch({ runMessaging: next })} />
+          </div>
+          <span className="hint">
+            Orchestrators of this project&apos;s runs can read each other&apos;s prompts and exchange short notes. Off by default; messages between projects need it on in both.
           </span>
         </div>
         <div className="field">

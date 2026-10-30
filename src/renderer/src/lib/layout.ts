@@ -7,14 +7,42 @@ export interface LayoutItem {
   height: number
 }
 
+/**
+ * Parent map with unknown parents and cycles removed: a role whose reportsTo chain loops back on itself is detached
+ * (treated as a root) so dagre never sees a cycle.
+ */
+export function acyclicParents(items: LayoutItem[]): Map<string, string> {
+  const ids = new Set(items.map((i) => i.id))
+  const parents = new Map<string, string>()
+  for (const item of items) if (item.parentId && item.parentId !== item.id && ids.has(item.parentId)) parents.set(item.id, item.parentId)
+  for (const item of items) {
+    const seen = new Set<string>([item.id])
+    let cur = item.id
+    for (;;) {
+      const next = parents.get(cur)
+      if (!next) break
+      if (seen.has(next)) {
+        parents.delete(cur)
+        break
+      }
+      seen.add(next)
+      cur = next
+    }
+  }
+  return parents
+}
+
 /** Top-down tree layout. Returns top-left positions keyed by id. */
 export function treeLayout(items: LayoutItem[], opts?: { nodesep?: number; ranksep?: number }): Record<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph()
   g.setGraph({ rankdir: 'TB', nodesep: opts?.nodesep ?? 48, ranksep: opts?.ranksep ?? 96, marginx: 20, marginy: 20 })
   g.setDefaultEdgeLabel(() => ({}))
-  const ids = new Set(items.map((i) => i.id))
+  const parents = acyclicParents(items)
   for (const item of items) g.setNode(item.id, { width: item.width, height: item.height })
-  for (const item of items) if (item.parentId && ids.has(item.parentId)) g.setEdge(item.parentId, item.id)
+  for (const item of items) {
+    const parent = parents.get(item.id)
+    if (parent) g.setEdge(parent, item.id)
+  }
   dagre.layout(g)
   const out: Record<string, { x: number; y: number }> = {}
   for (const item of items) {

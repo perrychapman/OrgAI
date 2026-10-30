@@ -1,8 +1,10 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ConnectionEvent, RunEvent } from '@shared/types'
-import { IPC } from '@shared/types'
+import { pathToFileURL } from 'node:url'
+import type { AppSettings, ConnectionEvent, FocusRunTarget, RunEvent } from '@shared/types'
+import { IPC, runWindowHash } from '@shared/types'
+import { appUrlMatcher, isExternalWebUrl, scopedWindow } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
 import { UsageMonitor } from './usageMonitor'
@@ -23,6 +25,7 @@ import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging } from './log'
+import { buildSettingsInfo, windowBackground } from './appInfo'
 
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
@@ -42,6 +45,21 @@ if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 let runManager: RunManager | undefined
 let notifier: Notifier | undefined
+let settingsStore: SettingsStore | undefined
+
+/** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
+function applyTheme(s: AppSettings): void {
+  if (nativeTheme.themeSource !== s.appearance.theme) nativeTheme.themeSource = s.appearance.theme
+}
+
+/** Every window hears about a save, so a second window and the deprecated notifications mirror stay in step. */
+function broadcastSettings(s: AppSettings): void {
+  if (!settingsStore) return
+  const info = buildSettingsInfo(s, { dataDir: settingsStore.dataDir, appVersion: app.getVersion() })
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.settingsChanged, info)
+  }
+}
 
 function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -60,43 +78,115 @@ function broadcastConnection(event: ConnectionEvent): void {
   }
 }
 
-function createWindow(): void {
+/**
+ * Every open window and its run scope: undefined = a main (unscoped) window, a target = a window opened with
+ * window:openRun for that run. Windows share every broadcast; the scope only decides what the renderer shows
+ * (it reads location.hash, `#/run/<projectId>/<runId>`, see runWindowHash) and which window a notification focuses.
+ */
+const windowScopes = new Map<BrowserWindow, FocusRunTarget | undefined>()
+
+/** Live windows with their scopes, for the window pickers in windowScope.ts. */
+function liveWindowScopes(): [BrowserWindow, FocusRunTarget | undefined][] {
+  return [...windowScopes].filter(([w]) => !w.isDestroyed())
+}
+
+/** URL schemes already logged as refused by the window-open handler; each is logged once. */
+const refusedSchemes = new Set<string>()
+
+function refuseExternal(url: string): void {
+  let scheme = 'invalid'
+  try {
+    scheme = new URL(url).protocol
+  } catch {
+    // keep 'invalid'
+  }
+  if (refusedSchemes.has(scheme)) return
+  refusedSchemes.add(scheme)
+  console.warn(`Refused to open a ${scheme} link outside the app; only http and https links open in the browser.`)
+}
+
+function showWindow(win: BrowserWindow): void {
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+/** window:openRun (already validated): focus the window scoped to this run, or open one. */
+function openRunWindow(target: FocusRunTarget): void {
+  const existing = scopedWindow(liveWindowScopes(), target.runId)
+  if (existing) showWindow(existing)
+  else createWindow(target)
+}
+
+/**
+ * The one window factory. Every window, main or run-scoped, gets the same preload and security settings
+ * (contextIsolation, the external-link handler). A run-scoped window loads the renderer with the hash
+ * `#/run/<projectId>/<runId>`.
+ */
+function createWindow(scope?: FocusRunTarget): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: scope ? 1280 : 1440,
+    height: scope ? 840 : 920,
     minWidth: 1024,
     minHeight: 680,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#0b0d12',
+    backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
     title: 'OrgAI',
     // Packaged builds take the icon from the executable; in development use the generated PNG.
     ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', 'icon.png') }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
+      // The preload is built as an ES module (index.mjs, package.json "type": "module"), which Electron cannot load
+      // in a sandboxed renderer. It uses only contextBridge and ipcRenderer, so a CommonJS preload could run sandboxed
+      // (see Risks in .orgai/ARCHITECTURE.md).
       sandbox: false,
       contextIsolation: true
     }
   })
 
+  windowScopes.set(win, scope)
+  win.on('closed', () => windowScopes.delete(win))
   win.on('ready-to-show', () => win.show())
   notifier?.attach(win)
+  // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
+  // (file:, custom protocols, javascript:) is refused.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (isExternalWebUrl(url)) void shell.openExternal(url)
+    else refuseExternal(url)
     return { action: 'deny' }
   })
-
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+  // The window never leaves the app's own renderer. In-page navigations (location.hash, so the #/run/... routes)
+  // do not fire will-navigate (Electron docs), and a reload is not a navigation, so they are unaffected.
+  const isAppUrl = appUrlMatcher(process.env.ELECTRON_RENDERER_URL, pathToFileURL(join(__dirname, '../renderer/index.html')).href)
+  const guard = (e: { url: string; preventDefault(): void }): void => {
+    if (isAppUrl(e.url)) return
+    e.preventDefault()
+    console.warn(`Blocked a navigation away from the app to ${e.url.slice(0, 200)}`)
   }
+  win.webContents.on('will-navigate', guard)
+  win.webContents.on('will-redirect', guard)
+
+  const hash = scope ? runWindowHash(scope) : ''
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}${hash}`)
+  } else {
+    // loadFile takes the fragment without its leading '#'.
+    void win.loadFile(join(__dirname, '../renderer/index.html'), hash ? { hash: hash.slice(1) } : undefined)
+  }
+  return win
 }
 
 app.whenReady().then(() => {
   const dataDir = join(app.getPath('userData'), 'data')
   const projects = new ProjectStore(dataDir)
   const settings = new SettingsStore(dataDir)
+  settingsStore = settings
+  applyTheme(settings.get())
+  settings.onChange((s) => {
+    applyTheme(s)
+    broadcastSettings(s)
+  })
   const runStore = new RunStore(dataDir)
   const secrets = new SecretStore(dataDir, safeStorage)
   const connections = new ConnectionService({
@@ -148,7 +238,8 @@ app.whenReady().then(() => {
     settings,
     connections,
     mcp,
-    adapterIds: Object.keys(adapters)
+    adapterIds: Object.keys(adapters),
+    openRunWindow
   })
   connections.init()
   app.on('before-quit', () => connections.dispose())
@@ -159,9 +250,11 @@ app.whenReady().then(() => {
       const project = projects.get(summary.projectId)
       return { projectId: summary.projectId, kind: summary.kind, autoContinue: project?.autoContinue !== false, maxAutoContinues: project?.maxAutoContinues }
     },
-    projectName: (projectId) => projects.get(projectId)?.name
+    projectName: (projectId) => projects.get(projectId)?.name,
+    windows: liveWindowScopes,
+    // AppSettings.notifications is the single source of truth, read fresh at every decision.
+    enabled: () => settings.get().notifications !== false
   })
-  ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean) => notifier?.setEnabled(!!enabled))
 
   // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
   const usageMonitor = new UsageMonitor({

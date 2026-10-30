@@ -26,6 +26,8 @@ import ProposalCard from '../components/ProposalCard'
 import QuestionCard from '../components/QuestionCard'
 import RuleRequestCard from '../components/RuleRequestCard'
 import MergeReviewCard from '../components/MergeReviewCard'
+import { SidePanel } from '../components/layout/SidePanel'
+import { CanvasFrame, FrameFooter, FrameStage, FrameTray } from '../components/layout/CanvasFrame'
 import RunTabs from '../components/RunTabs'
 import RunHeader from '../components/RunHeader'
 import NewRunPage from '../components/NewRunPage'
@@ -135,7 +137,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedInstall, setPickedInstall] = useState<string | null>(null)
   const [dismissedInstalls, setDismissedInstalls] = useState<Record<string, boolean>>({})
-  const cardsRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   const toggleCollapse = (): void => {
     setCollapseFinished((v) => {
@@ -390,7 +392,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // A jump from the sidebar's "Needs you" list asks the first decision of this run to take focus.
   useEffect(() => {
     if (!pendingFocus) return
-    const region = cardsRef.current
+    const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
     const target = region?.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ?? region
     target?.focus()
     target?.scrollIntoView?.({ block: 'nearest' })
@@ -428,21 +430,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     [run, selectedAgentId]
   )
 
-  const hasCards =
-    run.permissions.length > 0 ||
-    run.proposals.length > 0 ||
-    (run.questions?.length ?? 0) > 0 ||
-    (run.ruleRequests?.length ?? 0) > 0 ||
-    (run.mergeReviews?.length ?? 0) > 0 ||
-    cardItems.length > 0 ||
-    status === 'paused' ||
-    run.plan?.status === 'blocked'
-
   return (
     <div className="run-view">
       <RunHeader run={run} project={project} agentCount={agents.length} collapseFinished={collapseFinished} finishedCount={finishedCount} onToggleCollapse={toggleCollapse} />
-      <div className="run-body">
-        <div className="live-cards" aria-live="polite" aria-label="Waiting for you" ref={cardsRef} tabIndex={hasCards ? -1 : undefined}>
+      <div className="run-body" ref={bodyRef}>
+        <FrameTray label="Waiting for you">
           {status === 'paused' && <PauseBanner runId={runId} />}
 
           {status !== 'paused' && run.plan?.status === 'blocked' && (
@@ -550,10 +542,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               ))}
             </>
           )}
-        </div>
+        </FrameTray>
 
-        <div className="canvas">
-          <div className="canvas-flow" ref={canvasRef}>
+        <CanvasFrame frameRef={canvasRef}>
+          <FrameStage>
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -571,8 +563,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
               <Controls showInteractive={false} />
             </ReactFlow>
-          </div>
-          <div className="legend">
+          </FrameStage>
+          <FrameFooter>
             <span>
               <i style={{ background: 'var(--accent)' }} />
               working
@@ -593,8 +585,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               <i style={{ background: MESSAGE_COLOR }} />
               message
             </span>
-          </div>
-        </div>
+          </FrameFooter>
+        </CanvasFrame>
 
         <Composer
           draftKey={runId}
@@ -650,9 +642,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           }}
         />
 
-        <div className="side">
-          <TranscriptPanel runId={runId} agent={selectedAgent} entries={entries} logs={run.logs ?? []} finished={finishedGroup} />
-        </div>
+        <SidePanel label="run panel">
+          <div className="live-panel">
+            <TranscriptPanel runId={runId} agent={selectedAgent} entries={entries} logs={run.logs ?? []} finished={finishedGroup} />
+          </div>
+        </SidePanel>
       </div>
     </div>
   )

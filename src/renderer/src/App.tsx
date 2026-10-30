@@ -3,6 +3,9 @@ import { useEffect } from 'react'
 import { activeRun, runsOfProject, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
+import OrgChartView from './views/OrgChartView'
+import { SaveIndicator } from './components/layout/SaveIndicator'
+import './styles/run-tabs.css'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import ErrorBoundary from './components/ui/ErrorBoundary'
@@ -32,7 +35,7 @@ export default function App(): ReactElement {
   // The window title names the viewed run, so the OS task switcher and notifications show which run is on screen.
   const runIndex = run ? indexes.get(run.summary.id) : undefined
   useEffect(() => {
-    document.title = run && view === 'run' ? `${runTag(runIndex)}: ${shortPrompt(run.summary.prompt, 40)} - OrgAI` : 'OrgAI'
+    document.title = run && view === 'run' ? `OrgAI · ${runTag(runIndex)} · ${shortPrompt(run.summary.prompt, 40)}` : 'OrgAI'
   }, [run, runIndex, view])
 
   const badge = run || waitingHere ? runStatus(run?.summary.status ?? 'idle', { waiting: waitingHere || (run ? needsYou(run) : false), endedWithApp: !!run?.summary.endedWithApp }) : undefined
@@ -61,19 +64,37 @@ export default function App(): ReactElement {
                     {badge.word}
                   </span>
                 )}
-                <div className="tabs">
-                  <button type="button" className={view === 'run' ? 'active' : ''} onClick={() => setView('run')}>
+                <SaveIndicator />
+                <div className="tabs" role="group" aria-label="Project sections">
+                  <button type="button" className={view === 'run' ? 'active' : ''} aria-current={view === 'run' ? 'page' : undefined} onClick={() => setView('run')}>
                     Live
                   </button>
-                  <button type="button" className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}>
+                  <button type="button" className={view === 'history' ? 'active' : ''} aria-current={view === 'history' ? 'page' : undefined} onClick={() => setView('history')}>
                     History
                   </button>
-                  <button type="button" className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
-                    Org chart &amp; settings
+                  <button type="button" className={view === 'org' ? 'active' : ''} aria-current={view === 'org' ? 'page' : undefined} onClick={() => setView('org')}>
+                    Org chart
+                  </button>
+                  <button
+                    type="button"
+                    className={view === 'settings' ? 'active' : ''}
+                    aria-current={view === 'settings' ? 'page' : undefined}
+                    aria-label="Project settings"
+                    onClick={() => setView('settings')}
+                  >
+                    Settings
                   </button>
                 </div>
               </div>
-              {view === 'settings' ? <SettingsView project={project} /> : view === 'history' ? <RunHistory /> : <LiveRunView project={project} />}
+              {view === 'settings' ? (
+                <SettingsView project={project} />
+              ) : view === 'org' ? (
+                <OrgChartView project={project} />
+              ) : view === 'history' ? (
+                <RunHistory />
+              ) : (
+                <LiveRunView project={project} />
+              )}
             </>
           )}
         </ErrorBoundary>

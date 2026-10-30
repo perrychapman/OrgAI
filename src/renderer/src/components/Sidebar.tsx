@@ -7,6 +7,7 @@ import { waitingItems } from '../lib/needsYou'
 import { needsYou, projectCounts, relativeTime } from '../lib/runChains'
 import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
 import { runStatus } from '../lib/runStatus'
+import brandIcon from '../assets/brand/icon.png'
 import NotificationsToggle from './NotificationsToggle'
 import LogsLink from './LogsLink'
 import UsageMeter from './UsageMeter'
@@ -46,15 +47,15 @@ export default function Sidebar(): ReactElement {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="brand-mark">O</span>
+        <img className="brand-mark" src={brandIcon} alt="" width={26} height={26} />
         OrgAI
       </div>
       <div className="sidebar-section">
         <button type="button" className={`nav-item ${view === 'projects' ? 'active' : ''}`} onClick={() => setView('projects')}>
-          <Icon icon={LayoutGrid} size="md" /> Projects
+          <Icon icon={LayoutGrid} size="sm" /> Projects
         </button>
         <button type="button" className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} onClick={() => setView('appSettings')}>
-          <Icon icon={Settings} size="md" /> Settings
+          <Icon icon={Settings} size="sm" /> Settings
         </button>
       </div>
 
@@ -98,7 +99,7 @@ export default function Sidebar(): ReactElement {
         {projects.length === 0 && <div className="sidebar-empty">No projects yet</div>}
         {projects.map((p) => {
           const counts = projectCounts(allRuns, p.id)
-          const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'live' : ''
+          const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'is-running' : ''
           const projectRuns = allRuns.filter((r) => r.summary.projectId === p.id)
           const open = openRunsOf(projectRuns)
           const expanded = open.length > 0 && !collapsed[p.id]

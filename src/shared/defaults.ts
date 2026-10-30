@@ -1,5 +1,6 @@
 import type {
   AdapterChoice,
+  AppearanceSettings,
   AppSettings,
   ConnectionId,
   ImageMediaType,
@@ -21,6 +22,13 @@ import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
+/** Project.runMessaging when unset: cross-run messaging is opt-in per project. */
+export const DEFAULT_RUN_MESSAGING = false
+
+/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default off). */
+export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
+  return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
+}
 /** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
 export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
 export const MAX_SUBAGENT_DEPTH_LIMIT = 5
@@ -171,6 +179,17 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
   )
 }
 
+/** Default look. Theme stays 'dark' until the light theme is signed off, then becomes 'system' (plan.md section 2). */
+export const DEFAULT_APPEARANCE: AppearanceSettings = {
+  theme: 'dark',
+  accent: '#7c5cff',
+  canvas: { pattern: 'dots', tint: true, edges: 'curved', minimap: false },
+  reduceMotion: 'system'
+}
+
+/** Window background before the renderer paints, per resolved theme (matches --surface-0 in tokens.css). */
+export const THEME_BACKGROUND = { dark: '#0b0d12', light: '#f4f5f9' } as const
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPermissionMode: 'auto',
   defaultMaxBudgetUsd: undefined,
@@ -182,6 +201,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   connections: defaultConnections(),
   defaultConnection: 'anthropic',
   notifications: true,
+  appearance: DEFAULT_APPEARANCE,
   opusGuardThreshold: 80,
   defaultPreferSonnetNearLimit: false,
   defaultAutoContinue: true,

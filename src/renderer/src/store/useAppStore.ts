@@ -39,9 +39,10 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
+import { parseRunWindowHash } from '@shared/types'
 
-export type View = 'projects' | 'settings' | 'run' | 'history' | 'appSettings'
-export type SettingsTab = 'org' | 'project'
+/** Project tabs: run (Live), history, org (Org chart), settings. projects and appSettings are app-level. */
+export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'logs'
 
@@ -53,6 +54,12 @@ export interface ComposerDraft {
 /** Key of the New run page's draft for a project. Run drafts use the run id. */
 export const newRunDraftKey = (projectId: string): string => `new:${projectId}`
 export const isDraftEmpty = (d: ComposerDraft | undefined): boolean => !d || (d.text.trim().length === 0 && d.images.length === 0)
+/** Autosave feedback shown by the topbar indicator (spec 12.5). */
+export interface SaveStatus {
+  state: 'idle' | 'saving' | 'saved' | 'error'
+  at?: number
+  message?: string
+}
 
 export interface LogLine {
   at: number
@@ -107,7 +114,7 @@ interface AppState {
   projects: Project[]
   selectedProjectId: string | null
   view: View
-  settingsTab: SettingsTab
+  saveStatus: SaveStatus
   selectedRoleId: string | null
   runs: Record<string, RunState>
   activeRunByProject: Record<string, string>
@@ -129,6 +136,11 @@ interface AppState {
   setSideTab(tab: SideTab): void
   /** Short inline message next to the run tabs (e.g. after hiding a tab). */
   tabNotice: string | null
+  setTabNotice(message: string): void
+  /** Unread notes from other runs (run.message 'in'), per run id. Cleared when the run is viewed. */
+  unreadByRun: Record<string, number>
+  /** Show runs that are live in the main process but not in this window yet. */
+  loadLiveRuns(): Promise<void>
   /** Run whose first decision card should take focus once its view is on screen. */
   pendingDecisionFocus: string | null
   clearDecisionFocus(): void
@@ -180,7 +192,8 @@ interface AppState {
   loadProjects(): Promise<void>
   selectProject(id: string | null): void
   setView(view: View): void
-  setSettingsTab(tab: SettingsTab): void
+  setSaveStatus(status: SaveStatus): void
+  trackSave<T>(fn: () => Promise<T>): Promise<T>
   selectRole(id: string | null): void
   selectAgent(id: string | null): void
   createProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }): Promise<Project>
@@ -239,13 +252,14 @@ let unsubscribeEvents: (() => void) | null = null
 const summaryLookups = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function debouncedSave(project: Project): void {
+  useAppStore.getState().setSaveStatus({ state: 'saving' })
   const t = saveTimers.get(project.id)
   if (t) clearTimeout(t)
   saveTimers.set(
     project.id,
     setTimeout(() => {
       saveTimers.delete(project.id)
-      void window.orgai.projects.save(project)
+      void useAppStore.getState().trackSave(() => window.orgai.projects.save(project)).catch(() => undefined)
     }, 350)
   )
 }
@@ -292,7 +306,13 @@ export function useProjectSummaries(): RunSummary[] {
 function showRunPatch(s: AppState, projectId: string, runId: string): Partial<AppState> {
   const { [projectId]: _draft, ...draftPage } = s.draftPage
   const { [runId]: _hidden, ...dismissedRuns } = s.dismissedRuns
-  return { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root', view: 'run', draftPage, dismissedRuns }
+  const { [runId]: _read, ...unreadByRun } = s.unreadByRun
+  return { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root', view: 'run', draftPage, dismissedRuns, unreadByRun }
+}
+
+/** A run record from the main process as renderer state. Pending cards are not in a record; events fill them. */
+function stateFromRecord(record: Omit<RunState, 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'partial' | 'messages' | 'mcpInstalls' | 'mcpResolved'>): RunState {
+  return { ...record, permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
 
 /** Runs of a project that have a tab (not hidden), oldest first. */
@@ -334,7 +354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   selectedProjectId: null,
   view: 'projects',
-  settingsTab: 'org',
+  saveStatus: { state: 'idle' },
   selectedRoleId: null,
   runs: {},
   activeRunByProject: {},
@@ -348,6 +368,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   composerDrafts: {},
   sideTabByRun: {},
   tabNotice: null,
+  unreadByRun: {},
   pendingDecisionFocus: null,
   continueIntent: null,
   historyByProject: {},
@@ -537,6 +558,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().loadProjects()
     void get().loadAllHistory()
     void get().loadConnections()
+    // Runs already live in the main process (a second window, or this window after a reload): show them everywhere.
+    await get().loadLiveRuns()
+    // A window opened for one run carries its target in the hash.
+    const target = parseRunWindowHash(window.location.hash)
+    if (target) await get().focusRun(target.projectId, target.runId)
     try {
       const auth = await window.orgai.auth.status()
       set({ auth })
@@ -564,11 +590,29 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setView(view) {
-    set({ view })
+    set((s) => {
+      const id = view === 'run' ? activeRun(s)?.summary.id : undefined
+      if (!id || !s.unreadByRun[id]) return { view }
+      const { [id]: _read, ...unreadByRun } = s.unreadByRun
+      return { view, unreadByRun }
+    })
   },
 
-  setSettingsTab(tab) {
-    set({ settingsTab: tab })
+  setSaveStatus(status) {
+    set({ saveStatus: status })
+  },
+
+  /** Wraps an autosaving call: shows "Saving…", then "Saved HH:MM" or the error. */
+  async trackSave<T>(fn: () => Promise<T>): Promise<T> {
+    set({ saveStatus: { state: 'saving' } })
+    try {
+      const out = await fn()
+      set({ saveStatus: { state: 'saved', at: Date.now() } })
+      return out
+    } catch (e) {
+      set({ saveStatus: { state: 'error', at: Date.now(), message: (e as Error).message } })
+      throw e
+    }
   },
 
   selectRole(id) {
@@ -581,7 +625,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async createProject(input) {
     const project = await window.orgai.projects.create(input)
-    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'settings' }))
+    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'org' }))
     return project
   },
 
@@ -630,11 +674,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!live) {
       const record = await window.orgai.runs.get(runId)
       if (!record) return
-      set((s) => ({
-        runs: { ...s.runs, [runId]: { ...record, permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} } }
-      }))
+      set((s) => ({ runs: { ...s.runs, [runId]: stateFromRecord(record) } }))
     }
     set((s) => showRunPatch(s, project.id, runId))
+  },
+
+  async loadLiveRuns() {
+    try {
+      const live = await window.orgai.runs.listLive()
+      for (const summary of live) {
+        if (get().runs[summary.id]) continue
+        const record = await window.orgai.runs.get(summary.id)
+        if (!record) continue
+        // Events may have created the run while the record loaded.
+        set((s) => (s.runs[summary.id] ? {} : { runs: { ...s.runs, [summary.id]: stateFromRecord(record) } }))
+      }
+    } catch {
+      /* the main process could not list live runs; events still fill the store */
+    }
+  },
+
+  setTabNotice(message) {
+    set({ tabNotice: message })
+    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 5000)
   },
 
   async startRun(prompt, opts) {
@@ -788,6 +850,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Plan usage is account-wide: keep the latest, whichever run reported it.
     if (e.type === 'usage.status') {
       set({ usage: e.usage })
+      return
+    }
+    // A note from another run: the transcript already carries it (a persisted system row); here it only marks the tab unread.
+    if (e.type === 'run.message') {
+      if (e.direction === 'in') {
+        set((s) => {
+          const looking = s.view === 'run' && activeRun(s)?.summary.id === e.runId
+          return looking ? {} : { unreadByRun: { ...s.unreadByRun, [e.runId]: (s.unreadByRun[e.runId] ?? 0) + 1 } }
+        })
+      }
       return
     }
     set((s) => {

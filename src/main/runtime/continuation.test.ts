@@ -3,12 +3,15 @@ import type { PlanStep, RunPlan } from '@shared/types'
 import {
   ContinuationDriver,
   SET_PLAN_NUDGE,
+  SET_PLAN_SUMMARY,
   continueNudgeText,
+  continueSummary,
   describePlanChange,
   limitReachedText,
   nextNudge,
   nextStep,
   nudgeBlocked,
+  peerDeliveryBlocked,
   planProgressLabel,
   remainingSteps,
   stepActivity,
@@ -49,27 +52,38 @@ describe('nextNudge', () => {
     const d = nextNudge(input())
     expect(d.kind).toBe('continue')
     expect(d.text).toBe(
-      'Harness: plan progress 1 of 3 done. Remaining: p2 Implement it (in progress); p3 Verify: build and tests. ' +
-        'Continue with the next step now; mark steps with update_plan as you go. ' +
-        "When every step is done, run the project's verification (build/tests) and call complete_plan. " +
-        'Only stop for a genuine decision: call ask_user, or mark_blocked with the reason.'
+      'Harness: plan 1 of 3 done. Remaining: p2 Implement it (in progress); p3 Verify: build and tests. ' +
+        'Continue with the next step; mark steps with update_plan as you go. ' +
+        "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+        'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
+    )
+    expect(d.summary).toBe('Continuing: 1 of 3 steps done, next "Implement it".')
+  })
+
+  it('summarises a nudge in one human line', () => {
+    expect(continueSummary(plan({ steps: [step('p1', 'A', 'done'), step('p2', 'B', 'pending')] }))).toBe('Continuing: 1 of 2 steps done, next "B".')
+    expect(continueSummary(plan({ steps: [step('p1', 'A', 'done')] }))).toBe('Continuing: 1 of 1 step done, asked the orchestrator to verify and complete the plan.')
+    const long = 'x'.repeat(120)
+    expect(continueSummary(plan({ steps: [step('p1', long, 'pending')] }))).toBe(`Continuing: 0 of 1 step done, next "${'x'.repeat(79)}…".`)
+    expect(limitReachedText(40)).toBe(
+      'Automatic continues paused: this run reached its limit of 40. Reply to keep going, or raise "Max automatic continues per run" in project settings.'
     )
   })
 
   it('counts skipped steps as finished and marks blocked steps in the list', () => {
     const p = plan({ steps: [step('p1', 'A', 'skipped'), step('p2', 'B', 'blocked'), step('p3', 'C', 'done')] })
-    expect(continueNudgeText(p)).toContain('plan progress 2 of 3 done. Remaining: p2 B (blocked).')
+    expect(continueNudgeText(p)).toContain('plan 2 of 3 done. Remaining: p2 B (blocked).')
   })
 
   it('asks for verification and complete_plan when every step is done but the plan is still active', () => {
     const d = nextNudge(input({ plan: plan({ steps: [step('p1', 'A', 'done'), step('p2', 'B', 'skipped')] }) }))
     expect(d.kind).toBe('continue')
-    expect(d.text).toContain('plan progress 2 of 2 done, but the plan is not complete')
+    expect(d.text).toContain('plan 2 of 2 done but not completed')
     expect(d.text).toContain('call complete_plan with a summary')
   })
 
   it('asks for a plan once, after the first completed turn without one', () => {
-    expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 1 }))).toEqual({ kind: 'set-plan', text: SET_PLAN_NUDGE })
+    expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 1 }))).toEqual({ kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY })
     expect(SET_PLAN_NUDGE).toBe('Harness: before continuing, call set_plan with the goal and the concrete steps, then start on step 1.')
     expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 2 })).kind).toBe('none')
     expect(nextNudge(input({ plan: undefined, turnsWithoutPlan: 0 })).kind).toBe('none')
@@ -105,6 +119,19 @@ describe('nextNudge', () => {
   })
 })
 
+describe('peerDeliveryBlocked', () => {
+  const ok = { held: false, rateLimited: false, pendingInteractions: 0 }
+  it('allows delivery to a run that is not waiting on its user', () => {
+    expect(peerDeliveryBlocked(ok)).toBeNull()
+  })
+  it('holds messages for an interrupted, rate-limited or waiting run, the user stop first', () => {
+    expect(peerDeliveryBlocked({ ...ok, held: true })).toBe('held')
+    expect(peerDeliveryBlocked({ ...ok, rateLimited: true })).toBe('rate limited')
+    expect(peerDeliveryBlocked({ ...ok, pendingInteractions: 2 })).toBe('waiting for the user')
+    expect(peerDeliveryBlocked({ held: true, rateLimited: true, pendingInteractions: 1 })).toBe('held')
+  })
+})
+
 describe('plan helpers', () => {
   it('reports progress, the next step and the step in progress', () => {
     const p = plan()
@@ -130,12 +157,12 @@ describe('plan helpers', () => {
 
 describe('ContinuationDriver', () => {
   let current: RunPlan | undefined
-  let host: ContinuationHost & { nudges: [string, string][]; told: string[]; logs: [string, string][] }
+  let host: ContinuationHost & { nudges: [string, string, string][]; told: string[]; logs: [string, string][] }
 
   beforeEach(() => {
     vi.useFakeTimers()
     current = plan()
-    const nudges: [string, string][] = []
+    const nudges: [string, string, string][] = []
     const told: string[] = []
     const logs: [string, string][] = []
     host = {
@@ -152,7 +179,7 @@ describe('ContinuationDriver', () => {
       rateLimited: () => false,
       stopping: () => false,
       orchestratorBusy: () => false,
-      nudge: (text, activity) => nudges.push([text, activity]),
+      nudge: (text, activity, summary) => nudges.push([text, activity, summary]),
       log: (level, message) => logs.push([level, message]),
       tellUser: (text) => told.push(text),
       nudges,
@@ -172,8 +199,9 @@ describe('ContinuationDriver', () => {
     expect(host.nudges).toHaveLength(0)
     await vi.advanceTimersByTimeAsync(200)
     expect(host.nudges).toHaveLength(1)
-    expect(host.nudges[0][0]).toContain('Harness: plan progress 1 of 3 done.')
+    expect(host.nudges[0][0]).toContain('Harness: plan 1 of 3 done.')
     expect(host.nudges[0][1]).toBe('Continuing: Implement it')
+    expect(host.nudges[0][2]).toBe('Continuing: 1 of 3 steps done, next "Implement it".')
     expect(current?.autoContinues).toBe(1)
     expect(host.logs.some(([l, m]) => l === 'info' && m.startsWith('Automatic continue 1 of 2'))).toBe(true)
   })
@@ -202,7 +230,7 @@ describe('ContinuationDriver', () => {
     current = undefined
     const d = new ContinuationDriver(host)
     expect((await d.evaluate()).kind).toBe('set-plan')
-    expect(host.nudges[0]).toEqual([SET_PLAN_NUDGE, 'Planning the work…'])
+    expect(host.nudges[0]).toEqual([SET_PLAN_NUDGE, 'Planning the work…', SET_PLAN_SUMMARY])
     expect((await d.evaluate()).kind).toBe('none')
     expect(host.updatePlan).not.toHaveBeenCalled()
   })
@@ -215,6 +243,17 @@ describe('ContinuationDriver', () => {
     expect((await d.evaluate()).kind).toBe('none')
     reports = 0
     expect((await d.evaluate()).kind).toBe('set-plan')
+  })
+
+  it('isHeld is true from hold until the next user message', () => {
+    const d = new ContinuationDriver(host)
+    expect(d.isHeld()).toBe(false)
+    d.hold()
+    expect(d.isHeld()).toBe(true)
+    d.turnEnded()
+    expect(d.isHeld()).toBe(true)
+    d.userMessage()
+    expect(d.isHeld()).toBe(false)
   })
 
   it('hold stops nudges until the user speaks; userMessage cancels a pending check', async () => {

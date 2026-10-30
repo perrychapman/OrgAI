@@ -1,6 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, CircleAlert, Pencil, Plus, X } from 'lucide-react'
+import { AppWindow, ChevronDown, CircleAlert, EyeOff, Link2, Pencil, Plus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import type { Project } from '@shared/types'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
@@ -25,6 +25,7 @@ interface TabView {
   tone: RunTone | 'none'
   waiting: boolean
   hasDraft: boolean
+  unread: number
   closable: boolean
 }
 
@@ -75,6 +76,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const draftOnPage = useAppStore((s) => !isDraftEmpty(s.composerDrafts[newRunDraftKey(project.id)]))
   const draftKeys = useAppStore(useShallow((s) => Object.keys(s.composerDrafts).filter((k) => !isDraftEmpty(s.composerDrafts[k]))))
   const notice = useAppStore((s) => s.tabNotice)
+  const unreadByRun = useAppStore((s) => s.unreadByRun)
   const openRun = useAppStore((s) => s.openRun)
   const openDraft = useAppStore((s) => s.openDraft)
   const closeDraft = useAppStore((s) => s.closeDraft)
@@ -100,6 +102,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
         tone: 'none',
         waiting: false,
         hasDraft: draftOnPage,
+        unread: 0,
         closable: !only
       }
     }
@@ -109,14 +112,16 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const tag = runTag(indexes.get(run.summary.id))
     const full = promptLine(run.summary.prompt)
     const hasDraft = draftKeys.includes(run.summary.id)
+    const unread = unreadByRun[run.summary.id] ?? 0
     return {
       tag,
       title: shortPrompt(run.summary.prompt, 60),
       tooltip: `${tag}: ${full}\n${st.word}${st.note ? ` (${st.note})` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
-      label: `${tag}: ${shortPrompt(run.summary.prompt, 60)}. ${st.word}.${hasDraft ? ' Has an unsent draft.' : ''}`,
+      label: `${tag}: ${shortPrompt(run.summary.prompt, 60)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
       tone: st.tone,
       waiting,
       hasDraft,
+      unread,
       closable: !isRunLive(run)
     }
   }
@@ -194,7 +199,11 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     else if (e.key === 'ArrowLeft') next = ids[(at - 1 + ids.length) % ids.length]
     else if (e.key === 'Home') next = ids[0]
     else if (e.key === 'End') next = ids[ids.length - 1]
-    else if (e.key === 'Delete') {
+    else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault()
+      openCtx(rovingId)
+      return
+    } else if (e.key === 'Delete') {
       const item = visible[at]
       if (view(item).closable) {
         e.preventDefault()
@@ -223,13 +232,45 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   useEffect(() => {
     if (hidden.length === 0) setMenuOpen(false)
   }, [hidden.length])
-  const onMenuKey = (e: ReactKeyboardEvent): void => {
-    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
+  // Tab context menu (right click, ContextMenu key or Shift+F10 on a tab): Hide, Open in new window.
+  const [ctx, setCtx] = useState<{ id: string; left: number; top: number } | null>(null)
+  const ctxRef = useRef<HTMLDivElement>(null)
+  const setTabNotice = useAppStore((s) => s.setTabNotice)
+  const openCtx = (id: string): void => {
+    const el = tabRefs.current.get(id)?.parentElement
+    const rect = el?.getBoundingClientRect()
+    if (rect) setCtx({ id, left: rect.left, top: rect.bottom })
+  }
+  useEffect(() => {
+    if (!ctx) return undefined
+    ctxRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
+    const onDown = (e: PointerEvent): void => {
+      if (!ctxRef.current?.contains(e.target as Node)) setCtx(null)
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [ctx])
+  const closeCtx = (): void => {
+    const id = ctx?.id
+    setCtx(null)
+    if (id) tabRefs.current.get(id)?.focus()
+  }
+  const openInWindow = (item: TabItem): void => {
+    const run = item.run
+    if (!run) return
+    window.orgai.window
+      .openRun({ projectId: run.summary.projectId, runId: run.summary.id })
+      .catch((err: unknown) => setTabNotice(`Could not open a new window: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : 'unknown error'}`))
+  }
+  const onMenuKey = (e: ReactKeyboardEvent, root: HTMLElement | null = menuRef.current, close: () => void = () => {
+    setMenuOpen(false)
+    moreRef.current?.focus()
+  }): void => {
+    const buttons = Array.from(root?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])
     const at = buttons.indexOf(document.activeElement as HTMLElement)
     if (e.key === 'Escape') {
       e.preventDefault()
-      setMenuOpen(false)
-      moreRef.current?.focus()
+      close()
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
       buttons[(at + 1) % buttons.length]?.focus()
@@ -242,7 +283,10 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     } else if (e.key === 'End') {
       e.preventDefault()
       buttons[buttons.length - 1]?.focus()
-    } else if (e.key === 'Tab') setMenuOpen(false)
+    } else if (e.key === 'Tab') {
+      setMenuOpen(false)
+      setCtx(null)
+    }
   }
 
   return (
@@ -269,6 +313,10 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 }}
                 onFocus={() => setRoving(item.id)}
                 onClick={() => activate(item)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  openCtx(item.id)
+                }}
               >
                 {item.kind === 'draft' ? (
                   <span className="run-tab-glyph">
@@ -283,6 +331,10 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                   {v.waiting ? (
                     <span className="badge-warn" title="Waiting for you">
                       <Icon icon={CircleAlert} size="xs" />
+                    </span>
+                  ) : v.unread > 0 ? (
+                    <span className="badge-unread" title={`${v.unread} unread note${v.unread === 1 ? '' : 's'} from other runs`}>
+                      <Icon icon={Link2} size="xs" />
                     </span>
                   ) : v.hasDraft ? (
                     <span className="badge-draft" title="Unsent draft">
@@ -342,6 +394,51 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
           )}
         </div>
       )}
+      {ctx &&
+        (() => {
+          const item = items.find((t) => t.id === ctx.id)
+          if (!item) return null
+          const v = view(item)
+          return (
+            <div
+              className="run-tab-menu run-tab-ctx"
+              role="menu"
+              aria-label={`${v.tag || 'New run'} actions`}
+              ref={ctxRef}
+              style={{ left: ctx.left, top: ctx.top }}
+              onKeyDown={(e) => onMenuKey(e, ctxRef.current, closeCtx)}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="run-tab-menuitem"
+                disabled={!v.closable}
+                title={v.closable ? 'Hide this tab (Ctrl+W)' : 'A working run stays open. End its session first.'}
+                onClick={() => {
+                  setCtx(null)
+                  hide(item)
+                }}
+              >
+                <Icon icon={EyeOff} size="xs" />
+                Hide
+              </button>
+              {item.kind === 'run' && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="run-tab-menuitem"
+                  onClick={() => {
+                    setCtx(null)
+                    openInWindow(item)
+                  }}
+                >
+                  <Icon icon={AppWindow} size="xs" />
+                  Open in new window
+                </button>
+              )}
+            </div>
+          )
+        })()}
       <button type="button" ref={newRef} className="run-tab-new" aria-label="New run" title="New run (Ctrl+T)" onClick={openDraft}>
         <Icon icon={Plus} size="sm" />
       </button>

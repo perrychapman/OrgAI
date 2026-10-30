@@ -2,7 +2,7 @@ import type { RunStatus } from '@shared/types'
 
 /** The one status vocabulary of the app: tabs, run header, history, sidebar and the topbar badge all use these words. */
 export type StatusWord = 'Working' | 'Waiting for you' | 'Idle' | 'Paused' | 'Finished' | 'Failed'
-export type RunTone = 'live' | 'warn' | 'idle' | 'paused' | 'ok' | 'danger'
+export type RunTone = 'is-running' | 'warn' | 'idle' | 'paused' | 'ok' | 'danger'
 
 export interface RunStatusView {
   word: StatusWord
@@ -12,7 +12,7 @@ export interface RunStatusView {
 }
 
 const TONES: Record<StatusWord, RunTone> = {
-  Working: 'live',
+  Working: 'is-running',
   'Waiting for you': 'warn',
   Idle: 'idle',
   Paused: 'paused',

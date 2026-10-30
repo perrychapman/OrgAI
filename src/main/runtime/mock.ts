@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
 import { MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
-import { composeFirstMessage } from './prompts'
+import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { matchingRule } from './ruleMatch'
@@ -153,7 +153,7 @@ const DEFAULT_MCP_ASSIST: MockStep[] = [
     args: {
       title: 'Mock MCP servers',
       rationale: 'A filesystem server lets the roles read shared notes.',
-      upsert: [{ id: 'mcp-mock-fs', name: 'mock-fs', transport: 'stdio', command: 'npx', args: ['-y', 'mock-fs-server'], enabled: true, source: 'registry', addedAt: '2026-01-01T00:00:00.000Z' }]
+      upsert: [{ id: 'mcp-mock-fs', name: 'mock-fs', transport: 'stdio', command: 'npx', args: ['-y', 'mock-fs-server@1.0.0'], enabled: true, source: 'registry', registry: { name: 'io.github.mock/fs-server', version: '1.0.0', registryType: 'npm', identifier: 'mock-fs-server' }, addedAt: '2026-01-01T00:00:00.000Z' }]
     }
   },
   { type: 'text', text: 'The MCP servers are set up.' }
@@ -188,6 +188,8 @@ export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
   readonly harnessMessages: string[] = []
+  /** Raw messages from other runs delivered through receive(), in order. For tests. */
+  readonly peerMessages: PeerMessage[] = []
   /** What a real adapter would grant: role slug -> names of the MCP servers that role may use. For tests. */
   readonly mcpServersByRole: Record<string, string[]> = {}
   /** The enabled plugins the session would load. For tests. */
@@ -255,9 +257,9 @@ export class MockSession implements RuntimeSession {
         const root = this.agents.get(ROOT_AGENT_ID)
         return !!root && root.state !== 'idle' && root.state !== 'done'
       },
-      nudge: (text, activity) => this.deliverHarness(text, activity),
+      nudge: (text, activity, summary) => this.deliverHarness(text, activity, { summary }),
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' })
     })
     this.stopSignal = new Promise((resolve) => (this.signalStop = () => resolve(STOPPED)))
     if (loadError) this.log('warn', loadError)
@@ -283,6 +285,13 @@ export class MockSession implements RuntimeSession {
     this.poke()
   }
 
+  /** A message from another run: delivered like a harness message, but RunManager writes the transcript block. */
+  async receive(message: PeerMessage): Promise<void> {
+    if (this.stopped) return
+    this.peerMessages.push(message)
+    this.deliverHarness(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
   async stop(): Promise<void> {
     this.continuation.dispose()
     this.stopped = true
@@ -306,8 +315,8 @@ export class MockSession implements RuntimeSession {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
   }
 
-  private transcript(agentId: string, block: TranscriptBlock): void {
-    this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block } })
+  private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
+    this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
   }
 
   private upsert(agent: AgentInstance): void {
@@ -398,9 +407,11 @@ export class MockSession implements RuntimeSession {
   }
 
   /** A harness message for the orchestrator (the Claude adapter's notifyOrchestrator path). */
-  private deliverHarness(text: string, activity: string): void {
+  private deliverHarness(text: string, activity: string, opts: { transcript?: boolean; summary?: string } = {}): void {
     this.harnessMessages.push(text)
-    this.transcript(ROOT_AGENT_ID, { kind: 'system', text })
+    if (opts.transcript !== false) {
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
+    }
     const root = this.agents.get(ROOT_AGENT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_AGENT_ID, 'thinking', activity)
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
@@ -419,7 +430,7 @@ export class MockSession implements RuntimeSession {
       activity: 'Reading your request…'
     })
     if (this.ctx.resumeSessionId) {
-      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` })
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: `Continued from run ${this.ctx.run.resumedFrom ?? this.ctx.resumeSessionId}` }, { source: 'harness' })
     }
     const firstImages = this.ctx.images
     this.transcript(

@@ -167,6 +167,23 @@ export function newServerBase(name: string, roles: Role[]): SpecBase {
   return { id: newId('mcp'), name, enabled: true, roles: allRoleSlugs(roles), addedAt: new Date().toISOString() }
 }
 
+/** Drops deleted entries and repeats of the same name and version (the registry can list a version more than once). */
+export function dedupeRegistryEntries(entries: McpRegistryEntry[]): McpRegistryEntry[] {
+  const seen = new Set<string>()
+  const out: McpRegistryEntry[] = []
+  for (const e of entries) {
+    if (e.status === 'deleted') continue
+    const key = `${e.name}@${e.version}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(e)
+  }
+  return out
+}
+
+/** Starting points offered while the registry search is empty. */
+export const REGISTRY_SUGGESTIONS = ['filesystem', 'github', 'fetch', 'memory', 'playwright']
+
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : String(e)
 }
