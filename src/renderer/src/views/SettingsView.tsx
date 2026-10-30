@@ -8,7 +8,7 @@ import PluginsSection from '../components/mcp/PluginsSection'
 import { GeneralSection } from '../components/settings/GeneralSection'
 import { LimitsSection } from '../components/settings/LimitsSection'
 import { MaintenanceSection } from '../components/settings/MaintenanceSection'
-import { PermissionsSection } from '../components/settings/PermissionsSection'
+import { AgentsSection } from '../components/settings/AgentsSection'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import type { SettingsNavItem } from '../components/settings/SettingsNav'
 import { PROJECT_SETTINGS_PANES, type ProjectSettingsPane } from '../lib/settingsTarget'
@@ -38,11 +38,15 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
   return (
     <div className="editor single">
       <SettingsPage title="Project settings" idBase="project-settings" label="Project settings sections" panes={PANES} active={pane} onSelect={(id) => setPane(project.id, id)}>
-        <RemapNotices projectId={project.id} />
         {pane === 'general' && <GeneralSection project={project} patch={patch} />}
-        {pane === 'agents' && <PermissionsSection project={project} patch={patch} />}
+        {pane === 'agents' && <AgentsSection project={project} patch={patch} />}
         {pane === 'limits' && <LimitsSection project={project} patch={patch} />}
-        {pane === 'connection' && <ProjectConnection project={project} />}
+        {pane === 'connection' && (
+          <>
+            <RemapNotices projectId={project.id} />
+            <ProjectConnection project={project} />
+          </>
+        )}
         {pane === 'tools' && (
           <>
             <McpSection project={project} />

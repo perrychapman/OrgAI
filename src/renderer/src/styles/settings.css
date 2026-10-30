@@ -358,3 +358,45 @@
   gap: var(--space-2);
   min-width: 0;
 }
+
+/* ---------- Project pane additions: quiet line, card list, add row, danger text ---------- */
+.settings-quiet {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.settings-card > .settings-card-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.settings-card > .settings-card-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.settings-card-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+}
+.settings-card-item + .settings-card-item {
+  border-top: 1px solid var(--border-subtle);
+}
+.settings-card-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.settings-card-hint {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+.danger-zone-text {
+  margin: 0;
+  color: var(--text-primary);
+}
