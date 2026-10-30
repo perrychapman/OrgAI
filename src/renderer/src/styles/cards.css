@@ -568,6 +568,59 @@
     max-height: min(30cqh, 200px);
   }
 }
+/* Inline cards (a question): the options and the note are the action, so the body shows at every size. Details then
+   covers the helper text only. The card keeps room for its footer: the tray scrolls before the footer is cut. */
+.decision-card[data-inline='true'] {
+  min-height: 200px;
+}
+.frame-tray[data-compact='true'] .decision-card[data-inline='true'] .decision-body {
+  display: block;
+  max-height: none;
+}
+.frame-tray[data-compact='true'] .decision-card[data-inline='true'][data-expanded='false'] .decision-helper {
+  display: none;
+}
+.frame-tray[data-compact='true'] .decision-card[data-inline='true'][data-expanded='true'] .decision-helper {
+  display: block;
+}
+@container frame (max-height: 479px) {
+  .decision-card[data-inline='true'] .decision-body {
+    display: block;
+    max-height: none;
+  }
+  .decision-card[data-inline='true'][data-expanded='false'] .decision-helper {
+    display: none;
+  }
+  .decision-card[data-inline='true'][data-expanded='true'] .decision-helper {
+    display: block;
+  }
+  .question-options {
+    gap: var(--space-1);
+  }
+  .question-option {
+    padding: var(--space-1) var(--space-2);
+  }
+  .question-desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+/* A question keeps its whole text in the title: up to two lines. */
+.decision-card.kind-question .decision-title {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.question-full {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
 .decision-tool-input {
   margin: 0;
   padding: var(--space-2);

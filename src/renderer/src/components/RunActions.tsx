@@ -24,7 +24,7 @@ function Described({ text, children }: { text: string; children: ReactNode }): R
 /**
  * The viewed run's actions, at the trailing edge of the run strip: Interrupt turn and End session while the session is
  * open (a gap before the destructive one), Org retrospective once a work run has ended. The words collapse to icons
- * in a narrow strip (the label stays the accessible name). It carries no status: the active tab is the run's status.
+ * in a narrow strip (the label stays the accessible name); End session is destructive and always keeps its words. It carries no status: the active tab is the run's status.
  */
 export default function RunActions({ runId }: { runId: string }): ReactElement | null {
   const summary = useAppStore((s) => s.runs[runId]?.summary)
@@ -45,7 +45,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
         <>
           <Described text={interruptHelp}>
             <Button size="sm" icon={Pause} ariaLabel="Interrupt turn" onClick={() => void interrupt()} disabled={summary.status !== 'running'} title={interruptHelp}>
-              <span className="run-act-label">Interrupt turn</span>
+              <span className="run-act-label run-act-collapse">Interrupt turn</span>
             </Button>
           </Described>
           <span className="run-act-end">
@@ -60,7 +60,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
       {canRetro && (
         <Described text={retroHelp}>
           <Button size="sm" icon={RotateCcw} ariaLabel="Org retrospective" title={retroHelp} onClick={() => void startRetro(summary.id)}>
-            <span className="run-act-label">Org retrospective</span>
+            <span className="run-act-label run-act-collapse">Org retrospective</span>
           </Button>
         </Described>
       )}

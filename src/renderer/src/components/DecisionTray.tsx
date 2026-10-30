@@ -1,5 +1,6 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useRef } from 'react'
+import type { KeyboardEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { decisionFocus } from './DecisionCard'
 import { Icon } from './ui/Icon'
@@ -32,7 +33,17 @@ export default function DecisionTray({
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
   }, [selected, items.length])
+  // The chips are one Tab stop (roving tabindex): the focused chip, else the selected one.
+  const [focused, setFocused] = useState<number | null>(null)
   if (items.length === 0) return null
+  const rover = Math.min(focused ?? selected, items.length - 1)
+  const onChipKey = (e: KeyboardEvent<HTMLButtonElement>, i: number): void => {
+    const to = e.key === 'ArrowRight' ? Math.min(i + 1, items.length - 1) : e.key === 'ArrowLeft' ? Math.max(i - 1, 0) : e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : -1
+    if (to < 0) return
+    e.preventDefault()
+    setFocused(to)
+    listRef.current?.querySelectorAll<HTMLElement>('.decision-chip')[to]?.focus()
+  }
   const go = (to: number): void => {
     decisionFocus.suppress = true
     onSelect(to)
@@ -45,14 +56,24 @@ export default function DecisionTray({
           <span className="decision-stepper-title">
             Decisions <span className="decision-count">{items.length}</span>
           </span>
-          <ul className="decision-list" ref={listRef}>
+          <ul
+            className="decision-list"
+            ref={listRef}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(null)
+            }}
+          >
             {items.map((it, i) => (
               <li key={it.key}>
                 <button
                   type="button"
                   className="decision-chip"
                   aria-current={i === selected ? 'true' : undefined}
+                  aria-label={`Decision ${i + 1}: ${it.label}`}
                   title={it.label}
+                  tabIndex={i === rover ? 0 : -1}
+                  onFocus={() => setFocused(i)}
+                  onKeyDown={(e) => onChipKey(e, i)}
                   onClick={() => go(i)}
                 >
                   <span className="decision-chip-n">{i + 1}</span>

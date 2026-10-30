@@ -46,6 +46,11 @@ interface Props {
    * title cannot show everything the user is approving (a multi-line shell command, a broad rule).
    */
   focusDetails?: boolean
+  /**
+   * The body is the action (a question's options and note): it shows at every size, also in compact mode. The Details
+   * toggle then covers only the helper text, and is absent without one.
+   */
+  inline?: boolean
   /** Skip moving focus on mount (a card that is only a record, e.g. an answered install). */
   noAutoFocus?: boolean
   /** A failed answer, shown above the footer so the buttons stay in place. */
@@ -92,7 +97,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, headerExtra, children, helper, primary, secondary, deny, focusDetails, noAutoFocus, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
@@ -102,6 +107,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
     return roleId ? selectedProject(st)?.roles.find((r) => r.id === roleId)?.color : undefined
   })
   const hasBody = (children !== undefined && children !== null) || !!helper
+  const hasDetails = inline ? !!helper : hasBody
   useEffect(() => {
     if (decisionFocus.suppress) {
       decisionFocus.suppress = false
@@ -130,6 +136,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
       aria-label={`${k.label}: ${title}`}
       data-kind={kind}
       data-expanded={expanded ? 'true' : 'false'}
+      data-inline={inline ? 'true' : undefined}
       data-testid={testId}
     >
       <header className="decision-head">
@@ -152,7 +159,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
           <span className="decision-title" title={title}>
             {title}
           </span>
-          {hasBody && (
+          {hasDetails && (
             <button type="button" className="decision-details" aria-expanded={expanded} aria-controls={bodyId} onClick={() => setExpanded((v) => !v)}>
               <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
               Details

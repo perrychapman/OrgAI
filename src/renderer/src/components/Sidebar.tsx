@@ -4,12 +4,13 @@ import type { AuthStatusResult, ConnectionStatus } from '@shared/types'
 import { BellRing, ChevronDown, ChevronRight, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
-import { waitingItems } from '../lib/needsYou'
-import { needsYou, projectCounts } from '../lib/runChains'
+import { decisionCount, waitingItems } from '../lib/needsYou'
+import { needsYou } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { isStoppedRun, runStatus, statusOfRun } from '../lib/runStatus'
 import { projectStatus } from '../lib/projectStatus'
 import { initials } from '../lib/layout'
+import { currentPlatform, isMacPlatform, modKeyLabel } from '../lib/platform'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { tightestWindow, UsageBar } from './UsageMeter'
@@ -82,6 +83,7 @@ export default function Sidebar(): ReactElement {
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
   const tight = mockAdapter ? null : tightestWindow(usage)
   const needsLabel = `Needs you · ${items.length}`
+  const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
   return (
     <aside className="sidebar" id="sidebar" tabIndex={-1} aria-label="Sidebar" data-collapsed={rail ? 'true' : 'false'}>
@@ -89,6 +91,7 @@ export default function Sidebar(): ReactElement {
         collapsed={rail}
         onExpand={() => setCollapsed(false)}
         railNote={mockAdapter ? MOCK_TIP : undefined}
+        shortcut={sidebarKey}
         tag={
           mockAdapter ? (
             <Badge tone="neutral" testId="mock-mode-badge" title={MOCK_TIP}>
@@ -96,7 +99,7 @@ export default function Sidebar(): ReactElement {
             </Badge>
           ) : undefined
         }
-        trailing={<IconButton icon={PanelLeftClose} label="Collapse sidebar" size="sm" testId="sidebar-toggle" onClick={toggle} />}
+        trailing={<IconButton icon={PanelLeftClose} label={`Collapse sidebar (${sidebarKey})`} size="sm" testId="sidebar-toggle" onClick={toggle} />}
       />
       <div className="sidebar-section sidebar-nav">
         <button
@@ -135,16 +138,17 @@ export default function Sidebar(): ReactElement {
                       <button
                         type="button"
                         className="needs-item"
-                        title={`${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${it.label}`}
+                        data-kind={it.kind}
+                        title={`${it.label}\n${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}`}
                         onClick={() => {
                           close()
-                          void jumpToDecision(r.summary.projectId, r.summary.id)
+                          void jumpToDecision(r.summary.projectId, r.summary.id, it.key)
                         }}
                       >
+                        <span className="needs-what">{it.label}</span>
                         <span className="needs-where">
                           {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
                         </span>
-                        <span className="needs-what">{it.label}</span>
                       </button>
                     </li>
                   ))
@@ -159,13 +163,13 @@ export default function Sidebar(): ReactElement {
       <div className="sidebar-section sidebar-projects">
         {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
         {projects.map((p) => {
-          const counts = projectCounts(allRuns, p.id)
           const projectRuns = allRuns.filter((r) => r.summary.projectId === p.id)
           const open = openRunsOf(projectRuns)
           const expanded = !rail && open.length > 0 && !collapsed[p.id]
           const newest = [...(history[p.id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
           const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
-          const st = projectStatus({ open: open.length > 0 ? counts.open : 0, needsYou: counts.needsYou, newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
+          // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
+          const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
           const active = selectedId === p.id && inProject(view)
           const viewedId = draftPage[p.id] ? undefined : viewedByProject[p.id]
           const accessibleName = st.needsLabel ? `${p.name}, ${st.needsLabel}` : p.name
@@ -210,9 +214,9 @@ export default function Sidebar(): ReactElement {
                         <span className="nav-name">{p.name}</span>
                         {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
                       </span>
-                      {st.needsYou > 0 && (
+                      {st.decisions > 0 && (
                         <Badge tone="attention" title={st.needsLabel}>
-                          {st.needsYou}
+                          {st.decisions}
                         </Badge>
                       )}
                     </>
@@ -262,6 +266,7 @@ export default function Sidebar(): ReactElement {
             </>
           }
           triggerLabel={rail ? account.label : undefined}
+          triggerTitle={rail ? account.label : undefined}
           triggerClassName="account-row"
           triggerTestId="auth-pill"
           label="Account and plan usage"

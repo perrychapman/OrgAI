@@ -37,16 +37,22 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
     void answer(() => onAnswer(note ? { selected, text: note } : { selected }))
   }
 
+  // The title carries the question; a very long one is clipped there, so the full text goes behind Details.
+  const title = questionTitle(question.question)
+  const clipped = title.endsWith('…')
+
   return (
     <DecisionCard
       kind="question"
       error={error}
       runId={runId}
-      title={questionTitle(question.question)}
+      title={title}
+      inline
       who={who}
       agentId={question.agentId}
       helper={
         <>
+          {clipped && <span className="question-full">{question.question} </span>}
           {who} is waiting for your answer. {question.allowMultiple ? 'Pick one or more.' : 'Pick one.'}
         </>
       }
@@ -57,7 +63,6 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       }
     >
       <div className="stack-3">
-        <p className="question-text">{question.question}</p>
         <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={question.question}>
           {question.options.map((o) => {
             const checked = selected.includes(o.label)
