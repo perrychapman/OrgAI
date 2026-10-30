@@ -6,7 +6,8 @@
 # - Or run it by hand (workflow_dispatch). dry_run (the default) only builds and uploads workflow artifacts; a dry run
 #   of a ref that is not on main is allowed (build only) and prints a notice.
 # Nothing is uploaded by electron-builder itself (`--publish never`); the publish job creates the draft release.
-# Mac builds are unsigned unless the CSC_LINK secret is set; notarization runs only when the APPLE_* secrets are set.
+# Dry runs are deliberately unsigned. Publishable runs fail unless Windows and macOS signing credentials are present,
+# and their artifacts pass platform signature/notarization verification before upload.
 name: Release
 
 on:
@@ -35,12 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      ref: ${{ steps.meta.outputs.ref }}
+      commit: ${{ steps.meta.outputs.commit }}
       tag: ${{ steps.meta.outputs.tag }}
       publish: ${{ steps.meta.outputs.publish }}
     steps:
       # Full history plus origin/main and the tags, for the reachability check.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - id: meta
@@ -76,9 +77,9 @@ jobs:
             echo "::notice::$ref ($commit) is not on main. Dry run: build only, nothing is published."
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag ref=$ref publish=$publish"
+          echo "tag=$tag commit=$commit publish=$publish"
 
   build:
     name: ${{ matrix.name }}
@@ -105,10 +106,11 @@ jobs:
             args: --mac --x64
             arch: x64
     steps:
-      - uses: actions/checkout@v4
+      # Checkout the exact object that passed the main-reachability check. Never resolve the mutable tag/ref again.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ needs.meta.outputs.ref }}
-      - uses: actions/setup-node@v4
+          ref: ${{ needs.meta.outputs.commit }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -129,6 +131,30 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Require Windows signing credentials
+        if: needs.meta.outputs.publish == 'true' && runner.os == 'Windows'
+        shell: bash
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          [ -n "$WIN_CSC_LINK" ] && [ -n "$WIN_CSC_KEY_PASSWORD" ] || {
+            echo "::error::Publishable Windows builds require WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD."; exit 1;
+          }
+      - name: Require macOS signing and notarization credentials
+        if: needs.meta.outputs.publish == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          [ -n "$MAC_CSC_LINK" ] && [ -n "$MAC_CSC_KEY_PASSWORD" ] && [ -n "$APPLE_ID" ] && \
+            [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ] || {
+            echo "::error::Publishable macOS builds require signing and notarization credentials."; exit 1;
+          }
       - name: Package
         # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
         # administrator, so winCodeSign's symlinks extract. If this step fails extracting winCodeSign, append
@@ -138,21 +164,45 @@ jobs:
         # so absent secrets are left unset and the build is unsigned (CSC_IDENTITY_AUTO_DISCOVERY=false).
         shell: bash
         env:
-          SECRET_CSC_LINK: ${{ secrets.CSC_LINK }}
-          SECRET_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          PUBLISH: ${{ needs.meta.outputs.publish }}
+          SECRET_WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          SECRET_WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          SECRET_MAC_CSC_LINK: ${{ secrets.CSC_LINK }}
+          SECRET_MAC_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           SECRET_APPLE_ID: ${{ secrets.APPLE_ID }}
           SECRET_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           export CSC_IDENTITY_AUTO_DISCOVERY=false
-          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$SECRET_CSC_LINK" ]; then
-            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$SECRET_CSC_LINK" CSC_KEY_PASSWORD="$SECRET_CSC_KEY_PASSWORD"
-            if [ -n "$SECRET_APPLE_ID" ]; then
-              export APPLE_ID="$SECRET_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$SECRET_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$SECRET_APPLE_TEAM_ID"
-            fi
+          if [ "$PUBLISH" = "true" ] && [ "$RUNNER_OS" = "Windows" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$SECRET_WIN_CSC_LINK" CSC_KEY_PASSWORD="$SECRET_WIN_CSC_KEY_PASSWORD"
+          elif [ "$PUBLISH" = "true" ] && [ "$RUNNER_OS" = "macOS" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$SECRET_MAC_CSC_LINK" CSC_KEY_PASSWORD="$SECRET_MAC_CSC_KEY_PASSWORD"
+            export APPLE_ID="$SECRET_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$SECRET_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$SECRET_APPLE_TEAM_ID"
           fi
           npx electron-builder ${{ matrix.args }} --publish never
-      - uses: actions/upload-artifact@v4
+      - name: Verify Windows signatures
+        if: needs.meta.outputs.publish == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem release -Filter *.exe
+          if (-not $artifacts) { throw 'No Windows executables were produced.' }
+          foreach ($artifact in $artifacts) {
+            $signature = Get-AuthenticodeSignature $artifact.FullName
+            if ($signature.Status -ne 'Valid') { throw "$($artifact.Name) signature is $($signature.Status)." }
+          }
+      - name: Verify macOS signatures and notarization
+        if: needs.meta.outputs.publish == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          app_path="$(find release -type d -name 'OrgAI.app' -print -quit)"
+          [ -n "$app_path" ] || { echo "::error::No packaged OrgAI.app was produced."; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+          dmg_path="$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+          [ -n "$dmg_path" ] || { echo "::error::No DMG was produced."; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: orgai-${{ matrix.name }}
           path: |
@@ -172,13 +222,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.meta.outputs.commit }}
+          fetch-depth: 0
       # One folder per leg (no merge-multiple): both mac legs may write a latest-mac.yml.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: orgai-*
       - run: ls -R dist
-      - uses: softprops/action-gh-release@v2
+      - name: Verify release tag still names the reviewed commit
+        shell: bash
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.meta.outputs.commit }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          actual="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          [ "$actual" = "$EXPECTED_COMMIT" ] || {
+            echo "::error::Release tag moved after validation; expected $EXPECTED_COMMIT, got $actual."; exit 1;
+          }
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           draft: true

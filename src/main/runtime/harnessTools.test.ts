@@ -453,7 +453,7 @@ describe('request_permission_rules', () => {
     expect(ctx.requestPermissionRules).toHaveBeenCalledWith({ agentId: 'a1', rules: ['Bash(gh repo create:*)', 'Bash(git push:*)'], reason: 'Publish the repo' })
     const project = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'grant' as const, scope: 'project' as const })) })
     expect(await tool(project).call({ rules: ['WebSearch'], reason: 'r' })).toMatch(/^GRANTED \(saved for this project\): WebSearch\./)
-    expect(vi.mocked(project.requestPermissionRules!).mock.calls[0][0].agentId).toBe('root')
+    expect(vi.mocked(project.requestPermissionRules!).mock.calls[0]![0]!.agentId).toBe('root')
   })
 
   it('reports a denial with the user note, and refuses to retry', async () => {
