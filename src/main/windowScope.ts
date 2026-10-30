@@ -53,9 +53,14 @@ export function isExternalWebUrl(url: string): boolean {
 /**
  * Whether a navigation target is the app's own renderer: the dev server's origin (ELECTRON_RENDERER_URL) in
  * development, the bundled index.html file in production. Hash and query are ignored, so `#/run/...` stays in.
- * Used by the will-navigate / will-redirect guards, which cancel every other navigation.
+ * File paths are compared as URL-normalised pathnames, never decoded (a malformed escape such as `%zz` must not
+ * throw), and case-folded on Windows only. Call it through shouldBlockNavigation, which fails closed.
  */
-export function appUrlMatcher(rendererUrl: string | undefined, indexFileUrl: string): (url: string) => boolean {
+export function appUrlMatcher(
+  rendererUrl: string | undefined,
+  indexFileUrl: string,
+  platform: NodeJS.Platform = process.platform
+): (url: string) => boolean {
   const parse = (url: string): URL | null => {
     try {
       return new URL(url)
@@ -71,10 +76,24 @@ export function appUrlMatcher(rendererUrl: string | undefined, indexFileUrl: str
     }
   }
   const index = parse(indexFileUrl)
-  // Windows paths are case-insensitive and Chromium may report the drive letter in either case.
-  const key = (u: URL): string => decodeURIComponent(u.pathname).toLowerCase()
+  // Windows paths are case-insensitive and Chromium may report the drive letter in either case; elsewhere case matters.
+  const key = (u: URL): string => (platform === 'win32' ? u.pathname.toLowerCase() : u.pathname)
   return (url) => {
     const u = parse(url)
     return !!u && !!index && u.protocol === 'file:' && index.protocol === 'file:' && u.host === index.host && key(u) === key(index)
+  }
+}
+
+/**
+ * The will-navigate / will-redirect / will-frame-navigate guard: true when the navigation must be cancelled.
+ * Anything but the app's own renderer is blocked; subframes may also load about:blank and about:srcdoc. A matcher
+ * that throws blocks (fails closed), since the throw would otherwise skip preventDefault().
+ */
+export function shouldBlockNavigation(isAppUrl: (url: string) => boolean, url: string, isMainFrame = true): boolean {
+  try {
+    if (!isMainFrame && (url === 'about:blank' || url === 'about:srcdoc')) return false
+    return !isAppUrl(url)
+  } catch {
+    return true
   }
 }

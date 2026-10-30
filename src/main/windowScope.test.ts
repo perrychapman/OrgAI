@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseRunWindowHash, runWindowHash } from '@shared/types'
-import { appUrlMatcher, checkRunTarget, isExternalWebUrl, pickFocusWindow, scopedWindow } from './windowScope'
+import { appUrlMatcher, checkRunTarget, isExternalWebUrl, pickFocusWindow, scopedWindow, shouldBlockNavigation } from './windowScope'
 
 const lookup = {
   project: (id: string) => (id === 'proj_a' || id === 'proj_b' ? { id } : null),
@@ -78,12 +78,48 @@ describe('navigation guards', () => {
   })
 
   it('keeps a packaged window on its own index.html', () => {
-    const isApp = appUrlMatcher(undefined, 'file:///C:/Program%20Files/OrgAI/resources/app.asar/out/renderer/index.html')
+    const isApp = appUrlMatcher(undefined, 'file:///C:/Program%20Files/OrgAI/resources/app.asar/out/renderer/index.html', 'win32')
     expect(isApp('file:///C:/Program%20Files/OrgAI/resources/app.asar/out/renderer/index.html')).toBe(true)
     expect(isApp('file:///c:/Program%20Files/OrgAI/resources/app.asar/out/renderer/index.html#/run/proj_a/run_1')).toBe(true)
     expect(isApp('file:///C:/Program%20Files/OrgAI/resources/app.asar/out/renderer/other.html')).toBe(false)
     expect(isApp('file:///C:/Users/me/Downloads/evil.html')).toBe(false)
     expect(isApp('file://remote-host/C:/Program%20Files/OrgAI/resources/app.asar/out/renderer/index.html')).toBe(false)
     expect(isApp('https://evil.example/index.html')).toBe(false)
+  })
+
+  it('never decodes file paths, so malformed and encoded escapes neither throw nor match', () => {
+    const isApp = appUrlMatcher(undefined, 'file:///C:/app/out/renderer/index.html', 'win32')
+    expect(() => isApp('file:///%zz')).not.toThrow()
+    expect(isApp('file:///%zz')).toBe(false)
+    expect(() => isApp('file:///x/%E0%A4%A')).not.toThrow()
+    expect(isApp('file:///x/%E0%A4%A')).toBe(false)
+    // An encoded slash is a different path, not the same file.
+    expect(isApp('file:///C:/app/out/renderer%2Findex.html')).toBe(false)
+    expect(isApp('file:///C:/app/out%2Frenderer/index.html')).toBe(false)
+    expect(shouldBlockNavigation(isApp, 'file:///%zz')).toBe(true)
+    expect(shouldBlockNavigation(isApp, 'file:///C:/app/out/renderer/index.html#/run/p/r')).toBe(false)
+  })
+
+  it('compares file paths case-sensitively off Windows', () => {
+    const mac = appUrlMatcher(undefined, 'file:///Applications/OrgAI.app/Contents/Resources/app.asar/out/renderer/index.html', 'darwin')
+    expect(mac('file:///Applications/OrgAI.app/Contents/Resources/app.asar/out/renderer/index.html')).toBe(true)
+    expect(mac('file:///applications/orgai.app/contents/resources/app.asar/out/renderer/index.html')).toBe(false)
+    const win = appUrlMatcher(undefined, 'file:///C:/App/index.html', 'win32')
+    expect(win('file:///c:/app/INDEX.html')).toBe(true)
+  })
+
+  it('blocks when the matcher throws and lets subframes load only about:blank and about:srcdoc besides the app', () => {
+    const throwing = (): boolean => {
+      throw new Error('boom')
+    }
+    expect(shouldBlockNavigation(throwing, 'file:///C:/app/index.html')).toBe(true)
+    expect(shouldBlockNavigation(throwing, 'https://evil.example/', false)).toBe(true)
+    const isApp = appUrlMatcher('http://localhost:5173', 'file:///unused/index.html')
+    expect(shouldBlockNavigation(isApp, 'http://localhost:5173/#/x')).toBe(false)
+    expect(shouldBlockNavigation(isApp, 'https://evil.example/')).toBe(true)
+    expect(shouldBlockNavigation(isApp, 'about:blank', false)).toBe(false)
+    expect(shouldBlockNavigation(isApp, 'about:srcdoc', false)).toBe(false)
+    expect(shouldBlockNavigation(isApp, 'about:blank')).toBe(true)
+    expect(shouldBlockNavigation(isApp, 'https://evil.example/', false)).toBe(true)
   })
 })
