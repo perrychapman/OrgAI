@@ -1,5 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type {
+  AgentImportApplyResult,
+  AgentImportInput,
+  AgentImportPreview,
+  AgentImportScan,
+  OrgExportResult,
   AppInfo,
   AppSettings,
   AppSettingsInfo,
@@ -57,6 +62,7 @@ import type { MaintenanceService } from './maintenance'
 import type { SettingsStore } from './store/settings'
 import type { ConnectionService } from './connections/service'
 import type { McpService } from './mcp/service'
+import type { AgentImportService } from './setup/import/importer'
 import { claudeAuthStatus } from './connections/anthropicAuth'
 import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
@@ -84,18 +90,34 @@ export interface IpcServices {
    * `#/run/<projectId>/<runId>` (index.ts window factory).
    */
   openRunWindow(target: FocusRunTarget): void
+  /** Agent import and org export (src/main/setup/import/importer.ts). */
+  importer: AgentImportService
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer }: IpcServices): void {
   /** A stored project, or the virtual harness project that owns harness-level runs. Never listed by projects:list. */
   const projectOrHarness = (id: string): Project | null => (id === HARNESS_PROJECT_ID ? harnessProject() : projects.get(id))
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
   ipcMain.handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
-    projects.create(input, settings.get(), { mockAvailable: adapterIds.includes('mock'), prepare: (p) => connections.prepareNewProject(p) })
+    projects.create(input, settings.get(), {
+      mockAvailable: adapterIds.includes('mock'),
+      prepare: (p) => connections.prepareNewProject(p),
+      // After prepare: imported models map to the connection the project was put on.
+      importRoles: (p, sources) => importer.rolesForNewProject(p, sources)
+    })
   )
-  ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => checkProjectPath(path))
+  // Never rejects: the agent scan and the existing-project lookup add fields only when they succeed.
+  ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => {
+    const check = checkProjectPath(path)
+    return { ...check, ...importer.pathCheckExtras(path, check) }
+  })
+  // Agent import: read-only scans of the stored project's folder; the renderer supplies choices, never roles.
+  ipcMain.handle(IPC.projectsScanAgents, (_e, path: string): AgentImportScan => importer.scan(path))
+  ipcMain.handle(IPC.projectsPreviewImport, (_e, input: AgentImportInput): AgentImportPreview => importer.preview(input))
+  ipcMain.handle(IPC.projectsApplyImport, (_e, input: AgentImportInput): AgentImportApplyResult => importer.apply(input))
+  ipcMain.handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   ipcMain.handle(IPC.projectsSave, (_e, project: Project) => {
     if (project?.id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be saved.')

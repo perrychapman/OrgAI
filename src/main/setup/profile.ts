@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 import type { ProjectProfile } from '@shared/types'
+import { agentDefinitionLocations } from './import/scan'
 
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', 'target', 'bin', 'obj', '.next', '.nuxt', '.turbo',
@@ -91,7 +92,20 @@ export async function profileRepo(root: string): Promise<ProjectProfile> {
     .slice(0, 12)
     .map(([ext, files]) => ({ ext, files }))
 
-  return { scannedAt, exists: true, isEmpty: fileCount === 0, hasGit, fileCount, tree: treeLines.join('\n'), languages, keyFiles, gitLog }
+  // Dot folders are left out of the tree; agent definitions in them are listed here instead (src/main/setup/import).
+  const agentDefinitions = agentDefinitionLocations(root)
+  return {
+    scannedAt,
+    exists: true,
+    isEmpty: fileCount === 0,
+    hasGit,
+    fileCount,
+    tree: treeLines.join('\n'),
+    languages,
+    keyFiles,
+    gitLog,
+    ...(agentDefinitions.length ? { agentDefinitions } : {})
+  }
 }
 
 function gitLogLines(root: string): Promise<string[]> {
@@ -112,6 +126,7 @@ export function renderProfile(p: ProjectProfile): string {
     `Languages by file count: ${p.languages.map((l) => `${l.ext} (${l.files})`).join(', ') || 'none detected'}.`,
     `Directory tree:\n${p.tree}`
   ]
+  if (p.agentDefinitions?.length) parts.push(`Agent definitions present: ${p.agentDefinitions.join(', ')}.`)
   if (p.gitLog.length) parts.push(`Recent commits:\n${p.gitLog.join('\n')}`)
   for (const f of p.keyFiles) parts.push(`--- ${f.path} ---\n${f.content}`)
   return parts.join('\n\n')
