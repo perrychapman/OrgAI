@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
-import { PANEL_W, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
+import { PANEL_W, PANEL_WIDE_PX, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
 import { ResizeHandle } from './ResizeHandle'
 
 const PREF_PREFIX = 'orgai.sidePanel.'
@@ -27,7 +27,7 @@ function readPref(key: string | undefined): 'open' | 'closed' | null {
  * `autoCollapseBelow` (px): when the panel's grid is narrower than this on first layout, it starts collapsed. The
  * user's own toggle is saved under `persistKey` (localStorage) and wins over that default from then on.
  * The panel is drag-resizable (a `ResizeHandle` on its left edge): the width is saved per `persistKey` (shared key
- * `default` without one) as `orgai.sidePanelW.<key>`, clamped to 280..640 px so the canvas keeps 360 px; when 280 px does not fit it shows as its rail. It drives
+ * `default` without one) as `orgai.sidePanelW.<key>`, clamped to 280 px up to whatever leaves the canvas 280 px (no fixed max); when 280 px does not fit it shows as its rail. It drives
  * `--side-panel-w` on the parent grid; with no saved width the grid's own CSS default applies.
  * `revealOn`: when this value changes to a non-null value (a selected node), the panel opens without saving.
  */
@@ -107,6 +107,15 @@ export function SidePanel({
     return () => window.removeEventListener('resize', apply)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoCollapseBelow, persistKey])
+  // Parent grids can restyle for a wide panel (the Live view moves the composer into the panel column).
+  const wide = !(collapsible && (collapsed || !budget.fits)) && sizes.panel >= PANEL_WIDE_PX
+  useLayoutEffect(() => {
+    const parent = ref.current?.parentElement
+    if (!parent) return undefined
+    if (wide) parent.setAttribute('data-side-wide', 'true')
+    else parent.removeAttribute('data-side-wide')
+    return () => parent.removeAttribute('data-side-wide')
+  }, [wide])
   const first = useRef(true)
   useEffect(() => {
     if (first.current) {

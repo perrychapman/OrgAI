@@ -2,10 +2,12 @@ import { useCallback, useState } from 'react'
 
 /** Sidebar column range (px) and default; the default matches `--sidebar-w`. */
 export const SIDEBAR_W = { min: 200, max: 420, def: 232 } as const
-/** Right side panel range (px). The default is whatever the CSS gives (it varies with the frame), so there is none. */
-export const PANEL_W = { min: 280, max: 640 } as const
+/** Right side panel minimum (px). There is no fixed maximum: the canvas minimum below bounds it. The default is whatever the CSS gives. */
+export const PANEL_W = { min: 280 } as const
 /** The canvas next to a side panel never gets narrower than this. */
-export const CANVAS_MIN_PX = 360
+export const CANVAS_MIN_PX = 280
+/** From this panel width the Live view moves the composer into the panel column (SidePanel sets data-side-wide). */
+export const PANEL_WIDE_PX = 480
 /** The main area next to the sidebar never gets narrower than this. */
 export const MAIN_MIN_PX = 480
 /** Arrow-key step and the Shift step (px). */
@@ -25,10 +27,10 @@ export function maxWidthFor(container: number, reserve: number, min: number, max
  * is false and the panel must show as its rail instead of squeezing the canvas. `saved` is never changed here.
  */
 export function panelBudget(parent: number, saved: number | null): { fits: boolean; max: number; width: number | null } {
-  if (parent <= 0) return { fits: true, max: PANEL_W.max, width: saved === null ? null : clampWidth(saved, PANEL_W.min, PANEL_W.max) }
+  if (parent <= 0) return { fits: true, max: Infinity, width: saved === null ? null : Math.max(saved, PANEL_W.min) }
   const room = Math.floor(parent - CANVAS_MIN_PX)
   const fits = room >= PANEL_W.min
-  const max = Math.max(PANEL_W.min, Math.min(PANEL_W.max, room))
+  const max = Math.max(PANEL_W.min, room)
   return { fits, max, width: saved === null ? null : clampWidth(saved, PANEL_W.min, max) }
 }
 
