@@ -987,7 +987,11 @@ export interface McpServersProposalPayload {
   upsert: McpProposalServer[]
   /** Ids of servers to remove (project scope: unlinks linked servers; library scope: library entry ids). */
   remove?: string[]
-  /** Secret slots to fill once approved; values are entered through mcp:setSecret, never in the proposal. */
+  /**
+   * Secret slots to fill once approved; values are entered through mcp:setSecret / mcpLibrary:setSecret, never in
+   * the proposal. serverId is the project server id (project scope; when that server is linked after applying, set
+   * the value on its libraryId) or the library entry id (library scope).
+   */
   secrets?: { serverId: string; kind: McpSecretKind; name: string; description?: string }[]
   rationale: string
 }

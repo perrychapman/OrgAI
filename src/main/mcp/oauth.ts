@@ -193,11 +193,16 @@ export async function runAuthorization(_input: AuthorizeFlowInput): Promise<Auth
  * refresh token is refreshed before use).
  */
 export function authStatusFrom(
-  _config: McpOAuthConfig | undefined,
-  _stored: { accessToken: boolean; refreshToken: boolean },
-  _now: number
+  config: McpOAuthConfig | undefined,
+  stored: { accessToken: boolean; refreshToken: boolean },
+  now: number
 ): McpAuthStatus {
-  throw new Error('not implemented')
+  if (!config) return { state: 'notRequired' }
+  const extra = { ...(config.expiresAt ? { expiresAt: config.expiresAt } : {}), ...(config.account ? { account: config.account } : {}) }
+  if (!stored.accessToken) return { state: 'notAuthorized' }
+  const expires = config.expiresAt ? Date.parse(config.expiresAt) : NaN
+  if (Number.isFinite(expires) && expires <= now && !stored.refreshToken) return { state: 'expired', ...extra }
+  return { state: 'authorized', ...extra }
 }
 
 /** Replace every occurrence of the given secret values (and bearer tokens / code= / *_token= params) with [redacted]. */
