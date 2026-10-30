@@ -12,8 +12,10 @@ import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
+import UsageTrends from './UsageTrends'
 
 type Filter = 'all' | 'work' | 'setup'
+type HistoryView = 'runs' | 'trends'
 
 /** History is the one place status is content: the shared status words in the Badge status tones. */
 const STATUS_BADGE: Record<RunTone, BadgeTone> = {
@@ -39,6 +41,8 @@ export default function RunHistory(): ReactElement {
   const current = useAppStore(activeRun)
   const indexes = useRunIndexes()
   const [filter, setFilter] = useState<Filter>('all')
+  const [view, setView] = useState<HistoryView>('runs')
+  const project = useAppStore(selectedProject)
 
   const shown = summaries.filter((r) => filter === 'all' || (filter === 'work' ? r.kind === 'work' : r.kind === 'setup'))
 
@@ -46,18 +50,35 @@ export default function RunHistory(): ReactElement {
     <div className="history">
       <div className="history-bar">
         <h2>History</h2>
-        <SegmentedControl<Filter>
-          label="Show runs of kind"
-          value={filter}
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'work', label: 'Work' },
-            { value: 'setup', label: 'Setup' }
-          ]}
-          onChange={setFilter}
-        />
+        <div className="history-bar-controls">
+          <SegmentedControl<HistoryView>
+            label="History view"
+            value={view}
+            options={[
+              { value: 'runs', label: 'Runs' },
+              { value: 'trends', label: 'Trends' }
+            ]}
+            onChange={setView}
+          />
+          {view === 'runs' && (
+            <SegmentedControl<Filter>
+              label="Show runs of kind"
+              value={filter}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'work', label: 'Work' },
+                { value: 'setup', label: 'Setup' }
+              ]}
+              onChange={setFilter}
+            />
+          )}
+        </div>
       </div>
-      {summaries.length === 0 ? (
+      {view === 'trends' ? (
+        project ? (
+          <UsageTrends projectId={project.id} />
+        ) : null
+      ) : summaries.length === 0 ? (
         <div className="history-empty">
           <Icon icon={HistoryIcon} size="lg" />
           <p>No runs yet. Give the team a goal on the Live tab; every run you start is kept here.</p>

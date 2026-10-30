@@ -1,1 +1,223 @@
 /* history trends */
+
+.history-bar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.trends {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  container-name: trends;
+}
+.trends-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4) 0;
+}
+.trends-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4) var(--space-6);
+}
+.trends-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.trends-body {
+  display: grid;
+  gap: var(--space-5);
+}
+.trends-body[data-stale] {
+  opacity: 0.6;
+}
+
+.trends-totals {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-16) * 2), 1fr));
+  gap: var(--space-2);
+}
+.trends-totals > div {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.trends-totals dt {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.trends-totals dd {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.trends-section {
+  display: grid;
+  gap: var(--space-2);
+}
+.trends-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.trends-section-head h3 {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.trends-chart {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-0h);
+  height: calc(var(--space-16) * 3);
+  padding: var(--space-2);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.trends-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.trends-bar-slot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.trends-bar {
+  width: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+}
+.trends-bar.partial {
+  background: repeating-linear-gradient(135deg, var(--accent) 0 var(--space-1), var(--accent-soft-border) var(--space-1) var(--space-2));
+}
+.trends-bar.unknown {
+  background: repeating-linear-gradient(135deg, var(--border-strong) 0 var(--space-1), transparent var(--space-1) var(--space-2));
+}
+.trends-col:hover .trends-bar {
+  background: var(--accent-hover);
+}
+.trends-col-label {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  text-align: center;
+}
+/* Labels only when the bars are wide enough to hold them. */
+.trends-chart:has(.trends-col:nth-child(15)) .trends-col-label {
+  visibility: hidden;
+}
+.trends-chart:has(.trends-col:nth-child(15)) .trends-col:first-child .trends-col-label,
+.trends-chart:has(.trends-col:nth-child(15)) .trends-col:last-child .trends-col-label {
+  visibility: visible;
+  text-align: left;
+  overflow: visible;
+}
+.trends-chart:has(.trends-col:nth-child(15)) .trends-col:last-child .trends-col-label {
+  text-align: right;
+  direction: rtl;
+}
+
+.trends-details summary {
+  cursor: pointer;
+  width: fit-content;
+  font-size: var(--text-small);
+  color: var(--accent-text);
+  border-radius: var(--radius-xs);
+}
+.trends-details summary:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+  outline-offset: 2px;
+}
+.trends-table-wrap {
+  overflow-x: auto;
+}
+.trends-table th[scope='row'] {
+  position: static;
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-weight: var(--weight-medium, var(--weight-semibold));
+  font-size: var(--text-small);
+}
+.trends-table th.num,
+.trends-table td.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.trends-table td {
+  vertical-align: middle;
+}
+.trends-role {
+  width: 100%;
+}
+.share {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: calc(var(--space-16) * 2);
+}
+.share-track {
+  flex: 1;
+  height: var(--space-2);
+  background: var(--surface-3);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+.share-fill {
+  height: 100%;
+  background: var(--accent);
+}
+.share-text {
+  min-width: var(--space-8);
+  text-align: right;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+@container trends (max-width: 640px) {
+  .trends-roles .col-runs {
+    display: none;
+  }
+  .share {
+    min-width: calc(var(--space-16) + var(--space-4));
+  }
+}
+@container trends (max-width: 460px) {
+  .trends-roles .col-share {
+    display: none;
+  }
+  .trends-chart {
+    height: calc(var(--space-16) * 2);
+  }
+}
