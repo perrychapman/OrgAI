@@ -37,7 +37,7 @@ import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
-import { authFailureMessage, describeTool, isAuthFailure } from './activity'
+import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
 import { isolateClaudeEnv } from './childEnv'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
@@ -258,6 +258,11 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
   }
   Object.assign(env, ctx.connection?.env)
   return env
+}
+
+/** Provider auth-failure text safe for the transcript and log: exact secrets redacted, then key-like tokens masked. */
+export function authFailureDetail(raw: string, secrets: Iterable<string>): string {
+  return scrubAuthDetail(redactSecrets(raw, secrets))
 }
 
 /**
@@ -1101,7 +1106,7 @@ class ClaudeSession implements RuntimeSession {
     if (this.authFailed) return
     this.authFailed = true
     const message = authFailureMessage(this.ctx.connection?.connection)
-    const detail = redactSecrets(raw, this.secrets).slice(0, 400)
+    const detail = authFailureDetail(raw, this.secrets)
     this.transcript(ROOT_ID, { kind: 'system', text: message, ...(detail ? { detail } : {}) }, { source: 'harness' })
     this.log('error', `Authentication failed${detail ? `: ${detail}` : ''}`)
     this.partial.clearAll()
