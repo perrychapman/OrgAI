@@ -36,6 +36,13 @@ describe('normalizeParents', () => {
     const out = normalizeParents(list)
     expect(out.map((a) => a.parentId)).toEqual([null, 'a5b1', 'a5b1', 'a2b8'])
   })
+  it('repairs the persisted run shape (a7e2 keeps its parent) and is idempotent', () => {
+    const list = [ag('root', null), ag('a5b1', 'a2b8'), ag('a2b8', 'a5b1'), ag('a7e2', 'a5b1')]
+    const out = normalizeParents(list)
+    expect(out.map((a) => a.parentId)).toEqual([null, null, 'a5b1', 'a5b1'])
+    expect(normalizeParents(out)).toBe(out)
+    expect(list[1].parentId).toBe('a2b8')
+  })
 })
 
 describe('hasLiveDescendant', () => {
