@@ -356,6 +356,12 @@ export interface Role {
    * list leaves it out. See mcpServersForRole. Missing = no explicit grants.
    */
   mcpServers?: string[]
+  /**
+   * Skill grants: ids of the project's skills (SkillSpec.id) this role may load. Missing = none. projects:save drops
+   * ids the project does not have. Enforced per agent by the harness (Claude: a PreToolUse gate on the Skill tool;
+   * Codex and mock: list_skills / load_skill answer only with the caller's grants).
+   */
+  skills?: string[]
 }
 
 /**
@@ -437,6 +443,13 @@ export interface Project {
   mcpServers?: McpServerSpec[]
   /** Claude Code plugins loaded for this project's runs (Claude adapter only). Missing = none. */
   plugins?: PluginSpec[]
+  /**
+   * Skills this project's roles may be granted (Role.skills). Missing = none. Change it only through skills:* (which
+   * return the saved project); projects:save keeps the stored list.
+   */
+  skills?: SkillSpec[]
+  /** Proactive skill evaluation (skills:evaluate). Missing = DEFAULT_SKILL_EVALUATION (off). Saved through projects:save. */
+  skillEvaluation?: SkillEvaluationSettings
   /** AI-driven setup state. Missing on projects created before setup existed. */
   setup?: ProjectSetup
   createdAt: string
@@ -685,6 +698,341 @@ export interface PluginUpsertInput {
   projectId: string
   plugin: PluginSpec
 }
+
+// ---------- Skills ----------
+
+/** SKILL.md frontmatter `name`: at most this many characters of [a-z0-9-], never containing "anthropic" or "claude". */
+export const SKILL_NAME_MAX = 64
+/** SKILL.md frontmatter `description`: 1 to this many characters, no `<` or `>`. */
+export const SKILL_DESCRIPTION_MAX = 1024
+/** Longest SKILL.md body (the text after the frontmatter) a draft, an import or a suggestion may carry. */
+export const SKILL_BODY_MAX_CHARS = 100_000
+/** Most files one skill folder may hold (SKILL.md included). */
+export const SKILL_MAX_FILES = 50
+/** Largest single file in a skill folder, bytes. */
+export const SKILL_MAX_FILE_BYTES = 256 * 1024
+/** Largest whole skill folder, bytes. */
+export const SKILL_MAX_TOTAL_BYTES = 1024 * 1024
+/** Most skills one project (or the library) may hold. */
+export const SKILL_MAX_PER_PROJECT = 100
+
+/**
+ * Where a project skill (or library entry) came from. 'user': written in OrgAI (skills:create) or added from a folder;
+ * 'repo': imported from the project's repository (SkillSpec.repoPath); 'suggestion': created from a skill evaluation
+ * suggestion (skills:applySuggestion); 'library': a link to a library entry (SkillSpec.libraryId).
+ */
+export type SkillSource = 'user' | 'repo' | 'suggestion' | 'library'
+
+/** One file inside a skill folder. */
+export interface SkillFileInfo {
+  /** Relative to the skill folder, '/'-separated, e.g. "SKILL.md" or "scripts/fill.py". */
+  path: string
+  bytes: number
+}
+
+/**
+ * One skill of a project: a folder holding SKILL.md (frontmatter `name` and `description`, then instructions) and
+ * optional resource files. OrgAI keeps its own copy of the files under the data dir (a project skill under
+ * `<data>/project-skills/<projectId>/<skillId>/`, a library entry under `<data>/skills/<entryId>/`); a repo import is
+ * a snapshot, re-imported to pick up changes. Grants are per role (Role.skills). Structured-clone safe, no secrets.
+ * Change it only through the skills:* channels (projects:save keeps the stored list).
+ */
+export interface SkillSpec {
+  /** Stable id (newId('skill')), SAFE_ID. Role.skills and the skills:* channels refer to it. */
+  id: string
+  /** The SKILL.md frontmatter name (skillNameProblem() is null). Unique within the project. */
+  name: string
+  /** The SKILL.md frontmatter description (skillDescriptionProblem() is null): when to use the skill. */
+  description: string
+  /** Off = kept in the list but not passed to runs. */
+  enabled: boolean
+  source: SkillSource
+  /** source 'repo': the folder it was imported from, project-relative and '/'-separated, e.g. ".claude/skills/pdf". */
+  repoPath?: string
+  /** sha256 (hex) over the stored files (paths and contents); changes whenever the content changes. */
+  digest: string
+  /** The stored files, SKILL.md first. */
+  files: SkillFileInfo[]
+  /** ISO timestamps. */
+  addedAt: string
+  updatedAt: string
+  /**
+   * Set when this project skill is a link to an app-wide library entry (SkillLibraryEntry.id). Like a linked MCP
+   * server: the stored copy is a snapshot refreshed from the library on every read; the files are the entry's. A link
+   * whose entry is gone is kept (SkillInfo.libraryMissing) but never passed to runs.
+   */
+  libraryId?: string
+}
+
+/** An app-wide skill in the library (`<data>/skill-library.json`, files under `<data>/skills/<id>/`). Name unique within the library. */
+export type SkillLibraryEntry = Omit<SkillSpec, 'enabled' | 'libraryId'>
+
+/** skills:list entry. */
+export interface SkillInfo {
+  spec: SkillSpec
+  /** Ids of the roles whose Role.skills grant it. */
+  grantedTo: string[]
+  /** The linked library entry no longer exists: kept as a snapshot but excluded from runs. */
+  libraryMissing?: true
+}
+
+/** skillLibrary:list entry: the entry and the projects that link it, with the roles that hold a grant there. */
+export interface SkillLibraryInfo {
+  entry: SkillLibraryEntry
+  usedBy: { projectId: string; projectName: string; skillId: string; roleNames: string[] }[]
+}
+
+/** The text of a skill: what skills:read / skillLibrary:read return for viewing and editing. */
+export interface SkillContent {
+  /** The whole SKILL.md as stored (frontmatter included). */
+  skillMd: string
+  /** SKILL.md without its frontmatter. */
+  body: string
+  files: SkillFileInfo[]
+}
+
+/** A skill written in OrgAI: becomes `SKILL.md` = frontmatter (name, description) + body. */
+export interface SkillDraft {
+  name: string
+  description: string
+  /** Markdown instructions, at most SKILL_BODY_MAX_CHARS characters. */
+  body: string
+}
+
+/** skills:create input. */
+export interface SkillCreateInput {
+  projectId: string
+  draft: SkillDraft
+  /** Roles to grant it to right away (Role ids). Default none. */
+  roleIds?: string[]
+}
+
+/**
+ * skills:update input. On a linked skill only `enabled` and `roleIds` may be given (edit the library entry for the
+ * rest). `draft` rewrites SKILL.md and keeps the resource files. `roleIds` replaces the set of roles granted.
+ */
+export interface SkillUpdateInput {
+  projectId: string
+  skillId: string
+  draft?: SkillDraft
+  enabled?: boolean
+  roleIds?: string[]
+}
+
+/** skills:linkLibrary input: add a library entry to a project by reference. */
+export interface SkillLinkLibraryInput {
+  projectId: string
+  libraryId: string
+  /** Roles to grant it to (Role ids). Default none. */
+  roleIds?: string[]
+}
+
+/** Output of every project skill mutation. */
+export interface SkillMutationResult {
+  project: Project
+  skills: SkillInfo[]
+  /**
+   * skills:remove (and skills:update with roleIds): the roles that lost their grant, so the UI can say so. The UI
+   * asks before removing from SkillInfo.grantedTo.
+   */
+  rolesUpdated?: { roleId: string; roleName: string }[]
+}
+
+/** The repository folders the skill import reads, in this order. Each holds `<name>/SKILL.md` folders. */
+export type SkillRepoRoot = '.claude/skills' | '.agents/skills' | '.github/skills' | '.opencode/skills'
+export const SKILL_REPO_ROOTS: readonly SkillRepoRoot[] = ['.claude/skills', '.agents/skills', '.github/skills', '.opencode/skills']
+
+/** What applying an import item does. 'add': a new project skill; 'update': replace the files of the project skill that has the same repoPath (or name); 'unchanged': same digest, nothing to do; 'skip': left out. */
+export type SkillImportAction = 'add' | 'update' | 'unchanged' | 'skip'
+
+/** One valid skill folder found in the repository. */
+export interface SkillImportItem {
+  /** Stable key for choices: `<root>/<folder>`, e.g. ".claude/skills/pdf". Equal to repoPath. */
+  key: string
+  root: SkillRepoRoot
+  /** Project-relative folder, '/'-separated. */
+  repoPath: string
+  name: string
+  description: string
+  /** SKILL.md body (after the frontmatter), whole, at most SKILL_BODY_MAX_CHARS characters. Untrusted text: show it as plain text. */
+  body: string
+  files: SkillFileInfo[]
+  totalBytes: number
+  /** Files that look executable (scripts by extension or a shebang), flagged for the user. */
+  scripts: string[]
+  digest: string
+  /** The default action (or the chosen one). */
+  action: SkillImportAction
+  /** action 'update' / 'unchanged': the project skill it matches. */
+  existingSkillId?: string
+  /** Another project skill (not this repoPath) already has this name; 'add' is refused for it. */
+  nameConflict?: true
+  /** The same name appears in an earlier root (".claude/skills" wins); this one defaults to 'skip'. */
+  duplicateOf?: string
+  notes: string[]
+}
+
+/** A skill folder that could not be imported, with the reason (bad frontmatter, too large, symlink, ...). */
+export interface SkillImportInvalid {
+  repoPath: string
+  reason: string
+}
+
+/** One choice on an import item (keyed by SkillImportItem.key). */
+export interface SkillImportChoice {
+  key: string
+  include: boolean
+  /** Roles to grant the skill to on apply (Role ids). Default: an update keeps the existing grants, an add grants none. */
+  roleIds?: string[]
+}
+
+/** skills:previewImport input. Always re-scans the stored project's folder. At most AGENT_IMPORT_MAX_CHOICES choices. */
+export interface SkillImportInput {
+  projectId: string
+  choices?: SkillImportChoice[]
+}
+
+/** skills:previewImport output. Saves nothing. */
+export interface SkillImportPreview {
+  items: SkillImportItem[]
+  invalid: SkillImportInvalid[]
+  /** Scan warnings (caps hit, unreadable folders). */
+  warnings: string[]
+  /** Which roots exist in the repository. */
+  roots: SkillRepoRoot[]
+  /** sha256 of the scanned folders; skills:applyImport requires it and refuses when the folder changed since. */
+  digest: string
+}
+
+/** skills:applyImport input. */
+export interface SkillImportApplyInput extends SkillImportInput {
+  digest: string
+}
+
+/** skills:applyImport output. */
+export interface SkillImportApplyResult extends SkillMutationResult {
+  /** Project skill ids added and updated. */
+  added: string[]
+  updated: string[]
+  /**
+   * Pass to skills:undoImport to restore the skills, files and grants as they were before this apply. Main keeps
+   * one undo per project; it expires on the project's next skill mutation and when OrgAI quits.
+   */
+  undoId: string
+}
+
+/** skillLibrary:addFromFolder input: one skill folder (SKILL.md at its top) the user picked; treated as untrusted. */
+export interface SkillLibraryFolderInput {
+  /** Absolute path. */
+  path: string
+}
+
+/** Project.skillEvaluation: proactive skill evaluation. Missing = DEFAULT_SKILL_EVALUATION (off). */
+export interface SkillEvaluationSettings {
+  /** Allows the model-assisted step of skills:evaluate (the deterministic checks always run). Default false. */
+  enabled: boolean
+  /** Most tokens (input + output) one skills:evaluate may spend on the model-assisted step. */
+  tokenBudget: number
+}
+
+/**
+ * What a skill evaluation finding is about. Quality: 'neverLoaded' (granted, no loads in the last runs),
+ * 'neverGranted' (no role has it), 'overlap' (two descriptions too alike), 'vagueDescription' (short or generic),
+ * 'stale' (SKILL.md names repo paths that no longer exist), 'libraryMissing' (a link whose entry is gone). Gaps:
+ * 'repeatedToolSequence' (the same tool sequence across runs), 'repeatedCorrection' (the user repeated a correction).
+ */
+export type SkillFindingKind =
+  | 'neverLoaded'
+  | 'neverGranted'
+  | 'overlap'
+  | 'vagueDescription'
+  | 'stale'
+  | 'libraryMissing'
+  | 'repeatedToolSequence'
+  | 'repeatedCorrection'
+
+export interface SkillFinding {
+  /** Stable within one report. */
+  id: string
+  kind: SkillFindingKind
+  severity: 'info' | 'warning'
+  /** Project skill ids it concerns (empty for gap findings). */
+  skillIds: string[]
+  /** One line, plain text. */
+  title: string
+  detail: string
+  evidence?: {
+    runIds?: string[]
+    /** 'stale': the missing paths. */
+    paths?: string[]
+    /** 'overlap': token-set similarity 0..1. */
+    similarity?: number
+    /** 'repeatedToolSequence': tool names in order. */
+    sequence?: string[]
+    /** How many times it was seen. */
+    count?: number
+  }
+}
+
+/** A drafted new skill. Never applied on its own: skills:applySuggestion creates it on the user's call. */
+export interface SkillSuggestion {
+  id: string
+  draft: SkillDraft
+  /** Why, one or two sentences. */
+  rationale: string
+  /** The gap findings it answers. */
+  findingIds: string[]
+  /** Set once applied: the project skill it created. */
+  appliedSkillId?: string
+}
+
+/** skills:evaluate / skills:lastEvaluation: persisted per project (`<data>/skill-evaluations/<projectId>.json`). */
+export interface SkillEvaluationReport {
+  projectId: string
+  /** Epoch ms. */
+  at: number
+  /** Work runs read (the newest SKILL_EVALUATION_RUNS runs of the project). */
+  runsConsidered: number
+  findings: SkillFinding[]
+  suggestions: SkillSuggestion[]
+  /** Whether the model-assisted step ran. */
+  modelAssisted: boolean
+  /** Why it did not run: 'disabled', 'no-gaps', 'budget' (the estimate exceeded the budget) or 'error' (see error). */
+  skippedReason?: 'disabled' | 'no-gaps' | 'budget' | 'error'
+  /** Readable failure of the model-assisted step (the deterministic findings are still there). */
+  error?: string
+  /** The project's budget at evaluation time. */
+  tokenBudget: number
+  /** Tokens the model-assisted step spent (0 when skipped). */
+  tokensUsed: number
+  /** True when tokensUsed is an estimate (the adapter reported no usage). */
+  tokensEstimated?: true
+  /** Cost of the model-assisted step, USD; null = unknown. */
+  costUsd: number | null
+  /** The model it used. */
+  model?: string
+}
+
+/** skills:applySuggestion input. */
+export interface SkillApplySuggestionInput {
+  projectId: string
+  suggestionId: string
+  /** Roles to grant the new skill to (Role ids). Default none. */
+  roleIds?: string[]
+}
+
+/** How often a skill was loaded in one run (RunUsage.skills). */
+export interface SkillUseCount {
+  skillId: string
+  name: string
+  loads: number
+  /** Slugs of the roles whose agents loaded it. */
+  roles: string[]
+}
+
+/** Harness tools that stand in for a native Skill tool (Codex, mock): list and load the caller's granted skills. */
+export const SKILL_HARNESS_TOOLS = { list: 'list_skills', load: 'load_skill' } as const
+export type SkillHarnessToolName = (typeof SKILL_HARNESS_TOOLS)[keyof typeof SKILL_HARNESS_TOOLS]
 
 /** An environment variable (or header) a registry package needs. */
 export interface McpRegistryEnvVar {
@@ -1261,6 +1609,8 @@ export interface RunUsage {
   idleMs: number
   /** See AgentUsage.legacy: computed from a record saved before usage tracking. */
   legacy?: true
+  /** Skills loaded in the run (skill.used events), most loaded first. Missing = none (or a run before skills existed). */
+  skills?: SkillUseCount[]
   updatedAt: number
 }
 
@@ -1843,6 +2193,12 @@ export type RunEvent =
       text: string
       at: number
     }
+  /**
+   * An agent loaded a skill (Claude: an allowed Skill tool call; Codex and mock: load_skill). Emitted by the adapter
+   * (or the load_skill harness tool); RunManager counts it into RunUsage.skills and writes a harness transcript row
+   * ("Loaded skill <name>", source 'harness') on that agent. `at` is epoch ms.
+   */
+  | { type: 'skill.used'; runId: string; agentId: string; skillId: string; name: string; at: number }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
