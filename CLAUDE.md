@@ -185,6 +185,10 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     user authorizes in Settings and the next run picks it up.
   - Harness-level runs (the library MCP assistant) use the virtual project `HARNESS_PROJECT_ID` ('harness', built by
     `harnessProject()` in `mcp/assist.ts`, never stored). Only `mcp-assist` runs may use it.
+  - Hardening: install-card edits are allowlisted onto the agent's spec and cannot reuse an existing id; a run-scoped
+    server never reads stored secrets. OAuth bearers are injected only when `oauth.resource` matches the server URL.
+    The loopback callback ignores (400) any request whose state does not match exactly. OAuth fetches never follow
+    redirects and refuse private-IP literals (no DNS check). All of this is unit-tested only.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.
