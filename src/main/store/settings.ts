@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type {
+  AppearanceSettings,
   AppSettings,
   ConnectionId,
   ModelRef,
@@ -9,8 +10,39 @@ import type {
   ProviderAuth,
   ProviderConnections
 } from '@shared/types'
-import { CONNECTION_IDS, isModelTier, isPermissionMode } from '@shared/types'
-import { DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, defaultConnections } from '@shared/defaults'
+import { CANVAS_EDGE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
+import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, defaultConnections } from '@shared/defaults'
+
+const oneOf = <T extends string>(options: readonly T[], v: unknown, fallback: T): T =>
+  (options as readonly unknown[]).includes(v) ? (v as T) : fallback
+
+/**
+ * Appearance from disk or the renderer over DEFAULT_APPEARANCE. Settings saved before it existed get the
+ * defaults; unknown enum values fall back field by field; an accent that is not '#rrggbb' (or '#rgb') falls back.
+ */
+export function normalizeAppearance(raw: unknown): AppearanceSettings {
+  const d = DEFAULT_APPEARANCE
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof AppearanceSettings, unknown>>
+  const c = (r.canvas && typeof r.canvas === 'object' ? r.canvas : {}) as Partial<Record<keyof AppearanceSettings['canvas'], unknown>>
+  const accent = (): string => {
+    if (typeof r.accent !== 'string') return d.accent
+    const hex = r.accent.trim().toLowerCase()
+    if (/^#[0-9a-f]{6}$/.test(hex)) return hex
+    if (/^#[0-9a-f]{3}$/.test(hex)) return `#${[...hex.slice(1)].map((x) => x + x).join('')}`
+    return d.accent
+  }
+  return {
+    theme: oneOf(THEME_MODES, r.theme, d.theme),
+    accent: accent(),
+    canvas: {
+      pattern: oneOf(CANVAS_PATTERNS, c.pattern, d.canvas.pattern),
+      tint: typeof c.tint === 'boolean' ? c.tint : d.canvas.tint,
+      edges: oneOf(CANVAS_EDGE_STYLES, c.edges, d.canvas.edges),
+      minimap: typeof c.minimap === 'boolean' ? c.minimap : d.canvas.minimap
+    },
+    reduceMotion: oneOf(['system', 'on'] as const, r.reduceMotion, d.reduceMotion)
+  }
+}
 
 type RawConnection = Partial<{
   enabled: unknown
@@ -111,6 +143,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     connections,
     defaultConnection: (CONNECTION_IDS as readonly unknown[]).includes(r.defaultConnection) ? (r.defaultConnection as ConnectionId) : d.defaultConnection,
     notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
+    appearance: normalizeAppearance(r.appearance),
     opusGuardThreshold:
       r.opusGuardThreshold != null && Number.isFinite(threshold) && threshold >= 1 && threshold <= 100 ? threshold : d.opusGuardThreshold,
     defaultPreferSonnetNearLimit:
@@ -127,6 +160,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
 export class SettingsStore {
   private file: string
   private settings: AppSettings = normalizeSettings(null)
+  private listeners = new Set<(settings: AppSettings) => void>()
 
   constructor(readonly dataDir: string) {
     this.file = join(dataDir, 'settings.json')
@@ -158,13 +192,30 @@ export class SettingsStore {
     return structuredClone(this.settings)
   }
 
-  /** Save settings from the renderer. LiteLLM's hasApiKey is owned by the main process and kept as stored. */
+  /**
+   * Save settings from the renderer. LiteLLM's hasApiKey is owned by the main process and kept as stored.
+   * A caller that leaves out appearance (an older renderer) keeps the stored one instead of resetting it.
+   */
   set(next: Partial<AppSettings>): AppSettings {
-    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, next))
+    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, next.appearance === undefined ? { ...next, appearance: this.settings.appearance } : next))
     normalized.connections.litellm.hasApiKey = this.settings.connections.litellm.hasApiKey
     this.settings = normalized
     this.persist()
-    return this.get()
+    const saved = this.get()
+    for (const listener of this.listeners) {
+      try {
+        listener(saved)
+      } catch (e) {
+        console.error('Settings listener failed:', e)
+      }
+    }
+    return saved
+  }
+
+  /** Called with the saved settings after every set(). Returns an unsubscribe function. */
+  onChange(listener: (settings: AppSettings) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
   }
 
   /** Record whether a LiteLLM key is stored in safeStorage (called by the secret store, never the renderer). */

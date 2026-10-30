@@ -17,6 +17,12 @@ export interface NotifierDeps {
   projectOfRun(runId: string): NotifierRun | undefined
   /** Display name of a project. */
   projectName(projectId: string): string | undefined
+  /**
+   * Whether OS notifications are on, read at every decision. index.ts passes
+   * `() => settings.get().notifications !== false`, so AppSettings.notifications is the single source of truth
+   * and a save takes effect at once.
+   */
+  enabled(): boolean
 }
 
 /**
@@ -25,7 +31,6 @@ export interface NotifierDeps {
  * a run that finished or failed). Clicking one focuses the window and asks the renderer to show the run.
  */
 export class Notifier {
-  private enabled = true
   /** runId -> project, cached because the run manager forgets runs once they end. */
   private runs = new Map<string, NotifierRun>()
   /** runId -> latest plan, from plan.updated events. */
@@ -37,10 +42,6 @@ export class Notifier {
 
   constructor(private deps: NotifierDeps) {
     if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
-  }
-
-  setEnabled(enabled: boolean): void {
-    this.enabled = enabled
   }
 
   /** Stop the taskbar flash once the user comes back. */
@@ -82,7 +83,7 @@ export class Notifier {
     if (isRequest && process.platform === 'darwin') app.dock?.bounce('critical')
     // macOS shows notifications only after the user allows them (System Settings > Notifications > OrgAI). An
     // unsigned or ad-hoc build may be listed under Electron or not at all; a signed build is reliable.
-    if (!this.enabled || !Notification.isSupported()) return
+    if (!this.deps.enabled() || !Notification.isSupported()) return
 
     const notification = new Notification({
       title: this.deps.projectName(run.projectId) ?? 'OrgAI',

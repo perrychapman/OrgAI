@@ -1,5 +1,9 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { normalizeSettings, reconcileAnthropicAuth } from './settings'
+import { DEFAULT_APPEARANCE } from '@shared/defaults'
+import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth } from './settings'
 
 describe('normalizeSettings', () => {
   it('defaults to the unattended permission mode', () => {
@@ -52,5 +56,57 @@ describe('connections', () => {
       connections: { ...prev.connections, anthropic: { ...prev.connections.anthropic, auth: { kind: 'apiKey', envVar: 'C' } } }
     })
     expect(normalizeSettings(viaConnection).providerAuth).toEqual({ kind: 'apiKey', envVar: 'C' })
+  })
+})
+
+describe('appearance', () => {
+  it('fills defaults for settings saved before appearance existed', () => {
+    expect(normalizeSettings({ notifications: false }).appearance).toEqual(DEFAULT_APPEARANCE)
+    expect(DEFAULT_APPEARANCE.theme).toBe('dark')
+  })
+
+  it('keeps valid values and falls back field by field', () => {
+    expect(
+      normalizeAppearance({ theme: 'light', accent: '#22C58B', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
+    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
+    expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3 }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
+    expect(normalizeAppearance({ theme: 'system', accent: '#AbC' })).toMatchObject({ theme: 'system', accent: '#aabbcc' })
+    expect(normalizeAppearance('nonsense')).toEqual(DEFAULT_APPEARANCE)
+  })
+})
+
+describe('SettingsStore', () => {
+  const tmp = (): string => mkdtempSync(join(tmpdir(), 'orgai-settings-'))
+
+  it('migrates an old settings.json and keeps the stored appearance when a caller leaves it out', () => {
+    const dir = tmp()
+    try {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { notifications: false, defaultKeepRuns: 7 } }))
+      const store = new SettingsStore(dir)
+      expect(store.get()).toMatchObject({ notifications: false, defaultKeepRuns: 7, appearance: DEFAULT_APPEARANCE })
+      store.set({ ...store.get(), appearance: { ...DEFAULT_APPEARANCE, theme: 'light' } })
+      const { appearance: _drop, ...older } = store.get()
+      store.set(older)
+      expect(store.get().appearance.theme).toBe('light')
+      expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).settings.appearance.theme).toBe('light')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('tells listeners about every save until they unsubscribe', () => {
+    const dir = tmp()
+    try {
+      const store = new SettingsStore(dir)
+      const seen: boolean[] = []
+      const off = store.onChange((s) => seen.push(s.notifications !== false))
+      store.set({ ...store.get(), notifications: false })
+      store.set({ ...store.get(), notifications: true })
+      off()
+      store.set({ ...store.get(), notifications: false })
+      expect(seen).toEqual([false, true])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

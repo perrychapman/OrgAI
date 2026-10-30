@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ConnectionEvent, RunEvent } from '@shared/types'
+import type { AppSettings, ConnectionEvent, RunEvent } from '@shared/types'
 import { IPC } from '@shared/types'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
@@ -23,6 +23,7 @@ import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging } from './log'
+import { buildSettingsInfo, windowBackground } from './appInfo'
 
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
@@ -42,6 +43,21 @@ if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 let runManager: RunManager | undefined
 let notifier: Notifier | undefined
+let settingsStore: SettingsStore | undefined
+
+/** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
+function applyTheme(s: AppSettings): void {
+  if (nativeTheme.themeSource !== s.appearance.theme) nativeTheme.themeSource = s.appearance.theme
+}
+
+/** Every window hears about a save, so a second window and the deprecated notifications mirror stay in step. */
+function broadcastSettings(s: AppSettings): void {
+  if (!settingsStore) return
+  const info = buildSettingsInfo(s, { dataDir: settingsStore.dataDir, appVersion: app.getVersion() })
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.settingsChanged, info)
+  }
+}
 
 function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -68,7 +84,7 @@ function createWindow(): void {
     minHeight: 680,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#0b0d12',
+    backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
     title: 'OrgAI',
     // Packaged builds take the icon from the executable; in development use the generated PNG.
     ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', 'icon.png') }),
@@ -97,6 +113,12 @@ app.whenReady().then(() => {
   const dataDir = join(app.getPath('userData'), 'data')
   const projects = new ProjectStore(dataDir)
   const settings = new SettingsStore(dataDir)
+  settingsStore = settings
+  applyTheme(settings.get())
+  settings.onChange((s) => {
+    applyTheme(s)
+    broadcastSettings(s)
+  })
   const runStore = new RunStore(dataDir)
   const secrets = new SecretStore(dataDir, safeStorage)
   const connections = new ConnectionService({
@@ -159,9 +181,10 @@ app.whenReady().then(() => {
       const project = projects.get(summary.projectId)
       return { projectId: summary.projectId, kind: summary.kind, autoContinue: project?.autoContinue !== false, maxAutoContinues: project?.maxAutoContinues }
     },
-    projectName: (projectId) => projects.get(projectId)?.name
+    projectName: (projectId) => projects.get(projectId)?.name,
+    // AppSettings.notifications is the single source of truth, read fresh at every decision.
+    enabled: () => settings.get().notifications !== false
   })
-  ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean) => notifier?.setEnabled(!!enabled))
 
   // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
   const usageMonitor = new UsageMonitor({
