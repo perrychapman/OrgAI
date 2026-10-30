@@ -41,7 +41,11 @@ function addWorktree(id: string): { path: string; branch: string } {
 }
 
 function branches(): string[] {
-  return git(root, 'branch --format=%(refname:short)').split(/\r?\n/).filter(Boolean)
+  // No --format=%(refname:short): the parentheses are a syntax error for /bin/sh on macOS (git runs through a shell here).
+  return git(root, 'branch')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[*+]?\s*/, '').trim())
+    .filter(Boolean)
 }
 
 beforeEach(() => {
