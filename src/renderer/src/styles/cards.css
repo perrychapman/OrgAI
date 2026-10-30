@@ -266,3 +266,122 @@
   white-space: pre-wrap;
   color: var(--text-secondary);
 }
+
+/* ---------- Decision card (spec 12.1): header, scrolling body, footer that never scrolls away ---------- */
+
+.decision-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  max-height: min(60vh, 480px);
+  padding: var(--space-3);
+  background: var(--surface-3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-2);
+  font-size: var(--text-small);
+}
+.decision-card.kind-question,
+.decision-card.kind-merge {
+  border-color: var(--info-border);
+}
+.decision-card.kind-proposal {
+  border-color: var(--accent-border);
+}
+.decision-run {
+  min-width: 0;
+  flex: none;
+}
+.decision-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.decision-who {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  max-width: 40%;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+.decision-who-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.decision-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.decision-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+  padding-right: var(--space-1);
+}
+.decision-helper {
+  flex: none;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.decision-footer {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.decision-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.decision-deny {
+  margin-left: auto;
+}
+.decision-tool-input {
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--code-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow: auto;
+}
+.decision-stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
