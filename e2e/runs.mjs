@@ -274,6 +274,47 @@ try {
   check(ts.radiosInside && ts.submitInside, 'the question options and Submit stay visible with the side panel open at 1024x640', JSON.stringify(ts))
   check(ts.endLabelW > 20, 'End session keeps its text label with the side panel open at 1024', String(ts.endLabelW))
   await shot('three-decisions-1024-panel')
+  // Side panel resize on a live run at 1024 (sidebar is a rail here): pointer drag to the max keeps the canvas >= 360 px.
+  {
+    const handle = page.locator('[data-testid=side-panel-resize]').first()
+    const geo = () => page.evaluate(() => ({
+      panel: Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0),
+      stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
+      sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
+    }))
+    check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify(await geo()))
+    const g0 = await geo()
+    const hb = await handle.boundingBox()
+    check(!!hb, 'the run view side panel has a resize handle with a live run')
+    if (hb) {
+      const y = hb.y + hb.height / 2
+      await page.mouse.move(hb.x + hb.width / 2, y)
+      await page.mouse.down()
+      await page.mouse.move(hb.x + hb.width / 2 - 40, y, { steps: 4 })
+      await page.mouse.up()
+      await sleep(200)
+      const g1 = await geo()
+      check(g1.panel - g0.panel >= 30, 'dragging the run side panel handle left widens the panel', `${g0.panel} -> ${g1.panel}`)
+      const hb2 = await handle.boundingBox()
+      await page.mouse.move(hb2.x + hb2.width / 2, y)
+      await page.mouse.down()
+      await page.mouse.move(hb2.x + hb2.width / 2 - 900, y, { steps: 8 })
+      await page.mouse.up()
+      await sleep(250)
+      const g2 = await geo()
+      check(g2.stage >= 359, 'dragged to max at 1024 the canvas stage keeps at least 360 px', JSON.stringify(g2))
+      check(g2.panel <= 640 && g2.panel >= g1.panel, 'the panel stays within 280-640 px', JSON.stringify(g2))
+      await shot('side-panel-max-1024')
+      await handle.dblclick()
+      await sleep(200)
+      check(Math.abs((await geo()).panel - g0.panel) <= 1, 'double-click restores the run side panel default width', JSON.stringify(await geo()))
+    }
+    await panelToggle().click().catch(() => {})
+    await sleep(500)
+    check((await page.locator('[data-testid=side-panel-resize]:visible').count()) === 0, 'no side panel handle while the panel is collapsed')
+    await panelToggle().click().catch(() => {})
+    await sleep(500)
+  }
   // ArrowRight moves focus along the chips without a second Tab stop.
   await page.locator('.decision-chip[tabindex="0"]').focus()
   await page.keyboard.press('ArrowRight')
