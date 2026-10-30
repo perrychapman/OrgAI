@@ -56,6 +56,18 @@ try {
       await shot(`defaults-${w}x${h}-${theme}`)
       const rawTiers = await page.locator('select option').evaluateAll((os) => os.map((o) => (o.textContent ?? '').trim()).filter((t) => /^(deep|everyday|fast|top)$/i.test(t)))
       check(rawTiers.length === 0, `Defaults selects show tier labels, not raw tier ids at ${w}x${h} ${theme}`, rawTiers.join(', '))
+      // The selected tier label must fit its select (no ellipsis on the label itself).
+      const clipped = await page.evaluate(() => {
+        const c = document.createElement('canvas').getContext('2d')
+        return [...document.querySelectorAll('.model-select select, select.mono-select')].flatMap((el) => {
+          const cs = getComputedStyle(el)
+          c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+          const label = (el.selectedOptions[0]?.textContent ?? '').trim()
+          const avail = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 20
+          return /tier$/i.test(label) && c.measureText(label).width > avail ? [`${label} ${Math.round(c.measureText(label).width)}>${Math.round(avail)}`] : []
+        })
+      })
+      check(clipped.length === 0, `tier labels are not clipped in Defaults selects at ${w}x${h} ${theme}`, clipped.join(', '))
       if (w === 1024 && theme === 'dark') {
         // Setup model persists across reopening App settings
         const sm = () => page.getByRole('combobox', { name: 'Setup model', exact: true })
