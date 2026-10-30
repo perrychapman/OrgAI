@@ -317,6 +317,17 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     server never reads stored secrets. OAuth bearers are injected only when `oauth.resource` matches the server URL.
     The loopback callback ignores (400) any request whose state does not match exactly. OAuth fetches never follow
     redirects and refuse private-IP literals (no DNS check). All of this is unit-tested only.
+- Connectors (`src/shared/connectors.ts` catalog, `src/main/mcp/connectors.ts`, `McpService.connectors*`): curated
+  presets for official remote MCP servers that become library entries (`McpLibraryEntry.connectorId`, written only by
+  `connectors:add`, which is idempotent and takes only `{ connectorId, variant? }`). IPC `connectors:list`
+  (`ConnectorInfo`), `connectors:add`, `connectors:setToken` (token connectors; prefix added in main); everything else
+  reuses mcp:* / mcpLibrary:*. `oauthClient` connectors (Google, Slack) use the user's own client and the fixed
+  redirect `http://127.0.0.1:38917/callback` (`CONNECTOR_REDIRECT_URI`, strict listen, no ephemeral fallback).
+  ORGAI_MOCK=1 makes connector authorize/test network-free (mock@example.com, fake tools); the stand-in token is
+  ignored outside mock mode. Unverified, every preset (`verified: false`): Google accepting a 127.0.0.1 redirect on a
+  Web application client and ignoring a missing `resource`; Slack accepting an http loopback redirect at all (its docs
+  say HTTPS), the `oauth.v2.user.access` response shape and the scopes it needs; DCR plus loopback on Notion, Linear,
+  Sentry, Stripe, Figma and Atlassian (admin allowlist); GitHub's `X-MCP-Readonly` header. Unit-tested only.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.

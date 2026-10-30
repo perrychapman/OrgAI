@@ -605,6 +605,148 @@ export interface McpServerSpec {
   libraryId?: string
   /** Remote servers that use OAuth (see McpOAuthConfig). Written by the main process only. */
   oauth?: McpOAuthConfig
+  /**
+   * Library entries made from a connector preset (connectors:add) carry the ConnectorDef id, and a link copies it.
+   * Written by the main process only: mcp:upsert, mcpLibrary:upsert, installs and proposals never set it, and an
+   * edit that changes where the entry connects drops it.
+   */
+  connectorId?: string
+  /** With connectorId: the ConnectorVariant id the entry was built from. */
+  connectorVariant?: string
+}
+
+// ---------- Connectors (curated MCP presets, src/shared/connectors.ts) ----------
+
+export type ConnectorCategory = 'email' | 'calendar' | 'files' | 'chat' | 'docs' | 'project' | 'dev' | 'monitoring' | 'payments' | 'design'
+
+/**
+ * OAuth details a preset supplies instead of (or as a fallback for) discovery. Every URL is https on a public
+ * host (checked by the catalog test and again at authorize time).
+ */
+export interface ConnectorOAuthOverrides {
+  /** Issuer recorded as McpOAuthConfig.authorizationServer. Default: the authorization endpoint's origin. */
+  issuer?: string
+  authorizationEndpoint?: string
+  tokenEndpoint?: string
+  /** 'replace' = skip discovery and use the endpoints; 'fallback' = use them only when discovery fails. */
+  endpointsMode?: 'replace' | 'fallback'
+  /**
+   * Extra authorization-URL parameters, e.g. Google's access_type=offline and prompt=consent. Reserved
+   * parameters (response_type, client_id, redirect_uri, state, code_challenge*, resource, scope) are ignored.
+   */
+  extraAuthParams?: Record<string, string>
+  /** Default true. False = never send the RFC 8707 `resource` parameter (servers that do not know it). */
+  sendResource?: boolean
+  /** 'slackUser' = also read the token from `authed_user` when the response has no top-level access_token. */
+  tokenResponse?: 'standard' | 'slackUser'
+}
+
+/** How a connector authenticates. */
+export type ConnectorAuth =
+  /** OAuth with dynamic client registration: the user only clicks Authorize. */
+  | { kind: 'oauth'; scopes?: string[]; overrides?: ConnectorOAuthOverrides }
+  /**
+   * OAuth with the user's own app (no DCR): the user creates a client in the vendor's console, registers
+   * CONNECTOR_REDIRECT_URI there, and passes client id (and secret) to mcp:authorize. The flow listens on that
+   * fixed port and fails with a clear message when it is busy.
+   */
+  | {
+      kind: 'oauthClient'
+      scopes?: string[]
+      overrides?: ConnectorOAuthOverrides
+      /** Where the user creates the OAuth client. */
+      consoleUrl: string
+      clientSecret: 'required' | 'optional'
+    }
+  /** A pasted token sent as a secret header (connectors:setToken adds the prefix). */
+  | {
+      kind: 'token'
+      /** The secret header name, e.g. "Authorization". */
+      header: string
+      /** Prepended to the pasted token, e.g. "Bearer ". */
+      prefix?: string
+      /** Field label, e.g. "Personal access token". */
+      label: string
+      /** One-line help: which scopes or permissions the token needs. */
+      help: string
+      /** Where to create the token. */
+      link?: string
+    }
+
+/** One way to reach a connector's server, e.g. Linear's read-only endpoint versus the full one. */
+export interface ConnectorVariant {
+  /** Unique within the connector, e.g. 'readonly', 'full'. */
+  id: string
+  label: string
+  description?: string
+  transport: 'http' | 'sse'
+  /** https only. */
+  url: string
+  /** Non-secret headers sent with every request, e.g. GitHub's X-MCP-Readonly. */
+  headers?: Record<string, string>
+  /** The server exposes only read tools (or the requested scopes are read-only). */
+  readOnly: boolean
+  auth: ConnectorAuth
+}
+
+/**
+ * A curated preset for an outside service's official remote MCP server. Pure data in src/shared/connectors.ts
+ * (CONNECTORS); connectors:add turns one into an app-wide MCP library entry. Structured-clone safe.
+ */
+export interface ConnectorDef {
+  /** Kebab-case id, also the preferred library entry name (so tools surface as mcp__<id>__<tool>). */
+  id: string
+  name: string
+  /** Who runs the server, e.g. "Google". */
+  vendor: string
+  /** Every preset points at the vendor's own server. */
+  publisher: 'official'
+  category: ConnectorCategory
+  /** One line for the gallery card. */
+  description: string
+  /** The vendor's own label for the server: preview (beta, developer preview) or generally available. */
+  status: 'preview' | 'stable'
+  docsUrl: string
+  variants: ConnectorVariant[]
+  /** A variants[].id. */
+  defaultVariant: string
+  /** Short setup steps in order (console work for oauthClient; the exact redirect URI is included). */
+  setup: string[]
+  /** Caveats: admin approval, write tools, unverified behaviour. */
+  notes?: string[]
+  /** False until someone authorized and listed tools against the live server. */
+  verified: boolean
+}
+
+/** A gallery card's summary state. */
+export type ConnectorState = 'available' | 'needsSetup' | 'connected' | 'error'
+
+/** connectors:list entry: the preset plus its library entry once added. */
+export interface ConnectorInfo {
+  connector: ConnectorDef
+  /** The library entry made from it (McpLibraryEntry.connectorId === connector.id), with auth, secrets and usedBy. */
+  library?: McpLibraryInfo
+  /** The variant id of the added entry. */
+  variant?: string
+  /**
+   * 'available' = not added; 'needsSetup' = added but not authorized or its token is missing; 'connected' =
+   * authorized or token stored (not a liveness check: run mcpLibrary:test); 'error' = the last authorization failed.
+   */
+  state: ConnectorState
+}
+
+/** connectors:add input. The renderer names a preset; main builds the URL, headers and auth from the catalog. */
+export interface ConnectorAddInput {
+  connectorId: string
+  /** A ConnectorVariant id; missing or unknown = the connector's defaultVariant. */
+  variant?: string
+}
+
+/** connectors:setToken input for 'token' connectors. Write-only; `null` clears it. */
+export interface ConnectorTokenInput {
+  connectorId: string
+  /** The bare token as pasted; main trims it, adds the preset's prefix and stores it as the secret header. */
+  token: string | null
 }
 
 /**
@@ -2332,6 +2474,23 @@ export interface OrgAIApi {
   }
   /** The library changed (any mcpLibrary:* mutation, authorize, revoke, promote). Returns an unsubscribe function. */
   onMcpLibraryChanged(cb: (entries: McpLibraryInfo[]) => void): () => void
+  /**
+   * Connectors: curated presets (src/shared/connectors.ts) that become MCP library entries. Authorize, test,
+   * link, revoke and remove reuse mcp.authorize ({ libraryId }), mcpLibrary.test, mcp.linkLibrary, mcp.revokeAuth
+   * and mcpLibrary.remove. Changes arrive through onMcpLibraryChanged (re-read connectors.list then).
+   */
+  connectors: {
+    /** Every preset in catalog order, with its library entry and state. */
+    list(): Promise<ConnectorInfo[]>
+    /**
+     * Create the library entry from the preset (main builds url, headers and secret slots; nothing else is taken
+     * from the renderer). Idempotent: an existing entry for that connector is returned unchanged, whatever the
+     * variant (remove it first to switch). Broadcasts mcpLibrary:changed when it creates one.
+     */
+    add(input: ConnectorAddInput): Promise<McpLibraryInfo>
+    /** 'token' connectors: store (or clear) the token as the entry's secret header. Rejects before add. */
+    setToken(input: ConnectorTokenInput): Promise<McpLibraryInfo>
+  }
   plugins: {
     /** Add or replace one plugin. Returns the saved project. */
     upsert(input: PluginUpsertInput): Promise<Project>
@@ -2553,6 +2712,9 @@ export const IPC = {
   mcpLibraryTest: 'mcpLibrary:test',
   /** main -> renderer push channel carrying McpLibraryInfo[] after every library or authorization change. */
   mcpLibraryChanged: 'mcpLibrary:changed',
+  connectorsList: 'connectors:list',
+  connectorsAdd: 'connectors:add',
+  connectorsSetToken: 'connectors:setToken',
   pluginsUpsert: 'plugins:upsert',
   pluginsRemove: 'plugins:remove',
   runsListLive: 'runs:listLive',

@@ -19,6 +19,9 @@ import type {
   ContinueRunInput,
   DraftRequest,
   FocusRunTarget,
+  ConnectorAddInput,
+  ConnectorInfo,
+  ConnectorTokenInput,
   McpAnswerInstallInput,
   McpAssistInput,
   McpAuthStatus,
@@ -363,6 +366,10 @@ function registerMcpIpc(runs: RunManager, mcp: McpService, projectOrHarness: (id
   ipcMain.handle(IPC.mcpLibraryRemove, (_e, input: { libraryId: string }): McpLibraryInfo[] => mcp.libraryRemove(input))
   ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: McpLibrarySecretInput): McpLibraryInfo[] => mcp.librarySetSecret(input))
   ipcMain.handle(IPC.mcpLibraryTest, (_e, input: { libraryId: string }): Promise<McpTestResult> => mcp.libraryTest(input))
+  // Connectors: the renderer names a preset (and a variant); main builds the entry from src/shared/connectors.ts.
+  ipcMain.handle(IPC.connectorsList, (): ConnectorInfo[] => mcp.connectorsList())
+  ipcMain.handle(IPC.connectorsAdd, (_e, input: ConnectorAddInput): McpLibraryInfo => mcp.connectorsAdd(input))
+  ipcMain.handle(IPC.connectorsSetToken, (_e, input: ConnectorTokenInput): McpLibraryInfo => mcp.connectorsSetToken(input))
   ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
   ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
 }

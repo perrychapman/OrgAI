@@ -230,6 +230,8 @@ app.whenReady().then(() => {
     secrets,
     library: new McpLibraryStore(dataDir),
     openExternal: (url) => shell.openExternal(url),
+    // ORGAI_MOCK=1 only: connector entries authorize and test without network (walkthroughs, e2e).
+    mock: mockAdapter,
     onLibraryChanged: broadcastMcpLibrary,
     // Library changes that save a project (unlink on remove, promote) reach every window like a run's project update.
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
