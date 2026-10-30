@@ -1366,6 +1366,77 @@ describe('cross-run messaging', () => {
       expect(warns.filter((e) => e.runId === a.id && e.message.startsWith('Your queued message'))).toHaveLength(RUN_MESSAGE_QUEUE_LIMIT)
       await m.stopAll()
     })
+
+    it('keeps held messages in order when a direct message arrives mid-flush', async () => {
+      const { m, adapter, a, b } = await two()
+      const ctx = adapter.ctxs.get(a.id)!
+      await m.interrupt(b.id)
+      for (const t of ['q1', 'q2', 'q3']) expect(await ctx.messageRun!(b.id, t)).toEqual({ result: 'queued' })
+      const session = adapter.bySession.get(b.id)!
+      const original = session.receive!.bind(session)
+      const done: string[] = []
+      let q4: Promise<unknown> | undefined
+      session.receive = async (msg) => {
+        // The inbox is empty while q3 is in flight, so q4 takes the direct path during this flush.
+        if (msg.text === 'q3') q4 = ctx.messageRun!(b.id, 'q4')
+        await new Promise((r) => setTimeout(r, msg.text === 'q3' ? 40 : 5))
+        done.push(msg.text)
+        return original(msg)
+      }
+      await m.send(b.id, 'carry on')
+      expect(q4).toBeDefined()
+      expect(await q4).toEqual({ result: 'delivered' })
+      expect(done).toEqual(['q1', 'q2', 'q3', 'q4'])
+      expect(session.peerMessages.map((p) => p.text)).toEqual(['q1', 'q2', 'q3', 'q4'])
+      await m.stopAll()
+    })
+
+    it('holds messages after a usage-limit report until the user sends again', async () => {
+      const { m, adapter, a, b } = await two()
+      const ctx = adapter.ctxs.get(a.id)!
+      adapter.ctxs.get(b.id)!.rateLimited({ window: 'five_hour' })
+      expect(await ctx.messageRun!(b.id, 'limited')).toEqual({ result: 'queued' })
+      const session = adapter.bySession.get(b.id)!
+      expect(session.peerMessages).toEqual([])
+      await m.send(b.id, 'try again')
+      expect(session.peerMessages.map((p) => p.text)).toEqual(['limited'])
+      // The hold lifted: the next message goes straight through.
+      await idle(b.id)
+      expect(await ctx.messageRun!(b.id, 'after')).toEqual({ result: 'delivered' })
+      await m.stopAll()
+    })
+
+    it('keeps the hold when the user message fails to send', async () => {
+      const { m, adapter, a, b } = await two()
+      const ctx = adapter.ctxs.get(a.id)!
+      const session = adapter.bySession.get(b.id)!
+      session.send = async () => {
+        throw new Error('send failed')
+      }
+      await m.interrupt(b.id)
+      await expect(m.send(b.id, 'hello')).rejects.toThrow('send failed')
+      expect(await ctx.messageRun!(b.id, 'still held')).toEqual({ result: 'queued' })
+      adapter.ctxs.get(b.id)!.rateLimited({})
+      await expect(m.send(b.id, 'hello again')).rejects.toThrow('send failed')
+      expect(await ctx.messageRun!(b.id, 'held too')).toEqual({ result: 'queued' })
+      expect(session.peerMessages).toEqual([])
+      await m.stopAll()
+    })
+  })
+
+  it('marks its system rows as harness rows', async () => {
+    const { m, a, b, tool } = await two()
+    await m.interrupt(b.id)
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'queued one' })).toMatch(/^QUEUED/)
+    await m.send(b.id, 'resume')
+    await idle(b.id)
+    expect(await tool(a.id, 'message_run', { runId: b.id, message: 'direct one' })).toMatch(/^DELIVERED/)
+    const rows = [...m.get(a.id)!.transcript, ...m.get(b.id)!.transcript].filter(
+      (t) => t.block.kind === 'system' && /^(Sent to run|Queued for run|Note from run)/.test((t.block as { text: string }).text)
+    )
+    expect(rows.length).toBeGreaterThanOrEqual(4)
+    for (const r of rows) expect(r.source).toBe('harness')
+    await m.stopAll()
   })
 
   it('caps what one run may receive from all runs together', async () => {

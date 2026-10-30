@@ -100,6 +100,12 @@ interface ActiveRun {
   flushTimer?: ReturnType<typeof setTimeout>
   /** Set when the provider reported a usage-limit rejection; the run pauses instead of ending. */
   limited?: { until?: number; window?: string }
+  /**
+   * A usage-limit report holds peer delivery until the user's next successful send(). Unlike `limited` (which
+   * drives pausing at session end and is never cleared) this lifts, so a transient limit does not hold messages
+   * until teardown.
+   */
+  limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
@@ -127,6 +133,8 @@ interface ActiveRun {
    * inside the adapter; RunManager routes both interrupt() and send(), so it tracks the same rule itself.
    */
   held: boolean
+  /** The inbox flush in progress; flushes chain on it so concurrent flushes never reorder peer messages. */
+  flushing?: Promise<void>
 }
 
 /** A message_run message held for a run that is waiting on its user. */
@@ -137,6 +145,8 @@ interface QueuedPeerMessage {
   fromPrompt: string
   text: string
   at: number
+  /** Set once a delivery was attempted: true when the session took it, false when it could not. */
+  delivered?: boolean
 }
 
 /**
@@ -199,7 +209,7 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
 
 /** A system line in a run's root transcript. */
 function systemBlock(a: ActiveRun, at: number, text: string): void {
-  a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, block: { kind: 'system', text } } })
+  a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, source: 'harness', block: { kind: 'system', text } } })
 }
 
 /** A prompt shortened for messages: one line, at most `max` (default 60) characters. */
@@ -503,6 +513,7 @@ export class RunManager {
         requestMergeReview: (req) => this.requestMergeReview(active, req),
         rateLimited: (info) => {
           active.limited = { ...active.limited, ...info }
+          active.limitHold = true
         },
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
@@ -676,12 +687,18 @@ export class RunManager {
     }
     systemBlock(sender, at, `Sent to run ${to.id} (${target.projectName}: ${toPrompt}): ${text}`)
     sender.emit({ type: 'log', runId: from.id, level: 'info', message: `Messaged run ${to.id} (${target.projectName}).` })
-    return (await this.deliverPeerMessage(target, message)) ? { result: 'delivered' } : { result: 'not-live' }
+    // Through the inbox, behind any flush in progress, so a direct message never overtakes held ones.
+    target.inbox.push(message)
+    await this.flushInbox(target)
+    if (message.delivered === true) return { result: 'delivered' }
+    // Still waiting: the run became blocked before its turn came. Gone without an attempt: the run ended.
+    if (message.delivered === undefined && target.inbox.includes(message)) return { result: 'queued' }
+    return { result: 'not-live' }
   }
 
   /** Why a peer message must wait for this run's user now, or null (continuation.peerDeliveryBlocked). */
   private deliveryBlocked(a: ActiveRun): string | null {
-    return peerDeliveryBlocked({ held: a.held, rateLimited: !!a.limited, pendingInteractions: pendingCount(a) })
+    return peerDeliveryBlocked({ held: a.held, rateLimited: !!a.limitHold, pendingInteractions: pendingCount(a) })
   }
 
   /**
@@ -713,10 +730,20 @@ export class RunManager {
   }
 
   /** Deliver held peer messages, oldest first, while nothing makes the run wait on its user. */
-  private async flushInbox(a: ActiveRun): Promise<void> {
-    while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
-      await this.deliverPeerMessage(a, a.inbox.shift()!)
+  private flushInbox(a: ActiveRun): Promise<void> {
+    const drain = async (): Promise<void> => {
+      while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
+        const m = a.inbox.shift()!
+        m.delivered = await this.deliverPeerMessage(a, m)
+      }
     }
+    // Chained: a flush started while another runs waits for it, so messages leave strictly oldest first.
+    const next = (a.flushing ?? Promise.resolve()).then(drain).catch((e: unknown) => log.warn(`Peer message flush failed: ${(e as Error)?.message ?? e}`))
+    a.flushing = next
+    void next.finally(() => {
+      if (a.flushing === next) a.flushing = undefined
+    })
+    return next
   }
 
   /** A card was answered: if it was the last one and the run is not held, deliver held peer messages. */
@@ -990,9 +1017,11 @@ export class RunManager {
     if (!hasContent(text, images)) throw new Error('Nothing to send')
     active.emit({ type: 'run.status', runId, status: 'running' })
     // The user's message lifts an interrupt's hold (as ContinuationDriver.userMessage does in the adapter); peer
-    // messages held meanwhile follow it, so the orchestrator reads the user first.
-    active.held = false
+    // messages held meanwhile follow it, so the orchestrator reads the user first. A usage-limit hold lifts too.
+    // Both are cleared only once the session took the message: a failed send leaves the run held.
     await active.session.send(text, images.length ? images : undefined)
+    active.held = false
+    active.limitHold = false
     await this.flushInbox(active)
   }
 
