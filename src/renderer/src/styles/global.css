@@ -17,6 +17,9 @@
 @import './usage.css';
 @import './layout.css';
 @import './import.css';
+@import './usage-tab.css';
+@import './history-trends.css';
+@import './model-prices.css';
 
 * {
   box-sizing: border-box;
