@@ -140,7 +140,7 @@ Sequencing: Runtime half of C first. Then A, B, C-UI, D can run in parallel exce
 
 ## 5. Spec-level issues for the Product Designer
 
-Sent as a separate message. In short: (1) the card system needs one anatomy and one layering rule (H5, M4); (2) the project tab model (M11) should be fixed in the spec before B5-B9 finish; (3) the diff-versus-current display for org chart proposals (M1) is not in `spec.md`; (4) "idle session" semantics: when a run is finished versus waiting (H4, L9) needs a vocabulary table.
+The Product Designer was not reachable by message during this review, so these go to the requester to relay. In short: (1) the card system needs one anatomy and one layering rule (H5, M4); (2) the project tab model (M11) should be fixed in the spec before B5-B9 finish; (3) the diff-versus-current display for org chart proposals (M1) is not in `spec.md`; (4) "idle session" semantics: when a run is finished versus waiting (H4, L9) needs a vocabulary table.
 
 ## 6. Reproduction
 
