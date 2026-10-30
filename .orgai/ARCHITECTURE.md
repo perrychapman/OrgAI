@@ -92,10 +92,12 @@ anthropicAuth.ts runs `claude auth status` and lists candidate claude binaries.
 McpService covers:
 
 - persisting Project.mcpServers / Project.plugins, with secret values only in SecretStore
+- the app-wide MCP library (store/mcpLibrary.ts, <data>/mcp-library.json): entries defined once, linked by projects (McpServerSpec.libraryId), snapshots refreshed on read, link / unlink / promote, library removal unlinks every project and drops Role.mcpServers grants
+- OAuth for remote servers (oauth.ts: discovery, client registration, PKCE, loopback redirect, token exchange and refresh); McpService.authorize / cancelAuthorize / revokeAuth / prepareForRun; resolve() injects the bearer
 - resolving servers for runs and saving installs that the user approved with scope 'project'
 - registry search (registry.ts, the official MCP Registry)
 - the token-free server test (probe.ts: initialize + tools/list for stdio and streamable HTTP)
-- spec validation (validate.ts: pinned versions, names) and the MCP assistant context (assist.ts)
+- spec validation (validate.ts: pinned versions, names, library entries) and the MCP assistant context and the virtual harness project (assist.ts)
 
 - `src/main/mcp/`
 
@@ -217,7 +219,9 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
   - Role.tier plus each connection's tierModels drive remaps. A remap never clobbers an explicit pick of a valid catalog model, except when the project switches connection.
   - Remaps are reported as projects.remapped with Undo in the UI.
   - projects:previewRemap is the main-process dry run.
-- Secrets live only in SecretStore (Electron safeStorage). Covered secrets: the LiteLLM key and MCP env and header values.
+- Secrets live only in SecretStore (Electron safeStorage). Covered secrets: the LiteLLM key, MCP env and header values, and MCP OAuth client secrets and tokens.
+  - Key scheme: project servers `mcp:<projectId>:<serverId>:{env|header|oauth}:<name>`, library entries `mcplib:<entryId>:...` (helpers in store/secrets.ts). A linked project server uses its entry's secrets.
+  - McpOAuthConfig (endpoints, client id, expiry) is written by the main process only; mcp:upsert and mcpLibrary:upsert keep the stored value, and a url change drops it and its tokens.
   - They never cross IPC. Write-only inputs are allowed, and responses carry has-flags only.
   - They are never logged and are redacted from probe output. An API key reaches Codex only through the environment.
 - projects:save (ProjectStore.saveFromRenderer) keeps the stored mcpServers and plugins. Those change only through mcp:* and plugins:*, approved setup or MCP proposals, and installs approved with scope 'project'. Deleting a project deletes its MCP secrets.
@@ -227,6 +231,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
   - Agents add servers only through request_mcp_install. It needs exact pinned versions and the user's approval on an install card.
   - A denial means the agent finds another route.
   - Registry content is untrusted data: it is quoted as data and never followed as instructions.
+- MCP library: credentials and authorization live with the library entry; a project links it or keeps a project-only server. mcp:upsert on a link changes only enabled and roles; mcp:remove on a link only unlinks. Proposals (propose_mcp_servers) default to project scope, where a new server is also saved to the library unless projectOnly; harness runs (project id HARNESS_PROJECT_ID, virtual, never stored) use library scope. Every library mutation broadcasts mcpLibrary:changed. In setup the Architect may propose linking library entries as an optional last step; it never blocks complete_setup.
 - Setup-like runs (setup, mcp-assist) use built-in roles (the Architect, the MCP assistant) and are never nudged by the continuation driver.
 - Cross-run messaging (list_runs, message_run) is for work-run roots only and never involves setup-like runs.
   - It is opt-in per project: Project.runMessaging (default off, runMessagingOn in defaults.ts). message_run is refused unless both projects have it on; the refusal names the project and tells the agent not to work around it. list_runs lists every other live work run but hides prompts unless both projects opted in.
@@ -301,6 +306,7 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Electron deprecates sync safeStorage (removed in Electron 46). SecretStore must move to the async API before upgrading.
 - The UI was verified only against stubbed or empty states. The connection and MCP screens have not been run against live services.
 - The UI overhaul shell pass has not landed: Radix, resizable panels, components/layout, the frontend-design skill and Role.skills. When it lands it rewrites App.tsx, LiveRunView.tsx and SettingsView.tsx and must go in as one serialized pass before parallel restyles.
+- MCP OAuth is tested only against fakes; no live authorization server, GitHub included, has been used. Mid-run re-authorization is not supported. PLANNED for the UI Lead: the App Settings MCP library section, project "From your library" / "Only in this project" groups, Authorize chips and buttons, the reauthorization notice in runs.
 - Renderer remap previews (lib/remap.ts) are computed in the renderer. projects:previewRemap exists but is not wired into the UI yet.
 - No lint or format tooling, and the renderer has no component tests.
 - The Claude SDK is pinned to 0.3.312. Plan usage relies on an experimental API and can break on upgrade.

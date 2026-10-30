@@ -120,6 +120,25 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests.
   - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
     and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
+- MCP library and OAuth:
+  - The app-wide library lives in `<data>/mcp-library.json` (`McpLibraryStore`). A project server with `libraryId` is a
+    link: McpService refreshes its snapshot from the entry on every read (`withLibrary`, `list`, `enabledServers`,
+    `resolve`), its secrets and tokens are the entry's, and a link whose entry is gone is kept but never passed to runs.
+    Secret keys: project `mcp:<projectId>:<serverId>:{env|header|oauth}:<name>`, library `mcplib:<entryId>:...`.
+    Verified by unit tests.
+  - OAuth (`src/main/mcp/oauth.ts`): RFC 9728 discovery from the 401 `WWW-Authenticate`, RFC 8414 / OIDC metadata,
+    a user-entered client id first, then DCR, else `needsClientId`; PKCE S256, RFC 8707 `resource`, a one-shot
+    loopback redirect on 127.0.0.1, refresh with rotation. Verified only with fake fetch and the real loopback in
+    unit tests; no live authorization server has been used.
+  - The host injects `Authorization: Bearer <access token>` into resolved headers. Unverified: that the bundled
+    CLI's undocumented `oauth` block in mcpServers passes through from SDK options (not used); that GitHub's hosted
+    server (`https://api.githubcopilot.com/mcp/`) accepts a token from a user's own GitHub OAuth app; how Codex's
+    own MCP OAuth behaves when `bearer_token_env_var` is set.
+  - Runs refresh tokens that expire within 5 minutes before they start (`prepareForRun`). A server that is still not
+    authorized starts without credentials and the run logs a warning. Mid-run re-authorization is out of scope: the
+    user authorizes in Settings and the next run picks it up.
+  - Harness-level runs (the library MCP assistant) use the virtual project `HARNESS_PROJECT_ID` ('harness', built by
+    `harnessProject()` in `mcp/assist.ts`, never stored). Only `mcp-assist` runs may use it.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.
