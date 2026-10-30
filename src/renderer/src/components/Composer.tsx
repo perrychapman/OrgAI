@@ -48,6 +48,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const labelId = useId()
+  const hintId = useId()
   const reasonId = useId()
   const sendRef = useRef<HTMLSpanElement>(null)
   const canSend = (text.trim().length > 0 || images.length > 0) && !busy
@@ -121,8 +122,9 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             {modeLabel}
           </span>
           {modeSwitch}
-          <span className="composer-hint" tabIndex={0} role="img" aria-label={HINT} title={HINT}>
-            <Icon icon={CircleHelp} size="sm" />
+          <span className="composer-hint" id={hintId}>
+            <Icon icon={CircleHelp} size="xs" />
+            <span className="composer-hint-text">{HINT}</span>
           </span>
         </div>
         {notices}
@@ -155,6 +157,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             ref={ref}
             className="textarea"
             aria-labelledby={labelId}
+            aria-describedby={hintId}
             value={text}
             onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
             onPaste={(e) => {

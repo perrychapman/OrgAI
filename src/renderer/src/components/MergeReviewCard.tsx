@@ -5,6 +5,7 @@ import type { MergeDecision, MergeReview } from '@shared/types'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import DiffView from './DiffView'
 import { Button } from './ui/Button'
+import { Icon } from './ui/Icon'
 import { ConfirmDialog } from './ui/Dialog'
 import { mergeTitle } from '../lib/decisionTitle'
 
@@ -52,9 +53,10 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
             <Button size="sm" disabled={busy} onClick={() => decide({ behavior: 'hold' })}>
               Hold for later
             </Button>
-            <Button size="sm" variant="ghost" icon={showPatch ? ChevronDown : ChevronRight} onClick={() => setShowPatch((v) => !v)}>
+            <button type="button" className="btn ghost sm" aria-expanded={showPatch} onClick={() => setShowPatch((v) => !v)}>
+              <Icon icon={showPatch ? ChevronDown : ChevronRight} size="sm" />
               {showPatch ? 'Hide patch' : 'Show patch'}
-            </Button>
+            </button>
           </>
         }
         deny={

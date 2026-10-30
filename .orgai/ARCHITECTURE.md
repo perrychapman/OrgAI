@@ -316,6 +316,7 @@ components/layout:
 - Each feature lands as one descriptive commit plus a merge commit ('Merge <feature>').
 - Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Agent runs happen on dev.
 - Build output (out/, release/, release-*/, *.tsbuildinfo) is gitignored. Never commit it.
+- Permission cards never clip a command silently: a Bash command is shown in full in a scrollable block, the title carries a "(+N lines)" or "(long command)" marker, and in compact mode (body collapsed) focus goes to the Details toggle instead of the primary action (`DecisionCard` `focusDetails`; also set for broad rule requests).
 
 ## Commands
 

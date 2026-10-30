@@ -34,6 +34,33 @@
   max-height: 160px;
   overflow: auto;
 }
+.perm-input.perm-command {
+  max-height: 200px;
+  white-space: pre-wrap;
+}
+.perm-input.perm-command.full {
+  max-height: 60cqh;
+}
+.perm-expand {
+  margin-top: var(--space-1);
+  padding: 0 var(--space-1);
+  min-height: 24px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--text-caption);
+  cursor: pointer;
+}
+.perm-expand:hover {
+  text-decoration: underline;
+}
+.perm-expand:focus-visible,
+.perm-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .perm-input .diff-add {
   color: var(--success-text);
   background: var(--diff-add-bg);
@@ -590,4 +617,12 @@
 .decision-stepper .icon-btn {
   min-width: 32px;
   min-height: 32px;
+}
+
+/* Previous/Next keep focus at the ends (aria-disabled instead of disabled). */
+.decision-steps .icon-btn[aria-disabled='true'],
+.decision-steps .icon-btn[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--text-disabled);
+  cursor: default;
 }

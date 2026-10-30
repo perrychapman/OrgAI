@@ -88,6 +88,7 @@ export default function Sidebar(): ReactElement {
       <BrandLockup
         collapsed={rail}
         onExpand={() => setCollapsed(false)}
+        railNote={mockAdapter ? MOCK_TIP : undefined}
         tag={
           mockAdapter ? (
             <Badge tone="neutral" testId="mock-mode-badge" title={MOCK_TIP}>

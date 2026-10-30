@@ -31,6 +31,7 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
   }
 
   const flagged = new Set(request.flagged ?? [])
+  const risky = request.rules.filter((r) => flagged.has(r) || isWholeToolRule(r)).length
   return (
     <DecisionCard
       kind="rules"
@@ -38,7 +39,9 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
       runId={runId}
       who={who}
       agentId={request.agentId}
-      title={rulesTitle(request.rules)}
+      title={rulesTitle(request.rules, risky)}
+      focusDetails={risky > 0}
+      headerExtra={risky > 0 ? <Badge tone="danger">{risky === 1 ? 'Broad rule' : `${risky} broad rules`}</Badge> : undefined}
       helper={
         <ul className="decision-scopes">
           <li>Allow for this run: takes effect now for this run and its reports.</li>

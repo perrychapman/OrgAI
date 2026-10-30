@@ -77,6 +77,10 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: calc(-1 * var(--space-0h));
 }
+/* The selected tab is the surface step plus the accent bar; the ring is for keyboard focus only, not after a click. */
+.run-tab[data-pointer]:focus-visible {
+  outline: none;
+}
 .run-tab-glyph {
   flex: none;
   display: inline-grid;

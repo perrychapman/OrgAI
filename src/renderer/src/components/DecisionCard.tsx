@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { initials } from '../lib/layout'
 import { selectedProject, useAppStore } from '../store/useAppStore'
@@ -41,6 +41,11 @@ interface Props {
   secondary?: ReactNode
   /** Footer, rightmost: the quiet danger button (Button variant danger). */
   deny?: ReactNode
+  /**
+   * Focus the Details toggle instead of the primary action while the body is collapsed (compact mode). For cards whose
+   * title cannot show everything the user is approving (a multi-line shell command, a broad rule).
+   */
+  focusDetails?: boolean
   /** Skip moving focus on mount (a card that is only a record, e.g. an answered install). */
   noAutoFocus?: boolean
   /** A failed answer, shown above the footer so the buttons stay in place. */
@@ -87,10 +92,11 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, headerExtra, children, helper, primary, secondary, deny, noAutoFocus, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, headerExtra, children, helper, primary, secondary, deny, focusDetails, noAutoFocus, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
+  const bodyId = useId()
   const color = useAppStore((st) => {
     const roleId = agentId ? st.runs[runId]?.agents[agentId]?.roleId : undefined
     return roleId ? selectedProject(st)?.roles.find((r) => r.id === roleId)?.color : undefined
@@ -104,13 +110,19 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
     if (noAutoFocus) return
     const card = ref.current
     if (!card || typingElsewhere(card)) return
+    // The Details toggle is only displayed in compact mode (container query), where the body is collapsed.
+    const details = focusDetails ? card.querySelector<HTMLElement>('.decision-details') : null
+    if (details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true') {
+      details.focus()
+      return
+    }
     const target =
       card.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
       card.querySelector<HTMLElement>('.decision-body input:not([disabled]), .decision-body textarea:not([disabled]), .decision-body summary, .decision-body button:not([disabled])') ??
       card.querySelector<HTMLElement>('.decision-footer button:not([disabled])')
     target?.focus()
     // Mount only: later renders (a body change) must not pull focus back.
-  }, [noAutoFocus])
+  }, [noAutoFocus, focusDetails])
   return (
     <article
       ref={ref}
@@ -141,7 +153,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
             {title}
           </span>
           {hasBody && (
-            <button type="button" className="decision-details" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
+            <button type="button" className="decision-details" aria-expanded={expanded} aria-controls={bodyId} onClick={() => setExpanded((v) => !v)}>
               <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
               Details
             </button>
@@ -149,7 +161,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
         </div>
       </header>
       {hasBody && (
-        <div className="decision-body">
+        <div className="decision-body" id={bodyId}>
           {children}
           {helper && <div className="decision-helper">{helper}</div>}
         </div>
