@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
-import { costLabel } from '../lib/layout'
+import { useCostLabel } from '../lib/useCostLabel'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
@@ -36,7 +36,7 @@ export default function RunHistory(): ReactElement {
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
   const startRetro = useAppStore((s) => s.startRetro)
   const current = useAppStore(activeRun)
-  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
+  const labelCost = useCostLabel()
   const indexes = useRunIndexes()
   const [filter, setFilter] = useState<Filter>('all')
 
@@ -98,7 +98,7 @@ export default function RunHistory(): ReactElement {
                   waiting={!!runs[r.id] && needsYou(runs[r.id])}
                   viewed={current?.summary.id === r.id}
                   summaries={summaries}
-                  cost={costLabel(r.totalCostUsd, authMode)}
+                  cost={labelCost(r.totalCostUsd, r.connection ?? 'anthropic')}
                   indexes={indexes}
                   onOpen={() => void openRun(r.id)}
                   onContinue={() => void continueFromHistory(r.id)}
@@ -130,7 +130,7 @@ function HistoryRow({
   waiting: boolean
   viewed: boolean
   summaries: RunSummary[]
-  cost: { text: string; title: string }
+  cost: { text: string; title: string; hidden: boolean }
   indexes: Map<string, number>
   onOpen: () => void
   onContinue: () => void
@@ -193,8 +193,8 @@ function HistoryRow({
           {statusText(status)}
         </Badge>
       </td>
-      <td className="col-cost" title={cost.title}>
-        {cost.text}
+      <td className="col-cost" title={cost.hidden ? undefined : cost.title}>
+        {cost.hidden ? '–' : cost.text}
       </td>
       <td className="col-started" title={started.toLocaleString()}>
         {relativeTime(r.startedAt)}
