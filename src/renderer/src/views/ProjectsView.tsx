@@ -1,75 +1,276 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
-import type { SetupKind } from '@shared/types'
+import { useEffect, useId, useState } from 'react'
+import { FolderOpen, Plus } from 'lucide-react'
+import type { ProjectPathCheck, SetupKind } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { examplePath } from '../lib/platform'
+import { effectiveName, pathStatus, submitBlocker } from '../lib/projectsForm'
+import { Badge } from '../components/ui/Badge'
+import { Button } from '../components/ui/Button'
+import { Checkbox } from '../components/ui/Checkbox'
+import { useConfirm } from '../components/ui/ConfirmDialog'
+import { Input } from '../components/ui/Input'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { Textarea } from '../components/ui/Textarea'
 
-export default function ProjectsView(): ReactElement {
-  const projects = useAppStore((s) => s.projects)
+const KINDS: { value: SetupKind; label: string }[] = [
+  { value: 'new', label: 'New idea' },
+  { value: 'existing', label: 'Existing repository' }
+]
+
+function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
   const createProject = useAppStore((s) => s.createProject)
   const startSetup = useAppStore((s) => s.startSetup)
-  const selectProject = useAppStore((s) => s.selectProject)
-  const setView = useAppStore((s) => s.setView)
-  const removeProject = useAppStore((s) => s.removeProject)
+  const uid = useId()
+  const ids = { name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
 
   const [kind, setKind] = useState<SetupKind>('new')
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [brief, setBrief] = useState('')
-  const [skipSetup, setSkipSetup] = useState(false)
+  const [architect, setArchitect] = useState(true)
+  const [useMock, setUseMock] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [check, setCheck] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
 
+  // Debounced live check of the folder; stale answers are dropped.
+  useEffect(() => {
+    const p = path.trim()
+    if (!p) return undefined
+    let live = true
+    const t = setTimeout(() => {
+      window.orgai.projects
+        .checkPath(p)
+        .then((result) => {
+          if (live) setCheck({ path: p, result })
+        })
+        .catch(() => {})
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [path])
+
+  const current = check && check.path === path.trim() ? check.result : null
+  const status = pathStatus(kind, path, current)
+  const blocker = submitBlocker({ kind, name, path, brief, status })
+
+  const setPathValue = (v: string): void => {
+    setPath(v)
+    setError(null)
+  }
   const pick = async (): Promise<void> => {
     const dir = await window.orgai.projects.pickDirectory()
-    if (dir) {
-      setPath(dir)
-      if (!name) setName(dir.split(/[\\/]/).filter(Boolean).pop() ?? '')
-    }
+    if (dir) setPathValue(dir)
   }
-
-  const valid = name.trim() && path.trim() && (kind === 'existing' || brief.trim())
 
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
-    if (!valid) return
+    if (blocker || busy) return
     setBusy(true)
     setError(null)
     try {
-      await createProject({ name: name.trim(), path: path.trim(), brief: brief.trim(), setupKind: skipSetup ? undefined : kind })
-      if (!skipSetup) await startSetup()
-      setName('')
-      setPath('')
-      setBrief('')
+      // `mock` is accepted by projects.create (ProjectCreateInput); the store's input type has not caught up.
+      const input = {
+        name: effectiveName(name, path, current),
+        path: path.trim(),
+        brief: brief.trim(),
+        setupKind: architect ? kind : undefined,
+        ...(mockAvailable && useMock ? { mock: true } : {})
+      }
+      await createProject(input as Parameters<typeof createProject>[0])
+      if (architect) await startSetup()
     } catch (err) {
       setError((err as Error).message)
+      document.getElementById(ids.path)?.focus()
     } finally {
       setBusy(false)
     }
+  }
+
+  const pathField = (label: string, placeholder: string, hint: string): ReactElement => (
+    <div className="field">
+      <label htmlFor={ids.path}>{label}</label>
+      <div className="row">
+        <div className="grow">
+          <Input
+            id={ids.path}
+            mono
+            value={path}
+            onChange={setPathValue}
+            placeholder={placeholder}
+            invalid={!!error || status?.tone === 'error'}
+            aria-describedby={[error ? ids.pathErr : '', status ? ids.pathMsg : ''].filter(Boolean).join(' ') || undefined}
+          />
+        </div>
+        <Button icon={FolderOpen} onClick={() => void pick()}>
+          Browse
+        </Button>
+      </div>
+      {error && (
+        <span id={ids.pathErr} className="field-msg error" role="alert">
+          {error}
+        </span>
+      )}
+      {status && (
+        <span id={ids.pathMsg} className={`field-msg ${status.tone}`}>
+          {status.text}
+        </span>
+      )}
+      <span className="hint">{hint}</span>
+    </div>
+  )
+
+  const nameField = (placeholder: string): ReactElement => (
+    <div className="field">
+      <label htmlFor={ids.name}>Name</label>
+      <Input id={ids.name} value={name} onChange={setName} placeholder={placeholder} />
+    </div>
+  )
+
+  return (
+    <form className="card project-form" onSubmit={submit}>
+      <div className="row between">
+        <h2 className="form-title">New project</h2>
+        {onCancel && (
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+      </div>
+      <SegmentedControl
+        label="Project type"
+        value={kind}
+        options={KINDS}
+        onChange={(k) => {
+          setKind(k)
+          setError(null)
+        }}
+      />
+
+      {kind === 'new' ? (
+        <>
+          {nameField('My app')}
+          <div className="field">
+            <label htmlFor={ids.brief}>What do you want to build?</label>
+            <Textarea
+              id={ids.brief}
+              rows={5}
+              value={brief}
+              onChange={setBrief}
+              placeholder="Describe the idea, who it is for, and anything you already know you want: stack, constraints, must-haves. The Architect asks about the rest."
+            />
+          </div>
+          {pathField('Folder to create it in', examplePath('new-folder'), 'An empty folder is best. It is created if it does not exist.')}
+        </>
+      ) : (
+        <>
+          {pathField('Repository folder', examplePath('repo'), 'The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.')}
+          {nameField('Defaults to the folder name')}
+          <div className="field">
+            <label htmlFor={ids.brief}>Anything the Architect should know? (optional)</label>
+            <Textarea
+              id={ids.brief}
+              value={brief}
+              onChange={setBrief}
+              placeholder="e.g. the kind of work you mostly do here, areas to leave alone, or team conventions not written down."
+            />
+          </div>
+        </>
+      )}
+
+      <div className="stack-2 form-options">
+        <Checkbox
+          checked={architect}
+          onChange={setArchitect}
+          label="Set up with the Architect (recommended)"
+          description="Turn off to start with the default roles and skip the interview."
+          testId="architect-setup"
+        />
+        {mockAvailable && <Checkbox checked={useMock} onChange={setUseMock} label="Use the mock adapter (no tokens are spent)" testId="use-mock" />}
+      </div>
+
+      <div className="row form-submit">
+        <Button type="submit" variant="primary" loading={busy} disabled={!!blocker}>
+          {busy ? (architect ? 'Scanning and starting the Architect…' : 'Creating…') : architect ? 'Create and start setup' : 'Create project'}
+        </Button>
+        {blocker && !busy && (
+          <span id={ids.why} className="hint">
+            {blocker}
+          </span>
+        )}
+      </div>
+    </form>
+  )
+}
+
+export default function ProjectsView(): ReactElement {
+  const projects = useAppStore((s) => s.projects)
+  const selectProject = useAppStore((s) => s.selectProject)
+  const setView = useAppStore((s) => s.setView)
+  const removeProject = useAppStore((s) => s.removeProject)
+  const appInfo = useAppStore((s) => s.appInfo)
+  const loadAppInfo = useAppStore((s) => s.loadAppInfo)
+  const { confirm, dialog } = useConfirm()
+  const [formOpen, setFormOpen] = useState(false)
+
+  useEffect(() => {
+    void loadAppInfo()
+  }, [loadAppInfo])
+
+  const mockAvailable = !!appInfo?.mockAdapter
+  const empty = projects.length === 0
+  const showForm = empty || formOpen
+
+  const remove = async (id: string, name: string): Promise<void> => {
+    const ok = await confirm({
+      title: `Delete "${name}"?`,
+      body: 'This only removes the project from OrgAI. Files in its folder are untouched.',
+      confirmLabel: 'Delete project',
+      danger: true
+    })
+    if (ok) await removeProject(id)
   }
 
   return (
     <>
       <div className="topbar">
         <h1>Projects</h1>
+        {mockAvailable && (
+          <Badge tone="warning" title="The mock adapter is available: new projects can run on scripted data">
+            Mock mode
+          </Badge>
+        )}
         <div className="spacer" />
+        {!empty && !formOpen && (
+          <Button variant="primary" icon={Plus} onClick={() => setFormOpen(true)} testId="new-project">
+            New project
+          </Button>
+        )}
       </div>
       <div className="projects">
-        <div>
-          {projects.length === 0 ? (
-            <div className="card" style={{ color: 'var(--text-dim)' }}>
-              <h3 style={{ margin: '0 0 6px', color: 'var(--text)' }}>Start with a project</h3>
-              Describe a new idea or point at an existing repository. The Architect interviews you, reads what is there, and proposes
-              the architecture, the org chart of agent roles, and the run settings. You approve each step before it is applied.
-            </div>
-          ) : (
-            <div className="project-list">
-              {projects.map((p) => (
-                <div
-                  key={p.id}
-                  className="card project-card"
+        {empty && (
+          <div className="projects-intro">
+            <h2>Start with a project</h2>
+            <p>
+              Describe a new idea or point at an existing repository. The Architect interviews you, reads what is there, and proposes the
+              architecture, the org chart of agent roles, and the run settings. You approve each step before it is applied.
+            </p>
+          </div>
+        )}
+        {showForm && <NewProjectForm mockAvailable={mockAvailable} onCancel={empty ? undefined : () => setFormOpen(false)} />}
+        {!empty && (
+          <ul className="project-list">
+            {projects.map((p) => (
+              <li key={p.id} className="card project-card">
+                <button
+                  type="button"
+                  className="project-card-main"
+                  aria-label={`Open ${p.name}, ${p.path}`}
                   onClick={() => {
                     selectProject(p.id)
                     setView('run')
@@ -83,121 +284,24 @@ export default function ProjectsView(): ReactElement {
                         {initials(r.name)}
                       </span>
                     ))}
-                    {p.roles.length > 8 && <span style={{ background: 'var(--border-strong)' }}>+{p.roles.length - 8}</span>}
+                    {p.roles.length > 8 && <span className="more">+{p.roles.length - 8}</span>}
                   </div>
-                  <div className="row" style={{ marginTop: 12, justifyContent: 'space-between' }}>
-                    <span className="row" style={{ gap: 6 }}>
-                      <span className="chip">{p.roles.length} roles</span>
-                      {setupPending(p) && (
-                        <span className="chip" style={{ color: 'var(--warn)', borderColor: 'rgba(245,165,36,0.5)' }}>
-                          setup pending
-                        </span>
-                      )}
-                    </span>
-                    <button
-                      className="btn ghost sm"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (confirm(`Delete project "${p.name}"? This only removes it from OrgAI; files are untouched.`)) void removeProject(p.id)
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
+                </button>
+                <div className="row between project-card-foot">
+                  <span className="row gap-2">
+                    <span className="chip">{p.roles.length} roles</span>
+                    {setupPending(p) && <span className="chip warn">Setup pending</span>}
+                  </span>
+                  <Button variant="ghost" size="sm" onClick={() => void remove(p.id, p.name)}>
+                    Delete
+                  </Button>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <form className="card" onSubmit={submit}>
-          <h3 style={{ margin: '0 0 12px' }}>New project</h3>
-          <div className="tabs" style={{ marginBottom: 14, display: 'flex' }}>
-            <button type="button" className={kind === 'new' ? 'active' : ''} style={{ flex: 1 }} onClick={() => setKind('new')}>
-              New idea
-            </button>
-            <button type="button" className={kind === 'existing' ? 'active' : ''} style={{ flex: 1 }} onClick={() => setKind('existing')}>
-              Existing repository
-            </button>
-          </div>
-
-          {kind === 'new' ? (
-            <>
-              <div className="field">
-                <label>Name</label>
-                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My app" />
-              </div>
-              <div className="field">
-                <label>What do you want to build?</label>
-                <textarea
-                  className="textarea"
-                  style={{ minHeight: 120 }}
-                  value={brief}
-                  onChange={(e) => setBrief(e.target.value)}
-                  placeholder="Describe the idea, who it is for, and anything you already know you want: stack, constraints, must-haves. The Architect asks about the rest."
-                />
-              </div>
-              <div className="field">
-                <label>Folder to create it in</label>
-                <div className="row">
-                  <input className="input" value={path} onChange={(e) => setPath(e.target.value)} placeholder={examplePath('new-folder')} />
-                  <button type="button" className="btn" onClick={pick}>
-                    Browse
-                  </button>
-                </div>
-                <span className="hint">An empty folder is best. It is created if it does not exist.</span>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="field">
-                <label>Repository folder</label>
-                <div className="row">
-                  <input className="input" value={path} onChange={(e) => setPath(e.target.value)} placeholder={examplePath('repo')} />
-                  <button type="button" className="btn" onClick={pick}>
-                    Browse
-                  </button>
-                </div>
-                <span className="hint">The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.</span>
-              </div>
-              <div className="field">
-                <label>Name</label>
-                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to the folder name" />
-              </div>
-              <div className="field">
-                <label>Anything the Architect should know? (optional)</label>
-                <textarea
-                  className="textarea"
-                  value={brief}
-                  onChange={(e) => setBrief(e.target.value)}
-                  placeholder="e.g. the kind of work you mostly do here, areas to leave alone, or team conventions not written down."
-                />
-              </div>
-            </>
-          )}
-
-          <label className={`check ${skipSetup ? 'on' : ''}`} style={{ marginBottom: 12 }}>
-            <input type="checkbox" checked={skipSetup} onChange={(e) => setSkipSetup(e.target.checked)} /> Skip AI setup, start with default roles
-          </label>
-
-          {error && (
-            <div className="draft-box" style={{ borderColor: 'rgba(255,107,107,0.5)', color: 'var(--danger)', marginBottom: 10 }}>
-              {error}
-            </div>
-          )}
-          <button className="btn primary" disabled={busy || !valid}>
-            {busy ? (
-              <>
-                <span className="spinner" /> {skipSetup ? 'Creating…' : 'Scanning and starting the Architect…'}
-              </>
-            ) : skipSetup ? (
-              'Create project'
-            ) : (
-              'Create and start setup'
-            )}
-          </button>
-        </form>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
+      {dialog}
     </>
   )
 }
