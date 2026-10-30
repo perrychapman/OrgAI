@@ -1024,6 +1024,11 @@ export interface RunSummary {
   pauseReason?: string
   /** Paused runs: the harness continues the run at pausedUntil unless the user cancels. */
   autoResume?: boolean
+  /**
+   * The session was still open when OrgAI last quit or crashed; the store marked it finished at startup.
+   * It stays continuable.
+   */
+  endedWithApp?: true
 }
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'
