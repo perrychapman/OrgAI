@@ -43,6 +43,9 @@ try {
       const defConn = page.getByRole('combobox', { name: 'Default connection', exact: true })
       await defConn.waitFor({ timeout: 10_000 })
       check((await defConn.count()) === 1, `default connection row on the Defaults pane at ${w}x${h} ${theme}`)
+      for (const name of ['Setup model', 'MCP assistant model']) {
+        check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select on the Defaults pane at ${w}x${h} ${theme}`)
+      }
       if (w === 1024 && theme === 'dark') {
         // A connection that is not set up is a disabled option; persistence is checked on a usable one.
         const opts = await defConn.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, d: o.disabled, t: o.textContent })))

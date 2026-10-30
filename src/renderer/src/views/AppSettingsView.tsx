@@ -99,12 +99,18 @@ export default function AppSettingsView(): ReactElement {
   const [pane, setPane] = useState<string>(() => (useAppStore.getState().mcpFocus?.kind === 'library' ? APP_SETTINGS_PANES.mcpLibrary : APP_SETTINGS_PANES.general))
   // A jump from elsewhere ("App settings > Connections") opens the pane that holds its section.
   useEffect(() => {
-    const target = takeAppSettingsSection()
-    const next = target ? appPaneForSection(target) : undefined
-    if (next) {
-      setPane(next)
-      pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage }
+    const take = (): void => {
+      const target = takeAppSettingsSection()
+      const next = target ? appPaneForSection(target) : undefined
+      if (next) {
+        setPane(next)
+        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage }
+      }
     }
+    take()
+    // A jump requested while this page is already open (the MCP assistant dialog's model link).
+    window.addEventListener('orgai:settings-section', take)
+    return () => window.removeEventListener('orgai:settings-section', take)
   }, [])
   // "Open in library" lands on the MCP library pane; the section there then scrolls to the entry.
   useEffect(() => {
@@ -379,7 +385,7 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'connections' && <ConnectionsPanel />}
         {pane === 'mcp-library' && <McpLibrarySection />}
         {pane === 'defaults' && (
-          <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="For new projects. Existing ones keep their own.">
+          <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="Starting values for new projects, plus the assistants that work across all projects.">
             <SettingsGroup title="Connection">
               <SettingsCard>
                 <SettingRow
@@ -413,16 +419,39 @@ export default function AppSettingsView(): ReactElement {
             <SettingsGroup title="Models">
               <SettingsCard>
                 <SettingRow
+                  id="default-root-model-row"
                   title="Orchestrator model"
+                  description="Leads each new project's runs."
                   width="select"
-                  control={<Select label="Orchestrator model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
+                  control={<Select label="Orchestrator model" describedBy={settingDescId('default-root-model-row')} value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
                 />
                 <SettingRow
+                  id="default-report-model-row"
                   title="Report model"
+                  description="Used by the roles that report to the orchestrator."
                   width="select"
-                  control={<Select label="Report model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
+                  control={<Select label="Report model" describedBy={settingDescId('default-report-model-row')} value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
                 />
               </SettingsCard>
+            </SettingsGroup>
+            <SettingsGroup title="Assistants">
+              <SettingsCard>
+                <SettingRow
+                  id="setup-model-row"
+                  title="Setup model"
+                  description="Plans and revises org charts and reviews finished runs. Applies to every project."
+                  width="select"
+                  control={<Select label="Setup model" describedBy={settingDescId('setup-model-row')} value={info.setupModel} options={modelOptions(info.setupModel, false)} onChange={(setupModel) => patch({ setupModel })} />}
+                />
+                <SettingRow
+                  id="mcp-assist-model-row"
+                  title="MCP assistant model"
+                  description="Used by Configure with AI in the MCP library. Applies to every project."
+                  width="select"
+                  control={<Select label="MCP assistant model" describedBy={settingDescId('mcp-assist-model-row')} value={info.mcpAssistModel} options={modelOptions(info.mcpAssistModel, false)} onChange={(mcpAssistModel) => patch({ mcpAssistModel })} />}
+                />
+              </SettingsCard>
+              <p className="muted">On other connections a Claude model stands for its tier. If a project's connection can't run it, the run uses the deep tier and says so in its log.</p>
             </SettingsGroup>
             <SettingsGroup title="Safety">
               <SettingsCard>
