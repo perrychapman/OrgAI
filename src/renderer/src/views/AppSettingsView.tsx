@@ -74,6 +74,7 @@ export default function AppSettingsView(): ReactElement {
     // Another window or the sidebar mirror changed a setting: follow it unless we have an unsaved edit.
     return window.orgai.onSettingsChanged((s) => {
       if (!pending.current) setInfo(s)
+      else pending.current = { ...pending.current, notifications: s.notifications }
     })
   }, [])
 
@@ -91,6 +92,7 @@ export default function AppSettingsView(): ReactElement {
       useAppStore.setState({ auth })
     } catch (e) {
       setError((e as Error).message)
+      void window.orgai.settings.get().then(setInfo).catch(() => undefined)
     }
   }
 
@@ -136,6 +138,12 @@ export default function AppSettingsView(): ReactElement {
 
   const hexValue = hexDraft ?? appearance.accent
   const hexOk = normalizeHex(hexValue) !== null
+  /** Apply the typed color on Enter or blur, not on every keystroke. */
+  const commitHex = (): void => {
+    const hex = normalizeHex(hexValue)
+    if (hex && hex !== appearance.accent) patchAppearance({ accent: hex })
+    if (hex) setHexDraft(null)
+  }
   const setAccent = (hex: string): void => {
     setHexDraft(null)
     patchAppearance({ accent: hex })
@@ -175,7 +183,7 @@ export default function AppSettingsView(): ReactElement {
               control={<SegmentedControl label="Theme" value={appearance.theme} options={THEME_OPTIONS} onChange={(theme) => patchAppearance({ theme })} />}
             />
             <div className="field narrow">
-              <label htmlFor="accent-hex">Accent color</label>
+              <span className="field-title" id="accent-title">Accent color</span>
               <div className="accent-swatches" role="group" aria-label="Accent color presets">
                 {ACCENT_SWATCHES.map((s) => (
                   <button
@@ -192,31 +200,31 @@ export default function AppSettingsView(): ReactElement {
               </div>
               <Input
                 id="accent-hex"
+                aria-labelledby="accent-title"
                 mono
                 value={hexValue}
                 invalid={!hexOk}
                 aria-describedby={hexOk ? undefined : 'accent-hex-error'}
                 maxLength={7}
                 spellCheck={false}
-                onChange={(v) => {
-                  setHexDraft(v)
-                  const hex = normalizeHex(v)
-                  if (hex && hex !== appearance.accent) patchAppearance({ accent: hex })
+                onChange={setHexDraft}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitHex()
                 }}
-                onBlur={() => setHexDraft(null)}
+                onBlur={commitHex}
               />
               {!hexOk && (
-                <span className="field-error" id="accent-hex-error">
-                  Use six hex digits, like #7c5cff.
+                <span className="field-error" id="accent-hex-error" aria-live="polite">
+                  Use a hex color like #7c5cff.
                 </span>
               )}
             </div>
             <div className="field">
-              <label>Canvas pattern</label>
+              <span className="field-title">Canvas pattern</span>
               <SegmentedControl label="Canvas pattern" value={appearance.canvas.pattern} options={PATTERN_OPTIONS} onChange={(pattern) => patchAppearance({}, { pattern })} />
             </div>
             <div className="field">
-              <label>Connection lines</label>
+              <span className="field-title">Connection lines</span>
               <SegmentedControl label="Connection lines" value={appearance.canvas.edges} options={EDGE_OPTIONS} onChange={(edges) => patchAppearance({}, { edges })} />
             </div>
             <SettingRow
@@ -228,7 +236,7 @@ export default function AppSettingsView(): ReactElement {
               control={<Switch checked={appearance.canvas.minimap} label="Show the minimap" onChange={(minimap) => patchAppearance({}, { minimap })} />}
             />
             <div className="field">
-              <label>Motion</label>
+              <span className="field-title">Motion</span>
               <SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />
             </div>
           </section>

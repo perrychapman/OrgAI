@@ -38,9 +38,9 @@ function luminance(hex: string): number {
   return 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255)
 }
 
-/** Text color that reads on the accent: white unless the accent is light. */
+/** Text color with the higher contrast on the accent (white vs near-black cross over at luminance about 0.19). Literals are allowed here: they are computed overrides. */
 export function onAccent(hex: string): string {
-  return luminance(hex) > 0.4 ? '#0b0d12' : '#ffffff'
+  return luminance(hex) > 0.19 ? '#0b0d12' : '#ffffff'
 }
 
 const ACCENT_VARS = ['--accent', '--accent-hover', '--accent-active', '--accent-text', '--text-on-accent'] as const

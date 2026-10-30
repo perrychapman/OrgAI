@@ -23,5 +23,6 @@ describe('theme', () => {
   it('picks readable text on the accent', () => {
     expect(onAccent('#ffee00')).toBe('#0b0d12')
     expect(onAccent('#3b2fd0')).toBe('#ffffff')
+    for (const hex of ['#d98e04', '#14b8a6', '#22a559']) expect(onAccent(hex)).toBe('#0b0d12')
   })
 })

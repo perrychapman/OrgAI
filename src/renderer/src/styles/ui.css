@@ -668,3 +668,7 @@ ul.maint-list {
 .field.narrow .input {
   max-width: 160px;
 }
+.field-title {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
