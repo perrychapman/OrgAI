@@ -130,6 +130,35 @@ try {
   check(loaded, 'reopened thumbnail image decodes (rehydrated from disk)')
   await shot('transcript-with-image-reopened')
 
+  // Run strip, composer mode row and Runs tab in the viewport x theme matrix (continuation UX).
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(400)
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await sleep(300)
+      await page.getByRole('button', { name: 'Runs', exact: true }).click().catch(() => {})
+      await sleep(300)
+      const m = await page.evaluate(() => {
+        const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
+        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, strip: r('.run-strip'), composer: r('.composer'), row: r('.run-row') }
+      })
+      const inside = (b) => !!b && b.l >= -0.5 && b.r <= m.iw + 0.5 && b.t >= -0.5 && b.b <= m.ih + 0.5
+      check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
+      check(inside(m.strip), `run strip inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.strip))
+      check(inside(m.composer), `composer with mode row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.composer))
+      check(inside(m.row), `Runs tab row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.row))
+      const chip = page.locator('.run-chip-main').first()
+      await chip.focus()
+      await page.keyboard.press('Shift+Tab')
+      await page.keyboard.press('Tab') // keyboard modality so :focus-visible matches; the ring sits on the .run-chip wrapper
+      const ring = await chip.evaluate((el) => { const s = getComputedStyle(el.closest('.run-chip') ?? el); return { o: s.outlineStyle, ow: s.outlineWidth, bs: s.boxShadow } })
+      check((ring.o !== 'none' && parseFloat(ring.ow) > 0) || ring.bs !== 'none', `run chip shows a focus ring at ${w}x${h} ${theme}`, JSON.stringify(ring))
+      await shot(`runs-${w}x${h}-${theme}`)
+    }
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+
   // New-idea mode, also token-free with setup skipped.
   const created = await createProject(page, { mode: 'new', path: path.join(base, 'new-idea-folder'), name: NEW_NAME, brief: 'A tiny todo app for layout testing.' })
   check(!!created, 'new-idea project created')

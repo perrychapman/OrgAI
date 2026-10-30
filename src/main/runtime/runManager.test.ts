@@ -938,6 +938,36 @@ describe('RunManager session chains', () => {
     expect(store.get(second.id)).toMatchObject({ status: 'finished', autoResume: false })
   })
 
+  it('continues a run that ended with the app (finished, session kept) from its own session', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'Cut short' })
+    await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    const sessionId = m.summary(run.id)?.sessionId
+    expect(sessionId).toBeTruthy()
+    store.upsert({ ...store.get(run.id)!, status: 'finished', endedWithApp: true })
+    const next = await m.continueRun(p, run.id, 'Pick up where we left off')
+    expect(next.resumedFrom).toBe(run.id)
+    await m.stopAll()
+  })
+
+  it('leaves a paused run untouched when the continuation is refused because the session is open', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'First' })
+    await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    const next = await m.continueRun(p, run.id, 'Second')
+    store.upsert({ ...store.get(run.id)!, status: 'paused', autoResume: true, pausedUntil: Date.now() + 60_000 })
+    await expect(m.continueRun(p, run.id, 'Third')).rejects.toThrow(`Session already open: run ${next.id} `)
+    // The guard runs before the hand-over, so the refused paused run keeps autoResume (it does NOT end with false).
+    expect(store.get(run.id)).toMatchObject({ status: 'paused', autoResume: true })
+    await m.stopAll()
+  })
+
   it('does not treat a live run of another session as holding this one', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })

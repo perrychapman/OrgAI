@@ -49,6 +49,40 @@ describe('runChains', () => {
     ]
     expect(projectCounts(list, 'p')).toEqual({ open: 2, needsYou: 1 })
   })
+  it('links chains in both directions, through a shared session id alone, and survives cycles', () => {
+    const list = [r('a', 1, { sessionId: 's' }), r('b', 2, { sessionId: 's' }), r('c', 3, { resumedFrom: 'b' })]
+    for (const id of ['a', 'b', 'c']) expect(chainOf(list, id).map((x) => x.id)).toEqual(['a', 'b', 'c'])
+    const cyc = [r('a', 1, { resumedFrom: 'b' }), r('b', 2, { resumedFrom: 'a' })]
+    expect(chainOf(cyc, 'a').map((x) => x.id)).toEqual(['a', 'b'])
+    expect(continuedBy(cyc, 'a')?.id).toBeDefined()
+  })
+  it('offers Continue on finished, error and paused newest members only', () => {
+    for (const status of ['finished', 'error', 'paused'] as RunStatus[]) expect(canContinue([r('a', 1, { sessionId: 's', status })], 'a')).toBe(true)
+    for (const status of ['starting', 'running', 'idle', 'stopping'] as RunStatus[]) expect(canContinue([r('a', 1, { sessionId: 's', status })], 'a')).toBe(false)
+    expect(canContinue([r('a', 1, { status: 'finished' })], 'a')).toBe(false)
+    expect(canContinue([], 'a')).toBe(false)
+  })
+  it('counts questions, proposals and blocked plans as needing the user, only on open runs', () => {
+    const list = [
+      { summary: r('1', 1, { status: 'idle' }), questions: [{}] },
+      { summary: r('2', 2, { status: 'running' }), proposals: [{}] },
+      { summary: r('3', 3, { status: 'running' }), plan: { status: 'blocked' } },
+      { summary: r('4', 4, { status: 'running' }), plan: { status: 'active' } },
+      { summary: r('5', 5, { status: 'paused' }), questions: [{}] }
+    ]
+    expect(projectCounts(list, 'p')).toEqual({ open: 4, needsYou: 3 })
+    expect(projectCounts(list, 'none')).toEqual({ open: 0, needsYou: 0 })
+  })
+  it('labels statuses in plain words, with endedWithApp beating paused and waiting beating all', () => {
+    expect(statusLabel('running')).toBe('Working')
+    expect(statusLabel('idle')).toBe('Idle')
+    expect(statusLabel('paused')).toBe('Paused')
+    expect(statusLabel('error')).toBe('Failed')
+    expect(statusLabel('finished')).toBe('Finished')
+    expect(statusLabel('finished', false, true)).toBe('Ended when OrgAI closed')
+    expect(statusLabel('paused', false, true)).toBe('Paused')
+    expect(statusLabel('running', true, true)).toBe('Waiting for you')
+  })
   it('formats relative time and parses the refusal', () => {
     expect(relativeTime(0, 10_000)).toBe('just now')
     expect(relativeTime(0, 5 * 60_000)).toBe('5 min ago')
