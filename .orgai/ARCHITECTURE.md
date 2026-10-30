@@ -2,7 +2,7 @@
 
 OrgAI is an Electron app built with electron-vite and three processes. The main process (src/main) holds the runtime adapters, run manager, connections and model catalog, MCP servers and secrets, usage tracking, setup service, worktrees and JSON stores. The preload (src/preload) exposes window.orgai. The renderer (src/renderer) uses React 19 with React Flow and zustand. IPC types live in src/shared/types.ts. Two provider adapters exist: Claude (Claude Agent SDK) and Codex (`codex app-server`). They are reached through three connections: Anthropic, OpenAI and LiteLLM.
 
-An approved UI-overhaul plan is PLANNED but has not landed. It covers Radix Primitives, react-resizable-panels panels, a components/layout shell, the vendored frontend-design skill and Role.skills. Items below marked PLANNED do not exist in the code yet.
+The UI overhaul's shell pass and its parallel restyles have landed (docs/design/plan.md, spec.md). The shell is built on native elements with container queries: components/layout, components/ui primitives, top-level project tabs, and a theme layer driven by AppSettings.appearance. Radix Primitives, react-resizable-panels and Role.skills were not adopted. plan.md still lists them, so they remain a possible later step. Items below marked PLANNED do not exist in the code.
 
 ## Stack
 
@@ -16,13 +16,20 @@ An approved UI-overhaul plan is PLANNED but has not landed. It covers Radix Prim
 - vitest 3 (node env) for unit tests; playwright-core Electron driver for e2e
 - electron-builder (Windows nsis + portable tested; mac dmg and linux AppImage configured, untested)
 - Node >= 22, git (worktree isolation)
-- PLANNED, not installed: radix-ui (unstyled Radix Primitives), react-resizable-panels, the vendored anthropics/skills frontend-design skill in .claude/skills
+- Not installed (plan.md keeps them as a possible later step): radix-ui, react-resizable-panels. The frontend-design skill is not vendored in .claude/skills.
 
 ## Modules
 
 ### Shared contracts
 
 IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remaps, MCP servers, plugins, install requests, IPC names), defaults (adapterForProject, builtin models, tier helpers, MCP secret names), the built-in Architect and MCP assistant roles and setup tool names. RunSummary.endedWithApp is set by RunStore at startup for runs cut by the app quitting. Role.skills is PLANNED and not in the contract yet.
+
+- Appearance: AppSettings.appearance (AppearanceSettings: theme 'dark' | 'light' | 'system', accent '#rrggbb', canvas { pattern dots/grid/none, tint, edges curved/orthogonal/straight, minimap }, reduceMotion 'system' | 'on'). defaults.ts holds DEFAULT_APPEARANCE (theme stays 'dark' until the light theme is signed off) and THEME_BACKGROUND (window background per resolved theme, matching --surface-0). Main applies the theme to nativeTheme.themeSource at startup and on every settings:set, then broadcasts settings:changed (IPC.settingsChanged, preload window.orgai.onSettingsChanged).
+- Notifications: AppSettings.notifications is the single source of truth, and main reads it at every decision (notifications.ts). window.orgai.notifications.setEnabled (app:setNotifications) remains only as a deprecated mirror into it. The renderer no longer calls it.
+- Projects: projects:checkPath returns ProjectPathCheck (exists, isDirectory, isGitRepo, suggestedName, empty) and never rejects. projects:create validates the path (ProjectStore createPathError) and throws a readable message. ProjectCreateInput.mock creates a project on the mock adapter (provider.id 'mock'). It is accepted only when the mock adapter is registered (ORGAI_MOCK=1).
+- Cards: every *.resolved RunEvent (permission, proposal, question, rules, merge, mcpInstall) may carry `cancelled?: true`. src/main/runtime/pendingCards.ts cancelPending resolves every open card of a run as cancelled. RunManager calls it from emit when a run reaches an outcome or a paused status, and at teardown.
+- Transcript: TranscriptEntry.source 'harness' marks entries the harness wrote (nudges, hand-offs, notices, limit notices). Claude, Codex and mock write them as system blocks with a one-line summary and a detail.
+- Live runs and run windows: runs:listLive (every live run across projects) and window:openRun (FocusRunTarget, opens or focuses a run-scoped window).
 
 - `src/shared/types.ts`
 - `src/shared/defaults.ts`
@@ -35,6 +42,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - Role prompts, activity strings, permission scopes, agent handles and messages, the continuation driver, WorktreeIntegrator and git worktree commit/merge.
 - Vendor-neutral usage mapping.
 - Image attachments. attachments.ts sanitizes untrusted pasted images: count and size limits, base64 checks, and magic-byte sniffing.
+- Run end. activity.ts runOutcome maps how a run ended to finished, stopped or failed, and settleAgent relabels agents Finished, Stopped or Failed (TERMINAL_ACTIVITY). pendingCards.ts cancels the run's open cards at the same point.
 - Agent tree rules. agentTree.ts resolves a reported agent's parent without creating cycles and repairs cyclic stored records.
 - Concurrency. Any number of runs may be live at once, in one project and across projects, on every adapter: RunManager keys runs by id, ContinuationDriver and adapter sessions keep per-instance state, and each Codex session starts its own app-server. The only refusal is continueRun's "Session already open" for one provider session chain. RunManager.liveRuns() backs runs:listLive.
 - Cross-run messaging. Work-run roots get list_runs and message_run (RUN_HARNESS_TOOLS). RunManager implements RuntimeContext.listRuns / messageRun and delivers through the target's RuntimeSession.receive(), which every adapter routes through its harness-message path (peerMessageText in prompts.ts frames the text as peer data). Delivery goes through the target's inbox: RunManager holds peer messages while the run waits on its user (see Conventions) and flushes them oldest first, one chained flush at a time. Both runs get a run.message event (direction out/in) and a root transcript system block ("Sent to run …" / "Queued for run …" / "Note from run …", marked TranscriptEntry.source 'harness').
@@ -51,6 +59,7 @@ IPC-safe types (Project, Role, RunEvent, UsageStatus, connections, models, remap
 - `src/main/runtime/network.ts`
 - `src/main/runtime/attachments.ts`
 - `src/main/runtime/agentTree.ts`
+- `src/main/runtime/pendingCards.ts`
 - `src/main/runtime/runManager.ts`
 - `src/main/runtime/worktrees.ts`
 - `src/main/runtime/usage.ts`
@@ -62,7 +71,7 @@ SDK event mapping and hook mechanics only. Only the Adapter Engineer edits claud
 
 - Claude: the files below. Harness tools run in an in-process MCP server named "orgai". PreToolUse records which agent called them.
 - Codex: codexAppServer.ts is the JSON-RPC client and binary lookup, codexProtocol.ts holds policies, launch config, dynamic tool specs and parsers, codexEvents.ts maps events, codexAgents.ts runs harness-side subagents as threads, and codex.ts is the adapter.
-- mock.ts is the reference adapter.
+- mock.ts is the reference adapter. Its scripted MCP proposal uses a pinned package (mock-fs-server@1.0.0), so it passes validate.ts.
 
 - `src/main/runtime/claude.ts`
 - `src/main/runtime/claudeCost.ts`
@@ -114,8 +123,8 @@ McpService covers:
 - One window factory, createWindow(scope?) in index.ts. The main window is unscoped. window:openRun opens (or focuses) a window scoped to one run, loading the renderer at the hash #/run/<projectId>/<runId> (runWindowHash / parseRunWindowHash in src/shared/types.ts). index.ts keeps a Map<BrowserWindow, FocusRunTarget | undefined> of scopes. windowScope.ts holds the pure checkRunTarget (id pattern plus store lookups) and pickFocusWindow: a notification click focuses the run's window, else the main window, else any. Every window gets the same preload and security settings and every broadcast. Closing a secondary window never quits the app.
 - The app entry. Startup order: ORGAI_DATA_DIR override (app.setPath('userData') + app.setAppLogsPath(<dir>/logs)), app.setName('OrgAI') when unpackaged, installLogging, applyShellPath, stores, SecretStore(safeStorage), ConnectionService, McpService, SetupService, adapters, RunManager, IPC, connections.init(). Then installAppMenu, and createWindow last.
 - ORGAI_DATA_DIR is how e2e and CI keep off the real profile. package.json productName ("OrgAI") names the packaged app.
-- IPC handlers, logging and notifications. log.ts pickLogsDir falls back from the app logs dir to <userData>/logs, then to temp.
-- app:info (IPC.appInfo) returns AppInfo: version, platform, dataDir, logsDir, packaged, and mockAdapter, derived from the adapters map RunManager received (registerIpc gets its keys as adapterIds). The pure builder is appInfo.ts. ORGAI_MOCK=1 registers the mock adapter; a renderer toggle to pick it in project settings lands in the UI brief.
+- IPC handlers, logging and notifications. notifications.ts reads AppSettings.notifications through a getter that index.ts passes in. log.ts pickLogsDir falls back from the app logs dir to <userData>/logs, then to temp.
+- app:info (IPC.appInfo) returns AppInfo: version, platform, dataDir, logsDir, packaged, and mockAdapter, derived from the adapters map RunManager received (registerIpc gets its keys as adapterIds). The pure builder is appInfo.ts. ORGAI_MOCK=1 registers the mock adapter, and the new-project form then offers "Use the mock adapter" (ProjectCreateInput.mock).
 - The idle usage monitor (the Claude plan, plus Codex through extraProbes).
 - JSON stores.
 - shellEnv.ts gives macOS and Linux GUI launches the login shell's PATH, per shell: POSIX shells print $PATH, fish uses `string join`, and csh/tcsh/nushell/unknown shells fall back to /bin/zsh on macOS or /bin/bash on Linux. appMenu.ts is the macOS application menu.
@@ -137,14 +146,14 @@ McpService covers:
 
 ### Preload bridge
 
-The contextBridge API window.orgai and its typings (index.d.ts types window.orgai as OrgAIApi). window.orgai.app.info() returns AppInfo. window.orgai.runs.listLive() returns every live run across projects; window.orgai.window.openRun({ projectId, runId }) opens a run-scoped window.
+The contextBridge API window.orgai and its typings (index.d.ts types window.orgai as OrgAIApi). window.orgai.app.info() returns AppInfo. window.orgai.onSettingsChanged subscribes to the settings:changed push. window.orgai.projects.checkPath(path) returns ProjectPathCheck. window.orgai.notifications.setEnabled is deprecated (see Shared contracts). window.orgai.runs.listLive() returns every live run across projects; window.orgai.window.openRun({ projectId, runId }) opens a run-scoped window.
 
 - `src/preload/`
 
 ### Agent skills
 
-- `.claude/skills/run-desktop/`
-- PLANNED: `.claude/skills/frontend-design/` (not vendored yet)
+- `.claude/skills/run-desktop/` (drives the built app for walkthroughs)
+- The frontend-design skill that the design docs (spec.md, providers-and-mcp.md) refer to is not vendored: `.claude/skills/` holds only run-desktop.
 
 ### Brand assets
 
@@ -154,19 +163,31 @@ The contextBridge API window.orgai and its typings (index.d.ts types window.orga
 
 ### Theme layer
 
+lib/theme.ts applies AppSettings.appearance to <html>. initTheme() runs in main.tsx before React renders and follows settings:changed and prefers-color-scheme. It sets data-theme (the resolved dark or light), data-reduce-motion="on", data-canvas-pattern, data-canvas-tint, data-canvas-edges and data-canvas-minimap, the accent vars, and --canvas-pattern-kind, --canvas-edge-style and --canvas-minimap. CSS reads the attributes. Code that needs a resolved color value (React Flow props) reads a CSS var through lib/useCssVar.ts. tokens.css defines every token for both themes, and styles/tokens.test.ts checks it.
+
 - `src/renderer/src/styles/tokens.css`
 - `src/renderer/src/styles/global.css`
 - `src/renderer/src/lib/theme.ts`
+- `src/renderer/src/lib/useCssVar.ts`
 
 ### UI primitives
 
-components/ui is built on native elements today: Badge, Banner, Button, IconButton, Dialog/ConfirmDialog, Switch, SegmentedControl (native radio group), CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). components/layout holds CanvasFrame, SidePanel and SaveIndicator. PLANNED: Radix-based versions and a react-resizable-panels shell; neither exists yet. Button takes an optional className for test hooks.
+components/ui is built on native elements: Badge, Banner, Button, IconButton, Dialog, ConfirmDialog with useConfirm (promise-style, replaces window.confirm), Input, Textarea, Checkbox, Select, SettingRow, Switch, SegmentedControl (native radio group), CopyButton, ModelSelect, SecretField, ConnectionStatusBadge, RemapNotice, Icon and ErrorBoundary (class component wrapping the main region; a render error shows a message and a way back to Projects instead of a blank window). IconButton requires `label`, which becomes the accessible name and the tooltip. Button takes optional `ariaLabel` and `className` (test hooks).
+
+components/layout:
+- CanvasFrame with its slots FrameToolbar, FrameStage (the React Flow canvas), FrameTray (decision cards, labelled "Decisions") and FrameFooter (the composer). Empty slots render nothing, so the tray column exists only while a card does.
+- SidePanel (a labelled region that keeps its content mounted) and SaveIndicator (project autosave status in the topbar).
 
 - `src/renderer/src/components/ui/`
+- `src/renderer/src/components/layout/`
 
 ### Renderer UI
 
 - The app shell, projects view, org chart editor, live run view, app and project settings, transcript, usage meter, zustand store and dagre layout.
+- Project tabs: Live, History, Org chart and Settings in the topbar (App.tsx). views/OrgChartView.tsx is the org chart editor (keyboard model, add and remove roles with undo, inspector sections). It was split from views/SettingsView.tsx, which is now the sectioned project settings page.
+- Settings pages: components/settings/ holds SettingsNav (the sub-nav), SettingsSection, and the GeneralSection, PermissionsSection, LimitsSection and MaintenanceSection of project settings (the danger zone asks through useConfirm). views/AppSettingsView.tsx holds appearance, notifications, defaults, permission rules and connections.
+- Decision cards: components/DecisionCard.tsx is the shared shell (run label, title, body, actions). PermissionCard, QuestionCard, RuleRequestCard, MergeReviewCard, McpInstallCard and ProposalCard (with an org-chart diff from lib/orgDiff.ts) are built on it. They sit in CanvasFrame's tray, one at a time with a stepper.
+- Projects view: a live path check through projects:checkPath, inline errors, Architect and mock toggles, a collapsible new-project form, and ConfirmDialog for delete. lib/projectsForm.ts holds the pure path and form rules.
 - Connections settings (components/connections/).
 - MCP servers, plugins, registry dialog and install cards (components/mcp/).
 - Run workspace: components/RunTabs.tsx (browser-style tablist, roving tabindex, +n overflow menu, tab context menu with Open in new window, Ctrl+T / Ctrl+W), RunHeader.tsx (index, status, full prompt, actions), NewRunPage.tsx (the blank draft page behind +), Composer.tsx (shared message box; drafts live in the store per run id or `new:<projectId>`), RunLabel.tsx (names a run on decision cards), Sidebar.tsx (project rows expand to open runs, global Needs you list), RunHistory.tsx (the History tab). LiveRunView composes them on layout/CanvasFrame (stage, decision tray, footer) and layout/SidePanel; nothing floats over the canvas.
@@ -175,15 +196,19 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
 - Cross-run messages: RunEvent run.message only marks the receiving tab unread. The transcript shows the persisted system rows on the root ("Sent to run ...", "Note from run ...") through lib/peerNotes.ts as a sender row and a tinted receiver row, as plain text, never Markdown. Harness-written entries (source "harness") render as system rows with `detail` behind a disclosure. Project.runMessaging (default off) is the Switch in project Settings.
 - lib/platform.ts: navigator-based isMacPlatform, modKeyLabel and examplePath, no IPC.
 - lib/runChains.ts: session chains. Continue is offered only on the chain's newest member.
-- lib/needsYou.ts, runLabels.ts, runStatus.ts, peerNotes.ts: pure helpers for decisions, run labels, the status vocabulary and cross-run notes (unit tested).
+- lib/runStatus.ts is the one status vocabulary: Running, Needs you, Idle, Paused, Finished, Stopped, Failed. The topbar pill, run header, tabs, sidebar and History use its words and tones.
+- Pure, unit-tested helpers in lib/: needsYou.ts (pending decisions across runs), runLabels.ts (R1, R2 per project), runStatus.ts, peerNotes.ts (cross-run notes), transcriptRows.ts (tool calls as sentences, raw input as an optional detail), orgDiff.ts (the proposal diff), roleOps.ts (role names, add and remove), projectsForm.ts, layout.ts (dagre layout; acyclicParents detaches a role whose reportsTo chain loops), theme.ts.
+- Styles: one CSS file per area in styles/, including layout.css (the CanvasFrame and SidePanel grid) and run-tabs.css. RunStrip.tsx, NotificationsToggle.tsx and LogsLink.tsx were removed: run tabs replace the strip, and notifications and logs live in App Settings.
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`
 - `src/renderer/src/components/mcp/`
+- `src/renderer/src/components/settings/`
+- `src/renderer/src/components/DecisionCard.tsx`
 - `src/renderer/src/components/RunTabs.tsx`
-- `src/renderer/src/components/layout/`
-- `src/renderer/src/lib/platform.ts`
-- `src/renderer/src/lib/runChains.ts`
+- `src/renderer/src/views/`
+- `src/renderer/src/lib/`
+- `src/renderer/src/styles/`
 
 ### Scripts, e2e and packaging
 
@@ -248,18 +273,19 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
   - Runs the store finds still live at startup were cut by the app quitting or crashing. They become finished with endedWithApp and stay continuable.
 - Git operations on one checkout are serialized through worktrees.withRepoLock (keyed by pathKey of the merge target). integrateWorktree, commitLeftovers, discardWorktree and prepareRepo take it; a merge review waits outside the lock, and different checkouts never block each other.
 - SDK spawns go through the adapter's EXECUTABLE_OPTION, and the native CLIs stay in asarUnpack.
-- PLANNED, with the UI overhaul (not in force for code that does not use them yet):
-  - Radix-based components/ui and a components/layout panel shell.
-  - Container queries everywhere.
-  - Role.skills passed as AgentDefinition.skills.
+- Renderer layout goes through components/layout and components/ui. Responsive behaviour comes from container queries (container-type on layout regions).
+- PLANNED, not in force: Role.skills passed as AgentDefinition.skills.
 - Styling uses design tokens only. Never hardcode hex colors, shadows, radii, font sizes or z-indexes. Every token is defined for both dark and light themes.
 - Hierarchy comes from the type scale, weight and spacing, not from uppercase micro-labels. Labels use sentence case, with at most one primary action per region.
-- Nothing floats over the React Flow canvas except React Flow's own controls. Cards, banners and approvals sit in layout regions.
-- No div or span with onClick and no native confirm(). Every control is reachable by keyboard with a visible :focus-visible ring.
+- Nothing floats over the React Flow canvas except React Flow's own controls. Decision cards live in CanvasFrame's FrameTray. Banners and notices sit in layout regions.
+- No div or span with onClick and no native confirm(): ask through ConfirmDialog / useConfirm. Every control is reachable by keyboard with a visible :focus-visible ring, and every IconButton gets a label.
+- One status vocabulary: run status words come from lib/runStatus.ts, and agent end labels from activity.ts TERMINAL_ACTIVITY. Views do not invent synonyms.
+- Harness-written transcript entries (source 'harness') render as quiet system rows with the detail behind a disclosure, never as user or model messages.
+- Appearance is consumed through the <html> attributes and CSS vars that lib/theme.ts sets. Views never read AppSettings.appearance to style themselves.
 - Icons are lucide-react via the Icon wrapper. No Unicode glyphs as icons.
 - Motion respects prefers-reduced-motion.
 - Unit tests are *.test.ts files beside the module they test. They run with vitest in the node environment and never spend tokens.
-- Smoke scripts and the e2e scripts setup, history and worktree spend real tokens. Run them only with explicit approval. e2e:free is safe and must pass after UI changes, with selectors updated in the same change.
+- Smoke scripts and the e2e scripts setup, history and worktree spend real tokens. Run them only with explicit approval. e2e:free (layout, runs, maintenance, connections) is safe and must pass after UI changes, with selectors updated in the same change.
 - e2e scripts and CI never touch the real user data directory: they set ORGAI_DATA_DIR.
 - Release builds for each mac arch run on a native runner. Never cross-arch install the native CLIs.
 - New dependencies are pinned to exact versions like the rest of package.json.
@@ -305,10 +331,14 @@ components/ui is built on native elements today: Badge, Banner, Button, IconButt
   - The publish job end to end.
   - Signed and notarized builds have never been exercised.
 - Electron deprecates sync safeStorage (removed in Electron 46). SecretStore must move to the async API before upgrading.
-- The UI was verified only against stubbed or empty states. The connection and MCP screens have not been run against live services.
-- The UI overhaul shell pass has not landed: Radix, resizable panels, components/layout, the frontend-design skill and Role.skills. When it lands it rewrites App.tsx, LiveRunView.tsx and SettingsView.tsx and must go in as one serialized pass before parallel restyles.
+- The UX Researcher walked the UI on mock data (ORGAI_MOCK=1, a temp ORGAI_DATA_DIR): docs/design/ux-review.md, ux-review-runs.md and ux-review-runs-2.md (at dc86f31, before the brief A run-view merge). ux-review-mcp.md is a code walkthrough of the MCP screens. The connection and MCP screens have not been run against live services. Open items in ux-review-runs-2.md, not re-walked since:
+  - N1, the tray outside the canvas frame: the code now renders FrameTray inside CanvasFrame. It needs a re-walk.
+  - N2: a window opened with "Open in new window" does not show the run's pending decision.
+  - N3, N4, N2b: idle nodes read "Waiting for you". Reaching a decision by keyboard takes many Tab presses and focus is lost after answering. A stale tab notice never clears.
+  - N5 to N13: tab overflow at 1024, Needs-you density, topbar crowding, runs cut by quitting read Finished, raw message_run JSON in the transcript, and smaller polish.
+- Radix, react-resizable-panels, Role.skills and the frontend-design skill are not in the tree. The light theme is not signed off, so the default theme stays dark.
 - Renderer remap previews (lib/remap.ts) are computed in the renderer. projects:previewRemap exists but is not wired into the UI yet.
-- No lint or format tooling, and the renderer has no component tests.
+- No lint or format tooling, and the renderer has no component tests (only the pure lib/*.test.ts helpers and styles/tokens.test.ts).
 - The Claude SDK is pinned to 0.3.312. Plan usage relies on an experimental API and can break on upgrade.
 - claude.ts and codex.ts are large hotspots for merge conflicts.
 - Cross-run messaging: delivery of a peer message to a Claude orchestrator mid-turn is assumed from the existing notifyOrchestrator path and not smoke-tested; Codex delivery is tested only against a fake app-server. RunManager holds peer messages for an interrupted, usage-limited or card-blocked run, but RuntimeSession.receive() itself is ungated, so any new caller must go through RunManager. The per-pair and inbound caps bound but do not prevent token spend between many runs.

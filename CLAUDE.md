@@ -27,6 +27,35 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
   preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
   (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
+- Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
+  teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
+  `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
+  `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
+- Settings: `AppSettings.appearance` (theme, accent, canvas, reduceMotion; `DEFAULT_APPEARANCE`) and
+  `AppSettings.notifications` (the single source of truth; `notifications.setEnabled` in the preload is a deprecated
+  mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only
+  in `lib/theme.ts` (`initTheme` in `main.tsx`) as `data-theme`, `data-canvas-*`, `data-reduce-motion` and `--canvas-*`
+  on `<html>`. Views never read appearance settings themselves.
+- Projects: `projects:checkPath` (`ProjectPathCheck`) never rejects. `projects:create` validates the path, and
+  `ProjectCreateInput.mock` is accepted only with `ORGAI_MOCK=1`.
+
+## Renderer
+
+The UI overhaul landed on native elements with container queries. Radix and react-resizable-panels are not installed,
+and the frontend-design skill is not vendored in `.claude/skills` (only `run-desktop` is there).
+
+- Layout: `components/layout` (`CanvasFrame` with `FrameToolbar` / `FrameStage` / `FrameTray` / `FrameFooter`,
+  `SidePanel`, `SaveIndicator`). Nothing floats over the canvas: decision cards sit in `FrameTray` on the
+  `components/DecisionCard.tsx` shell.
+- Primitives: `components/ui` (`ConfirmDialog` + `useConfirm` instead of `confirm()`, `Input`, `Textarea`, `Checkbox`,
+  `Select`, `SettingRow` and the earlier ones). `IconButton` requires `label`, and `Button` takes `ariaLabel`.
+- Status words come only from `lib/runStatus.ts`: Running, Needs you, Idle, Paused, Finished, Stopped, Failed.
+- Project tabs are Live, History, Org chart and Settings. The org chart editor is `views/OrgChartView.tsx`, and project
+  settings are sectioned through `components/settings/*`.
+- e2e:free is `e2e/layout.mjs`, `runs.mjs`, `maintenance.mjs` and `connections.mjs`. Update selectors in the same change.
+- Walkthroughs on mock data are in `docs/design/ux-review*.md`. The newest, `ux-review-runs-2.md`, predates the brief A
+  run-view merge, so its N1 tray finding needs a re-walk. N2 (run windows miss pending decisions) and the focus and
+  wording items are still open.
 - Claude Agent SDK facts verified against v0.3.312 (see `scripts/smoke-*.mjs`):
   - `task_started` (system message) arrives before the `SubagentStart` hook and carries `task_id` (= `agent_id`),
     `tool_use_id` of the spawning Agent call, `subagent_type`, `description`, optional `parent_task_id`.
