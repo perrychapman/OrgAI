@@ -43,8 +43,11 @@ export function normalizeModelKey(model: string): string {
   return m.replace(/\[.*\]$/, '').replace(/-\d{8}$/, '').replace(/@\d{8}$/, '')
 }
 
-/** A suffix that only versions a model ("-v2", "-2024-08-06", ":1", "-latest"), never one that names another model ("-mini"). */
-const VERSION_SUFFIX = /^[-@:.](?:v?\d[\w.:-]*|latest)$/
+/**
+ * A suffix that only versions a model ("-v2", "-2024-08-06", "-20250929", "-001", ":0", "-latest"), never one that
+ * names another model ("-mini", or "-5" in "claude-sonnet-4-5" against "claude-sonnet-4").
+ */
+const VERSION_SUFFIX = /^(?:[-@](?:\d{8}|\d{4}-\d{2}-\d{2}|\d{3}|latest|v\d[\w.:-]*)|:\d[\w.-]*)$/
 
 /** True when one key is the other plus a version suffix. */
 function sameModelVersioned(a: string, b: string): boolean {
@@ -83,12 +86,34 @@ export function priceFor(pricing: Record<string, ModelPrice> | undefined, model:
 export function pricingFromCatalog(
   models: readonly { id: string; price?: ModelPrice; upstream?: string }[]
 ): Record<string, ModelPrice> | undefined {
-  const out: Record<string, ModelPrice> = {}
-  for (const m of models) if (m.price) out[m.id] = { ...m.price }
-  for (const m of models) {
-    if (!m.price || !m.upstream) continue
+  const out: Record<string, ModelPrice> = Object.create(null) as Record<string, ModelPrice>
+  const priced = models.flatMap((m) => {
+    const price = cleanPrice(m.price)
+    return price && typeof m.id === 'string' ? [{ id: m.id, price, upstream: m.upstream }] : []
+  })
+  for (const m of priced) out[m.id] = { ...m.price }
+  for (const m of priced) {
+    if (typeof m.upstream !== 'string') continue
     const bare = m.upstream.slice(m.upstream.lastIndexOf('/') + 1).trim()
     if (bare && !Object.prototype.hasOwnProperty.call(out, bare)) out[bare] = { ...m.price }
   }
-  return Object.keys(out).length ? out : undefined
+  return Object.keys(out).length ? { ...out } : undefined
+}
+
+const rate = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined)
+
+/** A price with only finite, non-negative numbers (models.json is re-read from disk); undefined when unusable. */
+export function cleanPrice(p: ModelPrice | undefined): ModelPrice | undefined {
+  if (!p || typeof p !== 'object') return undefined
+  const input = rate(p.inputPerToken)
+  const output = rate(p.outputPerToken)
+  if (input === undefined || output === undefined) return undefined
+  const cacheRead = rate(p.cacheReadPerToken)
+  const cacheCreation = rate(p.cacheCreationPerToken)
+  return {
+    inputPerToken: input,
+    outputPerToken: output,
+    ...(cacheRead !== undefined ? { cacheReadPerToken: cacheRead } : {}),
+    ...(cacheCreation !== undefined ? { cacheCreationPerToken: cacheCreation } : {})
+  }
 }

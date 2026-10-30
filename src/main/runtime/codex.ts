@@ -27,6 +27,7 @@ import {
   type PolicyChoice
 } from './codexProtocol'
 import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChanges, type CodexUpdate } from './codexEvents'
+import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
   CodexAgentNetwork,
   callNetworkTool,
@@ -266,6 +267,24 @@ class CodexSession implements RuntimeSession {
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
     this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
+  }
+
+  /**
+   * LiteLLM only: the agent's cost from the thread's cumulative token totals at its model's /model/info price
+   * (RunConnection.pricing). undefined = no estimate (other connections, no pricing, or an unpriced model), so the
+   * cost stays 0 as on a ChatGPT plan.
+   */
+  private estimateCost(agent: AgentInstance, u: { input: number; output: number; cachedInput: number }): number | undefined {
+    const conn = this.ctx.connection
+    if (conn?.connection !== 'litellm' || !conn.pricing) return undefined
+    const price = priceFor(conn.pricing, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model)
+    return price ? costFromPrice(openAiMix(u.input, u.cachedInput, u.output), price) : undefined
+  }
+
+  private totalCost(): number {
+    let usd = 0
+    for (const a of this.agents.values()) usd += a.costUsd
+    return usd
   }
 
   private upsert(agent: AgentInstance): void {
@@ -584,7 +603,11 @@ class CodexSession implements RuntimeSession {
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
+          const cost = this.estimateCost(agent, u)
+          const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
+          if (moved) agent.costUsd = cost
           this.upsert(agent)
+          if (moved) this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: this.totalCost() })
         }
         return
       case 'turnStarted':

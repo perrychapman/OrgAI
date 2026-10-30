@@ -1,11 +1,15 @@
-import type { ProviderModel } from '@shared/types'
+import type { ModelPrice, ProviderModel, UsageSpend } from '@shared/types'
 import { makeDiscoveredModel } from './catalog'
 
 /**
  * LiteLLM proxy discovery. UNVERIFIED against a live proxy (written from LiteLLM's documented API):
  *   GET {base}/v1/models      -> { data: [{ id }] }                       (OpenAI-compatible)
  *   GET {base}/model/info     -> { data: [{ model_name, litellm_params: { model }, model_info: {
- *                                  litellm_provider, max_input_tokens, max_tokens, mode } }] }
+ *                                  litellm_provider, max_input_tokens, max_tokens, mode, input_cost_per_token,
+ *                                  output_cost_per_token, cache_read_input_token_cost,
+ *                                  cache_creation_input_token_cost } }] }      (costs: USD per token, may be null)
+ *   GET {base}/key/info       -> { key, info: { spend, max_budget, budget_duration, budget_reset_at, key_alias, ... } }
+ *                                (no `key` param: the caller's own key; needs the proxy's DB, else 500)
  * Auth is sent both as `Authorization: Bearer` and `x-api-key` since proxies differ. /model/info is
  * best-effort enrichment and may be admin-only. The key never appears in an error string.
  */
@@ -100,6 +104,31 @@ export interface ModelInfoEntry {
   litellmProvider?: string
   contextWindow?: number
   mode?: string
+  /** USD per token from model_info; absent when the proxy has no input or output price. */
+  price?: ModelPrice
+  /** litellm_params.model. */
+  upstream?: string
+}
+
+/** A finite number >= 0, from a number or a numeric string. */
+function amount(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*[\d.eE+-]+\s*$/.test(v) ? Number(v) : NaN
+  return Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+/** The four model_info price fields; undefined unless an input or output price is present. */
+export function parsePrice(info: Record<string, unknown>): ModelPrice | undefined {
+  const input = amount(info.input_cost_per_token)
+  const output = amount(info.output_cost_per_token)
+  if (input === undefined && output === undefined) return undefined
+  const cacheRead = amount(info.cache_read_input_token_cost)
+  const cacheCreation = amount(info.cache_creation_input_token_cost)
+  return {
+    inputPerToken: input ?? 0,
+    outputPerToken: output ?? 0,
+    ...(cacheRead !== undefined ? { cacheReadPerToken: cacheRead } : {}),
+    ...(cacheCreation !== undefined ? { cacheCreationPerToken: cacheCreation } : {})
+  }
 }
 
 /** Per-model details from a /model/info body, keyed by model_name. */
@@ -116,10 +145,14 @@ export function parseModelInfo(body: unknown): Map<string, ModelInfoEntry> {
     const paramModel = str(params.model)
     const provider = str(info.litellm_provider) ?? (paramModel?.includes('/') ? paramModel.slice(0, paramModel.indexOf('/')) : undefined)
     const prev = out.get(name)
+    const price = prev?.price ?? parsePrice(info)
+    const upstream = prev?.upstream ?? paramModel
     out.set(name, {
       litellmProvider: prev?.litellmProvider ?? provider,
       contextWindow: prev?.contextWindow ?? num(info.max_input_tokens) ?? num(info.max_tokens),
-      mode: prev?.mode ?? str(info.mode)
+      mode: prev?.mode ?? str(info.mode),
+      ...(price ? { price } : {}),
+      ...(upstream ? { upstream } : {})
     })
   }
   return out
@@ -133,7 +166,9 @@ export function buildLiteLLMModels(ids: string[], info: Map<string, ModelInfoEnt
   for (const id of ids) {
     const e = info.get(id)
     if (e?.mode && !CHAT_MODES.has(e.mode)) continue
-    models.push(makeDiscoveredModel('litellm', { id, litellmProvider: e?.litellmProvider, contextWindow: e?.contextWindow }))
+    models.push(
+      makeDiscoveredModel('litellm', { id, litellmProvider: e?.litellmProvider, contextWindow: e?.contextWindow, price: e?.price, upstream: e?.upstream })
+    )
   }
   return models
 }
@@ -149,4 +184,38 @@ export async function fetchLiteLLMModels(baseUrl: string, key: string, fetchImpl
     // best effort: /model/info is often admin-only
   }
   return buildLiteLLMModels(ids, info)
+}
+
+/** Epoch ms from an ISO string or an epoch number (seconds or ms); null otherwise. */
+function instant(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v < 1e12 ? v * 1000 : v
+  if (typeof v === 'string' && v.trim()) {
+    const t = Date.parse(v.trim())
+    return Number.isFinite(t) ? t : null
+  }
+  return null
+}
+
+/**
+ * The key's spend from a /key/info body (`{ key, info: {...} }` or the bare info object). null when there is no
+ * numeric spend. A budget of 0 or less counts as no budget. The key itself is never read.
+ */
+export function parseKeyInfo(body: unknown): UsageSpend | null {
+  const root = obj(body)
+  const info = root.info && typeof root.info === 'object' && !Array.isArray(root.info) ? obj(root.info) : root
+  const usd = amount(info.spend)
+  if (usd === undefined) return null
+  const budget = amount(info.max_budget)
+  return {
+    usd,
+    budgetUsd: budget !== undefined && budget > 0 ? budget : null,
+    resetsAt: instant(info.budget_reset_at),
+    budgetDuration: str(info.budget_duration)?.slice(0, 40) ?? null,
+    keyAlias: str(info.key_alias)?.slice(0, 120) ?? null
+  }
+}
+
+/** The virtual key's own spend (GET /key/info). Throws a short human Error; the key is never in the message. */
+export async function fetchLiteLLMKeyInfo(baseUrl: string, key: string, fetchImpl: FetchLike = fetch): Promise<UsageSpend | null> {
+  return parseKeyInfo(await getJson('/key/info', normalizeBaseUrl(baseUrl), key, fetchImpl))
 }

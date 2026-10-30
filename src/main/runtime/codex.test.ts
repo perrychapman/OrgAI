@@ -376,6 +376,35 @@ describe('CodexAdapter session', () => {
     expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(false)
   })
 
+  it('on LiteLLM with pricing, prices cumulative tokens and emits run.cost', async () => {
+    const { adapter, servers } = setup()
+    const price = { inputPerToken: 1e-6, outputPerToken: 1e-5, cacheReadPerToken: 1e-7 }
+    const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'k', openaiBaseUrl: 'http://localhost:4000/v1', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test': price } } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 200 }, last: {}, modelContextWindow: null } })
+    const expected = 1000 * 1e-6 + 300 * 1e-5 + 200 * 1e-7
+    expect(lastAgent(ctx, 'root')?.costUsd).toBeCloseTo(expected, 12)
+    const costs = ctx.events.flatMap((e) => (e.type === 'run.cost' ? [e.totalCostUsd] : []))
+    expect(costs).toHaveLength(1)
+    expect(costs[0]).toBeCloseTo(expected, 12)
+    // The same totals again: no new run.cost.
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 200 }, last: {}, modelContextWindow: null } })
+    expect(ctx.events.filter((e) => e.type === 'run.cost')).toHaveLength(1)
+  })
+
+  it('on LiteLLM without a price for the model, cost stays 0', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'k', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test-mini': { inputPerToken: 1, outputPerToken: 1 } } } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
+    expect(lastAgent(ctx, 'root')).toMatchObject({ inputTokens: 1200, costUsd: 0 })
+    expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(false)
+  })
+
   it('pauses on a usage limit and ends the session after the failed turn', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor()

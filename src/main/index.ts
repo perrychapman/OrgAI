@@ -64,6 +64,9 @@ function broadcastSettings(s: AppSettings): void {
   }
 }
 
+/** How long after a LiteLLM run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
+const LITELLM_SPEND_DELAY_MS = 15_000
+
 function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.runEvent, event)
@@ -248,7 +251,20 @@ app.whenReady().then(() => {
     codex: new CodexAdapter({ completionConnection: codexCompletion }),
     ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
-  runManager = new RunManager(adapters, broadcast, runStore, setup, keepRunsFor, {
+  // A LiteLLM run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
+  // writes), one timer at a time. Set once the usage monitor exists.
+  let refreshLiteLLMSpend: (() => void) | undefined
+  let spendTimer: ReturnType<typeof setTimeout> | undefined
+  const runBroadcast = (event: RunEvent): void => {
+    broadcast(event)
+    if (event.type !== 'run.status' || !['finished', 'error', 'paused'].includes(event.status)) return
+    if (spendTimer || runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
+    spendTimer = setTimeout(() => {
+      spendTimer = undefined
+      refreshLiteLLMSpend?.()
+    }, LITELLM_SPEND_DELAY_MS)
+  }
+  runManager = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     resolveProject: (projectId) => projectOrHarness(projectId),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
@@ -304,8 +320,10 @@ app.whenReady().then(() => {
     auth: () => settings.get().providerAuth,
     broadcast,
     liveRuns: () => runManager?.liveRunCount() ?? 0,
-    extraProbes: [() => connections.probeCodexUsage()]
+    extraProbes: [() => connections.probeCodexUsage(), { key: 'litellm', probe: () => connections.probeLiteLLMUsage() }]
   })
+  refreshLiteLLMSpend = () => void usageMonitor.refreshProbe('litellm')
+  app.on('before-quit', () => clearTimeout(spendTimer))
   ipcMain.handle(IPC.usageRefresh, () => usageMonitor.refresh())
   usageMonitor.start()
   app.on('before-quit', () => usageMonitor.stop())
