@@ -154,6 +154,9 @@ export class McpService {
    * name (a server approved for this run only); it wins over stored values.
    */
   resolve(projectId: string, spec: McpServerSpec, extra: Record<string, string> = {}): ResolvedMcpServer {
+    // Projects created by older versions may contain specs that predate the current validation rules. Revalidate at
+    // the trust boundary so a legacy insecure URL cannot receive decrypted credentials merely by starting a run.
+    assertValidSpec(spec)
     const env: Record<string, string> = { ...(spec.env ?? {}) }
     const headers: Record<string, string> = { ...(spec.headers ?? {}) }
     for (const n of spec.secretEnv ?? []) {

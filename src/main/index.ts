@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type { ConnectionEvent, RunEvent } from '@shared/types'
 import { IPC } from '@shared/types'
 import { ProjectStore } from './store/projects'
@@ -19,7 +20,7 @@ import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
-import { registerIpc } from './ipc'
+import { externalUrl, isTrustedRendererUrl, registerIpc, secureHandle, trustedRenderer } from './ipc'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging } from './log'
@@ -42,6 +43,17 @@ if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 let runManager: RunManager | undefined
 let notifier: Notifier | undefined
+
+const rendererFile = join(__dirname, '../renderer/index.html')
+const developmentRendererUrl = process.env.ELECTRON_RENDERER_URL?.trim()
+const rendererEntry = developmentRendererUrl || pathToFileURL(rendererFile).href
+const rendererTrust = trustedRenderer(rendererEntry)
+
+async function openExternal(raw: string): Promise<void> {
+  const url = externalUrl(raw)
+  if (!url) throw new Error('Blocked an unsafe external URL.')
+  await shell.openExternal(url)
+}
 
 function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -73,23 +85,30 @@ function createWindow(): void {
     // Packaged builds take the icon from the executable; in development use the generated PNG.
     ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', 'icon.png') }),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
-      sandbox: false,
-      contextIsolation: true
+      preload: join(__dirname, '../preload/index.cjs'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
     }
   })
 
   win.on('ready-to-show', () => win.show())
   notifier?.attach(win)
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    void openExternal(url).catch((e) => console.warn((e as Error).message))
     return { action: 'deny' }
   })
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isTrustedRendererUrl(url, rendererTrust)) event.preventDefault()
+  })
+  win.webContents.on('will-redirect', (event, url) => {
+    if (!isTrustedRendererUrl(url, rendererTrust)) event.preventDefault()
+  })
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(process.env.ELECTRON_RENDERER_URL)
+  if (developmentRendererUrl) {
+    void win.loadURL(rendererEntry)
   } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+    void win.loadFile(rendererFile)
   }
 }
 
@@ -105,7 +124,7 @@ app.whenReady().then(() => {
     projects,
     secrets,
     broadcast: broadcastConnection,
-    openExternal: (url) => shell.openExternal(url)
+    openExternal
   })
   const mcp = new McpService({ projects, secrets })
   const setup = new SetupService(projects, { removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId) })
@@ -148,7 +167,8 @@ app.whenReady().then(() => {
     settings,
     connections,
     mcp,
-    adapterIds: Object.keys(adapters)
+    adapterIds: Object.keys(adapters),
+    trustedRenderer: rendererTrust
   })
   connections.init()
   app.on('before-quit', () => connections.dispose())
@@ -161,7 +181,8 @@ app.whenReady().then(() => {
     },
     projectName: (projectId) => projects.get(projectId)?.name
   })
-  ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean) => notifier?.setEnabled(!!enabled))
+  const handle = secureHandle(rendererTrust)
+  handle(IPC.appSetNotifications, (_e, enabled: boolean) => notifier?.setEnabled(!!enabled))
 
   // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
   const usageMonitor = new UsageMonitor({
@@ -171,7 +192,7 @@ app.whenReady().then(() => {
     liveRuns: () => runManager?.liveRunCount() ?? 0,
     extraProbes: [() => connections.probeCodexUsage()]
   })
-  ipcMain.handle(IPC.usageRefresh, () => usageMonitor.refresh())
+  handle(IPC.usageRefresh, () => usageMonitor.refresh())
   usageMonitor.start()
   app.on('before-quit', () => usageMonitor.stop())
 

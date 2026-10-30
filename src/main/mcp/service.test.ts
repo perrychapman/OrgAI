@@ -97,6 +97,19 @@ describe('McpService servers', () => {
     expect(svc.resolve(pid, s).env).toEqual({ A: '1' })
   })
 
+  it('revalidates legacy specs before resolving stored secrets', () => {
+    const insecure = spec({
+      transport: 'http',
+      command: undefined,
+      args: undefined,
+      url: 'http://example.com/mcp',
+      secretEnv: undefined,
+      secretHeaders: ['Authorization']
+    })
+    expect(() => svc.resolve(pid, insecure, { Authorization: 'Bearer secret' })).toThrow(/require an HTTPS/)
+    expect(() => svc.resolve(pid, { ...insecure, url: 'https://user:pass@example.com/mcp' }, { Authorization: 'Bearer secret' })).toThrow(/must not contain credentials/)
+  })
+
   it('persistInstall saves the spec as agent-sourced and stores the secrets', () => {
     const p = svc.persistInstall(pid, spec(), { GITHUB_TOKEN: 'tok' })
     expect(p.mcpServers?.[0].source).toBe('agent')

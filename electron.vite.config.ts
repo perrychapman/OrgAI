@@ -8,8 +8,15 @@ export default defineConfig({
     resolve: { alias: { '@shared': resolve('src/shared') } }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
-    resolve: { alias: { '@shared': resolve('src/shared') } }
+    resolve: { alias: { '@shared': resolve('src/shared') } },
+    // Sandboxed Electron preloads cannot use ESM or require arbitrary packages. Force one fully bundled CJS file;
+    // Electron and the sandbox-supported Node built-ins remain external through electron-vite's built-in config.
+    build: {
+      externalizeDeps: false,
+      rollupOptions: {
+        output: { format: 'cjs', entryFileNames: '[name].cjs' }
+      }
+    }
   },
   renderer: {
     plugins: [react()],

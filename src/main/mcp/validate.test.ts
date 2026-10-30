@@ -35,6 +35,23 @@ describe('validateSpec names and transports', () => {
     const http: McpServerSpec = { id: 'h', name: 'remote', transport: 'http', url: 'https://x.test', headers: { authorization: 'x' }, secretHeaders: ['Authorization'], enabled: true, source: 'user', addedAt: '' }
     expect(validateSpec(http).join()).toMatch(/both a secret/)
   })
+  it('rejects URL credentials and secret headers over cleartext HTTP', () => {
+    const remote = (url: string, secretHeaders?: string[]): McpServerSpec => ({
+      id: 'h',
+      name: 'remote',
+      transport: 'http',
+      url,
+      secretHeaders,
+      enabled: true,
+      source: 'user',
+      addedAt: ''
+    })
+    expect(validateSpec(remote('https://user:pass@example.com/mcp')).join()).toMatch(/must not contain credentials/)
+    expect(validateSpec(remote('http://example.com/mcp', ['Authorization'])).join()).toMatch(/require an HTTPS/)
+    expect(validateSpec(remote('http://127.0.0.1:3000/mcp', ['Authorization'])).join()).toMatch(/require an HTTPS/)
+    expect(validateSpec(remote('http://example.com/mcp'))).toEqual([])
+    expect(validateSpec(remote('https://example.com/mcp', ['Authorization']))).toEqual([])
+  })
 })
 
 describe('pinned versions', () => {

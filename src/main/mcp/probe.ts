@@ -12,6 +12,8 @@ export const PROTOCOL_VERSION = '2025-06-18'
 const CLIENT_INFO = { name: 'orgai', version: '1.0.0' }
 const STDERR_TAIL = 2000
 const MAX_PAGES = 10
+const MAX_RESPONSE_BYTES = 1024 * 1024
+const MAX_TOOLS = 1000
 
 interface RpcClient {
   request(method: string, params?: unknown): Promise<unknown>
@@ -36,6 +38,30 @@ export function redact(text: string, secrets: string[]): string {
   let out = text
   for (const s of secrets) out = out.split(s).join('[redacted]')
   return out
+}
+
+/** Read a remote response without allowing an MCP endpoint to exhaust the Electron main process. */
+async function boundedResponseText(res: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<string> {
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`The MCP server response exceeds the ${maxBytes}-byte limit.`)
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      bytes += value.byteLength
+      if (bytes > maxBytes) throw new Error(`The MCP server response exceeds the ${maxBytes}-byte limit.`)
+      chunks.push(value)
+    }
+  } catch (e) {
+    await reader.cancel().catch(() => {})
+    throw e
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)), bytes).toString('utf8')
 }
 
 /** Kill a process and everything it started. */
@@ -224,11 +250,14 @@ class HttpClient implements RpcClient {
     const session = res.headers.get('mcp-session-id')
     if (session) this.session = session
     if (!res.ok) {
-      const text = (await res.text().catch(() => '')).slice(0, 300)
+      const text = (await boundedResponseText(res).catch((e) => {
+        if ((e as Error).message.includes('exceeds')) throw e
+        return ''
+      })).slice(0, 300)
       throw new Error(`HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}${text ? `: ${text}` : ''}`)
     }
     const type = res.headers.get('content-type') ?? ''
-    const text = await res.text()
+    const text = await boundedResponseText(res)
     let msg: { result?: unknown; error?: { message?: string } } | null
     if (type.includes('text/event-stream')) msg = parseSse(text, id)
     else {
@@ -249,7 +278,7 @@ class HttpClient implements RpcClient {
 
   async notify(method: string, params?: unknown): Promise<void> {
     const res = await this.post({ jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) })
-    await res.text().catch(() => '')
+    await boundedResponseText(res)
   }
 
   async close(): Promise<void> {
@@ -278,6 +307,7 @@ async function handshake(client: RpcClient): Promise<{ name: string; description
     const res = (await client.request('tools/list', cursor ? { cursor } : {})) as { tools?: { name?: unknown; description?: unknown }[]; nextCursor?: unknown } | undefined
     for (const t of res?.tools ?? []) {
       if (typeof t?.name !== 'string') continue
+      if (tools.length >= MAX_TOOLS) throw new Error(`The MCP server returned more than ${MAX_TOOLS} tools.`)
       const description = typeof t.description === 'string' ? t.description.trim().slice(0, MAX_DESCRIPTION) : ''
       tools.push(description ? { name: t.name, description } : { name: t.name })
     }
