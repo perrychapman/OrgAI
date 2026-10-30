@@ -94,8 +94,10 @@ export function relativeTime(at: number, now: number = Date.now()): string {
 }
 
 /** Plain-words status for chips and rows. `waiting` wins over the run status. */
-export function statusLabel(status: RunStatus, waiting = false): string {
+export function statusLabel(status: RunStatus, waiting = false, endedWithApp = false): string {
   if (waiting) return 'Waiting for you'
+  // Cut by app exit wins even when the run had paused before the restart.
+  if (endedWithApp && status === 'finished') return 'Ended when OrgAI closed'
   switch (status) {
     case 'starting':
     case 'running':

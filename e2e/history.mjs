@@ -45,7 +45,7 @@ try {
   await page.getByRole('button', { name: 'Runs', exact: true }).click()
   await sleep(500)
   check((await page.locator('.run-row').count()) >= 1, 'run history survives a restart')
-  await page.locator('.run-row').first().click()
+  await page.locator('.run-row .run-open').first().click()
   await sleep(1500)
   const nodes = await page.locator('.agent-node').count()
   check(nodes >= 1, 'past run redrawn on the canvas', String(nodes))

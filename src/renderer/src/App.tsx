@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect } from 'react'
-import { activeRun, isRunLive, selectedProject, useAppStore } from './store/useAppStore'
+import { activeRun, selectedProject, useAppStore } from './store/useAppStore'
 import NotificationsToggle from './components/NotificationsToggle'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
@@ -9,6 +9,7 @@ import AppSettingsView from './views/AppSettingsView'
 import LogsLink from './components/LogsLink'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import UsageMeter from './components/UsageMeter'
+import { projectCounts } from './lib/runChains'
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -18,7 +19,6 @@ export default function App(): ReactElement {
   const setView = useAppStore((s) => s.setView)
   const selectProject = useAppStore((s) => s.selectProject)
   const auth = useAppStore((s) => s.auth)
-  const activeRunByProject = useAppStore((s) => s.activeRunByProject)
   const runs = useAppStore((s) => s.runs)
   const project = useAppStore(selectedProject)
   const run = useAppStore(activeRun)
@@ -27,15 +27,7 @@ export default function App(): ReactElement {
     void init()
   }, [init])
 
-  const isLive = (projectId: string): boolean => {
-    const runId = activeRunByProject[projectId]
-    const status = runId ? runs[runId]?.summary.status : undefined
-    if (status === 'running' || status === 'starting' || status === 'idle') return true
-    return Object.values(runs).some((r) => r.summary.projectId === projectId && isRunLive(r))
-  }
-  /** Some run of the project holds a permission or proposal card nobody answered yet. */
-  const needsAttention = (projectId: string): boolean =>
-    Object.values(runs).some((r) => r.summary.projectId === projectId && r.permissions.length + r.proposals.length > 0)
+  const allRuns = Object.values(runs)
 
   return (
     <div className="app">
@@ -55,20 +47,28 @@ export default function App(): ReactElement {
         <div className="sidebar-label">Workspaces</div>
         <div className="sidebar-section" style={{ overflow: 'auto' }}>
           {projects.length === 0 && <div style={{ padding: '6px 10px', color: 'var(--text-faint)' }}>No projects yet</div>}
-          {projects.map((p) => (
-            <button
-              key={p.id}
-              className={`nav-item ${selectedId === p.id && view !== 'projects' && view !== 'appSettings' ? 'active' : ''}`}
-              onClick={() => {
-                selectProject(p.id)
-                if (view === 'projects' || view === 'appSettings') setView('run')
-              }}
-              title={p.path}
-            >
-              <span className={`dot ${needsAttention(p.id) ? 'warn' : isLive(p.id) ? 'live' : ''}`} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-            </button>
-          ))}
+          {projects.map((p) => {
+            const counts = projectCounts(allRuns, p.id)
+            const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'live' : ''
+            const summary = [counts.open > 0 ? `${counts.open} open` : '', counts.needsYou > 0 ? `${counts.needsYou} needs you` : ''].filter(Boolean).join(' · ')
+            return (
+              <button
+                key={p.id}
+                className={`nav-item ${selectedId === p.id && view !== 'projects' && view !== 'appSettings' ? 'active' : ''}`}
+                onClick={() => {
+                  selectProject(p.id)
+                  if (view === 'projects' || view === 'appSettings') setView('run')
+                }}
+                title={summary ? `${p.path}\n${summary}` : p.path}
+              >
+                <span className={`dot ${state}`} aria-hidden="true" />
+                <span className="nav-text">
+                  <span className="nav-name">{p.name}</span>
+                  {summary && <span className={`nav-counts ${counts.needsYou > 0 ? 'warn' : ''}`}>{summary}</span>}
+                </span>
+              </button>
+            )
+          })}
         </div>
         <div className="sidebar-footer">
           <span
@@ -109,7 +109,7 @@ export default function App(): ReactElement {
               {run && (
                 <span className={`pill ${run.summary.status === 'running' || run.summary.status === 'starting' ? 'live' : run.summary.status === 'error' ? 'danger' : run.summary.status === 'paused' ? 'warn' : 'ok'}`}>
                   <span className="dot" /> {run.summary.kind === 'setup' ? 'setup · ' : ''}
-                  {run.summary.status}
+                  {run.summary.endedWithApp && run.summary.status === 'finished' ? 'ended when OrgAI closed' : run.summary.status}
                 </span>
               )}
               <div className="tabs">

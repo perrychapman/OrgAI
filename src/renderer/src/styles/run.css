@@ -272,6 +272,30 @@
   line-height: var(--text-caption-lh);
   color: var(--warning-text);
 }
+.composer-notice.info {
+  color: var(--text-secondary);
+}
+.composer-notice .link-btn {
+  margin-left: var(--space-2);
+}
+.composer-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1h) var(--space-3);
+}
+.composer-mode-label {
+  min-width: 0;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.composer-help {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
 .attach-strip {
   list-style: none;
   margin: 0;
@@ -476,6 +500,7 @@ button.run-chip.new {
 }
 .run-close:focus-visible {
   outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* ---------- Folded "done" groups ---------- */

@@ -38,9 +38,9 @@ export default function RunHistory(): ReactElement {
             <div className="run-row-head">
               <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
               <span className={`pill ${tone}`} title={r.pauseReason}>
-                <span className="dot" /> {statusLabel(r.status, waiting)}
+                <span className="dot" aria-hidden="true" /> {statusLabel(r.status, waiting, !!r.endedWithApp)}
               </span>
-              {r.pausedUntil !== undefined && r.status === 'finished' && (
+              {r.pausedUntil !== undefined && r.status === 'finished' && !r.endedWithApp && (
                 <span className="chip" title={r.pauseReason ?? 'Stopped at a usage limit'}>
                   usage limit
                 </span>
@@ -78,7 +78,6 @@ export default function RunHistory(): ReactElement {
               <button
                 type="button"
                 className="btn sm run-open"
-                disabled={viewed}
                 title={viewed ? 'You are viewing this run' : open ? 'Open this live run' : 'Open this run'}
                 onClick={() => void openRun(r.id)}
               >
