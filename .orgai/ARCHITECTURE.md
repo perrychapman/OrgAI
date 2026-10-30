@@ -316,7 +316,7 @@ components/layout:
 - Each feature lands as one descriptive commit plus a merge commit ('Merge <feature>').
 - Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Agent runs happen on dev.
 - Build output (out/, release/, release-*/, *.tsbuildinfo) is gitignored. Never commit it.
-- Permission cards never clip a command silently: a Bash command is shown in full in a scrollable block, the title carries a "(+N lines)" or "(long command)" marker, and in compact mode (body collapsed) focus goes to the Details toggle instead of the primary action (`DecisionCard` `focusDetails`; also set for broad rule requests).
+- Permission cards never clip a command silently: a Bash command is shown in full in a scrollable block, the title carries a "(+N lines)" or "(long command)" marker, and the header shows a "Command" badge (or "N lines" / "Long command" for multi-line or long ones) for every Bash call. In compact mode (body collapsed) every Bash card with a command focuses the Details toggle instead of the primary action (`DecisionCard` `focusDetails`, a no-op outside compact; also set for broad rule requests). Bidi and control characters in a command are shown as visible `\uXXXX` escapes with a "Hidden characters" badge.
 
 ## Commands
 

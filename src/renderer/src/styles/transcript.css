@@ -510,6 +510,11 @@
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--text-caption);
 }
+.md .md-link-host {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: var(--text-small);
+}
 .md .md-image-alt {
   color: var(--text-tertiary);
   font-size: var(--text-caption);
