@@ -121,7 +121,7 @@ try {
   if ((await page.locator('.run-row button.run-open').count()) > 0) await page.locator('.run-row button.run-open').first().click()
   else await projectTab(page, 'Live').click()
   await sleep(1500)
-  await page.getByRole('button', { name: 'Transcript', exact: true }).click()
+  await page.locator('[data-testid=side-tab-transcript], .side .tabs button:has-text("Transcript")').first().click()
   await sleep(500)
   const reopenedThumb = page.locator('.entry.user .entry-thumb').first()
   check((await reopenedThumb.count()) >= 1, 'reopened run transcript still shows the image thumbnail')
@@ -141,11 +141,11 @@ try {
   await sleep(400)
   check((await page.locator('.new-run').count()) === 1, 'Ctrl+T opens the New run page')
   check((await page.locator('.run-tabs [role="tab"]').count()) === 2, 'the New run page is a second tab')
-  check((await page.locator('.run-header').count()) === 0 && (await page.locator('.react-flow').count()) === 0, 'no other run is on screen on the New run page')
+  check((await page.locator('[data-testid=run-meta]').count()) === 0 && (await page.locator('.react-flow').count()) === 0, 'no other run is on screen on the New run page')
   await shot('new-run-page')
   await page.keyboard.press('Control+w')
   await sleep(400)
-  check((await page.locator('.new-run').count()) === 0 && (await page.locator('.run-header').count()) === 1, 'Ctrl+W closes the New run page and returns to the run')
+  check((await page.locator('.new-run').count()) === 0 && (await page.locator('[data-testid=run-meta]').count()) === 1, 'Ctrl+W closes the New run page and returns to the run')
   await page.locator('.run-tab-new').click()
   await sleep(300)
   check((await page.locator('.new-run').count()) === 1, 'the + button opens the New run page')
@@ -156,7 +156,7 @@ try {
   check(await page.evaluate(() => document.activeElement?.getAttribute('aria-selected') === 'false'), 'ArrowLeft moves focus back')
   await page.keyboard.press('Enter')
   await sleep(400)
-  check((await page.locator('.run-header').count()) === 1, 'Enter activates the focused tab')
+  check((await page.locator('[data-testid=run-meta]').count()) === 1, 'Enter activates the focused tab')
 
   // Run tabs, run header, composer and the History tab in the viewport x theme matrix.
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
@@ -169,7 +169,7 @@ try {
       await sleep(300)
       const m = await page.evaluate(() => {
         const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
-        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, tabs: r('.run-tabs'), header: r('.run-header'), composer: r('.composer') }
+        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, tabs: r('.run-tabs'), strip: r('[data-testid=run-strip]'), toolbar: r('.frame-toolbar'), stage: r('.frame-stage'), frame: r('.canvas-frame'), topbar: r('main .topbar'), composer: r('.composer'), side: document.querySelector('.side-panel')?.getAttribute('data-collapsed') }
       })
       const inside = (b) => !!b && b.l >= -0.5 && b.r <= m.iw + 0.5 && b.t >= -0.5 && b.b <= m.ih + 0.5
       const shellM = await page.evaluate(() => {
@@ -183,9 +183,31 @@ try {
       check((await page.locator('main .topbar .badge').count()) === 0, `no status badge in the topbar on Live at ${w}x${h} ${theme}`)
       check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
       check(inside(m.tabs), `run tabs inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.tabs))
-      check(inside(m.header), `run header inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.header))
+      check(inside(m.strip), `run strip inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.strip))
       check(inside(m.composer), `composer with mode row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.composer))
-      check(!!m.tabs && !!m.header && m.header.t >= m.tabs.b - 0.5, `run header sits under the tabs in normal flow at ${w}x${h} ${theme}`, JSON.stringify([m.tabs, m.header]))
+      check(!!m.strip && !!m.topbar && m.strip.t >= m.topbar.b - 0.5 && Math.abs(m.strip.b - m.strip.t - 40) <= 1.5, `run strip is 40 px and sits under the topbar at ${w}x${h} ${theme}`, JSON.stringify([m.topbar, m.strip]))
+      check(!!m.toolbar && !!m.strip && m.toolbar.t >= m.strip.b - 0.5 && Math.abs(m.toolbar.b - m.toolbar.t - 32) <= 1.5, `canvas toolbar is 32 px and sits under the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.toolbar]))
+      check(!!m.tabs && !!m.strip && m.tabs.l >= m.strip.l - 0.5 && m.tabs.r <= m.strip.r + 0.5, `run tabs live inside the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.tabs]))
+      check(!!m.stage && !!m.toolbar && m.stage.t >= m.toolbar.b - 0.5, `stage sits under the toolbar at ${w}x${h} ${theme}`, JSON.stringify([m.toolbar, m.stage]))
+      check(w >= 1100 || m.side === 'true', `run panel starts collapsed below 1100 px of main width at ${w}x${h} ${theme}`, String(m.side))
+      check((await page.locator('.react-flow__controls').count()) === 0, `React Flow controls are gone from the canvas at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=run-strip] .btn:visible').first().evaluate((el) => el.getBoundingClientRect().height).catch(() => 28)) <= 36, `strip buttons fit the 40 px strip at ${w}x${h} ${theme}`)
+      log(`chrome above canvas at ${w}x${h} ${theme}:`, m.stage ? Math.round(m.stage.t) : '?', 'px; stage', m.stage ? `${Math.round(m.stage.r - m.stage.l)}x${Math.round(m.stage.b - m.stage.t)}` : '?')
+      // The legend lives behind the toolbar "?" popover: a shape plus a word per state.
+      const legendBtn = page.locator('[data-testid=canvas-legend-trigger]')
+      await legendBtn.click()
+      await sleep(250)
+      const legendText = ((await page.locator('[data-testid=canvas-legend]').innerText().catch(() => '')) || '').toLowerCase()
+      check(['working', 'needs approval', 'done', 'error', 'message'].every((t) => legendText.includes(t)), `legend popover lists all five states at ${w}x${h} ${theme}`, legendText.replace(/\s+/g, ' '))
+      await page.keyboard.press('Escape')
+      await sleep(150)
+      check((await page.locator('.frame-footer').count()) === 0, `no legend row under the canvas at ${w}x${h} ${theme}`)
+      const zoomBefore = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform ?? '')
+      await page.getByRole('button', { name: 'Zoom in', exact: true }).click()
+      await sleep(350)
+      const zoomAfter = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform ?? '')
+      check(zoomBefore !== zoomAfter, `the toolbar Zoom in button zooms the canvas at ${w}x${h} ${theme}`, `${zoomBefore} -> ${zoomAfter}`)
+      await page.getByRole('button', { name: 'Fit to view', exact: true }).click()
       const tab = page.locator('.run-tab[aria-selected="true"]')
       await tab.focus()
       await page.keyboard.press('Shift+Tab')
@@ -274,7 +296,7 @@ try {
     }
     check(!!win2, 'a second window opens for the theme check')
     if (win2) {
-      await win2.waitForSelector('.sidebar, .run-header', { timeout: 20_000 }).catch(() => {})
+      await win2.waitForSelector('.sidebar, [data-testid=run-strip]', { timeout: 20_000 }).catch(() => {})
       await sleep(600)
       check((await win2.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'the second window uses the saved light theme')
       await win2.close().catch(() => {})

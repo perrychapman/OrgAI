@@ -1,16 +1,29 @@
-/* ---------- Run tabs, run header, New run page, History (spec 2.5, 2.6) ---------- */
+/* ---------- Run strip (40 px): run tabs at the start, the active run's actions at the end (ui-review-2 B.5) ---------- */
 
-/* Row 1 of the run bar: browser-style tabs. In normal flow; tabs never scroll, the overflow goes to the "+n" menu. */
+.run-strip {
+  --run-strip-h: 40px;
+  container-type: inline-size;
+  container-name: strip;
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-3);
+  height: var(--run-strip-h);
+  min-width: 0;
+  padding: 0 var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+}
+/* Browser-style tabs. In normal flow; tabs never scroll, the overflow goes to the "+n" menu. */
 .run-tabs {
   --run-tab-w: calc(var(--space-16) * 2.5);
   position: relative;
+  flex: 1 1 0;
   display: flex;
   align-items: flex-end;
   gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-1) var(--space-3) 0;
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-default);
+  padding-top: var(--space-2);
 }
 .run-tablist {
   display: flex;
@@ -23,26 +36,22 @@
   flex: 0 0 var(--run-tab-w);
   display: flex;
   height: var(--control-md);
-  border: 1px solid var(--border-default);
+  margin-bottom: -1px;
+  border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
-  background: var(--surface-2);
+  background: transparent;
   color: var(--text-secondary);
 }
 .run-tab-wrap:hover {
-  border-color: var(--border-strong);
+  background: var(--surface-2);
   color: var(--text-primary);
 }
 .run-tab-wrap.selected {
-  background: var(--surface-3);
-  border-color: var(--border-strong);
+  background: var(--surface-2);
+  border-color: var(--border-default);
   color: var(--text-primary);
-  box-shadow: inset 0 var(--space-0h) 0 var(--accent);
-}
-.run-tab-wrap.waiting {
-  border-color: var(--warning-border);
-  background: var(--warning-soft);
-  color: var(--text-primary);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 .run-tab {
   flex: 1;
@@ -80,22 +89,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* One trailing badge slot of fixed width, so a tab never changes size while you watch it. */
-.run-tab-badge {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
-  width: var(--icon-md);
-  height: var(--icon-md);
-}
-.run-tab-badge .badge-warn {
-  display: inline-flex;
-  color: var(--warning-text);
-}
-.run-tab-badge .badge-draft {
-  display: inline-flex;
-  color: var(--text-tertiary);
-}
 .run-tab-close {
   position: absolute;
   top: 50%;
@@ -117,10 +110,6 @@
 .run-tab-wrap.selected .run-tab-close,
 .run-tab-close:focus-visible {
   opacity: 1;
-}
-.run-tab-wrap:hover:has(.run-tab-close) .run-tab-badge,
-.run-tab-wrap.selected:has(.run-tab-close) .run-tab-badge {
-  visibility: hidden;
 }
 .run-tab-close:hover {
   background: var(--border-default);
@@ -148,6 +137,10 @@
 }
 .run-dot.danger {
   background: var(--danger);
+}
+/* Unread notes or an unsent draft: the same dot with a ring; the words are in the tooltip and the tab's name. */
+.run-dot.marked {
+  box-shadow: 0 0 0 1px var(--surface-1), 0 0 0 2px var(--text-secondary);
 }
 @media (prefers-reduced-motion: reduce) {
   .run-dot.is-running {
@@ -236,10 +229,6 @@
   color: var(--text-disabled);
   cursor: default;
 }
-.run-tab-badge .badge-unread {
-  display: inline-flex;
-  color: var(--info-text);
-}
 .run-tabs-notice {
   flex: 0 1 auto;
   align-self: center;
@@ -253,110 +242,26 @@
   color: var(--text-secondary);
 }
 
-/* Row 2: the run header. Wraps instead of squeezing; the meta text goes first when the header is narrow. */
-.run-header {
-  container-type: inline-size;
-  container-name: run-header;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-3);
-  min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-default);
-}
-.run-header-id {
-  flex: 1 1 calc(var(--space-16) * 4);
+/* The active run's actions, at the trailing edge of the strip. */
+.run-actions {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
 }
-.run-header-prompt {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-body);
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
+.run-actions .run-act-end {
+  margin-left: var(--space-2);
 }
-.run-header-prompt-toggle {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  padding: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.run-header-prompt-toggle:hover {
-  background: var(--surface-2);
-  color: var(--text-primary);
-}
-.run-header-prompt-toggle:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
-/* The whole prompt, wrapped and scrollable, on its own row under the header controls. */
-.run-header-fullprompt {
-  flex: 1 1 100%;
-  min-width: 0;
-  max-height: calc(var(--space-16) * 2);
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  color: var(--text-secondary);
-}
-.run-header-meta {
-  flex: none;
-  white-space: nowrap;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
-}
-.run-header-chain {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
-}
-.run-header-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-}
-/* Narrow header: the fold toggle keeps its icon and its accessible name, the agent count goes. */
-@container run-header (max-width: 900px) {
-  .run-agents {
-    display: none;
-  }
-  .fold-label {
+/* Narrow strip: the actions keep their icon and accessible name, the words go. */
+@container strip (max-width: 760px) {
+  .run-act-label {
     position: absolute;
     width: 1px;
     height: 1px;
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
-  }
-}
-@container run-header (max-width: 560px) {
-  .run-header-meta {
-    display: none;
   }
 }
 
@@ -582,4 +487,15 @@
   border-radius: var(--radius-full);
   background: var(--info-text);
   flex: none;
+}
+
+.run-tab-index {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.run-tab-wrap.selected .run-tab-index {
+  color: var(--text-primary);
 }

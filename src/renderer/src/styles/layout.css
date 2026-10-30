@@ -12,8 +12,8 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  /* The stage keeps at least 40% of the frame; the tray takes what it needs up to 60% and its card body scrolls. */
-  grid-template-rows: auto minmax(max(96px, 40cqh), 1fr) minmax(0, max-content) auto;
+  /* The stage keeps at least 55% of the frame; the tray takes what it needs up to the rest and scrolls inside it. */
+  grid-template-rows: auto minmax(max(96px, 55cqh), 1fr) minmax(0, max-content) auto;
   grid-template-areas:
     'toolbar'
     'stage'
@@ -49,9 +49,10 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  overflow: hidden;
-  /* Share the frame height with the stage: never more than 60% of the frame. */
-  max-height: min(60cqh, calc(100cqh - 160px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* A share of the frame, not of the window: the stage keeps 55% and the 32px toolbar comes off the tray's 45%. */
+  max-height: calc(45cqh - var(--toolbar-h, 32px));
   min-height: 0;
   background: var(--surface-1);
   border-top: 1px solid var(--border-default);
@@ -75,10 +76,10 @@
   margin-right: var(--space-1h);
   vertical-align: middle;
 }
-/* Wide or short frame: the tray docks beside the canvas and keeps its own scroll. */
-@container frame (min-width: 760px) or (max-height: 420px) {
+/* Only a roomy frame (1100 x 560 or more) docks the tray beside the canvas; a short frame never does (it stacks). */
+@container frame (min-width: 1100px) and (min-height: 560px) {
   .frame-grid:has(> .frame-tray) {
-    grid-template-columns: minmax(0, 1fr) clamp(280px, 40cqi, 360px);
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 34cqi, 400px);
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       'toolbar toolbar'
@@ -91,6 +92,11 @@
     border-left: 1px solid var(--border-default);
   }
 }
+/* Compact tray (frame under 480px high, data-compact set by CanvasFrame): tighter padding; the cards fold their body. */
+.frame-tray[data-compact='true'] {
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+}
 .frame-tray:empty {
   display: none;
 }
@@ -99,9 +105,6 @@
 .frame-tray > * {
   min-width: 0;
   max-width: 100%;
-}
-.frame-toolbar .run-strip {
-  flex: 1 1 100%;
 }
 
 /* Side panel: a collapsible column of .editor / .live. */
@@ -166,9 +169,256 @@
   }
 }
 
-/* Stacked tray (frame narrower than 760px): the legend gives its row back to the card while a decision is pending. */
-@container frame (max-width: 759px) {
-  .frame-grid:has(> .frame-tray) .frame-footer {
+/* ---------- Run toolbar (32 px, inside the frame): metadata at the start, switch, zoom and legend at the end ---------- */
+
+.frame-toolbar.frame-toolbar-dense {
+  --toolbar-h: 32px;
+  flex-wrap: nowrap;
+  height: var(--toolbar-h);
+  padding: 0 var(--space-3);
+  gap: var(--space-3);
+  overflow: hidden;
+}
+.frame-toolbar-end {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.run-meta {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.run-meta-item {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.run-meta-chain {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.run-meta-chain .link-btn {
+  font-size: inherit;
+}
+button.run-meta-item {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+button.run-meta-item:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+button.run-meta-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.run-meta-steps.blocked {
+  color: var(--warning-text);
+}
+.run-meta-steps.done {
+  color: var(--success-text);
+}
+.run-meta-unattended {
+  color: var(--text-secondary);
+}
+/* A narrow frame drops the least useful items first. */
+@container frame (max-width: 760px) {
+  .run-meta-started,
+  .run-meta-auto {
     display: none;
+  }
+}
+@container frame (max-width: 560px) {
+  .run-meta-cost,
+  .run-meta-agents {
+    display: none;
+  }
+  .fold-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+.run-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0h);
+}
+
+/* Legend popover: the shape each state has on its node, plus the word (never colour alone). */
+.legend-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 200px;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-primary);
+}
+.legend-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.legend-shape {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+}
+.legend-ring {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--info);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--info) 25%, transparent);
+}
+.legend-line {
+  width: 18px;
+  border-top: 2px dashed var(--edge-message);
+}
+.legend-warn {
+  color: var(--warning-text);
+}
+.legend-ok {
+  color: var(--success-text);
+}
+.legend-bad {
+  color: var(--danger-text);
+}
+
+/* ---------- Decision list in the tray (chips for every open decision) ---------- */
+
+.frame-tray .decision-stepper {
+  position: sticky;
+  top: calc(-1 * var(--space-3));
+  z-index: 1;
+  min-width: 0;
+  margin: calc(-1 * var(--space-1)) 0 0;
+  padding: var(--space-1) 0;
+  background: var(--surface-1);
+}
+.frame-tray .decision-stepper-title {
+  flex: none;
+  margin-right: 0;
+}
+.frame-tray .decision-stepper .icon-btn {
+  min-width: var(--control-sm);
+  min-height: var(--control-sm);
+}
+.decision-count {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.decision-list {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-0h);
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.decision-list li {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.decision-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  max-width: 180px;
+  height: var(--control-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.decision-chip:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.decision-chip[aria-current='true'] {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.decision-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.decision-chip-n {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.decision-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-steps {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+@container frame (max-width: 640px) {
+  .decision-steps > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
 }
