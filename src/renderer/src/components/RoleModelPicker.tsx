@@ -68,7 +68,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
     const groups: ModelGroup[] = [
       { label: 'Inherit', options: [{ value: 'inherit', label: isRoot ? 'Use the connection default' : 'Inherit from parent' }] },
       ...tierGroups,
-      ...(others.length ? [{ label: 'Other models', options: others.map((m) => ({ value: m.id, label: m.id })) }] : [])
+      ...(others.length ? [{ label: 'Other models', options: others.map((m) => ({ value: m.id, label: m.recommended ? `${m.id} (recommended)` : m.id })) }] : [])
     ]
     return { groups, known: byId }
   }, [catalog, tierModels, isRoot])

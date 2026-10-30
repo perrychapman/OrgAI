@@ -14,7 +14,7 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { AgentImportScan, Project, Role } from '@shared/types'
-import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import { ROLE_COLORS, modelForTier, newId, projectConnection, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar } from '../components/layout/CanvasFrame'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -65,6 +65,8 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const selectedRoleId = useAppStore((s) => s.selectedRoleId)
   const selectRole = useAppStore((s) => s.selectRole)
   const updateRoles = useAppStore((s) => s.updateRoles)
+  const connectionInfos = useAppStore((s) => s.connections)
+  const modelCatalogs = useAppStore((s) => s.models)
   const { confirm, dialog } = useConfirm()
   const patternColor = useCssVar('--canvas-pattern')
   const faintColor = useCssVar('--text-tertiary')
@@ -313,6 +315,12 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const addRole = (): void => {
     const manager = addParent
     const name = nextRoleName(project.roles)
+    const conn = projectConnection(project)
+    const everyday = modelForTier('everyday', {
+      connection: conn,
+      tierModels: connectionInfos?.find((c) => c.connection.id === conn)?.connection.tierModels ?? {},
+      catalog: modelCatalogs[conn]
+    })
     const role: Role = {
       id: newId('role'),
       slug: slugify(name),
@@ -321,7 +329,8 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
       responsibilities: [],
       prompt: 'You are a specialist. Complete the assigned task and report back concisely.',
       tools: ['Read', 'Glob', 'Grep'],
-      model: 'sonnet',
+      model: everyday?.model ?? 'inherit',
+      tier: everyday ? everyday.tier : undefined,
       canSpawn: false,
       spawnable: [],
       reportsTo: manager?.id ?? null,

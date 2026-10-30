@@ -5,6 +5,7 @@ import type { ConnectionInfo, ModelRef, ModelTier, ProviderConnection, ProviderM
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { defaultTierModels, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
+import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
@@ -43,7 +44,7 @@ export default function TierEditor({
   }, [saved])
 
   const groups: ModelGroup[] = useMemo(
-    () => groupByFamily(models).map((g) => ({ label: FAMILY_LABEL[g.family], options: g.models.map((m) => ({ value: m.id, label: m.id })) })),
+    () => groupByFamily(models).map((g) => ({ label: FAMILY_LABEL[g.family], options: g.models.map((m) => ({ value: m.id, label: m.recommended ? `${m.id} (recommended)` : m.id })) })),
     [models]
   )
   const known = new Set(models.map((m) => m.id))
@@ -94,7 +95,15 @@ export default function TierEditor({
           return (
             <div key={o.value} className="tier-row">
               <div className="tier-label">
-                <strong>{o.label}</strong>
+                <strong>
+                  {o.label}
+                  {info.connection.autoTiers?.includes(o.value) && (
+                    <>
+                      {' '}
+                      <Badge testId="tier-auto" title="Chosen automatically; moves to a newer model when one is discovered. Choosing a model makes it manual.">Automatic</Badge>
+                    </>
+                  )}
+                </strong>
                 <span className="muted">{{ top: 'Most capable. Orchestrators and hard problems.', deep: 'Strong reasoning for senior roles.', everyday: 'Default for most roles.', fast: 'Cheap and quick. Lookups and simple edits.' }[o.value]}</span>
               </div>
               <ModelSelect

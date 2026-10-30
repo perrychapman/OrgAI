@@ -18,7 +18,7 @@ import { useConfirm } from '../ui/ConfirmDialog'
 import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 
-const SOURCE_LABEL: Record<ModelPriceInfo['source'], string> = { override: 'Override', proxy: 'Proxy', builtin: 'Built-in' }
+const SOURCE_LABEL: Record<ModelPriceInfo['source'], string> = { override: 'Override', proxy: 'Proxy', builtin: 'Built-in', community: 'Community list' }
 
 const FIELDS: { field: Exclude<PriceField, 'model'>; label: string; optional: boolean }[] = [
   { field: 'input', label: 'Input', optional: false },

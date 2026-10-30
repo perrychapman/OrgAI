@@ -986,7 +986,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ login: e.login })
         return
       case 'models.updated':
-        set((s) => ({ models: { ...s.models, [e.connection]: e.models } }))
+        // `changed === false`: same model ids as before, so keep the existing list (no re-render); only the
+        // refresh time moves. (Remap notices come from projects.remapped, which main sends only on a real change.)
+        set((s) => ({
+          ...(e.changed === false && s.models[e.connection] ? {} : { models: { ...s.models, [e.connection]: e.models } }),
+          modelsError: { ...s.modelsError, [e.connection]: undefined },
+          connections:
+            e.refreshedAt && s.connections
+              ? s.connections.map((c) => (c.connection.id === e.connection ? { ...c, modelsRefreshedAt: e.refreshedAt, modelsError: undefined } : c))
+              : s.connections
+        }))
         return
       case 'projects.remapped': {
         // Snapshot the renderer copies before reloading, so Undo can restore them.

@@ -3,7 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import type { ConnectionId } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
@@ -23,6 +23,8 @@ import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
 import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/settingsCopy'
+import { modelSettingGroups, modelSettingHint } from '../lib/assistantModels'
+import { ModelSelect } from '../components/ui/ModelSelect'
 import { connectionUsable } from '../lib/projectsForm'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
@@ -155,10 +157,16 @@ export default function AppSettingsView(): ReactElement {
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const connections = useAppStore((s) => s.connections)
   const loadConnections = useAppStore((s) => s.loadConnections)
+  const loadModels = useAppStore((s) => s.loadModels)
+  const defaultConn: ConnectionId = info?.defaultConnection ?? 'anthropic'
+  const defaultCatalog = useAppStore((s) => s.models[defaultConn])
   useEffect(() => {
     void loadAppInfo()
     void loadConnections()
   }, [loadAppInfo, loadConnections])
+  useEffect(() => {
+    if (!defaultCatalog) void loadModels(defaultConn)
+  }, [defaultCatalog, defaultConn, loadModels])
 
   useEffect(() => {
     window.orgai.settings
@@ -264,12 +272,17 @@ export default function AppSettingsView(): ReactElement {
     patchAppearance({ accent: hex })
   }
 
-  const modelOptions = (value: string, allowInherit: boolean): { value: string; label: string }[] => {
-    const list = CLAUDE_MODEL_OPTIONS.filter((m) => allowInherit || m.value !== 'inherit').map((m) => ({ value: m.value, label: m.label }))
-    return CLAUDE_MODEL_OPTIONS.some((m) => m.value === value) ? list : [...list, { value, label: value }]
-  }
-
-  const modelHint = (value: string): string | undefined => CLAUDE_MODEL_OPTIONS.find((m) => m.value === value)?.hint
+  /** Tiers first, then the default connection's discovered models. Never a hard-coded vendor name. */
+  const modelSelect = (label: string, rowId: string, value: string, allowInherit: boolean, onChange: (v: string) => void): ReactElement => (
+    <ModelSelect
+      label={label}
+      hideLabel
+      value={value}
+      groups={modelSettingGroups(value, defaultCatalog, allowInherit)}
+      onChange={onChange}
+      testId={`${rowId}-select`}
+    />
+  )
 
   return (
     <>
@@ -409,6 +422,23 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'connections' && (
           <>
             <ConnectionsPanel />
+            <SettingsSection id="appsettings-section-price-sources" title="Price sources" description="Where cost estimates come from for models without a built-in price.">
+              <SettingsCard>
+                <SettingRow
+                  id="community-prices-row"
+                  title="Community price list"
+                  description="Fetches a cached public price list (LiteLLM, MIT) for models without a built-in price. Your overrides below always win."
+                  control={
+                    <Switch
+                      checked={info.communityPrices !== false}
+                      label="Community price list"
+                      describedBy={settingDescId('community-prices-row')}
+                      onChange={(communityPrices) => patch({ communityPrices }, true)}
+                    />
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
             <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
           </>
         )}
@@ -455,16 +485,16 @@ export default function AppSettingsView(): ReactElement {
                 <SettingRow
                   id="default-root-model-row"
                   title="Orchestrator model"
-                  description="Leads each new project's runs."
+                  description={`Leads each new project's runs.${modelSettingHint(info.defaultRootModel) ? ` ${modelSettingHint(info.defaultRootModel)}.` : ''}`}
                   width="select"
-                  control={<Select label="Orchestrator model" describedBy={settingDescId('default-root-model-row')} value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
+                  control={modelSelect('Orchestrator model', 'default-root-model-row', info.defaultRootModel, false, (defaultRootModel) => patch({ defaultRootModel }))}
                 />
                 <SettingRow
                   id="default-report-model-row"
                   title="Report model"
-                  description="Used by the roles that report to the orchestrator."
+                  description={`Used by the roles that report to the orchestrator.${modelSettingHint(info.defaultReportModel) ? ` ${modelSettingHint(info.defaultReportModel)}.` : ''}`}
                   width="select"
-                  control={<Select label="Report model" describedBy={settingDescId('default-report-model-row')} value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
+                  control={modelSelect('Report model', 'default-report-model-row', info.defaultReportModel, true, (defaultReportModel) => patch({ defaultReportModel }))}
                 />
               </SettingsCard>
             </SettingsGroup>
@@ -475,17 +505,17 @@ export default function AppSettingsView(): ReactElement {
                   title="Setup model"
                   description="Plans and revises org charts and reviews finished runs. Applies to every project."
                   width="select"
-                  control={<Select label="Setup model" describedBy={settingDescId('setup-model-row')} value={info.setupModel} options={modelOptions(info.setupModel, false)} onChange={(setupModel) => patch({ setupModel })} />}
+                  control={modelSelect('Setup model', 'setup-model-row', info.setupModel, false, (setupModel) => patch({ setupModel }))}
                 />
                 <SettingRow
                   id="mcp-assist-model-row"
                   title="MCP assistant model"
                   description="Used by Configure with AI under Custom servers. Applies to every project."
                   width="select"
-                  control={<Select label="MCP assistant model" describedBy={settingDescId('mcp-assist-model-row')} value={info.mcpAssistModel} options={modelOptions(info.mcpAssistModel, false)} onChange={(mcpAssistModel) => patch({ mcpAssistModel })} />}
+                  control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
                 />
               </SettingsCard>
-              <p className="muted">On other connections a Claude model stands for its tier. If a project's connection can't run it, the run uses the deep tier and says so in its log.</p>
+              <p className="muted">A tier resolves through each project's connection. A specific model applies only where that connection offers it. If a project's connection can't run it, the run uses the deep tier and says so in its log.</p>
             </SettingsGroup>
             <SettingsGroup title="Safety">
               <SettingsCard>
@@ -571,15 +601,15 @@ export default function AppSettingsView(): ReactElement {
                   }
                 />
                 <SettingRow
-                  id="default-sonnet-row"
-                  title={SETTINGS_COPY.preferSonnet.label}
-                  description={SETTINGS_COPY.preferSonnet.description}
+                  id="default-everyday-row"
+                  title={SETTINGS_COPY.preferEveryday.label}
+                  description={SETTINGS_COPY.preferEveryday.description}
                   control={
                     <Switch
-                      checked={info.defaultPreferSonnetNearLimit}
-                      label={SETTINGS_COPY.preferSonnet.label}
-                      describedBy={settingDescId('default-sonnet-row')}
-                      onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
+                      checked={info.defaultPreferEverydayNearLimit}
+                      label={SETTINGS_COPY.preferEveryday.label}
+                      describedBy={settingDescId('default-everyday-row')}
+                      onChange={(defaultPreferEverydayNearLimit) => patch({ defaultPreferEverydayNearLimit })}
                     />
                   }
                 />

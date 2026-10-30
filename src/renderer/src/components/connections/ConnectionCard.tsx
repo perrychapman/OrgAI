@@ -253,6 +253,13 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           {connected && (
             <>
               <div className="card-sec">
+                {(info.modelsRefreshedAt || info.modelsError) && (
+                  <p className={`field-msg${info.modelsError ? ' warn' : ''}`} data-testid="models-refreshed">
+                    {info.modelsRefreshedAt ? `Models updated ${relativeTime(info.modelsRefreshedAt)}` : ''}
+                    {info.modelsRefreshedAt && info.modelsError ? '. ' : ''}
+                    {info.modelsError ? `Last refresh failed: ${info.modelsError}` : ''}
+                  </p>
+                )}
                 <ModelList id={id} models={models} error={modelsError} onRetry={() => void loadModels(id, true)} tierModels={info.connection.tierModels} />
               </div>
               <div className="card-sec">
