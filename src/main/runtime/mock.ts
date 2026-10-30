@@ -8,6 +8,7 @@ import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { composeFirstMessage } from './prompts'
+import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 
 /**
@@ -622,12 +623,13 @@ export class MockSession implements RuntimeSession {
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
     const role = this.rolesBySlug.get(slug)
+    const agentParent = resolveParent(this.agents, step.id, parentId, ROOT_AGENT_ID)
     this.upsert({
-      ...this.ensureAgent(step.id, { roleSlug: slug, parentId }),
+      ...this.ensureAgent(step.id, { roleSlug: slug, parentId: agentParent }),
       roleId: role?.id ?? null,
       roleSlug: slug,
       name: role?.name ?? slug,
-      parentId,
+      parentId: agentParent,
       spawnToolUseId: toolUseId,
       handle,
       state: 'thinking',

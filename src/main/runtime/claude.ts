@@ -37,6 +37,7 @@ import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, canWrite, composeFirst
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
+import { resolveParent } from './agentTree'
 import {
   mapRateLimitEvent,
   mapUsageResponse,
@@ -1037,10 +1038,10 @@ class ClaudeSession implements RuntimeSession {
         } else if (msg.subtype === 'task_started') {
           // Background shell commands and MCP calls are tasks too; only subagents belong on the chart.
           if (msg.task_type && msg.task_type !== 'local_agent') break
-          const parentId =
-            msg.parent_task_id ??
-            (msg.tool_use_id ? this.toolUseIssuer.get(msg.tool_use_id) : undefined) ??
-            ROOT_ID
+          // A SendMessage to a finished subagent resumes it with parent_task_id = the messenger (possibly its own
+          // descendant); resolveParent keeps an existing agent's parent so the tree can never gain a cycle.
+          const candidate = msg.parent_task_id ?? (msg.tool_use_id ? this.toolUseIssuer.get(msg.tool_use_id) : undefined)
+          const parentId = resolveParent(this.agents, msg.task_id, candidate, ROOT_ID)
           if (msg.tool_use_id) this.taskByToolUse.set(msg.tool_use_id, msg.task_id)
           const slug = msg.subagent_type ?? 'general-purpose'
           const role = this.rolesBySlug.get(slug)
