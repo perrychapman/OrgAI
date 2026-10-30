@@ -315,6 +315,7 @@ try {
   await page.locator('[data-testid=auth-pill]').click()
   await page.locator('[data-testid=account-popover]').waitFor({ state: 'visible', timeout: 5000 })
   check((await page.locator('[data-testid=account-popover]').getByRole('button', { name: /Connections/ }).count()) === 1, 'account popover links to App settings Connections')
+  check((await page.locator('[data-testid=account-popover]').getByRole('button', { name: /refresh/i }).count()) === 0 && !/Updated/.test(await page.locator('[data-testid=account-popover]').innerText()), 'account popover has no Refresh button or Updated text')
   await shot('account-popover')
   await page.keyboard.press('Escape')
   await sleep(200)
