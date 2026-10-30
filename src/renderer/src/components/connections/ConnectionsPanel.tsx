@@ -30,18 +30,21 @@ export default function ConnectionsPanel(): ReactElement {
 
   const none = connections && connections.every((c) => c.status.state !== 'connected')
   return (
-    <section className="conn-panel" aria-labelledby="connections-title">
-      <div className="section-head">
-        <div>
-          <h2 id="connections-title">Connections</h2>
-          <p>Where agents get their models. Each project picks one connection.</p>
+    <section className="conn-panel settings-section" aria-labelledby="connections-title">
+      {/* Same markup as SettingsSection, spelled out so the heading keeps its stable id. */}
+      <header className="settings-section-head">
+        <div className="settings-section-heading">
+          <h2 id="connections-title" className="settings-section-title">
+            Connections
+          </h2>
+          <p className="settings-section-lead">Where agents get their models. Each project picks one.</p>
         </div>
-        <div className="section-actions">
-          <Button icon={undefined} loading={busy} title="Reload status and model lists" onClick={() => void refreshAll()}>
+        <div className="settings-section-actions">
+          <Button loading={busy} title="Reload status and model lists" onClick={() => void refreshAll()}>
             Refresh all
           </Button>
         </div>
-      </div>
+      </header>
       <RemapNotices />
       {error && !connections ? (
         <Banner tone="danger" title="Could not load connections" actions={<Button size="sm" onClick={() => void load()}>Retry</Button>}>

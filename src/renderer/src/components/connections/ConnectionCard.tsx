@@ -39,13 +39,18 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const loadModels = useAppStore((s) => s.loadModels)
   const models = useAppStore((s) => s.models[id])
   const modelsError = useAppStore((s) => s.modelsError[id])
-  const [open, setOpen] = useState(true)
+  // Collapsed when everything works; open when the card needs the user (not connected, error, login pending).
+  const [open, setOpen] = useState(info.status.state !== 'connected')
   const [busy, setBusy] = useState<null | 'refresh' | 'connect'>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const state = info.status.state
   const connected = state === 'connected'
+
+  useEffect(() => {
+    if (state === 'error' || state === 'connecting') setOpen(true)
+  }, [state])
 
   useEffect(() => {
     if (connected && !models) void loadModels(id)
@@ -114,16 +119,18 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
 
   const detail = useMemo(() => {
     if (state === 'connected') {
-      const parts = [info.status.account, info.status.detail].filter(Boolean)
+      // One-line summary: auth kind, model count, freshness.
+      const conn = info.connection as AnthropicConnection | OpenAIConnection | LiteLLMConnection
+      const auth = id === 'litellm' ? 'Proxy key' : (conn as AnthropicConnection).auth.kind === 'apiKey' ? 'API key' : id === 'anthropic' ? 'Claude Code login' : 'ChatGPT sign-in'
       const when = relativeTime(info.status.checkedAt)
-      return [...parts, when ? `Updated ${when}` : ''].filter(Boolean).join(' · ') || 'Connected'
+      return [info.status.account, auth, models ? `${models.length} models` : '', when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
     }
     if (state === 'connecting') return info.status.detail ?? (id === 'litellm' ? 'Testing the proxy' : 'Waiting for the browser sign-in')
     if (state === 'error') return info.status.detail ?? 'Something went wrong.'
     const usesKey = (info.connection as AnthropicConnection | OpenAIConnection).auth?.kind === 'apiKey'
     if (usesKey && info.status.detail) return `Not connected: ${info.status.detail}`
     return info.status.detail ?? meta.hint
-  }, [state, info.status, info.connection, id, meta.hint])
+  }, [state, info.status, info.connection, id, meta.hint, models])
 
   return (
     <section className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
@@ -221,6 +228,16 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   )
 }
 
+/** Long caveat behind a native "Learn more" disclosure (same look as SettingRow's). */
+function More({ children }: { children: string }): ReactElement {
+  return (
+    <details className="setting-row-more">
+      <summary>Learn more</summary>
+      <div className="setting-row-more-body">{children}</div>
+    </details>
+  )
+}
+
 function CopyDetails({ text }: { text: string }): ReactElement {
   return (
     <Button size="sm" variant="ghost" icon={Copy} onClick={() => void navigator.clipboard?.writeText(text)}>
@@ -300,7 +317,7 @@ function AnthropicAuth({
           </Button>
         )}
       </div>
-      {connected && <p className="muted">OrgAI stops using this connection. Your Claude Code login on this machine is not changed.</p>}
+      {connected && <More>OrgAI stops using this connection. Your Claude Code login on this machine is not changed.</More>}
     </div>
   )
 }
@@ -402,14 +419,14 @@ function OpenAIAuth({
           <div className="conn-actions">
             {connected ? <Button onClick={() => void onDisconnect()}>Sign out of OrgAI</Button> : <Button variant="primary" loading={busy} onClick={() => void onConnect()}>Connect</Button>}
           </div>
-          {connected && <p className="muted">OrgAI stops using this connection. The environment variable is not changed.</p>}
+          {connected && <More>OrgAI stops using this connection. The environment variable is not changed.</More>}
         </>
       ) : connected ? (
         <>
           <div className="conn-actions">
             <Button onClick={() => void onDisconnect()}>Sign out of ChatGPT</Button>
           </div>
-          <p className="muted">Removes the ChatGPT login OrgAI keeps for Codex.</p>
+          <More>Removes the ChatGPT login OrgAI keeps for Codex.</More>
         </>
       ) : (
         <>
@@ -515,9 +532,8 @@ function LiteLLMAuth({
           />
         </div>
       </div>
-      <p className="muted">The key is stored encrypted on this machine. It is never written to your project or shown again.</p>
+      <More>The key is stored encrypted on this machine. It is never written to your project or shown again. Disconnecting deletes the stored key and keeps the proxy URL.</More>
       {connected && changed && <p className="muted">Changed. Test and connect to apply.</p>}
-      {connected && <p className="muted">Disconnecting deletes the stored API key. The proxy URL stays.</p>}
       <div className="conn-actions">
         <Button variant="primary" loading={busy} disabled={!valid} onClick={() => void onConnect({ ...conn, baseUrl: url.trim() })}>
           Test and connect

@@ -87,15 +87,14 @@ Panes, in order: **General · Agents · Limits · Connection · Tools (MCP serve
 
 #### App settings (sidebar item `App settings`, topbar title `App settings`)
 
-Panes: **General (Appearance, Notifications) · Connections · MCP library · Defaults (Defaults for new projects, Usage) · About**. Same pane model, same `SettingsSection` tier; the topbar h1 is the page title, so there is no second title in the page. Saves drive the same topbar `SaveIndicator` as the project page.
+Panes: **General · Connections · MCP library · Defaults · About**. Same pane model, same `SettingsSection` tier; the topbar h1 is the page title, so there is no second title in the page. Saves drive the same topbar `SaveIndicator` as the project page.
 
 | Page | Rows |
 | --- | --- |
-| **Appearance** | Theme (SegmentedControl: Dark / Light / System, each with a tiny preview), Accent color (swatch grid of 7 presets + custom hex input with live contrast readout), Canvas (Pattern: Dots / Grid / None; Accent tint: Switch; Edge style: Curved / Orthogonal / Straight; Show minimap: Switch), Reduce motion (System / Always). A live preview card (mini org chart + button + badge) renders at the top of the page so changes are visible without leaving. |
-| **Notifications** | Notify me when a run needs attention or finishes (Switch). The single source of truth; the sidebar toggle is removed. |
-| **Claude and usage** | Authentication (RadioGroup, same component as the project one), live plan usage (same bars as the popover, full width), Opus weekly threshold (number, with the sentence "Applies to projects that prefer Sonnet near the limit"). |
-| **Defaults for new projects** | Orchestrator model, Report model, Permission mode, Estimated-cost cap, Runs to keep, Isolate writing reports (Switch), Prefer Sonnet near the limit (Switch). One group, one footnote: "Applied when a project is created. Existing projects keep their own settings." |
-| **Data and about** | Data directory (path + Open folder), App logs (Open log folder), Version, link to docs, the OrgAI lockup. |
+| **General** | Appearance in two groups. Theme: Theme (Dark / Light / System), Accent colour (preset swatches; the hex field appears behind "Custom…"), Motion (System / Always reduce). Canvas: Pattern, Connection lines, Tint with the accent, Minimap. Then Notifications: one Switch row, the single source of truth. |
+| **Connections** | `SettingsSection` header with "Refresh all" in the actions slot. Three provider cards, collapsed to one summary line (status chip, auth kind, N models, last updated); a card opens by default only when it needs action. Open: Authentication, "Models (N)" disclosure, "Model tiers (advanced)" disclosure with Reset. Caveats sit behind "Learn more". About 80 words at rest. |
+| **Defaults** | "Defaults for new projects" (lead: "Applied when a project is created. Existing projects keep their own settings."): models, then the shared-copy rows from `lib/settingsCopy.ts` (select options use short names, the chosen option's description is the row hint). Usage group (`appsettings-section-usage`) follows with the Opus weekly threshold. |
+| **About** | One card with a compact definition list: Version (with a "Mock adapter" badge when available), Platform, Data folder and Logs folder (path, Copy, Open). About 30 words. |
 
 Rows: label and a one-line description (15 words at most, no internal tool names) on the left, the control on the right at a fixed width (number 120 px, select or segmented 240 px, full width only for paths and textareas), a hairline between rows, 56 px minimum height. Long rationale goes behind a native "Learn more" disclosure on the row. Settings that exist in both scopes (permission mode, cost cap, runs to keep, isolate, auto-continue, max continues, prefer Sonnet, Opus threshold) take their wording from the shared table `lib/settingsCopy.ts` and use the same labels and descriptions; app-level rows are prefixed by the page title "Defaults for new projects" instead of re-labelling each field.
 

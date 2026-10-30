@@ -18,6 +18,7 @@ import type { SettingsNavItem } from '../components/settings/SettingsNav'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
+import { SETTINGS_COPY } from '../lib/settingsCopy'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
@@ -44,6 +45,15 @@ const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string
   { value: 'system', label: 'Follow system' },
   { value: 'on', label: 'Always reduce' }
 ]
+/** Short select names; the chosen mode's description shows as the row hint. Matches the project page. */
+const PERMISSION_SHORT: Record<PermissionMode, string> = {
+  auto: 'Unattended',
+  acceptEdits: 'Auto-accept edits',
+  default: 'Ask for risky actions',
+  dontAsk: 'Never ask',
+  plan: 'Plan only',
+  bypassPermissions: 'Bypass all prompts'
+}
 /** Accent choices; the first is the default. Any other color can be typed as hex. */
 const ACCENT_SWATCHES: { name: string; hex: string }[] = [
   { name: 'Violet', hex: DEFAULT_APPEARANCE.accent },
@@ -72,6 +82,7 @@ export default function AppSettingsView(): ReactElement {
   const [info, setInfo] = useState<AppSettingsInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [hexDraft, setHexDraft] = useState<string | null>(null)
+  const [customRequested, setCustomRequested] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
@@ -162,6 +173,8 @@ export default function AppSettingsView(): ReactElement {
     patch({ appearance: next }, true)
   }
 
+  // The hex field stays hidden unless asked for or the current accent is not a preset.
+  const customOpen = customRequested || !ACCENT_SWATCHES.some((sw) => sw.hex === appearance.accent)
   const hexValue = hexDraft ?? appearance.accent
   const hexOk = normalizeHex(hexValue) !== null
   /** Apply the typed color on Enter or blur, not on every keystroke. */
@@ -176,9 +189,11 @@ export default function AppSettingsView(): ReactElement {
   }
 
   const modelOptions = (value: string, allowInherit: boolean): { value: string; label: string }[] => {
-    const list = CLAUDE_MODEL_OPTIONS.filter((m) => allowInherit || m.value !== 'inherit').map((m) => ({ value: m.value, label: `${m.label} · ${m.hint}` }))
+    const list = CLAUDE_MODEL_OPTIONS.filter((m) => allowInherit || m.value !== 'inherit').map((m) => ({ value: m.value, label: m.label }))
     return CLAUDE_MODEL_OPTIONS.some((m) => m.value === value) ? list : [...list, { value, label: value }]
   }
+
+  const modelHint = (value: string): string | undefined => CLAUDE_MODEL_OPTIONS.find((m) => m.value === value)?.hint
 
   return (
     <>
@@ -196,19 +211,20 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'general' && (
           <>
             <SettingsSection id={APP_SETTINGS_SECTIONS.appearance} title="Appearance" testId="appearance-section">
-              <SettingsCard>
-                <SettingRow
-                  title="Theme"
-                  description="System follows your operating system."
-                  width="select"
-                  control={<SegmentedControl label="Theme" value={appearance.theme} options={THEME_OPTIONS} onChange={(theme) => patchAppearance({ theme })} />}
-                />
-                <SettingRow
-                  title="Accent color"
-                  id="accent-title"
-                  control={
-                    <>
-                      <div className="accent-swatches" role="group" aria-label="Accent color presets">
+              <SettingsGroup title="Theme">
+                <SettingsCard>
+                  <SettingRow
+                    title="Theme"
+                    description="System follows your operating system."
+                    width="select"
+                    control={<SegmentedControl label="Theme" value={appearance.theme} options={THEME_OPTIONS} onChange={(theme) => patchAppearance({ theme })} />}
+                  />
+                  <SettingRow
+                    title="Accent colour"
+                    id="accent-title"
+                    width="select"
+                    control={
+                      <div className="accent-swatches" role="group" aria-label="Accent colour presets">
                         {ACCENT_SWATCHES.map((s) => (
                           <button
                             key={s.hex}
@@ -222,41 +238,50 @@ export default function AppSettingsView(): ReactElement {
                           />
                         ))}
                       </div>
-                      <Input
-                        id="accent-hex"
-                        aria-labelledby="accent-title"
-                        mono
-                        value={hexValue}
-                        invalid={!hexOk}
-                        aria-describedby={hexOk ? undefined : 'accent-hex-error'}
-                        maxLength={7}
-                        spellCheck={false}
-                        onChange={setHexDraft}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') commitHex()
-                        }}
-                        onBlur={commitHex}
-                      />
-                    </>
-                  }
-                  hint={
-                    !hexOk ? (
-                      <span className="field-error" id="accent-hex-error" aria-live="polite">
-                        Use a hex color like #7c5cff.
-                      </span>
-                    ) : undefined
-                  }
-                />
-                <SettingRow
-                  title="Motion"
-                  width="select"
-                  control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />}
-                />
-              </SettingsCard>
+                    }
+                    hint={
+                      customOpen ? (
+                        <span className="accent-custom">
+                          <Input
+                            id="accent-hex"
+                            aria-labelledby="accent-title"
+                            mono
+                            value={hexValue}
+                            invalid={!hexOk}
+                            aria-describedby={hexOk ? undefined : 'accent-hex-error'}
+                            maxLength={7}
+                            spellCheck={false}
+                            onChange={setHexDraft}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitHex()
+                            }}
+                            onBlur={commitHex}
+                          />
+                          {!hexOk && (
+                            <span className="field-error" id="accent-hex-error" aria-live="polite">
+                              Use a hex colour like #7c5cff.
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <button type="button" className="link-btn" onClick={() => setCustomRequested(true)}>
+                          Custom…
+                        </button>
+                      )
+                    }
+                  />
+                  <SettingRow
+                    title="Motion"
+                    description="Reduce animation across the app."
+                    width="select"
+                    control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />}
+                  />
+                </SettingsCard>
+              </SettingsGroup>
               <SettingsGroup title="Canvas">
                 <SettingsCard>
                   <SettingRow
-                    title="Canvas pattern"
+                    title="Pattern"
                     width="select"
                     control={<SegmentedControl label="Canvas pattern" value={appearance.canvas.pattern} options={PATTERN_OPTIONS} onChange={(pattern) => patchAppearance({}, { pattern })} />}
                   />
@@ -266,11 +291,11 @@ export default function AppSettingsView(): ReactElement {
                     control={<SegmentedControl label="Connection lines" value={appearance.canvas.edges} options={EDGE_OPTIONS} onChange={(edges) => patchAppearance({}, { edges })} />}
                   />
                   <SettingRow
-                    title="Tint the canvas with the accent"
+                    title="Tint with the accent"
                     control={<Switch checked={appearance.canvas.tint} label="Tint the canvas with the accent" onChange={(tint) => patchAppearance({}, { tint })} />}
                   />
                   <SettingRow
-                    title="Show the minimap"
+                    title="Minimap"
                     control={<Switch checked={appearance.canvas.minimap} label="Show the minimap" onChange={(minimap) => patchAppearance({}, { minimap })} />}
                   />
                 </SettingsCard>
@@ -301,145 +326,156 @@ export default function AppSettingsView(): ReactElement {
         )}
         {pane === 'mcp-library' && <McpLibrarySection />}
         {pane === 'defaults' && (
-          <>
-            <SettingsSection
-              id={APP_SETTINGS_SECTIONS.defaults}
-              title="Defaults for new projects"
-              description="Used when you create a project. Existing projects keep their own settings."
-            >
-              <SettingsCard>
-                <SettingRow
-                  title="Orchestrator model"
-                  width="select"
-                  control={<Select label="Orchestrator model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
-                />
-                <SettingRow
-                  title="Report model"
-                  width="select"
-                  control={<Select label="Report model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
-                />
-                <SettingRow
-                  title="Permission mode"
-                  width="select"
-                  control={
-                    <Select
-                      label="Permission mode"
-                      value={info.defaultPermissionMode}
-                      options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                      onChange={(v) => patch({ defaultPermissionMode: v as PermissionMode })}
-                    />
-                  }
-                />
-                <SettingRow
-                  title="Estimated cost cap per run (API-equivalent USD)"
-                  width="number"
-                  control={
-                    <Input
-                      aria-label="Estimated cost cap per run"
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={info.defaultMaxBudgetUsd ?? ''}
-                      placeholder="No cap"
-                      onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
-                    />
-                  }
-                />
-                <SettingRow
-                  title="Runs to keep"
-                  width="number"
-                  control={
-                    <Input
-                      aria-label="Runs to keep"
-                      type="number"
-                      min={1}
-                      max={5000}
-                      value={info.defaultKeepRuns}
-                      onChange={(v) => patch({ defaultKeepRuns: Math.max(1, Number(v) || DEFAULT_KEEP_RUNS) })}
-                    />
-                  }
-                />
-                <SettingRow
-                  title="Isolate writing reports in git worktrees"
-                  description="Each report that edits files works in its own copy of the repository."
-                  control={<Switch checked={info.defaultIsolateWriters} label="Isolate writing reports in git worktrees" onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })} />}
-                />
-                <SettingRow
-                  title="Keep the orchestrator going until the plan is complete"
-                  description="Re-prompts the orchestrator until its plan is done, up to the limit below."
-                  control={
-                    <Switch
-                      checked={info.defaultAutoContinue}
-                      label="Keep the orchestrator going until the plan is complete"
-                      onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })}
-                    />
-                  }
-                />
-                <SettingRow
-                  title="Max automatic continues per run"
-                  width="number"
-                  control={
-                    <Input
-                      aria-label="Max automatic continues per run"
-                      type="number"
-                      min={0}
-                      max={MAX_AUTO_CONTINUES_LIMIT}
-                      value={info.defaultMaxAutoContinues}
-                      onChange={(v) => {
-                        const n = Number(v)
-                        patch({ defaultMaxAutoContinues: Number.isFinite(n) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(n))) : DEFAULT_MAX_AUTO_CONTINUES })
-                      }}
-                    />
-                  }
-                />
-                <SettingRow
-                  title="Prefer Sonnet for new reports when the Opus weekly window is above the threshold"
-                  description="Uses the weekly threshold under Usage."
-                  control={
-                    <Switch
-                      checked={info.defaultPreferSonnetNearLimit}
-                      label="Prefer Sonnet for new reports when the Opus weekly window is above the threshold"
-                      onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
-                    />
-                  }
-                />
-              </SettingsCard>
-            </SettingsSection>
-            <SettingsSection id={APP_SETTINGS_SECTIONS.usage} title="Usage">
-              <SettingsCard>
-                <SettingRow
-                  title="Opus weekly threshold (%)"
-                  description="Projects that prefer Sonnet near the limit switch Opus reports to Sonnet at this level."
-                  width="number"
-                  control={
-                    <Input
-                      aria-label="Opus weekly threshold (%)"
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={info.opusGuardThreshold}
-                      onChange={(v) => {
-                        const n = Number(v)
-                        if (Number.isFinite(n) && n >= 1 && n <= 100) patch({ opusGuardThreshold: n })
-                      }}
-                    />
-                  }
-                />
-              </SettingsCard>
-            </SettingsSection>
-          </>
+          <SettingsSection
+            id={APP_SETTINGS_SECTIONS.defaults}
+            title="Defaults for new projects"
+            description="Applied when a project is created. Existing projects keep their own settings."
+          >
+            <SettingsCard>
+              <SettingRow
+                title="Orchestrator model"
+                width="select"
+                control={<Select label="Orchestrator model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
+                hint={modelHint(info.defaultRootModel)}
+              />
+              <SettingRow
+                title="Report model"
+                width="select"
+                control={<Select label="Report model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
+                hint={modelHint(info.defaultReportModel)}
+              />
+              <SettingRow
+                title={SETTINGS_COPY.permissionMode.label}
+                description={SETTINGS_COPY.permissionMode.description}
+                more={SETTINGS_COPY.permissionMode.more}
+                width="select"
+                control={
+                  <Select
+                    label={SETTINGS_COPY.permissionMode.label}
+                    value={info.defaultPermissionMode}
+                    options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: PERMISSION_SHORT[o.value] }))}
+                    onChange={(v) => patch({ defaultPermissionMode: v as PermissionMode })}
+                  />
+                }
+                hint={PERMISSION_MODE_OPTIONS.find((o) => o.value === info.defaultPermissionMode)?.label.replace(/^[^:]*: /, '')}
+              />
+              <SettingRow
+                title={SETTINGS_COPY.costCap.label}
+                description={SETTINGS_COPY.costCap.description}
+                more={SETTINGS_COPY.costCap.more}
+                width="number"
+                control={
+                  <Input
+                    aria-label={SETTINGS_COPY.costCap.label}
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={info.defaultMaxBudgetUsd ?? ''}
+                    placeholder="No cap"
+                    onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
+                  />
+                }
+              />
+              <SettingRow
+                title={SETTINGS_COPY.keepRuns.label}
+                description={SETTINGS_COPY.keepRuns.description}
+                more={SETTINGS_COPY.keepRuns.more}
+                width="number"
+                control={
+                  <Input
+                    aria-label={SETTINGS_COPY.keepRuns.label}
+                    type="number"
+                    min={1}
+                    max={5000}
+                    value={info.defaultKeepRuns}
+                    onChange={(v) => patch({ defaultKeepRuns: Math.max(1, Number(v) || DEFAULT_KEEP_RUNS) })}
+                  />
+                }
+              />
+              <SettingRow
+                title={SETTINGS_COPY.isolateWriters.label}
+                description={SETTINGS_COPY.isolateWriters.description}
+                more={SETTINGS_COPY.isolateWriters.more}
+                control={<Switch checked={info.defaultIsolateWriters} label={SETTINGS_COPY.isolateWriters.label} onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })} />}
+              />
+              <SettingRow
+                title={SETTINGS_COPY.autoContinue.label}
+                description={SETTINGS_COPY.autoContinue.description}
+                more={SETTINGS_COPY.autoContinue.more}
+                control={<Switch checked={info.defaultAutoContinue} label={SETTINGS_COPY.autoContinue.label} onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })} />}
+              />
+              <SettingRow
+                title={SETTINGS_COPY.maxAutoContinues.label}
+                description={SETTINGS_COPY.maxAutoContinues.description}
+                width="number"
+                control={
+                  <Input
+                    aria-label={SETTINGS_COPY.maxAutoContinues.label}
+                    type="number"
+                    min={0}
+                    max={MAX_AUTO_CONTINUES_LIMIT}
+                    value={info.defaultMaxAutoContinues}
+                    onChange={(v) => {
+                      const n = Number(v)
+                      patch({ defaultMaxAutoContinues: Number.isFinite(n) ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.max(0, Math.floor(n))) : DEFAULT_MAX_AUTO_CONTINUES })
+                    }}
+                  />
+                }
+              />
+              <SettingRow
+                title={SETTINGS_COPY.preferSonnet.label}
+                description={SETTINGS_COPY.preferSonnet.description}
+                more={SETTINGS_COPY.preferSonnet.more}
+                control={
+                  <Switch
+                    checked={info.defaultPreferSonnetNearLimit}
+                    label={SETTINGS_COPY.preferSonnet.label}
+                    onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
+                  />
+                }
+              />
+            </SettingsCard>
+            <div id={APP_SETTINGS_SECTIONS.usage}>
+              <SettingsGroup title="Usage">
+                <SettingsCard>
+                  <SettingRow
+                    title={SETTINGS_COPY.opusThreshold.label}
+                    description={SETTINGS_COPY.opusThreshold.description}
+                    more={SETTINGS_COPY.opusThreshold.more}
+                    width="number"
+                    control={
+                      <Input
+                        aria-label={`${SETTINGS_COPY.opusThreshold.label} (%)`}
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={info.opusGuardThreshold}
+                        onChange={(v) => {
+                          const n = Number(v)
+                          if (Number.isFinite(n) && n >= 1 && n <= 100) patch({ opusGuardThreshold: n })
+                        }}
+                      />
+                    }
+                  />
+                </SettingsCard>
+              </SettingsGroup>
+            </div>
+          </SettingsSection>
         )}
         {pane === 'about' && appInfo && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About" testId="about-block">
-            {appInfo.mockAdapter && (
-              <p>
-                <Badge tone="accent">Mock adapter available</Badge>
-              </p>
-            )}
             <SettingsCard>
               <dl className="about-list">
                 <dt>Version</dt>
-                <dd>{appInfo.version}</dd>
+                <dd>
+                  {appInfo.version}
+                  {appInfo.mockAdapter && (
+                    <span title="This build can run scripted projects without a connection.">
+                      {' '}
+                      <Badge tone="accent">Mock adapter</Badge>
+                    </span>
+                  )}
+                </dd>
                 <dt>Platform</dt>
                 <dd>
                   {appInfo.platform} · {appInfo.packaged ? 'packaged' : 'development'}
@@ -465,7 +501,6 @@ export default function AppSettingsView(): ReactElement {
                 ))}
               </dl>
             </SettingsCard>
-            <p className="muted">Projects, settings and run history are stored in the data folder.</p>
           </SettingsSection>
         )}
       </SettingsPage>
