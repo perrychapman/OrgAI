@@ -509,6 +509,14 @@ export class RunManager {
     return this.runs.size
   }
 
+  /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
+  liveRuns(): RunSummary[] {
+    return [...this.runs.values()]
+      .filter((a) => LIVE_STATUSES.has(a.summary.status))
+      .map((a) => ({ ...a.summary }))
+      .sort((a, b) => a.startedAt - b.startedAt)
+  }
+
   summaryOf(runId: string): RunSummary | undefined {
     return this.runs.get(runId)?.summary
   }

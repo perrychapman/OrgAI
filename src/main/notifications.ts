@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Notification } from 'electron'
 import type { FocusRunTarget, RunEvent, RunKind, RunPlan } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, IPC } from '@shared/types'
+import { pickFocusWindow } from './windowScope'
 
 /** What the notifier knows about a run. */
 export interface NotifierRun {
@@ -17,6 +18,8 @@ export interface NotifierDeps {
   projectOfRun(runId: string): NotifierRun | undefined
   /** Display name of a project. */
   projectName(projectId: string): string | undefined
+  /** Live windows with their run scope (undefined = main window). Missing = every window counts as unscoped. */
+  windows?(): [BrowserWindow, FocusRunTarget | undefined][]
 }
 
 /**
@@ -157,8 +160,13 @@ export class Notifier {
     }
   }
 
+  /** Focus the window scoped to the run, else the main (unscoped) window, else any (pickFocusWindow). */
   private focus(target: FocusRunTarget): void {
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    const known = this.deps.windows?.() ?? BrowserWindow.getAllWindows().map((w): [BrowserWindow, FocusRunTarget | undefined] => [w, undefined])
+    const win = pickFocusWindow(
+      known.filter(([w]) => !w.isDestroyed()),
+      target
+    )
     if (!win) return
     if (win.isMinimized()) win.restore()
     win.show()
