@@ -38,7 +38,8 @@ export type CodexUpdate =
   | { type: 'thinking'; threadId: string; text: string }
   | { type: 'toolUse'; threadId: string; id: string; name: string; input: unknown; activity: string; state: 'tool' | 'waiting' }
   | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; isError: boolean }
-  | { type: 'tokens'; threadId: string; input: number; output: number }
+  /** The thread's cumulative totals. input includes the cached part (OpenAI counting); output includes reasoning. */
+  | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number }
   | { type: 'turnStarted'; threadId: string; turnId: string }
   | { type: 'turnCompleted'; threadId: string; turnId: string; status: TurnStatus; result?: string; error?: CodexTurnError }
   | { type: 'error'; threadId: string; message: string; willRetry: boolean; usageLimit: boolean }
@@ -114,7 +115,7 @@ export class CodexEventMapper {
         return [{ type: 'partial', threadId: n.threadId, text: '' }, { type: 'turnCompleted', threadId: n.threadId, turnId: n.turnId, status, ...(result ? { result } : {}), ...(n.error ? { error: n.error } : {}) }]
       }
       case 'tokenUsage':
-        return [{ type: 'tokens', threadId: n.threadId, input: n.input, output: n.output }]
+        return [{ type: 'tokens', threadId: n.threadId, input: n.input, output: n.output, cachedInput: n.cachedInput }]
       case 'agentMessageDelta': {
         const text = (this.streaming.get(n.itemId) ?? '') + n.delta
         this.streaming.set(n.itemId, text)

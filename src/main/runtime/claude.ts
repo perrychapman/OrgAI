@@ -30,7 +30,8 @@ import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
-import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
+import { costOf, ratesFromModelUsage, sumByModel, type CostRates, type TokenMix } from './claudeCost'
+import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
@@ -449,6 +450,8 @@ class ClaudeSession implements RuntimeSession {
   private partial = new PartialText((agentId, text) => this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text }))
   private seenBlocks = new Set<string>()
   private seenToolUses = new Set<string>()
+  /** `agentId:messageId` pairs already counted as a turn. */
+  private turnIds = new Set<string>()
   /** Resumed sessions only: tool results already shown, in case the SDK replays history. */
   private seenToolResults = new Set<string>()
   /** Resumed sessions only: subtracted from the SDK's cumulative cost; null until the first result. */
@@ -581,7 +584,7 @@ class ClaudeSession implements RuntimeSession {
 
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
   }
 
   private ensureAgent(id: string, init?: Partial<AgentInstance>): AgentInstance {
@@ -629,9 +632,23 @@ class ClaudeSession implements RuntimeSession {
       const a = this.agents.get(agentId)
       if (!a) continue
       const cost = costOf(perAgent.values(), rates)
-      if (Math.abs(cost - a.costUsd) < 1e-9) continue
+      const before = JSON.stringify(a.usage?.models.map((m) => m.providerCostUsd))
+      this.syncModelUsage(a, perAgent)
+      if (Math.abs(cost - a.costUsd) < 1e-9 && before === JSON.stringify(a.usage?.models.map((m) => m.providerCostUsd))) continue
       a.costUsd = cost
       this.upsert(a)
+    }
+  }
+
+  /** Report the agent's per-model token sums (and the SDK-derived provider cost when rates exist). */
+  private syncModelUsage(a: AgentInstance, perAgent: Map<string, { model?: string; mix: TokenMix }>): void {
+    for (const [model, e] of sumByModel(perAgent.values(), this.costRates, a.model)) {
+      setModelTokens(
+        a,
+        model,
+        { input: e.mix.input, output: e.mix.output, cacheRead: e.mix.cacheRead, cacheWrite: e.mix.cacheCreation },
+        e.costUsd ?? undefined
+      )
     }
   }
 
@@ -1179,6 +1196,11 @@ class ClaudeSession implements RuntimeSession {
             ...(worktree ? { worktree } : {}),
             ...(handle ? { handle } : {})
           })
+        } else if (msg.subtype === 'api_retry') {
+          // SDKAPIRetryMessage carries no agent fields, so a retry counts against the root.
+          const root = this.ensureAgent(ROOT_ID)
+          countUsage(root, 'retries')
+          this.upsert(root)
         } else if (msg.subtype === 'task_notification') {
           const a = this.agents.get(msg.task_id)
           if (a) {
@@ -1202,6 +1224,10 @@ class ClaudeSession implements RuntimeSession {
         const a = this.ensureAgent(agentId)
         const usage = msg.message.usage
         const messageId = msg.message.id || msg.uuid
+        if (!this.turnIds.has(`${agentId}:${messageId}`)) {
+          this.turnIds.add(`${agentId}:${messageId}`)
+          countUsage(a, 'turns')
+        }
         if (usage) {
           // Streaming emits one message per content block and the CLI may re-send a message after a
           // permission answer, all sharing message.id. Count each message id once, using its latest usage.
@@ -1227,6 +1253,7 @@ class ClaudeSession implements RuntimeSession {
           }
           a.inputTokens = input
           a.outputTokens = output
+          this.syncModelUsage(a, perAgent)
           // Live estimate at the last known per-model rates; the next result message reconciles it.
           if (this.costRates) a.costUsd = costOf(perAgent.values(), this.costRates)
         }
@@ -1251,6 +1278,7 @@ class ClaudeSession implements RuntimeSession {
           } else if (block.type === 'tool_use') {
             if (this.seenToolUses.has(block.id)) continue
             this.seenToolUses.add(block.id)
+            countUsage(a, 'toolCalls')
             this.seenBlocks.add(blockKey)
             this.toolUseIssuer.set(block.id, agentId)
             this.transcript(agentId, { kind: 'tool_use', id: block.id, name: block.name, input: block.input })
