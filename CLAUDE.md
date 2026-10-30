@@ -66,6 +66,52 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   4,000-char YAML lines and linear parser regexes (timing-tested), hard caps (see ARCHITECTURE.md
   Conventions). Every parser is verified only by fixtures written from the docs, not by files the other harnesses
   produced; Copilot, Gemini, Kiro and Roo are best-effort. No renderer code uses it yet.
+- Usage and pricing (#10): `src/main/runtime/pricing.ts` (pure) prices per token (`ModelPrice`, each price finite,
+  >= 0 and at most `MODEL_PRICE_MAX_PER_TOKEN` 0.01). Per model: override (`AppSettings.modelPrices`, at most 200,
+  connection-scoped beats global) > provider-reported cost > 0 > proxy (LiteLLM `RunConnection.pricing` /
+  catalog `ProviderModel.price`) > builtin (`BUILTIN_PRICES`, vendor pages read 2026-10-30; 5.x ids are guesses) >
+  community (`communityPrices.ts`, off with `AppSettings.communityPrices: false`) > unknown (`costUsd: null`, never
+  $0; a partly priced sum sets `costPartial`). `priceFor` is memoized per pricing record (index + 500-entry cache).
+  `runUsage.ts` holds `AgentUsage` (adapters only tally tokens per model, turns, tool calls, retries and provider cost
+  through `setModelTokens` / `countUsage`) and `RunUsage` (cost, models, roles, wall / waiting / limit-hold / idle
+  time, nudges, agents without a result, `skills`). The root agent is never counted as producing nothing. RunManager
+  prices every `agent.upsert`, drops an adapter's `run.usage`, and publishes its own at most once per 1 s
+  (`USAGE_THROTTLE_MS`, trailing; at once on a terminal status). The adapter's `run.cost` is ignored as a provider
+  total when `RunConnection.pricing` is set. Records saved before usage tracking are normalized on read with
+  `legacy: true`. `runs:usageStats` (default 500 rows, max 2000; roles, trend and totals cover only the returned rows)
+  and `models:prices` (override, proxy and builtin rows) are the IPC. LiteLLM discovery caps: 2,000 models, 200-char
+  ids (`validModelId`), 5 MB body. Mock: `[mock:no-price]` makes every agent unpriced, `[mock:computed-cost]` prices
+  from the builtin table with no provider cost, and the default script's `mock-report-2` is unpriced and returns
+  nothing. Verified by unit tests and the mock only; no live run has checked the builtin ids or which model id the CLI
+  or a proxy reports.
+- Skills (#11): `src/main/skills/` (`SkillService`). Project skills are specs in `Project.skills` with files in
+  `<data>/project-skills/<pid>/<sid>/`; the library is `<data>/skill-library.json` + `<data>/skills/<id>/`; a project
+  skill with `libraryId` is a link refreshed from its entry on every read, and a link whose entry is gone is kept but
+  never run. Grants are `Role.skills`. Repo import scans `.claude/skills`, `.agents/skills`, `.github/skills`,
+  `.opencode/skills` and stores a snapshot copy: `digest` covers the stored files (SKILL.md rewritten), `sourceDigest`
+  the folder as found, and apply refuses a missing or stale preview digest; `skills:undoImport` restores skills, files
+  and grants (one undo per project). Repo and picked folders are untrusted: SKILL.md is re-emitted with name and
+  description only, shell-injection bodies (!`cmd`, ```! fences) are refused, UNC/device paths are refused, and
+  `skillLibrary:addFromFolder` accepts only a path from the main-process folder picker (`wasPickedFolder`).
+  - Claude: granted skills go into a run-scoped temp plugin named `orgai-<8 hex>` (`claudeSkills.ts`), passed as
+    `plugins` with `options.skills` (it only adds Skill(<name>) allow rules), `settings.disableBundledSkills` plus env
+    `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, and `settings.disableSkillShellExecution` on every run; `settingSources`
+    stays `['project']`. The PreToolUse Skill gate allows only `<plugin>:<name>` granted to the calling role, before
+    any rule; `skill.used` is emitted from PostToolUse. `AgentDefinition.skills` is not used (it preloads content and
+    grants nothing). The namespace and the options.skills behaviour were read from the bundled CLI / sdk.mjs source;
+    `scripts/smoke-skills.mjs` (gate beats the allow rule, subagent use, input shape) exists, has NOT been run, and
+    needs the user's consent.
+  - Codex: `list_skills` / `load_skill` dynamic tools, plus a native skill lock per thread cwd (`lockNativeSkills`:
+    skills/list, then skills/config/write enabled=false; config keys verified token-free on codex 0.166.0). It fails
+    open with a run warning (review M2); that a disabled skill leaves the prompt is unverified.
+  - `skill.used` events count into `RunUsage.skills` (at most 1000 loads per run, unknown ids dropped) and write a
+    harness transcript row "Loaded skill <name>".
+  - Evaluation (`skills:evaluate`): deterministic checks over the newest 20 work runs; the model step (`kind:
+    'skills'`) runs only when `Project.skillEvaluation.enabled` and the estimate fits its `tokenBudget`. Evidence is
+    redacted, the report persists at `<data>/skill-evaluations/<pid>.json`, suggestions apply only on the user's call.
+    No A/B replay.
+  - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
+    readable by any agent with Read or Bash. Verified by unit tests and the mock adapter only.
 
 ## Renderer
 
@@ -74,6 +120,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 The UI overhaul landed on native elements with container queries. Radix and react-resizable-panels are not installed,
 and the frontend-design skill is not vendored in `.claude/skills` (only `run-desktop` is there).
 
+- Cost and usage (#10): every cost goes through `lib/cost.ts` `costView` and `components/ui/Cost.tsx` (unknown is
+  never $0, "$0.42+" is a lower bound). The run side panel has a Usage tab (`components/UsagePanel.tsx`, `SideTab`
+  'usage'); History switches Runs | Trends (`components/UsageTrends.tsx`, `runs:usageStats`). App settings >
+  Connections > Model prices is `components/settings/ModelPricesSection.tsx`; `lib/settingsTarget.ts`
+  `requestModelPrice(model?)` deep-links to it with the model pre-filled.
 - Layout: `components/layout` (`CanvasFrame` with `FrameToolbar` / `FrameStage` / `FrameTray` / `FrameFooter`,
   `SidePanel`, `SaveIndicator`). Nothing floats over the canvas: decision cards sit in `FrameTray` on the
   `components/DecisionCard.tsx` shell.
@@ -200,7 +251,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   API-surface ones (`DISABLE_EXPERIMENTAL_BETAS`, `DISABLE_ADAPTIVE_THINKING`, `ENABLE_GATEWAY_MODEL_DISCOVERY`, `ENABLE_FINE_GRAINED_TOOL_STREAMING`, `ENABLE_PROXY_AUTH_HELPER`,
   `DISABLE_AUTH_REFRESH_LOCK`, `ENABLE_XAA`, `DISABLE_LEGACY_MODEL_REMAP`...), feature toggles and terminal UI ones
   (`DISABLE_MOUSE`, `DISABLE_TERMINAL_TITLE`...) that a headless SDK run does not need. OrgAI sets none of them
-  (it sets only `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_CONCURRENT_SUBAGENTS`). The explicit allows
+  (it sets only `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_CONCURRENT_SUBAGENTS`, and on work runs
+  `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, added after isolation). The explicit allows
   (`CLAUDE_CODE_ALLOWED_SWITCHES`) are `CLAUDE_CODE_ENABLE_TELEMETRY` (an organisation's OpenTelemetry opt-in;
   `OTEL_*` passes through) and the privacy opt-outs `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and
   `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`. Kept as
@@ -277,7 +329,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     `runConnection` passes them as `RunConnection.pricing` (`pricing.ts` `pricingFromCatalog`, `priceFor` matches
     exact, normalized, then version-suffix-only). Claude prices each message from it (falls back to the CLI's rates for
     an unpriced model; `run.cost` = sum of agent costs) and Codex prices thread totals (`openAiMix`: input includes
-    cached). Unpriced models cost 0. The `/key/info` shape and the price fields are unverified against a live proxy
+    cached). These adapter estimates now only feed the legacy `AgentInstance.costUsd` / `run.cost`: RunManager
+    re-prices every agent (see Usage and pricing above), and an unpriced model is unknown, not 0. The `/key/info` shape and the price fields are unverified against a live proxy
     (source-read only), as is which model name the proxy reports on messages and whether a resumed Codex thread's
     token totals include the earlier run. Prices appear only after the next discovery (connect or models refresh).
 - MCP:
