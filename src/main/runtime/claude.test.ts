@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -10,6 +10,44 @@ function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpS
 
 const fs = spec({ id: 'm1', name: 'fs', command: 'npx', args: ['-y', 'fs'], secretEnv: ['TOKEN'], roles: ['lead'] })
 const web = spec({ id: 'm2', name: 'web', transport: 'http', url: 'https://x.test/mcp', secretHeaders: ['Authorization'] })
+
+describe('near-limit steering helpers', () => {
+  it('detects deep and top models by tier name, alias, id or the connection mapping', () => {
+    expect(isDeepOrTopModel('opus', undefined)).toBe(true)
+    expect(isDeepOrTopModel('deep', undefined)).toBe(true)
+    expect(isDeepOrTopModel('claude-fable-1', undefined)).toBe(true)
+    expect(isDeepOrTopModel('sonnet', undefined)).toBe(false)
+    expect(isDeepOrTopModel('gpt-big', { deep: 'gpt-big' })).toBe(true)
+    expect(isDeepOrTopModel('gpt-big', { everyday: 'gpt-big' })).toBe(false)
+    expect(isDeepOrTopModel('', { deep: '' })).toBe(false)
+  })
+
+  it('replaces with the connection everyday model, else the builtin everyday entry', () => {
+    expect(everydayReplacement({ everyday: ' gpt-mid ' })).toBe('gpt-mid')
+    expect(everydayReplacement(undefined)).toBe('sonnet')
+  })
+})
+
+describe('mapSupportedModels', () => {
+  it('skips default, blanks, duplicates and non-strings, trims and caps', () => {
+    const out = mapSupportedModels([
+      { value: 'default', displayName: 'Default', description: '' },
+      { value: ' opus ', displayName: ' Opus ', description: 'd', resolvedModel: 'claude-opus-x' },
+      { value: 'opus', displayName: 'dup' },
+      { value: '  ' },
+      { value: 5 },
+      null,
+      { value: 'x'.repeat(300), displayName: 7, description: 'y'.repeat(400) }
+    ])
+    expect(out).toHaveLength(2)
+    expect(out[0]).toEqual({ id: 'opus', label: 'Opus', description: 'd', resolvedModel: 'claude-opus-x' })
+    expect(out[1].id).toHaveLength(200)
+    expect(out[1].label).toBeUndefined()
+    expect(out[1].description).toHaveLength(300)
+    expect(mapSupportedModels('nope')).toEqual([])
+    expect(mapSupportedModels(Array.from({ length: 300 }, (_, i) => ({ value: `m${i}` })))).toHaveLength(200)
+  })
+})
 
 describe('toClaudeMcpServers', () => {
   it('maps stdio and http specs, keyed by name, with resolved secrets', () => {
