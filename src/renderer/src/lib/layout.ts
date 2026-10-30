@@ -52,7 +52,24 @@ export function treeLayout(items: LayoutItem[], opts?: { nodesep?: number; ranks
   return out
 }
 
-export function initials(name: string): string {
+/**
+ * Two-letter avatar initials. Pass the other role names shown beside this one; when two share initials
+ * ("RE" for Reviewer and Researcher) each keeps its first letter and takes the first later letter of its own
+ * name that is free (Reviewer becomes RV, Researcher RS).
+ */
+export function initials(name: string, others: readonly string[] = []): string {
+  const base = baseInitials(name)
+  const taken = new Set(others.filter((o) => o !== name).map(baseInitials))
+  if (!taken.has(base)) return base
+  const letters = name.toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
+  for (let i = 1; i < letters.length; i++) {
+    const cand = letters[0] + letters[i]
+    if (cand !== base && !taken.has(cand)) return cand
+  }
+  return base
+}
+
+function baseInitials(name: string): string {
   const words = name.replace(/[-_]/g, ' ').trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return '?'
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase()

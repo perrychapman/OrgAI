@@ -2,9 +2,14 @@ import type { ReactElement, ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { Icon } from './Icon'
 
-export type BadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger' | 'accent'
+/**
+ * One shape, three tones (docs/design/ui-review-2.md C.5): `neutral` (kind labels, counts, MOCK), `accent`
+ * (selected or "yours") and status. The status tones are `success`, `attention` (the warning hue, "needs you"),
+ * `info` and `danger`. `warning` stays as an alias of `attention` so existing call sites keep working.
+ */
+export type BadgeTone = 'neutral' | 'accent' | 'success' | 'attention' | 'info' | 'warning' | 'danger'
 
-/** Small status label. Always pair a tone with an icon or words; color is never the only signal. */
+/** Small label, 20 px, soft fill, no border. Always pair a status tone with an icon or words; color is never the only signal. */
 export function Badge({
   tone = 'neutral',
   icon,
