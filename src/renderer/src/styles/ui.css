@@ -742,6 +742,9 @@ ul.maint-list {
     border-bottom: 0;
   }
 }
+.settings-col.flow > section:first-child {
+  margin-top: 0;
+}
 .settings-block {
   display: flex;
   flex-direction: column;

@@ -174,7 +174,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
 
       <SettingsGroup title="Danger zone">
         <div className="danger-zone">
-          <div className="stack-1">
+          <div className="field">
             <span className="field-label">Files OrgAI added to the repository</span>
             <span className="hint">
               {hasFootprint
