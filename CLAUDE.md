@@ -48,6 +48,16 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `<message>` text, and `[mock:title-fail]` makes it throw. The live fast-model call is unverified (no smoke script).
 - Projects: `projects:checkPath` (`ProjectPathCheck`) never rejects. `projects:create` validates the path, and
   `ProjectCreateInput.mock` is accepted only with `ORGAI_MOCK=1`.
+- Agent import (`src/main/setup/import/`, `AgentImportService` in `importer.ts`): `projects:scanAgents` (never
+  rejects), `projects:previewImport`, `projects:applyImport` (returns `previousRoles` for Undo), `projects:exportOrg`
+  (`.orgai/org.json`, format `orgai.org/1`), `ProjectCreateInput.importAgents` and the `ProjectPathCheck` extras
+  (`agentSources`, `instructionFiles`, `existingProjectId/Name`). Sources: OrgAI export, Claude Code, opencode, Codex,
+  Copilot, Gemini CLI, Kiro, Roo; AGENTS.md/CLAUDE.md-style files are listed, never roles. Models map to the project's
+  connection (`model.ts`, `importTierForModel` in defaults.ts: kept, tier, or 'everyday' default). Preview and apply
+  re-scan the stored project's folder (the renderer sends choices, never roles) and apply refuses a stale `digest`.
+  The repo is untrusted: realpath-confined regular files only, no process or network, hard caps (see ARCHITECTURE.md
+  Conventions). Every parser is verified only by fixtures written from the docs, not by files the other harnesses
+  produced; Copilot, Gemini, Kiro and Roo are best-effort. No renderer code uses it yet.
 
 ## Renderer
 
