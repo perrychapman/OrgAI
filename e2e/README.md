@@ -6,6 +6,7 @@ flows. Run `npm run build` first; the scripts use `out/` and never the dev serve
 | script | tokens | what it checks |
 | --- | --- | --- |
 | `layout.mjs` | free | create projects in both form modes with setup skipped; live view layout with a long path; delete |
+| `connections.mjs` | free | Connections page (three cards or a load error), project settings sections (connection, MCP servers, plugins, Add from registry), role model picker and tier badge at 1024x640 and 1600x1000 in both themes; a LiteLLM test against an unreachable URL shows an error, the key never lands in plain text, and Remove connection clears it |
 | `maintenance.mjs` | free | plants leftover worktrees and setup files in a fixture repo; merge, conflict, refusal, discard, uninstall |
 | `setup.mjs --yes [--new]` | **spends** | full Architect setup, one org-chart revision, applied roles and architecture files |
 | `history.mjs --yes` | **spends** | setup run, app restart, run reopened from the Runs tab, records removed with the project |
@@ -13,7 +14,7 @@ flows. Run `npm run build` first; the scripts use `out/` and never the dev serve
 
 ```sh
 npm run build
-npm run e2e:free           # layout + maintenance
+npm run e2e:free           # layout + maintenance + connections
 node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
 ```
 
