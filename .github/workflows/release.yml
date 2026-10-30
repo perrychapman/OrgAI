@@ -1,0 +1,161 @@
+# Builds the installers and drafts a GitHub release.
+# - Push a tag `v<version>` (must equal package.json's version) to build all three and draft the release.
+# - Or run it by hand (workflow_dispatch). dry_run (the default) only builds and uploads workflow artifacts.
+# Nothing is uploaded by electron-builder itself (`--publish never`); the publish job creates the draft release.
+# Mac builds are unsigned unless the CSC_LINK secret is set; notarization runs only when the APPLE_* secrets are set.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and release (e.g. v0.1.0). Empty builds the selected branch.
+        required: false
+        default: ''
+      dry_run:
+        description: Build only; do not create a release.
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.meta.outputs.ref }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - id: meta
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            tag="$REF_NAME"; ref="$REF"; publish=true
+          else
+            tag="$INPUT_TAG"; ref="${INPUT_TAG:-$REF}"
+            if [ "$DRY_RUN" = "true" ]; then publish=false; else publish=true; fi
+            if [ "$publish" = "true" ] && [ -z "$tag" ]; then
+              echo "::error::A non-dry-run release needs a tag."; exit 1
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag ref=$ref publish=$publish"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # nsis + portable (targets come from electron-builder.yml).
+          - name: windows
+            os: windows-latest
+            args: --win
+            arch: x64
+          # Each mac arch on its native runner so `npm ci` installs the matching
+          # @anthropic-ai/claude-agent-sdk-darwin-<arch> and @openai/codex-darwin-<arch> optional deps.
+          - name: mac-arm64
+            os: macos-14
+            args: --mac --arm64
+            arch: arm64
+          - name: mac-x64
+            os: macos-15-intel
+            args: --mac --x64
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check runner arch
+        shell: bash
+        run: |
+          actual="$(node -p process.arch)"
+          if [ "$actual" != "${{ matrix.arch }}" ]; then
+            echo "::error::Runner ${{ matrix.os }} is $actual, expected ${{ matrix.arch }}."; exit 1
+          fi
+      - name: Check tag matches package.json
+        if: needs.meta.outputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: node scripts/ci-check-version.mjs "$TAG"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Package
+        # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
+        # administrator, so winCodeSign's symlinks extract. If this step fails extracting winCodeSign, append
+        # `-c.win.signAndEditExecutable=false` to the windows args above (OrgAI.exe then keeps Electron's icon).
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          # Signing secrets reach the mac legs only (a mac .p12 in CSC_LINK must not be tried on Windows).
+          # Absent secrets expand to '' and CSC_IDENTITY_AUTO_DISCOVERY to 'false', so the build is unsigned.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ runner.os == 'macOS' && secrets.CSC_LINK != '' }}
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orgai-${{ matrix.name }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [meta, build]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # One folder per leg (no merge-multiple): both mac legs may write a latest-mac.yml.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: orgai-*
+      - run: ls -R dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # latest*.yml is left out: auto-update is not wired, and the two mac legs' copies would collide.
+          files: |
+            dist/**/*.exe
+            dist/**/*.dmg
+            dist/**/*.zip
+            dist/**/*.blockmap

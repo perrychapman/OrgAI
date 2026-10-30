@@ -22,6 +22,8 @@ win:
   # No certificate is configured, so signing is a no-op; this step still stamps the icon and version
   # info into OrgAI.exe. If winCodeSign fails to extract on a machine without symlink rights
   # (Developer Mode off), set this to false: the build then succeeds but OrgAI.exe keeps Electron's icon.
+  # CI (windows-latest) runs as an administrator, which has symlink rights, so true is kept there too. If the
+  # release job fails extracting winCodeSign, add `-c.win.signAndEditExecutable=false` in release.yml.
   signAndEditExecutable: true
 nsis:
   oneClick: false
@@ -29,29 +31,32 @@ nsis:
   artifactName: ${productName}-Setup-${version}.${ext}
 portable:
   artifactName: ${productName}-Portable-${version}.${ext}
-# mac is configured but untested (see docs/macos-testing.md); linux likewise.
+# mac: CI builds unsigned arm64 and x64 artifacts; not yet run on a Mac by hand (see docs/macos-testing.md).
+# linux is configured but untested.
 # Separate arm64 and x64 builds rather than a universal binary: the native claude and codex CLIs are per-arch
 # optional dependencies (@anthropic-ai/claude-agent-sdk-darwin-<arch>, @openai/codex-darwin-<arch>), so a universal
-# build would need both architectures installed and merged. Build each arch on a machine with its optional deps
-# (`npm ci` on that arch, or `npm install --os=darwin --cpu=x64`).
+# build would need both architectures installed and merged. Build each arch on a machine of that arch after `npm ci`.
+# The targets carry no `arch` list on purpose: an arch in the config overrides the --arm64/--x64 CLI flag, so
+# `--mac --arm64` would also build x64 (with the wrong native CLIs). Without a CLI flag the host arch is built.
 mac:
   target:
-    - target: dmg
-      arch: [arm64, x64]
-    - target: zip
-      arch: [arm64, x64]
+    - dmg
+    - zip
+  # Per-arch names so the arm64 and x64 jobs never collide: OrgAI-<version>-arm64.dmg, OrgAI-<version>-x64.zip.
+  artifactName: ${productName}-${version}-${arch}.${ext}
   category: public.app-category.developer-tools
   icon: build/icon.png
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Unsigned local test build: run with CSC_IDENTITY_AUTO_DISCOVERY=false (or uncomment `identity: null`).
-  # The app then needs right-click > Open the first time. For a distributable build set CSC_LINK/CSC_KEY_PASSWORD
-  # and the notarization variables (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID).
+  # Unsigned build: run with CSC_IDENTITY_AUTO_DISCOVERY=false (or uncomment `identity: null`); the release workflow
+  # does this when the CSC_LINK secret is absent. The app then needs right-click > Open the first time. For a
+  # distributable build set CSC_LINK/CSC_KEY_PASSWORD and the notarization variables (APPLE_ID,
+  # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID); without them notarization is skipped with a warning.
   # identity: null
 dmg:
-  artifactName: ${productName}-${version}.${ext}
+  artifactName: ${productName}-${version}-${arch}.${ext}
 linux:
   target: AppImage
   category: Development

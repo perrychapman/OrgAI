@@ -1,0 +1,78 @@
+# Checks every push to main and every pull request. Free: no smoke scripts and no token-spending e2e
+# (setup, history and worktree need the user's consent and never run here).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # The maintenance e2e shells out to git a lot.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    env:
+      # Fresh runners have no git identity; the e2e fixtures and OrgAI's merge commits need one.
+      GIT_AUTHOR_NAME: OrgAI CI
+      GIT_AUTHOR_EMAIL: ci@orgai.local
+      GIT_COMMITTER_NAME: OrgAI CI
+      GIT_COMMITTER_EMAIL: ci@orgai.local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: e2e (free)
+        run: npm run e2e:free
+        env:
+          # The e2e scripts pick their own temp data dir; this keeps any stray launch off the runner's profile.
+          # (The runner context is only available at step level.)
+          ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
+      - name: Upload e2e screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-${{ runner.os }}
+          path: e2e/shots/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+  pack:
+    name: pack (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    env:
+      # Unsigned: never look for a signing identity on the runner.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
+      # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
+      - run: npm run pack
