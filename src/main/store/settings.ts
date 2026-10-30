@@ -53,7 +53,8 @@ export function normalizeAppearance(raw: unknown): AppearanceSettings {
 export function normalizeModelPrices(raw: unknown): ModelPriceOverride[] {
   if (!Array.isArray(raw)) return []
   const byKey = new Map<string, ModelPriceOverride>()
-  for (const item of raw) {
+  // Bound the work on a hostile settings file: a few times the cap is plenty to find MODEL_PRICE_OVERRIDES_MAX valid ones.
+  for (const item of raw.slice(0, MODEL_PRICE_OVERRIDES_MAX * 4)) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue
     const o = item as Record<string, unknown>
     const model = typeof o.model === 'string' ? o.model.trim() : ''
