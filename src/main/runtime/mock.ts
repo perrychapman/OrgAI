@@ -289,7 +289,7 @@ export class MockSession implements RuntimeSession {
   async receive(message: PeerMessage): Promise<void> {
     if (this.stopped) return
     this.peerMessages.push(message)
-    this.deliverHarness(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+    this.deliverHarness(peerMessageText(message), 'Reading a message from another runâ€¦', { transcript: false })
   }
 
   async stop(): Promise<void> {
