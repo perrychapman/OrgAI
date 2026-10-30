@@ -9,6 +9,7 @@ import {
   nextNudge,
   nextStep,
   nudgeBlocked,
+  peerDeliveryBlocked,
   planProgressLabel,
   remainingSteps,
   stepActivity,
@@ -102,6 +103,19 @@ describe('nextNudge', () => {
 
   it('a blocked condition wins over the limit', () => {
     expect(nextNudge(input({ liveReports: 1, plan: plan({ autoContinues: 99 }) }))).toEqual({ kind: 'none' })
+  })
+})
+
+describe('peerDeliveryBlocked', () => {
+  const ok = { held: false, rateLimited: false, pendingInteractions: 0 }
+  it('allows delivery to a run that is not waiting on its user', () => {
+    expect(peerDeliveryBlocked(ok)).toBeNull()
+  })
+  it('holds messages for an interrupted, rate-limited or waiting run, the user stop first', () => {
+    expect(peerDeliveryBlocked({ ...ok, held: true })).toBe('held')
+    expect(peerDeliveryBlocked({ ...ok, rateLimited: true })).toBe('rate limited')
+    expect(peerDeliveryBlocked({ ...ok, pendingInteractions: 2 })).toBe('waiting for the user')
+    expect(peerDeliveryBlocked({ held: true, rateLimited: true, pendingInteractions: 1 })).toBe('held')
   })
 })
 
@@ -215,6 +229,17 @@ describe('ContinuationDriver', () => {
     expect((await d.evaluate()).kind).toBe('none')
     reports = 0
     expect((await d.evaluate()).kind).toBe('set-plan')
+  })
+
+  it('isHeld is true from hold until the next user message', () => {
+    const d = new ContinuationDriver(host)
+    expect(d.isHeld()).toBe(false)
+    d.hold()
+    expect(d.isHeld()).toBe(true)
+    d.turnEnded()
+    expect(d.isHeld()).toBe(true)
+    d.userMessage()
+    expect(d.isHeld()).toBe(false)
   })
 
   it('hold stops nudges until the user speaks; userMessage cancels a pending check', async () => {

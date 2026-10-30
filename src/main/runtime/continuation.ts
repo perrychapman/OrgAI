@@ -142,6 +142,27 @@ export function nextNudge(input: NudgeInput): NudgeDecision {
   return { kind: 'continue', text }
 }
 
+/** What decides whether a peer run's message (message_run) may wake the run now. */
+export interface PeerDeliveryInput {
+  /** The user interrupted the run and has not sent a message since. */
+  held: boolean
+  /** The provider reported a usage-limit rejection; the run is about to pause. */
+  rateLimited: boolean
+  /** Permission, proposal, question, merge-review, install and rule cards waiting for the user. */
+  pendingInteractions: number
+}
+
+/**
+ * Why a peer message must wait instead of waking the run, or null when it may be delivered now. Same rule as the
+ * automatic continue: nothing but the user resumes a run the user stopped or a run waiting on the user. Pure.
+ */
+export function peerDeliveryBlocked(input: PeerDeliveryInput): 'held' | 'rate limited' | 'waiting for the user' | null {
+  if (input.held) return 'held'
+  if (input.rateLimited) return 'rate limited'
+  if (input.pendingInteractions > 0) return 'waiting for the user'
+  return null
+}
+
 /** What a ContinuationDriver needs from the adapter and the run manager. */
 export interface ContinuationHost {
   kind: RunKind
@@ -200,6 +221,11 @@ export class ContinuationDriver {
   hold(): void {
     this.cancel()
     this.held = true
+  }
+
+  /** True from an interrupt (`hold`) until the user's next message (`userMessage`). */
+  isHeld(): boolean {
+    return this.held
   }
 
   dispose(): void {

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
@@ -1267,6 +1267,110 @@ describe('cross-run messaging', () => {
     expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
     projects.set(pa.id, { ...pa, runMessaging: true })
     expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^DELIVERED/)
+    await m.stopAll()
+  })
+
+  describe('a peer never overrides the user', () => {
+    const inFor = (id: string) => events.filter(isType('run.message', (e) => e.runId === id && e.direction === 'in'))
+    const sysTexts = (m: RunManager, id: string): string[] => m.get(id)!.transcript.filter((t) => t.block.kind === 'system').map((t) => (t.block as { text: string }).text)
+
+    it('delivers to a run that is not waiting on its user at once', async () => {
+      const { m, adapter, tool, a, b } = await two()
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'now' })).toMatch(/^DELIVERED/)
+      expect(adapter.bySession.get(b.id)!.peerMessages.map((p) => p.text)).toEqual(['now'])
+      expect(inFor(b.id)).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('queues a message for an interrupted run and delivers it after the user speaks', async () => {
+      const { m, adapter, tool, a, b } = await two()
+      await m.interrupt(b.id)
+      const out = await tool(a.id, 'message_run', { runId: b.id, message: 'heads up' })
+      expect(out).toBe(`QUEUED: run ${b.id} is waiting on its user; delivered when it resumes. Continue your own work and do not resend it.`)
+      const session = adapter.bySession.get(b.id)!
+      expect(session.peerMessages).toEqual([])
+      expect(session.harnessMessages).toEqual([])
+      // The sender's side is recorded at send time and says it was queued; the receiver's only at delivery.
+      expect(events.filter(isType('run.message', (e) => e.runId === a.id && e.direction === 'out'))).toHaveLength(1)
+      expect(sysTexts(m, a.id).some((t) => t.startsWith(`Queued for run ${b.id}`) && t.endsWith('heads up'))).toBe(true)
+      expect(inFor(b.id)).toEqual([])
+      expect(sysTexts(m, b.id).some((t) => t.startsWith('Note from run'))).toBe(false)
+
+      const before = events.length
+      await m.send(b.id, 'carry on')
+      expect(session.peerMessages.map((p) => p.text)).toEqual(['heads up'])
+      expect(inFor(b.id)).toHaveLength(1)
+      // The user's message comes first.
+      const userAt = events.findIndex((e, i) => i >= before && e.type === 'transcript' && e.runId === b.id && e.entry.block.kind === 'user')
+      const inAt = events.findIndex((e, i) => i >= before && e.type === 'run.message' && e.runId === b.id)
+      expect(userAt).toBeGreaterThanOrEqual(0)
+      expect(inAt).toBeGreaterThan(userAt)
+      // Not held any more: the next message goes straight through.
+      await idle(b.id)
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'again' })).toMatch(/^DELIVERED/)
+      await m.stopAll()
+    })
+
+    it('queues a message for a run with a pending permission card and delivers it once decided', async () => {
+      const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a'), runMessaging: true })
+      const pb = makeProject({ id: 'pb', name: 'Beta', path: join(dir, 'b'), runMessaging: true })
+      const projects = new Map<string, Project>([
+        [pa.id, pa],
+        [pb.id, pb]
+      ])
+      const { m, adapter, tool } = multiManager({ work: [{ type: 'tool', name: 'Bash', input: { command: 'ls' }, ask: true }] }, projects)
+      const a = await m.start({ project: pa, prompt: 'A' })
+      const b = await m.start({ project: pb, prompt: 'B' })
+      const card = await waitFor(isType('permission.request', (e) => e.runId === b.id))
+      await waitFor(isType('permission.request', (e) => e.runId === a.id))
+      // The sender's own pending card does not stop it from sending.
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'wait for me' })).toMatch(/^QUEUED/)
+      const session = adapter.bySession.get(b.id)!
+      expect(session.peerMessages).toEqual([])
+      expect(inFor(b.id)).toEqual([])
+      m.decide(b.id, card.request.id, { behavior: 'allow' })
+      await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['wait for me']))
+      expect(inFor(b.id)).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('refuses as busy beyond the queue limit and drops held messages when the run ends', async () => {
+      const { m, adapter, tool, a, b } = await two()
+      await m.interrupt(b.id)
+      for (let i = 0; i < RUN_MESSAGE_QUEUE_LIMIT; i++) expect(await tool(a.id, 'message_run', { runId: b.id, message: `q${i}` })).toMatch(/^QUEUED/)
+      expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'one more')).toEqual({ result: 'refused', refusal: 'busy' })
+      expect(await tool(a.id, 'message_run', { runId: b.id, message: 'one more' })).toMatch(/^REFUSED: busy/)
+      await m.stop(b.id)
+      await vi.waitFor(() => expect(m.summaryOf(b.id)).toBeUndefined())
+      expect(adapter.bySession.get(b.id)!.peerMessages).toEqual([])
+      const warns = events.filter(isType('log', (e) => e.level === 'warn'))
+      expect(warns.some((e) => e.runId === b.id && e.message.startsWith(`${RUN_MESSAGE_QUEUE_LIMIT} held messages`))).toBe(true)
+      expect(warns.filter((e) => e.runId === a.id && e.message.startsWith('Your queued message'))).toHaveLength(RUN_MESSAGE_QUEUE_LIMIT)
+      await m.stopAll()
+    })
+  })
+
+  it('caps what one run may receive from all runs together', async () => {
+    const { m, adapter, tool, a, b, pa } = await two()
+    const senders = [a]
+    while (senders.length * RUN_MESSAGE_LIMIT < RUN_MESSAGE_INBOUND_LIMIT + RUN_MESSAGE_LIMIT) {
+      const r = await m.start({ project: pa, prompt: `sender ${senders.length}` })
+      await idle(r.id)
+      senders.push(r)
+    }
+    let sent = 0
+    for (const s of senders) {
+      for (let i = 0; i < RUN_MESSAGE_LIMIT && sent < RUN_MESSAGE_INBOUND_LIMIT; i++, sent++) {
+        expect(await adapter.ctxs.get(s.id)!.messageRun!(b.id, `m${sent}`)).toEqual({ result: 'delivered' })
+      }
+    }
+    const last = senders[senders.length - 1]
+    expect(await adapter.ctxs.get(last.id)!.messageRun!(b.id, 'over')).toEqual({ result: 'refused', refusal: 'cap', cap: 'inbound' })
+    expect(await tool(last.id, 'message_run', { runId: b.id, message: 'over' })).toMatch(/^REFUSED: message cap reached: that run has taken the most/)
+    // The pair cap names itself too.
+    expect(await adapter.ctxs.get(a.id)!.messageRun!(b.id, 'over')).toEqual({ result: 'refused', refusal: 'cap', cap: 'pair' })
+    // The recipient can still send.
+    expect(await tool(b.id, 'message_run', { runId: a.id, message: 'reply' })).toMatch(/^DELIVERED/)
     await m.stopAll()
   })
 

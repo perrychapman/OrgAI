@@ -770,11 +770,13 @@ export const listRunsTool = defineTool({
   }
 })
 
-/** The one-line text message_run returns for an outcome. */
-export function messageRunText(outcome: RunMessageOutcome): string {
+/** The one-line text message_run returns for an outcome. `runId` is the target the caller named. */
+export function messageRunText(outcome: RunMessageOutcome, runId = 'that run'): string {
   switch (outcome.result) {
     case 'delivered':
       return 'DELIVERED: the other orchestrator will see it as information; any reply arrives later as a harness message. Continue your own work.'
+    case 'queued':
+      return `QUEUED: run ${datum(runId, 80)} is waiting on its user; delivered when it resumes. Continue your own work and do not resend it.`
     case 'not-found':
       return 'NOT FOUND: no run has that id. Check the id with list_runs.'
     case 'refused':
@@ -787,7 +789,11 @@ export function messageRunText(outcome: RunMessageOutcome): string {
           )
         }
         case 'cap':
-          return 'REFUSED: message cap reached for this run; report to the user instead of messaging it again.'
+          return outcome.cap === 'inbound'
+            ? 'REFUSED: message cap reached: that run has taken the most messages any run may receive; report to the user instead of messaging it again.'
+            : 'REFUSED: message cap reached: you have sent that run the most messages one run may send it; report to the user instead of messaging it again.'
+        case 'busy':
+          return 'REFUSED: busy: that run is waiting on its user and already holds the most queued messages. Do not resend; continue without it or report to the user.'
         case 'self':
           return 'REFUSED: that is this run. Message another run from list_runs.'
         case 'empty':
@@ -814,7 +820,8 @@ export const messageRunTool = defineTool({
   }),
   async handler(ctx, { runId, message }) {
     if (!ctx.messageRun) return messageRunText({ result: 'not-live' })
-    return messageRunText(await ctx.messageRun(runId.trim(), message))
+    const target = runId.trim()
+    return messageRunText(await ctx.messageRun(target, message), target)
   }
 })
 
