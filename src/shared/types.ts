@@ -191,6 +191,26 @@ export interface ProviderModel {
   hint?: string
   /** 'builtin' = shipped with OrgAI; 'discovered' = listed by the connection at runtime. */
   source: 'builtin' | 'discovered'
+  /**
+   * Token prices, when the connection reports them (LiteLLM /model/info `model_info.*_cost_per_token`). Used for
+   * run cost estimates on that connection. Absent = unknown price (the run's cost for this model stays 0).
+   */
+  price?: ModelPrice
+  /** LiteLLM: the upstream model the proxy routes this name to (litellm_params.model, e.g. "anthropic/claude-sonnet-4-5"). */
+  upstream?: string
+}
+
+/**
+ * USD per token of one model, as a LiteLLM proxy reports it in /model/info (UNVERIFIED against a live proxy).
+ * inputPerToken prices uncached input. A missing cache price falls back to inputPerToken. 0 = free (local models).
+ */
+export interface ModelPrice {
+  inputPerToken: number
+  outputPerToken: number
+  /** model_info.cache_read_input_token_cost. */
+  cacheReadPerToken?: number
+  /** model_info.cache_creation_input_token_cost. */
+  cacheCreationPerToken?: number
 }
 
 /** models:list and models:refresh input. Omit `connection` for every enabled connection. */
@@ -1265,6 +1285,13 @@ export interface RunSummary {
    * Advisory only: the UI falls back to `prompt`.
    */
   title?: string
+  /**
+   * The connection the run reached its models through (RunConnection.connection, set at start). Lets the UI label
+   * totalCostUsd per run: on 'anthropic' it is the CLI's own estimate, on 'litellm' it is computed from the proxy's
+   * /model/info prices (0 when a model has no price), on 'openai' it is 0 (ChatGPT plan, no per-token price).
+   * Missing on runs recorded before it existed.
+   */
+  connection?: ConnectionId
 }
 
 /**
@@ -1407,17 +1434,47 @@ export interface ModelRateLimitWindow extends RateLimitWindow {
   model: string
 }
 
-/** The plan limits that constrain a subscription login, as last reported by the provider. */
+/**
+ * Spend of a LiteLLM virtual key as the proxy reports it (GET {base}/key/info with the key as Bearer; UNVERIFIED
+ * against a live proxy). Only the key's own budget: a team budget that may also govern the key is not read.
+ */
+export interface UsageSpend {
+  /** USD spent so far in the current budget period (info.spend). */
+  usd: number
+  /** USD budget of the key (info.max_budget); null = no budget set. */
+  budgetUsd: number | null
+  /** When the budget resets (info.budget_reset_at), epoch ms; null = never or unknown. */
+  resetsAt: number | null
+  /** The budget period as the proxy writes it, e.g. "30d", "1h" (info.budget_duration); null = none. */
+  budgetDuration: string | null
+  /** The key's alias (info.key_alias); null when unset. Never the key itself. */
+  keyAlias: string | null
+}
+
+/**
+ * The plan limits that constrain a subscription login, or a key's spend, as last reported by the provider.
+ * Reports come per connection ('anthropic' Claude plan windows, 'openai' Codex windows, 'litellm' key spend), each
+ * as its own usage.status event with runId ''. The renderer keeps the latest report per `connection` (missing =
+ * 'anthropic'); a report never clears another connection's.
+ */
 export interface UsageStatus {
-  /** The adapter that reported it. Missing on older records = 'claude'. */
+  /**
+   * The adapter that reported it. Missing on older records = 'claude'. LiteLLM spend reports (connection 'litellm')
+   * leave it unset: the spend belongs to the key, not to an adapter.
+   */
   provider?: ProviderId
   /** The connection the limits belong to. Missing = 'anthropic'. Lets Codex (ChatGPT) limits show beside Claude's. */
   connection?: ConnectionId
   authMode: 'subscription' | 'apiKey' | 'unknown'
   /** e.g. 'pro', 'max'; null for API keys or when unknown. */
   subscriptionType: string | null
-  /** Plan windows were reported. False for API keys and before the first report. */
+  /**
+   * Plan windows (or, for 'litellm', `spend`) were reported. False for API keys and before the first report.
+   * A LiteLLM report has authMode 'apiKey', available true, windows {} and `spend` set.
+   */
   available: boolean
+  /** LiteLLM: the virtual key's spend and budget. Absent on plan-window reports. */
+  spend?: UsageSpend
   windows: {
     fiveHour?: RateLimitWindow
     sevenDay?: RateLimitWindow
