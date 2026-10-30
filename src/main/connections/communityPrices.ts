@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ModelPrice } from '@shared/types'
 import { sanitizeModelPrice } from '../runtime/pricing'
@@ -68,7 +68,7 @@ async function readCapped(res: Response, max: number): Promise<string> {
   if (Number.isFinite(declared) && declared > max) throw new Error('The price list is too large.')
   if (!res.body) {
     const text = await res.text()
-    if (text.length > max) throw new Error('The price list is too large.')
+    if (Buffer.byteLength(text, 'utf8') > max) throw new Error('The price list is too large.')
     return text
   }
   const reader = res.body.getReader()
@@ -134,11 +134,23 @@ export class CommunityPrices {
     }
   }
 
-  private save(prices: Prices): void {
-    mkdirSync(dirname(this.file), { recursive: true })
+  /** Write the cache. A disk error is logged as such (apart from fetch failures), the tmp file removed; never throws. */
+  private save(prices: Prices): boolean {
     const tmp = `${this.file}.tmp`
-    writeFileSync(tmp, JSON.stringify({ version: 1, fetchedAt: this.fetchedAt, prices }), 'utf8')
-    renameSync(tmp, this.file)
+    try {
+      mkdirSync(dirname(this.file), { recursive: true })
+      writeFileSync(tmp, JSON.stringify({ version: 1, fetchedAt: this.fetchedAt, prices }), 'utf8')
+      renameSync(tmp, this.file)
+      return true
+    } catch (e) {
+      console.warn(`Community model prices fetched but not saved to disk: ${(e as Error).message}`)
+      try {
+        rmSync(tmp, { force: true })
+      } catch {
+        // best effort
+      }
+      return false
+    }
   }
 
   /** The cached prices, or undefined when the setting is off or nothing is cached. */

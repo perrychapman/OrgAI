@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { cancelLogin, expiryOf, listModels, logoutAccount, onLoginCompleted, parseLoginStart, parseModelPage, readAccount, startLogin } from './codexAccount'
+import { cancelLogin, validModelId, expiryOf, listModels, logoutAccount, onLoginCompleted, parseLoginStart, parseModelPage, readAccount, startLogin } from './codexAccount'
 import { fakeRpc } from './testHelpers'
+
+describe('validModelId', () => {
+  it('accepts printable ids up to 200 chars and rejects whitespace, control chars, non-ASCII and a leading dash', () => {
+    for (const ok of ['opus', 'claude-sonnet-4-5', 'sonnet[1m]', 'openai/gpt-5.1', 'a-', 'x'.repeat(200)]) expect(validModelId(ok), ok).toBe(true)
+    for (const bad of ['has space', 'tab\there', 'bell\u0007', 'new\nline', '--help', '-m', 'caf\u00e9', 'x'.repeat(201), '']) expect(validModelId(bad), JSON.stringify(bad)).toBe(false)
+    expect(validModelId(42)).toBe(false)
+    expect(validModelId(undefined)).toBe(false)
+  })
+
+  it('model/list drops ids with a leading dash', () => {
+    expect(parseModelPage({ data: [{ model: '--config=x' }, { model: 'gpt-ok' }] }).models.map((m) => m.id)).toEqual(['gpt-ok'])
+  })
+})
 
 describe('codexAccount', () => {
   it('reads a signed-out, chatgpt and api-key account', async () => {

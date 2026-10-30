@@ -1,6 +1,8 @@
 import { adapterForFamily, builtinModels, defaultTierModels, tierForModel } from '@shared/defaults'
 import { MODEL_TIERS } from '@shared/types'
 import type { AdapterModelInfo } from '../runtime/types'
+import { sanitizeModelPrice } from '../runtime/pricing'
+import { validModelId } from './codexAccount'
 import type { ConnectionId, ModelFamily, ModelPrice, ModelRef, ModelTier, ProviderModel } from '@shared/types'
 
 /** Pure helpers that turn discovered model ids into catalog entries. */
@@ -72,6 +74,7 @@ export interface DiscoveredModelInput {
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
+  const price = m.price === undefined ? undefined : sanitizeModelPrice(m.price)
   const family = m.family ?? classifyFamily(m.id, m.litellmProvider)
   const tier = m.tier ?? inferTier(m.id, family)
   return {
@@ -85,7 +88,7 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     ...(m.hint ? { hint: m.hint } : {}),
     source: 'discovered',
     ...(m.recommended ? { recommended: true } : {}),
-    ...(m.price ? { price: { ...m.price } } : {}),
+    ...(price ? { price } : {}),
     ...(m.upstream ? { upstream: m.upstream } : {})
   }
 }
@@ -134,7 +137,7 @@ export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): Pro
   const out: ProviderModel[] = []
   for (const info of list) {
     const id = info.id?.trim()
-    if (!id || id === 'default' || seen.has(id)) continue
+    if (!id || id === 'default' || seen.has(id) || !validModelId(id)) continue
     seen.add(id)
     const tier = id.includes('[') ? undefined : (tierForModel(id) ?? tierFromDescription(info.description))
     const { tier: _inferred, ...entry } = makeDiscoveredModel('anthropic', {

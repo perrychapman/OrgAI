@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
 import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
@@ -37,7 +38,7 @@ describe('mapSupportedModels', () => {
       { value: '  ' },
       { value: 5 },
       null,
-      { value: 'x'.repeat(300), displayName: 7, description: 'y'.repeat(400) }
+      { value: 'x'.repeat(200), displayName: 7, description: 'y'.repeat(400) }
     ])
     expect(out).toHaveLength(2)
     expect(out[0]).toEqual({ id: 'opus', label: 'Opus', description: 'd', resolvedModel: 'claude-opus-x' })
@@ -46,6 +47,19 @@ describe('mapSupportedModels', () => {
     expect(out[1].description).toHaveLength(300)
     expect(mapSupportedModels('nope')).toEqual([])
     expect(mapSupportedModels(Array.from({ length: 300 }, (_, i) => ({ value: `m${i}` })))).toHaveLength(200)
+  })
+})
+
+describe('mapSupportedModels validation', () => {
+  it('drops ids with spaces, control chars, a leading dash, non-ASCII or over 200 chars', () => {
+    const bad = ['a b', 'a\u0007b', 'ab', 'a\nb', '--help', 'mödel', 'x'.repeat(201)]
+    const out = mapSupportedModels([...bad.map((value) => ({ value })), { value: 'claude-ok_1.2' }])
+    expect(out.map((m) => m.id)).toEqual(['claude-ok_1.2'])
+  })
+
+  it('drops an invalid resolvedModel but keeps the row', () => {
+    const out = mapSupportedModels([{ value: 'a', resolvedModel: 'bad model' }, { value: 'b', resolvedModel: '-x' }, { value: 'c', resolvedModel: 'good-1' }])
+    expect(out.map((m) => m.resolvedModel)).toEqual([undefined, undefined, 'good-1'])
   })
 })
 
@@ -312,6 +326,7 @@ describe('probeQueryOptions', () => {
     expect(o.strictMcpConfig).toBe(true)
     expect(o.mcpServers).toEqual({})
     expect(o.env).toEqual({ A: '1' })
+    expect(o.cwd).toBe(tmpdir())
   })
 })
 

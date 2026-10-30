@@ -246,6 +246,46 @@ describe('scheduled discovery', () => {
   })
 })
 
+describe('discovered id validation', () => {
+  it('anthropic: invalid discovered ids never reach the catalog or the tier mapping', async () => {
+    const list: Listed[] = [{ id: '--help', description: 'Our most capable model' }, { id: 'bad id' }, { id: 'ctl\u0007' }, { id: 'x'.repeat(201) }, ...MODEL_LIST]
+    const ctx = setup({ anthropicModels: async () => list })
+    await ctx.service.refresh({ connection: 'anthropic' })
+    const ids = ctx.service.models({ connection: 'anthropic' }).map((m) => m.id)
+    expect(ids).toEqual(['fable', 'opus', 'sonnet', 'sonnet[1m]', 'haiku'])
+    expect(Object.values(ctx.settings.get().connections.anthropic.tierModels)).not.toContain('--help')
+  })
+
+  it('openai: model/list ids with a leading dash are dropped', async () => {
+    const rpc = fakeRpc({
+      'account/read': { account: { type: 'chatgpt', email: 'a@b.c', planType: 'plus' }, requiresOpenaiAuth: false },
+      'model/list': { data: [{ model: '-c', isDefault: true }, { model: 'gpt-9', displayName: 'Nine' }] }
+    })
+    const ctx = setup({ codexFactory: () => asCodexServer(rpc) })
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true, auth: { kind: 'chatgpt' } } } })
+    await ctx.service.refresh({ connection: 'openai' })
+    expect(ctx.service.models({ connection: 'openai' }).map((m) => m.id)).toEqual(['gpt-9'])
+  })
+})
+
+describe('signed-out ChatGPT discovery', () => {
+  it('skips model/list and records no error when there is no account', async () => {
+    const rpc = fakeRpc({ 'account/read': { account: null, requiresOpenaiAuth: true }, 'model/list': { data: [{ model: 'gpt-9' }] } })
+    const ctx = setup({ codexFactory: () => asCodexServer(rpc), anthropicModels: async () => MODEL_LIST })
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true, auth: { kind: 'chatgpt' } } } })
+    await ctx.service.discoverStale(100)
+    await ctx.service.discoverStale(100)
+    const openai = (await ctx.service.list()).find((i) => i.connection.id === 'openai')!
+    expect(openai.modelsError).toBeUndefined()
+    expect(openai.modelsRefreshedAt).toBeUndefined()
+    expect(rpc.calls.some(([m]) => m === 'model/list')).toBe(false)
+    // The placeholders stay.
+    expect(ctx.service.models({ connection: 'openai' }).length).toBeGreaterThan(0)
+  })
+})
+
 describe('openai recommended and tiers', () => {
   it('passes isDefault as recommended, reads descriptions, and gives a recommended tierless model deep', async () => {
     const rpc = fakeRpc({

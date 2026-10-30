@@ -93,9 +93,13 @@ export const MODEL_TEXT_MAX = 300
 export const MODEL_LIST_MAX = 2000
 const MODEL_ID_RE = /^[!-~]+$/
 
-/** True for an id that is printable ASCII without spaces and at most 200 chars (untrusted provider/file data). */
-export function validModelId(id: string): boolean {
-  return id.length <= MODEL_ID_MAX && MODEL_ID_RE.test(id)
+/**
+ * True for a model id that is safe to pass on as options.model, an env value (ANTHROPIC_DEFAULT_*_MODEL) or a CLI
+ * argument: printable ASCII with no whitespace or control characters, 1 to 200 chars, and no leading '-' (it could
+ * read as an option). Applied to every provider's discovered ids, stored catalogs and saved tier models.
+ */
+export function validModelId(id: unknown): id is string {
+  return typeof id === 'string' && id.length <= MODEL_ID_MAX && MODEL_ID_RE.test(id) && !id.startsWith('-')
 }
 
 export function parseModelPage(raw: unknown): { models: CodexModelInfo[]; nextCursor: string | null } {
