@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, completionEnv, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -183,5 +183,27 @@ describe('completionEnv', () => {
   })
   it('keeps ANTHROPIC_API_KEY for anthropic', () => {
     expect(completionEnv({ connection: 'anthropic', adapter: 'claude', env: {} }, base)?.ANTHROPIC_API_KEY).toBe('k')
+  })
+})
+
+describe('linkAbortSignal', () => {
+  it('aborts the controller when the signal aborts', () => {
+    const ac = new AbortController()
+    const { controller } = linkAbortSignal(ac.signal)
+    expect(controller.signal.aborted).toBe(false)
+    ac.abort()
+    expect(controller.signal.aborted).toBe(true)
+  })
+  it('stops listening after dispose', () => {
+    const ac = new AbortController()
+    const { controller, dispose } = linkAbortSignal(ac.signal)
+    dispose()
+    ac.abort()
+    expect(controller.signal.aborted).toBe(false)
+  })
+  it('throws when already aborted', () => {
+    const ac = new AbortController()
+    ac.abort()
+    expect(() => linkAbortSignal(ac.signal)).toThrow('Completion cancelled')
   })
 })

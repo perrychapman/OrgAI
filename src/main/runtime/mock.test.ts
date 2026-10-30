@@ -267,6 +267,21 @@ describe('mock adapter complete', () => {
   it('fails on the failure marker', async () => {
     await expect(adapter.complete({ system: sys, prompt: '<message>[mock:title-fail]</message>', kind: 'title' })).rejects.toThrow('Mock title failure')
   })
+  it('rejects when the signal is already aborted', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    await expect(adapter.complete({ system: sys, prompt: 'x', kind: 'title', signal: ac.signal })).rejects.toThrow('cancelled')
+  })
+  it('rejects when the signal aborts during the slow wait', async () => {
+    const ac = new AbortController()
+    const p = adapter.complete({ system: sys, prompt: '<message>[mock:title-slow]</message>', kind: 'title', signal: ac.signal })
+    ac.abort()
+    await expect(p).rejects.toThrow('Completion cancelled')
+  })
+  it('completes the slow title when never aborted', async () => {
+    const ac = new AbortController()
+    expect(await adapter.complete({ system: sys, prompt: '<message>[mock:title-slow] hi</message>', kind: 'title', signal: ac.signal })).toMatch(/hi/)
+  })
   it('still answers drafts with parseable JSON roles', async () => {
     for (const kind of [undefined, 'draft' as const]) {
       const out = JSON.parse(await adapter.complete({ system: sys, prompt: 'x', kind }))
