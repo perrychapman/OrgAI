@@ -3,7 +3,7 @@ import { mapTools, rooGroupTools } from './tools'
 
 describe('mapTools', () => {
   it('defaults to read-only tools when no list is given', () => {
-    expect(mapTools(undefined)).toEqual({ tools: ['Read', 'Glob', 'Grep'], dropped: [], canSpawn: false })
+    expect(mapTools(undefined)).toEqual({ tools: ['Read', 'Glob', 'Grep'], dropped: [], ignoredDenied: [], canSpawn: false })
   })
   it('maps foreign names case-insensitively in catalog order', () => {
     const r = mapTools(['run_shell_command', 'READ_FILE', 'edit', 'search', 'web', 'todo', 'google_web_search', 'MultiEdit'])
@@ -20,6 +20,16 @@ describe('mapTools', () => {
     expect(mapTools(undefined, ['grep', 'bash']).tools).toEqual(['Read', 'Glob'])
     expect(mapTools(['Read', 'Write', 'Edit'], ['write']).tools).toEqual(['Read', 'Edit'])
     expect(mapTools(['Read', 'Agent'], ['task']).canSpawn).toBe(false)
+  })
+  it('reports removals it cannot map, and a removal wins over a grant', () => {
+    const r = mapTools(['Read', 'bash'], ['bash', 'mymcp_*', 'lsp'])
+    expect(r.tools).toEqual(['Read'])
+    expect(r.ignoredDenied).toEqual(['mymcp_*', 'lsp'])
+    expect(r.dropped).toEqual([])
+  })
+  it('maps Copilot, Gemini and Kiro aliases', () => {
+    expect(mapTools(['runCommands', 'editFiles', 'fetch', 'write_todos', 'todo_list']).tools).toEqual(['Edit', 'Write', 'Bash', 'WebFetch', 'TodoWrite'])
+    expect(mapTools(['use_subagent']).canSpawn).toBe(true)
   })
 })
 

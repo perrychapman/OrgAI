@@ -12,7 +12,7 @@ import type {
 import { AGENT_IMPORT_ELEVATED_TOOLS, AGENT_IMPORT_MAX_CHOICES, AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 import { mapChosenModel, mapImportedModel, type MappedModel, type ModelContext } from './model'
 import { importKey } from './scan'
-import { mapTools } from './tools'
+import { DEFAULT_IMPORT_TOOLS, mapTools } from './tools'
 import type { ImportedAgent } from './types'
 
 /** Characters of the imported prompt shown in a preview item. */
@@ -148,7 +148,11 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
     const mapped = choice?.model !== undefined ? mapChosenModel(choice.model, ctx, agent.name) : mapImportedModel(agent.model, ctx, agent.tier)
     if (mapped.note) notes.push(mapped.note)
     if (mappedTools.dropped.length) notes.push(`Tools with no OrgAI equivalent were dropped: ${mappedTools.dropped.join(', ')}.`)
-    if (agent.tools === undefined) notes.push('No tools listed: read-only by default.')
+    if (mappedTools.ignoredDenied.length) notes.push(`Removed tools with no OrgAI equivalent were ignored: ${mappedTools.ignoredDenied.join(', ')}.`)
+    if (agent.tools === undefined) {
+      const removed = DEFAULT_IMPORT_TOOLS.filter((t) => !mappedTools.tools.includes(t))
+      notes.push(removed.length ? `No tools granted: read-only by default, without ${removed.join(', ')}.` : 'No tools listed: read-only by default.')
+    }
     if (agent.prompt.length > PROMPT_EXCERPT_CHARS) notes.push(`The prompt is ${agent.prompt.length.toLocaleString('en-US')} characters; review all of it before applying.`)
     const prompt = agent.prompt.trim() || describe(agent)
     if (!agent.prompt.trim()) notes.push('The definition has no prompt; its description is used.')

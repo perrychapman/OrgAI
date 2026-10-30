@@ -1,8 +1,8 @@
-import type { AgentImportSource, Effort, ModelTier } from '@shared/types'
+import { AGENT_IMPORT_SOURCE_LABELS, type AgentImportSource, type Effort, type ModelTier } from '@shared/types'
 import { parseFrontmatter, parseYamlDoc, type FmValue } from './frontmatter'
 import { parseJsonc } from './jsonc'
 import { parseToml } from './toml'
-import { rooGroupTools } from './tools'
+import { DEFAULT_IMPORT_TOOLS, rooGroupTools } from './tools'
 import { IMPORT_LIMITS, type ImportedAgent, type ParseResult } from './types'
 
 /**
@@ -188,20 +188,53 @@ export function parseClaudeAgent(text: string, file: string): ParseResult {
 
 // ---------- opencode ----------
 
-function opencodeDenied(tools: unknown, permission: unknown): string[] {
+const MAX_KEY_NOTE = 40
+
+function grants(v: unknown): boolean {
+  return v === 'allow' || v === 'ask'
+}
+
+/**
+ * The opencode `tools` map (true = grant, false = remove) and `permission` map (allow / ask = grant, deny = remove;
+ * a pattern object follows its "*" entry). opencode enables every tool unless told otherwise, but OrgAI never
+ * grants a tool that is not named: the grant list is the read-only default plus the named grants, and undefined
+ * when nothing is granted (the converter then uses the read-only default minus the removals). Removals win.
+ */
+export function opencodeTools(tools: unknown, permission: unknown): { tools?: string[]; denied: string[]; notes: string[] } {
+  const granted: string[] = []
   const denied: string[] = []
-  if (isObj(tools)) for (const [k, v] of Object.entries(tools)) if (v === false || v === 'false') denied.push(k)
-  if (isObj(permission)) {
-    for (const [k, v] of Object.entries(permission)) {
-      if (v === 'deny') denied.push(k)
-      else if (isObj(v) && v['*'] === 'deny') denied.push(k)
+  const notes: string[] = []
+  if (isObj(tools)) {
+    for (const [k, v] of Object.entries(tools)) {
+      if (v === true || v === 'true') granted.push(k)
+      else if (v === false || v === 'false') denied.push(k)
     }
   }
-  return denied
+  if (isObj(permission)) {
+    for (const [k, v] of Object.entries(permission)) {
+      const key = k.slice(0, MAX_KEY_NOTE)
+      const partial = `opencode allowed only some "${key}" patterns; OrgAI cannot limit a tool by pattern, so it is not granted`
+      if (grants(v)) granted.push(k)
+      else if (v === 'deny') denied.push(k)
+      else if (isObj(v)) {
+        const values = Object.entries(v).filter(([p]) => p !== '*').map(([, x]) => x)
+        const star = v['*']
+        if (grants(star)) {
+          granted.push(k)
+          if (values.includes('deny')) notes.push(`opencode denied some "${key}" patterns; OrgAI grants the whole tool and does not enforce them`)
+        } else if (star === 'deny') {
+          denied.push(k)
+          if (values.some(grants)) notes.push(partial)
+        } else if (values.some(grants)) notes.push(partial)
+      }
+    }
+  }
+  return { ...(granted.length ? { tools: [...DEFAULT_IMPORT_TOOLS, ...granted] } : {}), denied, notes }
 }
 
 function opencodeDraft(file: string, name: string, o: Record<string, unknown>, prompt: string): Draft {
   const mode = str(o.mode)
+  const t = opencodeTools(o.tools, o.permission)
   return {
     source: 'opencode',
     file,
@@ -209,9 +242,10 @@ function opencodeDraft(file: string, name: string, o: Record<string, unknown>, p
     description: str(o.description),
     prompt,
     model: str(o.model),
-    deniedTools: opencodeDenied(o.tools, o.permission),
+    ...(t.tools ? { tools: t.tools } : {}),
+    deniedTools: t.denied,
     primary: mode === 'primary' || mode === 'all',
-    notes: []
+    notes: t.notes
   }
 }
 
@@ -281,9 +315,37 @@ export function parseCodexAgent(text: string, file: string): ParseResult {
 
 // ---------- Copilot, Gemini, Kiro (markdown) ----------
 
+/** Names that grant every tool, per source. */
+const ALL_TOOLS: Partial<Record<AgentImportSource, ReadonlySet<string>>> = {
+  copilot: new Set(['*']),
+  gemini: new Set(['*']),
+  kiro: new Set(['*', '@builtin'])
+}
+
+/** Kiro names whose generic meaning in tools.ts differs: Kiro `write` creates and edits files. */
+const KIRO_ALIASES: Record<string, string> = { write: 'fs_write' }
+
+/**
+ * A source's tool list as names for mapTools. An "all tools" entry is never taken as a grant: it becomes the
+ * read-only default plus the other names listed, with a note.
+ */
+function sourceTools(source: AgentImportSource, list: string[] | undefined, notes: string[]): string[] | undefined {
+  if (!list) return undefined
+  let out = list
+  if (source === 'kiro') out = out.map((n) => (Object.hasOwn(KIRO_ALIASES, n.toLowerCase()) ? KIRO_ALIASES[n.toLowerCase()] : n))
+  const all = ALL_TOOLS[source]
+  const star = all ? out.find((n) => all.has(n.toLowerCase())) : undefined
+  if (all && star) {
+    notes.push(`"${star}" grants every tool in ${AGENT_IMPORT_SOURCE_LABELS[source]}; OrgAI imports it as read-only (${DEFAULT_IMPORT_TOOLS.join(', ')}) plus the tools named`)
+    out = [...DEFAULT_IMPORT_TOOLS, ...out.filter((n) => !all.has(n.toLowerCase()))]
+  }
+  return out
+}
+
 function mdAgent(source: AgentImportSource, text: string, file: string, fallbackName: string, ignored: string[]): ParseResult {
   const fm = parseFrontmatter(text)
   const warnings = fm.error ? [`${file}: frontmatter problem (${fm.error})`] : []
+  const notes = fmNotes(fm.data, ignored)
   const d: Draft = {
     source,
     file,
@@ -291,8 +353,8 @@ function mdAgent(source: AgentImportSource, text: string, file: string, fallback
     description: str(fm.data.description),
     prompt: fm.body,
     model: str(fm.data.model),
-    tools: strList(fm.data.tools),
-    notes: fmNotes(fm.data, ignored)
+    tools: sourceTools(source, strList(fm.data.tools), notes),
+    notes
   }
   return one(d, warnings)
 }
@@ -304,8 +366,6 @@ export function parseCopilotAgent(text: string, file: string): ParseResult {
 export function parseGeminiAgent(text: string, file: string): ParseResult {
   return guard(file, () => mdAgent('gemini', text, file, baseName(file, '.md'), ['mcpServers', 'temperature', 'max_turns', 'timeout_mins']))
 }
-
-const KIRO_ALL = new Set(['*', '@builtin'])
 
 export function parseKiroAgent(text: string, file: string, readRelative?: (relPath: string) => string | null): ParseResult {
   return guard(file, () => {
@@ -322,8 +382,7 @@ export function parseKiroAgent(text: string, file: string, readRelative?: (relPa
       if (body === null) warnings.push(`${file}: prompt file ${ref[1].slice(0, 100)} could not be read, prompt left empty`)
       prompt = body ?? ''
     }
-    let tools = strList(o.tools)
-    if (tools && tools.some((x) => KIRO_ALL.has(x))) tools = undefined
+    const notes = Object.keys(o).filter((k) => ['mcpServers', 'hooks', 'toolsSettings', 'resources'].includes(k)).map((k) => `Ignored "${k}" (not imported)`)
     const d: Draft = {
       source: 'kiro',
       file,
@@ -331,8 +390,8 @@ export function parseKiroAgent(text: string, file: string, readRelative?: (relPa
       description: str(o.description),
       prompt,
       model: str(o.model),
-      tools,
-      notes: Object.keys(o).filter((k) => ['mcpServers', 'hooks', 'toolsSettings', 'resources'].includes(k)).map((k) => `Ignored "${k}" (not imported)`)
+      tools: sourceTools('kiro', strList(o.tools), notes),
+      notes
     }
     return one(d, warnings)
   })
