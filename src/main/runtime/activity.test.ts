@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance } from '@shared/types'
-import { TERMINAL_ACTIVITY, authFailureMessage, describeTool, harnessToolActivity, isAuthFailure, runOutcome, scrubAuthDetail, settleAgent } from './activity'
+import { TERMINAL_ACTIVITY, authFailureMessage, describeTool, harnessToolActivity, isAuthFailure, runOutcome, scrubAuthDetail, settleAgent, skillActivity, withSkillActivity } from './activity'
 
 describe('isAuthFailure', () => {
   it('trusts the SDK error code', () => {
@@ -132,6 +132,32 @@ describe('describeTool', () => {
 
   it('does not treat a bare non-harness call as a harness tool', () => {
     expect(describeTool(PROPOSAL_TOOLS.architecture, {})).toBe('Using propose_architecture')
+  })
+})
+
+describe('skill activity', () => {
+  const agent = (over: Partial<AgentInstance>): AgentInstance => ({
+    id: 'r1', roleId: null, roleSlug: 'engineer', name: 'Engineer', parentId: 'root', spawnToolUseId: null,
+    state: 'tool', activity: 'Reading a.ts', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1, ...over
+  })
+
+  it('names the skill on one capped line', () => {
+    expect(skillActivity('pdf-fill')).toBe('Using skill pdf-fill')
+    expect(skillActivity('a\n  b')).toBe('Using skill a b')
+    expect(skillActivity('x'.repeat(200)).length).toBeLessThanOrEqual('Using skill '.length + 60)
+    expect(skillActivity('   ')).toBe('Using skill a skill')
+  })
+
+  it('relabels live agents only and keeps the object when nothing changes', () => {
+    const live = agent({})
+    expect(withSkillActivity(live, 'pdf-fill')).toEqual({ ...live, activity: 'Using skill pdf-fill' })
+    expect(live.activity).toBe('Reading a.ts')
+    const already = agent({ activity: 'Using skill pdf-fill' })
+    expect(withSkillActivity(already, 'pdf-fill')).toBe(already)
+    for (const state of ['done', 'error'] as const) {
+      const ended = agent({ state, activity: 'Reported back' })
+      expect(withSkillActivity(ended, 'pdf-fill')).toBe(ended)
+    }
   })
 })
 
