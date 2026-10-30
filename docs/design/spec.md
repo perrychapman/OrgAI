@@ -4,6 +4,8 @@ Status: proposal, awaiting approval of the decisions in section 11. Findings beh
 
 Revision 2 (UX review): section 12 supersedes earlier sections wherever they differ (tab names, the sheet and floating tray for decisions, the sidebar footer, the status vocabulary). Findings are cited as `ux-review.md` IDs (H5, M4 and so on).
 
+Revision 3 (placement and brand): `ui-review-2.md` supersedes this file and section 12 wherever they differ. Decided there and reflected in section 9 below: one 40 px run strip replaces the run tabs plus run header; the decision tray sits under the canvas by default and beside it only at 1100 x 560 px of frame or more (replacing the 900 px rule in 12.1 and 12.7); the sidebar collapses to the 56 px rail below 1180 px (specified in 2.1, not yet built); the footer is one 52 px account row with a usage popover and the Settings gear; navigation tabs are underline tabs (segmented controls are for value choices only); the topbar shows the project folder name, not the path; one status carrier per level; the mock marker is a neutral MOCK tag by the wordmark. Surface steps, the gradient allow list, the accent and button text, role-avatar tint, the single `Badge`, the type scale (12 px floor, two weights) and the lockup are specified in `ui-review-2.md` section C and section 9 below.
+
 Related: connections, model remap, the model picker, MCP servers and plugins, and the live MCP install approval are specified in `providers-and-mcp.md`.
 
 Goal from the user: the app should feel **modern and clean**, and controls and data that are currently poorly organized should be grouped and easy to find.
@@ -507,22 +509,29 @@ No package is installed by this phase. Version pinning follows the repo conventi
 
 ## 9. Brand usage
 
-Source of truth: `src/renderer/src/assets/brand/`, with `scripts/make-icon.mjs` and `build/icon.png` kept visually identical to the mark. Assets are not created in this phase; plan Brief 0 produces them from the geometry below.
+Revision 3. Source of truth: `src/renderer/src/assets/brand/` with `scripts/make-icon.mjs` and `build/icon.png` kept visually identical. The full system, with contrast numbers, is in `ui-review-2.md` section C; the decisions are stated here.
+
+The mark: a `#0b0d12` rounded tile (corner radius 22 percent) holding an org-chart glyph, one ring feeding two joined by a bus line, filled with a diagonal gradient `#7c5cff` to `#2bb0ff`. Geometry (512 viewBox, from `make-icon.mjs`): tile `x=16 y=16 w=480 h=480 rx=104`; rings at (256,168), (148,352), (364,352) with outer radii 60, 52, 52 and inner radii 24, 20, 20; four 24-unit lines (256,210) to (256,262), (148,262) to (364,262), and the two drops to y=316; gradient vector (100,100) to (512,512).
 
 | Asset | Description | Use |
 | --- | --- | --- |
-| `mark.svg` (tile) | Rounded square `#0b0d12`, corner radius 22% of width, containing the org-chart glyph: one node feeding two child nodes joined by rounded connector lines, in a violet `#7c5cff` to blue `#2bb0ff` gradient (the exact glyph in `build/icon.png`). | App icon, sidebar header at 24-28 px, About page, favicon, empty-state mark. Works on dark and light backgrounds because it carries its own tile. |
-| `mark-glyph.svg` | Same glyph, `currentColor`, no tile. | Monochrome contexts (tray, loading, watermarks, empty-state 48 px at 40% opacity). |
-| `wordmark.svg` | `OrgAI` set in a geometric sans (Inter 600, tracking -0.01em), converted to outlines, `fill="currentColor"`. | Always paired with the mark in the sidebar; alone in About/splash. Never recolored with the accent. |
-| `lockup.svg` | Mark tile left, wordmark right, vertical center-aligned, gap 0.4x mark height. Vertical variant for splash. | Sidebar header (collapsed state shows only the mark), docs, installer artwork. |
+| `mark.svg` | The tile with the gradient glyph. | Sidebar lockup (32 px expanded, 28 px on the rail), About, favicon, empty states. Plain `<img>`; it carries its own background, so it works in both themes (add a 1 px `--border-subtle` ring in light). |
+| `mark-glyph.svg` | The glyph only, `currentColor`, no tile. | CSS mask for the empty-state glyph (96 px, gradient fill at 14 percent opacity dark and 10 percent light) and monochrome contexts. |
+| Wordmark | Live text "OrgAI", 16/600, letter-spacing -0.01em, `--text-primary`. No `wordmark.svg` until a font is bundled. | Always beside the mark, never accent-coloured. |
+| `BrandLockup` | `components/layout/BrandLockup.tsx`: mark, 12 px gap, wordmark; 48 px row (equal to `--topbar-h`) with 16 px inline padding; collapsed state is the mark alone. | Sidebar header. The neutral MOCK tag follows the wordmark in the same row when the mock adapter is on. |
 
 Rules:
-- Clear space on all sides = 0.5x mark height. Minimum mark 16 px, minimum lockup width 96 px.
-- The gradient belongs to the mark only and is fixed (`--brand-from/--brand-to`); it does not follow the user's accent, because brand recognition must not change with a preference.
-- Wordmark and glyph use `currentColor`, so they flip with the theme; an `<img>` cannot inherit `currentColor`, so render them as a CSS mask: a `<span>` with `background: currentColor; mask: url(<imported wordmark.svg>) center / contain no-repeat`. The gradient tile (`mark.svg`) is a plain `<img>`. Components import the SVGs from `assets/brand/`; no inlined copies (architecture rule).
-- Accent is a UI color, not a brand color. Allowed uses: primary buttons, focus ring, selected tab/nav indicator, links, switch/checkbox on state, selected node outline, progress bars below 80%. Not allowed: status, role identity, charts of different series.
-- Splash and first paint: `index.html` sets `<meta name="color-scheme">` and an inline background so the window never flashes the wrong theme; the main process uses the persisted theme for `BrowserWindow.backgroundColor` (replaces the hard-coded `#0b0d12`).
-- Empty states may show the monochrome glyph at 48 px; no illustrations in this phase.
+- **Clear space** is 0.5x the mark height on all sides (16 px at 32 px). Minimum mark 16 px, minimum lockup width 96 px.
+- **Surfaces** (dark): `--surface-0 #0b0d12` (fixed: `THEME_BACKGROUND`), `--surface-1 #12161f` (chrome), `--surface-2 #181c27` (raised), `--surface-3 #20263a` (hover, selected); borders `--border-subtle #1d2332`, `--border-default #283045`, `--border-strong #39435b`, `--border-input #5d6882`; `--text-tertiary #8791a8`. Light keeps `--surface-0 #f4f5f9`, `#fafbfd`, `#ffffff`, `--surface-3 #e9ecf4`, `--border-default #d5dae6`, `--border-strong #bcc4d6`. Panels separate by surface step, not border, wherever adjacent surfaces differ. Section 4.1's earlier values for these tokens are replaced by this list when Phase 1A lands.
+- **Gradient**: `--gradient-mark` (fixed) for the mark; `--gradient-ui` (themed: dark `#7c5cff` to `#2bb0ff`, light `#6a4cf0` to `#1a86d9`, both at least 3:1 on the page surface) for exactly four things: the 2 px active tab indicator, the usage bar fill below 80 percent, the empty-state glyph, and the existing 6 percent canvas wash. At most two non-mark gradient surfaces per screen. **Forbidden**: any fill behind text (including primary buttons and their hover), borders, focus rings, node rings, status or role colours, scrollbars, links, selection, `background-clip: text`, glow or blur. White on `#7c5cff` is 4.35:1 and white on `#2bb0ff` is 2.40:1, so no text colour passes across the gradient.
+- **Accent** stays `#6e4df5` dark and `#5b3df0` light (white text 5.19:1 and 6.23:1). It means interactive or selected (primary fill, selected row, links, switch on, active tab label, focus ring, selected node outline) and never a state. Primary buttons are solid accent with white text. The focus ring is `--accent-text`, 2 px with 2 px offset plus the halo, never a gradient.
+- **Colour meanings** (one colour, one meaning): violet = interactive or selected; blue (`--info`) = working; amber = needs you or caution; green = done; red = error or destructive; slate dashed line = message; grey = neutral, stopped and the mock marker. No role colour is ever drawn at full saturation: an avatar is `color-mix(in oklab, var(--role) 24%, var(--surface-2))` with `--text-primary` initials and an inset 50 percent ring (60 percent in light), and status rings are drawn from state tokens, never from `--role`. The default role palette is brand-tonal (violet to periwinkle plus two neutrals) and excludes the status hues (contract request to the Runtime Lead for `ROLE_COLORS`; existing colours are tinted, not migrated).
+- **Badges**: one `Badge` (20 px, full radius, 12/400, no border, soft fill) with tones `neutral`, `accent` and `status`. Metadata (agents, steps, cost, path, unattended) is plain text with an icon, not a chip.
+- **Type**: 12 (small and caption), 13 (body), 14, 16, 20 px; weights 400 and 600; `--text-display` only on the first-run hero. 12 px is the minimum.
+- **Elevation, radius, motion**: radii 4, 6, 8, 12 and full (`--radius-xl` is dropped); shadows only on popovers and dialogs plus a 1 px inset highlight on raised dark cards; no glow, including the mark; one ambient loop (the working ring), every loop with a reduced-motion fallback.
+- The mark gradient is fixed and does not follow the user accent, so brand recognition does not change with a preference.
+- Splash and first paint: `index.html` sets `<meta name="color-scheme">` and an inline background so the window never flashes the wrong theme; the main process uses the persisted theme for `BrowserWindow.backgroundColor`.
+- Native title bar stays this phase (D7); a custom bar is 32 px, or 48 px with search or tabs, with caption controls on the right.
 
 ## 10. e2e selectors likely to move
 
