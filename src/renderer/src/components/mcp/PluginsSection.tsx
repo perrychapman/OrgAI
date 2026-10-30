@@ -60,7 +60,7 @@ export default function PluginsSection({ project }: { project: Project }): React
     <SettingsSection
       id="settings-section-plugins"
       title="Plugins"
-      description="Claude Code plugin folders for this project."
+      description="Claude Code plugin folders (may bundle skills, MCP servers and commands)."
       testId="plugins-section"
       actions={
         <Button icon={Plus} loading={busy} onClick={() => void add()}>
@@ -79,7 +79,7 @@ export default function PluginsSection({ project }: { project: Project }): React
           <div className="card-block mcp-empty">
             <Icon icon={Puzzle} size="lg" />
             <strong>No plugins</strong>
-            <p className="muted">Add a folder to give agents its skills.</p>
+            <p className="muted">Add a plugin folder; it may bundle skills, MCP servers and commands.</p>
           </div>
         ) : (
           <ul className="card-block mcp-list" aria-label="Plugins">

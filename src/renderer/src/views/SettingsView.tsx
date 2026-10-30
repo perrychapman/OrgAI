@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import ProjectConnection from '../components/connections/ProjectConnection'
 import RemapNotices from '../components/RemapNotices'
 import McpSection from '../components/mcp/McpSection'
+import SkillsSection from '../components/skills/SkillsSection'
 import PluginsSection from '../components/mcp/PluginsSection'
 import { GeneralSection } from '../components/settings/GeneralSection'
 import { LimitsSection } from '../components/settings/LimitsSection'
@@ -49,6 +50,7 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
         )}
         {pane === 'tools' && (
           <>
+            <SkillsSection project={project} />
             <McpSection project={project} />
             <PluginsSection project={project} />
           </>
