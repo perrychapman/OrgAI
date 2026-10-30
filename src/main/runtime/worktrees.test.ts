@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync, execSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   commitLeftovers,
+  diffWorktree,
   discardWorktree,
   findWorktree,
   inspectPending,
@@ -41,10 +42,13 @@ function addWorktree(id: string): { path: string; branch: string } {
 }
 
 function branches(): string[] {
-  // No --format=%(refname:short): the parentheses are a syntax error for /bin/sh on macOS (git runs through a shell here).
-  return git(root, 'branch')
+  return execFileSync('git', ['-c', 'user.name=OrgAI-Test', '-c', 'user.email=test@orgai.local', 'branch', '--format=%(refname:short)'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+    .trim()
     .split(/\r?\n/)
-    .map((l) => l.replace(/^[*+]?\s*/, '').trim())
     .filter(Boolean)
 }
 
@@ -149,6 +153,32 @@ describe('commitLeftovers', () => {
     const files = git(wt.path, 'show --name-only --format= HEAD').split(/\r?\n/).filter(Boolean)
     expect(files).toEqual(['src/real.js'])
   })
+
+  it('disables repository hooks for harness commits', async () => {
+    const wt = addWorktree('hooks')
+    const hooks = join(root, '.githooks')
+    put(root, '.githooks/pre-commit', '#!/bin/sh\nexit 73\n')
+    chmodSync(join(hooks, 'pre-commit'), 0o755)
+    git(root, 'config core.hooksPath .githooks')
+    put(wt.path, 'src/safe.js', 'export const safe = true\n')
+
+    expect(await commitLeftovers(wt.path, 'Hook-free commit')).toEqual({ committed: true })
+    expect(git(wt.path, 'log -1 --format=%s')).toBe('Hook-free commit')
+  })
+
+  it('fails closed when local executable filters are configured', async () => {
+    put(root, '.gitattributes', '*.js filter=untrusted\n')
+    git(root, 'add .gitattributes')
+    git(root, 'commit -q -m "select filter"')
+    const wt = addWorktree('filter')
+    git(root, 'config filter.untrusted.clean false')
+    put(wt.path, 'src/unsafe.js', 'export const unsafe = true\n')
+
+    const result = await commitLeftovers(wt.path, 'Do not run filter')
+    expect(result.committed).toBe(false)
+    expect(result.error).toContain('filter.untrusted.clean')
+    expect(git(wt.path, 'status --porcelain')).toContain('src/unsafe.js')
+  })
 })
 
 describe('integrateWorktree', () => {
@@ -186,6 +216,104 @@ describe('integrateWorktree', () => {
     expect(readFileSync(join(root, 'src/app.js'), 'utf8')).toContain('from main')
     // The report's work was committed on its branch.
     expect(git(root, `log -1 --format=%s ${wt.branch}`)).toBe('Implementer: change a')
+  })
+
+  it('rejects a source tree that selects an executable filter hidden by its working-tree attributes', async () => {
+    const wt = addWorktree('tree-filter')
+    put(wt.path, '.gitattributes', 'tree-filter.txt filter=tree-marker\n')
+    put(wt.path, 'tree-filter.txt', 'content\n')
+    git(wt.path, 'add .gitattributes tree-filter.txt')
+    git(wt.path, 'commit -q -m "malicious source attributes"')
+    const marker = join(root, 'tree-filter-ran.marker').replace(/\\/g, '/')
+    const script = join(root, 'tree-filter-marker.sh')
+    put(root, 'tree-filter-marker.sh', `#!/bin/sh\nprintf hit > "${marker}"\ncat\n`)
+    execFileSync('git', ['config', 'filter.tree-marker.smudge', `sh "${script.replace(/\\/g, '/')}"`], { cwd: root })
+    // Hide the committed rule from working-tree attribute inspection without changing the source branch OID.
+    put(wt.path, '.gitattributes', '')
+    execFileSync('git', ['update-index', '--skip-worktree', '.gitattributes'], { cwd: wt.path })
+
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'must not execute source filter')
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toContain('filter.tree-marker.smudge')
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(wt.path)).toBe(true)
+  })
+
+  it('rejects target-tree attributes that select a filter for a source-only path', async () => {
+    await prepareRepo(root)
+    put(root, '.gitattributes', '*.txt filter=target-marker\n')
+    git(root, 'add .gitattributes')
+    git(root, 'commit -q -m "malicious target attributes"')
+    const wt = addWorktree('target-tree-filter')
+    // The source removes the rule and adds the only matching path, so neither the source tree nor the target's own
+    // path set exposes the risk. The target attributes must be evaluated against the union of both exact trees.
+    put(wt.path, '.gitattributes', '')
+    put(wt.path, 'new.txt', 'source content\n')
+    git(wt.path, 'add .gitattributes new.txt')
+    git(wt.path, 'commit -q -m "safe source attributes and source-only path"')
+
+    // Hide the target commit's malicious attributes behind a benign, status-clean working-tree copy.
+    put(root, '.gitattributes', '')
+    execFileSync('git', ['update-index', '--skip-worktree', '.gitattributes'], { cwd: root })
+    const marker = join(root, '.git', 'target-filter-ran.marker').replace(/\\/g, '/')
+    const script = join(root, '.git', 'target-filter-marker.sh')
+    put(root, '.git/target-filter-marker.sh', `#!/bin/sh\nprintf hit > "${marker}"\ncat\n`)
+    execFileSync('git', ['config', 'filter.target-marker.smudge', `sh "${script.replace(/\\/g, '/')}"`], { cwd: root })
+    expect(git(root, 'status --porcelain')).toBe('')
+
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'must not execute target filter')
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toContain('filter.target-marker.smudge')
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(wt.path)).toBe(true)
+    expect(existsSync(join(root, 'new.txt'))).toBe(false)
+  })
+
+  it('evaluates source-tree attributes under target worktree-specific config', async () => {
+    await prepareRepo(root)
+    git(root, 'config extensions.worktreeConfig true')
+    const wt = addWorktree('target-config-filter')
+    put(wt.path, '.gitattributes', 'source-only.txt filter=target-only\n')
+    put(wt.path, 'source-only.txt', 'source content\n')
+    git(wt.path, 'add .gitattributes source-only.txt')
+    git(wt.path, 'commit -q -m "source attributes"')
+
+    const marker = join(root, '.git', 'target-config-filter-ran.marker').replace(/\\/g, '/')
+    const script = join(root, '.git', 'target-config-filter-marker.sh')
+    put(root, '.git/target-config-filter-marker.sh', `#!/bin/sh\nprintf hit > "${marker}"\ncat\n`)
+    execFileSync('git', ['config', '--worktree', 'filter.target-only.smudge', `sh "${script.replace(/\\/g, '/')}"`], { cwd: root })
+    expect(execFileSync('git', ['config', '--worktree', '--get', 'filter.target-only.smudge'], { cwd: root, encoding: 'utf8' })).toContain(script)
+    expect(() => execFileSync('git', ['config', '--worktree', '--get', 'filter.target-only.smudge'], { cwd: wt.path, stdio: 'ignore' })).toThrow()
+
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'must not execute target-only filter')
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toContain('filter.target-only.smudge')
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(wt.path)).toBe(true)
+    expect(existsSync(join(root, 'source-only.txt'))).toBe(false)
+  })
+
+  it('evaluates target working-tree attributes against source-only paths', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('target-working-filter')
+    put(wt.path, 'new.txt', 'source content\n')
+    git(wt.path, 'add new.txt')
+    git(wt.path, 'commit -q -m "source-only path"')
+
+    // The target's uncommitted wildcard rule has no matching target path. It still governs the source-only path when
+    // Git writes the merge result, so working attributes must be evaluated against the exact source tree's paths.
+    put(root, '.gitattributes', '*.txt filter=working-marker\n')
+    const marker = join(root, '.git', 'target-working-filter-ran.marker').replace(/\\/g, '/')
+    const script = join(root, '.git', 'target-working-filter-marker.sh')
+    put(root, '.git/target-working-filter-marker.sh', `#!/bin/sh\nprintf hit > "${marker}"\ncat\n`)
+    execFileSync('git', ['config', 'filter.working-marker.smudge', `sh "${script.replace(/\\/g, '/')}"`], { cwd: root })
+
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'must not execute target working filter')
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toContain('filter.working-marker.smudge')
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(wt.path)).toBe(true)
+    expect(existsSync(join(root, 'new.txt'))).toBe(false)
   })
 
   it('commits and merges with OrgAI identity when git has none (fresh CI runner)', async () => {
@@ -257,6 +385,26 @@ describe('inspectPending', () => {
     expect(pb.uncommittedFiles).toBe(1)
     expect(pb.changedFiles).toEqual([])
     expect(pb.lastSubject).toBe('initial')
+  })
+
+  it('does not execute an active clean filter while inspecting pending worktrees', async () => {
+    // The leading space must survive the NUL-delimited ls-files -> check-attr path. Trimming that output changes the
+    // path to "leading.txt", misses this exact attribute, and lets the following status execute the filter.
+    put(root, '.gitattributes', '" leading.txt" filter=marker\n')
+    put(root, ' leading.txt', 'original\n')
+    execFileSync('git', ['add', '--', '.gitattributes', ' leading.txt'], { cwd: root })
+    git(root, 'commit -q -m "filter fixture"')
+    const wt = addWorktree('filter-inspect')
+    const marker = join(root, 'filter-ran.marker').replace(/\\/g, '/')
+    const script = join(root, 'filter-marker.sh')
+    put(root, 'filter-marker.sh', `#!/bin/sh\nprintf hit > "${marker}"\ncat\n`)
+    execFileSync('git', ['config', 'filter.marker.clean', `sh "${script.replace(/\\/g, '/')}"`], { cwd: root })
+    put(wt.path, ' leading.txt', 'changed\n')
+
+    const pending = await inspectPending(root)
+    expect(pending).toHaveLength(1)
+    expect(pending[0].uncommittedFiles).toBe(1)
+    expect(existsSync(marker)).toBe(false)
   })
 })
 
@@ -537,5 +685,148 @@ describe('withRepoLock', () => {
     const res = await pending
     expect(res.info.status).toBe('removed')
     expect(res.message).toMatch(/removed during the review/)
+  })
+
+  it('refuses to merge when the reviewed source branch changes', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('rev-source')
+    put(wt.path, 'src/reviewed.js', 'export const reviewed = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'merge' }
+    })
+    while (!reviewing) await tick()
+
+    put(wt.path, 'src/unreviewed.js', 'export const unreviewed = 1\n')
+    git(wt.path, 'add src/unreviewed.js')
+    git(wt.path, 'commit -q -m "unreviewed follow-up"')
+    review.resolve()
+
+    const res = await pending
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toMatch(/changed during review/)
+    expect(existsSync(join(root, 'src/reviewed.js'))).toBe(false)
+    expect(existsSync(wt.path)).toBe(true)
+  })
+
+  it('does not discard new work added after the reviewed diff', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('rev-discard')
+    put(wt.path, 'src/reviewed.js', 'export const reviewed = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'discard' }
+    })
+    while (!reviewing) await tick()
+
+    put(wt.path, 'src/unreviewed.js', 'export const unreviewed = 1\n')
+    git(wt.path, 'add src/unreviewed.js')
+    git(wt.path, 'commit -q -m "unreviewed follow-up"')
+    review.resolve()
+
+    const res = await pending
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toMatch(/changed during review/)
+    expect(existsSync(wt.path)).toBe(true)
+    expect(branches()).toContain(wt.branch)
+  })
+
+  it('refuses a review decision when uncommitted work appears without changing the branch oid', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('rev-dirty')
+    put(wt.path, 'src/reviewed.js', 'export const reviewed = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'merge' }
+    })
+    while (!reviewing) await tick()
+    const reviewedOid = git(wt.path, 'rev-parse HEAD')
+
+    put(wt.path, 'src/uncommitted.js', 'export const uncommitted = 1\n')
+    expect(git(wt.path, 'rev-parse HEAD')).toBe(reviewedOid)
+    review.resolve()
+
+    const res = await pending
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toMatch(/worktree.*changed during review/)
+    expect(existsSync(join(wt.path, 'src/uncommitted.js'))).toBe(true)
+    expect(existsSync(join(root, 'src/reviewed.js'))).toBe(false)
+  })
+
+  it('refuses to merge when the reviewed target changes', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('rev-target')
+    put(wt.path, 'src/reviewed.js', 'export const reviewed = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'merge' }
+    })
+    while (!reviewing) await tick()
+
+    put(root, 'src/other.js', 'export const other = 1\n')
+    git(root, 'add src/other.js')
+    git(root, 'commit -q -m "concurrent target change"')
+    review.resolve()
+
+    const res = await pending
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toMatch(/changed during review/)
+    expect(existsSync(join(root, 'src/reviewed.js'))).toBe(false)
+    expect(existsSync(wt.path)).toBe(true)
+  })
+
+  it('renders and merges the captured commits across an ABA ref swap', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('rev-aba')
+    const targetOid = git(root, 'rev-parse HEAD')
+    put(wt.path, 'src/reviewed.js', 'export const reviewed = 1\n')
+    git(wt.path, 'add src/reviewed.js')
+    git(wt.path, 'commit -q -m "reviewed source"')
+    const sourceOid = git(wt.path, 'rev-parse HEAD')
+    put(wt.path, 'src/unreviewed.js', 'export const unreviewed = 1\n')
+    git(wt.path, 'add src/unreviewed.js')
+    git(wt.path, 'commit -q -m "alternate source"')
+    const alternateSource = git(wt.path, 'rev-parse HEAD')
+    git(wt.path, `reset -q --hard ${sourceOid}`)
+    put(root, 'src/alternate-target.js', 'export const alternateTarget = 1\n')
+    git(root, 'add src/alternate-target.js')
+    git(root, 'commit -q -m "alternate target"')
+    const alternateTarget = git(root, 'rev-parse HEAD')
+    git(root, `reset -q --hard ${targetOid}`)
+
+    let artifact: Awaited<ReturnType<typeof diffWorktree>> | undefined
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed ABA', async (snapshot) => {
+      expect(snapshot).toEqual({ changedFiles: ['src/reviewed.js'], sourceOid, targetOid })
+      // Symbolic refs temporarily point elsewhere while the review artifact is rendered, then return to the
+      // captured commits before the final merge checks. Exact-OID rendering must be immune to that ABA swap.
+      git(root, `update-ref refs/heads/${wt.branch} ${alternateSource}`)
+      git(root, `update-ref refs/heads/main ${alternateTarget}`)
+      artifact = await diffWorktree(root, snapshot.sourceOid, snapshot.targetOid)
+      git(root, `update-ref refs/heads/${wt.branch} ${sourceOid}`)
+      git(root, `update-ref refs/heads/main ${targetOid}`)
+      return { behavior: 'merge' }
+    })
+
+    expect(res.info.status).toBe('merged')
+    expect(artifact?.changedFiles).toEqual(['src/reviewed.js'])
+    expect(artifact?.patch).toContain('reviewed = 1')
+    expect(artifact?.patch).not.toContain('unreviewed')
+    expect(artifact?.patch).not.toContain('alternateTarget')
+    expect(git(root, 'show -s --format=%P HEAD').split(' ')).toEqual([targetOid, sourceOid])
+    expect(existsSync(join(root, 'src/reviewed.js'))).toBe(true)
+    expect(existsSync(join(root, 'src/unreviewed.js'))).toBe(false)
+    expect(existsSync(join(root, 'src/alternate-target.js'))).toBe(false)
   })
 })

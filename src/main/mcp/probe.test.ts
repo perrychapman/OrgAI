@@ -102,6 +102,35 @@ describe('testServer (http)', () => {
     expect(r.error).toContain('HTTP 401')
     expect(r.error).not.toContain('tok-123')
   })
+
+  it('rejects oversized response bodies before buffering them', async () => {
+    const fake = (async () =>
+      new Response('x'.repeat(1024 * 1024 + 1), {
+        headers: { 'content-type': 'application/json' }
+      })) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/exceeds the .*byte limit/)
+  })
+
+  it('caps the number of tools returned by a server', async () => {
+    const fake = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body))
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18' } }), {
+          headers: { 'content-type': 'application/json' }
+        })
+      }
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      return new Response(
+        JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { tools: Array.from({ length: 1001 }, (_, i) => ({ name: `tool-${i}` })) } }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/more than 1000 tools/)
+  })
 })
 
 describe('helpers', () => {

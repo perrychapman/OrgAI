@@ -24,7 +24,7 @@ npx electron .     # launch the built app
 npm run typecheck
 ```
 
-Requires Node 22+ and a logged-in Claude Code CLI (`claude auth status`) or `ANTHROPIC_API_KEY`.
+Requires Node 22.12+ and a logged-in Claude Code CLI (`claude auth status`) or `ANTHROPIC_API_KEY`.
 
 To verify locally without spending tokens, run `npm run check` (typecheck, unit tests, build and the free e2e
 flows). `ORGAI_MOCK=1 npm run dev` starts the app with the scripted mock adapter for token-free runs. See

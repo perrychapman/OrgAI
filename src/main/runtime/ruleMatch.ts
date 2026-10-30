@@ -26,20 +26,32 @@ export function isValidRule(rule: string): boolean {
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)
 }
 
-/** The inner command of `bash -lc '...'` / `pwsh -Command "..."` style wrappers; the input when it is not wrapped. */
+/**
+ * Commands are matched exactly as submitted. Shell wrappers are deliberately not unwrapped: a basename cannot
+ * prove which executable will run (`./bash`, PATH shadowing on Windows), so approving their inner command would
+ * let a repository-controlled program inherit an unrelated saved prefix rule.
+ */
 export function unwrapShellCommand(command: string): string {
-  const c = command.trim()
-  const m = /^(?:"[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(['"])([\s\S]*)\1$/i.exec(c)
-  return m ? m[2].trim() : c
+  return command.trim()
 }
 
 /** Split a command on `&&`, `||` and `;` outside quotes. A trailing or empty segment stays empty (invalid). */
-export function splitCommand(command: string): string[] {
+export function splitCommand(command: string): string[] | null {
   const parts: string[] = []
   let cur = ''
   let quote: string | null = null
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]
+    if (ch === '\\') {
+      if (i + 1 >= command.length) return null
+      const next = command[i + 1]
+      // Backslash escaping differs between POSIX shells and PowerShell. Refuse any case that could
+      // alter quoting or command boundaries under one of them; ordinary Windows paths remain usable.
+      if (/['";&|`<>\r\n]/.test(next)) return null
+      cur += ch + next
+      i++
+      continue
+    }
     if (quote) {
       cur += ch
       if (ch === quote) quote = null
@@ -63,6 +75,7 @@ export function splitCommand(command: string): string[] {
     }
     cur += ch
   }
+  if (quote) return null
   parts.push(cur)
   return parts.map((s) => s.trim())
 }
@@ -88,8 +101,10 @@ function shellRuleFor(segment: string, rules: readonly string[]): string | undef
 export function shellRulesFor(command: string, rules: readonly string[]): string[] | null {
   const cmd = unwrapShellCommand(command)
   if (!cmd) return null
+  const segments = splitCommand(cmd)
+  if (!segments) return null
   const hits: string[] = []
-  for (const segment of splitCommand(cmd)) {
+  for (const segment of segments) {
     if (!segment || UNSAFE_SEGMENT.test(segment)) return null
     const rule = shellRuleFor(segment, rules)
     if (!rule) return null

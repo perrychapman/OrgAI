@@ -428,8 +428,8 @@ export interface LaunchConfig {
  *          app-server's own environment (same name), so values are not in argv.
  *   http   url + http_headers (non-secret); each secret header becomes env_http_headers { Header = "ORGAI_MCP_<n>_H<k>" }.
  *          An Authorization header of the form "Bearer x" is passed as bearer_token_env_var instead.
- * Two stdio servers needing the same secret name with different values cannot both use env_vars; the later one
- * gets the value inline in `env` (visible in the process arguments) and the summary says so.
+ * Two stdio servers needing the same secret name with different values cannot both use env_vars. The later server
+ * is skipped rather than placing a secret inline in `env`, which would expose it in the process arguments.
  */
 export function buildLaunchConfig(connection: RunConnection | undefined, servers: ResolvedMcpServer[]): LaunchConfig {
   const config: string[] = []
@@ -462,28 +462,29 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
         skipped.push({ name: spec.name, reason: 'no command' })
         return
       }
+      const secretNames = new Set(spec.secretEnv ?? [])
+      const conflict = Object.entries(srv.env).find(([k, v]) => secretNames.has(k) && forwarded.has(k) && forwarded.get(k) !== v)
+      if (conflict) {
+        const reason = `secret environment variable ${conflict[0]} conflicts with another server`
+        skipped.push({ name: spec.name, reason })
+        summary.push(`mcp ${spec.name}: skipped (${reason})`)
+        return
+      }
       config.push(`${base}.command=${tomlString(spec.command)}`)
       if (spec.args?.length) config.push(`${base}.args=${tomlArray(spec.args)}`)
-      const secretNames = new Set(spec.secretEnv ?? [])
       const plain: Record<string, string> = {}
       const forward: string[] = []
-      const inlineSecrets: string[] = []
       for (const [k, v] of Object.entries(srv.env)) {
         if (!secretNames.has(k)) plain[k] = v
-        else if (!forwarded.has(k) || forwarded.get(k) === v) {
+        else {
           forwarded.set(k, v)
           env[k] = v
           forward.push(k)
-        } else {
-          plain[k] = v
-          inlineSecrets.push(k)
         }
       }
       if (Object.keys(plain).length) config.push(`${base}.env=${tomlTable(plain)}`)
       if (forward.length) config.push(`${base}.env_vars=${tomlArray(forward)}`)
-      summary.push(
-        `mcp ${spec.name}: stdio ${spec.command}${forward.length ? ` (secrets forwarded: ${forward.join(', ')})` : ''}${inlineSecrets.length ? ` (WARNING ${inlineSecrets.join(', ')} passed inline: name clash with another server)` : ''}`
-      )
+      summary.push(`mcp ${spec.name}: stdio ${spec.command}${forward.length ? ` (secrets forwarded: ${forward.join(', ')})` : ''}`)
     } else {
       if (!spec.url) {
         skipped.push({ name: spec.name, reason: 'no url' })

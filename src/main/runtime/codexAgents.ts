@@ -8,6 +8,7 @@ import { NETWORK_TOOLS } from './codexEvents'
 import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, spawnHandle } from './network'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
 import { ROOT_AGENT_ID } from './types'
+import { gitAutomationRisk, secureGitArgs } from './worktrees'
 
 /**
  * Harness-side subagents for providers without a native spawn: Codex has no Agent tool the harness can
@@ -309,7 +310,7 @@ export function childFirstMessage(parentLabel: string, brief: string): string {
 
 function git(cwd: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile('git', secureGitArgs(args), { cwd, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
   })
@@ -321,9 +322,13 @@ function git(cwd: string, args: string[]): Promise<{ ok: boolean; out: string; e
  * isolation), so worktrees.ts (findWorktree, integrateWorktree, pendingWorktrees) and maintenance recognise it.
  */
 export async function createAgentWorktree(cwd: string, agentId: string): Promise<{ path: string; branch: string }> {
+  const head = await git(cwd, ['rev-parse', '--verify', 'HEAD'])
+  if (!head.ok) throw new Error(`git worktree add failed: could not resolve HEAD${head.err || head.out ? ` (${head.err || head.out})` : ''}`)
+  const risk = await gitAutomationRisk(cwd, head.out)
+  if (risk) throw new Error(risk)
   const branch = `worktree-agent-${agentId}`
   const path = join(cwd, '.claude', 'worktrees', `agent-${agentId}`)
-  const res = await git(cwd, ['worktree', 'add', '-b', branch, path, 'HEAD'])
+  const res = await git(cwd, ['worktree', 'add', '-b', branch, path, head.out])
   if (!res.ok) throw new Error(`git worktree add failed: ${res.err || res.out}`)
   return { path, branch }
 }

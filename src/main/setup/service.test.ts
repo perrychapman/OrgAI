@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -72,6 +72,35 @@ describe('renderArchitecture', () => {
   it('exports the paths the CLAUDE.md block relies on', () => {
     expect(ARCHITECTURE_PATH).toBe('.orgai/ARCHITECTURE.md')
     expect(CLAUDE_MD_MARKER).toMatch(/^<!--.*-->$/)
+  })
+})
+
+describe('applyProposal (architecture)', () => {
+  it('refuses a symlinked .orgai directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-setup-arch-'))
+    const repo = join(dir, 'repo')
+    const outside = join(dir, 'outside')
+    mkdirSync(repo)
+    mkdirSync(outside)
+    symlinkSync(outside, join(repo, '.orgai'), process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      const store = new ProjectStore(join(dir, 'data'))
+      const service = new SetupService(store)
+      const project = store.create({ name: 'X', path: repo, brief: '' })
+      const proposal: Proposal = {
+        id: 'prop-arch',
+        runId: 'run-1',
+        agentId: 'root',
+        title: 'Architecture',
+        createdAt: 0,
+        kind: 'architecture',
+        payload: full
+      }
+      expect(() => service.applyProposal(project.id, proposal)).toThrow(/symbolic link/)
+      expect(existsSync(join(outside, 'ARCHITECTURE.md'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

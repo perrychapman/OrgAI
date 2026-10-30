@@ -196,6 +196,10 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
       try {
         const u = new URL(spec.url)
         ok = u.protocol === 'http:' || u.protocol === 'https:'
+        if (u.username || u.password) errors.push('The MCP URL must not contain credentials; store them in secret headers instead.')
+        if (u.protocol === 'http:' && spec.secretHeaders?.length) {
+          errors.push('Secret headers require an HTTPS MCP URL.')
+        }
       } catch {
         ok = false
       }

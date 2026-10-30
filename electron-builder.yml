@@ -19,8 +19,8 @@ win:
   target:
     - nsis
     - portable
-  # No certificate is configured, so signing is a no-op; this step still stamps the icon and version
-  # info into OrgAI.exe. If winCodeSign fails to extract on a machine without symlink rights
+  # Release CI supplies WIN_CSC_LINK through electron-builder's CSC_LINK variable and verifies every executable.
+  # Local/dry-run builds remain unsigned. If winCodeSign fails to extract on a machine without symlink rights
   # (Developer Mode off), set this to false: the build then succeeds but OrgAI.exe keeps Electron's icon.
   # CI (windows-latest) runs as an administrator, which has symlink rights, so true is kept there too. If the
   # release job fails extracting winCodeSign, add `-c.win.signAndEditExecutable=false` in release.yml.
@@ -31,7 +31,7 @@ nsis:
   artifactName: ${productName}-Setup-${version}.${ext}
 portable:
   artifactName: ${productName}-Portable-${version}.${ext}
-# mac: CI builds unsigned arm64 and x64 artifacts; not yet run on a Mac by hand (see docs/macos-testing.md).
+# mac: dry-run CI builds unsigned arm64 and x64 artifacts; publishable runs require signing and notarization.
 # linux is configured but untested.
 # Separate arm64 and x64 builds rather than a universal binary: the native claude and codex CLIs are per-arch
 # optional dependencies (@anthropic-ai/claude-agent-sdk-darwin-<arch>, @openai/codex-darwin-<arch>), so a universal
@@ -50,10 +50,8 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Unsigned build: run with CSC_IDENTITY_AUTO_DISCOVERY=false (or uncomment `identity: null`); the release workflow
-  # does this when the CSC_LINK secret is absent. The app then needs right-click > Open the first time. For a
-  # distributable build set CSC_LINK/CSC_KEY_PASSWORD and the notarization variables (APPLE_ID,
-  # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID); without them notarization is skipped with a warning.
+  # Unsigned local/dry-run build: run with CSC_IDENTITY_AUTO_DISCOVERY=false. Publishable CI requires
+  # CSC_LINK/CSC_KEY_PASSWORD and the notarization variables (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID).
   # identity: null
 dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}

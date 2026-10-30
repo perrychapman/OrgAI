@@ -19,7 +19,6 @@ import {
   policyFor,
   tomlKey,
   tomlString,
-  unwrapShellCommand,
   untilFromRateLimits,
   userInput
 } from './codexProtocol'
@@ -75,12 +74,10 @@ describe('matchesBashRule (saved allow rules)', () => {
     }
   })
 
-  it('unwraps bash -lc and powershell -Command wrappers', () => {
-    expect(unwrapShellCommand(`bash -lc 'npm test'`)).toBe('npm test')
-    expect(unwrapShellCommand(`"C:\\Program Files\\PowerShell\\pwsh.exe" -Command "npm test"`)).toBe('npm test')
-    expect(matchesBashRule(`bash -lc 'npm test --silent'`, rules)).toBe(true)
+  it('requires separate approval for shell wrappers', () => {
+    expect(matchesBashRule(`bash -lc 'npm test --silent'`, rules)).toBe(false)
+    expect(matchesBashRule(`"C:\\Program Files\\PowerShell\\pwsh.exe" -Command "npm test"`, rules)).toBe(false)
     expect(matchesBashRule(`bash -lc 'npm test && rm x'`, rules)).toBe(false)
-    expect(unwrapShellCommand('ls -la')).toBe('ls -la')
   })
 })
 
@@ -202,14 +199,16 @@ describe('buildLaunchConfig', () => {
     expect(l.config.join('\n')).not.toMatch(/sk-super|kkk-secret/)
   })
 
-  it('falls back to inline env on a secret name clash between servers and says so', () => {
+  it('skips a server on a secret name clash without putting either secret in argv', () => {
     const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
     const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })
     const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'one' }), resolved(b, { TOKEN: 'two' })])
     expect(l.env.TOKEN).toBe('one')
     expect(l.config).toContain('mcp_servers.a.env_vars=["TOKEN"]')
-    expect(l.config).toContain('mcp_servers.b.env={ TOKEN = "two" }')
-    expect(l.summary.join('\n')).toContain('WARNING TOKEN passed inline')
+    expect(l.config.join('\n')).not.toContain('mcp_servers.b')
+    expect(l.config.join('\n')).not.toMatch(/one|two/)
+    expect(l.skipped).toEqual([{ name: 'b', reason: 'secret environment variable TOKEN conflicts with another server' }])
+    expect(l.summary.join('\n')).toContain('mcp b: skipped')
     expect(l.summary.join('\n')).not.toContain('two')
   })
 

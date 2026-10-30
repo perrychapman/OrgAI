@@ -1,7 +1,7 @@
 import type { AgentInstance, MergeDecision, WorktreeInfo, WorktreeStatus } from '@shared/types'
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { INTEGRATE_TOOL } from './harnessTools'
-import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo } from './worktrees'
+import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type MergeSnapshot } from './worktrees'
 
 /**
  * The per-run worktree state machine, shared by every adapter whose writing reports work in git
@@ -302,13 +302,13 @@ export class WorktreeIntegrator {
     agentId: string | null,
     info: WorktreeInfo,
     targetRoot: string = this.root
-  ): ((changedFiles: string[]) => Promise<MergeDecision>) | undefined {
+  ): ((snapshot: MergeSnapshot) => Promise<MergeDecision>) | undefined {
     if (!this.ctx.project.reviewMerges) return undefined
-    return async (changedFiles) => {
+    return async ({ changedFiles, sourceOid, targetOid }) => {
       const owner = agentId ? this.host.agent(agentId) : undefined
       const ownerName = owner?.name ?? agentId ?? undefined
       if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
-      const diff = await diffWorktree(targetRoot, info.branch)
+      const diff = await diffWorktree(targetRoot, sourceOid, targetOid)
       const into = targetRoot === this.root ? '' : ` into ${info.parentBranch ?? targetRoot}`
       this.log('info', `${ownerName ?? info.branch}: waiting for the user to review ${info.branch} before merging${into}.`)
       const decision = await this.ctx.requestMergeReview({

@@ -272,4 +272,87 @@ describe('createAgentWorktree', () => {
     expect(nested.path.replace(/\\/g, '/')).toContain('agent-cx_abc/.claude/worktrees/agent-cx_def')
     await expect(createAgentWorktree(join(dir, 'missing'), 'cx_zzz')).rejects.toThrow(/git worktree add failed/)
   })
+
+  it('refuses to create a worktree when local executable filters are configured', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-cx-filter-'))
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    run('init', '-q')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    writeFileSync(join(dir, 'a.txt'), 'a')
+    writeFileSync(join(dir, '.gitattributes'), '*.txt filter=untrusted\n')
+    run('add', '.')
+    run('commit', '-q', '-m', 'init')
+    run('config', 'filter.untrusted.smudge', 'false')
+
+    await expect(createAgentWorktree(dir, 'cx_filter')).rejects.toThrow(/filter\.untrusted\.smudge/)
+    expect(existsSync(join(dir, '.claude', 'worktrees', 'agent-cx_filter'))).toBe(false)
+  })
+
+  it('rejects an effective global driver only when repository attributes select it', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-cx-global-filter-'))
+    const globalConfig = join(dir, 'global.gitconfig')
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    run('init', '-q')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    writeFileSync(join(dir, 'a.txt'), 'a')
+    writeFileSync(join(dir, '.gitattributes'), '*.txt filter=global-danger\n')
+    run('add', '.')
+    run('commit', '-q', '-m', 'init')
+    execFileSync('git', ['config', '--file', globalConfig, 'filter.global-danger.smudge', 'false'])
+    const previous = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    try {
+      await expect(createAgentWorktree(dir, 'cx_global_filter')).rejects.toThrow(/filter\.global-danger\.smudge/)
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = previous
+    }
+    expect(existsSync(join(dir, '.claude', 'worktrees', 'agent-cx_global_filter'))).toBe(false)
+  })
+
+  it('allows an effective global driver that no repository attribute selects', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-cx-unused-filter-'))
+    const globalConfig = join(dir, 'global.gitconfig')
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    run('init', '-q')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    writeFileSync(join(dir, 'a.txt'), 'a')
+    run('add', '.')
+    run('commit', '-q', '-m', 'init')
+    execFileSync('git', ['config', '--file', globalConfig, 'filter.unused.smudge', 'false'])
+    const previous = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    try {
+      const wt = await createAgentWorktree(dir, 'cx_unused_filter')
+      expect(existsSync(wt.path)).toBe(true)
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = previous
+    }
+  })
+
+  it('checks committed HEAD attributes even when the working tree removes them', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-cx-head-filter-'))
+    const marker = join(dir, 'head-filter-ran.marker').replace(/\\/g, '/')
+    const script = join(dir, 'head-filter-marker.sh')
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    run('init', '-q')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    writeFileSync(join(dir, '.gitattributes'), 'payload.txt filter=head-marker\n')
+    writeFileSync(join(dir, 'payload.txt'), 'payload\n')
+    run('add', '.gitattributes', 'payload.txt')
+    run('commit', '-q', '-m', 'malicious committed attributes')
+    writeFileSync(join(dir, 'head-filter-marker.sh'), `#!/bin/sh\nprintf hit > "${marker}"\ncat\n`)
+    run('config', 'filter.head-marker.smudge', `sh "${script.replace(/\\/g, '/')}"`)
+    // The mutable working tree is benign, but the worktree command checks out committed HEAD.
+    writeFileSync(join(dir, '.gitattributes'), '')
+
+    await expect(createAgentWorktree(dir, 'cx_head_filter')).rejects.toThrow(/filter\.head-marker\.smudge/)
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(join(dir, '.claude', 'worktrees', 'agent-cx_head_filter'))).toBe(false)
+  })
 })

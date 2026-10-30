@@ -1,11 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import type { ArchitectureSpec, McpServerSpec, McpServersProposalPayload, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
 import { validateSpec } from '../mcp/validate'
 import { setupKindLabel } from '@shared/setup'
 import { isPermissionMode } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
-import { addRules, isUnsafeAllowRule } from '../runtime/permissionRules'
+import { addRules, isUnsafeAllowRule, safeProjectPath } from '../runtime/permissionRules'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
 
@@ -217,10 +216,13 @@ function clamp(n: number, lo: number, hi: number): number {
 
 /** Write the architecture document into the repo and make sure CLAUDE.md points at it. Returns the repo-relative path. */
 function writeArchitecture(root: string, projectName: string, spec: ArchitectureSpec): string {
-  mkdirSync(join(root, '.orgai'), { recursive: true })
-  writeFileSync(join(root, ARCHITECTURE_PATH), renderArchitecture(projectName, spec), 'utf8')
+  const orgaiDir = safeProjectPath(root, '.orgai')
+  safeProjectPath(root, ARCHITECTURE_PATH)
+  const claudeMd = safeProjectPath(root, 'CLAUDE.md')
+  mkdirSync(orgaiDir, { recursive: true })
+  // Recheck after creating the directory so a newly materialized path is covered too.
+  writeFileSync(safeProjectPath(root, ARCHITECTURE_PATH), renderArchitecture(projectName, spec), 'utf8')
 
-  const claudeMd = join(root, 'CLAUDE.md')
   const existing = existsSync(claudeMd) ? readFileSync(claudeMd, 'utf8') : ''
   if (!existing.includes(CLAUDE_MD_MARKER)) {
     const block =

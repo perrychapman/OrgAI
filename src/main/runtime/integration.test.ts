@@ -38,7 +38,7 @@ function integrateTo(status: WorktreeStatus, message = `${status} message`, chan
   vi.mocked(integrateWorktree).mockImplementation(async (_root, info, _msg, review) => {
     let final = status
     if (review) {
-      const d: MergeDecision = await review(changedFiles)
+      const d: MergeDecision = await review({ changedFiles, sourceOid: 'source-oid', targetOid: 'target-oid' })
       final = d.behavior === 'discard' ? 'removed' : d.behavior === 'hold' ? 'held' : status
     }
     return { info: { ...info, status: final, changedFiles }, message }
@@ -140,7 +140,7 @@ describe('WorktreeIntegrator', () => {
       integrator.track('a1', WT)
       await integrator.onSubagentFinished('a1')
       expect(transitions.map((t) => t.status)).toEqual(['merging', 'review', 'merging', 'merged'])
-      expect(diffWorktree).toHaveBeenCalledWith('/repo', 'worktree-agent-a1')
+      expect(diffWorktree).toHaveBeenCalledWith('/repo', 'source-oid', 'target-oid')
       expect(ctx.requestMergeReview).toHaveBeenCalledWith(
         expect.objectContaining({ agentId: 'a1', agentName: 'Engineer', branch: 'worktree-agent-a1', changedFiles: ['a.ts'], stat: ' a.ts | 2 +-' })
       )
@@ -259,7 +259,7 @@ describe('nested isolation', () => {
     vi.mocked(integrateWorktree).mockImplementation(async (_root, info, _msg, review) => {
       let final = statuses[info.branch] ?? 'merged'
       if (review) {
-        const d = await review(['a.ts'])
+        const d = await review({ changedFiles: ['a.ts'], sourceOid: 'source-oid', targetOid: 'target-oid' })
         final = d.behavior === 'discard' ? 'removed' : d.behavior === 'hold' ? 'held' : final
       }
       return { info: { ...info, status: final, changedFiles: ['a.ts'] }, message: `${info.branch} ${final}` }
@@ -378,7 +378,7 @@ describe('nested isolation', () => {
     integrateBy({})
     const { integrator, ctx, statusesOf, logs } = nested(true, { behavior: 'merge' })
     await integrator.onSubagentFinished('c1')
-    expect(diffWorktree).toHaveBeenCalledWith(P, 'worktree-agent-c1')
+    expect(diffWorktree).toHaveBeenCalledWith(P, 'source-oid', 'target-oid')
     expect(ctx.requestMergeReview).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'c1', agentName: 'Dev1', branch: 'worktree-agent-c1' }))
     expect(statusesOf('c1')).toEqual(['merging', 'review', 'merging', 'merged'])
     expect(logs()).toContain('info: Dev1: waiting for the user to review worktree-agent-c1 before merging into worktree-agent-p1.')
