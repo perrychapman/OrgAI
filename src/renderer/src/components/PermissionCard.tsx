@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import type { PermissionRequest } from '@shared/types'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
+import { permissionTitle } from '../lib/decisionTitle'
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
 
@@ -82,7 +83,8 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
       error={error}
       runId={runId}
       who={who}
-      title={`wants to use ${request.toolName}`}
+      agentId={request.agentId}
+      title={permissionTitle(request.toolName, request.input)}
       helper={
         <>
           <ul className="decision-scopes">
