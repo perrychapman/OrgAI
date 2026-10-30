@@ -199,7 +199,9 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' })
+    // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
+    const body = bottom.current?.parentElement
+    if (body) body.scrollTop = body.scrollHeight
   }, [entries.length, logs.length, tab, partial])
 
   const toolNames = useMemo(() => {
@@ -219,7 +221,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   ]
   const idPrefix = `side-${runId}`
   return (
-    <>
+    <div className="side-run">
       <div className="side-header side-header-col">
         <div className="side-title">
           <span className="run-index" title="The run this panel belongs to">
@@ -340,6 +342,6 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <div ref={bottom} />
         </TabPanel>
       )}
-    </>
+    </div>
   )
 }
