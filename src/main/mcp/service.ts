@@ -39,7 +39,7 @@ import {
 import type { ResolvedMcpServer } from '../runtime/types'
 import { searchRegistry } from './registry'
 import { testServer } from './probe'
-import { OAuthError, authStatusFrom, redactOAuth, refreshTokens, runAuthorization } from './oauth'
+import { OAuthError, authStatusFrom, canonicalResource, redactOAuth, refreshTokens, runAuthorization } from './oauth'
 import { LIBRARY_ID, assertValidLibraryEntry, assertValidSpec, sameDefinition, validateLibraryEntry, validateSpec } from './validate'
 
 /** The OAuth functions McpService calls; tests inject fakes. */
@@ -69,6 +69,31 @@ function withOAuth<T extends { oauth?: McpOAuthConfig }>(x: T, config: McpOAuthC
 function sameEndpoint(a: { transport: string; url?: string }, b: { transport: string; url?: string }): boolean {
   return mcpSupportsOAuth(a as McpServerSpec) && mcpSupportsOAuth(b as McpServerSpec) && (a.url ?? '').trim() === (b.url ?? '').trim()
 }
+
+/** The canonical resource of a server URL, or undefined when it is not a valid URL. */
+function resourceOf(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  try {
+    return canonicalResource(url.trim())
+  } catch {
+    return undefined
+  }
+}
+
+/** The OAuth config applies to this definition: its resource is the canonical form of the server URL. */
+function oauthMatches(spec: { url?: string }, config: McpOAuthConfig | undefined): boolean {
+  const r = resourceOf(spec.url)
+  return !!config && !!r && config.resource === r
+}
+
+/** Where a definition connects: transport plus url, or command plus args. A change retargets its secrets. */
+function sameTarget(a: McpServerSpec | McpLibraryEntry, b: McpServerSpec | McpLibraryEntry): boolean {
+  if (a.transport !== b.transport) return false
+  if (a.transport === 'stdio') return (a.command ?? '') === (b.command ?? '') && JSON.stringify(a.args ?? []) === JSON.stringify(b.args ?? [])
+  return (a.url ?? '').trim() === (b.url ?? '').trim()
+}
+
+const isSecretKind = (k: unknown): k is 'env' | 'header' => k === 'env' || k === 'header'
 
 /**
  * The main-process side of MCP servers, the app-wide library and OAuth: persists Project.mcpServers /
@@ -197,16 +222,36 @@ export class McpService {
   }
 
   /** Validate and persist one entry (no broadcasts). Linked projects are re-saved by the caller. */
-  private commitEntry(incoming: McpLibraryEntry): McpLibraryEntry {
+  private commitEntry(incoming: McpLibraryEntry, opts: { applied?: boolean } = {}): McpLibraryEntry {
     const lib = this.lib()
     const prev = lib.get(incoming.id)
     const entry: McpLibraryEntry = withOAuth({ ...incoming, source: normalSource(incoming.source) }, undefined)
-    if (prev?.oauth) {
-      if (sameEndpoint(prev, entry)) entry.oauth = prev.oauth
-      else this.secrets.deletePrefix(`${mcpLibraryPrefix(entry.id)}oauth:`)
-    }
-    if (prev) this.dropOrphanSecrets({ libraryId: entry.id }, prev, entry)
+    const owner: McpSecretOwner = { libraryId: entry.id }
+    if (prev) this.retarget(owner, prev, entry, opts.applied === true)
+    if (prev?.oauth && sameEndpoint(prev, entry)) entry.oauth = prev.oauth
+    if (prev) this.dropOrphanSecrets(owner, prev, entry)
     return lib.save(entry)
+  }
+
+  /**
+   * An existing definition is replaced. A changed endpoint aborts the owner's in-flight authorization and drops its
+   * OAuth tokens. When an approved proposal (not the user's own edit) changes where it connects, the stored env and
+   * header values are dropped too: the user re-enters them for the new target. Returns whether values were dropped.
+   */
+  private retarget(owner: McpSecretOwner, before: McpServerSpec | McpLibraryEntry, after: McpServerSpec | McpLibraryEntry, applied: boolean): boolean {
+    const key = mcpOwnerPrefix(owner)
+    if (!sameEndpoint(before, after)) {
+      if (before.transport !== after.transport || (before.url ?? '').trim() !== (after.url ?? '').trim()) {
+        this.flows.get(key)?.abort()
+        this.lastErrors.delete(key)
+      }
+      if (before.oauth || this.secrets.keys(`${key}oauth:`).length) this.secrets.deletePrefix(`${key}oauth:`)
+    }
+    if (!applied || sameTarget(before, after)) return false
+    const had = this.secrets.keys(`${key}env:`).length + this.secrets.keys(`${key}header:`).length > 0
+    this.secrets.deletePrefix(`${key}env:`)
+    this.secrets.deletePrefix(`${key}header:`)
+    return had
   }
 
   libraryUpsert(entry: McpLibraryEntry): McpLibraryInfo[] {
@@ -244,6 +289,7 @@ export class McpService {
   librarySetSecret(input: McpLibrarySecretInput): McpLibraryInfo[] {
     const entry = this.lib().get(input.libraryId)
     if (!entry) throw new Error('Library entry not found')
+    if (!isSecretKind(input?.kind)) throw new Error('Unknown secret kind.')
     const slots = input.kind === 'env' ? entry.secretEnv : entry.secretHeaders
     if (!slots?.includes(input.name)) throw new Error(`"${input.name}" is not a secret ${input.kind === 'env' ? 'environment variable' : 'header'} of ${entry.name}.`)
     if (typeof input.value === 'string' && input.kind === 'header' && /[\r\n]/.test(input.value)) throw new Error('A header value must be a single line.')
@@ -303,10 +349,8 @@ export class McpService {
     if (input.spec?.libraryId || input.spec?.source === 'library') throw new Error('Use mcp:linkLibrary to add a server from the library.')
     assertValidSpec(input.spec, existing)
     const spec: McpServerSpec = withOAuth({ ...input.spec, source: normalSource(input.spec.source) }, undefined)
-    if (stored?.oauth) {
-      if (sameEndpoint(stored, spec)) spec.oauth = stored.oauth
-      else this.secrets.deletePrefix(`${mcpSecretPrefix(project.id, stored.id)}oauth:`)
-    }
+    if (stored) this.retarget({ projectId: project.id, serverId: stored.id }, stored, spec, false)
+    if (stored?.oauth && sameEndpoint(stored, spec)) spec.oauth = stored.oauth
     const next = stored ? existing.map((s) => (s.id === spec.id ? spec : s)) : [...existing, spec]
     if (stored) this.dropOrphanSecrets({ projectId: project.id, serverId: stored.id }, stored, spec)
     return this.result(this.projects.save({ ...project, mcpServers: next }))
@@ -337,6 +381,7 @@ export class McpService {
     const spec = (project.mcpServers ?? []).find((s) => s.id === input.serverId)
     if (!spec) throw new Error('MCP server not found')
     if (spec.libraryId) throw new Error(`${spec.name} comes from your MCP library. Set its secret on the library entry instead.`)
+    if (!isSecretKind(input?.kind)) throw new Error('Unknown secret kind.')
     const slots = input.kind === 'env' ? spec.secretEnv : spec.secretHeaders
     if (!slots?.includes(input.name)) throw new Error(`"${input.name}" is not a secret ${input.kind === 'env' ? 'environment variable' : 'header'} of ${spec.name}.`)
     if (typeof input.value === 'string' && input.kind === 'header' && /[\r\n]/.test(input.value)) throw new Error('A header value must be a single line.')
@@ -386,14 +431,25 @@ export class McpService {
     assertValidLibraryEntry(entry, lib.list())
     const from = mcpSecretPrefix(project.id, spec.id)
     const to = mcpLibraryPrefix(entry.id)
+    // An authorization in flight would save its tokens under the old owner: stop it.
+    this.flows.get(from)?.abort()
+    this.lastErrors.delete(from)
     for (const key of this.secrets.keys(from)) {
       const value = this.secrets.get(key)
       if (value !== undefined) this.secrets.set(`${to}${key.slice(from.length)}`, value)
     }
+    let out: Project
+    try {
+      const saved = lib.save(entry)
+      const link = linkedSpec(saved, spec)
+      out = this.projects.save({ ...project, mcpServers: existing.map((s) => (s.id === spec.id ? link : s)) })
+    } catch (e) {
+      // Nothing moved: drop the copies (and the entry if it was saved) and keep the source secrets.
+      this.secrets.deletePrefix(to)
+      if (lib.get(entry.id)) lib.remove(entry.id)
+      throw e
+    }
     this.secrets.deletePrefix(from)
-    const saved = lib.save(entry)
-    const link = linkedSpec(saved, spec)
-    const out = this.projects.save({ ...project, mcpServers: existing.map((s) => (s.id === spec.id ? link : s)) })
     this.notifyLibrary()
     return this.result(out)
   }
@@ -479,12 +535,14 @@ export class McpService {
         })
       }
       const config = this.refFromOwner(ref.owner)?.spec.oauth
-      const clientSecret = enteredSecret ?? secretOf()
+      // Only a newly entered secret goes as clientSecret; the stored one is reused only for its own authorization server.
+      const storedSecret = enteredSecret ? undefined : secretOf()
       const result = await this.oauth.runAuthorization({
         url: ref.spec.url ?? '',
         ...(config ? { config } : {}),
         ...(clientId ? { clientId } : {}),
-        ...(clientSecret ? { clientSecret } : {}),
+        ...(enteredSecret ? { clientSecret: enteredSecret } : {}),
+        ...(storedSecret ? { storedClientSecret: storedSecret } : {}),
         fetch: this.fetchImpl,
         openExternal: this.openExternal,
         signal: ac.signal,
@@ -494,6 +552,10 @@ export class McpService {
       // Re-read the owner: the entry may have been edited while the browser was open.
       const live = this.refFromOwner(ref.owner)
       if (!live) throw new OAuthError('token', 'The server was removed while it was being authorized.')
+      // The URL may have changed while the browser was open: tokens for another resource are discarded.
+      if (!mcpSupportsOAuth(live.spec) || resourceOf(live.spec.url) !== result.config.resource) {
+        throw new OAuthError('token', 'The server address changed while it was being authorized. Authorize it again.')
+      }
       live.saveOAuth({ ...result.config })
       this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), result.tokens.accessToken)
       this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), result.tokens.refreshToken ?? null)
@@ -633,6 +695,7 @@ export class McpService {
 
   /** Forget every stored secret of one project-only server. */
   removeServerSecrets(projectId: string, serverId: string): void {
+    this.flows.get(mcpSecretPrefix(projectId, serverId))?.abort()
     this.secrets.deletePrefix(mcpSecretPrefix(projectId, serverId))
   }
 
@@ -660,7 +723,7 @@ export class McpService {
       const v = Object.hasOwn(extra, n) ? extra[n] : this.secrets.get(mcpOwnerSecretKey(owner, 'header', n))
       if (v) headers[n] = v
     }
-    if (spec.oauth && mcpSupportsOAuth(spec)) {
+    if (spec.oauth && mcpSupportsOAuth(spec) && oauthMatches(spec, spec.oauth)) {
       const token = this.usableToken(owner, spec.oauth)
       if (token) {
         for (const h of Object.keys(headers)) if (h.toLowerCase() === 'authorization') delete headers[h]
@@ -684,8 +747,11 @@ export class McpService {
   persistInstall(projectId: string, spec: McpServerSpec, secrets: Record<string, string> = {}, scope: 'project' | 'library' = 'project'): Project {
     const project = this.project(projectId)
     const existing = project.mcpServers ?? []
+    if (spec?.libraryId || (spec as { projectOnly?: unknown })?.projectOnly !== undefined) throw new Error('An installed server cannot carry a library link.')
+    if (existing.some((s) => s.id === spec?.id) || this.library?.get(spec?.id)) throw new Error('A server with that id already exists.')
     assertValidSpec(spec, existing)
-    const saved: McpServerSpec = { ...spec, source: spec.source === 'registry' ? 'registry' : 'agent' }
+    // OAuth configs are written by the main process only, after an authorization; an install never brings one.
+    const saved: McpServerSpec = withOAuth({ ...spec, source: spec.source === 'registry' ? 'registry' : 'agent' }, undefined)
     if (scope === 'library') {
       const lib = this.lib()
       const entry = libraryEntryFromSpec(saved, newId('mcpl'))
@@ -702,9 +768,7 @@ export class McpService {
     const owner: McpSecretOwner = { projectId, serverId: saved.id }
     for (const n of saved.secretEnv ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), secrets[n])
     for (const n of saved.secretHeaders ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), secrets[n])
-    const idx = existing.findIndex((s) => s.id === saved.id)
-    const next = idx === -1 ? [...existing, saved] : existing.map((s, i) => (i === idx ? saved : s))
-    return this.projects.save({ ...project, mcpServers: next })
+    return this.projects.save({ ...project, mcpServers: [...existing, saved] })
   }
 
   // ---------- applying MCP proposals (SetupService) ----------
@@ -735,7 +799,7 @@ export class McpService {
     }
     if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
     for (const id of removeIds) if (lib.get(id)) this.removeEntry(id)
-    for (const entry of commits) this.relinkProjects(this.commitEntry(entry))
+    for (const entry of commits) this.relinkProjects(this.commitEntry(entry, { applied: true }))
     this.notifyLibrary()
   }
 
@@ -753,6 +817,8 @@ export class McpService {
     let servers = (project.mcpServers ?? []).filter((s) => !removeIds.has(s.id))
     let entries = lib?.list() ?? []
     const newEntries: McpLibraryEntry[] = []
+    /** Project-only servers this proposal redefines: [before, after]. */
+    const redefined: Array<[McpServerSpec, McpServerSpec]> = []
     const problems: string[] = []
     const now = new Date(this.now()).toISOString()
     const put = (s: McpServerSpec): void => {
@@ -796,7 +862,10 @@ export class McpService {
       if (raw.projectOnly || current || !lib) {
         const errors = validateSpec(spec, servers.filter((s) => s.id !== spec.id))
         if (errors.length) fail(errors.join(' '))
-        else put(spec)
+        else {
+          put(spec)
+          if (current) redefined.push([current, spec])
+        }
         continue
       }
       // A new server: save it to the library and link it under the item's id (proposal secrets refer to that id).
@@ -830,6 +899,7 @@ export class McpService {
     for (const entry of newEntries) lib?.save(entry)
     const roles = project.roles.map((r) => (r.mcpServers?.some((id) => removeIds.has(id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => !removeIds.has(id)) } : r))
     const saved = this.projects.save({ ...project, roles, mcpServers: servers })
+    for (const [before, after] of redefined) this.retarget({ projectId: project.id, serverId: before.id }, before, after, true)
     for (const s of removed) if (!s.libraryId) this.removeServerSecrets(project.id, s.id)
     if (newEntries.length) this.notifyLibrary()
     return saved
