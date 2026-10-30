@@ -3,7 +3,7 @@
 // Usage: node e2e/history.mjs --yes
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, createProject, driveSetup, endSession, finish, findProject, launch, log, makeFixtureRepo, openProject, removeFixture, requireYes, runRecordsDir, sleep } from './lib.mjs'
+import { check, cleanup, createProject, driveSetup, endSession, finish, findProject, launch, log, makeFixtureRepo, openProject, projectTab, removeFixture, requireYes, runRecordsDir, sleep } from './lib.mjs'
 
 requireYes('e2e/history', '$0.30-$1.50 on opus; about 3-8 minutes')
 
@@ -22,7 +22,7 @@ try {
   check(done, 'setup reached complete')
   await sleep(4000)
   await endSession(page)
-  await page.getByRole('button', { name: 'History', exact: true }).click()
+  await projectTab(page, 'History').click()
   await sleep(500)
   await shot('runs-tab')
   const rows = await page.locator('.run-row').count()
@@ -42,7 +42,7 @@ await app.close().catch(() => {})
 try {
   await openProject(page, NAME)
   await sleep(800)
-  await page.getByRole('button', { name: 'History', exact: true }).click()
+  await projectTab(page, 'History').click()
   await sleep(500)
   check((await page.locator('.run-row').count()) >= 1, 'run history survives a restart')
   await page.locator('.run-row .run-open').first().click()

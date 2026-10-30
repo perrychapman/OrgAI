@@ -28,10 +28,10 @@ import { formatUntil } from '../lib/layout'
 
 const WARN_AT = 80
 
-type Row = { key: string; label: string; window: RateLimitWindow; limited: boolean }
+export type Row = { key: string; label: string; window: RateLimitWindow; limited: boolean }
 
 /** The plan windows to show, in a fixed order; per-model windows without a dedicated slot come last. */
-function rows(usage: UsageStatus): Row[] {
+export function usageRows(usage: UsageStatus): Row[] {
   const w = usage.windows
   const out: Row[] = []
   const add = (key: string, label: string, window: RateLimitWindow | undefined, provider: string): void => {
@@ -49,7 +49,35 @@ function rows(usage: UsageStatus): Row[] {
   return out
 }
 
-/** Subscription plan windows under the auth pill: one thin bar per window with its reset time. */
+export type UsageLevel = '' | 'warn' | 'danger'
+
+/** The window closest to its limit (the one the footer bar shows), or null when no plan window is reported. */
+export function tightestWindow(usage: UsageStatus | null): { label: string; pct: number; level: UsageLevel } | null {
+  if (!usage || usage.authMode === 'apiKey' || !usage.available) return null
+  let best: { label: string; pct: number; level: UsageLevel } | null = null
+  for (const r of usageRows(usage)) {
+    const pct = r.window.utilization
+    if (pct === null) continue
+    const level: UsageLevel = r.limited ? 'danger' : pct >= WARN_AT || usage.status === 'allowed_warning' ? 'warn' : ''
+    // A limited window always wins; otherwise the highest utilization.
+    if (!best || (level === 'danger' && best.level !== 'danger') || (best.level !== 'danger' && pct > best.pct)) best = { label: r.label, pct, level }
+  }
+  return best
+}
+
+/** The 4 px footer bar: the brand gradient, solid warning from 80 percent, solid danger at the limit. */
+export function UsageBar({ usage }: { usage: UsageStatus | null }): ReactElement | null {
+  const t = tightestWindow(usage)
+  if (!t) return null
+  const shown = t.level === 'danger' ? 100 : Math.min(100, Math.max(0, t.pct))
+  return (
+    <span className={`usage-mini ${t.level}`} role="img" aria-label={`${t.label} usage ${Math.round(t.pct)} percent`} data-testid="usage-mini">
+      <i style={{ width: `${shown}%` }} />
+    </span>
+  )
+}
+
+/** Subscription plan windows (inside the account popover): one thin bar per window with its reset time. */
 export default function UsageMeter(): ReactElement {
   const usage = useAppStore((s) => s.usage)
   const [now, setNow] = useState(() => Date.now())
@@ -80,7 +108,7 @@ export default function UsageMeter(): ReactElement {
     )
   }
 
-  const list = rows(usage)
+  const list = usageRows(usage)
   return (
     <div className="usage-meter" title={usage.subscriptionType ? `Plan: ${usage.subscriptionType}` : undefined}>
       {list.length === 0 && <div className="usage-empty">No plan windows reported</div>}

@@ -4,7 +4,7 @@
 // and delete the project. Finally checks the repository on disk.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, createProject, finish, git, gitSafe, launch, log, makeFixtureRepo, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, cleanup, createProject, finish, git, gitSafe, launch, log, makeFixtureRepo, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
 
 const NAME = 'E2E maintenance (orgai test)'
 const MARKER = '<!-- orgai:architecture -->'
@@ -70,7 +70,7 @@ async function confirmDialog(button) {
 try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created')
-  await page.locator('.editor .tabs, .tabs').getByRole('button', { name: 'Project settings', exact: true }).first().click()
+  await projectTab(page, 'Settings').click()
   await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
   await page.waitForSelector('.maint-row', { timeout: 20_000 })
   const count = await rows.count()

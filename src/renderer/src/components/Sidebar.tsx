@@ -1,17 +1,26 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionStatus } from '@shared/types'
-import { BellRing, ChevronDown, ChevronRight, LayoutGrid, Settings } from 'lucide-react'
+import { BellRing, ChevronDown, ChevronRight, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { waitingItems } from '../lib/needsYou'
-import { needsYou, projectCounts, relativeTime } from '../lib/runChains'
+import { needsYou, projectCounts } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
-import { isStoppedRun, runStatus, statusOfRun, statusText } from '../lib/runStatus'
-import brandIcon from '../assets/brand/icon.png'
-import UsageMeter from './UsageMeter'
+import { isStoppedRun, runStatus, statusOfRun } from '../lib/runStatus'
+import { projectStatus } from '../lib/projectStatus'
+import { initials } from '../lib/layout'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
+import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
+import UsageMeter, { tightestWindow, UsageBar } from './UsageMeter'
+import { BrandLockup } from './layout/BrandLockup'
 import { Icon } from './ui/Icon'
 import { Badge } from './ui/Badge'
+import { Button } from './ui/Button'
+import { IconButton } from './ui/IconButton'
+import { Popover } from './ui/Popover'
+
+const MOCK_TIP = 'ORGAI_MOCK is on: runs use scripted data, no tokens are spent'
 
 /** Open runs of a project, the ones that need the user first, then the newest. */
 function openRunsOf(runs: RunState[]): RunState[] {
@@ -20,7 +29,7 @@ function openRunsOf(runs: RunState[]): RunState[] {
     .sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)) || b.summary.startedAt - a.summary.startedAt)
 }
 
-/** The footer pill follows the Anthropic connection's status (what the Connections panel shows); the login probe only adds detail. */
+/** The account row follows the Anthropic connection's status (what the Connections panel shows); the login probe only adds detail. */
 function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | undefined): { tone: string; label: string; title?: string } {
   if (status) {
     const detail = status.detail ?? auth?.detail
@@ -47,6 +56,7 @@ export default function Sidebar(): ReactElement {
   const selectProject = useAppStore((s) => s.selectProject)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const auth = useAppStore((s) => s.auth)
+  const usage = useAppStore((s) => s.usage)
   const connections = useAppStore((s) => s.connections)
   const loadConnections = useAppStore((s) => s.loadConnections)
   useEffect(() => {
@@ -60,101 +70,114 @@ export default function Sidebar(): ReactElement {
   const draftPage = useAppStore((s) => s.draftPage)
   const waiting = useAppStore(useShallow(waitingRuns))
   const indexes = useRunIndexes()
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const [needsOpen, setNeedsOpen] = useState(true)
+  const { collapsed: rail, toggle, setCollapsed } = useSidebarCollapsed()
+  const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
   const items = waiting.flatMap((r) => waitingItems(r))
   const projectName = (id: string): string => projects.find((p) => p.id === id)?.name ?? 'Project'
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
+  const names = projects.map((p) => p.name)
+
+  const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
+  const tight = mockAdapter ? null : tightestWindow(usage)
+  const needsLabel = `Needs you · ${items.length}`
 
   return (
-    <aside className="sidebar">
-      <div className="brand">
-        <img className="brand-mark" src={brandIcon} alt="" width={26} height={26} />
-        OrgAI
-      </div>
-      {mockAdapter && (
-        <div className="sidebar-mock">
-          <Badge tone="warning" testId="mock-mode-badge" title="ORGAI_MOCK is on: runs use the mock adapter">
-            Mock mode: no tokens are spent
-          </Badge>
-        </div>
-      )}
-      <div className="sidebar-section">
-        <button type="button" className={`nav-item ${view === 'projects' ? 'active' : ''}`} aria-current={view === 'projects' ? 'page' : undefined} onClick={() => setView('projects')}>
-          <Icon icon={LayoutGrid} size="sm" /> Projects
+    <aside className="sidebar" id="sidebar" tabIndex={-1} aria-label="Sidebar" data-collapsed={rail ? 'true' : 'false'}>
+      <BrandLockup
+        collapsed={rail}
+        onExpand={() => setCollapsed(false)}
+        tag={
+          mockAdapter ? (
+            <Badge tone="neutral" testId="mock-mode-badge" title={MOCK_TIP}>
+              MOCK
+            </Badge>
+          ) : undefined
+        }
+        trailing={<IconButton icon={PanelLeftClose} label="Collapse sidebar" size="sm" testId="sidebar-toggle" onClick={toggle} />}
+      />
+      <div className="sidebar-section sidebar-nav">
+        <button
+          type="button"
+          className={`nav-item ${view === 'projects' ? 'active' : ''}`}
+          aria-current={view === 'projects' ? 'page' : undefined}
+          aria-label={rail ? 'All projects' : undefined}
+          title={rail ? 'All projects' : undefined}
+          onClick={() => setView('projects')}
+        >
+          <Icon icon={LayoutGrid} size="sm" />
+          {!rail && 'Projects'}
         </button>
-        <button type="button" className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} aria-current={view === 'appSettings' ? 'page' : undefined} onClick={() => setView('appSettings')}>
-          <Icon icon={Settings} size="sm" /> App settings
-        </button>
-      </div>
-
-      {items.length > 0 && (
-        <div className="sidebar-section nav-needs">
-          <button type="button" className="nav-item needs-you" aria-expanded={needsOpen} onClick={() => setNeedsOpen((o) => !o)}>
-            <Icon icon={BellRing} size="md" />
-            <span className="nav-text">
-              <span className="nav-name">Needs you ({items.length})</span>
-            </span>
-            <Icon icon={needsOpen ? ChevronDown : ChevronRight} size="xs" />
-          </button>
-          {needsOpen && (
-            <ul className="nav-runs" aria-label="Everything waiting for you">
-              {waiting.flatMap((r) =>
-                waitingItems(r).map((it) => (
-                  <li key={it.key} className="nav-needs-item">
-                    <button
-                      type="button"
-                      className="nav-run waiting"
-                      title={`${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${it.label}`}
-                      onClick={() => void jumpToDecision(r.summary.projectId, r.summary.id)}
-                    >
-                      <span className="nav-run-main">
-                        <span className="nav-run-where">
+        {items.length > 0 && (
+          <Popover
+            trigger={
+              <>
+                <Icon icon={BellRing} size="sm" />
+                {rail ? <span className="nav-rail-count">{items.length}</span> : <span className="nav-text">{needsLabel}</span>}
+                {!rail && <Icon icon={ChevronDown} size="xs" />}
+              </>
+            }
+            triggerLabel={rail ? needsLabel : undefined}
+            triggerClassName="nav-item needs-row"
+            triggerTestId="needs-you-row"
+            label="Everything waiting for you"
+            placement="bottom-start"
+            className="needs-popover"
+            testId="needs-you-list"
+          >
+            {({ close }) => (
+              <ul className="needs-list">
+                {waiting.flatMap((r) =>
+                  waitingItems(r).map((it) => (
+                    <li key={it.key}>
+                      <button
+                        type="button"
+                        className="needs-item"
+                        title={`${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${it.label}`}
+                        onClick={() => {
+                          close()
+                          void jumpToDecision(r.summary.projectId, r.summary.id)
+                        }}
+                      >
+                        <span className="needs-where">
                           {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
                         </span>
-                        <span className="nav-run-what">{it.label}</span>
-                      </span>
-                    </button>
-                  </li>
-                ))
-              )}
-              {items.length > 3 && <li className="nav-needs-more">+{items.length - 3} more</li>}
-            </ul>
-          )}
-        </div>
-      )}
+                        <span className="needs-what">{it.label}</span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
+          </Popover>
+        )}
+      </div>
 
-      <div className="sidebar-label">Workspaces</div>
+      {!rail && <div className="sidebar-label">Projects</div>}
       <div className="sidebar-section sidebar-projects">
-        {projects.length === 0 && <div className="sidebar-empty">No projects yet</div>}
+        {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
         {projects.map((p) => {
           const counts = projectCounts(allRuns, p.id)
-          const state = counts.needsYou > 0 ? 'warn' : counts.open > 0 ? 'is-running' : ''
           const projectRuns = allRuns.filter((r) => r.summary.projectId === p.id)
           const open = openRunsOf(projectRuns)
-          const expanded = open.length > 0 && !collapsed[p.id]
+          const expanded = !rail && open.length > 0 && !collapsed[p.id]
           const newest = [...(history[p.id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
           const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
-          const subtitle =
-            open.length > 0
-              ? [`${counts.open} open`, counts.needsYou > 0 ? `${counts.needsYou} needs you` : ''].filter(Boolean).join(' · ')
-              : newest && last
-                ? `Last run ${relativeTime(newest.startedAt)} · ${statusText(last)}`
-                : ''
+          const st = projectStatus({ open: open.length > 0 ? counts.open : 0, needsYou: counts.needsYou, newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
           const active = selectedId === p.id && inProject(view)
           const viewedId = draftPage[p.id] ? undefined : viewedByProject[p.id]
+          const accessibleName = st.needsLabel ? `${p.name}, ${st.needsLabel}` : p.name
           return (
             <div key={p.id} className="nav-project">
               <div className="nav-row">
-                {open.length > 0 ? (
+                {rail ? null : open.length > 0 ? (
                   <button
                     type="button"
                     className="nav-chevron"
                     aria-expanded={expanded}
                     aria-label={`${expanded ? 'Hide' : 'Show'} open runs of ${p.name}`}
-                    onClick={() => setCollapsed((c) => ({ ...c, [p.id]: expanded }))}
+                    onClick={() => setCollapsedRuns((c) => ({ ...c, [p.id]: expanded }))}
                   >
                     <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
                   </button>
@@ -163,24 +186,42 @@ export default function Sidebar(): ReactElement {
                 )}
                 <button
                   type="button"
-                  className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined}
-                  title={subtitle ? `${p.path}\n${subtitle}` : p.path}
+                  className={`nav-item nav-project-btn ${active ? 'active' : ''}`}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={rail ? accessibleName : undefined}
+                  data-testid="nav-project"
+                  data-name={p.name}
+                  title={[rail ? accessibleName : '', p.path, st.subtitle].filter(Boolean).join('\n')}
                   onClick={() => {
                     void openProject(p.id)
                     if (!inProject(view)) setView('run')
                   }}
                 >
-                  <span className={`dot ${state}`} aria-hidden="true" />
-                  <span className="nav-text">
-                    <span className="nav-name">{p.name}</span>
-                    {subtitle && <span className={`nav-counts ${counts.needsYou > 0 ? 'warn' : ''}`}>{subtitle}</span>}
-                  </span>
+                  {rail ? (
+                    <span className="nav-initials">
+                      {initials(p.name, names)}
+                      <span className={`dot ${st.dot}`} aria-hidden="true" />
+                    </span>
+                  ) : (
+                    <>
+                      <span className={`dot ${st.dot}`} aria-hidden="true" />
+                      <span className="nav-text">
+                        <span className="nav-name">{p.name}</span>
+                        {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
+                      </span>
+                      {st.needsYou > 0 && (
+                        <Badge tone="attention" title={st.needsLabel}>
+                          {st.needsYou}
+                        </Badge>
+                      )}
+                    </>
+                  )}
                 </button>
               </div>
               {expanded && (
                 <ul className="nav-runs" aria-label={`Open runs of ${p.name}`}>
                   {open.map((r) => {
-                    const st = statusOfRun(r, p, needsYou(r))
+                    const rs = statusOfRun(r, p, needsYou(r))
                     const here = active && viewedId === r.summary.id
                     return (
                       <li key={r.summary.id}>
@@ -188,16 +229,16 @@ export default function Sidebar(): ReactElement {
                           type="button"
                           className={`nav-run ${here ? 'active' : ''}`}
                           aria-current={here ? 'true' : undefined}
-                          title={`${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${st.word}`}
+                          title={`${runTag(indexes.get(r.summary.id))}: ${promptLine(r.summary.prompt)}\n${rs.word}`}
                           onClick={() => {
                             if (selectedId !== p.id) selectProject(p.id)
                             void openRun(r.summary.id)
                           }}
                         >
-                          <span className={`run-dot ${st.tone}`} aria-hidden="true" />
+                          <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
                           <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>
                           <span className="nav-run-title">{runName(r.summary)}</span>
-                          <span className="sr-only">{st.word}</span>
+                          <span className="sr-only">{rs.word}</span>
                         </button>
                       </li>
                     )
@@ -208,12 +249,48 @@ export default function Sidebar(): ReactElement {
           )
         })}
       </div>
+
       <div className="sidebar-footer">
-        <span className={`pill ${pill.tone}`} title={pill.title} data-testid="auth-pill">
-          <span className="dot" />
-          {pill.label}
+        <Popover
+          trigger={
+            <>
+              <span className={`dot ${account.tone}`} aria-hidden="true" />
+              <span className="account-label">{account.label}</span>
+              {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
+              {!rail && <UsageBar usage={mockAdapter ? null : usage} />}
+            </>
+          }
+          triggerLabel={rail ? account.label : undefined}
+          triggerClassName="account-row"
+          triggerTestId="auth-pill"
+          label="Account and plan usage"
+          placement="top-start"
+          className="account-popover"
+          testId="account-popover"
+        >
+          {({ close }) => (
+            <div className="account-pop">
+              <div className="account-pop-title">{account.label}</div>
+              {account.title && <p className="account-pop-note">{account.title}</p>}
+              {mockAdapter ? <p className="account-pop-note">Runs use scripted data. No plan limits apply.</p> : <UsageMeter />}
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={Settings}
+                onClick={() => {
+                  close()
+                  requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+                  setView('appSettings')
+                }}
+              >
+                App settings: Connections
+              </Button>
+            </div>
+          )}
+        </Popover>
+        <span className="sidebar-gear" data-active={view === 'appSettings'}>
+          <IconButton icon={Settings} label="App settings" testId="app-settings-button" onClick={() => setView('appSettings')} />
         </span>
-        <UsageMeter />
       </div>
     </aside>
   )
