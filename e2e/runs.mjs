@@ -18,6 +18,32 @@ const repo = path.join(base, 'repo')
 makeFixtureRepo('runs', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'runs' })
+// Start from a defined window size so the flow is the same on every runner. E2E_RUNS_START=1000x700 first shrinks the
+// window (the sidebar becomes a rail, as on a small CI screen) and then widens it to the working size again.
+const resizeTo = async (cw, ch, want) => {
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [cw, ch])
+  await page.waitForFunction((w) => Math.abs(window.innerWidth - w) <= 1, cw, { timeout: 10_000 }).catch(() => {})
+  for (let i = 0; i < 40; i++) {
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+    if ((await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-sidebar'))) === want) break
+    await sleep(250)
+  }
+}
+if (process.env.E2E_RUNS_START) {
+  const [nw, nh] = process.env.E2E_RUNS_START.split('x').map(Number)
+  await resizeTo(nw, nh, nw < 1180 ? 'rail' : 'full')
+}
+await resizeTo(1424, 881, 'full')
+await page.evaluate(() => {
+  window.dispatchEvent(new Event('resize'))
+  // Diagnostics: record who persists the sidebar choice (read back in envDiag).
+  const set = Storage.prototype.setItem
+  window.__sidebarSets = []
+  Storage.prototype.setItem = function (k, v) {
+    if (k === 'orgai.sidebar') window.__sidebarSets.push({ v, w: window.innerWidth, stack: String(new Error().stack).split('\n').slice(2, 5).join(' | ').slice(0, 300) })
+    return set.call(this, k, v)
+  }
+})
 const tabsBar = () => page.getByRole('tablist', { name: 'Project sections' })
 const startOnPage = async (text) => {
   const ta = page.locator('.composer textarea')
@@ -52,7 +78,10 @@ try {
   const liveRuns = await page.evaluate(() => window.orgai.runs.listLive())
   check(Array.isArray(liveRuns) && liveRuns.length === 2, 'runs.listLive reports both runs', String(liveRuns?.length))
 
-  // Sidebar: the project row expands to its open runs.
+  // Sidebar: the project row expands to its open runs. The chevron exists only in the full sidebar, and a click that
+  // lands while the window is still resizing can hit the rail's Expand button (which persists an explicit choice), so
+  // wait for the full sidebar first.
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: 15_000 }).catch(() => {})
   const toggle = page.locator('.sidebar button.nav-chevron').first()
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
   await sleep(200)
@@ -259,7 +288,8 @@ try {
   const envDiag = () => page.evaluate(() => ({
     inner: window.innerWidth, outer: window.outerWidth, availW: screen.availWidth, dpr: window.devicePixelRatio,
     ls: Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith('orgai.')).map((k) => [k, localStorage.getItem(k)])),
-    dataSidebar: document.querySelector('.app')?.getAttribute('data-sidebar')
+    dataSidebar: document.querySelector('.app')?.getAttribute('data-sidebar'),
+    sidebarSets: window.__sidebarSets
   }))
   const panelToggle = () => page.locator('.side-panel').getByRole('button').first()
   const trayState = () => page.evaluate(() => {
@@ -311,7 +341,7 @@ try {
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
-    check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ ...(await geo()), ...(await envDiag()) }))
+    check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
     const g0 = await geo()
     await handle.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     const hb = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
@@ -424,6 +454,7 @@ try {
   check((await page.locator('.run-header').count()) === 0, 'the 44 px run header is gone (strip + toolbar)')
   const metaText = ((await page.locator('[data-testid=run-meta]').innerText()) || '').toLowerCase()
   check(!metaText.includes('add tests') && /agent/.test(metaText), 'the metadata line shows facts, not the prompt', metaText.slice(0, 120))
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: 15_000 }).catch(() => {})
   const sbToggle = page.locator('.sidebar button.nav-chevron').first()
   if ((await sbToggle.getAttribute('aria-expanded')) !== 'true') await sbToggle.click()
   await sleep(200)
@@ -503,6 +534,7 @@ try {
   await sw.click()
   await sleep(1500)
   check((await findProject(page, NAME)).runMessaging === true, 'switch saved runMessaging=true')
+  log('sidebar choice writes this run:', JSON.stringify(await page.evaluate(() => window.__sidebarSets)))
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
