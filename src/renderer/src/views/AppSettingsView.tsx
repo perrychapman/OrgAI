@@ -23,7 +23,7 @@ import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
 import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/settingsCopy'
-import { modelSettingGroups, modelSettingHint } from '../lib/assistantModels'
+import { modelSettingDescription, modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
 import { connectionUsable } from '../lib/projectsForm'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
@@ -167,6 +167,16 @@ export default function AppSettingsView(): ReactElement {
   useEffect(() => {
     if (!defaultCatalog) void loadModels(defaultConn)
   }, [defaultCatalog, defaultConn, loadModels])
+  // Every enabled connection's catalog feeds the model pickers.
+  const allModels = useAppStore((s) => s.models)
+  const enabledKey = (connections ?? []).map((c) => `${c.connection.id}:${c.connection.enabled}`).join()
+  useEffect(() => {
+    for (const c of connections ?? []) {
+      if (c.connection.enabled && !useAppStore.getState().models[c.connection.id]) void loadModels(c.connection.id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledKey, loadModels])
+  const sources = modelSources(connections, allModels)
 
   useEffect(() => {
     window.orgai.settings
@@ -278,11 +288,17 @@ export default function AppSettingsView(): ReactElement {
       label={label}
       hideLabel
       value={value}
-      groups={modelSettingGroups(value, defaultCatalog, allowInherit)}
+      groups={modelSettingGroups(value, sources, allowInherit)}
       onChange={onChange}
       testId={`${rowId}-select`}
     />
   )
+
+  /** Row description: what the row does, then what its tier or model resolves to per connection. */
+  const describe = (what: string, value: string): string => {
+    const d = modelSettingDescription(value, sources)
+    return d ? `${what} ${d}` : what
+  }
 
   return (
     <>
@@ -485,14 +501,14 @@ export default function AppSettingsView(): ReactElement {
                 <SettingRow
                   id="default-root-model-row"
                   title="Orchestrator model"
-                  description={`Leads each new project's runs.${modelSettingHint(info.defaultRootModel) ? ` ${modelSettingHint(info.defaultRootModel)}.` : ''}`}
+                  description={describe("Leads each new project's runs.", info.defaultRootModel)}
                   width="select"
                   control={modelSelect('Orchestrator model', 'default-root-model-row', info.defaultRootModel, false, (defaultRootModel) => patch({ defaultRootModel }))}
                 />
                 <SettingRow
                   id="default-report-model-row"
                   title="Report model"
-                  description={`Used by the roles that report to the orchestrator.${modelSettingHint(info.defaultReportModel) ? ` ${modelSettingHint(info.defaultReportModel)}.` : ''}`}
+                  description={describe('Used by the roles that report to the orchestrator.', info.defaultReportModel)}
                   width="select"
                   control={modelSelect('Report model', 'default-report-model-row', info.defaultReportModel, true, (defaultReportModel) => patch({ defaultReportModel }))}
                 />
@@ -503,14 +519,14 @@ export default function AppSettingsView(): ReactElement {
                 <SettingRow
                   id="setup-model-row"
                   title="Setup model"
-                  description="Plans and revises org charts and reviews finished runs. Applies to every project."
+                  description={describe('Plans and revises org charts and reviews finished runs.', info.setupModel)}
                   width="select"
                   control={modelSelect('Setup model', 'setup-model-row', info.setupModel, false, (setupModel) => patch({ setupModel }))}
                 />
                 <SettingRow
                   id="mcp-assist-model-row"
                   title="MCP assistant model"
-                  description="Used by Configure with AI under Custom servers. Applies to every project."
+                  description={describe('Used by Configure with AI under Custom servers.', info.mcpAssistModel)}
                   width="select"
                   control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
                 />

@@ -297,6 +297,11 @@
   font-family: var(--font-mono);
   font-size: var(--text-mono);
 }
+.model-select .mono-select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
 .select.invalid,
 .input.invalid {
   border-color: var(--danger);
