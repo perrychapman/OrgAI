@@ -22,15 +22,17 @@ import {
 } from 'lucide-react'
 import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
-import { selectedProject, useAppStore, useRunIndexes, type LogLine } from '../store/useAppStore'
+import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
+import { Badge } from './ui/Badge'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
+import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, humanizeToolResult, humanizeToolUse, type ToolKind } from '../lib/transcriptRows'
 
 interface Props {
@@ -93,15 +95,11 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
       <div className="plan-head">
         <div className="plan-goal">{plan.goal}</div>
         <div className="row plan-pills">
-          <span className={`pill ${plan.status === 'done' ? 'ok' : plan.status === 'blocked' ? 'warn' : 'is-running'}`}>
-            <span className="dot" /> {status}
-          </span>
-          <span className="pill">
+          <Badge tone={plan.status === 'done' ? 'success' : plan.status === 'blocked' ? 'attention' : 'info'}>{status}</Badge>
+          <Badge>
             {done} of {total} steps done
-          </span>
-          <span className="pill" title={cont.explain}>
-            {cont.pill}
-          </span>
+          </Badge>
+          <Badge title={cont.explain}>{cont.pill}</Badge>
         </div>
         <p className="panel-note">{cont.explain}</p>
       </div>
@@ -211,39 +209,43 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   }, [entries])
   const visible = showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')
 
-  const headerTitle = tab === 'transcript' ? (agent ? agent.name : finished ? 'Finished reports' : 'Transcript') : tab === 'plan' ? 'Plan' : 'Logs'
-  const hasErrors = logs.some((l) => l.level === 'error')
+  const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
+  const errorCount = logs.filter((l) => l.level === 'error').length
+  const showPlanTab = isWork || !!plan
+  const tabs: TabItem[] = [
+    { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
+    ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
+    { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
+  ]
+  const idPrefix = `side-${runId}`
   return (
     <>
-      <div className="side-header">
-        <span className="run-index" title="The run this panel belongs to">
-          {runTag(index)}
-        </span>
-        <h2 title={headerTitle}>{headerTitle}</h2>
-        <div className="side-spacer" />
-        <div className="side-tabs">
-          <div className="tabs" role="group" aria-label="This agent">
-            <button type="button" className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')} title="What the selected agent said and did">
-              Transcript
-            </button>
-          </div>
-          <div className="tabs" role="group" aria-label={`Run ${runTag(index)}`} title={`These tabs cover the whole run ${runTag(index)}`}>
-            {(isWork || plan) && (
-              <button type="button" className={tab === 'plan' ? 'active' : ''} onClick={() => setTab('plan')} title={plan ? `Plan: ${plan.status}` : 'No plan yet'}>
-                Plan{plan?.status === 'blocked' ? ' !' : ''}
-              </button>
-            )}
-            <button type="button" className={tab === 'logs' ? 'active' : ''} onClick={() => setTab('logs')}>
-              Logs{hasErrors ? ' !' : ''}
-            </button>
-          </div>
+      <div className="side-header side-header-col">
+        <div className="side-title">
+          <span className="run-index" title="The run this panel belongs to">
+            {runTag(index)}
+          </span>
+          <h2 title={headerTitle}>{headerTitle}</h2>
+          {agent && (
+            <span className="side-role" title={`Role: ${agent.roleSlug}`}>
+              {agent.roleSlug}
+            </span>
+          )}
         </div>
+        <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
       </div>
-      {tab === 'plan' && <PlanView plan={plan} />}
-      {tab === 'transcript' && finished && !agent && <FinishedList group={finished} />}
+      {tab === 'plan' && (
+        <TabPanel idPrefix={idPrefix} id="plan" value={tab}>
+          <PlanView plan={plan} />
+        </TabPanel>
+      )}
+      {tab === 'transcript' && finished && !agent && (
+        <TabPanel idPrefix={idPrefix} id="transcript" value={tab}>
+          <FinishedList group={finished} />
+        </TabPanel>
+      )}
       {agent && tab === 'transcript' && (
         <div className="agent-meta" aria-label="Agent details">
-          <span title={`Role: ${agent.roleSlug}`}>{agent.roleSlug}</span>
           <span>{agent.model ?? 'model unknown'}</span>
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
@@ -258,10 +260,14 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           )}
         </div>
       )}
+      {agent && tab === 'transcript' && (
+        <div className="transcript-bar">
+          <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
+        </div>
+      )}
       {tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
-        <div className="transcript">
+        <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
-          {agent && <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
           {visible.map((e) => {
             const b = e.block
@@ -321,9 +327,9 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
             </div>
           )}
           <div ref={bottom} />
-        </div>
+        </TabPanel>
       ) : (
-        <div className="logs">
+        <TabPanel idPrefix={idPrefix} id="logs" value={tab} className="logs">
           {logs.length === 0 && <span>No log lines yet.</span>}
           {logs.map((l, i) => (
             <div key={i} className={l.level}>
@@ -332,7 +338,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
             </div>
           ))}
           <div ref={bottom} />
-        </div>
+        </TabPanel>
       )}
     </>
   )

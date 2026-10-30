@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import type { AgentInstance } from '@shared/types'
+import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { formatCost, formatElapsed, initials } from '../lib/layout'
 
@@ -40,8 +41,8 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
           <span className="finished-body">
             <span className="finished-title">
               <strong>{a.name}</strong>
-              <span className={`chip ${a.state === 'error' ? 'danger' : ''}`}>{a.state === 'error' ? 'failed' : 'done'}</span>
-              {a.worktree && <span className="chip">{WT_LABEL[a.worktree.status] ?? a.worktree.status}</span>}
+              <Badge tone={a.state === 'error' ? 'danger' : 'neutral'}>{a.state === 'error' ? 'failed' : 'done'}</Badge>
+              {a.worktree && <Badge>{WT_LABEL[a.worktree.status] ?? a.worktree.status}</Badge>}
             </span>
             <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
           </span>

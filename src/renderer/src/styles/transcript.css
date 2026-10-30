@@ -132,7 +132,7 @@
 }
 /* Shared with the proposal card's key/value block. */
 .agent-summary {
-  padding: 12px 14px;
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border-default);
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -220,7 +220,7 @@
   background: var(--code-bg);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   overflow: auto;
 }
 .md pre code {
@@ -311,16 +311,16 @@
 /* ---------- Finished-report list ---------- */
 
 .finished-list {
-  padding: 10px 12px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 .finished-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--text-small);
   color: var(--text-secondary);
   margin-bottom: 4px;
@@ -328,12 +328,12 @@
 .finished-row {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--space-3);
   text-align: left;
   background: var(--surface-2);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   cursor: pointer;
   color: var(--text-primary);
 }
@@ -350,7 +350,7 @@
 .finished-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   font-size: var(--text-small);
 }
@@ -378,17 +378,17 @@
 /* ---------- Plan tab: the orchestrator's plan and the automatic continuation ---------- */
 
 .plan-view {
-  padding: 10px 12px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
   font-size: var(--text-small);
   overflow: auto;
 }
 .plan-head {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 .plan-goal {
   color: var(--text-primary);
@@ -399,7 +399,7 @@
   background: var(--warning-soft);
   color: var(--warning-text);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
 }
 .plan-steps {
   list-style: none;
@@ -411,9 +411,9 @@
 }
 .plan-step {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: flex-start;
-  padding: 6px 8px;
+  padding: var(--space-2);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--surface-2);
@@ -476,44 +476,47 @@
   color: var(--text-secondary);
 }
 
-/* Per-agent tab and per-run tabs sit in separate groups with a gap between them. */
-.side-tabs {
+/* Side-panel header: name and role once, then the compact underline tabs under them. */
+.side-header.side-header-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  padding-bottom: 0;
+}
+.side-title {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-shrink: 0;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
 }
-.side-tabs .tabs + .tabs {
-  position: relative;
+.side-role {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
 }
-.side-tabs .tabs + .tabs::before {
-  content: '';
-  position: absolute;
-  left: calc(var(--space-2) * -1 - 1px);
-  top: var(--space-1);
-  bottom: var(--space-1);
-  border-left: 1px solid var(--border-strong);
+.side-header .tabs-list {
+  margin-inline: calc(var(--space-1) * -1);
+}
+.transcript-bar {
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-caption);
+}
+.md .md-image-alt {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
 }
 
-/* Side-panel header: the agent name gets the full width when the tabs do not fit beside it. */
-.side-spacer {
-  flex: 1;
-}
-@container side (max-width: 360px) {
-  .live-panel .side-header {
-    flex-wrap: wrap;
-  }
-  .live-panel .side-header h2 {
-    flex: 1 1 calc(100% - var(--space-10));
-  }
-  .live-panel .side-header .side-spacer {
-    display: none;
-  }
-  .live-panel .side-header .side-tabs {
-    flex-wrap: wrap;
-    gap: var(--space-1h);
-  }
-  .live-panel .side-header .side-tabs .tabs + .tabs::before {
-    display: none;
-  }
+/* Status badge in History: a dot in the badge's text colour, next to the status word. */
+.badge .status-dot {
+  width: var(--space-1h);
+  height: var(--space-1h);
+  border-radius: var(--radius-full);
+  background: currentColor;
+  flex: none;
 }

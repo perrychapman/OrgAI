@@ -6,13 +6,23 @@ import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunInd
 import { costLabel } from '../lib/layout'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
-import { statusOfRun, statusText } from '../lib/runStatus'
+import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
-import { Badge } from './ui/Badge'
+import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 
 type Filter = 'all' | 'work' | 'setup'
+
+/** History is the one place status is content: the shared status words in the Badge status tones. */
+const STATUS_BADGE: Record<RunTone, BadgeTone> = {
+  'is-running': 'info',
+  warn: 'attention',
+  idle: 'neutral',
+  paused: 'neutral',
+  ok: 'success',
+  danger: 'danger'
+}
 
 /**
  * The History tab: every run of the project as a table (status, prompt first, kind, started, cost) with its
@@ -177,9 +187,10 @@ function HistoryRow({
         )}
       </td>
       <td>
-        <span className={`pill run-status ${status.tone}`} title={r.pauseReason ?? status.note}>
-          <span className="dot" aria-hidden="true" /> {statusText(status)}
-        </span>
+        <Badge tone={STATUS_BADGE[status.tone]} title={r.pauseReason ?? status.note}>
+          <span className="status-dot" aria-hidden="true" />
+          {statusText(status)}
+        </Badge>
       </td>
       <td className="col-cost" title={cost.title}>
         {cost.text}
@@ -188,7 +199,7 @@ function HistoryRow({
         {relativeTime(r.startedAt)}
       </td>
       <td className="col-kind">
-        <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
+        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{r.kind}</Badge>
       </td>
       <td>
         <div className="run-row-actions">
