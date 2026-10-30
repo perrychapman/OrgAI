@@ -1,6 +1,6 @@
-import type { DraftRequest, DraftResult, Project, Role, ToolName } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, TOOL_CATALOG } from '@shared/types'
-import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
+import { TOOL_CATALOG } from '@shared/types'
+import { ROLE_COLORS, modelForTier, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
 import type { RuntimeAdapter } from '../runtime/types'
 
 export interface DraftRole {
@@ -26,13 +26,13 @@ An org chart is a tree of roles. Exactly one role is the root orchestrator (repo
 
 Design principles:
 - Purpose-built roles: each role has a tight set of responsibilities and only the tools it needs. Reviewers and researchers get read-only tools.
-- Right-size the model to the task: "opus" for orchestration, architecture and hard debugging; "sonnet" for implementation, testing and review; "haiku" for lookups, summaries and mechanical chores. Use "fable" only for the single hardest reasoning role if the project truly needs it.
+- Right-size the model to the task by tier: "deep" for orchestration, architecture and hard debugging; "everyday" for implementation, testing and review; "fast" for lookups, summaries and mechanical chores. Use "top" only for the single hardest reasoning role if the project truly needs it.
 - Keep it as small as the work allows. Three to seven roles is typical. Add a middle layer (a lead with its own reports) only when the project has clearly separate domains, such as frontend and backend, or app and infrastructure.
 - Prompts are system prompts: second person, concrete, 60 to 160 words, describing how the role works and how it reports back.
 - The description is one sentence telling a manager when to delegate to this role.
 
 Available tools: ${TOOL_CATALOG.join(', ')}. (The Agent tool is granted automatically to roles with canSpawn=true; do not list it.)
-Available models: ${CLAUDE_MODEL_OPTIONS.map((m) => m.value).join(', ')}.
+Available model tiers: top, deep, everyday, fast (each maps to a concrete model on the project's connection), or inherit. Never name a vendor model.
 
 Respond with a single JSON object and nothing else, no code fences, matching:
 {
@@ -44,7 +44,7 @@ Respond with a single JSON object and nothing else, no code fences, matching:
       "responsibilities": ["..."],
       "prompt": "System prompt text.",
       "tools": ["Read", "Grep"],
-      "model": "sonnet",
+      "model": "everyday",
       "canSpawn": false,
       "spawnable": ["Name of a direct report", "..."],
       "reportsTo": "Name of manager role or null"
@@ -88,9 +88,34 @@ function layout(roles: Role[]): void {
   }
 }
 
-export function toRoles(payload: DraftPayload): Role[] {
+/** The connection a proposed chart is mapped onto. Without one, tiers map through the anthropic builtins. */
+export interface DraftModelContext {
+  connection: ConnectionId
+  tierModels: Partial<Record<ModelTier, ModelRef>>
+  /** Exact model ids the connection lists as available; a proposed id in this list is kept. */
+  models?: string[]
+}
+
+/**
+ * A proposed role model onto a connection: a tier name or legacy Claude alias maps through modelForTier (nearest
+ * mapped tier; nothing mapped = 'inherit'); a listed id is kept; anything else becomes the everyday tier.
+ */
+function mapModel(raw: unknown, ctx: DraftModelContext | undefined): { model: ModelRef; tier?: ModelTier } {
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  if (value === 'inherit') return { model: 'inherit' }
+  const tc: TierContext = ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
+  const viaTier = (tier: ModelTier): { model: ModelRef; tier?: ModelTier } => modelForTier(tier, tc) ?? { model: 'inherit' }
+  const asTier = settingTier(value)
+  if (asTier) return viaTier(asTier)
+  if (ctx?.models?.includes(value)) {
+    const tier = tierForModel(value)
+    return { model: value, ...(tier ? { tier } : {}) }
+  }
+  return viaTier('everyday')
+}
+
+export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role[] {
   const validTools = new Set<string>(TOOL_CATALOG)
-  const validModels = new Set(CLAUDE_MODEL_OPTIONS.map((m) => m.value))
   const drafts = payload.roles
 
   const roles: Role[] = drafts.map((d, i) => ({
@@ -101,7 +126,7 @@ export function toRoles(payload: DraftPayload): Role[] {
     responsibilities: Array.isArray(d.responsibilities) ? d.responsibilities.map(String) : [],
     prompt: d.prompt?.trim() || '',
     tools: (Array.isArray(d.tools) ? d.tools : []).filter((t): t is ToolName => validTools.has(t)),
-    model: validModels.has(d.model) ? d.model : 'sonnet',
+    ...mapModel(d.model, models),
     canSpawn: !!d.canSpawn,
     spawnable: [],
     reportsTo: null,
@@ -148,7 +173,13 @@ export function toRoles(payload: DraftPayload): Role[] {
   return roles
 }
 
-export async function draftOrgChart(adapter: RuntimeAdapter, project: Project, req: DraftRequest): Promise<DraftResult> {
+export async function draftOrgChart(
+  adapter: RuntimeAdapter,
+  project: Project,
+  req: DraftRequest,
+  /** The project's connection (ConnectionService.importModelContext): its deep tier drafts, its tiers map the result. */
+  tiers?: TierContext
+): Promise<DraftResult> {
   const existing =
     req.mode === 'revise'
       ? `\n\nCurrent org chart (revise this; keep what still fits):\n${JSON.stringify(
@@ -177,7 +208,10 @@ ${req.instruction}${existing}
 
 Design the org chart now. Return only the JSON object.`
 
-  const text = await adapter.complete({ system: SYSTEM, prompt, cwd: project.path, model: 'opus' })
+  const text = await adapter.complete({ system: SYSTEM, prompt, cwd: project.path, model: tiers ? modelForTier('deep', tiers)?.model : undefined })
   const payload = extractJson(text)
-  return { roles: toRoles(payload), rationale: payload.rationale ?? '' }
+  const context: DraftModelContext | undefined = tiers
+    ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id) } : {}) }
+    : undefined
+  return { roles: toRoles(payload, context), rationale: payload.rationale ?? '' }
 }

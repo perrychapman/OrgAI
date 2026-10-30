@@ -271,6 +271,27 @@ function proxyFor(served: string, id: string, ctx: PricingContext): ModelPrice |
   return null
 }
 
+const communityIndex = new WeakMap<object, Map<string, ModelPrice>>()
+
+/**
+ * A community price: the exact key, else the key equal after normalizeModelKey (prefix and date tolerated), looked up
+ * through an index built once per price object (the list has thousands of keys). An unprefixed key wins over a
+ * "provider/" one.
+ */
+function communityPrice(community: Record<string, ModelPrice>, model: string): ModelPrice | undefined {
+  if (Object.hasOwn(community, model)) return community[model]
+  let index = communityIndex.get(community)
+  if (!index) {
+    index = new Map()
+    for (const [key, price] of Object.entries(community)) {
+      const k = normalizeModelKey(key)
+      if (k && (!index.has(k) || !key.includes('/'))) index.set(k, price)
+    }
+    communityIndex.set(community, index)
+  }
+  return index.get(normalizeModelKey(model))
+}
+
 /** The non-provider price for a model (override > proxy > builtin > community), or null. */
 export function resolvePrice(model: string, ctx: PricingContext): { price: ModelPrice; source: ResolvedSource } | null {
   const served = applyAlias(model, ctx)
@@ -282,7 +303,7 @@ export function resolvePrice(model: string, ctx: PricingContext): { price: Model
   if (proxy) return { price: proxy, source: 'proxy' }
   const builtin = builtinPrice(served)
   if (builtin) return { price: builtin, source: 'builtin' }
-  const community = ctx.community ? priceFor(ctx.community, served) : undefined
+  const community = ctx.community ? communityPrice(ctx.community, served) : undefined
   if (community) return { price: community, source: 'community' }
   return null
 }
