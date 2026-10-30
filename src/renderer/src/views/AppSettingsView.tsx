@@ -174,14 +174,14 @@ export default function AppSettingsView(): ReactElement {
               description="System follows your operating system."
               control={<SegmentedControl label="Theme" value={appearance.theme} options={THEME_OPTIONS} onChange={(theme) => patchAppearance({ theme })} />}
             />
-            <div className="field">
+            <div className="field narrow">
               <label htmlFor="accent-hex">Accent color</label>
-              <div className="swatches" role="group" aria-label="Accent color presets">
+              <div className="accent-swatches" role="group" aria-label="Accent color presets">
                 {ACCENT_SWATCHES.map((s) => (
                   <button
                     key={s.hex}
                     type="button"
-                    className="swatch"
+                    className="accent-swatch"
                     style={{ '--swatch': s.hex } as CSSProperties}
                     aria-label={s.name}
                     title={s.name}
@@ -270,7 +270,7 @@ export default function AppSettingsView(): ReactElement {
                   onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
                 />
               </div>
-              <div className="field">
+              <div className="field narrow">
                 <label htmlFor="def-keep">Runs to keep</label>
                 <Input
                   id="def-keep"
@@ -286,15 +286,15 @@ export default function AppSettingsView(): ReactElement {
               checked={info.defaultIsolateWriters}
               onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })}
               label="Isolate writing reports in git worktrees"
-              description="Parallel work"
+              description="Each report that edits files works in its own copy of the repository."
             />
             <Checkbox
               checked={info.defaultAutoContinue}
               onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })}
               label="Keep the orchestrator going until the plan is complete"
-              description="Unattended execution"
+              description="Re-prompts the orchestrator until its plan is done, up to the limit below."
             />
-            <div className="field">
+            <div className="field narrow">
               <label htmlFor="def-continues">Max automatic continues per run</label>
               <Input
                 id="def-continues"
@@ -312,7 +312,7 @@ export default function AppSettingsView(): ReactElement {
               checked={info.defaultPreferSonnetNearLimit}
               onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
               label="Prefer Sonnet for new reports when the Opus weekly window is above the threshold"
-              description="Subscription limits"
+              description="Uses the weekly threshold under Usage."
             />
           </section>
 
@@ -322,7 +322,7 @@ export default function AppSettingsView(): ReactElement {
                 <h2 id="usage-title">Usage</h2>
               </div>
             </div>
-            <div className="field">
+            <div className="field narrow">
               <label htmlFor="opus-threshold">Opus weekly threshold (%)</label>
               <Input
                 id="opus-threshold"
