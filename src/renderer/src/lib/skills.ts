@@ -241,3 +241,8 @@ export function skillUseTotal(skills: SkillUseCount[] | undefined): number {
 export function skillActivityText(name: string): string {
   return `Loaded skill ${name}`
 }
+
+/** Paths of a skill's files that look like scripts (a scripts/ folder or a runnable extension). Feeds `skillElevatedHint`. */
+export function skillScriptPaths(files: readonly { path: string }[] | undefined): string[] {
+  return (files ?? []).map((f) => f.path).filter((p) => /(^|\/)scripts\//i.test(p) || /\.(sh|bash|zsh|ps1|bat|cmd|py|js|mjs|cjs|ts|rb|pl)$/i.test(p))
+}

@@ -7,6 +7,7 @@ export const APP_SETTINGS_SECTIONS = {
   connections: 'appsettings-section-connections',
   modelPrices: 'appsettings-section-model-prices',
   mcpLibrary: 'appsettings-section-mcp-library',
+  skillLibrary: 'skill-library',
   defaults: 'appsettings-section-defaults',
   usage: 'appsettings-section-usage',
   about: 'appsettings-section-about'
@@ -17,6 +18,7 @@ export const APP_SETTINGS_PANES = {
   general: 'general',
   connections: 'connections',
   mcpLibrary: 'mcp-library',
+  skillLibrary: 'skill-library',
   defaults: 'defaults',
   about: 'about'
 } as const
@@ -39,6 +41,7 @@ const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
   [APP_SETTINGS_SECTIONS.connections]: 'connections',
   [APP_SETTINGS_SECTIONS.modelPrices]: 'connections',
   [APP_SETTINGS_SECTIONS.mcpLibrary]: 'mcp-library',
+  [APP_SETTINGS_SECTIONS.skillLibrary]: 'skill-library',
   [APP_SETTINGS_SECTIONS.defaults]: 'defaults',
   [APP_SETTINGS_SECTIONS.usage]: 'defaults',
   [APP_SETTINGS_SECTIONS.about]: 'about'
@@ -65,6 +68,11 @@ export function requestAppSettingsSection(id: string): void {
   } catch {
     /* storage unavailable: the page just opens on General */
   }
+}
+
+/** Ask App settings to open on the Skill library pane (Project settings > Tools links here). The caller still switches the view. */
+export function requestSkillLibrary(): void {
+  requestAppSettingsSection(APP_SETTINGS_SECTIONS.skillLibrary)
 }
 
 /** Read and clear the requested section. */
