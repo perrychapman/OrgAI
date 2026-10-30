@@ -13,6 +13,7 @@ import { IconButton } from '../ui/IconButton'
 import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
 import { SegmentedControl } from '../ui/SegmentedControl'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { relativeTime } from '../../lib/remap'
 import ModelList from './ModelList'
 import TierEditor from './TierEditor'
@@ -247,8 +248,18 @@ function AnthropicAuth({
 }): ReactElement {
   const [envVar, setEnvVar] = useState(conn.auth.kind === 'apiKey' ? conn.auth.envVar : 'ANTHROPIC_API_KEY')
   const isKey = conn.auth.kind === 'apiKey'
+  const { confirm, dialog } = useConfirm()
+  const switchAuth = async (kind: string): Promise<void> => {
+    // Leaving a working login for a key that may be missing: ask once.
+    if (kind === 'apiKey' && connected) {
+      const ok = await confirm({ title: 'Switch to API key?', body: 'OrgAI signs out of the Claude login.', confirmLabel: 'Switch to API key' })
+      if (!ok) return
+    }
+    await onSaveProbe({ ...conn, auth: kind === 'apiKey' ? { kind: 'apiKey', envVar: envVar || 'ANTHROPIC_API_KEY' } : { kind: 'subscription' } })
+  }
   return (
     <div className="conn-auth">
+      {dialog}
       <div className="field">
         <label>Authentication</label>
         <SegmentedControl
@@ -258,7 +269,7 @@ function AnthropicAuth({
             { value: 'subscription', label: 'Claude Code login' },
             { value: 'apiKey', label: 'API key from environment variable' }
           ]}
-          onChange={(kind) => void onSaveProbe({ ...conn, auth: kind === 'apiKey' ? { kind: 'apiKey', envVar: envVar || 'ANTHROPIC_API_KEY' } : { kind: 'subscription' } })}
+          onChange={(kind) => void switchAuth(kind)}
         />
       </div>
       {isKey && (
