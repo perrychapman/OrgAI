@@ -16,6 +16,7 @@ import { SettingRow } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
+import McpLibrarySection from '../components/mcp/McpLibrarySection'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -169,6 +170,8 @@ export default function AppSettingsView(): ReactElement {
             </p>
           )}
           <ConnectionsPanel />
+
+          <McpLibrarySection />
 
           <section className="settings-section" aria-labelledby="appearance-title" data-testid="appearance-section">
             <div className="section-head">

@@ -13,6 +13,7 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project } from '@shared/types'
+import { HARNESS_PROJECT_ID } from '@shared/types'
 import McpInstallCard from '../components/McpInstallCard'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Badge } from '../components/ui/Badge'
@@ -126,6 +127,15 @@ export default function LiveRunView({ project }: { project: Project }): ReactEle
           <ReactFlowProvider key={`${project.id}:${runId}`}>
             <RunView project={project} runId={runId} />
           </ReactFlowProvider>
+        ) : project.id === HARNESS_PROJECT_ID ? (
+          <div className="new-run">
+            <div className="new-run-inner">
+              <section className="new-run-intro">
+                <h2>No assistant run yet</h2>
+                <p>Start one from Configure with AI in the MCP library settings.</p>
+              </section>
+            </div>
+          </div>
         ) : (
           <NewRunPage key={`new:${project.id}`} project={project} />
         )}

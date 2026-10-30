@@ -1,0 +1,152 @@
+/* ---------- MCP library, linked rows, authorization (providers-and-mcp.md section 12) ---------- */
+.mcp-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.mcp-group-title {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.mcp-lib-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+}
+.mcp-lib-main > .mcp-row-id,
+.mcp-lib-main > .mcp-row-meta,
+.mcp-lib-main > .mcp-row-actions {
+  grid-area: auto;
+}
+.mcp-row-actions {
+  flex-wrap: wrap;
+}
+@container settings-col (min-width: 720px) {
+  .mcp-lib-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .mcp-lib-main > .mcp-row-id,
+  .mcp-lib-main > .mcp-row-meta {
+    grid-column: 1;
+  }
+  .mcp-lib-main > .mcp-row-actions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+}
+.mcp-clamp {
+  overflow-wrap: anywhere;
+}
+.mcp-auth {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.mcp-auth-detail {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.mcp-authorize {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.mcp-authorize-row {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+.mcp-authorize-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.mcp-client-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex-basis: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+.mcp-client-inputs p {
+  margin: 0;
+}
+.mcp-auth-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.mcp-used-by,
+.mcp-lib-secrets {
+  margin: 0;
+  padding: var(--space-2);
+  list-style: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  font-size: var(--text-small);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mcp-row-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-8);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.mcp-row-note.warn {
+  color: var(--warning-text);
+}
+.mcp-pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mcp-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.mcp-pick:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--surface-1);
+}
+.mcp-pick:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.mcp-pick input {
+  margin-top: var(--space-1);
+  flex: none;
+}
+.mcp-pick label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  cursor: pointer;
+}
