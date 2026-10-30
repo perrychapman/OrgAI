@@ -6,13 +6,15 @@ export function Switch({
   onChange,
   label,
   disabled,
-  title
+  title,
+  testId
 }: {
   checked: boolean
   onChange: (next: boolean) => void
   label: string
   disabled?: boolean
   title?: string
+  testId?: string
 }): ReactElement {
   return (
     <button
@@ -22,6 +24,7 @@ export function Switch({
       aria-checked={checked}
       aria-label={label}
       title={title}
+      data-testid={testId}
       disabled={disabled}
       onClick={() => onChange(!checked)}
     >

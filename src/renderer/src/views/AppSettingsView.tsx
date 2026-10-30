@@ -1,9 +1,12 @@
 import type { ReactElement } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { AppSettings, AppSettingsInfo, PermissionMode } from '@shared/types'
 import { CLAUDE_MODEL_OPTIONS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
+import { Badge } from '../components/ui/Badge'
+import { Button } from '../components/ui/Button'
+import { CopyButton } from '../components/ui/CopyButton'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 
 /** Same debounce the project store uses for project saves. */
@@ -15,6 +18,11 @@ export default function AppSettingsView(): ReactElement {
   const [saved, setSaved] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
+  const appInfo = useAppStore((s) => s.appInfo)
+  const loadAppInfo = useAppStore((s) => s.loadAppInfo)
+  useEffect(() => {
+    void loadAppInfo()
+  }, [loadAppInfo])
 
   useEffect(() => {
     window.orgai.settings
@@ -239,6 +247,46 @@ export default function AppSettingsView(): ReactElement {
             </div>
             <span className="hint">Projects, settings and run history are stored here.</span>
           </div>
+
+          {appInfo && (
+            <section data-testid="about-block" aria-labelledby="about-title">
+              <div className="side-section-title" id="about-title" style={{ margin: '18px 0 10px' }}>
+                About
+              </div>
+              {appInfo.mockAdapter && (
+                <p>
+                  <Badge tone="accent">Mock adapter available</Badge>
+                </p>
+              )}
+              <dl className="about-list">
+                <dt>Version</dt>
+                <dd>{appInfo.version}</dd>
+                <dt>Platform</dt>
+                <dd>
+                  {appInfo.platform} · {appInfo.packaged ? 'packaged' : 'development'}
+                </dd>
+                {(
+                  [
+                    ['Data folder', appInfo.dataDir],
+                    ['Logs folder', appInfo.logsDir]
+                  ] as const
+                ).map(([name, path]) => (
+                  <Fragment key={name}>
+                    <dt>{name}</dt>
+                    <dd className="about-path">
+                      <span className="mono" title={path}>
+                        {path}
+                      </span>
+                      <CopyButton text={path} label={`Copy ${name.toLowerCase()} path`} />
+                      <Button size="sm" onClick={() => void window.orgai.app.openPath(path).then((err) => err && setError(err))}>
+                        Open
+                      </Button>
+                    </dd>
+                  </Fragment>
+                ))}
+              </dl>
+            </section>
+          )}
         </div>
       </div>
     </>
