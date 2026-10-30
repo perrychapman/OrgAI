@@ -47,6 +47,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     accepts a later user message whose `content` is `[{ type: 'image', source: { type: 'base64', media_type:
     'image/png', data } }, { type: 'text', text }]`, exactly what `claude.ts` `send()` pushes via `userContent()`.
     A 16x16 solid red PNG sent mid-session was answered "Red". Each turn emits its own `init` and `result`.
+  - A SendMessage to a finished subagent resumes it, and the SDK emits `task_started` with `task_id` = that agent and
+    `parent_task_id` = the messaging agent. A `task_started` for a known agent is therefore a resume, never a re-parent
+    (`agentTree.resolveParent`). Observed in a persisted run record on 0.3.312; not yet reproduced by a smoke script.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
 - Worktree isolation (verified with `scripts/smoke-worktree.mjs`): `isolation: "worktree"` on an Agent call can be
