@@ -733,9 +733,10 @@ export class MockAdapter implements RuntimeAdapter {
 
   /** A fixed org chart draft, in the JSON shape the drafter expects. */
   async complete(input: CompletionInput): Promise<string> {
+    if (input.signal?.aborted) throw new Error('Completion cancelled')
     if (input.kind === 'title') {
       if (input.prompt.includes('[mock:title-fail]')) throw new Error('Mock title failure')
-      if (input.prompt.includes('[mock:title-slow]')) await new Promise((r) => setTimeout(r, 50))
+      if (input.prompt.includes('[mock:title-slow]')) await abortableDelay(50, input.signal)
       const m = /<message>\s*([\s\S]*?)\s*<\/message>/.exec(input.prompt)
       const words = (m ? m[1]! : input.prompt)
         .split(/\s+/)
@@ -749,4 +750,20 @@ export class MockAdapter implements RuntimeAdapter {
     const args = setupStep?.args ?? { rationale: '', roles: [] }
     return JSON.stringify({ rationale: args.rationale, roles: args.roles })
   }
+}
+
+/** A timer that rejects with 'Completion cancelled' when the signal aborts first. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('Completion cancelled'))
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new Error('Completion cancelled'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }

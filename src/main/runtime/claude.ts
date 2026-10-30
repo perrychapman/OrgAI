@@ -218,6 +218,18 @@ export function usesProxy(ctx: Pick<RuntimeContext, 'connection'>): boolean {
 }
 
 /** Environment for a one-shot completion on a run's connection; undefined (SDK default) without one. */
+/**
+ * Links an external signal to a fresh AbortController. Throws 'Completion cancelled' if the signal is already
+ * aborted. `dispose` removes the listener.
+ */
+export function linkAbortSignal(signal: AbortSignal): { controller: AbortController; dispose: () => void } {
+  if (signal.aborted) throw new Error('Completion cancelled')
+  const controller = new AbortController()
+  const onAbort = (): void => controller.abort()
+  signal.addEventListener('abort', onAbort, { once: true })
+  return { controller, dispose: () => signal.removeEventListener('abort', onAbort) }
+}
+
 export function completionEnv(connection: RunConnection | undefined, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> | undefined {
   if (!connection) return undefined
   const env: Record<string, string | undefined> = { ...base, ...connection.env }
@@ -1328,14 +1340,24 @@ export class ClaudeAdapter implements RuntimeAdapter {
     if (input.model) options.model = input.model
     const env = completionEnv(input.connection)
     if (env) options.env = env
+    const link = input.signal ? linkAbortSignal(input.signal) : undefined
+    if (link) options.abortController = link.controller
     let text = ''
-    for await (const msg of query({ prompt: input.prompt, options })) {
-      if (msg.type === 'assistant') {
-        for (const block of msg.message.content) if (block.type === 'text') text += block.text
-      } else if (msg.type === 'result' && msg.subtype !== 'success') {
-        throw new Error(`Completion failed: ${msg.subtype}`)
+    try {
+      for await (const msg of query({ prompt: input.prompt, options })) {
+        if (msg.type === 'assistant') {
+          for (const block of msg.message.content) if (block.type === 'text') text += block.text
+        } else if (msg.type === 'result' && msg.subtype !== 'success') {
+          throw new Error(`Completion failed: ${msg.subtype}`)
+        }
       }
+    } catch (err) {
+      if (input.signal?.aborted) throw new Error('Completion cancelled')
+      throw err
+    } finally {
+      link?.dispose()
     }
+    if (input.signal?.aborted) throw new Error('Completion cancelled')
     return text
   }
 }
