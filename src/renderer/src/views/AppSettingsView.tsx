@@ -27,6 +27,7 @@ import { connectionUsable } from '../lib/projectsForm'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
+import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 
 /** Same debounce the project store uses for project saves. */
@@ -74,7 +75,7 @@ const ACCENT_SWATCHES: { name: string; hex: string }[] = [
 const PANES: SettingsNavItem[] = [
   { id: APP_SETTINGS_PANES.general, label: 'General' },
   { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
-  { id: APP_SETTINGS_PANES.mcpLibrary, label: 'MCP library' },
+  { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
   { id: APP_SETTINGS_PANES.defaults, label: 'Defaults' },
   { id: APP_SETTINGS_PANES.about, label: 'About' }
 ]
@@ -411,7 +412,12 @@ export default function AppSettingsView(): ReactElement {
             <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
           </>
         )}
-        {pane === 'mcp-library' && <McpLibrarySection />}
+        {pane === 'mcp-library' && (
+          <>
+            <ConnectorGallery />
+            <McpLibrarySection />
+          </>
+        )}
         {pane === 'defaults' && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="Starting values for new projects, plus the assistants that work across all projects.">
             <SettingsGroup title="Connection">
@@ -474,7 +480,7 @@ export default function AppSettingsView(): ReactElement {
                 <SettingRow
                   id="mcp-assist-model-row"
                   title="MCP assistant model"
-                  description="Used by Configure with AI in the MCP library. Applies to every project."
+                  description="Used by Configure with AI under Custom servers. Applies to every project."
                   width="select"
                   control={<Select label="MCP assistant model" describedBy={settingDescId('mcp-assist-model-row')} value={info.mcpAssistModel} options={modelOptions(info.mcpAssistModel, false)} onChange={(mcpAssistModel) => patch({ mcpAssistModel })} />}
                 />
