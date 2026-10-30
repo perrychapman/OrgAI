@@ -39,6 +39,37 @@ describe('parsing', () => {
   })
 })
 
+describe('proxy prices', () => {
+  const info = parseModelInfo(fx('litellm-model-info.json'))
+
+  it('converts per-token costs under model_info to USD per MTok without float noise', () => {
+    expect(info.get('claude-opus-4-5')?.price).toEqual({ inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5, cacheWritePerMTok: 6.25 })
+  })
+  it('falls back to the entry top level, and accepts a zero cache price', () => {
+    expect(info.get('claude-sonnet-4-5')?.price).toEqual({ inputPerMTok: 3, outputPerMTok: 15 })
+    expect(info.get('gpt-5')?.price).toEqual({ inputPerMTok: 1.25, outputPerMTok: 10, cacheReadPerMTok: 0 })
+  })
+  it('has no price when the proxy reports none', () => {
+    expect(info.get('claude-haiku-4-5')?.price).toBeUndefined()
+    expect(info.get('llama-3-8b')?.price).toBeUndefined()
+  })
+  it('reads litellm_params as a last resort and rejects bad numbers', () => {
+    const body = (e: Record<string, unknown>): unknown => ({ data: [{ model_name: 'm', ...e }] })
+    expect(parseModelInfo(body({ litellm_params: { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 } })).get('m')?.price).toEqual({ inputPerMTok: 1, outputPerMTok: 2 })
+    expect(parseModelInfo(body({ model_info: { input_cost_per_token: 1e-6 } })).get('m')?.price).toBeUndefined()
+    expect(parseModelInfo(body({ model_info: { input_cost_per_token: -1, output_cost_per_token: 1e-6 } })).get('m')?.price).toBeUndefined()
+    expect(parseModelInfo(body({ model_info: { input_cost_per_token: '1e-6', output_cost_per_token: 1e-6 } })).get('m')?.price).toBeUndefined()
+    expect(parseModelInfo(body({ model_info: { input_cost_per_token: 1, output_cost_per_token: 1e-6 } })).get('m')?.price).toBeUndefined() // $1 per token is over the bound
+    expect(parseModelInfo(body({ model_info: { input_cost_per_token: 1e-6, output_cost_per_token: 1e-6, cache_read_input_token_cost: Infinity } })).get('m')?.price).toEqual({ inputPerMTok: 1, outputPerMTok: 1 })
+  })
+  it('carries prices onto the discovered models', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => (String(url).endsWith('/v1/models') ? json(fx('litellm-models.json')) : json(fx('litellm-model-info.json'))))
+    const models = await fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl as unknown as typeof fetch)
+    expect(models.find((m) => m.id === 'claude-opus-4-5')?.price).toEqual({ inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5, cacheWritePerMTok: 6.25 })
+    expect(models.find((m) => m.id === 'gpt-5-mini')).not.toHaveProperty('price')
+  })
+})
+
 describe('fetchLiteLLMModels', () => {
   it('merges both endpoints, sends both auth headers and drops non-chat models', async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request) =>

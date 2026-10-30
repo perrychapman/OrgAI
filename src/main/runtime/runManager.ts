@@ -146,6 +146,8 @@ interface ActiveRun {
   lastUsageAt: number
   /** summary.usage changed since it was last published and saved. */
   usageDirty: boolean
+  /** The last published usage without its timestamp; an identical recompute is not sent again. */
+  lastUsageKey?: string
   /** Display name of the project, for cross-run messages. */
   projectName: string
   /** Name of the root role (its orchestrator), for list_runs. */
@@ -824,6 +826,10 @@ export class RunManager {
     a.summary.totalCostUsd = a.summary.usage.costUsd ?? 0
     a.lastUsageAt = now
     a.usageDirty = false
+    // Nothing but the timestamp changed (e.g. a settled agent after the end): the last event and save still stand.
+    const key = JSON.stringify({ ...a.summary.usage, updatedAt: 0 })
+    if (key === a.lastUsageKey) return
+    a.lastUsageKey = key
     this.store.upsert(a.summary)
     this.broadcast({ type: 'run.usage', runId: a.summary.id, usage: a.summary.usage })
   }

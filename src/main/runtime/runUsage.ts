@@ -208,10 +208,13 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   const cost = mergeCosts(usages)
   const provider = inputs.providerTotalUsd
   const hasProvider = provider !== undefined && Number.isFinite(provider) && provider > 0
+  // The provider's run total covers the whole run, so it wins when the agents' costs are provider-priced, and it
+  // fills in when agent costs are missing altogether (no per-model cost reported). Computed costs keep their sum.
+  const useProvider = hasProvider && (cost.costSource === 'provider' || cost.costSource === 'none' || cost.costSource === 'unknown')
   const usage: RunUsage = {
     tokens,
-    costUsd: cost.costSource === 'provider' && hasProvider ? provider : cost.costUsd,
-    costSource: cost.costSource,
+    costUsd: useProvider ? provider : cost.costUsd,
+    costSource: useProvider ? 'provider' : cost.costSource,
     models,
     roles,
     wallMs: Math.max(0, (summary.endedAt ?? now) - summary.startedAt),
@@ -227,7 +230,7 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
     idleMs: inputs.idleMs,
     updatedAt: now
   }
-  if (cost.costPartial) usage.costPartial = true
+  if (cost.costPartial && !useProvider) usage.costPartial = true
   if (hasProvider) usage.providerCostUsd = provider
   if (legacy) usage.legacy = true
   return usage

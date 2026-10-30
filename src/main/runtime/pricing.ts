@@ -93,7 +93,8 @@ export function normalizeModelId(id: string): string {
   return s
 }
 
-const BUILTIN_KEYS = Object.keys(BUILTIN_PRICES).sort((a, b) => b.length - a.length)
+const VARIANT_WORDS: ReadonlySet<string> = new Set(['codex', 'mini', 'nano', 'pro'])
+const BUILTIN_KEYS =Object.keys(BUILTIN_PRICES).sort((a, b) => b.length - a.length)
 
 /** Table lookup: exact normalized id, else the longest key that prefixes it on a '-' boundary. */
 export function builtinPrice(model: string): ModelPrice | null {
@@ -101,7 +102,11 @@ export function builtinPrice(model: string): ModelPrice | null {
   if (!id) return null
   if (Object.hasOwn(BUILTIN_PRICES, id)) return BUILTIN_PRICES[id]!
   for (const key of BUILTIN_KEYS) {
-    if (id.startsWith(key + '-')) return BUILTIN_PRICES[key]!
+    if (!id.startsWith(key + '-')) continue
+    // A variant of a different price class (gpt-5-codex, o3-mini, gpt-5-pro) is not the base model: stays unknown
+    // unless the table lists it itself.
+    if (id.slice(key.length + 1).split('-').some((part) => VARIANT_WORDS.has(part))) continue
+    return BUILTIN_PRICES[key]!
   }
   return null
 }
