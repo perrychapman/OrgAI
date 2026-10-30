@@ -34,7 +34,16 @@ Requires Node 22+ and a logged-in Claude Code CLI (`claude auth status`) or `ANT
 
 ## CI
 
-`.github/workflows/ci.yml` runs `npm ci`, `npm run typecheck`, `npm test`, `npm run build` and `npm run e2e:free` on macOS and Windows. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds release artifacts.
+`.github/workflows/ci.yml` runs `npm ci`, `npm run typecheck`, `npm test`, `npm run build` and `npm run e2e:free` on macOS and Windows, for pushes to and pull requests into `main` and `dev`. Pushing a `v*` tag on `main` triggers `.github/workflows/release.yml`, which builds release artifacts and drafts a release.
+
+### Branches and releases
+
+- `dev` is the integration branch: pull requests and OrgAI agent runs land there (keep `dev` checked out for agent work).
+- `main` is stable and protected; it changes only by pull request from `dev`.
+- To release, bump the `package.json` version on `dev`, merge `dev` into `main`, then tag the main commit: `git tag v<version> && git push origin v<version>`.
+- `release.yml` refuses tags that are not on `main`, builds the installers and drafts the release; publish it by hand.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Layout
 
