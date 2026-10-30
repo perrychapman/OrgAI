@@ -794,6 +794,8 @@ export function messageRunText(outcome: RunMessageOutcome, runId = 'that run'): 
             : 'REFUSED: message cap reached: you have sent that run the most messages one run may send it; report to the user instead of messaging it again.'
         case 'busy':
           return 'REFUSED: busy: that run is waiting on its user and already holds the most queued messages. Do not resend; continue without it or report to the user.'
+        case 'timeout':
+          return `REFUSED: run ${datum(runId, 80)} did not accept the message in time; it may be busy. Try again later or report to the user.`
         case 'self':
           return 'REFUSED: that is this run. Message another run from list_runs.'
         case 'empty':

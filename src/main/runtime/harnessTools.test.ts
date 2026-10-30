@@ -541,6 +541,7 @@ describe('cross-run tools', () => {
     expect(await run({ result: 'refused', refusal: 'cap', cap: 'inbound' })).toMatch(/^REFUSED: message cap reached: that run has taken the most messages any run may receive/)
     expect(await run({ result: 'refused', refusal: 'busy' })).toMatch(/^REFUSED: busy: that run is waiting on its user/)
     expect(await run('queued')).toBe('QUEUED: run run-b is waiting on its user; delivered when it resumes. Continue your own work and do not resend it.')
+    expect(await run({ result: 'refused', refusal: 'timeout' })).toBe('REFUSED: run run-b did not accept the message in time; it may be busy. Try again later or report to the user.')
     expect(await run({ result: 'refused', refusal: 'self' })).toMatch(/^REFUSED: that is this run/)
     expect(await run({ result: 'refused', refusal: 'empty' })).toMatch(/^REFUSED: the message is empty/)
     expect(await byName(workTools(fakeCtx()), 'message_run').call({ runId: 'x', message: 'y' })).toMatch(/^NOT LIVE/)

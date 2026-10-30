@@ -19,8 +19,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - Cross-run messages (`message_run`) never override the user: RunManager gates delivery (`peerDeliveryBlocked`) while
   a run is held by an interrupt, usage-limited (`ActiveRun.limitHold`) or has pending cards, holds them in the run's
   inbox (at most `RUN_MESSAGE_QUEUE_LIMIT` 20) and flushes them oldest first, one chained flush at a time, after the
-  user's next successful `send()` or the last card's answer. Caps: 40 per sender per target, 100 inbound per run. A
-  direct `RuntimeSession.receive()` call is ungated, so always deliver through RunManager.
+  user's next successful `send()` or the last card's answer. Only the user's send lifts a hold; peers never do, not
+  even after an auto-resume. `send()` never waits on that flush. Each `receive()` is raced against
+  `RUN_MESSAGE_RECEIVE_TIMEOUT_MS` (30 s): on timeout both runs get a warning, the chain moves on and a direct sender
+  gets refusal `timeout`. Caps: 40 per sender per target, 100 inbound per run. A direct `RuntimeSession.receive()`
+  call is ungated, so always deliver through RunManager.
 - Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
   preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
   (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.

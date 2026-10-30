@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
@@ -1316,7 +1316,7 @@ describe('cross-run messaging', () => {
 
       const before = events.length
       await m.send(b.id, 'carry on')
-      expect(session.peerMessages.map((p) => p.text)).toEqual(['heads up'])
+      await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['heads up']))
       expect(inFor(b.id)).toHaveLength(1)
       // The user's message comes first.
       const userAt = events.findIndex((e, i) => i >= before && e.type === 'transcript' && e.runId === b.id && e.entry.block.kind === 'user')
@@ -1383,8 +1383,9 @@ describe('cross-run messaging', () => {
         done.push(msg.text)
         return original(msg)
       }
+      // send() does not wait on the flush it starts.
       await m.send(b.id, 'carry on')
-      expect(q4).toBeDefined()
+      await vi.waitFor(() => expect(q4).toBeDefined())
       expect(await q4).toEqual({ result: 'delivered' })
       expect(done).toEqual(['q1', 'q2', 'q3', 'q4'])
       expect(session.peerMessages.map((p) => p.text)).toEqual(['q1', 'q2', 'q3', 'q4'])
@@ -1399,11 +1400,71 @@ describe('cross-run messaging', () => {
       const session = adapter.bySession.get(b.id)!
       expect(session.peerMessages).toEqual([])
       await m.send(b.id, 'try again')
-      expect(session.peerMessages.map((p) => p.text)).toEqual(['limited'])
+      await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['limited']))
       // The hold lifted: the next message goes straight through.
       await idle(b.id)
       expect(await ctx.messageRun!(b.id, 'after')).toEqual({ result: 'delivered' })
       await m.stopAll()
+    })
+
+    describe('a receive that never settles', () => {
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      /** Make b's session hang forever on the message `stuck`; every other message goes through. */
+      function hangOn(session: MockSession, stuck: string): void {
+        const original = session.receive!.bind(session)
+        session.receive = (msg) => (msg.text === stuck ? new Promise<void>(() => undefined) : original(msg))
+      }
+      const warnsFor = (id: string) => events.filter(isType('log', (e) => e.runId === id && e.level === 'warn')).map((e) => e.message)
+
+      it("never holds up the user's send, and the timeout moves the inbox on", async () => {
+        const { m, adapter, a, b } = await two()
+        const ctx = adapter.ctxs.get(a.id)!
+        const session = adapter.bySession.get(b.id)!
+        hangOn(session, 'stuck')
+        await m.interrupt(b.id)
+        expect(await ctx.messageRun!(b.id, 'stuck')).toEqual({ result: 'queued' })
+        expect(await ctx.messageRun!(b.id, 'next')).toEqual({ result: 'queued' })
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        // Resolves although the flush it started is stuck on the first held message.
+        await m.send(b.id, 'carry on')
+        expect(session.peerMessages).toEqual([])
+        await vi.advanceTimersByTimeAsync(RUN_MESSAGE_RECEIVE_TIMEOUT_MS)
+        await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['next']))
+        expect(warnsFor(a.id).some((w) => w.includes(`Run ${b.id} did not accept the message`))).toBe(true)
+        expect(warnsFor(b.id).some((w) => w.includes(`from run ${a.id} did not finish`))).toBe(true)
+        await m.stopAll()
+      })
+
+      it('refuses a direct sender with timeout and delivers the next message', async () => {
+        const { m, adapter, tool, a, b } = await two()
+        const ctx = adapter.ctxs.get(a.id)!
+        const session = adapter.bySession.get(b.id)!
+        hangOn(session, 'stuck')
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const first = tool(a.id, 'message_run', { runId: b.id, message: 'stuck' })
+        // Still behind the stuck message, so it waits in the inbox rather than overtaking it.
+        expect(await ctx.messageRun!(b.id, 'next')).toEqual({ result: 'queued' })
+        await vi.advanceTimersByTimeAsync(RUN_MESSAGE_RECEIVE_TIMEOUT_MS)
+        expect(await first).toBe(`REFUSED: run ${b.id} did not accept the message in time; it may be busy. Try again later or report to the user.`)
+        await vi.waitFor(() => expect(session.peerMessages.map((p) => p.text)).toEqual(['next']))
+        // The chain is free again: a fast receive is delivered at once.
+        expect(await ctx.messageRun!(b.id, 'fast')).toEqual({ result: 'delivered' })
+        await m.stopAll()
+      })
+
+      it('leaves a fast receive alone', async () => {
+        const { m, adapter, a, b } = await two()
+        const ctx = adapter.ctxs.get(a.id)!
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        expect(await ctx.messageRun!(b.id, 'quick')).toEqual({ result: 'delivered' })
+        await vi.advanceTimersByTimeAsync(RUN_MESSAGE_RECEIVE_TIMEOUT_MS * 2)
+        expect(adapter.bySession.get(b.id)!.peerMessages.map((p) => p.text)).toEqual(['quick'])
+        expect([...warnsFor(a.id), ...warnsFor(b.id)].filter((w) => w.includes('did not'))).toEqual([])
+        await m.stopAll()
+      })
     })
 
     it('keeps the hold when the user message fails to send', async () => {

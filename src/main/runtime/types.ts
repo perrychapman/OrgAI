@@ -83,9 +83,10 @@ export type RunMessageResult = 'delivered' | 'queued' | 'not-live' | 'not-found'
  * text; 'messaging-off': a project has Project.runMessaging off (offProjects names it); 'cap': this sender already
  * sent RUN_MESSAGE_LIMIT messages to this target (cap 'pair') or the target already took RUN_MESSAGE_INBOUND_LIMIT
  * messages from all runs (cap 'inbound'); 'busy': the target is waiting on its user and its queue of held messages
- * is full (RUN_MESSAGE_QUEUE_LIMIT).
+ * is full (RUN_MESSAGE_QUEUE_LIMIT); 'timeout': the live target's session did not take it within
+ * RUN_MESSAGE_RECEIVE_TIMEOUT_MS.
  */
-export type RunMessageRefusal = 'not-work' | 'self' | 'empty' | 'messaging-off' | 'cap' | 'busy'
+export type RunMessageRefusal = 'not-work' | 'self' | 'empty' | 'messaging-off' | 'cap' | 'busy' | 'timeout'
 
 /** What messageRun returns: the result, and for 'refused' the reason. */
 export interface RunMessageOutcome {
