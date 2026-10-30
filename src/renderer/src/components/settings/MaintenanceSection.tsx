@@ -170,7 +170,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
         </div>
       )}
 
-      {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`}>{notice.message}</div>}
+      {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'}>{notice.message}</div>}
 
       <SettingsGroup title="Danger zone">
         <div className="danger-zone">

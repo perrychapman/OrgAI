@@ -634,10 +634,7 @@
   font-family: var(--font-mono);
 }
 .settings-scroll {
-  padding: var(--space-6);
-  overflow: auto;
   flex: 1;
-  min-height: 0;
 }
 .settings-loading {
   padding: var(--space-6);
@@ -700,7 +697,7 @@ ul.maint-list {
   gap: var(--space-1);
   position: sticky;
   top: calc(var(--space-5) * -1);
-  z-index: 1;
+  z-index: var(--z-sticky);
   padding: var(--space-2) 0;
   background: var(--surface-0);
   border-bottom: 1px solid var(--border-subtle);
@@ -813,7 +810,7 @@ ul.maint-list {
   position: absolute;
   left: var(--space-2);
   top: var(--space-2);
-  z-index: 100;
+  z-index: var(--z-toast);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   background: var(--accent);

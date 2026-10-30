@@ -58,10 +58,10 @@ export default function Sidebar(): ReactElement {
         </div>
       )}
       <div className="sidebar-section">
-        <button type="button" className={`nav-item ${view === 'projects' ? 'active' : ''}`} onClick={() => setView('projects')}>
+        <button type="button" className={`nav-item ${view === 'projects' ? 'active' : ''}`} aria-current={view === 'projects' ? 'page' : undefined} onClick={() => setView('projects')}>
           <Icon icon={LayoutGrid} size="sm" /> Projects
         </button>
-        <button type="button" className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} onClick={() => setView('appSettings')}>
+        <button type="button" className={`nav-item ${view === 'appSettings' ? 'active' : ''}`} aria-current={view === 'appSettings' ? 'page' : undefined} onClick={() => setView('appSettings')}>
           <Icon icon={Settings} size="sm" /> Settings
         </button>
       </div>
@@ -138,7 +138,7 @@ export default function Sidebar(): ReactElement {
                 )}
                 <button
                   type="button"
-                  className={`nav-item ${active ? 'active' : ''}`}
+                  className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined}
                   title={subtitle ? `${p.path}\n${subtitle}` : p.path}
                   onClick={() => {
                     void openProject(p.id)

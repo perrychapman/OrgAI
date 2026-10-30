@@ -7,6 +7,26 @@ import { Checkbox } from '../ui/Checkbox'
 import { Input } from '../ui/Input'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
+/** Whole-number field that lets the user clear it while typing; commits valid values clamped to min..max and restores on blur. */
+function ClampedNumber({ id, value, min, max, onCommit }: { id: string; value: number; min: number; max: number; onCommit: (n: number) => void }): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <Input
+      id={id}
+      type="number"
+      min={min}
+      max={max}
+      value={draft ?? String(value)}
+      onChange={(v) => {
+        setDraft(v)
+        const n = Number(v)
+        if (v !== '' && Number.isFinite(n)) onCommit(Math.min(max, Math.max(min, Math.floor(n))))
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  )
+}
+
 /** Cost caps, concurrency, unattended execution, subscription limits, worktrees and retention. */
 export function LimitsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const uid = useId()
@@ -35,37 +55,22 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         </div>
         <div className="field">
           <label htmlFor={`${uid}-keep`}>Runs to keep</label>
-          <Input
-            id={`${uid}-keep`}
-            type="number"
-            min={1}
-            max={5000}
-            value={project.keepRuns ?? DEFAULT_KEEP_RUNS}
-            onChange={(v) => patch({ keepRuns: Math.max(1, Number(v) || DEFAULT_KEEP_RUNS) })}
-          />
+          <ClampedNumber id={`${uid}-keep`} min={1} max={5000} value={project.keepRuns ?? DEFAULT_KEEP_RUNS} onCommit={(n) => patch({ keepRuns: n })} />
           <span className="hint">Older finished runs and their transcripts are deleted from disk when a run ends.</span>
         </div>
         <div className="field">
           <label htmlFor={`${uid}-depth`}>Max subagent depth</label>
-          <Input
-            id={`${uid}-depth`}
-            type="number"
-            min={1}
-            max={MAX_SUBAGENT_DEPTH_LIMIT}
-            value={project.maxSubagentDepth}
-            onChange={(v) => patch({ maxSubagentDepth: Math.min(MAX_SUBAGENT_DEPTH_LIMIT, Number(v) || 1) })}
-          />
+          <ClampedNumber id={`${uid}-depth`} min={1} max={MAX_SUBAGENT_DEPTH_LIMIT} value={project.maxSubagentDepth} onCommit={(n) => patch({ maxSubagentDepth: n })} />
           <span className="hint">1 means reports cannot spawn their own subagents.</span>
         </div>
         <div className="field">
           <label htmlFor={`${uid}-conc`}>Max concurrent subagents</label>
-          <Input
+          <ClampedNumber
             id={`${uid}-conc`}
-            type="number"
             min={1}
             max={MAX_CONCURRENT_SUBAGENTS_LIMIT}
             value={project.maxConcurrentSubagents}
-            onChange={(v) => patch({ maxConcurrentSubagents: Math.min(MAX_CONCURRENT_SUBAGENTS_LIMIT, Number(v) || 1) })}
+            onCommit={(n) => patch({ maxConcurrentSubagents: n })}
           />
           <span className="hint">Reports that may run at the same time across the whole org.</span>
         </div>
