@@ -10,6 +10,7 @@ import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
+import { SettingsGroup, SettingsSection } from '../settings/SettingsSection'
 import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpAssistDialog from './McpAssistDialog'
 import McpLinkDialog from './McpLinkDialog'
@@ -109,7 +110,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   const libraryCount = library?.length ?? 0
 
   const actions = (
-    <div className="section-actions mcp-actions">
+    <>
       <Button variant="primary" icon={Library} testId="mcp-add-library" onClick={() => setModal({ kind: 'link' })}>
         Add from library
       </Button>
@@ -122,7 +123,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
       <Button icon={Sparkles} onClick={() => setModal({ kind: 'assist' })}>
         Configure with AI
       </Button>
-    </div>
+    </>
   )
 
   const rowProps = (info: McpServerInfo): Parameters<typeof McpRow>[0] => ({
@@ -138,14 +139,15 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   })
 
   return (
-    <section ref={root} id="settings-section-mcp" className="mcp-section" aria-labelledby="mcp-title" data-testid="mcp-section">
-      <div className="section-head">
-        <div>
-          <h2 id="mcp-title">MCP servers</h2>
-          <p>Tools agents can call. Servers run code on this machine or connect to remote hosts.</p>
-        </div>
-        {actions}
-      </div>
+    <SettingsSection
+      id="settings-section-mcp"
+      title="MCP servers"
+      description="Tools your agents can call."
+      actions={actions}
+      testId="mcp-section"
+      sectionRef={root}
+    >
+      <div className="mcp-body">
       {assistRun && (
         <Banner
           tone="neutral"
@@ -197,38 +199,58 @@ export default function McpSection({ project }: { project: Project }): ReactElem
           <Icon icon={Plug} size="lg" />
           <strong>No MCP servers</strong>
           <p className="muted">
-            {libraryCount > 0
-              ? 'Start with Add from library to reuse a server you already set up. Or add one from the registry, by hand, or ask an assistant.'
-              : 'Add one from the registry, set one up by hand, or ask an assistant. Servers you add to the MCP library in app settings can be reused in every project.'}
+            {libraryCount > 0 ? (
+              'Add one from your library to get started.'
+            ) : (
+              <>
+                Add one above, or define one in{' '}
+                <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary()}>
+                  App settings &gt; MCP library
+                </button>
+                .
+              </>
+            )}
           </p>
         </div>
       ) : (
         <>
-          <div className="mcp-group" data-testid="mcp-group-library">
-            <h3 className="mcp-group-title">From your library</h3>
-            {linked.length === 0 ? (
-              <p className="muted">
-                {libraryCount > 0 ? 'Nothing from the library is in this project yet. Use Add from library.' : 'Your MCP library is empty.'}
-              </p>
-            ) : (
-              <ul className="card-block mcp-list" aria-label="MCP servers from your library">
-                {linked.map((info) => (
-                  <McpRow key={info.spec.id} {...rowProps(info)} />
-                ))}
-              </ul>
-            )}
+          <div data-testid="mcp-group-library">
+            <SettingsGroup title="From your library">
+              {linked.length === 0 ? (
+                <p className="muted">
+                  {libraryCount > 0 ? (
+                    'None added yet.'
+                  ) : (
+                    <>
+                      Library is empty. See{' '}
+                      <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary()}>
+                        App settings &gt; MCP library
+                      </button>
+                      .
+                    </>
+                  )}
+                </p>
+              ) : (
+                <ul className="card-block mcp-list" aria-label="MCP servers from your library">
+                  {linked.map((info) => (
+                    <McpRow key={info.spec.id} {...rowProps(info)} />
+                  ))}
+                </ul>
+              )}
+            </SettingsGroup>
           </div>
-          <div className="mcp-group" data-testid="mcp-group-local">
-            <h3 className="mcp-group-title">Only in this project</h3>
-            {local.length === 0 ? (
-              <p className="muted">No project-only servers.</p>
-            ) : (
-              <ul className="card-block mcp-list" aria-label="MCP servers only in this project">
-                {local.map((info) => (
-                  <McpRow key={info.spec.id} {...rowProps(info)} />
-                ))}
-              </ul>
-            )}
+          <div data-testid="mcp-group-local">
+            <SettingsGroup title="Only in this project">
+              {local.length === 0 ? (
+                <p className="muted">No project-only servers.</p>
+              ) : (
+                <ul className="card-block mcp-list" aria-label="MCP servers only in this project">
+                  {local.map((info) => (
+                    <McpRow key={info.spec.id} {...rowProps(info)} />
+                  ))}
+                </ul>
+              )}
+            </SettingsGroup>
           </div>
         </>
       )}
@@ -258,7 +280,8 @@ export default function McpSection({ project }: { project: Project }): ReactElem
         description="An assistant run proposes servers, using your library first. You approve each one in the live run."
         placeholder="Search the web, read GitHub issues..."
       />
-    </section>
+      </div>
+    </SettingsSection>
   )
 }
 

@@ -11,6 +11,7 @@ import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { SecretField } from '../ui/SecretField'
+import { SettingsSection } from '../settings/SettingsSection'
 import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpAssistDialog from './McpAssistDialog'
 import McpServerForm from './McpServerForm'
@@ -64,13 +65,14 @@ export default function McpLibrarySection(): ReactElement {
 
   const infos = library ?? []
   return (
-    <section ref={section} id="appsettings-section-mcp-library" className="settings-section mcp-section" aria-labelledby="mcp-library-title" data-testid="mcp-library-section" tabIndex={-1}>
-      <div className="section-head">
-        <div>
-          <h2 id="mcp-library-title">MCP library</h2>
-          <p>Define tool servers once, then add them to any project. Credentials and sign-in live here.</p>
-        </div>
-        <div className="section-actions mcp-actions">
+    <SettingsSection
+      id="appsettings-section-mcp-library"
+      title="MCP library"
+      description="Define a server once; any project can link it."
+      testId="mcp-library-section"
+      sectionRef={section}
+      actions={
+        <>
           <Button variant="primary" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>
             Add from registry
           </Button>
@@ -80,8 +82,10 @@ export default function McpLibrarySection(): ReactElement {
           <Button icon={Sparkles} testId="mcp-library-assist" onClick={() => setModal({ kind: 'assist' })}>
             Configure with AI
           </Button>
-        </div>
-      </div>
+        </>
+      }
+    >
+      <div className="mcp-body">
       {assistRun && (
         <Banner
           tone="neutral"
@@ -124,7 +128,7 @@ export default function McpLibrarySection(): ReactElement {
         <div className="card-block mcp-empty">
           <Icon icon={Library} size="lg" />
           <strong>Your library is empty</strong>
-          <p className="muted">Add a server from the registry or by hand, or ask an assistant to set one up. Projects then pick what they need.</p>
+          <p className="muted">Add a server to reuse it across projects.</p>
         </div>
       ) : (
         <ul className="card-block mcp-list" aria-label="MCP library">
@@ -154,7 +158,8 @@ export default function McpLibrarySection(): ReactElement {
         description="An assistant run proposes library servers in its own window. You approve each one there."
         placeholder="Connect GitHub and a Postgres database..."
       />
-    </section>
+      </div>
+    </SettingsSection>
   )
 }
 

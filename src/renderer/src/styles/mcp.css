@@ -1,14 +1,10 @@
 /* ---------- MCP servers and plugins (project settings) ---------- */
 
-.mcp-section {
+.mcp-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
-}
-.mcp-actions {
-  flex: 1 1 auto;
-  justify-content: flex-end;
 }
 .mcp-list {
   list-style: none;
