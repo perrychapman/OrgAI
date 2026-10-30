@@ -41,7 +41,7 @@ describe('basic turn fixture', () => {
   })
 
   it('reports cumulative tokens, never cost', () => {
-    expect(of('tokens')).toEqual([{ type: 'tokens', threadId: 'th-1', input: 1200, output: 300 }])
+    expect(of('tokens')).toEqual([{ type: 'tokens', threadId: 'th-1', input: 1200, output: 300, cachedInput: 800 }])
     expect(JSON.stringify(updates)).not.toMatch(/cost/i)
   })
 
