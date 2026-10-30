@@ -54,6 +54,8 @@ try {
       const nb = await note.boundingBox()
       check(!!nb && nb.x >= 0 && nb.x + nb.width <= w + 0.5, `Assistants note inside the viewport at ${w}x${h} ${theme}`, JSON.stringify(nb))
       await shot(`defaults-${w}x${h}-${theme}`)
+      const rawTiers = await page.locator('select option').evaluateAll((os) => os.map((o) => (o.textContent ?? '').trim()).filter((t) => /^(deep|everyday|fast|top)$/i.test(t)))
+      check(rawTiers.length === 0, `Defaults selects show tier labels, not raw tier ids at ${w}x${h} ${theme}`, rawTiers.join(', '))
       if (w === 1024 && theme === 'dark') {
         // Setup model persists across reopening App settings
         const sm = () => page.getByRole('combobox', { name: 'Setup model', exact: true })
@@ -114,7 +116,7 @@ try {
       await sleep(600)
       check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
       check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
-      check((await page.getByRole('button', { name: 'Add from registry' }).count()) === 1, 'Add from registry button present')
+      check((await page.locator('[data-testid=mcp-add-other]').count()) === 1, 'Other ways to add menu present')
       const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on project tools at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
       await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
@@ -178,6 +180,7 @@ try {
     await projectTab(page, 'Settings').click()
     await page.getByRole('tab', { name: 'Tools', exact: true }).click()
     await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
+    await page.locator('[data-testid=mcp-add-other]').click()
     await page.locator('[data-testid=mcp-add-library]').click()
     const dlg = page.locator('[data-testid=mcp-link-dialog]')
     await dlg.getByText('e2e-lib-server').first().click()
