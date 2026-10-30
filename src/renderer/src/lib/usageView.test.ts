@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, RunUsage } from '@shared/types'
-import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, timeRows, tokenRows, skillRows } from './usageView'
+import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, timeRows, tokenRows, skillRows, skillLoadsFromTranscript } from './usageView'
 
 const tokens = { input: 100, output: 50, cacheRead: 300, cacheWrite: 100 }
 
@@ -115,10 +115,18 @@ describe('skillRows', () => {
   it('sorts by loads, words the count and joins roles', () => {
     const rows = skillRows({ skills: [{ skillId: 'a', name: 'a', loads: 1, roles: [] }, { skillId: 'b', name: 'b', loads: 3, roles: ['qa', 'dev'] }] })
     expect(rows.map((r) => r.name)).toEqual(['b', 'a'])
-    expect(rows[0]).toMatchObject({ loadsText: '3 loads', roles: 'qa, dev' })
-    expect(rows[1].loadsText).toBe('1 load')
+    expect(rows[0]).toMatchObject({ loadsText: 'Loaded 3 times', roles: 'qa, dev' })
+    expect(rows[1].loadsText).toBe('Loaded 1 time')
   })
   it('is empty without skills', () => {
     expect(skillRows({})).toEqual([])
+  })
+  it('counts agents and scopes to one agent from the transcript', () => {
+    const e = (agentId: string, text: string) => ({ agentId, source: 'harness' as const, block: { kind: 'system' as const, text } })
+    const entries = [e('a1', 'Loaded skill api'), e('a2', 'Loaded skill api'), e('a2', 'Loaded skill api'), e('a1', 'Loaded skill other')]
+    const u = { skills: [{ skillId: 's1', name: 'api', loads: 3, roles: ['dev'] }] }
+    expect(skillRows(u, skillLoadsFromTranscript(entries))[0]).toMatchObject({ agents: 2, agentsText: '2 agents' })
+    const own = skillRows(u, skillLoadsFromTranscript(entries, 'a2'), true)
+    expect(own.map((r) => [r.name, r.loadsText])).toEqual([['api', 'Loaded 2 times']])
   })
 })
