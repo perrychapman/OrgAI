@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
@@ -11,6 +11,7 @@ import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { matchingRule } from './ruleMatch'
+import { countUsage, setModelTokens, usageOf } from './runUsage'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -48,6 +49,8 @@ export type MockStep =
   | { type: 'planUpdate'; steps: { id: string; status: 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'; note?: string }[] }
   /** The orchestrator completes the plan (complete_plan). */
   | { type: 'planComplete'; summary: string }
+  /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
+  | { type: 'retry'; agent?: string }
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -67,15 +70,28 @@ export interface MockScript {
   continue?: MockStep[][]
 }
 
+/** The default script's silent, unpriced report. */
+export const UNPRICED_REPORT_ID = 'mock-report-2'
+/** Model ids the mock reports. 'mock-unpriced' is in no price table. */
+export const MOCK_UNPRICED_MODEL = 'mock-unpriced'
+/** Prompt markers: every agent unpriced (unknown cost), or priced from the built-in table (no provider cost). */
+export const NO_PRICE_TOKEN = '[mock:no-price]'
+export const COMPUTED_COST_TOKEN = '[mock:computed-cost]'
+
 const DEFAULT_WORK: MockStep[] = [
   { type: 'thinking', text: 'The request is small; one report can do it while I review.' },
   { type: 'text', text: 'Planning the work: I will read the project, delegate the change and review the result.' },
   { type: 'tool', name: 'Read', input: { file_path: 'README.md' }, result: '# Mock project\n' },
+  { type: 'retry' },
   { type: 'spawn', id: 'mock-report-1', description: 'Implement the requested change' },
   { type: 'tool', agent: 'mock-report-1', name: 'Read', input: { file_path: 'src/example.ts' }, result: 'export const x = 1\n' },
   { type: 'tool', agent: 'mock-report-1', name: 'Edit', input: { file_path: 'src/example.ts', old_string: 'x = 1', new_string: 'x = 2' }, ask: true, result: 'File updated.' },
   { type: 'text', agent: 'mock-report-1', text: 'Done. Changed src/example.ts.' },
   { type: 'finish', id: 'mock-report-1', result: 'Changed src/example.ts (x is now 2). Files touched: src/example.ts' },
+  // Spends tokens, reports nothing (the "produced nothing" case), and runs on a model with no known price.
+  { type: 'spawn', id: UNPRICED_REPORT_ID, description: 'Look for related tests' },
+  { type: 'tool', agent: UNPRICED_REPORT_ID, name: 'Glob', input: { pattern: '**/*.test.ts' }, result: '' },
+  { type: 'finish', id: UNPRICED_REPORT_ID, result: '' },
   { type: 'text', text: 'The report finished: src/example.ts was updated. Anything else?' }
 ]
 
@@ -324,7 +340,7 @@ export class MockSession implements RuntimeSession {
 
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
   }
 
   private ensureAgent(id: string, init?: Partial<AgentInstance>): AgentInstance {
@@ -340,7 +356,7 @@ export class MockSession implements RuntimeSession {
         spawnToolUseId: null,
         state: 'starting',
         activity: 'Starting…',
-        model: 'mock',
+        model: this.usageModel(id),
         inputTokens: 0,
         outputTokens: 0,
         costUsd: 0,
@@ -363,14 +379,39 @@ export class MockSession implements RuntimeSession {
   /** Synthetic usage: every step costs a little, so tokens and cost move like a real run. */
   private charge(agentId: string, text: string): void {
     const a = this.ensureAgent(agentId)
-    a.inputTokens += 800
-    a.outputTokens += Math.max(20, Math.ceil(text.length / 4))
-    a.costUsd = (a.inputTokens + 5 * a.outputTokens) * USD_PER_TOKEN
+    const model = this.usageModel(agentId)
+    const before = usageOf(a).models.find((m) => m.model === model)
+    const prev: TokenUsage = before ? before.tokens : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    // 800 input-side tokens per response, split like a real cached session.
+    const next: TokenUsage = {
+      input: prev.input + 200,
+      output: prev.output + Math.max(20, Math.ceil(text.length / 4)),
+      cacheRead: prev.cacheRead + 500,
+      cacheWrite: prev.cacheWrite + 100
+    }
+    const unit = next.input + next.cacheRead * 0.1 + next.cacheWrite * 1.25 + 5 * next.output
+    setModelTokens(a, model, next, this.providerCosted(agentId) ? unit * USD_PER_TOKEN : undefined)
+    countUsage(a, 'turns')
+    a.costUsd = this.providerCosted(agentId) ? (a.inputTokens + 5 * a.outputTokens) * USD_PER_TOKEN : 0
   }
 
+  /** The model id this agent reports, by default Opus for the root and Sonnet for reports. */
+  private usageModel(agentId: string): string {
+    const prompt = this.ctx.prompt
+    if (prompt.includes(NO_PRICE_TOKEN) || (agentId === UNPRICED_REPORT_ID && !prompt.includes(COMPUTED_COST_TOKEN))) return MOCK_UNPRICED_MODEL
+    if (prompt.includes(COMPUTED_COST_TOKEN)) return 'claude-sonnet-4-5'
+    return agentId === ROOT_AGENT_ID ? 'claude-opus-4-5' : 'claude-sonnet-4-5'
+  }
+
+  /** Whether the mock "provider" reports a cost for this agent (like Anthropic does; LiteLLM and Codex do not). */
+  private providerCosted(agentId: string): boolean {
+    return this.usageModel(agentId) !== MOCK_UNPRICED_MODEL && !this.ctx.prompt.includes(COMPUTED_COST_TOKEN)
+  }
+
+  /** Provider-reported cost only: agents without one are priced by RunManager. */
   private totalCost(): number {
     let usd = 0
-    for (const a of this.agents.values()) usd += a.costUsd
+    for (const a of this.agents.values()) for (const m of a.usage?.models ?? []) usd += m.providerCostUsd ?? 0
     return usd
   }
 
@@ -568,6 +609,13 @@ export class MockSession implements RuntimeSession {
       }
       case 'harness':
         return this.harnessStep(step)
+      case 'retry': {
+        const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
+        countUsage(a, 'retries')
+        this.log('info', `API request retried (attempt 1 of 3) for ${a.name}`)
+        this.upsert(a)
+        return
+      }
       case 'plan':
         return this.harnessStep({
           type: 'harness',
@@ -621,6 +669,7 @@ export class MockSession implements RuntimeSession {
     const id = newId('tu')
     this.transcript(agentId, { kind: 'tool_use', id, name: step.name, input })
     this.charge(agentId, JSON.stringify(input))
+    countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
@@ -678,6 +727,7 @@ export class MockSession implements RuntimeSession {
     const input = { subagent_type: slug, description: step.description, prompt: step.description, name: handle }
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
+    countUsage(parent, 'toolCalls')
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
     const role = this.rolesBySlug.get(slug)
@@ -705,6 +755,7 @@ export class MockSession implements RuntimeSession {
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = newId('tu')
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_use', id, name: step.name, input: step.args ?? {} })
+      countUsage(this.ensureAgent(ROOT_AGENT_ID), 'toolCalls')
       this.setState(ROOT_AGENT_ID, isBlockingHarnessTool(step.name) ? 'waiting' : 'tool', harnessToolActivity(step.name))
       let text: string
       let isError = false
