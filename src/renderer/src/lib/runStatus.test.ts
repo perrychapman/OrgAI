@@ -5,9 +5,9 @@ import { runStatus } from './runStatus'
 describe('runStatus', () => {
   it('maps every RunStatus to the shared vocabulary', () => {
     const expected: Record<RunStatus, [string, string]> = {
-      starting: ['Working', 'is-running'],
-      running: ['Working', 'is-running'],
-      stopping: ['Working', 'is-running'],
+      starting: ['Running', 'is-running'],
+      running: ['Running', 'is-running'],
+      stopping: ['Running', 'is-running'],
       idle: ['Idle', 'idle'],
       paused: ['Paused', 'paused'],
       finished: ['Finished', 'ok'],
@@ -19,14 +19,14 @@ describe('runStatus', () => {
     }
   })
 
-  it('notes a stopping run but keeps the word Working', () => {
-    expect(runStatus('stopping')).toEqual({ word: 'Working', tone: 'is-running', note: 'Stopping' })
+  it('notes a stopping run but keeps the word Running', () => {
+    expect(runStatus('stopping')).toEqual({ word: 'Running', tone: 'is-running', note: 'Stopping' })
     expect(runStatus('running').note).toBeUndefined()
   })
 
   it('lets waiting win over every status', () => {
     for (const s of ['running', 'idle', 'finished', 'error', 'paused'] as RunStatus[]) {
-      expect(runStatus(s, { waiting: true })).toEqual({ word: 'Waiting for you', tone: 'warn' })
+      expect(runStatus(s, { waiting: true })).toEqual({ word: 'Needs you', tone: 'warn' })
     }
   })
 
