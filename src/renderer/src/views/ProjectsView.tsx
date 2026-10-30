@@ -6,7 +6,7 @@ import { setupPending } from '@shared/setup'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { examplePath } from '../lib/platform'
-import { effectiveName, newProjectConnectionLine, pathStatus, submitBlocker } from '../lib/projectsForm'
+import { effectiveName, newProjectConnectionNote, pathStatus, submitBlocker } from '../lib/projectsForm'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Checkbox } from '../components/ui/Checkbox'
@@ -14,6 +14,7 @@ import { useConfirm } from '../components/ui/ConfirmDialog'
 import { Input } from '../components/ui/Input'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { Textarea } from '../components/ui/Textarea'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 
 const KINDS: { value: SetupKind; label: string }[] = [
   { value: 'new', label: 'New idea' },
@@ -214,7 +215,23 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
       </div>
 
       <p className="form-connection muted" data-testid="new-project-connection">
-        {newProjectConnectionLine(defaultConnection, connections)}
+        {newProjectConnectionNote(defaultConnection, connections, mockAvailable && useMock)}
+        {!(mockAvailable && useMock) && (
+          <>
+            {' '}Change in{' '}
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                requestAppSettingsSection(APP_SETTINGS_SECTIONS.defaults)
+                useAppStore.getState().setView('appSettings')
+              }}
+            >
+              App settings &gt; Defaults
+            </button>
+            .
+          </>
+        )}
       </p>
 
       <div className="row form-submit">

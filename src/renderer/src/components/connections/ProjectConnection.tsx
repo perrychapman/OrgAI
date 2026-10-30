@@ -34,6 +34,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
     setView('appSettings')
   }
   const appInfo = useAppStore((s) => s.appInfo)
+  const defaultConnection = useAppStore((s) => s.defaultConnection)
+  const loadDefault = useAppStore((s) => s.loadDefaultConnection)
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const current = projectConnection(project)
   const [pending, setPending] = useState<ConnectionId | null>(null)
@@ -44,7 +46,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
 
   useEffect(() => {
     void loadAppInfo()
-  }, [loadAppInfo])
+    void loadDefault()
+  }, [loadAppInfo, loadDefault])
   useEffect(() => {
     if (!connections) void loadConnections()
   }, [connections, loadConnections])
@@ -119,6 +122,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       title="Connection"
       description={
         <>
+          {mock && appInfo?.mockAdapter ? 'This project runs on the mock adapter, so the connection applies once you turn it off. ' : 'This project keeps its own connection. '}
+          {defaultConnection && defaultConnection !== current ? `App default for new projects: ${NAME[defaultConnection]}. ` : ''}
           Sign-in and keys are set in{' '}
           <button type="button" className="link-btn" onClick={openConnections}>
             App settings &gt; Connections
@@ -231,7 +236,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         <SettingsCard>
           <SettingRow
             title="Run on the mock adapter"
-            description={mock && appInfo?.mockAdapter ? 'On: the connection above does not apply to runs.' : 'Scripted runs and approvals, no tokens.'}
+            description={mock && appInfo?.mockAdapter ? 'On: runs use scripted data, not the connection above.' : 'Scripted runs and approvals, no tokens.'}
             control={<Switch checked={mock} onChange={(on) => void toggleMock(on)} label="Run on the scripted mock adapter" testId="mock-adapter-toggle" />}
             hint={mock && !appInfo?.mockAdapter ? <span className="pconn-mock-warn">Not loaded in this app. Turn off to use your connection.</span> : undefined}
           />

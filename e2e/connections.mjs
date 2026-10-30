@@ -44,14 +44,19 @@ try {
       await defConn.waitFor({ timeout: 10_000 })
       check((await defConn.count()) === 1, `default connection row on the Defaults pane at ${w}x${h} ${theme}`)
       if (w === 1024 && theme === 'dark') {
-        await defConn.selectOption('openai')
+        // A connection that is not set up is a disabled option; persistence is checked on a usable one.
+        const opts = await defConn.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, d: o.disabled, t: o.textContent })))
+        const pick = opts.find((o) => o.v !== 'anthropic' && !o.d)
+        check(opts.filter((o) => o.v !== 'anthropic' && o.d).every((o) => /Not connected/.test(o.t ?? '')), 'unusable default options are disabled and say Not connected', JSON.stringify(opts))
+        const want = pick ? pick.v : 'anthropic'
+        await defConn.selectOption(want)
         await sleep(600)
         await page.reload()
         await page.waitForSelector('.nav-item', { timeout: 15_000 })
         await openAppSettings(page)
         await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
         const after = await page.getByRole('combobox', { name: 'Default connection', exact: true }).inputValue()
-        check(after === 'openai', 'default connection persists after reload', after)
+        check(after === want, 'default connection persists after reload', after)
         await page.getByRole('combobox', { name: 'Default connection', exact: true }).selectOption('anthropic')
         await sleep(600)
         await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
