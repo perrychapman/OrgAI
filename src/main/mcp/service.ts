@@ -1,6 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, join, basename } from 'node:path'
 import type {
+  McpAuthStatus,
+  McpAuthTarget,
+  McpAuthorizeInput,
+  McpLibraryEntry,
+  McpLibraryInfo,
+  McpLibrarySecretInput,
+  McpLinkLibraryInput,
   McpMutationResult,
   McpRegistrySearchInput,
   McpRegistrySearchResult,
@@ -14,6 +21,7 @@ import type {
   Project
 } from '@shared/types'
 import type { ProjectStore } from '../store/projects'
+import type { McpLibraryStore } from '../store/mcpLibrary'
 import { mcpProjectPrefix, mcpSecretKey, mcpSecretPrefix, type SecretStore } from '../store/secrets'
 import type { ResolvedMcpServer } from '../runtime/types'
 import { searchRegistry } from './registry'
@@ -30,10 +38,66 @@ export class McpService {
   private secrets: SecretStore
   private fetchImpl: typeof fetch
 
-  constructor(deps: { projects: ProjectStore; secrets: SecretStore; fetch?: typeof fetch }) {
+  constructor(deps: {
+    projects: ProjectStore
+    secrets: SecretStore
+    /** The app-wide library store. Optional only so older tests keep compiling; index.ts always passes it. */
+    library?: McpLibraryStore
+    fetch?: typeof fetch
+    /** Opens an authorization URL in the system browser (index.ts: shell.openExternal). Tests pass a fake. */
+    openExternal?: (url: string) => Promise<void>
+    /** Called with the refreshed list after every library or authorization change (index.ts broadcasts it). */
+    onLibraryChanged?: (entries: McpLibraryInfo[]) => void
+    /** Called with each project a library change saved (unlink on remove, promote), for project.updated pushes. */
+    onProjectChanged?: (project: Project) => void
+  }) {
     this.projects = deps.projects
     this.secrets = deps.secrets
     this.fetchImpl = deps.fetch ?? fetch
+  }
+
+  // ---------- library (CONTRACT STUBS: the Runtime Engineer implements them) ----------
+
+  libraryList(): McpLibraryInfo[] {
+    throw new Error('not implemented')
+  }
+
+  libraryUpsert(_entry: McpLibraryEntry): McpLibraryInfo[] {
+    throw new Error('not implemented')
+  }
+
+  libraryRemove(_input: { libraryId: string }): McpLibraryInfo[] {
+    throw new Error('not implemented')
+  }
+
+  librarySetSecret(_input: McpLibrarySecretInput): McpLibraryInfo[] {
+    throw new Error('not implemented')
+  }
+
+  async libraryTest(_input: { libraryId: string }): Promise<McpTestResult> {
+    throw new Error('not implemented')
+  }
+
+  linkLibrary(_input: McpLinkLibraryInput): McpMutationResult {
+    throw new Error('not implemented')
+  }
+
+  promote(_input: { projectId: string; serverId: string }): McpMutationResult {
+    throw new Error('not implemented')
+  }
+
+  // ---------- OAuth (CONTRACT STUBS) ----------
+
+  async authorize(_input: McpAuthorizeInput): Promise<McpAuthStatus> {
+    throw new Error('not implemented')
+  }
+
+  cancelAuthorize(_target: McpAuthTarget): void {
+    throw new Error('not implemented')
+  }
+
+  revokeAuth(_target: McpAuthTarget): McpAuthStatus {
+    throw new Error('not implemented')
   }
 
   private project(projectId: string): Project {
@@ -46,7 +110,8 @@ export class McpService {
     const envSet = (spec.secretEnv ?? []).filter((n) => this.secrets.has(mcpSecretKey(projectId, spec.id, 'env', n)))
     const headersSet = (spec.secretHeaders ?? []).filter((n) => this.secrets.has(mcpSecretKey(projectId, spec.id, 'header', n)))
     const missingSecrets = [...(spec.secretEnv ?? []).filter((n) => !envSet.includes(n)), ...(spec.secretHeaders ?? []).filter((n) => !headersSet.includes(n))]
-    return { spec, envSet, headersSet, missingSecrets }
+    // Placeholder until the OAuth implementation lands (authStatusFrom with the stored tokens).
+    return { spec, envSet, headersSet, missingSecrets, auth: { state: spec.oauth ? 'notAuthorized' : 'notRequired' } }
   }
 
   list(projectId: string): McpServerInfo[] {

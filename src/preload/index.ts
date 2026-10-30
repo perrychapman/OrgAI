@@ -6,6 +6,7 @@ import type {
   ContinueRunInput,
   DraftRequest,
   FocusRunTarget,
+  McpLibraryInfo,
   OrgAIApi,
   PermissionDecision,
   Project,
@@ -54,7 +55,24 @@ const api: OrgAIApi = {
     test: (input) => ipcRenderer.invoke(IPC.mcpTest, input),
     registrySearch: (input) => ipcRenderer.invoke(IPC.mcpRegistrySearch, input),
     answerInstall: (input) => ipcRenderer.invoke(IPC.mcpAnswerInstall, input),
-    startAssist: (input) => ipcRenderer.invoke(IPC.mcpStartAssist, input)
+    startAssist: (input) => ipcRenderer.invoke(IPC.mcpStartAssist, input),
+    linkLibrary: (input) => ipcRenderer.invoke(IPC.mcpLinkLibrary, input),
+    promote: (input) => ipcRenderer.invoke(IPC.mcpPromote, input),
+    authorize: (input) => ipcRenderer.invoke(IPC.mcpAuthorize, input),
+    cancelAuthorize: (target) => ipcRenderer.invoke(IPC.mcpCancelAuthorize, target),
+    revokeAuth: (target) => ipcRenderer.invoke(IPC.mcpRevokeAuth, target)
+  },
+  mcpLibrary: {
+    list: () => ipcRenderer.invoke(IPC.mcpLibraryList),
+    upsert: (entry) => ipcRenderer.invoke(IPC.mcpLibraryUpsert, entry),
+    remove: (input) => ipcRenderer.invoke(IPC.mcpLibraryRemove, input),
+    setSecret: (input) => ipcRenderer.invoke(IPC.mcpLibrarySetSecret, input),
+    test: (input) => ipcRenderer.invoke(IPC.mcpLibraryTest, input)
+  },
+  onMcpLibraryChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, entries: McpLibraryInfo[]): void => cb(entries)
+    ipcRenderer.on(IPC.mcpLibraryChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.mcpLibraryChanged, listener)
   },
   plugins: {
     upsert: (input) => ipcRenderer.invoke(IPC.pluginsUpsert, input),

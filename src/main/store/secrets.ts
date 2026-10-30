@@ -34,6 +34,44 @@ export function mcpProjectPrefix(projectId: string): string {
   return `mcp:${projectId}:`
 }
 
+/** The OAuth secret slots of one server: the client secret and the current tokens. */
+export type McpOAuthSlot = 'clientSecret' | 'accessToken' | 'refreshToken'
+
+/** Key of one OAuth secret of a project-only server (under mcpSecretPrefix, so removing the server removes it). */
+export function mcpOAuthKey(projectId: string, serverId: string, slot: McpOAuthSlot): string {
+  return `${mcpSecretPrefix(projectId, serverId)}oauth:${slot}`
+}
+
+/** Prefix of every secret of one library entry. Distinct from every project key ('mcplib:' never starts 'mcp:'). */
+export function mcpLibraryPrefix(entryId: string): string {
+  return `mcplib:${entryId}:`
+}
+
+/** Key of one env or header secret of a library entry. */
+export function mcpLibrarySecretKey(entryId: string, kind: McpSecretKind, name: string): string {
+  return `${mcpLibraryPrefix(entryId)}${kind}:${name}`
+}
+
+/** Key of one OAuth secret of a library entry. */
+export function mcpLibraryOAuthKey(entryId: string, slot: McpOAuthSlot): string {
+  return `${mcpLibraryPrefix(entryId)}oauth:${slot}`
+}
+
+/** Whose secrets: a project-only server or a library entry (linked project servers use their entry's). */
+export type McpSecretOwner = { projectId: string; serverId: string } | { libraryId: string }
+
+export function mcpOwnerPrefix(owner: McpSecretOwner): string {
+  return 'libraryId' in owner ? mcpLibraryPrefix(owner.libraryId) : mcpSecretPrefix(owner.projectId, owner.serverId)
+}
+
+export function mcpOwnerSecretKey(owner: McpSecretOwner, kind: McpSecretKind, name: string): string {
+  return `${mcpOwnerPrefix(owner)}${kind}:${name}`
+}
+
+export function mcpOwnerOAuthKey(owner: McpSecretOwner, slot: McpOAuthSlot): string {
+  return `${mcpOwnerPrefix(owner)}oauth:${slot}`
+}
+
 export class SecretStore {
   private file: string
   /** key -> base64 ciphertext */

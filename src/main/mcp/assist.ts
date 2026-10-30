@@ -1,5 +1,30 @@
-import type { McpServerSpec, Project } from '@shared/types'
-import { mcpSecretNames } from '@shared/defaults'
+import type { AppSettings, McpServerSpec, Project } from '@shared/types'
+import { HARNESS_PROJECT_ID } from '@shared/types'
+import { mcpSecretNames, newProject } from '@shared/defaults'
+
+/**
+ * The virtual project that owns harness-level runs (the library MCP assistant): name "OrgAI", path = the data
+ * dir, the app's default connection, no roles, no servers. Never stored in projects.json and never listed by
+ * projects:list. With the mock adapter registered (ORGAI_MOCK=1) it runs on mock so harness runs stay token-free.
+ */
+export function harnessProject(settings: AppSettings, dataDir: string, opts: { mock?: boolean } = {}): Project {
+  const base = newProject({ name: 'OrgAI', path: dataDir, brief: 'Harness-level session: the app-wide MCP library, shared by every project.' }, settings)
+  const connection = settings.defaultConnection
+  const id = opts.mock ? 'mock' : connection === 'openai' ? 'codex' : 'claude'
+  return {
+    ...base,
+    id: HARNESS_PROJECT_ID,
+    provider: { ...base.provider, id, connection },
+    isolateWriters: false,
+    autoContinue: false,
+    roles: [],
+    mcpServers: [],
+    plugins: [],
+    setup: undefined,
+    createdAt: '1970-01-01T00:00:00.000Z',
+    updatedAt: '1970-01-01T00:00:00.000Z'
+  }
+}
 
 /**
  * First message and hidden context for the MCP assistant session (RunKind 'mcp-assist'). Project data

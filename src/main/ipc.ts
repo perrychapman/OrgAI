@@ -15,6 +15,13 @@ import type {
   FocusRunTarget,
   McpAnswerInstallInput,
   McpAssistInput,
+  McpAuthStatus,
+  McpAuthTarget,
+  McpAuthorizeInput,
+  McpLibraryEntry,
+  McpLibraryInfo,
+  McpLibrarySecretInput,
+  McpLinkLibraryInput,
   McpMutationResult,
   McpRegistrySearchInput,
   McpRegistrySearchResult,
@@ -41,7 +48,7 @@ import type {
   SendRunInput,
   StartRunInput
 } from '@shared/types'
-import { CONNECTION_IDS, IPC } from '@shared/types'
+import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
 import type { SetupService } from './setup/service'
@@ -69,6 +76,8 @@ export interface IpcServices {
   mcp: McpService
   /** Ids of the adapters handed to RunManager; `app:info` reports `mockAdapter` from it. */
   adapterIds: readonly string[]
+  /** The virtual harness project (HARNESS_PROJECT_ID), built fresh from the current settings (mcp/assist.ts harnessProject). */
+  harnessProject(): Project
   /**
    * window:openRun after validation: focus the window already scoped to this run, or open a new one at
    * `#/run/<projectId>/<runId>` (index.ts window factory).
@@ -76,17 +85,23 @@ export interface IpcServices {
   openRunWindow(target: FocusRunTarget): void
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, openRunWindow }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow }: IpcServices): void {
+  /** A stored project, or the virtual harness project that owns harness-level runs. Never listed by projects:list. */
+  const projectOrHarness = (id: string): Project | null => (id === HARNESS_PROJECT_ID ? harnessProject() : projects.get(id))
   ipcMain.handle(IPC.projectsList, () => projects.list())
-  ipcMain.handle(IPC.projectsGet, (_e, id: string) => projects.get(id))
+  ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
   ipcMain.handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
     projects.create(input, settings.get(), { mockAvailable: adapterIds.includes('mock') })
   )
   ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => checkProjectPath(path))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
-  ipcMain.handle(IPC.projectsSave, (_e, project: Project) => projects.saveFromRenderer(project))
+  ipcMain.handle(IPC.projectsSave, (_e, project: Project) => {
+    if (project?.id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be saved.')
+    return projects.saveFromRenderer(project)
+  })
   ipcMain.handle(IPC.projectsRemove, async (_e, id: string) => {
+    if (id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be removed.')
     await runs.removeProject(id)
     mcp.removeProjectSecrets(id)
     projects.remove(id)
@@ -144,7 +159,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.runsContinue, async (_e, input: ContinueRunInput) => {
     const from = runs.summary(input.runId)
     if (!from) throw new Error('Run not found')
-    const existing = projects.get(from.projectId)
+    const existing = projectOrHarness(from.projectId)
     if (!existing) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
@@ -164,7 +179,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.runsListLive, (): RunSummary[] => runs.liveRuns())
   ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
     const target = checkRunTarget(input, {
-      project: (id) => projects.get(id),
+      project: (id) => projectOrHarness(id),
       runProject: (runId) => runs.summary(runId)?.projectId
     })
     openRunWindow(target)
@@ -244,7 +259,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   )
 
   registerConnectionIpc(projects, connections)
-  registerMcpIpc(projects, runs, mcp)
+  registerMcpIpc(runs, mcp, projectOrHarness)
 }
 
 /** Connections, model catalog and remaps: ConnectionService 1:1. */
@@ -272,7 +287,7 @@ function registerConnectionIpc(projects: ProjectStore, connections: ConnectionSe
 }
 
 /** MCP servers, plugins, registry search and install approvals: McpService 1:1, installs and the assistant via RunManager. */
-function registerMcpIpc(projects: ProjectStore, runs: RunManager, mcp: McpService): void {
+function registerMcpIpc(runs: RunManager, mcp: McpService, projectOrHarness: (id: string) => Project | null): void {
   ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
   ipcMain.handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
   ipcMain.handle(IPC.mcpRemove, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.remove(input))
@@ -280,11 +295,28 @@ function registerMcpIpc(projects: ProjectStore, runs: RunManager, mcp: McpServic
   ipcMain.handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
   ipcMain.handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
   ipcMain.handle(IPC.mcpAnswerInstall, (_e, input: McpAnswerInstallInput): void => runs.answerMcpInstall(input.runId, input.requestId, input.decision))
+  // scope 'library' runs the assistant on the virtual harness project; RunManager and the harness tools treat a run
+  // whose projectId is HARNESS_PROJECT_ID as library scope.
   ipcMain.handle(IPC.mcpStartAssist, async (_e, input: McpAssistInput): Promise<RunSummary> => {
-    const project = projects.get(input.projectId)
+    const library = input?.scope === 'library'
+    const projectId = library ? HARNESS_PROJECT_ID : typeof input?.projectId === 'string' ? input.projectId : ''
+    if (!library && projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
+    const project = projectOrHarness(projectId)
     if (!project) throw new Error('Project not found')
-    return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, input.instruction) })
+    const instruction = typeof input?.instruction === 'string' ? input.instruction : undefined
+    return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction) })
   })
+  ipcMain.handle(IPC.mcpLinkLibrary, (_e, input: McpLinkLibraryInput): McpMutationResult => mcp.linkLibrary(input))
+  ipcMain.handle(IPC.mcpPromote, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.promote(input))
+  // Resolves when the browser flow ends (or fails, as state 'error'); client id and secret are write-only.
+  ipcMain.handle(IPC.mcpAuthorize, (_e, input: McpAuthorizeInput): Promise<McpAuthStatus> => mcp.authorize(input))
+  ipcMain.handle(IPC.mcpCancelAuthorize, (_e, target: McpAuthTarget): void => mcp.cancelAuthorize(target))
+  ipcMain.handle(IPC.mcpRevokeAuth, (_e, target: McpAuthTarget): McpAuthStatus => mcp.revokeAuth(target))
+  ipcMain.handle(IPC.mcpLibraryList, (): McpLibraryInfo[] => mcp.libraryList())
+  ipcMain.handle(IPC.mcpLibraryUpsert, (_e, entry: McpLibraryEntry): McpLibraryInfo[] => mcp.libraryUpsert(entry))
+  ipcMain.handle(IPC.mcpLibraryRemove, (_e, input: { libraryId: string }): McpLibraryInfo[] => mcp.libraryRemove(input))
+  ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: McpLibrarySecretInput): McpLibraryInfo[] => mcp.librarySetSecret(input))
+  ipcMain.handle(IPC.mcpLibraryTest, (_e, input: { libraryId: string }): Promise<McpTestResult> => mcp.libraryTest(input))
   ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
   ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
 }

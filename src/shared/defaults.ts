@@ -4,6 +4,7 @@ import type {
   AppSettings,
   ConnectionId,
   ImageMediaType,
+  McpLibraryEntry,
   McpServerSpec,
   ModelFamily,
   ModelRef,
@@ -167,6 +168,43 @@ export function isValidMcpServerName(name: string): boolean {
 /** Every secret slot of a spec: secretEnv names followed by secretHeaders names. */
 export function mcpSecretNames(spec: Pick<McpServerSpec, 'secretEnv' | 'secretHeaders'>): string[] {
   return [...(spec.secretEnv ?? []), ...(spec.secretHeaders ?? [])]
+}
+
+/** Remote transports can use OAuth (mcp:authorize); stdio servers never do. */
+export function mcpSupportsOAuth(spec: Pick<McpServerSpec, 'transport'>): boolean {
+  return spec.transport === 'http' || spec.transport === 'sse'
+}
+
+/** Runs refresh an OAuth access token that expires within this window before they start (and mcp:test before probing). */
+export const MCP_OAUTH_REFRESH_SKEW_MS = 5 * 60_000
+
+/** The project-owned fields of a linked server; everything else comes from its library entry. */
+export type McpLinkFields = Pick<McpServerSpec, 'id' | 'enabled' | 'roles' | 'addedAt'>
+
+/**
+ * The project copy of a linked library entry: the entry's fields plus the project-owned ones, source 'library'
+ * and libraryId = entry.id. McpService calls it on every read so a library edit reaches every project.
+ */
+export function linkedSpec(entry: McpLibraryEntry, own: McpLinkFields): McpServerSpec {
+  const { id: _entryId, source: _source, ...rest } = entry
+  return {
+    ...rest,
+    id: own.id,
+    enabled: own.enabled,
+    ...(own.roles ? { roles: [...own.roles] } : {}),
+    source: 'library',
+    libraryId: entry.id,
+    addedAt: own.addedAt
+  }
+}
+
+/**
+ * A library entry built from a project server (promote, or a proposal that saves a new server to the library):
+ * the project-owned fields are dropped, and a linked spec's 'library' source becomes 'user'.
+ */
+export function libraryEntryFromSpec(spec: McpServerSpec, id: string): McpLibraryEntry {
+  const { enabled: _enabled, roles: _roles, libraryId: _libraryId, ...rest } = spec
+  return { ...rest, id, source: spec.source === 'library' ? 'user' : spec.source }
 }
 
 /**

@@ -426,8 +426,70 @@ export interface Project {
 /** How OrgAI reaches an MCP server. 'http' is the MCP streamable HTTP transport. */
 export type McpTransport = 'stdio' | 'http' | 'sse'
 
-/** Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. */
-export type McpServerSource = 'user' | 'registry' | 'agent'
+/**
+ * Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. 'library' = a
+ * project server linked to an app-wide library entry (McpServerSpec.libraryId); the entry keeps its own source.
+ */
+export type McpServerSource = 'user' | 'registry' | 'agent' | 'library'
+
+/**
+ * Non-secret OAuth state of a remote (http / sse) MCP server, written only by the main process (mcp:authorize);
+ * mcp:upsert and mcpLibrary:upsert keep the stored value and ignore what the renderer sends. Secret values
+ * (client secret, access and refresh tokens) live only in the SecretStore. Missing on a spec = the server is
+ * not known to use OAuth (a static header or no auth).
+ */
+export interface McpOAuthConfig {
+  /** RFC 8707 resource indicator: the canonical MCP server URL the tokens are bound to. */
+  resource?: string
+  /** Issuer of the authorization server that was used. */
+  authorizationServer?: string
+  authorizationEndpoint?: string
+  tokenEndpoint?: string
+  /** RFC 7591 dynamic client registration endpoint, when the server offers one. */
+  registrationEndpoint?: string
+  /** Scopes requested at the last authorization. */
+  scopes?: string[]
+  /** The OAuth client id: entered by the user ('manual') or registered by OrgAI ('dcr'). */
+  clientId?: string
+  /** A client secret is stored for this client (write-only through mcp:authorize). */
+  hasClientSecret?: boolean
+  clientSource?: 'manual' | 'dcr'
+  /** The loopback redirect URI a 'dcr' client was registered with; reused when its port is free. */
+  redirectUri?: string
+  /** ISO timestamp of the last successful authorization or refresh. */
+  authorizedAt?: string
+  /** ISO timestamp the current access token expires; missing = no expiry was given. */
+  expiresAt?: string
+  /** Display only: the account the token belongs to, when the server says. */
+  account?: string
+}
+
+/** Authorization state of one server, computed by the main process from McpOAuthConfig and the stored tokens. */
+export type McpAuthState = 'notRequired' | 'notAuthorized' | 'authorized' | 'expired' | 'error'
+
+export interface McpAuthStatus {
+  state: McpAuthState
+  /** ISO timestamp the access token expires. */
+  expiresAt?: string
+  /** Display only: who the token belongs to. */
+  account?: string
+  /** 'error': what failed, naming the step. Never contains a token or secret. */
+  error?: string
+  /**
+   * 'error': the authorization server offers no dynamic client registration and no client id is stored. Show
+   * client id (and optional secret) inputs and call mcp:authorize again with them.
+   */
+  needsClientId?: true
+}
+
+/** Which server mcp:authorize / cancelAuthorize / revokeAuth act on: a library entry or a project-only server. */
+export type McpAuthTarget = { libraryId: string } | { projectId: string; serverId: string }
+
+/**
+ * mcp:authorize input. clientId / clientSecret are write-only: stored (the secret in safeStorage) and never
+ * echoed. A linked project server is authorized through its library entry ({ libraryId }).
+ */
+export type McpAuthorizeInput = McpAuthTarget & { clientId?: string; clientSecret?: string }
 
 /** The MCP Registry package a server was installed from. */
 export interface McpRegistryRef {
@@ -475,7 +537,22 @@ export interface McpServerSpec {
   description?: string
   /** ISO timestamp. */
   addedAt: string
+  /**
+   * Set when this project server is a link to an app-wide library entry (McpLibraryEntry.id). The stored copy is a
+   * snapshot of the entry plus the project-owned fields (id, enabled, roles, libraryId, addedAt); the main process
+   * refreshes it from the library on every read, and secrets and OAuth tokens are the library entry's.
+   */
+  libraryId?: string
+  /** Remote servers that use OAuth (see McpOAuthConfig). Written by the main process only. */
+  oauth?: McpOAuthConfig
 }
+
+/**
+ * A harness-level (app-wide) MCP server definition in the library (<data>/mcp-library.json). Defined once;
+ * credentials and OAuth authorization live with it, and projects link it (McpServerSpec.libraryId). The name
+ * is unique within the library.
+ */
+export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'>
 
 /** Which secret slot a value fills: an entry of McpServerSpec.secretEnv or of .secretHeaders. */
 export type McpSecretKind = 'env' | 'header'
@@ -483,12 +560,45 @@ export type McpSecretKind = 'env' | 'header'
 /** mcp:list entry: the spec plus which secrets have a stored value. Secret values never cross IPC. */
 export interface McpServerInfo {
   spec: McpServerSpec
-  /** secretEnv names with a stored value. */
+  /** secretEnv names with a stored value (the library entry's values for a linked server). */
   envSet: string[]
   /** secretHeaders names with a stored value. */
   headersSet: string[]
   /** Secret names (env and headers) still missing a value; the server cannot start until they are set. */
   missingSecrets: string[]
+  /** OAuth state (the library entry's for a linked server). 'notRequired' when spec.oauth is missing. */
+  auth: McpAuthStatus
+  /** The linked library entry no longer exists: the server is kept as a snapshot but excluded from runs. */
+  libraryMissing?: true
+}
+
+/** mcpLibrary:list entry: the entry, its secret has-flags, OAuth state and the projects that link it. */
+export interface McpLibraryInfo {
+  entry: McpLibraryEntry
+  envSet: string[]
+  headersSet: string[]
+  missingSecrets: string[]
+  auth: McpAuthStatus
+  usedBy: { projectId: string; projectName: string }[]
+}
+
+/** mcpLibrary:setSecret input. `value: null` deletes the stored value. Write-only. */
+export interface McpLibrarySecretInput {
+  libraryId: string
+  kind: McpSecretKind
+  /** Must be listed in the entry's secretEnv or secretHeaders. */
+  name: string
+  value: string | null
+}
+
+/** mcp:linkLibrary input: add a library entry to a project by reference. */
+export interface McpLinkLibraryInput {
+  projectId: string
+  libraryId: string
+  /** Role slugs allowed to use it; omit for every role. */
+  roles?: string[]
+  /** Default true. */
+  enabled?: boolean
 }
 
 /** mcp:upsert input. A spec whose id is new is added; otherwise it replaces the entry with that id. */
@@ -527,6 +637,13 @@ export interface McpTestResult {
   exitCode?: number | null
   /** How long the check took, ms. */
   durationMs?: number
+  /**
+   * A remote server answered 401 with an OAuth challenge (or the server uses OAuth and has no valid token):
+   * offer Authorize (mcp:authorize) instead of a header field. `ok` is false.
+   */
+  needsAuthorization?: true
+  /** With needsAuthorization: the authorization server or resource metadata URL the challenge named, if any. */
+  authorizationServer?: string
 }
 
 /** A Claude Code plugin directory loaded for a project's runs (Claude adapter only). */
@@ -639,14 +756,15 @@ export interface McpInstallRequest {
 /**
  * The user's answer to an McpInstallRequest (renderer -> main only). `secrets` maps required secret names to
  * values; the main process moves them into safeStorage and never echoes them. `scope` 'run' adds the server
- * for this run only; 'project' also saves it to Project.mcpServers.
+ * for this run only; 'project' also saves it to Project.mcpServers as a project-only server; 'library' saves it
+ * to the app-wide library (secrets with the library entry) and links it to the project.
  */
 export interface McpInstallDecision {
   approved: boolean
   secrets?: Record<string, string>
   /** Shown to the agent, e.g. why it was denied or what was changed. */
   note?: string
-  scope: 'run' | 'project'
+  scope: 'run' | 'project' | 'library'
   /** The spec as the user edited it before approving. Omitted = the proposed spec. */
   spec?: McpServerSpec
 }
@@ -661,9 +779,14 @@ export interface McpAnswerInstallInput {
   decision: McpInstallDecision
 }
 
-/** mcp:startAssist input: start the MCP assistant session for a project. */
+/**
+ * mcp:startAssist input. scope 'project' (default) starts the MCP assistant for a project (projectId required);
+ * scope 'library' starts it at the harness level on the virtual project HARNESS_PROJECT_ID (projectId ignored),
+ * where it proposes library entries.
+ */
 export interface McpAssistInput {
-  projectId: string
+  projectId?: string
+  scope?: 'project' | 'library'
   /** What the user wants, e.g. "connect our Postgres and GitHub". */
   instruction?: string
 }
@@ -845,13 +968,24 @@ export interface SettingsProposalPayload {
 }
 
 /**
- * MCP assistant proposal (propose_mcp_servers): servers to add or replace, servers to remove, and the secret
- * slots the user must fill after approving. Applying it saves Project.mcpServers.
+ * One server of an mcpServers proposal. Project scope: `libraryId` links that existing library entry (its other
+ * fields are a display snapshot); otherwise a new server that is also saved to the library and linked, unless
+ * `projectOnly`. Library scope: a library entry (enabled, roles, libraryId and projectOnly are ignored).
+ */
+export type McpProposalServer = McpServerSpec & { projectOnly?: boolean }
+
+/**
+ * MCP proposal (propose_mcp_servers, from the MCP assistant or the Architect in setup): servers to add or replace,
+ * servers to remove, and the secret slots the user must fill after approving. Applying it saves
+ * Project.mcpServers (scope 'project', the default) and creates library entries, or only changes the library
+ * (scope 'library', harness-level assistant runs).
  */
 export interface McpServersProposalPayload {
+  /** Missing = 'project'. */
+  scope?: 'project' | 'library'
   /** Specs to add (new id) or replace (existing id). */
-  upsert: McpServerSpec[]
-  /** Ids of servers to remove. */
+  upsert: McpProposalServer[]
+  /** Ids of servers to remove (project scope: unlinks linked servers; library scope: library entry ids). */
   remove?: string[]
   /** Secret slots to fill once approved; values are entered through mcp:setSecret, never in the proposal. */
   secrets?: { serverId: string; kind: McpSecretKind; name: string; description?: string }[]
@@ -1072,6 +1206,13 @@ export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished
  * changes through the proposal mechanism (kind 'mcpServers').
  */
 export type RunKind = 'work' | 'setup' | 'mcp-assist'
+
+/**
+ * Project id of the virtual harness project that owns harness-level runs (the library MCP assistant). It is built
+ * in the main process (name "OrgAI", path = the data dir), never stored in projects.json and never listed by
+ * projects:list; projects:get(HARNESS_PROJECT_ID) returns it so a run window can render it.
+ */
+export const HARNESS_PROJECT_ID = 'harness'
 
 export interface RunSummary {
   id: string
@@ -1489,13 +1630,16 @@ export interface OrgAIApi {
   /** Connection status, login progress, catalog changes and remaps. Returns an unsubscribe function. */
   onConnectionEvent(cb: (event: ConnectionEvent) => void): () => void
   mcp: {
-    /** The project's MCP servers with their secret has-flags. */
+    /** The project's MCP servers (linked ones refreshed from the library) with secret has-flags and OAuth state. */
     list(projectId: string): Promise<McpServerInfo[]>
-    /** Add or replace one server. */
+    /**
+     * Add or replace one server. On a linked server (libraryId) only `enabled` and `roles` may change; edit the
+     * library entry for the rest. The stored `oauth` is kept whatever the renderer sends.
+     */
     upsert(input: McpUpsertInput): Promise<McpMutationResult>
-    /** Remove one server and its stored secrets. */
+    /** Remove one server and its stored secrets. A linked server is only unlinked (the library entry stays). */
     remove(input: { projectId: string; serverId: string }): Promise<McpMutationResult>
-    /** Store or clear one secret value. Write-only. */
+    /** Store or clear one secret value of a project-only server. Write-only. Linked servers: mcpLibrary.setSecret. */
     setSecret(input: McpSecretInput): Promise<McpMutationResult>
     /** Start the server outside a run and list its tools. */
     test(input: { projectId: string; serverId: string }): Promise<McpTestResult>
@@ -1503,9 +1647,48 @@ export interface OrgAIApi {
     registrySearch(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult>
     /** Answer an agent's request_mcp_install card. */
     answerInstall(input: McpAnswerInstallInput): Promise<void>
-    /** Start the MCP assistant session (RunKind 'mcp-assist'); its proposals are answered with setup.decide. */
+    /**
+     * Start the MCP assistant session (RunKind 'mcp-assist'); its proposals are answered with setup.decide. scope
+     * 'library' runs it on the virtual harness project (RunSummary.projectId === HARNESS_PROJECT_ID).
+     */
     startAssist(input: McpAssistInput): Promise<RunSummary>
+    /** Add a library entry to a project by reference. Rejects when the project already has a server of that name. */
+    linkLibrary(input: McpLinkLibraryInput): Promise<McpMutationResult>
+    /**
+     * Move a project-only server into the library (with its secrets and OAuth tokens) and relink it. Rejects when
+     * the library already has an entry of that name.
+     */
+    promote(input: { projectId: string; serverId: string }): Promise<McpMutationResult>
+    /**
+     * Run the whole OAuth authorization (discovery, client registration, the system browser, the loopback
+     * callback, token exchange) and resolve with the resulting state; it does not reject for flow failures
+     * (state 'error' carries the message; needsClientId asks for a client id). A linked project server is
+     * authorized through { libraryId }. Broadcasts mcpLibrary:changed for a library entry.
+     */
+    authorize(input: McpAuthorizeInput): Promise<McpAuthStatus>
+    /** Abandon a pending authorize (its promise resolves with state 'error', "Authorization was cancelled."). */
+    cancelAuthorize(target: McpAuthTarget): Promise<void>
+    /** Forget the access and refresh tokens; the client registration (client id, secret) is kept. */
+    revokeAuth(target: McpAuthTarget): Promise<McpAuthStatus>
   }
+  /** The app-wide MCP library. Every mutation also broadcasts mcpLibrary:changed. */
+  mcpLibrary: {
+    list(): Promise<McpLibraryInfo[]>
+    /**
+     * Add (new id) or replace one entry; validated like a project server, name unique within the library. The
+     * stored `oauth` is kept (an edit that changes the url drops the OAuth state and tokens). Linked projects see
+     * the change on their next read.
+     */
+    upsert(entry: McpLibraryEntry): Promise<McpLibraryInfo[]>
+    /** Delete an entry and its secrets, unlink it from every project and drop the Role.mcpServers grants to it. */
+    remove(input: { libraryId: string }): Promise<McpLibraryInfo[]>
+    /** Store or clear one secret value of an entry. Write-only. */
+    setSecret(input: McpLibrarySecretInput): Promise<McpLibraryInfo[]>
+    /** Start the entry outside a run and list its tools (refreshes an expiring OAuth token first). */
+    test(input: { libraryId: string }): Promise<McpTestResult>
+  }
+  /** The library changed (any mcpLibrary:* mutation, authorize, revoke, promote). Returns an unsubscribe function. */
+  onMcpLibraryChanged(cb: (entries: McpLibraryInfo[]) => void): () => void
   plugins: {
     /** Add or replace one plugin. Returns the saved project. */
     upsert(input: PluginUpsertInput): Promise<Project>
@@ -1700,6 +1883,18 @@ export const IPC = {
   mcpRegistrySearch: 'mcp:registrySearch',
   mcpAnswerInstall: 'mcp:answerInstall',
   mcpStartAssist: 'mcp:startAssist',
+  mcpLinkLibrary: 'mcp:linkLibrary',
+  mcpPromote: 'mcp:promote',
+  mcpAuthorize: 'mcp:authorize',
+  mcpCancelAuthorize: 'mcp:cancelAuthorize',
+  mcpRevokeAuth: 'mcp:revokeAuth',
+  mcpLibraryList: 'mcpLibrary:list',
+  mcpLibraryUpsert: 'mcpLibrary:upsert',
+  mcpLibraryRemove: 'mcpLibrary:remove',
+  mcpLibrarySetSecret: 'mcpLibrary:setSecret',
+  mcpLibraryTest: 'mcpLibrary:test',
+  /** main -> renderer push channel carrying McpLibraryInfo[] after every library or authorization change. */
+  mcpLibraryChanged: 'mcpLibrary:changed',
   pluginsUpsert: 'plugins:upsert',
   pluginsRemove: 'plugins:remove',
   runsListLive: 'runs:listLive',
