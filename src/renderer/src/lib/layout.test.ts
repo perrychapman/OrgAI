@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { acyclicParents, treeLayout } from './layout'
+import { acyclicParents, initials, treeLayout } from './layout'
+
+describe('initials', () => {
+  it('uses the first letters of the first two words', () => {
+    expect(initials('Code reviewer')).toBe('CR')
+    expect(initials('frontend-dev')).toBe('FD')
+    expect(initials('orchestrator')).toBe('OR')
+    expect(initials('')).toBe('?')
+  })
+
+  it('keeps the default when nothing collides', () => {
+    expect(initials('Reviewer', ['Writer'])).toBe('RE')
+  })
+
+  it('takes a later letter of the slug on a collision', () => {
+    const names = ['Reviewer', 'Researcher']
+    expect(initials('Reviewer', names)).toBe('RV')
+    expect(initials('Researcher', names)).toBe('RS')
+  })
+
+  it('never collides with a third role', () => {
+    const names = ['Reviewer', 'Researcher', 'Release']
+    const out = names.map((n) => initials(n, names))
+    expect(new Set(out).size).toBe(3)
+  })
+})
 
 const item = (id: string, parentId: string | null) => ({ id, parentId, width: 100, height: 50 })
 

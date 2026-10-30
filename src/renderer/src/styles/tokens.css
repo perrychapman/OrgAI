@@ -23,20 +23,20 @@
   color-scheme: dark;
 
   --surface-0: #0b0d12;
-  --surface-1: #0f1218;
-  --surface-2: #141821;
-  --surface-3: #1b2030;
+  --surface-1: #12161f;
+  --surface-2: #181c27;
+  --surface-3: #20263a;
   --field-bg: #0b0d12;
   --overlay-scrim: rgb(4 5 8 / 0.6);
 
-  --border-subtle: #1c2130;
-  --border-default: #262d40;
-  --border-strong: #364058;
+  --border-subtle: #1d2332;
+  --border-default: #283045;
+  --border-strong: #39435b;
   --border-input: #5d6882;
 
   --text-primary: #e8ebf3;
   --text-secondary: #a3adc2;
-  --text-tertiary: #8089a0;
+  --text-tertiary: #8791a8;
   --text-disabled: #5b6479;
   --text-on-accent: #ffffff;
   --text-on-success: #0b0d12;
@@ -63,13 +63,15 @@
   --info-text: #4cb8ff;
   --info-soft: color-mix(in oklab, var(--info) 14%, transparent);
 
-  --code-bg: #0d1016;
+  --code-bg: var(--surface-0);
   --diff-add-bg: color-mix(in oklab, var(--success) 14%, transparent);
   --diff-del-bg: color-mix(in oklab, var(--danger) 14%, transparent);
   --scrollbar-thumb: #2a3041;
   --scrollbar-thumb-hover: #3a4258;
   --brand-from: #7c5cff;
   --brand-to: #2bb0ff;
+  --brand-ui-from: #7c5cff;
+  --brand-ui-to: #2bb0ff;
 
   --edge: #3a4258;
   --edge-message: #5d8bd6;
@@ -90,13 +92,13 @@
   --surface-0: #f4f5f9;
   --surface-1: #fafbfd;
   --surface-2: #ffffff;
-  --surface-3: #eceff6;
+  --surface-3: #e9ecf4;
   --field-bg: #ffffff;
   --overlay-scrim: rgb(16 20 32 / 0.35);
 
   --border-subtle: #e6e9f1;
-  --border-default: #d9dde8;
-  --border-strong: #c3cadb;
+  --border-default: #d5dae6;
+  --border-strong: #bcc4d6;
   --border-input: #858ea3;
 
   --text-primary: #12151f;
@@ -135,6 +137,8 @@
   --scrollbar-thumb-hover: #a9b2c6;
   --brand-from: #7c5cff;
   --brand-to: #2bb0ff;
+  --brand-ui-from: #6a4cf0;
+  --brand-ui-to: #1a86d9;
 
   --edge: #aab3c7;
   --edge-message: #2f67b4;
@@ -156,13 +160,13 @@
     --surface-0: #f4f5f9;
     --surface-1: #fafbfd;
     --surface-2: #ffffff;
-    --surface-3: #eceff6;
+    --surface-3: #e9ecf4;
     --field-bg: #ffffff;
     --overlay-scrim: rgb(16 20 32 / 0.35);
 
     --border-subtle: #e6e9f1;
-    --border-default: #d9dde8;
-    --border-strong: #c3cadb;
+    --border-default: #d5dae6;
+    --border-strong: #bcc4d6;
     --border-input: #858ea3;
 
     --text-primary: #12151f;
@@ -201,6 +205,8 @@
     --scrollbar-thumb-hover: #a9b2c6;
     --brand-from: #7c5cff;
     --brand-to: #2bb0ff;
+    --brand-ui-from: #6a4cf0;
+    --brand-ui-to: #1a86d9;
 
     --edge: #aab3c7;
     --edge-message: #2f67b4;
@@ -248,7 +254,7 @@
   /* Typography (spec 4.4). System stacks for now; bundled fonts arrive in a later brief. */
   --font-sans: 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'JetBrains Mono', monospace;
-  --text-caption: 11px;
+  --text-caption: 12px;
   --text-caption-lh: 16px;
   --text-small: 12px;
   --text-small-lh: 18px;
@@ -265,9 +271,9 @@
   --text-mono: 12px;
   --text-mono-lh: 18px;
   --weight-regular: 400;
-  --weight-medium: 500;
+  /* Weights are 400 and 600 only; --weight-medium stays as a 600 alias for settings.css until brief 3C. */
+  --weight-medium: 600;
   --weight-semibold: 600;
-  --weight-display: 650;
 
   /* Motion (spec 4.6). */
   --dur-fast: 100ms;
@@ -291,7 +297,7 @@
   --control-lg: 36px;
   --sidebar-w: 232px;
   --sidebar-w-collapsed: 56px;
-  --topbar-h: 52px;
+  --topbar-h: 48px;
   --runbar-h: 44px;
   --canvas-pattern-gap: 22;
 
@@ -319,7 +325,13 @@
   --halo-dot-warning: 0 0 0 4px var(--warning-soft);
   --inset-border-strong: inset 0 0 0 1px var(--border-strong);
 
-  /* Text on the fixed brand gradient and on role-colored avatars (role colors are user data). */
+  /* Brand gradients (docs/design/ui-review-2.md C.2). --gradient-mark is for the mark only; --gradient-ui is the
+     2 px tab indicator, usage bar and empty-state glyph, never behind text, borders or focus rings. */
+  --gradient-mark: linear-gradient(135deg, #7c5cff, #2bb0ff);
+  --gradient-ui: linear-gradient(90deg, var(--brand-ui-from), var(--brand-ui-to));
+
+  /* Text on the fixed brand gradient. --text-on-role is retired (.avatar is tinted); the alias stays only for the
+     saturated chips in projects.css .roles until brief 3B restyles them. */
   --text-on-brand: #ffffff;
   --text-on-role: #ffffff;
 }
