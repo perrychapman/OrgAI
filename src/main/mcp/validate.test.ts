@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
 import { parseRegistryResponse } from './registry'
-import { nameFromRegistry, pinErrors, specFromRegistry, validateSpec } from './validate'
+import { nameFromRegistry, pinErrors, specFromRegistry, validateLibraryEntry, validateSpec } from './validate'
 
 const entries = parseRegistryResponse(JSON.parse(readFileSync(join(__dirname, 'fixtures', 'registry-response.json'), 'utf8'))).entries
 
@@ -119,5 +119,17 @@ describe('specFromRegistry', () => {
   })
   it('slugs registry names', () => {
     expect(nameFromRegistry('io.github.Owner/My_Server.v2')).toBe('my-server-v2')
+  })
+})
+
+describe('validateLibraryEntry', () => {
+  const entry = (over: Record<string, unknown> = {}) => ({ id: 'mcpl-1', name: 'github', transport: 'stdio' as const, command: 'npx', args: ['-y', 'pkg@1.2.3'], source: 'user' as const, addedAt: 'x', ...over })
+  it('accepts a pinned entry and rejects bad ids, unpinned versions and library name clashes', () => {
+    expect(validateLibraryEntry(entry())).toEqual([])
+    expect(validateLibraryEntry(entry({ id: 'bad id/..' })).join()).toMatch(/id must be/)
+    expect(validateLibraryEntry(entry({ args: ['-y', 'pkg@latest'] })).join()).toMatch(/not pinned/)
+    expect(validateLibraryEntry(entry({ id: 'mcpl-2' }), [entry()]).join()).toMatch(/already exists in the MCP library/)
+    expect(validateLibraryEntry(entry(), [entry()])).toEqual([])
+    expect(validateLibraryEntry(entry({ transport: 'http', command: undefined, args: undefined, url: 'ftp://x' })).join()).toMatch(/http\(s\) URL/)
   })
 })

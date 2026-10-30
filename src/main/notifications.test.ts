@@ -53,4 +53,22 @@ describe('Notifier', () => {
     notifier.handle(request)
     expect(shown).toHaveLength(2)
   })
+
+  it('labels a harness MCP assistant run with the app name and its own wording', () => {
+    const notifier = new Notifier({
+      projectOfRun: () => ({ projectId: 'harness', kind: 'mcp-assist' }),
+      projectName: (id) => (id === 'harness' ? 'OrgAI' : undefined),
+      enabled: () => true
+    })
+    notifier.handle({
+      type: 'proposal.request',
+      runId: 'run-1',
+      proposal: { id: 'pr', runId: 'run-1', agentId: 'root', kind: 'mcpServers', title: 'Add GitHub', payload: {}, createdAt: 0 } as never
+    })
+    notifier.handle({ type: 'run.status', runId: 'run-1', status: 'finished' })
+    expect(shown).toEqual([
+      { title: 'OrgAI', body: 'MCP proposal: MCP servers - Add GitHub' },
+      { title: 'OrgAI', body: 'MCP assistant session finished' }
+    ])
+  })
 })
