@@ -1,4 +1,5 @@
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { SKILL_MAX_FILE_BYTES } from '@shared/types'
@@ -7,21 +8,38 @@ import type { RunSkill } from './types'
 /**
  * Run-scoped skills for the Claude adapter. The granted skills are copied from OrgAI's own store into a temporary
  * plugin directory (`.claude-plugin/plugin.json` + `skills/<name>/...`), loaded through Options.plugins. The plugin
- * name namespaces them as `orgai:<name>` (verified in the bundled CLI source). Repo skills under .claude/skills also
- * load (settingSources ['project']); the PreToolUse gate (skillGate) is what keeps them out of reach.
+ * name namespaces them as `<plugin>:<name>` (verified in the bundled CLI source). The plugin name is random per
+ * build (`orgai-<8 hex>`), so a repo skill under .claude/skills (settingSources ['project']) cannot be named to
+ * collide with it; the PreToolUse gate (skillGate) is what keeps repo skills out of reach.
  */
-export const SKILL_PLUGIN_NAME = 'orgai'
-
 export interface SkillPlugin {
   /** Absolute plugin directory (pass to Options.plugins). */
   path: string
+  /** The unguessable plugin name; the namespace of every qualified name. */
+  pluginName: string
   /** Remove the directory. Idempotent, never throws. */
   cleanup(): void
-  /** Qualified name ("orgai:<name>") -> skill, for the skills that were copied. */
+  /** Qualified name ("<plugin>:<name>") -> skill, for the skills that were copied. */
   names: Map<string, RunSkill>
 }
 
-export const qualifiedSkillName = (name: string): string => `${SKILL_PLUGIN_NAME}:${name}`
+export const qualifiedSkillName = (pluginName: string, name: string): string => `${pluginName}:${name}`
+
+/** Claude Code's inline shell injection: !`cmd` anywhere, or a fenced block opened with ```! (or ~~~!). */
+const SHELL_INJECTION = /!`[^`\n]*`|^[ \t]*(?:```|~~~)!/m
+
+/** A SKILL.md body with its frontmatter removed. Only the body is ever re-emitted. */
+export function skillBody(markdown: string): string {
+  const text = markdown.replace(/^﻿/, '')
+  const m = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
+  return m ? text.slice(m[0].length) : text
+}
+
+/** Re-emit SKILL.md with only name and description, so allowed-tools, hooks, model, ... never reach the CLI. */
+export function sanitizedSkillMd(skill: RunSkill, markdown: string): string {
+  const description = skill.description.replace(/\s+/g, ' ').trim()
+  return `---\nname: ${JSON.stringify(skill.name)}\ndescription: ${JSON.stringify(description)}\n---\n${skillBody(markdown)}`
+}
 
 /** A safe relative path from a stored file list: '/'-separated, no empty, '.', '..' or absolute parts. */
 function safeRelative(path: string): string[] | null {
@@ -60,7 +78,11 @@ function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): 
       const back = relative(skillRoot, resolve(dest))
       if (back.startsWith('..') || isAbsolute(back) || back.split(sep).includes('..')) throw new Error(`${file.path} escapes`)
       mkdirSync(dirname(dest), { recursive: true })
-      copyFileSync(source, dest)
+      if (file.path === 'SKILL.md') {
+        const text = readFileSync(source, 'utf8')
+        if (SHELL_INJECTION.test(skillBody(text))) throw new Error('SKILL.md uses shell injection (!`command`), which OrgAI does not run')
+        writeFileSync(dest, sanitizedSkillMd(skill, text))
+      } else copyFileSync(source, dest)
     }
     if (!skill.files.some((f) => f.path === 'SKILL.md')) throw new Error('SKILL.md is not listed')
     return true
@@ -74,6 +96,7 @@ function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): 
 /** Build the run-scoped plugin directory. Skills that fail validation are logged through `warn` and left out. */
 export function buildSkillPlugin(skills: RunSkill[], runId: string, warn: (message: string) => void = () => {}): SkillPlugin {
   const path = mkdtempSync(join(tmpdir(), 'orgai-skills-'))
+  const pluginName = `orgai-${randomBytes(4).toString('hex')}`
   const names = new Map<string, RunSkill>()
   let removed = false
   const cleanup = (): void => {
@@ -89,23 +112,23 @@ export function buildSkillPlugin(skills: RunSkill[], runId: string, warn: (messa
     mkdirSync(join(path, '.claude-plugin'), { recursive: true })
     writeFileSync(
       join(path, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: SKILL_PLUGIN_NAME, version: '1.0.0', description: 'Skills granted in this OrgAI run' }, null, 2)
+      JSON.stringify({ name: pluginName, version: '1.0.0', description: 'Skills granted in this OrgAI run' }, null, 2)
     )
     for (const skill of skills) {
-      if (names.has(qualifiedSkillName(skill.name))) continue
-      if (copySkill(skill, path, (m) => warn(`${m} (run ${runId})`))) names.set(qualifiedSkillName(skill.name), skill)
+      if (names.has(qualifiedSkillName(pluginName, skill.name))) continue
+      if (copySkill(skill, path, (m) => warn(`${m} (run ${runId})`))) names.set(qualifiedSkillName(pluginName, skill.name), skill)
     }
   } catch (e) {
     cleanup()
     throw e
   }
-  return { path, cleanup, names }
+  return { path, pluginName, cleanup, names }
 }
 
 export type SkillGateResult = { allow: true; skill: RunSkill } | { allow: false; reason: string }
 
 /**
- * Decide a Skill tool call. Only `orgai:<name>` of a skill granted to the calling role passes; a leading "/" is
+ * Decide a Skill tool call. Only `<plugin>:<name>` of a skill granted to the calling role passes; a leading "/" is
  * stripped (the CLI does the same). Bare names, other plugins and repo skills are denied, because a bare name
  * resolves to a local (repo) skill first.
  */
@@ -120,6 +143,6 @@ export function skillGate(skillInput: unknown, roleId: string, names: Map<string
   if (!mine.length) return { allow: false, reason: `Skill "${shown}" is not available: this role has no skills.` }
   return {
     allow: false,
-    reason: `Skill "${shown}" is not available to this role. Granted skills: ${mine.map((q) => `"${q}"`).join(', ')}. Use Skill with skill: "${mine[0]}" (always the full orgai: name).`
+    reason: `Skill "${shown}" is not available to this role. Granted skills: ${mine.map((q) => `"${q}"`).join(', ')}. Use Skill with skill: "${mine[0]}" (always the full name, including the prefix).`
   }
 }
