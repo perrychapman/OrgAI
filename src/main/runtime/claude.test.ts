@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -211,6 +211,14 @@ describe('env isolation in buildEnv', () => {
     const env = buildEnv(fakeCtx({ connection: { connection: 'litellm', adapter: 'claude', env: { ANTHROPIC_AUTH_TOKEN: 't' } } }), leaky)
     expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false)
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('t')
+  })
+})
+
+describe('authFailureDetail', () => {
+  it('masks echoed key fragments and exact secrets, one line, capped', () => {
+    const out = authFailureDetail('401 Received API Key = sk-...1234\nBearer abc.def exact-secret', ['exact-secret'])
+    expect(out).not.toMatch(/sk-|abc\.def|exact-secret|\n/)
+    expect(authFailureDetail('x'.repeat(900), [])).toHaveLength(400)
   })
 })
 
