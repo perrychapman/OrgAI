@@ -133,16 +133,25 @@ jobs:
         # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
         # administrator, so winCodeSign's symlinks extract. If this step fails extracting winCodeSign, append
         # `-c.win.signAndEditExecutable=false` to the windows args above (OrgAI.exe then keeps Electron's icon).
-        run: npx electron-builder ${{ matrix.args }} --publish never
+        # Signing secrets reach the mac legs only (a mac .p12 in CSC_LINK must not be tried on Windows), and only
+        # when set: electron-builder reads an empty CSC_LINK as a certificate path and fails with "<repo> not a file",
+        # so absent secrets are left unset and the build is unsigned (CSC_IDENTITY_AUTO_DISCOVERY=false).
+        shell: bash
         env:
-          # Signing secrets reach the mac legs only (a mac .p12 in CSC_LINK must not be tried on Windows).
-          # Absent secrets expand to '' and CSC_IDENTITY_AUTO_DISCOVERY to 'false', so the build is unsigned.
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ runner.os == 'macOS' && secrets.CSC_LINK != '' }}
-          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          SECRET_CSC_LINK: ${{ secrets.CSC_LINK }}
+          SECRET_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          SECRET_APPLE_ID: ${{ secrets.APPLE_ID }}
+          SECRET_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          export CSC_IDENTITY_AUTO_DISCOVERY=false
+          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$SECRET_CSC_LINK" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$SECRET_CSC_LINK" CSC_KEY_PASSWORD="$SECRET_CSC_KEY_PASSWORD"
+            if [ -n "$SECRET_APPLE_ID" ]; then
+              export APPLE_ID="$SECRET_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$SECRET_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$SECRET_APPLE_TEAM_ID"
+            fi
+          fi
+          npx electron-builder ${{ matrix.args }} --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: orgai-${{ matrix.name }}
