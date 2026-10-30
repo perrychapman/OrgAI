@@ -70,6 +70,9 @@ export default function McpAssistDialog({
         <label htmlFor="mcp-assist-text">What should agents be able to do?</label>
         <Textarea id="mcp-assist-text" data-autofocus maxLength={2000} rows={4} value={text} placeholder={placeholder} onChange={setText} />
       </div>
+      <p className="muted" data-testid="mcp-assist-cost-hint">
+        Runs an assistant on your plan. Counts toward your usage.
+      </p>
       <p className="muted" data-testid="mcp-assist-model-hint">
         Runs on {modelDisplayName(model)}.{' '}
         <button

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, Ellipsis, ExternalLink, Library, Minus, Package, Pencil, Plug, Plus, Sparkles, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
+import { Check, ChevronDown, Copy, Ellipsis, ExternalLink, Library, Minus, Package, Pencil, Plug, Plus, Sparkles, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
 import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTestResult, Project } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { focusPaneHeading } from '../../lib/settingsTarget'
@@ -9,6 +9,7 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
+import { Popover } from '../ui/Popover'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
 import { SettingsGroup, SettingsSection } from '../settings/SettingsSection'
@@ -20,11 +21,15 @@ import RegistryDialog from './RegistryDialog'
 import { RoleAccess } from './RoleAccess'
 import TestResultPanel from './TestResultPanel'
 import { errMessage, launchTarget, secretStatuses } from './mcpHelpers'
-import { authTarget, authWarning, transportWords } from './mcpLibraryHelpers'
+import { authTarget, authWarning, emptyKind, setUpConnectors, splitConnectorServers, transportWords } from './mcpLibraryHelpers'
+import AddServiceDialog from '../connectors/AddServiceDialog'
+import ConnectedServices from '../connectors/ConnectedServices'
+import { useConnectors } from '../connectors/useConnectors'
 import { projectWriter } from './mcpWriter'
 import { useMcpLibrary } from './useMcpLibrary'
 
 type Modal =
+  | { kind: 'service' }
   | { kind: 'registry' }
   | { kind: 'link' }
   | { kind: 'form'; editing?: McpServerInfo; seed?: McpServerSpec }
@@ -52,6 +57,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   const focus = useAppStore((s) => s.mcpFocus)
   const clearMcpFocus = useAppStore((s) => s.clearMcpFocus)
   const { library, refresh: refreshLibrary } = useMcpLibrary()
+  const { connectors, error: connectorsError, refresh: refreshConnectors } = useConnectors()
   const assistRun = useAppStore((s) => {
     const id = s.activeRunByProject[project.id]
     const summary = id ? s.runs[id]?.summary : undefined
@@ -105,25 +111,53 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   const writer = useMemo(() => projectWriter(project, applyResult), [project, applyResult])
 
   const all = servers ?? []
-  const linked = all.filter((s) => s.spec.libraryId)
-  const local = all.filter((s) => !s.spec.libraryId)
+  const { rest } = splitConnectorServers(all, connectors)
+  const linked = rest.filter((s) => s.spec.libraryId)
+  const local = rest.filter((s) => !s.spec.libraryId)
+  const hasConnectedServices = setUpConnectors(connectors).length > 0
   const warnings = authWarning(all)
   const libraryCount = library?.length ?? 0
 
+  const choose = (close: () => void, next: Modal): (() => void) => () => {
+    close()
+    setModal(next)
+  }
   const actions = (
     <>
-      <Button variant="primary" icon={Library} testId="mcp-add-library" onClick={() => setModal({ kind: 'link' })}>
-        Add from library
+      <Button variant="primary" icon={Plus} testId="mcp-add-service" onClick={() => setModal({ kind: 'service' })}>
+        Add a service
       </Button>
-      <Button icon={Package} onClick={() => setModal({ kind: 'registry' })}>
-        Add from registry
-      </Button>
-      <Button icon={Plus} onClick={() => setModal({ kind: 'form' })}>
-        Add manually
-      </Button>
-      <Button icon={Sparkles} onClick={() => setModal({ kind: 'assist' })}>
-        Configure with AI
-      </Button>
+      <Popover
+        trigger={
+          <>
+            Other ways to add
+            <Icon icon={ChevronDown} size="sm" />
+          </>
+        }
+        triggerClassName="btn"
+        triggerTestId="mcp-add-other"
+        label="Other ways to add"
+        role="group"
+        placement="bottom-end"
+        className="mcp-other-menu"
+      >
+        {({ close }) => (
+          <div className="mcp-other-list">
+            <Button variant="ghost" icon={Sparkles} testId="mcp-add-assist" onClick={choose(close, { kind: 'assist' })}>
+              Describe it to an assistant
+            </Button>
+            <Button variant="ghost" icon={Library} testId="mcp-add-library" onClick={choose(close, { kind: 'link' })}>
+              Add from your custom servers
+            </Button>
+            <Button variant="ghost" icon={Package} testId="mcp-add-registry" onClick={choose(close, { kind: 'registry' })}>
+              Browse community servers (unverified)
+            </Button>
+            <Button variant="ghost" icon={Plus} testId="mcp-add-manual" onClick={choose(close, { kind: 'form' })}>
+              Set up a custom server
+            </Button>
+          </div>
+        )}
+      </Popover>
     </>
   )
 
@@ -142,8 +176,8 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   return (
     <SettingsSection
       id="settings-section-mcp"
-      title="MCP servers"
-      description="Tools your agents can call."
+      title="Services and tools"
+      description="Services your agents can reach, like Slack or Gmail, plus custom servers."
       actions={actions}
       testId="mcp-section"
       sectionRef={root}
@@ -158,7 +192,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
               </Button>
             }
           >
-            An assistant run is configuring MCP servers.
+            An assistant run is setting up servers.
           </Banner>
         )}
         {warnings.length > 0 && (
@@ -178,7 +212,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
         {loadError ? (
           <Banner
             tone="danger"
-            title="Could not load MCP servers"
+            title="Could not load services and tools"
             actions={
               <Button size="sm" onClick={refresh}>
                 Retry
@@ -188,51 +222,49 @@ export default function McpSection({ project }: { project: Project }): ReactElem
             {loadError}
           </Banner>
         ) : servers === null ? (
-          <div className="card-block mcp-list" aria-busy="true" aria-label="Loading MCP servers">
+          <div className="card-block mcp-list" aria-busy="true" aria-label="Loading services and tools">
             {[0, 1, 2].map((i) => (
               <div key={i} className="card-sec">
                 <div className="skeleton mcp-sk" />
               </div>
             ))}
           </div>
-        ) : servers.length === 0 ? (
-          <div className="card-block mcp-empty">
+        ) : servers.length === 0 && !hasConnectedServices ? (
+          <div className="card-block mcp-empty" data-testid="mcp-empty">
             <Icon icon={Plug} size="lg" />
-            <strong>No MCP servers</strong>
-            <p className="muted">
-              {libraryCount > 0 ? (
-                'Add one from your library to get started.'
-              ) : (
-                <>
-                  Add one above, or define one in{' '}
-                  <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary()}>
-                    App settings &gt; MCP library
-                  </button>
-                  .
-                </>
-              )}
-            </p>
+            {emptyKind(connectors) === 'use' ? (
+              <>
+                <strong>Use a connected service</strong>
+                <p className="muted">Pick one of your connected services and choose which roles may use it.</p>
+              </>
+            ) : (
+              <>
+                <strong>No services connected yet</strong>
+                <p className="muted">
+                  You connect services like Slack or Gmail once, in App settings &gt; Connectors. Then you choose here which roles in this project may use them.
+                </p>
+                <Button variant="primary" icon={Plus} onClick={() => setModal({ kind: 'service' })}>
+                  Add a service
+                </Button>
+              </>
+            )}
           </div>
         ) : (
           <>
+            {hasConnectedServices && (
+              <div data-testid="mcp-group-connectors">
+                <SettingsGroup title="Connected services">
+                  <ConnectedServices project={project} connectors={connectors} servers={all} onResult={applyResult} onChanged={refreshConnectors} />
+                </SettingsGroup>
+              </div>
+            )}
+            {(linked.length > 0 || !hasConnectedServices) && (
             <div data-testid="mcp-group-library">
-              <SettingsGroup title="From your library">
+              <SettingsGroup title="Custom servers you added">
                 {linked.length === 0 ? (
-                  <p className="muted">
-                    {libraryCount > 0 ? (
-                      'None added yet.'
-                    ) : (
-                      <>
-                        Library is empty. See{' '}
-                        <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary()}>
-                          App settings &gt; MCP library
-                        </button>
-                        .
-                      </>
-                    )}
-                  </p>
+                  <p className="muted">{libraryCount > 0 ? 'None added yet.' : 'None yet. Custom servers are defined in App settings.'}</p>
                 ) : (
-                  <ul className="card-block mcp-list" aria-label="MCP servers from your library">
+                  <ul className="card-block mcp-list" aria-label="Custom servers you added">
                     {linked.map((info) => (
                       <McpRow key={info.spec.id} {...rowProps(info)} />
                     ))}
@@ -240,12 +272,14 @@ export default function McpSection({ project }: { project: Project }): ReactElem
                 )}
               </SettingsGroup>
             </div>
+            )}
+            {(local.length > 0 || !hasConnectedServices) && (
             <div data-testid="mcp-group-local">
               <SettingsGroup title="Only in this project">
                 {local.length === 0 ? (
                   <p className="muted">No project-only servers.</p>
                 ) : (
-                  <ul className="card-block mcp-list" aria-label="MCP servers only in this project">
+                  <ul className="card-block mcp-list" aria-label="Servers only in this project">
                     {local.map((info) => (
                       <McpRow key={info.spec.id} {...rowProps(info)} />
                     ))}
@@ -253,9 +287,21 @@ export default function McpSection({ project }: { project: Project }): ReactElem
                 )}
               </SettingsGroup>
             </div>
+            )}
           </>
         )}
 
+        {modal?.kind === 'service' && (
+          <AddServiceDialog
+            project={project}
+            connectors={connectors}
+            error={connectorsError}
+            servers={all}
+            onClose={() => setModal(null)}
+            onResult={applyResult}
+            onOther={(way) => setModal({ kind: way })}
+          />
+        )}
         {modal?.kind === 'link' && (
           <McpLinkDialog
             project={project}
@@ -277,8 +323,8 @@ export default function McpSection({ project }: { project: Project }): ReactElem
           open={modal?.kind === 'assist'}
           onClose={() => setModal(null)}
           onStart={(text) => useAppStore.getState().startMcpAssist(text)}
-          title="Configure MCP servers with AI"
-          description="An assistant run proposes servers, using your library first. You approve each one in the live run."
+          title="Describe it to an assistant"
+          description="An assistant run proposes servers, using your connected services and custom servers first. You approve each one in the live run."
           placeholder="Search the web, read GitHub issues..."
         />
       </div>
@@ -396,6 +442,8 @@ function McpRow({
             <SourceBadge source={spec.source} />
           )}
           {showAuth && <AuthChip auth={info.auth} />}
+        </div>
+        <div className="mcp-row-roles">
           <RoleAccess serverName={spec.name} roles={project.roles} value={spec.roles} onChange={(roles) => void upsert({ ...spec, roles })} />
         </div>
         <div className="mcp-row-actions">
@@ -441,7 +489,7 @@ function McpRow({
           <span>
             Secrets not set in the library: <span className="mono">{info.missingSecrets.join(', ')}</span>.{' '}
             <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary(spec.libraryId)}>
-              Open in library
+              {spec.connectorId ? 'Open in Connectors' : 'Open in library'}
             </button>
           </span>
         </p>
@@ -458,7 +506,7 @@ function McpRow({
                   useAppStore.getState().openMcpLibrary(spec.libraryId)
                 }}
               >
-                Open in library
+                {spec.connectorId ? 'Open in Connectors' : 'Open in library'}
               </Button>
               <Button
                 size="sm"
