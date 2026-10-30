@@ -553,3 +553,122 @@
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
+
+/* ---------- App settings sections, setting rows, swatches ---------- */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.settings-section > .field {
+  margin-bottom: 0;
+}
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+.setting-row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.setting-row-title {
+  color: var(--text-primary);
+}
+.setting-row-desc {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.setting-row-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.accent-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.accent-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border-default);
+  background: var(--swatch);
+  cursor: pointer;
+  padding: 0;
+}
+.accent-swatch:hover {
+  border-color: var(--border-strong);
+}
+.accent-swatch[aria-pressed='true'] {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--surface-0);
+}
+.accent-swatch:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.field-error {
+  color: var(--danger-text);
+  font-size: var(--text-caption);
+}
+.input.narrow {
+  max-width: 160px;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+}
+.chip-row .chip {
+  font-family: var(--font-mono);
+}
+.settings-scroll {
+  padding: var(--space-6);
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.settings-loading {
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+}
+.settings-loading.is-error {
+  color: var(--danger-text);
+}
+ul.maint-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rule-code {
+  overflow-wrap: anywhere;
+}
+.chip-btn {
+  cursor: pointer;
+}
+.chip-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.chip-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.field.narrow .input {
+  max-width: 160px;
+}
+.field-title {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}

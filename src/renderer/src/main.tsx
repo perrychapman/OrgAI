@@ -3,6 +3,9 @@ import ReactDOM from 'react-dom/client'
 import '@xyflow/react/dist/style.css'
 import './styles/global.css'
 import App from './App'
+import { initTheme } from './lib/theme'
+
+initTheme()
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>

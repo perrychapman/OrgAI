@@ -16,6 +16,14 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `continuation.ts` holds the pure `nextNudge` decision and the `ContinuationDriver` every adapter calls at turn end
   (`turnEnded`), on user messages, on interrupt (`hold`) and at session end; the adapter only delivers the nudge
   through its harness-message path (Claude: `notifyOrchestrator`). Never nudge setup runs.
+- Cross-run messages (`message_run`) never override the user: RunManager gates delivery (`peerDeliveryBlocked`) while
+  a run is held by an interrupt, usage-limited (`ActiveRun.limitHold`) or has pending cards, holds them in the run's
+  inbox (at most `RUN_MESSAGE_QUEUE_LIMIT` 20) and flushes them oldest first, one chained flush at a time, after the
+  user's next successful `send()` or the last card's answer. Caps: 40 per sender per target, 100 inbound per run. A
+  direct `RuntimeSession.receive()` call is ungated, so always deliver through RunManager.
+- Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
+  preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
+  (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
 - Claude Agent SDK facts verified against v0.3.312 (see `scripts/smoke-*.mjs`):
   - `task_started` (system message) arrives before the `SubagentStart` hook and carries `task_id` (= `agent_id`),
     `tool_use_id` of the spawning Agent call, `subagent_type`, `description`, optional `parent_task_id`.
@@ -92,6 +100,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - OrgAI uses its own `CODEX_HOME` at `<data>/codex`, so the user's `~/.codex` config and MCP servers never load.
     Config goes in as `-c key=value` TOML overrides. An API key travels only in the environment
     (`model_providers.orgai.env_key`), never in argv. Verified by unit tests (`codexProtocol.test.ts`).
+  - Concurrent Codex runs share that one `CODEX_HOME` at `<data>/codex` (`src/main/connections/service.ts`), each
+    with its own app-server. Whether they race on auth refresh or the session database is unverified.
   - Harness tools are `dynamicTools` on `thread/start`, answered through `item/tool/call`. `update_plan` collides
     with a built-in Codex tool, so it is exposed as `orgai_update_plan`. Subagents are threads started by the
     harness's own `spawn_agent` tool. Unverified: the wire shapes come from the schema, and `scripts/smoke-codex.mjs`

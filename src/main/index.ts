@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, ConnectionEvent, FocusRunTarget, RunEvent } from '@shared/types'
 import { IPC, runWindowHash } from '@shared/types'
-import { appUrlMatcher, isExternalWebUrl, scopedWindow } from './windowScope'
+import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
 import { UsageMonitor } from './usageMonitor'
@@ -159,13 +159,15 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
   // The window never leaves the app's own renderer. In-page navigations (location.hash, so the #/run/... routes)
   // do not fire will-navigate (Electron docs), and a reload is not a navigation, so they are unaffected.
   const isAppUrl = appUrlMatcher(process.env.ELECTRON_RENDERER_URL, pathToFileURL(join(__dirname, '../renderer/index.html')).href)
-  const guard = (e: { url: string; preventDefault(): void }): void => {
-    if (isAppUrl(e.url)) return
+  // The same guard covers frame navigations, so an iframe cannot be pointed elsewhere either. It fails closed.
+  const guard = (e: { url: string; isMainFrame?: boolean; preventDefault(): void }): void => {
+    if (!shouldBlockNavigation(isAppUrl, e.url, e.isMainFrame ?? true)) return
     e.preventDefault()
-    console.warn(`Blocked a navigation away from the app to ${e.url.slice(0, 200)}`)
+    console.warn(`Blocked a navigation away from the app to ${String(e.url).slice(0, 200)}`)
   }
   win.webContents.on('will-navigate', guard)
   win.webContents.on('will-redirect', guard)
+  win.webContents.on('will-frame-navigate', guard)
 
   const hash = scope ? runWindowHash(scope) : ''
   if (process.env.ELECTRON_RENDERER_URL) {

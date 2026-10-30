@@ -477,7 +477,7 @@
   color: var(--danger-text);
 }
 .pconn-cards:disabled {
-  opacity: 0.5;
+  opacity: 0.8;
 }
 .about-list {
   display: grid;
@@ -507,4 +507,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+.remap-roles.flush {
+  margin-left: 0;
+}
+.skeleton.w-40 {
+  width: 40%;
+}
+.skeleton.w-70 {
+  width: 70%;
+  margin-top: var(--space-2);
 }

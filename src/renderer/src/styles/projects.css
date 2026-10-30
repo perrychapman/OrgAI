@@ -3,23 +3,69 @@
 .projects {
   padding: 24px;
   overflow: auto;
-  display: grid;
-  grid-template-columns: 1fr 380px;
+  display: flex;
+  flex-direction: column;
   gap: 20px;
-  align-items: start;
+}
+.projects-intro {
+  max-width: 640px;
+  color: var(--text-secondary);
+}
+.projects-intro h2 {
+  margin: 0 0 6px;
+  font-size: var(--text-title-sm);
+  color: var(--text-primary);
+}
+.projects-intro p {
+  margin: 0;
+}
+.project-form {
+  width: 100%;
+  max-width: 640px;
+}
+.project-form .seg {
+  margin-bottom: 14px;
+}
+.form-title {
+  margin: 0 0 12px;
+  font-size: var(--text-title-sm);
+}
+.form-options {
+  margin: 4px 0 16px;
+}
+.form-submit {
+  gap: 12px;
 }
 .project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 12px;
 }
 .project-card {
-  cursor: pointer;
-  transition: border-color var(--dur-fast), transform var(--dur-fast);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color var(--dur-fast);
 }
-.project-card:hover {
+.project-card:hover,
+.project-card:has(.project-card-main:focus-visible) {
   border-color: var(--border-strong);
-  transform: translateY(-1px);
+}
+.project-card-main {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  cursor: pointer;
+  min-width: 0;
+  border-radius: var(--radius-md);
+}
+.project-card-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 4px;
 }
 .project-card h3 {
   margin: 0 0 4px;
@@ -37,6 +83,9 @@
   display: flex;
   gap: 4px;
   margin-top: 10px;
+}
+.project-card .roles span.more {
+  background: var(--border-strong);
 }
 .project-card .roles span {
   width: 20px;
@@ -69,4 +118,8 @@
 .maint-row code {
   font-family: var(--font-mono);
   font-size: var(--text-caption);
+}
+.form-submit .hint {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
 }

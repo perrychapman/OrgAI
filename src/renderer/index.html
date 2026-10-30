@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="system">
   <head>
     <meta charset="UTF-8" />
     <title>OrgAI</title>
@@ -10,8 +10,14 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
     />
     <style>
+      /* First paint before the stylesheet: follows prefers-color-scheme, which main drives from the saved theme. */
       html {
         background: #0b0d12;
+      }
+      @media (prefers-color-scheme: light) {
+        html {
+          background: #f4f5f9;
+        }
       }
     </style>
   </head>

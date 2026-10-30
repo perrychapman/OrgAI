@@ -143,7 +143,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           ))}
         </div>
       ) : (
-        <fieldset className="pconn-cards" data-testid="project-connection" disabled={mock && !!appInfo?.mockAdapter}>
+        <fieldset className="pconn-cards" data-testid="project-connection" disabled={mock && !!appInfo?.mockAdapter} aria-disabled={mock && !!appInfo?.mockAdapter ? true : undefined}>
           <legend className="sr-only">Connection</legend>
           {CONNECTION_IDS.map((id) => {
             const info = infoOf(id)
@@ -199,7 +199,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           {mismatches.length > 0 && (
             <div className="field">
               <label>Roles that must change ({mismatches.length})</label>
-              <ul className="remap-roles" style={{ marginLeft: 0 }}>
+              <ul className="remap-roles flush">
                 {mismatches.map((m) => (
                   <li key={m.roleId}>
                     <span className="remap-role">{m.roleName}</span>
@@ -228,6 +228,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         error={error}
         onCancel={() => setPreview(false)}
         onConfirm={() => void apply()}
+        confirmDisabled={!!pending && disconnected(pending)}
+        disabledReason={`${NAME[pending ?? target]} is not connected, so its models cannot be checked. Connect it in Settings > Connections first.`}
         extra={
           mismatches.length > 0 ? (
             <p className="muted">
