@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
@@ -57,9 +58,42 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
   })
 }
 
+/** Tail of each checkout's lock queue, by pathKey. Removed when the last holder releases. */
+const repoLocks = new Map<string, Promise<void>>()
+/** Keys the current async call chain already holds, so nested calls (integrate -> discard) do not wait on themselves. */
+const heldLocks = new AsyncLocalStorage<ReadonlySet<string>>()
+
+/**
+ * Run `fn` while holding the lock of one checkout (the main checkout or a worktree), keyed by pathKey(root).
+ * Two runs of one project, or a run and the maintenance panel, then never merge, commit or remove worktrees in
+ * the same checkout at the same time. Different checkouts do not block each other. Re-entrant within one call
+ * chain. Callers queue in arrival order; a rejected fn releases the lock.
+ */
+export async function withRepoLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
+  const key = pathKey(root)
+  const held = heldLocks.getStore()
+  if (held?.has(key)) return fn()
+  const prev = repoLocks.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const mine = new Promise<void>((r) => (release = r))
+  const tail = prev.then(() => mine)
+  repoLocks.set(key, tail)
+  await prev
+  try {
+    return await heldLocks.run(new Set([...(held ?? []), key]), fn)
+  } finally {
+    release()
+    if (repoLocks.get(key) === tail) repoLocks.delete(key)
+  }
+}
+
 /** Keep agent worktrees out of `git status` and prune leftovers from crashed runs. */
 export async function prepareRepo(root: string): Promise<void> {
   if (!isGitRepo(root)) return
+  await withRepoLock(root, () => prepareRepoUnlocked(root))
+}
+
+async function prepareRepoUnlocked(root: string): Promise<void> {
   const infoDir = join(root, '.git', 'info')
   try {
     mkdirSync(infoDir, { recursive: true })
@@ -190,6 +224,10 @@ export async function inspectPending(root: string): Promise<PendingWorktree[]> {
 
 /** Stage and commit whatever a report left behind. Returns true when a commit was made. */
 export async function commitLeftovers(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
+  return withRepoLock(wt, () => commitLeftoversUnlocked(wt, message))
+}
+
+async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
   const status = await git(wt, ['status', '--porcelain'])
   if (!status.ok || !status.out) return { committed: false }
   await git(wt, ['add', '-A', ...ADD_PATHSPEC])
@@ -207,8 +245,10 @@ export async function commitLeftovers(wt: string, message: string): Promise<{ co
 
 /** Remove a worktree and its branch, discarding any work on it. */
 export async function discardWorktree(root: string, wt: { path: string; branch: string }): Promise<void> {
-  await removeWorktree(root, wt.path)
-  await git(root, ['branch', '-D', wt.branch])
+  await withRepoLock(root, async () => {
+    await removeWorktree(root, wt.path)
+    await git(root, ['branch', '-D', wt.branch])
+  })
 }
 
 export interface IntegrateResult {
@@ -238,25 +278,34 @@ export async function integrateWorktree(
   review?: (changedFiles: string[]) => Promise<MergeDecision>
 ): Promise<IntegrateResult> {
   const wt = info.path
-  if (!existsSync(wt)) {
-    return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
-  }
+  // The target's lock is held for the git work but not while the user reviews the merge, which can take as
+  // long as the user likes; another run's merge into the same checkout then waits only for git.
+  const prepared = await withRepoLock(root, async (): Promise<IntegrateResult | { changedFiles: string[]; merged?: IntegrateResult }> => {
+    if (!existsSync(wt)) {
+      return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
+    }
 
-  const commit = await commitLeftovers(wt, commitMessage)
-  if (commit.error) {
-    return { info: { ...info, status: 'conflict' }, message: `Could not commit the worktree changes: ${commit.error}` }
-  }
+    const commit = await commitLeftovers(wt, commitMessage)
+    if (commit.error) {
+      return { info: { ...info, status: 'conflict' }, message: `Could not commit the worktree changes: ${commit.error}` }
+    }
 
-  // Anything to merge at all?
-  const head = await git(root, ['rev-parse', 'HEAD'])
-  const ahead = await git(root, ['rev-list', '--count', `HEAD..${info.branch}`])
-  if (!ahead.ok || ahead.out === '0') {
-    await discardWorktree(root, info)
-    return { info: { ...info, status: 'empty', changedFiles: [] }, message: 'The report made no changes; worktree removed.' }
-  }
+    // Anything to merge at all?
+    const head = await git(root, ['rev-parse', 'HEAD'])
+    const ahead = await git(root, ['rev-list', '--count', `HEAD..${info.branch}`])
+    if (!ahead.ok || ahead.out === '0') {
+      await discardWorktree(root, info)
+      return { info: { ...info, status: 'empty', changedFiles: [] }, message: 'The report made no changes; worktree removed.' }
+    }
 
-  const changed = await git(root, ['diff', '--name-only', `${head.out}...${info.branch}`])
-  const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
+    const changed = await git(root, ['diff', '--name-only', `${head.out}...${info.branch}`])
+    const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
+    // Without a review gate the merge follows under the same lock.
+    return review ? { changedFiles } : { changedFiles, merged: await mergeInto(root, info, commitMessage, changedFiles) }
+  })
+  if ('info' in prepared) return prepared
+  if (prepared.merged) return prepared.merged
+  const { changedFiles } = prepared
 
   if (review) {
     const decision = await review(changedFiles)
@@ -272,6 +321,12 @@ export async function integrateWorktree(
     }
   }
 
+  return withRepoLock(root, () => mergeInto(root, info, commitMessage, changedFiles))
+}
+
+/** integrateWorktree's merge step; the caller holds the target's lock. */
+async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[]): Promise<IntegrateResult> {
+  const wt = info.path
   const merge = await git(root, ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, info.branch])
   if (!merge.ok) {
     const conflicts = await git(root, ['diff', '--name-only', '--diff-filter=U'])

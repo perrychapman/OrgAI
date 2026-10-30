@@ -13,7 +13,8 @@ import {
   pathKey,
   pendingWorktrees,
   prepareRepo,
-  removeExcludeLine
+  removeExcludeLine,
+  withRepoLock
 } from './worktrees'
 
 const ID = '-c user.name=OrgAI-Test -c user.email=test@orgai.local'
@@ -331,5 +332,93 @@ describe('pathKey', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('withRepoLock', () => {
+  function deferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void
+    const promise = new Promise<void>((r) => (resolve = r))
+    return { promise, resolve }
+  }
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+  it('serializes calls on one checkout in arrival order', async () => {
+    const order: string[] = []
+    const gate = deferred()
+    const a = withRepoLock(root, async () => {
+      order.push('a:start')
+      await gate.promise
+      order.push('a:end')
+    })
+    // The same checkout spelled differently (separators, trailing slash) shares the lock.
+    const b = withRepoLock(`${root.replace(/\\/g, '/')}/`, async () => {
+      order.push('b')
+    })
+    await tick()
+    await tick()
+    expect(order).toEqual(['a:start'])
+    gate.resolve()
+    await Promise.all([a, b])
+    expect(order).toEqual(['a:start', 'a:end', 'b'])
+  })
+
+  it('lets different checkouts interleave', async () => {
+    const other = join(root, '.claude', 'worktrees', 'agent-x')
+    mkdirSync(other, { recursive: true })
+    const order: string[] = []
+    const gate = deferred()
+    const a = withRepoLock(root, async () => {
+      order.push('main:start')
+      await gate.promise
+      order.push('main:end')
+    })
+    await withRepoLock(other, async () => {
+      order.push('worktree')
+    })
+    expect(order).toEqual(['main:start', 'worktree'])
+    gate.resolve()
+    await a
+    expect(order).toEqual(['main:start', 'worktree', 'main:end'])
+  })
+
+  it('releases on rejection and is re-entrant within one call chain', async () => {
+    await expect(withRepoLock(root, async () => Promise.reject(new Error('boom')))).rejects.toThrow('boom')
+    expect(await withRepoLock(root, () => withRepoLock(root, async () => 42))).toBe(42)
+  })
+
+  it('merges two reports into one checkout concurrently', async () => {
+    await prepareRepo(root)
+    const one = addWorktree('par1')
+    const two = addWorktree('par2')
+    put(one.path, 'src/one.js', 'export const one = 1\n')
+    put(two.path, 'src/two.js', 'export const two = 2\n')
+    const [r1, r2] = await Promise.all([
+      integrateWorktree(root, { ...one, status: 'merging' }, 'one'),
+      integrateWorktree(root, { ...two, status: 'merging' }, 'two')
+    ])
+    expect([r1.info.status, r2.info.status]).toEqual(['merged', 'merged'])
+    expect(branches()).toEqual(['main'])
+    expect(existsSync(join(root, 'src/one.js')) && existsSync(join(root, 'src/two.js'))).toBe(true)
+  })
+
+  it('does not hold the checkout while the user reviews a merge', async () => {
+    await prepareRepo(root)
+    const held = addWorktree('rev1')
+    const other = addWorktree('rev2')
+    put(held.path, 'src/r.js', 'export const r = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...held, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'merge' }
+    })
+    while (!reviewing) await tick()
+    // The maintenance panel can discard another worktree while the review card is open.
+    await discardWorktree(root, other)
+    expect(branches()).not.toContain(other.branch)
+    review.resolve()
+    expect((await pending).info.status).toBe('merged')
   })
 })

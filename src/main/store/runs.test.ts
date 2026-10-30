@@ -53,18 +53,22 @@ describe('RunStore', () => {
     const s = new RunStore(dataDir)
     s.upsert(run('live', { status: 'running' }))
     s.upsert(run('bad', { status: 'error' }))
+    s.upsert(run('done', { status: 'finished', sessionId: 'sess' }))
     const reloaded = new RunStore(dataDir).list('p1')
     const live = reloaded.find((r) => r.id === 'live')!
     expect(live.status).toBe('finished')
     expect(live.endedAt).toBeTypeOf('number')
+    expect(live.endedWithApp).toBe(true)
     expect(reloaded.find((r) => r.id === 'bad')!.status).toBe('error')
+    expect(reloaded.find((r) => r.id === 'bad')!.endedWithApp).toBeUndefined()
+    expect(reloaded.find((r) => r.id === 'done')!.endedWithApp).toBeUndefined()
   })
 
   it('finishes a paused run on load but keeps when it could continue', () => {
     const s = new RunStore(dataDir)
     s.upsert(run('paused', { status: 'paused', pausedUntil: 5000, pauseReason: 'limit', autoResume: true }))
     const reloaded = new RunStore(dataDir).get('paused')!
-    expect(reloaded).toMatchObject({ status: 'finished', pausedUntil: 5000, pauseReason: 'limit' })
+    expect(reloaded).toMatchObject({ status: 'finished', pausedUntil: 5000, pauseReason: 'limit', endedWithApp: true })
     expect(reloaded.autoResume).toBeUndefined()
   })
 
