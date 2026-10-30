@@ -308,6 +308,16 @@ try {
       await handle.dblclick()
       await sleep(200)
       check(Math.abs((await geo()).panel - g0.panel) <= 1, 'double-click restores the run side panel default width', JSON.stringify(await geo()))
+      // Enter on the focused handle resets too (keyboard path): widen with ArrowLeft, then Enter.
+      await handle.focus()
+      await page.keyboard.press('ArrowLeft')
+      await page.keyboard.press('ArrowLeft')
+      await sleep(150)
+      const gk = await geo()
+      await page.keyboard.press('Enter')
+      await sleep(200)
+      const gr = await geo()
+      check(Math.abs(gr.panel - g0.panel) <= 1 && gr.stage >= 359, 'Enter on the focused side panel handle resets to the default width', `${g0.panel} -> ${gk.panel} -> ${gr.panel}`)
     }
     await panelToggle().click().catch(() => {})
     await sleep(500)
