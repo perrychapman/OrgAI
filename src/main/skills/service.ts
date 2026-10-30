@@ -28,7 +28,7 @@ import { SkillLibraryStore } from '../store/skillLibrary'
 import type { RunSkill } from '../runtime/types'
 import type { SkillRunSource, SkillServiceApi } from './types'
 import { childPath, digestFiles, fileInfos, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
-import { composeSkillMd, parseSkillMd, validDraft } from './skillMd'
+import { composeSkillMd, parseSkillMd, skillFromMd, validDraft } from './skillMd'
 import { planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
 
 /** What SkillService needs. The constructor signature is the contract index.ts wires; keep it. */
@@ -337,7 +337,13 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     if (entries.length >= SKILL_MAX_PER_PROJECT) throw new Error(`The skill library holds at most ${SKILL_MAX_PER_PROJECT} skills.`)
     this.assertNameFree(entries.map((e) => e.name), spec.name, 'The skill library')
     const ownDir = this.ownDir(project.id, spec.id)
-    const files = readStoredFolder(ownDir)
+    // Re-emit SKILL.md with only name and description: a copy stored before that rule is cleaned here.
+    const files = readStoredFolder(ownDir).map((f) => {
+      if (f.path !== 'SKILL.md') return f
+      const r = skillFromMd(f.data.toString('utf8'), spec.name)
+      if (!r.ok) throw new Error(r.reason)
+      return { path: f.path, data: Buffer.from(composeSkillMd({ name: r.name, description: r.description, body: r.body }), 'utf8') }
+    })
     const entry: SkillLibraryEntry = {
       id: newId('skilllib'),
       name: spec.name,

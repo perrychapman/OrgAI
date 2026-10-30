@@ -957,7 +957,10 @@ const SKILL_MD_RETURN_MAX_BYTES = 256 * 1024
 
 /** The role whose grants apply to a call: the caller's, else the root. */
 function callerRoleId(ctx: RuntimeContext, caller: HarnessToolCaller): string | undefined {
-  return caller.roleId ?? (ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0])?.id
+  if (caller.roleId) return caller.roleId
+  // Only the root (or an unnamed caller) falls back to the root role; an unresolved subagent has no skills.
+  if (caller.agentId !== undefined && caller.agentId !== ROOT_AGENT_ID) return undefined
+  return (ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0])?.id
 }
 
 /** A relative, '/'-separated, traversal-free skill file path, or null. */

@@ -12,7 +12,7 @@ import {
   type SkillSpec
 } from '@shared/types'
 import { digestFiles, fileInfos, FolderReader, looksLikeScript, type FileData } from './files'
-import { skillFromMd } from './skillMd'
+import { composeSkillMd, skillFromMd } from './skillMd'
 
 /**
  * Finds skill folders in a repository (or one folder the user picked). The input is untrusted: nothing is executed,
@@ -33,7 +33,10 @@ export interface ScannedSkill {
   data: FileData[]
   totalBytes: number
   scripts: string[]
+  /** Digest of the files OrgAI stores (SKILL.md rewritten). */
   digest: string
+  /** Digest of the folder as found in the repo; binds the preview so apply notices a change. */
+  sourceDigest: string
   notes: string[]
 }
 
@@ -51,19 +54,27 @@ function build(files: FileData[], folderName: string, repoPath: string, root: Sk
   if (!md) return 'There is no SKILL.md in the folder.'
   const parsed = skillFromMd(md.data.toString('utf8'), folderName)
   if (!parsed.ok) return parsed.reason
+  // Only name and description are kept: allowed-tools, hooks and the like never reach a stored copy.
+  const stored = files.map((f) => (f.path === 'SKILL.md' ? { path: f.path, data: Buffer.from(composeSkillMd({ name: parsed.name, description: parsed.description, body: parsed.body }), 'utf8') } : f))
   return {
     root,
     repoPath,
     name: parsed.name,
     description: parsed.description,
     body: parsed.body,
-    files: fileInfos(files),
-    data: files,
-    totalBytes: files.reduce((n, f) => n + f.data.length, 0),
-    scripts: files.filter((f) => f.path !== 'SKILL.md' && looksLikeScript(f.path, f.data)).map((f) => f.path),
-    digest: digestFiles(files),
+    files: fileInfos(stored),
+    data: stored,
+    totalBytes: stored.reduce((n, f) => n + f.data.length, 0),
+    scripts: stored.filter((f) => f.path !== 'SKILL.md' && looksLikeScript(f.path, f.data)).map((f) => f.path),
+    digest: digestFiles(stored),
+    sourceDigest: digestFiles(files),
     notes: parsed.notes
   }
+}
+
+/** UNC and device paths (two leading slashes or backslashes, so also the \\?\ and \\.\ prefixes): never touched by the fs. */
+export function isNetworkOrDevicePath(p: string): boolean {
+  return /^[\\/]{2}/.test(p)
 }
 
 /** Every skill folder under the known roots of the project folder. */
@@ -71,13 +82,17 @@ export function scanRepoSkills(projectPath: string): RepoScan {
   const out: RepoScan = { skills: [], invalid: [], warnings: [], roots: [], digest: '' }
   const finish = (): RepoScan => {
     const h = createHash('sha256')
-    for (const s of out.skills) h.update(`ok\0${s.repoPath}\0${s.digest}\n`)
+    for (const s of out.skills) h.update(`ok\0${s.repoPath}\0${s.sourceDigest}\n`)
     for (const i of out.invalid) h.update(`bad\0${i.repoPath}\0${i.reason}\n`)
     for (const w of out.warnings) h.update(`warn\0${w}\n`)
     out.digest = h.digest('hex')
     return out
   }
   try {
+    if (typeof projectPath === 'string' && isNetworkOrDevicePath(projectPath)) {
+      out.warnings.push('Network and device paths are not scanned; use a folder on this computer.')
+      return finish()
+    }
     if (typeof projectPath !== 'string' || !isAbsolute(projectPath)) {
       out.warnings.push('The project folder is not an absolute path.')
       return finish()
@@ -183,6 +198,7 @@ export function scanRepoSkills(projectPath: string): RepoScan {
 /** One absolute folder the user picked (SKILL.md at its top). */
 export function scanSkillFolder(path: string): { skill: ScannedSkill } | { invalid: string } {
   try {
+    if (typeof path === 'string' && isNetworkOrDevicePath(path)) return { invalid: 'Network and device paths are not allowed; use a folder on this computer.' }
     if (typeof path !== 'string' || !isAbsolute(path)) return { invalid: 'Use the full path of the skill folder.' }
     let st
     try {
@@ -275,6 +291,7 @@ export function planImport(scan: RepoScan, skills: SkillSpec[], roleIds: Set<str
       if (!c.include) item.action = 'skip'
       if (c.roleIds) grants.set(s.repoPath, [...new Set(c.roleIds)])
     }
+    if (item.action === 'update' && !grants.has(s.repoPath)) notes.push('Content changed; existing role grants are kept.')
     items.push(item)
   }
   return { items, grants }

@@ -776,3 +776,15 @@ describe('list_skills and load_skill', () => {
     expect(await load.call({ name: 'pdf-fill', file: 'bin.dat' }, { roleId: 'r-eng' })).toMatch(/binary file/)
   })
 })
+
+describe('skill tools: unknown caller role', () => {
+  it('gives a subagent with no resolved role no skills, but the root and unnamed callers get the root role', async () => {
+    const ctx = fakeCtx({ skills: () => [{ id: 'sk', name: 'pdf-fill', description: 'd', dir: '/x', files: [], roleIds: ['r-lead'] } as RunSkill] })
+    const tools = harnessToolsFor(ctx, {}, {})
+    const list = byName(tools, 'list_skills')
+    expect(await list.call({}, { agentId: 'agent-9' })).toBe('No skills are granted to your role.')
+    expect(await list.call({}, { agentId: ROOT_AGENT_ID })).toContain('pdf-fill')
+    expect(await list.call({})).toContain('pdf-fill')
+    expect(await byName(tools, 'load_skill').call({ name: 'pdf-fill' }, { agentId: 'agent-9' })).toContain('No skills are granted')
+  })
+})
