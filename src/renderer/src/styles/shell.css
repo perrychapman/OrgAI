@@ -232,10 +232,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The ask (kind and what) first and prominent; the location (project, run) second and muted. */
 .needs-what {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+.needs-where {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 /* Footer: one 52 px account row and the gear. */

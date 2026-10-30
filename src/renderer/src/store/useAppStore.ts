@@ -166,6 +166,8 @@ interface AppState {
   loadLiveRuns(): Promise<void>
   /** Run whose first decision card should take focus once its view is on screen. */
   pendingDecisionFocus: string | null
+  /** The request id that jump asked to open (a specific card in the tray); null opens the default card. */
+  pendingDecisionRequest: string | null
   clearDecisionFocus(): void
   /** Run whose composer should open on "Continue this run" (set by History's Continue). */
   continueIntent: string | null
@@ -180,7 +182,7 @@ interface AppState {
   /** Select a project and open the run that needs the user, else the last viewed one, else the newest. */
   openProject(projectId: string): Promise<void>
   /** Select the project, open the run and ask its decision card to take focus. */
-  jumpToDecision(projectId: string, runId: string): Promise<void>
+  jumpToDecision(projectId: string, runId: string, requestId?: string): Promise<void>
   /** Latest plan usage reported by any live session. */
   usage: UsageStatus | null
   /** Ask the main process to read plan usage now (no run needed). */
@@ -421,6 +423,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tabNotice: null,
   unreadByRun: {},
   pendingDecisionFocus: null,
+  pendingDecisionRequest: null,
   continueIntent: null,
   historyByProject: {},
   usage: null,
@@ -562,7 +565,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearDecisionFocus() {
-    set({ pendingDecisionFocus: null })
+    set({ pendingDecisionFocus: null, pendingDecisionRequest: null })
   },
 
   async continueFromHistory(runId) {
@@ -602,9 +605,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     else get().openDraft()
   },
 
-  async jumpToDecision(projectId, runId) {
+  async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
-    set({ pendingDecisionFocus: runId })
+    set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
   },
 
   async refreshUsage() {

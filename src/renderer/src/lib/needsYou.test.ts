@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultRunToOpen, waitingItems, type WaitRun } from './needsYou'
+import { decisionCount, defaultDecisionIndex, defaultRunToOpen, waitingItems, type WaitRun } from './needsYou'
 
 const run = (id: string, startedAt: number, status: WaitRun['summary']['status'], extra: Partial<WaitRun> = {}): WaitRun => ({
   summary: { id, status, startedAt },
@@ -10,13 +10,13 @@ const run = (id: string, startedAt: number, status: WaitRun['summary']['status']
 describe('waitingItems', () => {
   it('lists every open decision with the agent name', () => {
     const r = run('r1', 1, 'running', {
-      permissions: [{ id: 'p1', agentId: 'a1', toolName: 'Edit' }],
+      permissions: [{ id: 'p1', agentId: 'a1', toolName: 'Bash', input: { command: 'npm test' } }],
       mergeReviews: [{ id: 'm1', agentName: 'Implementer' }],
       mcpInstalls: [{ id: 'i1', agentId: 'a1' }]
     })
     const items = waitingItems(r)
     expect(items.map((i) => i.kind)).toEqual(['merge', 'permission', 'install'])
-    expect(items.find((i) => i.kind === 'permission')?.label).toBe('Implementer wants to use Edit')
+    expect(items.find((i) => i.kind === 'permission')?.label).toBe('Allow: Run npm test')
   })
   it('is empty for finished runs and for runs with nothing open', () => {
     expect(waitingItems(run('r1', 1, 'finished', { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Edit' }] }))).toEqual([])
@@ -24,6 +24,27 @@ describe('waitingItems', () => {
   })
   it('reports a blocked plan when nothing else waits', () => {
     expect(waitingItems(run('r1', 1, 'idle', { plan: { status: 'blocked' } })).map((i) => i.kind)).toEqual(['plan'])
+  })
+})
+
+describe('decision counts and the default card', () => {
+  it('counts decisions, not runs, and puts the kind and the ask first', () => {
+    const r = run('r1', 1, 'running', {
+      questions: [{ id: 'q', agentId: 'a1', question: 'Which limiter strategy?' }],
+      permissions: [
+        { id: 'p1', agentId: 'a1', toolName: 'Bash', input: { command: 'npm test' } },
+        { id: 'p2', agentId: 'a1', toolName: 'Edit', input: { file_path: 'src/a.ts' } }
+      ]
+    })
+    expect(decisionCount([r, run('r2', 2, 'running')])).toBe(3)
+    expect(waitingItems(r).map((i) => i.label)).toEqual(['Question: Which limiter strategy?', 'Allow: Run npm test', 'Allow: Edit a.ts'])
+    expect(waitingItems(r).map((i) => i.key)).toEqual(['q', 'p1', 'p2'])
+  })
+  it('opens on the first open decision, skipping answered records', () => {
+    expect(defaultDecisionIndex(['rec', 'q', 'p'], (k) => k === 'rec')).toBe(1)
+    expect(defaultDecisionIndex(['q', 'p'], () => false)).toBe(0)
+    expect(defaultDecisionIndex(['rec'], () => true)).toBe(0)
+    expect(defaultDecisionIndex([], () => false)).toBe(0)
   })
 })
 

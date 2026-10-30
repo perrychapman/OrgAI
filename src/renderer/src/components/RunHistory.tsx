@@ -21,7 +21,8 @@ const STATUS_BADGE: Record<RunTone, BadgeTone> = {
   idle: 'neutral',
   paused: 'neutral',
   ok: 'success',
-  danger: 'danger'
+  danger: 'danger',
+  stopped: 'neutral'
 }
 
 /**

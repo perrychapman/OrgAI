@@ -9,6 +9,7 @@ import {
   useReactFlow,
   ReactFlowProvider,
   type Edge,
+  type FitViewOptions,
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
@@ -19,6 +20,7 @@ import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
 import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
+import { defaultDecisionIndex } from '../lib/needsYou'
 import { Icon } from '../components/ui/Icon'
 import { Popover } from '../components/ui/Popover'
 import { Switch } from '../components/ui/Switch'
@@ -71,6 +73,12 @@ function useHtmlAttr(name: string, fallback: string): string {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name])
   return value
+}
+
+/** Fit-to-view options. A stage under 300 px tall (1024x640 with several decisions) keeps nodes readable: zoom stays at 0.8 or more and the chart pans. */
+function fitOpts(o: { duration: number }): FitViewOptions {
+  const h = document.querySelector('.frame-stage')?.clientHeight ?? 1000
+  return { padding: 0.25, maxZoom: 1, duration: o.duration, ...(h < 300 ? { minZoom: 0.8 } : {}) }
 }
 
 /** True when the OS or the app asks for reduced motion (animated edges stay still). */
@@ -289,7 +297,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   useEffect(() => {
     if (topologyKey && topologyKey !== lastTopology.current) {
       lastTopology.current = topologyKey
-      const t = setTimeout(() => fitView({ padding: 0.25, duration: 500, maxZoom: 1 }), 60)
+      const t = setTimeout(() => fitView(fitOpts({ duration: 500 })), 60)
       return () => clearTimeout(t)
     }
     return undefined
@@ -451,7 +459,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : 'o'}`).join('|') +
     `/${run.permissions.length}.${run.proposals.length}.${run.questions?.length ?? 0}.${run.ruleRequests?.length ?? 0}.${run.mergeReviews?.length ?? 0}.${status === 'paused' ? 'p' : ''}`
   useEffect(() => {
-    const t = setTimeout(() => fitView({ padding: 0.25, duration: 200, maxZoom: 1 }), 80)
+    const t = setTimeout(() => fitView(fitOpts({ duration: 200 })), 80)
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
 
@@ -470,8 +478,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // A jump from the sidebar's "Needs you" list asks the first decision of this run to take focus.
   useEffect(() => {
     if (!pendingFocus) return
-    focusDecision()
-    clearDecisionFocus()
+    // A jump from the Needs-you list names the decision: show that card, then move focus into it.
+    const request = useAppStore.getState().pendingDecisionRequest
+    if (request) setPickedDecision(request)
+    const t = setTimeout(
+      () => {
+        focusDecision()
+        clearDecisionFocus()
+      },
+      request ? 60 : 0
+    )
+    return () => clearTimeout(t)
   }, [pendingFocus, clearDecisionFocus, focusDecision])
 
   // Ctrl+. or Alt+D jumps to the pending decision from anywhere on this run (spec 12.1, N4).
@@ -501,7 +518,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       clearTimeout(t)
       t = setTimeout(() => {
         const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void fitView({ padding: 0.25, maxZoom: 1, duration: reduced ? 0 : 150 })
+        void fitView(fitOpts({ duration: reduced ? 0 : 150 }))
       }, 100)
     })
     ro.observe(el)
@@ -516,7 +533,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (e.ctrlKey || e.metaKey || e.altKey) return
     if (e.key === '+' || e.key === '=') void zoomIn({ duration: 150 })
     else if (e.key === '-' || e.key === '_') void zoomOut({ duration: 150 })
-    else if (e.key === '0') void fitView({ padding: 0.25, maxZoom: 1, duration: 150 })
+    else if (e.key === '0') void fitView(fitOpts({ duration: 150 }))
   }
 
   const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
@@ -572,8 +589,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const isRecord = (key: string): boolean => resolvedInstalls.some((r) => r.request.id === key)
   decisionItems.sort((a, b) => Number(isRecord(b.key)) - Number(isRecord(a.key)))
   const pickedAt = decisionItems.findIndex((d) => d.key === pickedDecision)
-  const newestPending = decisionItems.length - 1
-  const selectedDecision = pickedAt >= 0 ? pickedAt : newestPending
+  // Until the user picks one, the tray shows the first open decision (blocking kinds first), not the newest arrival.
+  const firstPending = defaultDecisionIndex(
+    decisionItems.map((d) => d.key),
+    isRecord
+  )
+  const selectedDecision = pickedAt >= 0 ? pickedAt : firstPending
   const shownKey = decisionItems[selectedDecision]?.key ?? null
   // The newest decision is shown until the user touches the tray; then that card stays put when later requests arrive.
   const pinShown = (): void => {
@@ -646,6 +667,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
               proOptions={{ hideAttribution: true }}
               deleteKeyCode={null}
+              edgesFocusable={false}
               minZoom={0.3}
               onKeyDown={onCanvasKey}
             >
@@ -754,7 +776,7 @@ function CanvasTools(): ReactElement {
       <span className="zoom-group" role="group" aria-label="Canvas zoom">
         <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => void zoomOut({ duration: 150 })} />
         <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => void zoomIn({ duration: 150 })} />
-        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => void fitView({ padding: 0.25, maxZoom: 1, duration: 150 })} />
+        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => void fitView(fitOpts({ duration: 150 }))} />
       </span>
       <Popover
         label="Canvas legend"

@@ -257,9 +257,9 @@
 .run-actions .run-act-end {
   margin-left: var(--space-2);
 }
-/* Narrow strip: the actions keep their icon and accessible name, the words go. */
+/* Narrow strip: Interrupt and the retrospective keep their icon and accessible name, the words go. End session keeps its words. */
 @container strip (max-width: 760px) {
-  .run-act-label {
+  .run-act-collapse {
     position: absolute;
     width: 1px;
     height: 1px;

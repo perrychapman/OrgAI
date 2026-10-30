@@ -5,7 +5,7 @@ import type { AgentInstance, RunStatus, RunSummary } from '@shared/types'
  * pill all use these words. 'Paused' is the one addition: a run waiting on a usage limit that resumes by itself.
  */
 export type StatusWord = 'Running' | 'Needs you' | 'Idle' | 'Paused' | 'Finished' | 'Stopped' | 'Failed'
-export type RunTone = 'is-running' | 'warn' | 'idle' | 'paused' | 'ok' | 'danger'
+export type RunTone = 'is-running' | 'warn' | 'idle' | 'paused' | 'ok' | 'danger' | 'stopped'
 
 export interface RunStatusView {
   word: StatusWord
@@ -20,8 +20,8 @@ const TONES: Record<StatusWord, RunTone> = {
   Idle: 'idle',
   Paused: 'paused',
   Finished: 'ok',
-  // Neutral like Idle: the topbar, sidebar and tab styles have no separate stopped tone.
-  Stopped: 'idle',
+  // Neutral grey: Idle is the info blue, and a Stopped run must not read as waiting or idle in the tab dot.
+  Stopped: 'stopped',
   Failed: 'danger'
 }
 
@@ -53,7 +53,8 @@ export function runStatus(status: RunStatus, opts: RunStatusOptions = {}): RunSt
       return make('Failed')
     default:
       if (opts.stopped) return make('Stopped', opts.endedWithApp ? 'Ended when OrgAI closed' : 'You ended this session')
-      return make('Finished', opts.endedWithApp ? 'Ended when OrgAI closed' : undefined)
+      if (opts.endedWithApp) return { ...make('Finished', 'Ended when OrgAI closed'), tone: 'stopped' }
+      return make('Finished')
   }
 }
 

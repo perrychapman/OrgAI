@@ -12,8 +12,10 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  /* The stage keeps at least 55% of the frame; the tray takes what it needs up to the rest and scrolls inside it. */
-  grid-template-rows: auto minmax(max(96px, 55cqh), 1fr) minmax(0, max-content) auto;
+  /* The stage keeps at least 55% of the frame; the tray takes what it needs up to the rest and scrolls inside it.
+     While a question is open its options are the action, so the stage may drop to 36% to give the tray 64%. */
+  --stage-min: 55cqh;
+  grid-template-rows: auto minmax(max(96px, var(--stage-min)), 1fr) minmax(0, max-content) auto;
   grid-template-areas:
     'toolbar'
     'stage'
@@ -51,9 +53,12 @@
   padding: var(--space-3);
   overflow-y: auto;
   overflow-x: hidden;
-  /* A share of the frame, not of the window: the stage keeps 55% and the 32px toolbar comes off the tray's 45%. */
-  max-height: calc(45cqh - var(--toolbar-h, 32px));
+  /* A share of the frame, not of the window: the stage keeps its minimum and the 32px toolbar comes off the tray's share. */
+  max-height: calc(100cqh - var(--stage-min) - var(--toolbar-h, 32px));
   min-height: 0;
+  /* The tray is a container too: the decision chips follow its width, not the frame's (it can sit beside the stage). */
+  container-type: inline-size;
+  container-name: tray;
   background: var(--surface-1);
   border-top: 1px solid var(--border-default);
 }
@@ -76,10 +81,15 @@
   margin-right: var(--space-1h);
   vertical-align: middle;
 }
-/* Only a roomy frame (1100 x 560 or more) docks the tray beside the canvas; a short frame never does (it stacks). */
-@container frame (min-width: 1100px) and (min-height: 560px) {
+/* The question's options are the action: while one is open the stage may shrink to 36% of the frame. */
+.frame-grid:has(> .frame-tray .decision-card[data-inline='true']) {
+  --stage-min: 36cqh;
+}
+/* Only a roomy frame (1500 x 560 or more) docks the tray beside the canvas; a narrower or shorter one stacks, so
+   collapsing the side panel never moves the tray sideways. The beside tray is at least 420 px wide. */
+@container frame (min-width: 1500px) and (min-height: 560px) {
   .frame-grid:has(> .frame-tray) {
-    grid-template-columns: minmax(0, 1fr) clamp(320px, 34cqi, 400px);
+    grid-template-columns: minmax(0, 1fr) clamp(420px, 30cqi, 480px);
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       'toolbar toolbar'
@@ -105,6 +115,13 @@
 .frame-tray > * {
   min-width: 0;
   max-width: 100%;
+}
+/* The selected card takes the tray's remaining height and its body shrinks (the card footer keeps its own space). */
+.frame-tray > .decision {
+  flex: 1 1 auto;
+}
+.frame-tray {
+  scroll-padding-bottom: var(--space-3);
 }
 
 /* Side panel: a collapsible column of .editor / .live. */
@@ -356,14 +373,31 @@ button.run-meta-item:focus-visible {
   display: flex;
   gap: var(--space-1);
   margin: 0;
-  padding: var(--space-0h);
+  padding: var(--space-1);
   list-style: none;
+  /* No scrollbar: the chips never shrink; Previous/Next and the arrow keys bring the rest into view. */
   overflow-x: auto;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+}
+.decision-list::-webkit-scrollbar {
+  display: none;
 }
 .decision-list li {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+}
+/* A tray under 700 px wide shows numbered chips; the label stays in the tooltip and the aria-label. */
+@container tray (max-width: 699px) {
+  .decision-chip-label {
+    display: none;
+  }
+  .decision-chip {
+    min-width: var(--control-sm);
+    justify-content: center;
+    padding: 0 var(--space-2);
+  }
+  .decision-chip-n {
+    color: inherit;
+  }
 }
 .decision-chip {
   display: inline-flex;
@@ -412,13 +446,4 @@ button.run-meta-item:focus-visible {
   align-items: center;
   gap: var(--space-1);
   white-space: nowrap;
-}
-@container frame (max-width: 640px) {
-  .decision-steps > span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
 }

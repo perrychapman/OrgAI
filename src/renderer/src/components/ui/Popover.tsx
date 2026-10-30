@@ -17,6 +17,7 @@ const GAP = 6
 export function Popover({
   trigger,
   triggerLabel,
+  triggerTitle,
   triggerClassName = 'btn ghost sm',
   children,
   label,
@@ -31,6 +32,8 @@ export function Popover({
   trigger: ReactNode
   /** aria-label of the trigger when its content is an icon only. */
   triggerLabel?: string
+  /** Tooltip of the trigger (e.g. the full name of a rail icon). */
+  triggerTitle?: string
   /** Class of the trigger button. Defaults to a small ghost button; pass `icon-btn size-md` for an icon trigger. */
   triggerClassName?: string
   children: ReactNode | ((api: { close: () => void }) => ReactNode)
@@ -129,6 +132,7 @@ export function Popover({
         aria-haspopup={role === 'group' ? undefined : role}
         aria-controls={id}
         aria-label={triggerLabel}
+        title={triggerTitle}
         data-testid={triggerTestId}
       >
         {trigger}

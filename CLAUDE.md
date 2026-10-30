@@ -67,7 +67,11 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 - Status words come only from `lib/runStatus.ts`: Running, Needs you, Idle, Paused, Finished, Stopped, Failed.
 - Run view: one 40 px run strip (`[data-testid=run-strip]`: run tabs plus Interrupt / End session / Org retrospective), then a 32 px canvas toolbar
   (`[data-testid=run-meta]` metadata, Hide finished switch, zoom IconButtons, the legend popover). The tray stacks under the canvas and docks
-  beside it only in a frame of 1100 x 560 or more; `section.frame-tray[data-compact=true]` marks a frame under 480 px high.
+  beside it only in a frame of 1500 x 560 or more; `section.frame-tray[data-compact=true]` marks a frame under 480 px high.
+- "Needs you" counts decisions (cards), never runs: the bell, the Needs-you row, the project row badge and subtitle
+  ("3 decisions · 1 run") and the topbar all come from `lib/needsYou.ts` `waitingItems` / `decisionCount`. A run row's dot
+  is the run's status. A Needs-you item names the kind and the ask first, then the location, and opens that card.
+  A question card shows its options inline at every size (`DecisionCard` `inline`); the tray shows the first open decision.
 - Project tabs are Live, History, Org chart and Settings. The org chart editor is `views/OrgChartView.tsx`, and project
   settings are sectioned through `components/settings/*`.
 - e2e:free is `e2e/layout.mjs`, `runs.mjs`, `maintenance.mjs` and `connections.mjs`. Update selectors in the same change.

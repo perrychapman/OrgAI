@@ -207,6 +207,114 @@ try {
   check((await page.getByText('Carrying on without the docs server.').count()) >= 1, 'the run proceeds after the MCP request is denied')
   await endSession(page)
 
+  // Three open decisions (two background permission asks, then ask_user): the question's options are answerable at
+  // 1024x640, the chips never overflow, End session keeps its words, Needs you counts decisions, the tray docks beside
+  // the stage only in a frame of 1500 px or more.
+  fs.writeFileSync(scriptFile, JSON.stringify({
+    delayMs: 250,
+    work: [
+      { type: 'text', text: 'Starting.' },
+      { type: 'spawn', id: 'mock-report-1', description: 'Implement the limiter' },
+      { type: 'tool', agent: 'mock-report-1', name: 'Bash', input: { command: 'npm test' }, ask: true, background: true, result: 'ok' },
+      { type: 'tool', agent: 'mock-report-1', name: 'Edit', input: { file_path: 'src/limiter.js', old_string: 'a', new_string: 'b' }, ask: true, background: true, result: 'ok' },
+      { type: 'harness', name: 'ask_user', args: { question: 'Which limiter strategy should the notes API use for write requests?', options: [{ label: 'Token bucket', description: 'Allows short bursts.' }, { label: 'Fixed window', description: 'Simple counter per minute.' }, { label: 'Sliding window', description: 'Most accurate.' }], allowMultiple: false, allowFreeText: true } },
+      { type: 'text', text: 'Done.' }
+    ]
+  }))
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Add rate limiting with three decisions')
+  await page.locator('.decision-chip').nth(2).waitFor({ timeout: 20_000 }).catch(() => {})
+  await sleep(1500)
+  const prev3 = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
+  const setSize = async (w, h) => {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(800)
+  }
+  const panelToggle = () => page.locator('.side-panel').getByRole('button').first()
+  const trayState = () => page.evaluate(() => {
+    const box = (sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom } }
+    const list = document.querySelector('.decision-list')
+    const chips = [...document.querySelectorAll('.decision-chip')]
+    const card = document.querySelector('section.frame-tray article.decision-card')
+    const tray = box('section.frame-tray')
+    const radios = card ? [...card.querySelectorAll('input[type=radio]')].map((r) => { const b = r.getBoundingClientRect(); return { t: b.top, b: b.bottom } }) : []
+    const submit = card?.querySelector('.decision-footer .btn.primary')?.getBoundingClientRect()
+    const end = [...document.querySelectorAll('.run-actions button')].find((b) => /End session/.test(b.getAttribute('aria-label') ?? ''))
+    const label = end?.querySelector('.run-act-label')?.getBoundingClientRect()
+    return {
+      kind: card?.getAttribute('data-kind'),
+      chips: chips.length,
+      tabbable: chips.filter((c) => c.tabIndex === 0).length,
+      overflow: list ? list.scrollWidth - list.clientWidth : -1,
+      numbered: chips.length > 0 && getComputedStyle(chips[0].querySelector('.decision-chip-label')).display === 'none',
+      overlap: chips.some((c, i) => i > 0 && c.getBoundingClientRect().left < chips[i - 1].getBoundingClientRect().right - 0.5),
+      tray,
+      stage: box('.frame-stage'),
+      radiosInside: radios.length >= 3 && tray ? radios.every((r) => r.t >= tray.t && r.b <= tray.b) : false,
+      submitInside: !!submit && !!tray && submit.bottom <= tray.b - 1 && submit.top >= tray.t,
+      endLabelW: label ? label.width : 0,
+      composerH: document.querySelector('.composer')?.getBoundingClientRect().height ?? 0
+    }
+  })
+  await setSize(1024, 640)
+  let ts = await trayState()
+  check(ts.chips === 3 && ts.kind === 'question', 'three decisions open and the tray opens on the question (first open decision)', JSON.stringify(ts))
+  check(ts.radiosInside && ts.submitInside, 'the question options and Submit are visible inside the tray at 1024x640 (side panel closed)', JSON.stringify(ts))
+  check(ts.overflow <= 0 && !ts.overlap && ts.tabbable === 1, 'decision chips do not overflow or overlap and are one Tab stop (1024)', JSON.stringify(ts))
+  check(ts.endLabelW > 20, 'End session keeps its text label at 1024', String(ts.endLabelW))
+  check(ts.composerH <= 100, 'the composer is at most 100 px tall', String(ts.composerH))
+  await shot('three-decisions-1024')
+  // Side panel open: a narrower tray (numbered chips), options still visible, End session still labelled.
+  await panelToggle().click().catch(() => {})
+  await sleep(600)
+  ts = await trayState()
+  check(ts.overflow <= 0 && !ts.overlap && ts.tabbable === 1, 'chips do not overflow or overlap with the side panel open at 1024', JSON.stringify(ts))
+  check(ts.radiosInside && ts.submitInside, 'the question options and Submit stay visible with the side panel open at 1024x640', JSON.stringify(ts))
+  check(ts.endLabelW > 20, 'End session keeps its text label with the side panel open at 1024', String(ts.endLabelW))
+  await shot('three-decisions-1024-panel')
+  // ArrowRight moves focus along the chips without a second Tab stop.
+  await page.locator('.decision-chip[tabindex="0"]').focus()
+  await page.keyboard.press('ArrowRight')
+  const rovedTo = await page.evaluate(() => document.activeElement?.textContent ?? '')
+  check(/^2/.test(rovedTo), 'ArrowRight moves focus to the next decision chip', rovedTo)
+  // 1424: labelled chips, no overflow, the tray stays under the stage when the panel collapses.
+  await setSize(1424, 881)
+  ts = await trayState()
+  check(ts.overflow <= 0 && !ts.overlap, 'chips do not overflow at 1424x881 (panel open)', JSON.stringify(ts))
+  check(!!ts.tray && !!ts.stage && ts.tray.t >= ts.stage.b - 0.5, 'the tray is under the stage at 1424 with the panel open', JSON.stringify(ts))
+  await panelToggle().click().catch(() => {})
+  await sleep(600)
+  ts = await trayState()
+  check(!!ts.tray && !!ts.stage && ts.tray.t >= ts.stage.b - 0.5, 'collapsing the side panel at 1424 keeps the tray under the stage', JSON.stringify(ts))
+  // Needs you counts decisions at every level (an older run may hold one more) and the list names the ask first.
+  const needs = (await page.locator('[data-testid=needs-you-row]').innerText()).replace(/\s+/g, ' ')
+  const needsN = Number(/Needs you · (\d+)/.exec(needs)?.[1] ?? 0)
+  await page.locator('[data-testid=needs-you-row]').click()
+  const items = page.locator('[data-testid=needs-you-list] .needs-item')
+  check((await items.count()) === needsN && needsN >= 3, 'the Needs you row counts decisions: its number equals the list length', `${needs} / ${await items.count()}`)
+  const q = items.filter({ hasText: 'Question: Which limiter' })
+  const qText = ((await q.first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(/^Question: Which limiter/.test(qText) && /R\d/.test(qText), 'a Needs you item shows the kind and ask first, then the location', qText)
+  const navBadge = ((await page.locator('[data-testid=nav-project][data-name="' + NAME + '"] .badge').first().innerText().catch(() => '')) || '').trim()
+  check(navBadge === String(needsN), 'the project row badge counts decisions, like the Needs you row', `${navBadge} vs ${needsN}`)
+  const navTip = (await page.locator('[data-testid=nav-project][data-name="' + NAME + '"]').getAttribute('title').catch(() => '')) ?? ''
+  check(new RegExp(`${needsN} decisions · \\d+ runs?`).test(navTip), 'the project row subtitle reads "n decisions · m runs"', navTip)
+  // Open the Bash permission: the tray shows that card, not the default one.
+  await items.filter({ hasText: 'Allow: Run npm test' }).first().click()
+  await sleep(500)
+  const opened = await page.evaluate(() => document.querySelector('section.frame-tray article.decision-card')?.getAttribute('aria-label') ?? '')
+  check(/^Permission: Run npm test/.test(opened), 'clicking a Needs you item opens that decision', opened)
+  // Beside only in a frame of 1500 px or more.
+  await setSize(2400, 1000)
+  ts = await trayState()
+  check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
+  await shot('three-decisions-2400')
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
+  await sleep(400)
+  await endSession(page)
+
   // AI run titles (mock adapter: the title is the first 4 words of the prompt, capitalised).
   fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
   const TITLED_PROMPT = 'Please refactor the billing module and add tests'
