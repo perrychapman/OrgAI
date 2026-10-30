@@ -155,7 +155,7 @@ try {
   // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
   try {
     await openAppSettings(page)
-    await page.getByRole('tab', { name: 'MCP library', exact: true }).click()
+    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
     const libSec = page.locator('[data-testid=mcp-library-section]')
     await libSec.waitFor({ timeout: 10_000 })
     await libSec.scrollIntoViewIfNeeded()

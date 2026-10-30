@@ -5,6 +5,7 @@ import type { McpLibraryInfo, McpTestResult } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { focusPaneHeading } from '../../lib/settingsTarget'
+import { modelDisplayName, useAssistantModel } from '../../lib/assistantModels'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -38,6 +39,7 @@ export default function McpLibrarySection(): ReactElement {
       (r) => r.summary.projectId === HARNESS_PROJECT_ID && r.summary.kind === 'mcp-assist' && ['starting', 'running', 'idle'].includes(r.summary.status)
     )
   )
+  const assistModel = modelDisplayName(useAssistantModel('mcpAssistModel'))
   const writer = useMemo(() => libraryWriter(setLibrary), [setLibrary])
 
   // A deep link ("Open in library") lands here: scroll to the section or the entry and move focus into it.
@@ -67,29 +69,33 @@ export default function McpLibrarySection(): ReactElement {
     await openRun(summary.id)
   }
 
-  const infos = library ?? []
+  // Services from the Connectors gallery live there; this list is for servers added by hand, from the registry or by an agent.
+  const infos = (library ?? []).filter((i) => !i.entry.connectorId)
   return (
     <SettingsSection
       id="appsettings-section-mcp-library"
-      title="MCP library"
-      description="Define a server once; any project can link it."
+      title="Custom servers (advanced)"
+      description="For a service that is not in Connectors. Set a server up once here; any project can use it."
       testId="mcp-library-section"
       sectionRef={section}
       actions={
         <>
-          <Button variant="primary" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>
-            Add from registry
-          </Button>
           <Button icon={Plus} testId="mcp-library-add-manual" onClick={() => setModal({ kind: 'form' })}>
             Add manually
           </Button>
-          <Button icon={Sparkles} testId="mcp-library-assist" onClick={() => setModal({ kind: 'assist' })}>
+          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses your assistant model (${assistModel}); counts toward your usage`} onClick={() => setModal({ kind: 'assist' })}>
             Configure with AI
+          </Button>
+          <Button variant="ghost" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>
+            Browse community servers (unverified)
           </Button>
         </>
       }
     >
       <div className="mcp-body">
+        <p className="muted" data-testid="mcp-library-assist-cost">
+          Configure with AI uses your assistant model ({assistModel}) and counts toward your usage.
+        </p>
         {assistRun && (
           <Banner
             tone="neutral"
@@ -111,7 +117,7 @@ export default function McpLibrarySection(): ReactElement {
         {error ? (
           <Banner
             tone="danger"
-            title="Could not load the MCP library"
+            title="Could not load custom servers"
             actions={
               <Button size="sm" onClick={refresh}>
                 Retry
@@ -131,11 +137,11 @@ export default function McpLibrarySection(): ReactElement {
         ) : infos.length === 0 ? (
           <div className="card-block mcp-empty">
             <Icon icon={Library} size="lg" />
-            <strong>Your library is empty</strong>
-            <p className="muted">Add a server to reuse it across projects.</p>
+            <strong>No custom servers</strong>
+            <p className="muted">Most people never need this. Add one by hand only when a service is not in Connectors.</p>
           </div>
         ) : (
-          <ul className="card-block mcp-list" aria-label="MCP library">
+          <ul className="card-block mcp-list" aria-label="Custom servers">
             {infos.map((info) => (
               <LibraryRow key={info.entry.id} info={info} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
             ))}
