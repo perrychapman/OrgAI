@@ -5,6 +5,7 @@ import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
+import { oneLine, questionTitle } from '../lib/decisionTitle'
 
 interface Props {
   runId: string
@@ -36,15 +37,22 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
     void answer(() => onAnswer(note ? { selected, text: note } : { selected }))
   }
 
+  // The title carries the question; a very long one is clipped there, so the full text goes behind Details.
+  const title = questionTitle(question.question)
+  const clipped = title.endsWith('…')
+
   return (
     <DecisionCard
       kind="question"
       error={error}
       runId={runId}
-      title={question.question}
+      title={title}
+      inline
       who={who}
+      agentId={question.agentId}
       helper={
         <>
+          {clipped && <span className="question-full">{question.question} </span>}
           {who} is waiting for your answer. {question.allowMultiple ? 'Pick one or more.' : 'Pick one.'}
         </>
       }
@@ -55,7 +63,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       }
     >
       <div className="stack-3">
-        <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={question.question}>
+        <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={oneLine(question.question, 300)}>
           {question.options.map((o) => {
             const checked = selected.includes(o.label)
             if (question.allowMultiple) {
@@ -66,7 +74,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
               )
             }
             return (
-              <label key={o.label} className={`question-option${checked ? ' selected' : ''}`}>
+              <label key={o.label} className={`question-option${checked ? ' selected' : ''}`} title={o.description ? oneLine(o.description, 300) : undefined}>
                 <input
                   type="radio"
                   name={`q-${question.id}`}

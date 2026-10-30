@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, Ellipsis, ExternalLink, Library, Minus, Package, Pencil, Plug, Plus, Sparkles, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
 import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTestResult, Project } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
+import { focusPaneHeading } from '../../lib/settingsTarget'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -10,6 +11,7 @@ import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
+import { SettingsGroup, SettingsSection } from '../settings/SettingsSection'
 import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpAssistDialog from './McpAssistDialog'
 import McpLinkDialog from './McpLinkDialog'
@@ -89,7 +91,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   // Deep link (a run's "not authorized" notice): scroll to the section or the named server once the rows exist.
   useEffect(() => {
     if (focus?.kind !== 'server' || focus.projectId !== project.id || servers === null) return
-    if (!(focus.serverId && focusRow(root.current, { id: focus.serverId }))) root.current?.scrollIntoView({ block: 'start' })
+    if (!(focus.serverId && focusRow(root.current, { id: focus.serverId }))) focusPaneHeading()
     clearMcpFocus()
   }, [focus, servers, project.id, clearMcpFocus])
 
@@ -109,7 +111,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   const libraryCount = library?.length ?? 0
 
   const actions = (
-    <div className="section-actions mcp-actions">
+    <>
       <Button variant="primary" icon={Library} testId="mcp-add-library" onClick={() => setModal({ kind: 'link' })}>
         Add from library
       </Button>
@@ -122,7 +124,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
       <Button icon={Sparkles} onClick={() => setModal({ kind: 'assist' })}>
         Configure with AI
       </Button>
-    </div>
+    </>
   )
 
   const rowProps = (info: McpServerInfo): Parameters<typeof McpRow>[0] => ({
@@ -138,127 +140,149 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   })
 
   return (
-    <section ref={root} id="settings-section-mcp" className="mcp-section" aria-labelledby="mcp-title" data-testid="mcp-section">
-      <div className="section-head">
-        <div>
-          <h2 id="mcp-title">MCP servers</h2>
-          <p>Tools agents can call. Servers run code on this machine or connect to remote hosts.</p>
-        </div>
-        {actions}
-      </div>
-      {assistRun && (
-        <Banner
-          tone="neutral"
-          actions={
-            <Button size="sm" onClick={() => setView('run')}>
-              Open run
-            </Button>
-          }
-        >
-          An assistant run is configuring MCP servers.
-        </Banner>
-      )}
-      {warnings.length > 0 && (
-        <Banner
-          tone="warning"
-          testId="mcp-auth-warning"
-          title={warnings.length === 1 ? `${warnings[0].name} is not authorized` : `${warnings.length} servers are not authorized`}
-          actions={warnings.map((w) => (
-            <Button key={w.id} size="sm" onClick={() => focusRow(root.current, { id: w.id })}>
-              {w.expired ? 'Reauthorize' : 'Authorize'} {w.name}
-            </Button>
-          ))}
-        >
-          Agents will not be able to use {warnings.length === 1 ? 'it' : 'them'} until you sign in.
-        </Banner>
-      )}
-      {loadError ? (
-        <Banner
-          tone="danger"
-          title="Could not load MCP servers"
-          actions={
-            <Button size="sm" onClick={refresh}>
-              Retry
-            </Button>
-          }
-        >
-          {loadError}
-        </Banner>
-      ) : servers === null ? (
-        <div className="card-block mcp-list" aria-busy="true" aria-label="Loading MCP servers">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="card-sec">
-              <div className="skeleton mcp-sk" />
+    <SettingsSection
+      id="settings-section-mcp"
+      title="MCP servers"
+      description="Tools your agents can call."
+      actions={actions}
+      testId="mcp-section"
+      sectionRef={root}
+    >
+      <div className="mcp-body">
+        {assistRun && (
+          <Banner
+            tone="neutral"
+            actions={
+              <Button size="sm" onClick={() => setView('run')}>
+                Open run
+              </Button>
+            }
+          >
+            An assistant run is configuring MCP servers.
+          </Banner>
+        )}
+        {warnings.length > 0 && (
+          <Banner
+            tone="warning"
+            testId="mcp-auth-warning"
+            title={warnings.length === 1 ? `${warnings[0].name} is not authorized` : `${warnings.length} servers are not authorized`}
+            actions={warnings.map((w) => (
+              <Button key={w.id} size="sm" onClick={() => focusRow(root.current, { id: w.id })}>
+                {w.expired ? 'Reauthorize' : 'Authorize'} {w.name}
+              </Button>
+            ))}
+          >
+            Agents will not be able to use {warnings.length === 1 ? 'it' : 'them'} until you sign in.
+          </Banner>
+        )}
+        {loadError ? (
+          <Banner
+            tone="danger"
+            title="Could not load MCP servers"
+            actions={
+              <Button size="sm" onClick={refresh}>
+                Retry
+              </Button>
+            }
+          >
+            {loadError}
+          </Banner>
+        ) : servers === null ? (
+          <div className="card-block mcp-list" aria-busy="true" aria-label="Loading MCP servers">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="card-sec">
+                <div className="skeleton mcp-sk" />
+              </div>
+            ))}
+          </div>
+        ) : servers.length === 0 ? (
+          <div className="card-block mcp-empty">
+            <Icon icon={Plug} size="lg" />
+            <strong>No MCP servers</strong>
+            <p className="muted">
+              {libraryCount > 0 ? (
+                'Add one from your library to get started.'
+              ) : (
+                <>
+                  Add one above, or define one in{' '}
+                  <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary()}>
+                    App settings &gt; MCP library
+                  </button>
+                  .
+                </>
+              )}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div data-testid="mcp-group-library">
+              <SettingsGroup title="From your library">
+                {linked.length === 0 ? (
+                  <p className="muted">
+                    {libraryCount > 0 ? (
+                      'None added yet.'
+                    ) : (
+                      <>
+                        Library is empty. See{' '}
+                        <button type="button" className="link-btn" onClick={() => useAppStore.getState().openMcpLibrary()}>
+                          App settings &gt; MCP library
+                        </button>
+                        .
+                      </>
+                    )}
+                  </p>
+                ) : (
+                  <ul className="card-block mcp-list" aria-label="MCP servers from your library">
+                    {linked.map((info) => (
+                      <McpRow key={info.spec.id} {...rowProps(info)} />
+                    ))}
+                  </ul>
+                )}
+              </SettingsGroup>
             </div>
-          ))}
-        </div>
-      ) : servers.length === 0 ? (
-        <div className="card-block mcp-empty">
-          <Icon icon={Plug} size="lg" />
-          <strong>No MCP servers</strong>
-          <p className="muted">
-            {libraryCount > 0
-              ? 'Start with Add from library to reuse a server you already set up. Or add one from the registry, by hand, or ask an assistant.'
-              : 'Add one from the registry, set one up by hand, or ask an assistant. Servers you add to the MCP library in app settings can be reused in every project.'}
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="mcp-group" data-testid="mcp-group-library">
-            <h3 className="mcp-group-title">From your library</h3>
-            {linked.length === 0 ? (
-              <p className="muted">
-                {libraryCount > 0 ? 'Nothing from the library is in this project yet. Use Add from library.' : 'Your MCP library is empty.'}
-              </p>
-            ) : (
-              <ul className="card-block mcp-list" aria-label="MCP servers from your library">
-                {linked.map((info) => (
-                  <McpRow key={info.spec.id} {...rowProps(info)} />
-                ))}
-              </ul>
-            )}
-          </div>
-          <div className="mcp-group" data-testid="mcp-group-local">
-            <h3 className="mcp-group-title">Only in this project</h3>
-            {local.length === 0 ? (
-              <p className="muted">No project-only servers.</p>
-            ) : (
-              <ul className="card-block mcp-list" aria-label="MCP servers only in this project">
-                {local.map((info) => (
-                  <McpRow key={info.spec.id} {...rowProps(info)} />
-                ))}
-              </ul>
-            )}
-          </div>
-        </>
-      )}
+            <div data-testid="mcp-group-local">
+              <SettingsGroup title="Only in this project">
+                {local.length === 0 ? (
+                  <p className="muted">No project-only servers.</p>
+                ) : (
+                  <ul className="card-block mcp-list" aria-label="MCP servers only in this project">
+                    {local.map((info) => (
+                      <McpRow key={info.spec.id} {...rowProps(info)} />
+                    ))}
+                  </ul>
+                )}
+              </SettingsGroup>
+            </div>
+          </>
+        )}
 
-      {modal?.kind === 'link' && (
-        <McpLinkDialog
-          project={project}
-          library={library ?? []}
-          servers={all}
+        {modal?.kind === 'link' && (
+          <McpLinkDialog
+            project={project}
+            library={library ?? []}
+            servers={all}
+            onClose={() => setModal(null)}
+            onResult={applyResult}
+            onOpenLibrary={() => {
+              setModal(null)
+              useAppStore.getState().openMcpLibrary()
+            }}
+          />
+        )}
+        {modal?.kind === 'registry' && <RegistryDialog writer={writer} servers={all} onClose={() => setModal(null)} onAddManually={() => setModal({ kind: 'form' })} />}
+        {modal?.kind === 'form' && (
+          <McpServerForm key={modal.editing?.spec.id ?? modal.seed?.id ?? 'new'} writer={writer} servers={all} editing={modal.editing} seed={modal.seed} onClose={() => setModal(null)} />
+        )}
+        <McpAssistDialog
+          open={modal?.kind === 'assist'}
           onClose={() => setModal(null)}
-          onResult={applyResult}
-          onOpenLibrary={() => {
-            setModal(null)
-            useAppStore.getState().openMcpLibrary()
-          }}
+          onStart={(text) => useAppStore.getState().startMcpAssist(text)}
+          title="Configure MCP servers with AI"
+          description="An assistant run proposes servers, using your library first. You approve each one in the live run."
+          placeholder="Search the web, read GitHub issues..."
         />
-      )}
-      {modal?.kind === 'registry' && <RegistryDialog writer={writer} servers={all} onClose={() => setModal(null)} onAddManually={() => setModal({ kind: 'form' })} />}
-      {modal?.kind === 'form' && (
-        <McpServerForm key={modal.editing?.spec.id ?? modal.seed?.id ?? 'new'} writer={writer} servers={all} editing={modal.editing} seed={modal.seed} onClose={() => setModal(null)} />
-      )}
-      <McpAssistDialog
-        open={modal?.kind === 'assist'}
-        onClose={() => setModal(null)}
-        onStart={(text) => useAppStore.getState().startMcpAssist(text)}
-        title="Configure MCP servers with AI"
-        description="An assistant run proposes servers, using your library first. You approve each one in the live run."
-        placeholder="Search the web, read GitHub issues..."
-      />
-    </section>
+      </div>
+    </SettingsSection>
   )
 }
 

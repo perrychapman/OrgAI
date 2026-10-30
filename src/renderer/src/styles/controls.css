@@ -19,10 +19,6 @@
 .btn:active {
   transform: translateY(1px);
 }
-.btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -50,6 +46,22 @@
 .btn.sm {
   padding: 4px 9px;
   font-size: var(--text-small);
+}
+/* Disabled is neutral for every variant (never a dimmed violet or red): flat surface fill, quiet text. It sits
+   after the variants and repeats their specificity so it also beats their :hover and :active rules. */
+.btn:disabled,
+.btn.primary:disabled,
+.btn.danger:disabled,
+.btn.ghost:disabled {
+  background: var(--surface-3);
+  border-color: var(--border-subtle);
+  color: var(--text-disabled);
+  cursor: default;
+  transform: none;
+}
+.btn.ghost:disabled {
+  background: transparent;
+  border-color: transparent;
 }
 
 .field {

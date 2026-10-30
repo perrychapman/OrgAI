@@ -120,12 +120,20 @@ export class ProjectStore {
    * Validates the path (createPathError) and throws its message. `mock` needs `opts.mockAvailable` (the mock
    * adapter is registered); it sets provider.id 'mock' so every run of the project is token-free.
    */
-  create(input: ProjectCreateInput, settings?: AppSettings, opts: { mockAvailable?: boolean; fs?: PathFs } = {}): Project {
+  create(
+    input: ProjectCreateInput,
+    settings?: AppSettings,
+    opts: { mockAvailable?: boolean; fs?: PathFs; prepare?: (p: Project) => Project; importRoles?: (p: Project, sources: unknown) => Project } = {}
+  ): Project {
     const error = createPathError(input, checkProjectPath(input.path, opts.fs))
     if (error) throw new Error(error)
     if (input.mock && !opts.mockAvailable) throw new Error('The mock adapter is not available. Start OrgAI with ORGAI_MOCK=1 to use it.')
-    const project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind }, settings)
+    let project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind }, settings)
+    // Mock projects stay on the anthropic defaults and the mock adapter; others take the default connection.
     if (input.mock) project.provider = { ...project.provider, id: 'mock' }
+    else if (opts.prepare) project = opts.prepare(project)
+    // Imported agents replace the default chart after the connection is chosen, so their models map to it.
+    if (Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) project = opts.importRoles(project, input.importAgents)
     this.projects.push(project)
     this.persist()
     return project

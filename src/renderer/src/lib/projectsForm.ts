@@ -1,4 +1,5 @@
-import type { ProjectPathCheck, SetupKind } from '@shared/types'
+import type { ConnectionId, ConnectionInfo, ProjectPathCheck, SetupKind } from '@shared/types'
+import { CONNECTION_NAME } from './settingsCopy'
 
 export type PathTone = 'error' | 'warn' | 'ok' | 'info'
 export interface PathStatus {
@@ -52,6 +53,34 @@ export function submitBlocker(input: { kind: SetupKind; name: string; path: stri
     if (!input.brief.trim()) return 'Describe what you want to build.'
   }
   return null
+}
+
+/** Same rule as projects:create: LiteLLM needs a proxy URL and key, OpenAI needs to be enabled, Anthropic always works. */
+export function connectionUsable(info: ConnectionInfo | undefined): boolean {
+  if (!info) return false
+  const c = info.connection
+  if (c.id === 'litellm') return !!c.baseUrl && c.hasApiKey
+  if (c.id === 'openai') return c.enabled
+  return true
+}
+
+/** The connection a new project will get: the default when usable, else Anthropic. */
+export function newProjectConnection(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined): ConnectionId {
+  if (!def || def === 'anthropic') return 'anthropic'
+  return connectionUsable(connections?.find((c) => c.connection.id === def)) ? def : 'anthropic'
+}
+
+/** The lead sentence of the new-project line (the "Change in App settings > Defaults" tail is added by the view). */
+export function newProjectConnectionNote(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined, mock = false): string {
+  if (mock) return 'Runs on the mock adapter (no tokens).'
+  const used = newProjectConnection(def, connections)
+  if (def && def !== used) return `${CONNECTION_NAME[def]} is not connected, so this project runs on ${CONNECTION_NAME[used]}.`
+  return `Runs on ${CONNECTION_NAME[used]}.`
+}
+
+export function newProjectConnectionLine(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined, mock = false): string {
+  const note = newProjectConnectionNote(def, connections, mock)
+  return mock ? note : `${note} Change in App settings > Defaults.`
 }
 
 /** The name to create with: the typed one, else the folder's name. */

@@ -40,10 +40,32 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only
   in `lib/theme.ts` (`initTheme` in `main.tsx`) as `data-theme`, `data-canvas-*`, `data-reduce-motion` and `--canvas-*`
   on `<html>`. Views never read appearance settings themselves.
+- Run titles: `RunSummary.title` (at most `RUN_TITLE_MAX_CHARS` = 32) and the `run.title` event come from
+  `src/main/ai/runTitle.ts`. RunManager fires it for work runs with prompt text and never awaits it. It is a one-shot
+  `complete({ kind: 'title', model: fast tier, connection })` with a 20 s timeout, cleaned by `cleanTitle`. A failure
+  leaves the title unset, and the UI falls back to the prompt. Continuations get the earlier run's title as context.
+  Auto-resume (`RESUME_TEXT`) keeps the earlier title. The mock answers `kind: 'title'` with the first 4 words of the
+  `<message>` text, and `[mock:title-fail]` makes it throw. The live fast-model call is unverified (no smoke script).
 - Projects: `projects:checkPath` (`ProjectPathCheck`) never rejects. `projects:create` validates the path, and
   `ProjectCreateInput.mock` is accepted only with `ORGAI_MOCK=1`.
+- Agent import (`src/main/setup/import/`, `AgentImportService` in `importer.ts`): `projects:scanAgents` (never
+  rejects), `projects:previewImport`, `projects:applyImport` (returns `previousRoles` for Undo), `projects:exportOrg`
+  (`.orgai/org.json`, format `orgai.org/1`), `ProjectCreateInput.importAgents` and the `ProjectPathCheck` extras
+  (`agentSources`, `instructionFiles`, `existingProjectId/Name`). Sources: OrgAI export, Claude Code, opencode, Codex,
+  Copilot, Gemini CLI, Kiro, Roo; AGENTS.md/CLAUDE.md-style files are listed, never roles. Models map to the project's
+  connection (`model.ts`, `importTierForModel` in defaults.ts: kept, tier, or 'everyday' default). Preview and apply
+  re-scan the stored project's folder (the renderer sends choices, at most 200, never roles); apply requires the
+  preview's `digest` (`AgentImportApplyInput`) and refuses a missing or stale one. Items carry the whole `prompt` and
+  `elevatedTools` (Bash, Edit, Write, NotebookEdit, 'canSpawn') for the UI to show. A definition with no tool list
+  gets read-only Read, Glob, Grep; a 'replace' keeps the old role's MCP grants with a "Keeps MCP access" note.
+  The repo is untrusted: absolute roots, realpath-confined regular files outside .git only, no process or network,
+  4,000-char YAML lines and linear parser regexes (timing-tested), hard caps (see ARCHITECTURE.md
+  Conventions). Every parser is verified only by fixtures written from the docs, not by files the other harnesses
+  produced; Copilot, Gemini, Kiro and Roo are best-effort. No renderer code uses it yet.
 
 ## Renderer
+
+- Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 360 px; when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
 
 The UI overhaul landed on native elements with container queries. Radix and react-resizable-panels are not installed,
 and the frontend-design skill is not vendored in `.claude/skills` (only `run-desktop` is there).
@@ -53,10 +75,24 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   `components/DecisionCard.tsx` shell.
 - Primitives: `components/ui` (`ConfirmDialog` + `useConfirm` instead of `confirm()`, `Input`, `Textarea`, `Checkbox`,
   `Select`, `SettingRow` and the earlier ones). `IconButton` requires `label`, and `Button` takes `ariaLabel`.
+- Shell: sidebar is `BrandLockup` + nav + project list + one 52 px account row (Popover with plan windows) and the gear
+  "App settings"; below 1180 px or with Ctrl/Cmd+B it is a 56 px rail (`lib/useSidebarCollapsed.ts`). The topbar is 48 px:
+  name, folder name only (`lib/paths.ts`), underline `Tabs` named "Project sections". e2e helpers: `projectTab`,
+  `openAppSettings`, `openProject` (via `[data-testid=nav-project][data-name]`); the account row is `[data-testid=auth-pill]`,
+  the folder `[data-testid=project-folder]`, run status is read from `.run-tab[aria-selected=true]`.
+- Resizable columns: `components/layout/ResizeHandle` is a `role=separator` (vertical, `aria-valuenow/min/max`, focusable) inside the column it resizes, on the edge facing the neighbour, so it never overlaps the canvas. It supports captured pointer drag, Left/Right (16 px, Shift 64 px), Home/End and double-click to reset; `lib/panelWidth.ts` holds the pure clamp/drag/key helpers (tested) and `usePersistedWidth`. Sidebar: 200-420 px (default 232), localStorage `orgai.sidebarW`, App sets `--sidebar-w` on `.app` and the main area keeps at least 480 px; shown only in the full sidebar, not in the rail (the chosen width survives collapse/expand). Right `SidePanel`: 280-640 px, localStorage `orgai.sidePanelW.<persistKey|default>`, drives `--side-panel-w` on the parent grid (`.editor`, `.run-body`; unset means the CSS default 360 px / clamp(280px, 28cqi, 400px)) and the canvas keeps at least 360 px; hidden while the panel is collapsed. Dragging below the minimum does not snap to the rail. The account popover's `UsageMeter` has no Refresh button or Updated text: it calls `refreshUsage()` on open when data is older than 60 s, then every 60 s while open (one call in flight, at most one attempt per minute even on failure).
 - Status words come only from `lib/runStatus.ts`: Running, Needs you, Idle, Paused, Finished, Stopped, Failed.
+- Run view: one 40 px run strip (`[data-testid=run-strip]`: run tabs plus Interrupt / End session / Org retrospective), then a 32 px canvas toolbar
+  (`[data-testid=run-meta]` metadata, Hide finished switch, zoom IconButtons, the legend popover). The tray stacks under the canvas and docks
+  beside it only in a frame of 1500 x 560 or more; `section.frame-tray[data-compact=true]` marks a frame under 480 px high.
+- "Needs you" counts decisions (cards), never runs: the bell, the Needs-you row, the project row badge and subtitle
+  ("3 decisions · 1 run") and the topbar all come from `lib/needsYou.ts` `waitingItems` / `decisionCount`. A run row's dot
+  is the run's status. A Needs-you item names the kind and the ask first, then the location, and opens that card.
+  A question card shows its options inline at every size (`DecisionCard` `inline`); the tray shows the first open decision.
 - Project tabs are Live, History, Org chart and Settings. The org chart editor is `views/OrgChartView.tsx`, and project
   settings are sectioned through `components/settings/*`.
 - e2e:free is `e2e/layout.mjs`, `runs.mjs`, `maintenance.mjs` and `connections.mjs`. Update selectors in the same change.
+- Agent import (renderer): the New project form shows `foundLine` ("Found 2 Claude Code agents and AGENTS.md.") and an "already a project" line from `checkPath` (debounced 300 ms), and with agents present swaps the Architect checkbox for a radio group (`[data-testid=setup-choice]`: import / architect / default; submit "Create project and review import", or "Open <name>" when the folder is already a project, with a secondary "... anyway"). Import creates the project with the default chart and sets `importRequest` in the store; `views/OrgChartView.tsx` then opens `components/import/ImportAgentsDialog.tsx` (mount-only-while-open, re-previews on every choice, always sends the preview digest, ConfirmDialog whenever replacedRoleIds is non-empty on a non-fresh chart; the apply error shows in the footer with Refresh preview and takes focus; `lib/ipcError.ts` strips the IPC wrapper). The Org chart tab has Import agents and Export to repo buttons and, in the `.frame-top` region above the canvas, a "not imported" Banner (remembered in localStorage per project, `lib/agentImport.ts`), the apply notice with Undo (`importNotices` in the store: undo saves `previousRoles` and expires on the first chart edit, comparing against `importedRoles`; the chart is fitted after an import and an Undo) and the export path notice. Project settings > Connection has a read-only "Role models" disclosure. Pure logic and tests are in `lib/agentImport.ts`; e2e is `e2e/import.mjs` (in e2e:free). Not built: a file/folder chooser in the dialog (the contract scans the project folder only), the Architect-setup "sees the agents" note, and a link to Connection settings from the dialog.
 - Walkthroughs on mock data are in `docs/design/ux-review*.md`. The newest, `ux-review-runs-2.md`, predates the brief A
   run-view merge, so its N1 tray finding needs a re-walk. N2 (run windows miss pending decisions) and the focus and
   wording items are still open.
@@ -129,6 +165,63 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   `claude` and `codex`. `adapterForProject` (`src/shared/defaults.ts`) picks the adapter from the connection, or for
   LiteLLM from the root role's model family. A work run whose roles mix families is refused before the run exists.
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
+- Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new
+  project takes `AppSettings.defaultConnection` when `creationConnection` (`defaults.ts`) finds it usable (anthropic
+  always, openai when enabled, litellm when enabled with a base URL and a stored key) and the connection maps every
+  tier the roles use; otherwise it stays on anthropic. It gets that connection's provider label, tier models (the
+  'switched' remap) and adapter. Mock projects and existing projects are untouched. Verified by unit tests.
+- Child env isolation (`src/main/runtime/childEnv.ts` `isolateClaudeEnv`, used by claude.ts `buildEnv`,
+  `completionEnv` and `probeUsage`, and by `claude auth status`): the inherited env loses every routing, model,
+  gateway and cloud-provider variable (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
+  `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_*`, `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_USE_*`,
+  `ANTHROPIC_{BEDROCK,VERTEX,FOUNDRY,AWS}_*`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_BETAS`, `ANTHROPIC_PROFILE`,
+  the workload-identity family `ANTHROPIC_{IDENTITY,SERVICE_ACCOUNT,WORKSPACE,FEDERATION}_*`,
+  `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_UNIX_SOCKET`, `AWS_BEARER_TOKEN_BEDROCK`, `CLOUD_ML_REGION`,
+  `VERTEX_REGION_*`, `CLAUDE_CODE_SKIP_*_AUTH` and every `CLAUDE_CODE_{DISABLE,ENABLE}_*` behaviour switch). Only the
+  connection's env (or OrgAI's own settings, merged after isolation) sets them. The bundled CLI of SDK 0.3.312 names
+  about 80 `CLAUDE_CODE_DISABLE_*` and 30 `CLAUDE_CODE_ENABLE_*` switches (grep of the SDK package): gateway and
+  API-surface ones (`DISABLE_EXPERIMENTAL_BETAS`, `DISABLE_ADAPTIVE_THINKING`, `ENABLE_GATEWAY_MODEL_DISCOVERY`, `ENABLE_FINE_GRAINED_TOOL_STREAMING`, `ENABLE_PROXY_AUTH_HELPER`,
+  `DISABLE_AUTH_REFRESH_LOCK`, `ENABLE_XAA`, `DISABLE_LEGACY_MODEL_REMAP`...), feature toggles and terminal UI ones
+  (`DISABLE_MOUSE`, `DISABLE_TERMINAL_TITLE`...) that a headless SDK run does not need. OrgAI sets none of them
+  (it sets only `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_CONCURRENT_SUBAGENTS`). The explicit allows
+  (`CLAUDE_CODE_ALLOWED_SWITCHES`) are `CLAUDE_CODE_ENABLE_TELEMETRY` (an organisation's OpenTelemetry opt-in;
+  `OTEL_*` passes through) and the privacy opt-outs `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and
+  `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`. Kept as
+  legitimate Anthropic auth sources: `CLAUDE_CODE_OAUTH_TOKEN` (and its refresh token) and `CLAUDE_CONFIG_DIR`.
+  `ANTHROPIC_API_KEY` reaches a run only on the anthropic connection for an API-key project, through
+  `RunConnection.env` (copied from the project's `auth.envVar`), so run titles get it too; `buildEnv` also copies
+  the inherited `auth.envVar` value for a non-proxy API-key project. On LiteLLM the inherited
+  API key, OAuth token (and refresh token) and `CLAUDE_CONFIG_DIR` (it holds the claude.ai login) are dropped, so
+  only the connection's `ANTHROPIC_AUTH_TOKEN` authenticates. Drafts (no connection) keep an inherited `ANTHROPIC_API_KEY`. Verified by unit tests only; the
+  bundled CLI's actual auth choice with this env has not been checked in a live run.
+- Anthropic status (`anthropicAuth.ts`), checked token-free on the bundled CLI 2.1.312 (SDK 0.3.312) with a temp
+  `CLAUDE_CONFIG_DIR`:
+  - `claude auth status --setting-sources project` is rejected (unknown option); the global form
+    `claude --setting-sources project auth status` is accepted. Verified.
+  - With an `env.ANTHROPIC_AUTH_TOKEN` in the config dir's `settings.json`, plain `auth status` reports
+    `loggedIn: true, authMethod: 'oauth_token'`; with `--setting-sources project` it reports `loggedIn: false,
+    authMethod: 'none'` and exits 1 with the JSON still on stdout. Verified.
+  - `authMethod` values seen: `claude.ai` (a /login), `oauth_token` (`CLAUDE_CODE_OAUTH_TOKEN` or an
+    `ANTHROPIC_AUTH_TOKEN` env, indistinguishable), `api_key` with `apiKeySource`, `none`. Verified.
+  - The project settings source reads `<cwd>/.claude/settings.json`, so the status runs in `os.tmpdir()`, never the
+    home dir. The bundled CLI is tried first (execFile), then PATH candidates found by `execFile(<SystemRoot>\System32\where.exe,
+    ['$PATH:claude'])` (PATH only, never the cwd) / `execFile('which', ['-a', 'claude'])`, both in the temp dir with
+    no shell and absolute paths only, plus the well-known install
+    paths, with no bare `claude` fallback (nothing found reports "Claude Code CLI not found" with the places
+    looked). A shell is used only for Windows .cmd/.bat shims without metacharacters; a CLI that rejects the flag is retried without it and its detail says user
+    settings could not be excluded. The disconnected detail tells the user to run claude and /login, set an API
+    key, or choose another default connection. Wiring is unit-tested with an injected runner.
+- Auth failures in a run: `activity.ts` `isAuthFailure` and `authFailureMessage(connection)`. A failure is the SDK
+  assistant `error: 'authentication_failed'`; the exact bare CLI reply "Invalid API key · Please run /login"
+  (separator `·`, `-` or `.`, nothing else in the text), the only text match without an error flag; short text that
+  starts with the CLI's wording ("API Error: 401", "OAuth token has expired"...) when the adapter reports an
+  auth-related error (`isError`; a non-auth `errorCode` alone never counts); or auth words / 401 / unauthorized anywhere only with `isError`. The Claude
+  adapter sets `isError` on an assistant message only for the codes in claude.ts `AUTH_ERROR_CODES`
+  (`authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`), never for rate_limit or
+  billing_error, and on a result from `is_error`. The Claude adapter then ends the run
+  `error` with that one-line message, writes a harness system row whose detail is the scrubbed raw text, and
+  `complete()` throws it. `[mock:auth-fail]` drives the mock the same way. The live failure shape is unverified
+  (from the 0.3.312 typings and the user's report).
 - Codex (`@openai/codex` 0.166.0):
   - `codex app-server` speaks JSON-RPC over stdio, one object per line. The `jsonrpc` field is not needed. The
     client sends `initialize` and then `initialized`. Verified offline against `generate-json-schema` /

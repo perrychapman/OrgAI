@@ -574,6 +574,66 @@ describe('CodexAdapter.complete', () => {
     server.push('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', items: [], error: { message: 'boom', codexErrorInfo: null } } })
     expect((await caught).message).toContain('boom')
   })
+
+  it('uses the run connection and model it is given instead of completionConnection', async () => {
+    let server!: FakeServer
+    const completionConnection = vi.fn(() => ({ connection: 'openai' as const, adapter: 'codex' as const, env: { CODEX_HOME: '/default' } }))
+    const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)), completionConnection })
+    const promise = adapter.complete({ kind: 'title', system: 's', prompt: 'p', model: 'gpt-5-nano', connection: { connection: 'litellm', adapter: 'codex', env: { CODEX_HOME: '/run' } } })
+    await vi.waitFor(() => expect(server?.of('turn/start')).toHaveLength(1))
+    expect(completionConnection).not.toHaveBeenCalled()
+    expect(server.options.env).toMatchObject({ CODEX_HOME: '/run' })
+    expect(server.of('thread/start')[0].params).toMatchObject({ model: 'gpt-5-nano' })
+    server.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await promise
+  })
+
+  it('stops and closes the app-server when the signal aborts', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)) })
+    const abort = new AbortController()
+    const caught = adapter.complete({ system: 's', prompt: 'p', signal: abort.signal }).then(() => new Error('resolved'), (e: Error) => e)
+    await vi.waitFor(() => expect(server?.of('turn/start')).toHaveLength(1))
+    abort.abort()
+    expect((await caught).message).toContain('cancelled')
+    expect(server.closed).toBe(true)
+  })
+
+  it('an abort while the app-server start hangs settles at once and closes the app-server', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        server = new FakeServer(o)
+        server.start = () => new Promise<unknown>(() => {})
+        return server
+      }
+    })
+    const abort = new AbortController()
+    const caught = adapter.complete({ system: 's', prompt: 'p', signal: abort.signal }).then(() => new Error('resolved'), (e: Error) => e)
+    await vi.waitFor(() => expect(server).toBeDefined())
+    abort.abort()
+    expect(server.closed).toBe(true)
+    expect((await caught).message).toContain('cancelled')
+    expect(server.of('thread/start')).toHaveLength(0)
+  })
+
+  it('an abort while thread/start hangs settles at once and closes the app-server', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        server = new FakeServer(o)
+        server.overrides['thread/start'] = () => new Promise(() => {})
+        return server
+      }
+    })
+    const abort = new AbortController()
+    const caught = adapter.complete({ system: 's', prompt: 'p', signal: abort.signal }).then(() => new Error('resolved'), (e: Error) => e)
+    await vi.waitFor(() => expect(server?.of('thread/start')).toHaveLength(1))
+    abort.abort()
+    expect(server.closed).toBe(true)
+    expect((await caught).message).toContain('cancelled')
+    expect(server.of('turn/start')).toHaveLength(0)
+  })
 })
 
 describe('codexModelFor', () => {

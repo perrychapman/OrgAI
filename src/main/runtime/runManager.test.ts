@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import { ROOT_AGENT_ID } from './types'
 import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
@@ -1808,5 +1809,233 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     expect(persistInstall).toHaveBeenCalledWith(p.id, expect.objectContaining({ name: 'github' }), {}, 'library')
     expect(events.find(isType('mcpInstall.resolved'))?.outcome.scope).toBe('library')
     await m.stopAll()
+  })
+})
+
+describe('run titles', () => {
+  it('a work run on the mock adapter gets run.title and a persisted summary.title', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p)
+    const completeSpy = vi.spyOn(MockAdapter.prototype, 'complete')
+    const run = await m.start({ project: p, prompt: 'fix the "login" bug, now please' })
+    const e = await waitFor(isType('run.title', (x) => x.runId === run.id))
+    expect(e.title).toBe('Fix the login bug')
+    expect(completeSpy.mock.calls[0][0]).toMatchObject({ kind: 'title' })
+    // The mock adapter has no fast model: no model is forced.
+    expect(completeSpy.mock.calls[0][0].model).toBeUndefined()
+    completeSpy.mockRestore()
+    // The title follows the status 'starting' event, never precedes it.
+    expect(events.findIndex(isType('run.status'))).toBeLessThan(events.indexOf(e))
+    expect(m.summaryOf(run.id)?.title).toBe('Fix the login bug')
+    expect(store.get(run.id)?.title).toBe('Fix the login bug')
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    // Survives a reload: runs.json index and the run record.
+    const reloaded = new RunStore(join(dir, 'data'))
+    expect(reloaded.get(run.id)?.title).toBe('Fix the login bug')
+    expect(reloaded.getRecord(run.id)?.summary.title).toBe('Fix the login bug')
+    expect(events.filter(isType('run.title'))).toHaveLength(1)
+  })
+
+  it('passes the fast model and the run connection to the completion', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const connection = { connection: 'litellm' as const, adapter: 'mock' as const, env: { ANTHROPIC_BASE_URL: 'http://proxy' } }
+    const fastModel = vi.fn(() => 'proxy-fast')
+    const { m } = manager(p, {}, { resolveConnection: () => connection, fastModel })
+    const completeSpy = vi.spyOn(MockAdapter.prototype, 'complete')
+    const run = await m.start({ project: p, prompt: 'Build the API for the billing service' })
+    await waitFor(isType('run.title', (x) => x.runId === run.id))
+    expect(fastModel).toHaveBeenCalledWith(expect.objectContaining({ id: p.id }), expect.objectContaining({ adapter: 'mock' }))
+    expect(completeSpy.mock.calls[0][0]).toMatchObject({ kind: 'title', model: 'proxy-fast', connection, cwd: expect.any(String) })
+    completeSpy.mockRestore()
+    await m.stop(run.id)
+  })
+
+  it('setup runs and image-only prompts get no title', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    const completeSpy = vi.spyOn(MockAdapter.prototype, 'complete')
+    const setupRun = await m.start({ project: p, prompt: 'Set this project up', kind: 'setup' })
+    const imageRun = await m.start({ project: p, prompt: '  ', images: [{ mediaType: 'image/png', data: 'iVBORw0KGgo=', name: 'a.png' }] })
+    await sleep(30)
+    expect(completeSpy).not.toHaveBeenCalled()
+    completeSpy.mockRestore()
+    expect(events.some((e) => e.type === 'run.title')).toBe(false)
+    expect(m.summaryOf(setupRun.id)?.title).toBeUndefined()
+    expect(m.summaryOf(imageRun.id)?.title).toBeUndefined()
+    await m.stop(setupRun.id)
+    await m.stop(imageRun.id)
+  })
+
+  it('an authentication failure ends the run failed with a readable error naming the connection', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const connection = { connection: 'litellm' as const, adapter: 'mock' as const }
+    const { m } = manager(p, {}, { resolveConnection: () => connection })
+    const run = await m.start({ project: p, prompt: 'Do it [mock:auth-fail]' })
+    const status = await waitFor(isType('run.status', (e) => e.status === 'error'))
+    expect(status.error).toMatch(/^The LiteLLM connection was refused/)
+    expect(status.error).toMatch(/Settings > Connections/)
+    expect(events.some((e) => e.type === 'permission.request')).toBe(false)
+    await sleep(20)
+    const record = m.get(run.id)
+    expect(record?.summary).toMatchObject({ status: 'error', error: status.error })
+    expect(record?.agents[ROOT_AGENT_ID]?.state).toBe('error')
+    const blocks = record?.transcript.map((t) => ({ block: t.block, source: t.source })) ?? []
+    expect(blocks.some((b) => b.block.kind === 'system' && b.source === 'harness')).toBe(true)
+    expect(blocks.some((b) => b.block.kind === 'text' && /Invalid API key/.test((b.block as { text: string }).text))).toBe(false)
+  })
+
+  it('a failing completion leaves the run healthy and untitled', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    const run = await m.start({ project: p, prompt: 'Change x [mock:title-fail]' })
+    const req = await waitFor(isType('permission.request'))
+    m.decide(run.id, req.request.id, { behavior: 'allow' })
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    expect(events.some((e) => e.type === 'run.title')).toBe(false)
+    expect(m.summaryOf(run.id)?.title).toBeUndefined()
+    expect(m.summaryOf(run.id)?.status).toBe('idle')
+    await m.stop(run.id)
+  })
+
+  it('a title that lands after the run ended is still saved and broadcast', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let release!: (t: string) => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: () => new Promise<string>((r) => (release = r)),
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    release('Ship the release notes')
+    const e = await waitFor(isType('run.title'))
+    expect(e).toEqual({ type: 'run.title', runId: run.id, title: 'Ship the release notes' })
+    expect(store.get(run.id)?.title).toBe('Ship the release notes')
+    expect(new RunStore(join(dir, 'data')).getRecord(run.id)?.summary.title).toBe('Ship the release notes')
+  })
+
+  it('stopping a run aborts its pending title and leaves it untitled', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p)
+    const completeSpy = vi.spyOn(MockAdapter.prototype, 'complete')
+    const run = await m.start({ project: p, prompt: 'Fix the login bug [mock:title-slow]' })
+    expect(completeSpy).toHaveBeenCalledTimes(1)
+    const signal = completeSpy.mock.calls[0][0].signal
+    completeSpy.mockRestore()
+    await m.stop(run.id)
+    expect(signal?.aborted).toBe(true)
+    await sleep(80)
+    expect(events.some((e) => e.type === 'run.title')).toBe(false)
+    expect(store.get(run.id)?.title).toBeUndefined()
+  })
+
+  it('stopAll aborts a title still pending for a run that already ended', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let signal: AbortSignal | undefined
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: (i) => {
+        signal = i.signal
+        return new Promise<string>(() => {})
+      },
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    expect(signal?.aborted).toBe(false)
+    await m.stopAll()
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('removing a project aborts a title still pending for one of its ended runs', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let signal: AbortSignal | undefined
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: (i) => {
+        signal = i.signal
+        return new Promise<string>(() => {})
+      },
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    await m.removeProject('some-other-project')
+    expect(signal?.aborted).toBe(false)
+    await m.removeProject(p.id)
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('a title that lands after the project was deleted writes nothing', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let release!: (t: string) => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: () => new Promise<string>((r) => (release = r)),
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await m.removeProject(p.id)
+    release('Ship the release notes')
+    await sleep(20)
+    expect(events.some((e) => e.type === 'run.title')).toBe(false)
+    expect(store.get(run.id)).toBeNull()
+    expect(new RunStore(join(dir, 'data')).getRecord(run.id)).toBeNull()
+  })
+
+  it('a continuation gets its own title; an auto-resume keeps the earlier one', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const prompts: string[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async (input) => {
+        prompts.push(input.prompt)
+        return `Title ${prompts.length}`
+      },
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const first = await m.start({ project: p, prompt: 'First task' })
+    await vi.waitFor(() => expect(store.get(first.id)?.title).toBe('Title 1'))
+    const second = await m.continueRun(p, first.id, 'Second task')
+    await vi.waitFor(() => expect(store.get(second.id)?.title).toBe('Title 2'))
+    // The follow-up is titled with the task it continues as context.
+    expect(prompts[0]).not.toContain('This continues the task')
+    expect(prompts[1]).toContain('This continues the task: <earlier_task>Title 1</earlier_task>')
+    expect(prompts[1]).toContain('<message>\nSecond task\n</message>')
+    const resumed = await m.continueRun(p, second.id, RESUME_TEXT)
+    expect(resumed.title).toBe('Title 2')
+    await sleep(20)
+    expect(prompts).toHaveLength(2)
+    expect(store.get(second.id)?.title).toBe('Title 2')
   })
 })

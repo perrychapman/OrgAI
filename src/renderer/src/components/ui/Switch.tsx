@@ -7,6 +7,7 @@ export function Switch({
   label,
   disabled,
   title,
+  describedBy,
   testId
 }: {
   checked: boolean
@@ -14,6 +15,8 @@ export function Switch({
   label: string
   disabled?: boolean
   title?: string
+  /** Id of the element that describes this switch (aria-describedby). */
+  describedBy?: string
   testId?: string
 }): ReactElement {
   return (
@@ -23,6 +26,7 @@ export function Switch({
       className="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-describedby={describedBy}
       title={title}
       data-testid={testId}
       disabled={disabled}

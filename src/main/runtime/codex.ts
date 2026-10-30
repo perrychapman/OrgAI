@@ -979,7 +979,7 @@ export class CodexAdapter implements RuntimeAdapter {
    * developer instructions. Returns the final agent message.
    */
   async complete(input: CompletionInput): Promise<string> {
-    const connection = await this.options.completionConnection?.()
+    const connection = input.connection ?? (await this.options.completionConnection?.())
     const launch = buildLaunchConfig(connection, [])
     const options: CodexAppServerOptions = { cwd: input.cwd, env: launch.env, config: launch.config }
     const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
@@ -1009,10 +1009,26 @@ export class CodexAdapter implements RuntimeAdapter {
       failure ??= error?.message ?? `codex app-server exited (code ${code ?? 'unknown'})`
       done()
     })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // The caller gave up (run-title timeout, run stopped): end the turn wait, kill the app-server at once so pending
+    // requests reject, and settle whichever step is awaited (start, thread/start, turn/start) even if one hangs.
+    let cancel!: (e: Error) => void
+    const cancelled = new Promise<never>((_, reject) => (cancel = reject))
+    cancelled.catch(() => {})
+    const step = <T>(p: Promise<T>): Promise<T> => Promise.race([p, cancelled])
+    const onAbort = (): void => {
+      failure ??= 'the completion was cancelled'
+      done()
+      cancel(new Error('Completion cancelled'))
+      server.close()
+    }
+    if (input.signal?.aborted) throw new Error('Completion cancelled')
+    input.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      await server.start(this.options.clientVersion)
+      await step(server.start(this.options.clientVersion))
+      if (input.signal?.aborted) throw new Error('Completion cancelled')
       const model = codexModelFor(input.model)
-      const res = await server.request(METHOD.threadStart, {
+      const res = await step(server.request(METHOD.threadStart, {
         ephemeral: true,
         approvalPolicy: 'never',
         sandbox: 'read-only',
@@ -1020,14 +1036,16 @@ export class CodexAdapter implements RuntimeAdapter {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(model ? { model } : {}),
         serviceName: ORGAI_SERVICE
-      })
+      }))
       const thread = parseThreadResult(res)
       if (!thread) throw new Error('thread/start returned no thread id')
-      await server.request(METHOD.turnStart, { threadId: thread.threadId, input: userInput(input.prompt) })
-      await Promise.race([completed, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Completion timed out')), this.options.completionTimeoutMs ?? 180_000))])
+      await step(server.request(METHOD.turnStart, { threadId: thread.threadId, input: userInput(input.prompt) }))
+      await Promise.race([completed, new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error('Completion timed out')), this.options.completionTimeoutMs ?? 180_000)))])
       if (failure) throw new Error(`Completion failed: ${failure}`)
       return final || text
     } finally {
+      clearTimeout(timer)
+      input.signal?.removeEventListener('abort', onAbort)
       server.close()
     }
   }

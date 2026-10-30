@@ -2,67 +2,54 @@
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100%;
 }
+/* Below 1180 px (or by choice, Ctrl/Cmd+B) the sidebar is a rail. */
+.app[data-sidebar='rail'] {
+  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+}
 
+/* Sidebar and topbar sit on --surface-1; the one 1 px --border-default is on the edge that touches --surface-0. */
 .sidebar {
+  position: relative;
   background: var(--surface-1);
   border-right: 1px solid var(--border-default);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 16px 12px;
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.3px;
-  font-size: var(--text-title-sm);
-}
-
-.brand-mark {
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
-  display: grid;
-  place-items: center;
-  font-size: var(--text-caption);
-  font-weight: var(--weight-semibold);
-  color: var(--text-on-brand);
+.sidebar:focus {
+  outline: none;
 }
 
 .sidebar-section {
-  padding: 8px 10px;
+  padding: var(--space-1) var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-
-.sidebar-mock {
-  padding: 0 var(--space-4) var(--space-2);
+  gap: var(--space-0h);
 }
 
 .sidebar-label {
   font-size: var(--text-small);
-  color: var(--text-secondary);
+  line-height: var(--text-small-lh);
+  color: var(--text-tertiary);
   font-weight: var(--weight-semibold);
-  padding: 10px 8px 4px;
+  padding: var(--space-3) var(--space-4) var(--space-1);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-2);
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
+  font: inherit;
   cursor: pointer;
   text-align: left;
   width: 100%;
@@ -74,7 +61,12 @@
 .nav-item.active {
   background: var(--surface-3);
   color: var(--text-primary);
-  border-color: var(--border-default);
+}
+.nav-item:focus-visible,
+.account-row:focus-visible,
+.needs-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .nav-item .dot {
   width: 8px;
@@ -88,10 +80,15 @@
   box-shadow: var(--halo-dot-live);
   animation: breathe 1.6s ease-in-out infinite;
 }
+.nav-item .dot.warn {
+  background: var(--warning);
+  box-shadow: var(--halo-dot-warning);
+}
 .nav-text {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1;
 }
 .nav-name {
   overflow: hidden;
@@ -106,26 +103,21 @@
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
 }
-.nav-counts.warn {
+/* One compact "Needs you · n" row: the only orange in the sidebar is its icon and count. */
+.nav-item.needs-row {
+  color: var(--text-primary);
+}
+.nav-item.needs-row > svg:first-child {
   color: var(--warning-text);
 }
-.nav-item .dot.warn {
-  background: var(--warning);
-  box-shadow: var(--halo-dot-warning);
+.nav-rail-count {
+  display: none;
 }
 
 .sidebar-projects {
   flex: 1;
   min-height: 0;
   overflow: auto;
-}
-/* Status pills in the topbar keep their words; the path pill shrinks instead. */
-.topbar .pill.run-status {
-  flex-shrink: 0;
-}
-.nav-needs .nav-runs {
-  max-height: calc(var(--space-16) * 2);
-  overflow-y: auto;
 }
 .sidebar-empty {
   padding: var(--space-1h) var(--space-3);
@@ -180,7 +172,8 @@
   gap: var(--space-1h);
   width: 100%;
   min-width: 0;
-  padding: var(--space-1) var(--space-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -196,7 +189,6 @@
 }
 .nav-run.active {
   background: var(--surface-3);
-  border-color: var(--border-default);
   color: var(--text-primary);
 }
 .nav-run-title {
@@ -205,43 +197,221 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nav-needs .nav-item.needs-you {
-  color: var(--warning-text);
+
+/* Needs-you popover list. */
+.needs-popover {
+  width: min(22rem, calc(100vw - 16px));
 }
-.nav-needs .nav-item.needs-you .nav-text {
-  flex: 1;
-}
-.nav-needs .nav-runs {
-  margin-left: var(--space-2);
-}
-.nav-run.waiting {
-  align-items: flex-start;
-  border-color: var(--warning-border);
-  background: var(--warning-soft);
-}
-.nav-run-main {
+.needs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  gap: var(--space-0h);
 }
-.nav-run-where,
-.nav-run-what {
+.needs-item {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1h) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.needs-item:hover {
+  background: var(--surface-3);
+}
+.needs-where,
+.needs-what {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nav-run-what {
+/* The ask (kind and what) first and prominent; the location (project, run) second and muted. */
+.needs-what {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+.needs-where {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
+/* Footer: one 52 px account row and the gear. */
 .sidebar-footer {
   margin-top: auto;
-  padding: 12px;
-  border-top: 1px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 52px;
+  padding: 0 var(--space-2);
+  border-top: 1px solid var(--border-subtle);
   font-size: var(--text-small);
   color: var(--text-secondary);
+}
+.sidebar-footer .popover-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  height: var(--control-lg);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+.account-row:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.account-row .dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.account-row .dot.ok {
+  background: var(--success);
+}
+.account-row .dot.warn {
+  background: var(--warning);
+}
+.account-row .dot.danger {
+  background: var(--danger);
+}
+.account-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-pct {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.account-pct + .usage-mini {
+  flex: 0 0 var(--space-6);
+  min-width: 0;
+}
+.sidebar-gear {
+  flex: none;
+  display: inline-flex;
+}
+.sidebar-gear[data-active='true'] .icon-btn {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+.sidebar-gear .icon-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Account popover. */
+.account-popover {
+  width: min(20rem, calc(100vw - 16px));
+}
+.account-pop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-1);
+}
+.account-pop-title {
+  font-weight: var(--weight-semibold);
+}
+.account-pop-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+
+/* ---------- Rail (56 px): mark, icons, initials chips ---------- */
+.sidebar[data-collapsed='true'] .sidebar-section {
+  align-items: center;
+  padding: var(--space-1) var(--space-1h);
+}
+.sidebar[data-collapsed='true'] .nav-item {
+  justify-content: center;
+  padding: 0;
+  width: 100%;
+}
+.sidebar[data-collapsed='true'] .nav-item.needs-row {
+  gap: var(--space-1);
+}
+.sidebar[data-collapsed='true'] .nav-rail-count {
+  display: inline;
+  font-size: var(--text-caption);
+  color: var(--warning-text);
+}
+.sidebar[data-collapsed='true'] .nav-row {
+  width: 100%;
+}
+.nav-initials {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-sm);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.nav-initials .dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+.sidebar[data-collapsed='true'] .nav-item.active .nav-initials {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+.sidebar[data-collapsed='true'] .sidebar-footer {
+  flex-direction: column;
+  height: auto;
+  padding: var(--space-2) var(--space-1h);
+  gap: var(--space-1);
+}
+.sidebar[data-collapsed='true'] .sidebar-footer .popover-wrap {
+  flex: none;
+  width: 100%;
+}
+.sidebar[data-collapsed='true'] .account-row {
+  justify-content: center;
+  padding: 0;
+}
+.sidebar[data-collapsed='true'] .account-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 
 .pill {
@@ -282,7 +452,8 @@
   background: var(--warning);
 }
 @media (prefers-reduced-motion: reduce) {
-  .pill.live .dot {
+  .pill.live .dot,
+  .nav-item .dot.is-running {
     animation: none;
   }
 }
@@ -299,6 +470,7 @@
   outline: none;
 }
 
+/* Base topbar, also used by App settings, Projects, the transcript panel and the editor. */
 .topbar {
   display: flex;
   align-items: center;
@@ -331,6 +503,71 @@
   flex: 1;
 }
 
+/* The project topbar: 48 px, name, folder, underline tabs, then at most two items on the right. */
+.topbar.project-topbar {
+  height: var(--topbar-h);
+  padding: 0 var(--space-4);
+  gap: var(--space-4);
+}
+.project-topbar h1 {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.project-folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-tabs {
+  flex: 0 0 auto;
+  height: calc(var(--topbar-h) - 1px);
+  margin-left: var(--space-2);
+}
+.topbar-needs {
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  cursor: pointer;
+}
+.topbar-needs:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* The folder name hides when the pane is narrow; the save indicator keeps its width and loses its words instead. */
+@container (max-width: 900px) {
+  .project-folder {
+    display: none;
+  }
+}
+@container (max-width: 1100px) {
+  .project-topbar .save-indicator.is-saved .save-text,
+  .project-topbar .save-indicator.is-saving .save-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+}
+
 .tabs {
   display: inline-flex;
   background: var(--surface-2);
@@ -355,40 +592,17 @@
   box-shadow: var(--inset-border-strong);
 }
 
-/* N7: the save indicator shrinks (and ellipsizes) before it can run under the section tabs. */
 .topbar .save-indicator {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  position: relative;
 }
-
-/* N6: on a short sidebar the Needs-you block shows three items and a "+n more" line. */
-.sidebar {
-  container: sidebar / size;
-}
-.nav-needs-more {
-  display: none;
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--text-small);
-  color: var(--text-secondary);
-}
-@container sidebar (max-height: 700px) {
-  .nav-needs .nav-needs-item:nth-child(n + 4) {
-    display: none;
-  }
-  .nav-needs-more {
-    display: block;
-  }
+.project-topbar .save-indicator {
+  min-width: var(--space-5);
 }
 
 /* The document never scrolls: only the view panes do, so a scrollIntoView can not push the topbar away. */
 html,
 #root {
   overflow: hidden;
-}
-.settings-block-stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
 }

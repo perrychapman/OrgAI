@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { adapterForProject } from '@shared/defaults'
+import { adapterForProject, newProject } from '@shared/defaults'
 import type { ConnectionEvent, LiteLLMConnection, Project } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
 import { ProjectStore } from '../store/projects'
@@ -148,6 +148,22 @@ describe('ConnectionService litellm', () => {
   })
 })
 
+describe('fastModel', () => {
+  it('uses each connection\'s fast tier, haiku on Anthropic and Claude, nothing for the mock', () => {
+    const ctx = setup()
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'anthropic' })).toBe('haiku')
+    expect(ctx.service.fastModel({ adapter: 'codex', connection: 'openai' })).toBe('gpt-5-nano')
+    expect(ctx.service.fastModel({ adapter: 'mock', connection: 'anthropic' })).toBeUndefined()
+    // LiteLLM without a fast tier: the Claude adapter falls back to the haiku alias, Codex to its default.
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('haiku')
+    expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBeUndefined()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { fast: 'claude-haiku-4-5' } } } })
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('claude-haiku-4-5')
+    expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBe('claude-haiku-4-5')
+  })
+})
+
 describe('runConnection', () => {
   it('builds the litellm env for the claude adapter and the codex config for codex', async () => {
     const ctx = setup()
@@ -187,6 +203,79 @@ describe('runConnection', () => {
     expect(() => ctx.service.runConnection(p, choice)).toThrow(/ORGAI_TEST_OPENAI_KEY/)
     vi.stubEnv('ORGAI_TEST_OPENAI_KEY', 'sk-openai')
     expect(ctx.service.runConnection(p, choice)).toMatchObject({ codexAuth: 'apiKey', apiKey: 'sk-openai' })
+    vi.unstubAllEnvs()
+  })
+})
+
+describe('prepareNewProject', () => {
+  const fresh = (settings: ReturnType<typeof setup>['settings']): Project => newProject({ name: 'N', path: '/x', brief: '' }, settings.get())
+
+  it('puts a project on a usable litellm default with that connection\'s tier models', async () => {
+    const ctx = setup()
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
+    const out = ctx.service.prepareNewProject(fresh(ctx.settings))
+    expect(out.provider).toMatchObject({ id: 'claude', connection: 'litellm', label: 'LiteLLM' })
+    const models = out.roles.map((r) => r.model)
+    expect(models.every((m) => m.startsWith('claude-'))).toBe(true)
+  })
+
+  it('a litellm default whose models are gpt picks the codex adapter', async () => {
+    const ctx = setup()
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const s = ctx.settings.get()
+    ctx.settings.set({
+      ...s,
+      defaultConnection: 'litellm',
+      connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { top: 'gpt-5', deep: 'gpt-5', everyday: 'gpt-5-mini', fast: 'gpt-5-mini' } } }
+    })
+    const out = ctx.service.prepareNewProject(fresh(ctx.settings))
+    expect(out.provider).toMatchObject({ id: 'codex', connection: 'litellm' })
+  })
+
+  it('stays on anthropic when litellm has no model for a tier the roles use', async () => {
+    const ctx = setup()
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const s = ctx.settings.get()
+    const { everyday: _everyday, ...partial } = s.connections.litellm.tierModels
+    void _everyday
+    ctx.settings.set({ ...s, defaultConnection: 'litellm', connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: partial } } })
+    const p = fresh(ctx.settings)
+    expect(ctx.service.prepareNewProject(p)).toEqual(p)
+  })
+
+  it('falls back to anthropic when litellm is not usable', () => {
+    const ctx = setup()
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
+    const p = fresh(ctx.settings)
+    expect(ctx.service.prepareNewProject(p)).toEqual(p)
+    expect(p.provider).toMatchObject({ id: 'claude', connection: 'anthropic' })
+  })
+
+  it('an enabled openai default gives codex', () => {
+    const ctx = setup()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, defaultConnection: 'openai', connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true } } })
+    const out = ctx.service.prepareNewProject(fresh(ctx.settings))
+    expect(out.provider).toMatchObject({ id: 'codex', connection: 'openai', label: 'Codex (ChatGPT)' })
+  })
+})
+
+describe('runConnection anthropic key', () => {
+  it('passes ANTHROPIC_API_KEY from the project\'s apiKey env var, else nothing', () => {
+    const ctx = setup()
+    const choice = { adapter: 'claude' as const, connection: 'anthropic' as const, mismatched: [] }
+    const p = project({ provider: { id: 'claude', label: 'x', auth: { kind: 'apiKey', envVar: 'ORGAI_TEST_ANTH_KEY' }, connection: 'anthropic' } })
+    expect(ctx.service.runConnection(p, choice).env).toEqual({})
+    vi.stubEnv('ORGAI_TEST_ANTH_KEY', 'sk-ant-x')
+    expect(ctx.service.runConnection(p, choice).env).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-x' })
+    expect(ctx.service.runConnection(project(), choice).env).toEqual({})
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, anthropic: { ...s.connections.anthropic, auth: { kind: 'apiKey', envVar: 'ORGAI_TEST_ANTH_KEY' } } } })
+    expect(ctx.service.runConnection(undefined, choice).env).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-x' })
     vi.unstubAllEnvs()
   })
 })

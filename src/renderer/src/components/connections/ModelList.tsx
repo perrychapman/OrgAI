@@ -27,7 +27,7 @@ export default function ModelList({
   onRetry: () => void
   tierModels: Partial<Record<ModelTier, ModelRef>>
 }): ReactElement {
-  const [open, setOpen] = useState(() => window.innerHeight >= 700)
+  const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const listId = useId()

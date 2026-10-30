@@ -4,9 +4,13 @@ import type { ImageAttachment } from '@shared/types'
 import { MAX_IMAGES_PER_MESSAGE } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { ComposerImages, filesToImages } from './ImageAttachments'
-import { Paperclip } from 'lucide-react'
+import { CircleHelp, Paperclip } from 'lucide-react'
 import { Button } from './ui/Button'
 import { IconButton } from './ui/IconButton'
+import { Banner } from './ui/Banner'
+import { Icon } from './ui/Icon'
+
+const HINT = 'Enter to send · Shift+Enter for a new line · paste or drop images'
 
 interface Props {
   /** Key of the draft in the store: a run id, or newRunDraftKey(projectId). */
@@ -38,12 +42,15 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
   const setDraft = useAppStore((s) => s.setComposerDraft)
   const text = draft?.text ?? ''
   const images = draft?.images ?? []
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ text: string; tone: 'warning' | 'danger' } | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const labelId = useId()
+  const hintId = useId()
+  const reasonId = useId()
+  const sendRef = useRef<HTMLSpanElement>(null)
   const canSend = (text.trim().length > 0 || images.length > 0) && !busy
 
   useEffect(() => {
@@ -55,12 +62,19 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
     if (focusToken && focusToken !== mountToken.current) ref.current?.focus()
   }, [focusToken])
   useEffect(() => setNotice(null), [draftKey])
+  // Button takes no aria-describedby; point the Send button at the reason it is disabled.
+  useEffect(() => {
+    const btn = sendRef.current?.querySelector('button')
+    if (!btn) return
+    if (canSend) btn.removeAttribute('aria-describedby')
+    else btn.setAttribute('aria-describedby', reasonId)
+  })
 
   const addImages = async (files: File[]): Promise<void> => {
     const current = useAppStore.getState().composerDrafts[draftKey]
     const { images: added, notice: n } = await filesToImages(files, current?.images.length ?? 0)
     if (added.length > 0) setDraft(draftKey, { text: useAppStore.getState().composerDrafts[draftKey]?.text ?? '', images: [...(current?.images ?? []), ...added].slice(0, MAX_IMAGES_PER_MESSAGE) })
-    setNotice(n)
+    setNotice(n ? { text: n, tone: 'warning' } : null)
   }
 
   const submit = async (): Promise<void> => {
@@ -76,7 +90,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
       // Keep the draft and attachments so nothing is lost on failure.
       const now = useAppStore.getState().composerDrafts[draftKey]
       setDraft(draftKey, { text: now?.text || sentText, images: now && now.images.length > 0 ? now.images : sending })
-      if (!onFail?.(err)) setNotice(err instanceof Error ? err.message : 'Could not send the message.')
+      if (!onFail?.(err)) setNotice({ text: err instanceof Error ? err.message : 'Could not send the message.', tone: 'danger' })
     } finally {
       setBusy(false)
     }
@@ -108,41 +122,22 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             {modeLabel}
           </span>
           {modeSwitch}
+          <span className="composer-hint" id={hintId}>
+            <Icon icon={CircleHelp} size="xs" />
+            <span className="composer-hint-text">{HINT}</span>
+          </span>
         </div>
         {notices}
         {notice && (
-          <div className="composer-notice" role="status">
-            {notice}
-          </div>
+          <Banner tone={notice.tone} onDismiss={() => setNotice(null)}>
+            {notice.text}
+          </Banner>
         )}
         <ComposerImages
           images={images}
           onRemove={(i) => setDraft(draftKey, { text, images: images.filter((_, j) => j !== i) })}
         />
-        <textarea
-          ref={ref}
-          className="textarea"
-          aria-labelledby={labelId}
-          value={text}
-          onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
-          onPaste={(e) => {
-            const files = Array.from(e.clipboardData.items)
-              .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-              .map((it) => it.getAsFile())
-              .filter((f): f is File => !!f)
-            if (files.length === 0) return
-            if (!e.clipboardData.getData('text/plain')) e.preventDefault()
-            void addImages(files)
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              void submit()
-            }
-          }}
-          placeholder={placeholder}
-        />
-        <div className="composer-foot">
+        <div className="composer-row">
           <IconButton icon={Paperclip} label="Attach images" size="sm" onClick={() => fileRef.current?.click()} />
           <input
             ref={fileRef}
@@ -158,12 +153,41 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
               if (files.length > 0) void addImages(files)
             }}
           />
-          <div className="composer-help">Enter to send · Shift+Enter for a new line · paste or drop images</div>
+          <textarea
+            ref={ref}
+            className="textarea"
+            aria-labelledby={labelId}
+            aria-describedby={hintId}
+            value={text}
+            onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData.items)
+                .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+                .map((it) => it.getAsFile())
+                .filter((f): f is File => !!f)
+              if (files.length === 0) return
+              if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+              void addImages(files)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                void submit()
+              }
+            }}
+            placeholder={`${placeholder}. Enter to send, Shift+Enter for a new line.`}
+            rows={2}
+          />
+          <span ref={sendRef}>
+            <Button variant="primary" disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
+              {primaryLabel}
+            </Button>
+            <span id={reasonId} className="sr-only">
+              {canSend ? '' : `Type a message to enable ${primaryLabel}`}
+            </span>
+          </span>
         </div>
       </div>
-      <Button variant="primary" disabled={!canSend} onClick={() => void submit()}>
-        {primaryLabel}
-      </Button>
     </div>
   )
 }

@@ -3,8 +3,9 @@ import { useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
-import { runTitle } from '../lib/runLabels'
+import { promptLine, runTitle } from '../lib/runLabels'
 import { Button } from './ui/Button'
+import { EmptyState } from './ui/EmptyState'
 import Composer from './Composer'
 import McpAuthNotice from './mcp/McpAuthNotice'
 
@@ -56,34 +57,33 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
     <div className="new-run">
       <div className="new-run-inner">
         {needsSetup ? (
-          <section className="new-run-intro">
-            <h2>{project.setup?.state === 'pending' ? 'Set this project up with the Architect' : 'Setup is not finished'}</h2>
-            <p>
-              {project.setup?.kind === 'new'
+          <EmptyState
+            title={project.setup?.state === 'pending' ? 'Set this project up with the Architect' : 'Setup is not finished'}
+            description={
+              project.setup?.kind === 'new'
                 ? 'The Architect asks a few questions about your idea, then proposes the architecture, the org chart, and the run settings. You approve each one.'
-                : 'The Architect scans the repository, reads the code, and proposes an architecture document, an org chart that fits the work already done, and run settings. You approve each one.'}
-            </p>
-            <div className="row" style={{ justifyContent: 'center' }}>
+                : 'The Architect scans the repository, reads the code, and proposes an architecture document, an org chart that fits the work already done, and run settings. You approve each one.'
+            }
+            actions={
               <Button variant="primary" loading={setupBusy} onClick={() => void beginSetup()}>
                 {setupBusy ? 'Scanning…' : project.setup?.state === 'pending' ? 'Start setup' : 'Resume setup'}
               </Button>
-            </div>
-          </section>
+            }
+          />
         ) : (
-          <section className="new-run-intro">
-            <h2>Give {rootName} something to do</h2>
-            <p>
-              Type a task below. The orchestrator plans it and delegates to its reports. Every subagent appears here the moment it is created,
-              attached to the agent that spawned it.
-            </p>
-            <ul className="role-chips" aria-label="Roles in this project">
-              {project.roles.map((r) => (
-                <li key={r.id} className="role-tag" style={{ ['--role' as string]: r.color }}>
-                  {r.name}
-                </li>
-              ))}
-            </ul>
-          </section>
+          <EmptyState
+            title={`Give ${rootName} something to do`}
+            description="Type a task below. The orchestrator plans it and delegates to its reports. Every subagent appears here the moment it is created, attached to the agent that spawned it."
+            actions={
+              <ul className="role-chips" aria-label="Roles in this project">
+                {project.roles.map((r) => (
+                  <li key={r.id} className="role-tag" style={{ ['--role' as string]: r.color }}>
+                    {r.name}
+                  </li>
+                ))}
+              </ul>
+            }
+          />
         )}
 
         <McpAuthNotice project={project} />
@@ -108,8 +108,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             <ul>
               {others.map((o) => (
                 <li key={o.id}>
-                  <button type="button" className="link-btn" onClick={() => void openRun(o.id)}>
-                    {runTitle(indexes.get(o.id), o.prompt, 60)}
+                  <button type="button" className="link-btn" title={promptLine(o.prompt)} onClick={() => void openRun(o.id)}>
+                    {runTitle(indexes.get(o.id), o)}
                   </button>
                 </li>
               ))}

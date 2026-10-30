@@ -1,36 +1,66 @@
-import type { ReactElement } from 'react'
+import type { KeyboardEvent, ReactElement } from 'react'
 
 export interface SettingsNavItem {
-  /** DOM id of the section this item scrolls to. */
+  /** Pane id (not a DOM id). */
   id: string
   label: string
 }
 
-/** Sub-navigation of a settings page: a left rail at wide widths, a wrapped row when the page is narrow. */
+/** DOM id of a pane's tab button. Stable so the tabpanel can point at it and e2e can find it. */
+export const settingsTabId = (idBase: string, pane: string): string => `${idBase}-tab-${pane}`
+/** DOM id of the page's tabpanel. */
+export const settingsPanelId = (idBase: string): string => `${idBase}-panel`
+
+/**
+ * Pane selector of a settings page: a native tablist (roving tabindex, arrow keys, Home/End; selection follows focus).
+ * A left rail at wide container widths, a horizontal strip when narrow (CSS decides). The panel it controls is
+ * rendered by `SettingsPage`.
+ */
 export function SettingsNav({
   items,
   active,
   onSelect,
-  label = 'Project settings sections'
+  idBase,
+  label
 }: {
   items: SettingsNavItem[]
   active: string
   onSelect: (id: string) => void
-  label?: string
+  idBase: string
+  label: string
 }): ReactElement {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    const i = items.findIndex((it) => it.id === active)
+    let next = i
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = (i + 1) % items.length
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') next = (i - 1 + items.length) % items.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = items.length - 1
+    else return
+    e.preventDefault()
+    onSelect(items[next].id)
+    document.getElementById(settingsTabId(idBase, items[next].id))?.focus()
+  }
   return (
-    <nav className="settings-nav" aria-label={label}>
-      {items.map((it) => (
-        <button
-          key={it.id}
-          type="button"
-          className={`settings-nav-item${active === it.id ? ' active' : ''}`}
-          aria-current={active === it.id ? 'location' : undefined}
-          onClick={() => onSelect(it.id)}
-        >
-          {it.label}
-        </button>
-      ))}
-    </nav>
+    <div className="settings-nav" role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+      {items.map((it) => {
+        const on = active === it.id
+        return (
+          <button
+            key={it.id}
+            type="button"
+            role="tab"
+            id={settingsTabId(idBase, it.id)}
+            className={`settings-nav-item${on ? ' active' : ''}`}
+            aria-selected={on}
+            aria-controls={settingsPanelId(idBase)}
+            tabIndex={on ? 0 : -1}
+            onClick={() => onSelect(it.id)}
+          >
+            {it.label}
+          </button>
+        )
+      })}
+    </div>
   )
 }

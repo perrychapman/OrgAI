@@ -3,7 +3,11 @@ import { useCallback, useEffect, useState } from 'react'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import DiffView from '../DiffView'
+import { RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
+import { IconButton } from '../ui/IconButton'
+import { SettingRow } from '../ui/SettingRow'
+import { SettingsCard } from './SettingsCard'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
@@ -84,11 +88,13 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   return (
     <SettingsSection id="settings-section-maintenance" title="Maintenance">
       <div className="field">
-        <span className="field-label">Report branches waiting in the repository</span>
         {worktrees === null ? (
-          <span className="hint">Looking…</span>
+          <span className="settings-quiet">Looking…</span>
         ) : worktrees.length === 0 ? (
-          <span className="hint">None. Every report branch has been merged or discarded.</span>
+          <div className="settings-quiet">
+            <span>No report branches waiting</span>
+            <IconButton icon={RefreshCw} label="Refresh" size="sm" onClick={() => void refresh()} disabled={busy !== null} />
+          </div>
         ) : (
           <div className="maint-list">
             {worktrees.map((w) => {
@@ -134,54 +140,63 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
             })}
           </div>
         )}
-        <div className="row gap-2 wrap">
-          <Button variant="ghost" size="sm" onClick={() => void refresh()} disabled={busy !== null}>
-            Refresh
-          </Button>
-          <span className="hint">Left by merge conflicts or interrupted runs. Merging commits any leftovers first; conflicts are reported and the branch is kept.</span>
-        </div>
+        {worktrees !== null && worktrees.length > 0 && (
+          <div className="row gap-2 wrap">
+            <Button variant="ghost" size="sm" onClick={() => void refresh()} disabled={busy !== null}>
+              Refresh
+            </Button>
+            <span className="hint">Left by conflicts or interrupted runs.</span>
+            <details className="setting-row-more">
+              <summary>Learn more</summary>
+              <div className="setting-row-more-body">Merging commits any leftovers first. Conflicts are reported and the branch is kept.</div>
+            </details>
+          </div>
+        )}
       </div>
 
       {project.setup?.architecturePath && (
-        <div className="field">
-          <span className="field-label">Architecture document</span>
-          <span className="hint">
-            {project.setup.architectureUpdatedAt
-              ? `Architecture document last updated ${new Date(project.setup.architectureUpdatedAt).toLocaleString()}.`
-              : `${project.setup.architecturePath} has not been edited by agents since setup.`}
-          </span>
-          <div className="row gap-2">
-            <Button
-              size="sm"
-              disabled={busy !== null}
-              onClick={() => {
-                setBusy('review')
-                void startSetup(
-                  'Review .orgai/ARCHITECTURE.md against the current code and propose an updated architecture, then re-check the org chart and settings.'
-                )
-                  .then(() => setView('run'))
-                  .catch((e: Error) => setNotice({ ok: false, message: e.message }))
-                  .finally(() => setBusy(null))
-              }}
-            >
-              {busy === 'review' ? 'Starting…' : 'Review with the Architect'}
-            </Button>
-          </div>
-        </div>
+        <SettingsCard>
+          <SettingRow
+            title="Architecture document"
+            description={
+              project.setup.architectureUpdatedAt
+                ? `Updated ${new Date(project.setup.architectureUpdatedAt).toLocaleDateString()}.`
+                : 'Not edited by agents since setup.'
+            }
+            control={
+              <Button
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => {
+                  setBusy('review')
+                  void startSetup(
+                    'Review .orgai/ARCHITECTURE.md against the current code and propose an updated architecture, then re-check the org chart and settings.'
+                  )
+                    .then(() => setView('run'))
+                    .catch((e: Error) => setNotice({ ok: false, message: e.message }))
+                    .finally(() => setBusy(null))
+                }}
+              >
+                {busy === 'review' ? 'Starting…' : 'Review with the Architect'}
+              </Button>
+            }
+          />
+        </SettingsCard>
       )}
 
       {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'}>{notice.message}</div>}
 
       <SettingsGroup title="Danger zone">
         <div className="danger-zone">
-          <div className="field">
-            <span className="field-label">Files OrgAI added to the repository</span>
-            <span className="hint">
+          <p className="danger-zone-text">Deletes the files OrgAI created in this repository. Your own files stay.</p>
+          <details className="setting-row-more">
+            <summary>Learn more</summary>
+            <div className="setting-row-more-body">
               {hasFootprint
                 ? `${project.setup?.architecturePath} and a short section in CLAUDE.md, plus a .git/info/exclude entry for agent worktrees.`
                 : 'None recorded. Any leftover worktrees and the .git/info/exclude entry are still removed.'}
-            </span>
-          </div>
+            </div>
+          </details>
           <div className="row gap-2">
             <Button variant="danger" size="sm" disabled={busy !== null} onClick={() => void uninstall()}>
               {busy === 'uninstall' ? 'Removing…' : 'Remove OrgAI files from repository'}

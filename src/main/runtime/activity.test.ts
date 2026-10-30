@@ -1,7 +1,68 @@
 import { describe, expect, it } from 'vitest'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance } from '@shared/types'
-import { TERMINAL_ACTIVITY, describeTool, harnessToolActivity, runOutcome, settleAgent } from './activity'
+import { TERMINAL_ACTIVITY, authFailureMessage, describeTool, harnessToolActivity, isAuthFailure, runOutcome, scrubAuthDetail, settleAgent } from './activity'
+
+describe('isAuthFailure', () => {
+  it('trusts the SDK error code', () => {
+    expect(isAuthFailure({ errorCode: 'authentication_failed' })).toBe(true)
+    expect(isAuthFailure({ errorCode: 'rate_limit', text: 'Rate limited' })).toBe(false)
+  })
+  it("matches the CLI's exact bare logged-out reply without an error flag", () => {
+    expect(isAuthFailure({ text: 'Invalid API key · Please run /login' })).toBe(true)
+    expect(isAuthFailure({ text: 'invalid api key - please run /login  \n' })).toBe(true)
+    expect(isAuthFailure({ text: 'Invalid API key. Please run /login' })).toBe(true)
+    expect(isAuthFailure({ text: 'Invalid API key · Please run /login and retry' })).toBe(false)
+  })
+  it("matches the CLI's leading auth wording only on an error", () => {
+    const apiError = 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'
+    expect(isAuthFailure({ text: apiError })).toBe(false)
+    expect(isAuthFailure({ text: apiError, isError: true })).toBe(true)
+    expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token.' })).toBe(false)
+    expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token.', isError: true })).toBe(true)
+    expect(isAuthFailure({ text: 'Failed to authenticate. API Error: 401', errorCode: 'oauth_org_not_allowed', isError: true })).toBe(true)
+    // A non-auth error code alone never makes leading auth wording a failure
+    expect(isAuthFailure({ text: 'API Error: 401 from upstream', errorCode: 'rate_limit' })).toBe(false)
+  })
+  it('never flags model text that starts with auth wording', () => {
+    expect(isAuthFailure({ text: 'Invalid API key handling is fixed' })).toBe(false)
+    expect(isAuthFailure({ text: 'Failed to authenticate users via SSO is now handled.' })).toBe(false)
+  })
+  it('counts auth words, a 401 or unauthorized anywhere only on an error result', () => {
+    expect(isAuthFailure({ text: 'Request failed: HTTP 401 Unauthorized' })).toBe(false)
+    expect(isAuthFailure({ text: 'Request failed: HTTP 401 Unauthorized', isError: true })).toBe(true)
+    expect(isAuthFailure({ text: 'Proxy said: authentication_error', isError: true })).toBe(true)
+  })
+  it('never flags a short reply or title that only mentions the words', () => {
+    expect(isAuthFailure({ text: 'Fix invalid API key handling' })).toBe(false)
+    expect(isAuthFailure({ text: 'The docs say: "Invalid API key · Please run /login" means you are logged out.' })).toBe(false)
+  })
+  it('never flags an ordinary or long answer', () => {
+    expect(isAuthFailure({ text: 'Done. I added the login page.' })).toBe(false)
+    expect(isAuthFailure({ text: `${'x'.repeat(500)} invalid api key` })).toBe(false)
+    expect(isAuthFailure({})).toBe(false)
+  })
+})
+
+describe('scrubAuthDetail', () => {
+  it('masks key-like tokens and bearer values and keeps one capped line', () => {
+    const out = scrubAuthDetail('401: Received API Key = sk-...1234,\nAuthorization: Bearer abc.def key pk-live_xyz')
+    expect(out).toBe('401: Received API Key = ***, Authorization: Bearer *** key ***')
+    expect(scrubAuthDetail('x'.repeat(900))).toHaveLength(400)
+  })
+})
+
+describe('authFailureMessage', () => {
+  it('names the connection on one line and points to Settings > Connections', () => {
+    for (const c of ['anthropic', 'openai', 'litellm', undefined] as const) {
+      const m = authFailureMessage(c)
+      expect(m).toMatch(/Settings > Connections/)
+      expect(m).not.toMatch(/\n/)
+    }
+    expect(authFailureMessage('litellm')).toMatch(/LiteLLM/)
+    expect(authFailureMessage('anthropic')).toMatch(/Anthropic/)
+  })
+})
 
 describe('describeTool', () => {
   it.each([

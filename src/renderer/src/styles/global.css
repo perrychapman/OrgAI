@@ -3,6 +3,7 @@
 @import './shell.css';
 @import './controls.css';
 @import './ui.css';
+@import './settings.css';
 @import './connections.css';
 @import './mcp.css';
 @import './mcp-library.css';
@@ -15,6 +16,7 @@
 @import './cards.css';
 @import './usage.css';
 @import './layout.css';
+@import './import.css';
 
 * {
   box-sizing: border-box;

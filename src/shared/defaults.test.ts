@@ -1,7 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify } from './defaults'
+import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily } from './defaults'
 import type { McpLibraryEntry } from './types'
 import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
+
+describe('creationConnection', () => {
+  const withConn = (defaultConnection: 'anthropic' | 'openai' | 'litellm', over: { openai?: boolean; litellm?: Record<string, unknown> } = {}) => {
+    const c = structuredClone(DEFAULT_APP_SETTINGS.connections)
+    if (over.openai !== undefined) c.openai.enabled = over.openai
+    if (over.litellm) Object.assign(c.litellm, over.litellm)
+    return { defaultConnection, connections: c }
+  }
+  const ready = { enabled: true, baseUrl: 'http://localhost:4000', hasApiKey: true }
+
+  it('anthropic is always usable', () => {
+    expect(creationConnection(withConn('anthropic'))).toBe('anthropic')
+    expect(creationConnection(undefined)).toBe('anthropic')
+  })
+  it('openai needs to be enabled', () => {
+    expect(creationConnection(withConn('openai', { openai: true }))).toBe('openai')
+    expect(creationConnection(withConn('openai', { openai: false }))).toBe('anthropic')
+  })
+  it('litellm needs enabled, a base URL and an API key', () => {
+    expect(creationConnection(withConn('litellm', { litellm: ready }))).toBe('litellm')
+    expect(creationConnection(withConn('litellm', { litellm: { ...ready, enabled: false } }))).toBe('anthropic')
+    expect(creationConnection(withConn('litellm', { litellm: { ...ready, baseUrl: ' ' } }))).toBe('anthropic')
+    expect(creationConnection(withConn('litellm', { litellm: { ...ready, hasApiKey: false } }))).toBe('anthropic')
+  })
+})
 
 describe('slugify', () => {
   it('lowercases and hyphenates', () => {
@@ -148,5 +173,42 @@ describe('MCP library links', () => {
     expect(mcpSupportsOAuth({ transport: 'http' })).toBe(true)
     expect(mcpSupportsOAuth({ transport: 'sse' })).toBe(true)
     expect(mcpSupportsOAuth({ transport: 'stdio' })).toBe(false)
+  })
+})
+
+describe('importTierForModel', () => {
+  it('maps Claude aliases, full ids, prefixes and the [1m] suffix', () => {
+    expect(importTierForModel('fable')).toBe('top')
+    expect(importTierForModel('best')).toBe('top')
+    expect(importTierForModel('opus')).toBe('deep')
+    expect(importTierForModel('opusplan')).toBe('deep')
+    expect(importTierForModel('sonnet[1m]')).toBe('everyday')
+    expect(importTierForModel('claude-sonnet-4-5[1m]')).toBe('everyday')
+    expect(importTierForModel('anthropic/claude-haiku-4-5')).toBe('fast')
+    expect(importTierForModel('bedrock/anthropic.claude-opus-4-1')).toBe('deep')
+  })
+  it('uses OpenAI and Gemini naming heuristics', () => {
+    expect(importTierForModel('openai/gpt-5-nano')).toBe('fast')
+    expect(importTierForModel('gpt-5-mini')).toBe('everyday')
+    expect(importTierForModel('o4-mini')).toBe('everyday')
+    expect(importTierForModel('gpt-5-pro')).toBe('top')
+    expect(importTierForModel('gpt-5.1-codex-max')).toBe('top')
+    expect(importTierForModel('gpt-5')).toBe('deep')
+    expect(importTierForModel('o3')).toBe('deep')
+    expect(importTierForModel('google/gemini-2.5-pro')).toBe('deep')
+    expect(importTierForModel('gemini-2.5-flash')).toBe('everyday')
+    expect(importTierForModel('gemini-2.5-flash-lite')).toBe('fast')
+  })
+  it('gives undefined for inherit, empty and unknown ids', () => {
+    expect(importTierForModel('inherit')).toBeUndefined()
+    expect(importTierForModel('')).toBeUndefined()
+    expect(importTierForModel(42)).toBeUndefined()
+    expect(importTierForModel('llama-3-70b')).toBeUndefined()
+  })
+  it('tierForModel keeps its behaviour and now tolerates the [1m] suffix', () => {
+    expect(tierForModel('opus[1m]')).toBe('deep')
+    expect(tierForModel('gpt-5')).toBeUndefined()
+    expect(tierForModel('best')).toBeUndefined()
+    expect(modelFamily('sonnet[1m]')).toBe('claude')
   })
 })

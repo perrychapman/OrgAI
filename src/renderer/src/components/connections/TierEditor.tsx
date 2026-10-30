@@ -1,11 +1,13 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { ConnectionInfo, ModelRef, ModelTier, ProviderConnection, ProviderModel } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { defaultTierModels, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
+import { Icon } from '../ui/Icon'
 import { ModelSelect, type ModelGroup } from '../ui/ModelSelect'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { FAMILY_LABEL, groupByFamily, previewRemap } from '../../lib/remap'
@@ -27,6 +29,8 @@ export default function TierEditor({
   const saved = info.connection.tierModels
   const [draft, setDraft] = useState<Draft>(saved)
   const [preview, setPreview] = useState(false)
+  const [open, setOpen] = useState(false)
+  const bodyId = useId()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const projects = useAppStore((s) => s.projects)
@@ -71,12 +75,18 @@ export default function TierEditor({
   return (
     <div className="tier-editor">
       <div className="tier-head">
-        <strong>Tier mapping</strong>
-        <Button size="sm" variant="ghost" onClick={() => setDraft(defaultTierModels(models))}>
-          Reset
-        </Button>
+        <button type="button" className="group-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((v) => !v)}>
+          <Icon icon={open ? ChevronDown : ChevronRight} size="sm" />
+          <strong>Model tiers (advanced)</strong>
+        </button>
+        {open && (
+          <Button size="sm" variant="ghost" onClick={() => setDraft(defaultTierModels(models))}>
+            Reset
+          </Button>
+        )}
       </div>
-      <div className="tier-rows">
+      {open && (
+      <div id={bodyId} className="tier-rows">
         {MODEL_TIER_OPTIONS.map((o, i) => {
           const value = draft[o.value] ?? ''
           const invalid = !!value && !known.has(value)
@@ -103,6 +113,7 @@ export default function TierEditor({
           )
         })}
       </div>
+      )}
       {stale.length > 0 && <Banner tone="warning">Some tiers point at models that are no longer in the catalog.</Banner>}
       {dirty && (
         <div className="tier-foot">

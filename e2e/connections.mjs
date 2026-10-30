@@ -3,7 +3,7 @@
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, openAppSettings, openProject, projectTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -27,7 +27,8 @@ try {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
 
       // App settings > Connections
-      await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+      await openAppSettings(page)
+      await page.getByRole('tab', { name: 'Connections', exact: true }).click()
       await page.waitForSelector('#connections-title', { timeout: 10_000 })
       await sleep(800)
       const cards = await page.locator('[data-testid=connection-card]').count()
@@ -37,7 +38,32 @@ try {
       check(ov.sw <= ov.cw, `no horizontal scroll on connections at ${w}x${h} ${theme}`, JSON.stringify(ov))
       await shot(`connections-${w}x${h}-${theme}`)
 
+      // Defaults pane: the Default connection row exists
+      await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+      const defConn = page.getByRole('combobox', { name: 'Default connection', exact: true })
+      await defConn.waitFor({ timeout: 10_000 })
+      check((await defConn.count()) === 1, `default connection row on the Defaults pane at ${w}x${h} ${theme}`)
+      if (w === 1024 && theme === 'dark') {
+        // A connection that is not set up is a disabled option; persistence is checked on a usable one.
+        const opts = await defConn.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, d: o.disabled, t: o.textContent })))
+        const pick = opts.find((o) => o.v !== 'anthropic' && !o.d)
+        check(opts.filter((o) => o.v !== 'anthropic' && o.d).every((o) => /Not connected/.test(o.t ?? '')), 'unusable default options are disabled and say Not connected', JSON.stringify(opts))
+        const want = pick ? pick.v : 'anthropic'
+        await defConn.selectOption(want)
+        await sleep(600)
+        await page.reload()
+        await page.waitForSelector('.nav-item', { timeout: 15_000 })
+        await openAppSettings(page)
+        await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+        const after = await page.getByRole('combobox', { name: 'Default connection', exact: true }).inputValue()
+        check(after === want, 'default connection persists after reload', after)
+        await page.getByRole('combobox', { name: 'Default connection', exact: true }).selectOption('anthropic')
+        await sleep(600)
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      }
+
       // About block
+      await page.getByRole('tab', { name: 'About', exact: true }).click()
       const about = page.locator('[data-testid=about-block]')
       check((await about.count()) === 1, `about block present at ${w}x${h} ${theme}`)
       await about.scrollIntoViewIfNeeded()
@@ -52,14 +78,21 @@ try {
       await shot(`about-${w}x${h}-${theme}`)
 
       // Project settings
-      await page.locator('.nav-item', { hasText: NAME }).first().click()
-      await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
-      await page.getByRole('button', { name: 'Project settings', exact: true }).click()
-      await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
+      await openProject(page, NAME)
+      await projectTab(page, 'Org chart').click()
+      await projectTab(page, 'Settings').click()
+      await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+      await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
       await sleep(600)
       check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
       check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
       check((await page.getByRole('button', { name: 'Add from registry' }).count()) === 1, 'Add from registry button present')
+      const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+      check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on project tools at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
+      await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
+      await shot(`project-mcp-${w}x${h}-${theme}`)
+      await page.getByRole('tab', { name: 'Connection', exact: true }).click()
+      await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
       const toggle = page.locator('[data-testid=mock-adapter-toggle]')
       check((await toggle.count()) === 1, `mock toggle present at ${w}x${h} ${theme}`)
@@ -81,11 +114,9 @@ try {
         check(!(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled)), 'connection fieldset enabled again')
       }
       await shot(`project-connection-${w}x${h}-${theme}`)
-      await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
-      await shot(`project-mcp-${w}x${h}-${theme}`)
 
       // Role inspector model picker
-      await page.getByRole('button', { name: 'Org chart', exact: true }).first().click()
+      await projectTab(page, 'Org chart').click()
       await page.locator('.react-flow__node').first().click()
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
@@ -95,7 +126,8 @@ try {
 
   // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
   try {
-    await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'MCP library', exact: true }).click()
     const libSec = page.locator('[data-testid=mcp-library-section]')
     await libSec.waitFor({ timeout: 10_000 })
     await libSec.scrollIntoViewIfNeeded()
@@ -113,9 +145,10 @@ try {
     await row.waitFor({ timeout: 10_000 })
     check(/Secrets: \d+ of 1 set/.test((await row.textContent()) ?? ''), 'library row shows the secrets summary')
     await shot('mcp-library-row')
-    await page.locator('.nav-item', { hasText: NAME }).first().click()
-    await page.locator('.topbar .tabs').getByRole('button', { name: /Org chart/ }).click()
-    await page.getByRole('button', { name: 'Project settings', exact: true }).click()
+    await openProject(page, NAME)
+    await projectTab(page, 'Org chart').click()
+    await projectTab(page, 'Settings').click()
+    await page.getByRole('tab', { name: 'Tools', exact: true }).click()
     await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
     await page.locator('[data-testid=mcp-add-library]').click()
     const dlg = page.locator('[data-testid=mcp-link-dialog]')
@@ -135,7 +168,8 @@ try {
 
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
   const CANARY = 'sk-e2e-canary-9f3a7c1d'
-  await page.locator('.nav-item', { hasText: 'Settings' }).first().click()
+  await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
   const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
   if ((await lite.count()) === 1) {
@@ -162,7 +196,7 @@ try {
     await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click()
     await sleep(800)
     check((await page.evaluate(() => window.orgai.connections.list())).find((c) => c.connection.id === 'litellm')?.connection.hasApiKey !== true, 'Remove connection clears the stored key')
-    await page.locator('.nav-item', { hasText: NAME }).first().click()
+    await openProject(page, NAME)
   } else {
     check(false, 'LiteLLM card present')
   }

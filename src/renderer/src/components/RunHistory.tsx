@@ -5,14 +5,25 @@ import type { RunSummary } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { costLabel } from '../lib/layout'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { statusOfRun, statusText } from '../lib/runStatus'
+import { promptLine, runName, runTag } from '../lib/runLabels'
+import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
-import { Badge } from './ui/Badge'
+import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 
 type Filter = 'all' | 'work' | 'setup'
+
+/** History is the one place status is content: the shared status words in the Badge status tones. */
+const STATUS_BADGE: Record<RunTone, BadgeTone> = {
+  'is-running': 'info',
+  warn: 'attention',
+  idle: 'neutral',
+  paused: 'neutral',
+  ok: 'success',
+  danger: 'danger',
+  stopped: 'neutral'
+}
 
 /**
  * The History tab: every run of the project as a table (status, prompt first, kind, started, cost) with its
@@ -136,9 +147,20 @@ function HistoryRow({
   return (
     <tr className={`run-row ${viewed ? 'active' : ''}`}>
       <td className="col-prompt">
-        <div className="prompt" title={promptLine(r.prompt)}>
-          <span className="run-index">{runTag(index)}</span> {promptLine(r.prompt)}
-        </div>
+        {r.title ? (
+          <>
+            <div className="run-name" title={runName(r)}>
+              <span className="run-index">{runTag(index)}</span> {runName(r)}
+            </div>
+            <div className="prompt muted" title={promptLine(r.prompt)}>
+              {promptLine(r.prompt)}
+            </div>
+          </>
+        ) : (
+          <div className="prompt" title={promptLine(r.prompt)}>
+            <span className="run-index">{runTag(index)}</span> {promptLine(r.prompt)}
+          </div>
+        )}
         {(predecessor || r.resumedFrom || successor || chainLength > 1) && (
           <div className="run-chain">
             {r.resumedFrom && (
@@ -146,7 +168,7 @@ function HistoryRow({
                 Continues{' '}
                 {predecessor ? (
                   <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openRun(predecessor.id)} title={promptLine(predecessor.prompt)}>
-                    {runTag(indexes.get(predecessor.id))}: {shortPrompt(predecessor.prompt, 32)}
+                    {runTag(indexes.get(predecessor.id))}: {runName(predecessor)}
                   </button>
                 ) : (
                   'an earlier run'
@@ -158,7 +180,7 @@ function HistoryRow({
               <>
                 Continued by{' '}
                 <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openRun(successor.id)} title={promptLine(successor.prompt)}>
-                  {runTag(indexes.get(successor.id))}: {shortPrompt(successor.prompt, 32)}
+                  {runTag(indexes.get(successor.id))}: {runName(successor)}
                 </button>
               </>
             )}
@@ -166,9 +188,10 @@ function HistoryRow({
         )}
       </td>
       <td>
-        <span className={`pill run-status ${status.tone}`} title={r.pauseReason ?? status.note}>
-          <span className="dot" aria-hidden="true" /> {statusText(status)}
-        </span>
+        <Badge tone={STATUS_BADGE[status.tone]} title={r.pauseReason ?? status.note}>
+          <span className="status-dot" aria-hidden="true" />
+          {statusText(status)}
+        </Badge>
       </td>
       <td className="col-cost" title={cost.title}>
         {cost.text}
@@ -177,7 +200,7 @@ function HistoryRow({
         {relativeTime(r.startedAt)}
       </td>
       <td className="col-kind">
-        <span className={`chip ${r.kind === 'setup' ? 'setup' : ''}`}>{r.kind}</span>
+        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{r.kind}</Badge>
       </td>
       <td>
         <div className="run-row-actions">
@@ -185,7 +208,7 @@ function HistoryRow({
             Open
           </Button>
           {viewed && (
-            <Badge tone="info" title="You are viewing this run">
+            <Badge tone="accent" title="You are viewing this run">
               Viewing
             </Badge>
           )}

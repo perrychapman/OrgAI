@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForProject, builtinModels, projectConnection } from '@shared/defaults'
+import { adapterForProject, builtinModels, connectionProviderLabel, creationConnection, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS } from '@shared/types'
 import type {
   AdapterChoice,
@@ -513,7 +513,33 @@ export class ConnectionService {
     return { project: next, result: out.result }
   }
 
-  private withAdapter(project: Project): Project {
+  /**
+   * Put a freshly built project on settings.defaultConnection (when usable): provider fields, tier models of that
+   * connection and the adapter its models need. Nothing is saved or broadcast.
+   */
+  prepareNewProject(project: Project): Project {
+    const settings = this.deps.settings.get()
+    const id = creationConnection(settings)
+    if (id === 'anthropic') return project
+    const tierModels = settings.connections[id].tierModels
+    // A tiered role without a mapping would keep its Anthropic alias, which the other connection cannot serve.
+    // Stay on Anthropic then; the user maps the tier in Settings > Connections and switches the project.
+    const unmapped = project.roles.some((r) => r.tier && r.model !== 'inherit' && !tierModels[r.tier]?.trim())
+    if (unmapped) {
+      console.warn(`New project stays on Anthropic: the ${id} connection has no model for every tier the roles use.`)
+      return project
+    }
+    const provider = { ...project.provider, connection: id, label: connectionProviderLabel(id, settings.providerAuth) }
+    return this.remapOne({ ...project, provider }, id, tierModels, undefined, 'switched').project
+  }
+
+  /** The agent importer's view of a connection: its catalog and tier mapping (src/main/setup/import/model.ts). */
+  importModelContext(id: ConnectionId): { connection: ConnectionId; catalog: ProviderModel[]; tierModels: Tiers } {
+    return { connection: id, catalog: this.catalogFor(id), tierModels: { ...this.deps.settings.get().connections[id].tierModels } }
+  }
+
+  /** Keep provider.id on the adapter the project's models need (mock projects are left alone). Pure. */
+  withAdapter(project: Project): Project {
     if (project.provider.id === 'mock') return project
     const adapter = adapterForProject(project, this.catalog()).adapter
     return adapter === project.provider.id ? project : { ...project, provider: { ...project.provider, id: adapter } }
@@ -559,13 +585,18 @@ export class ConnectionService {
 
   // ---------- per-run model access ----------
 
-  runConnection(_project: Project | undefined, choice: AdapterChoice): RunConnection {
+  runConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
     const id = choice.connection
     const base: RunConnection = { connection: id, adapter: choice.adapter }
     if (choice.adapter === 'mock') return base
     const settings = this.deps.settings.get()
     const codexHome = (): Record<string, string> => ({ CODEX_HOME: codexHomeDir(this.deps.dataDir) })
-    if (id === 'anthropic') return { ...base, env: {} }
+    if (id === 'anthropic') {
+      // Lets one-shot completions get the key even when the env var is not literally ANTHROPIC_API_KEY.
+      const auth = project?.provider.auth ?? settings.connections.anthropic.auth
+      const key = auth.kind === 'apiKey' ? this.env(auth.envVar) : undefined
+      return { ...base, env: key ? { ANTHROPIC_API_KEY: key } : {} }
+    }
     if (id === 'openai') {
       const auth = settings.connections.openai.auth
       if (auth.kind === 'chatgpt') return { ...base, codexAuth: 'chatgpt', env: codexHome() }
@@ -588,6 +619,18 @@ export class ConnectionService {
     if (t.everyday) env.ANTHROPIC_DEFAULT_SONNET_MODEL = t.everyday
     if (t.fast) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = t.fast
     return { ...base, env }
+  }
+
+  /**
+   * The fast-tier model for one-shot helpers (run titles) on a run's connection: the connection's tierModels.fast,
+   * with 'haiku' as the Anthropic fallback. The mock adapter has none. On LiteLLM + Claude the run's env also maps
+   * the haiku alias to the same model (ANTHROPIC_DEFAULT_HAIKU_MODEL).
+   */
+  fastModel(choice: Pick<AdapterChoice, 'adapter' | 'connection'>): string | undefined {
+    if (choice.adapter === 'mock') return undefined
+    const fast = this.deps.settings.get().connections[choice.connection]?.tierModels.fast?.trim()
+    if (fast) return fast
+    return choice.connection === 'anthropic' || choice.adapter === 'claude' ? 'haiku' : undefined
   }
 
   // ---------- usage, boot, shutdown ----------

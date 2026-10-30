@@ -816,6 +816,8 @@ export type RunHarnessToolName = (typeof RUN_HARNESS_TOOLS)[keyof typeof RUN_HAR
 export const RUN_MESSAGE_MAX_CHARS = 4000
 /** RunPeer.prompt and run.message peerPrompt: one line, at most this many characters. */
 export const RUN_PEER_PROMPT_CHARS = 120
+/** RunSummary.title and the run.title event: at most this many characters (cut on a word boundary with …). */
+export const RUN_TITLE_MAX_CHARS = 32
 
 // ---------- App settings (global) ----------
 
@@ -917,6 +919,11 @@ export interface ProjectProfile {
   /** Contents of manifest and documentation files, each truncated. */
   keyFiles: { path: string; content: string }[]
   gitLog: string[]
+  /**
+   * Agent-definition locations present (`.orgai/org.json`, `.claude/agents`, `.opencode`, `.codex/agents`,
+   * `.github/agents`...), project-relative. Missing on profiles taken before the importer existed.
+   */
+  agentDefinitions?: string[]
 }
 
 export interface ArchitectureSpec {
@@ -1242,6 +1249,13 @@ export interface RunSummary {
    * It stays continuable.
    */
   endedWithApp?: true
+  /**
+   * Work runs: a short AI summary of the run's first message (one line, at most RUN_TITLE_MAX_CHARS characters),
+   * written by the connection's fast model shortly after the run starts (a run.title event announces it). Absent
+   * until generated, and for good when generation failed or was skipped (setup-like runs, image-only prompts).
+   * Advisory only: the UI falls back to `prompt`.
+   */
+  title?: string
 }
 
 /**
@@ -1427,6 +1441,11 @@ export type RunEvent =
       pauseReason?: string
       autoResume?: boolean
     }
+  /**
+   * The run's AI-generated title (RunSummary.title) arrived. Sent at most once per run, work runs only, possibly
+   * after the run ended. The summary in runs:list / runs:get carries it from then on.
+   */
+  | { type: 'run.title'; runId: string; title: string }
   | { type: 'agent.upsert'; runId: string; agent: AgentInstance }
   | { type: 'agent.remove'; runId: string; agentId: string }
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
@@ -1539,6 +1558,12 @@ export interface ProjectCreateInput {
    * AppInfo.mockAdapter is true (ORGAI_MOCK=1); otherwise projects:create rejects.
    */
   mock?: boolean
+  /**
+   * Start the project with the agent definitions found in these sources of the folder (projects:scanAgents)
+   * instead of the default chart: the 'replace' import, with models mapped to the connection the project is
+   * created on. Unknown sources are ignored; when nothing importable is found the default chart is kept.
+   */
+  importAgents?: AgentImportSource[]
 }
 
 /** projects:checkPath. Never rejects; an empty or unreadable path reports exists false. */
@@ -1551,6 +1576,188 @@ export interface ProjectPathCheck {
   suggestedName: string
   /** An existing directory with no entries at all. False when it does not exist. */
   empty: boolean
+  /** Agent definitions found in the folder (the same scan as projects:scanAgents), when there are any. */
+  agentSources?: { source: AgentImportSource; label: string; agentCount: number }[]
+  /** Instruction-only files found (AGENTS.md, CLAUDE.md...), project-relative, when there are any. */
+  instructionFiles?: string[]
+  /** The folder (compared by resolved path) is already this OrgAI project. */
+  existingProjectId?: string
+  existingProjectName?: string
+}
+
+// ---------- Agent import ----------
+
+/**
+ * Where an imported agent definition came from. 'orgai' = `.orgai/org.json` (projects:exportOrg);
+ * 'claude' = `.claude/agents/**\/*.md`; 'opencode' = `.opencode/agents|agent/*.md` and `opencode.json(c)`;
+ * 'codex' = `.codex/agents/*.toml`; 'copilot' = `.github/agents/*.agent.md`; 'gemini' = `.gemini/agents/*.md`;
+ * 'kiro' = `.kiro/agents/*.json|*.md`; 'roo' = `.roomodes`.
+ */
+export type AgentImportSource = 'orgai' | 'claude' | 'opencode' | 'codex' | 'copilot' | 'gemini' | 'kiro' | 'roo'
+
+/** Every source, in scan and display order. */
+export const AGENT_IMPORT_SOURCES: readonly AgentImportSource[] = ['orgai', 'claude', 'opencode', 'codex', 'copilot', 'gemini', 'kiro', 'roo']
+
+/** Display names of the sources. */
+export const AGENT_IMPORT_SOURCE_LABELS: Record<AgentImportSource, string> = {
+  orgai: 'OrgAI export',
+  claude: 'Claude Code',
+  opencode: 'opencode',
+  codex: 'Codex',
+  copilot: 'GitHub Copilot',
+  gemini: 'Gemini CLI',
+  kiro: 'Kiro',
+  roo: 'Roo Code'
+}
+
+export function isAgentImportSource(v: unknown): v is AgentImportSource {
+  return typeof v === 'string' && (AGENT_IMPORT_SOURCES as readonly string[]).includes(v)
+}
+
+/** One source found in a folder. `files` are project-relative with forward slashes. */
+export interface AgentImportSourceSummary {
+  source: AgentImportSource
+  label: string
+  files: string[]
+  agentCount: number
+}
+
+/** projects:scanAgents. Never rejects: a missing or unreadable folder gives empty lists (and maybe a warning). */
+export interface AgentImportScan {
+  /** Only sources with at least one file. */
+  sources: AgentImportSourceSummary[]
+  /** Instruction-only files (AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, .cursor/rules/*.mdc). Never roles. */
+  instructionFiles: string[]
+  /** Parse problems, skipped files and truncations, one readable line each. */
+  warnings: string[]
+}
+
+/** 'replace' swaps the whole org chart for the imported roles; 'merge' keeps the existing roles and adds the imported ones. */
+export type AgentImportMode = 'replace' | 'merge'
+
+/**
+ * What to do with one imported role. 'add' (default): add it, renaming its slug when it collides.
+ * 'replace': take the place of the existing role with the same slug, keeping that role's id and reportsTo.
+ * 'skip': leave it out.
+ */
+export type AgentImportAction = 'add' | 'replace' | 'skip'
+
+/** A user's choice for one imported role, keyed by AgentImportItem.key. */
+export interface AgentImportChoice {
+  key: string
+  include: boolean
+  /** New manager: a role slug or id in the resulting chart. Refused when unknown or when it makes a cycle. */
+  reportsTo?: string
+  /** 'inherit', a catalog model of the project's connection, or a tier name (top, deep, everyday, fast) mapped there. */
+  model?: ModelRef
+  action?: AgentImportAction
+}
+
+/** projects:previewImport and projects:applyImport input. Omit `sources` for every source found. */
+export interface AgentImportInput {
+  projectId: string
+  sources?: AgentImportSource[]
+  mode: AgentImportMode
+  choices?: AgentImportChoice[]
+  /** Ignored by previewImport. applyImport takes AgentImportApplyInput, where it is required. */
+  digest?: string
+}
+
+/** Most choices one preview or apply accepts; more are refused. */
+export const AGENT_IMPORT_MAX_CHOICES = 200
+
+/**
+ * projects:applyImport input. `digest` is required: the AgentImportPreview.digest of the preview the user reviewed.
+ * When the folder's definitions changed since (another prompt, tool list, model, responsibilities or color under the
+ * same name), apply refuses, and it refuses outright without a digest. The digest covers the folder only: apply
+ * recomputes against the project's current roles, mode and choices, so the UI should re-preview after an org chart edit.
+ */
+export interface AgentImportApplyInput extends AgentImportInput {
+  digest: string
+}
+
+/** Tools that change files or run commands. AgentImportItem.elevatedTools lists the ones an imported role gets. */
+export const AGENT_IMPORT_ELEVATED_TOOLS: readonly ToolName[] = ['Bash', 'Edit', 'Write', 'NotebookEdit']
+
+/**
+ * Why an imported role got its model. 'kept': the original is a catalog model of the project's connection.
+ * 'tier': mapped through the connection's tier mapping from the original's tier. 'default': the original was
+ * missing or unknown, so the 'everyday' tier was used. 'inherit': stays 'inherit'. 'chosen': AgentImportChoice.model.
+ */
+export type AgentImportModelReason = 'kept' | 'tier' | 'default' | 'inherit' | 'chosen'
+
+/** One imported role in a preview. */
+export interface AgentImportItem {
+  /** Stable across scans of the same files: `<source>:<file>#<name>`. Choices refer to it. */
+  key: string
+  /** The role's id in AgentImportPreview.roles (absent when the action is 'skip'). */
+  roleId?: string
+  name: string
+  slug: string
+  source: AgentImportSource
+  /** Project-relative file the definition came from. */
+  file: string
+  description: string
+  originalModel?: string
+  model: ModelRef
+  tier?: ModelTier
+  modelReason: AgentImportModelReason
+  tools: ToolName[]
+  /** Foreign tool names with no OrgAI equivalent. */
+  toolsDropped: string[]
+  canSpawn: boolean
+  /** Slug or name of the manager in the result, null for the root. */
+  reportsTo: string | null
+  /** The first 600 characters of the imported prompt. */
+  promptExcerpt: string
+  /** Length of the whole imported prompt (at most 20,000), so the UI can say how much the excerpt leaves out. */
+  promptLength: number
+  /**
+   * The whole prompt the role gets (the imported prompt, capped at 20,000 characters, or its description when the
+   * definition has none). Untrusted repo text: render it as plain text and let the user read all of it before applying.
+   */
+  prompt: string
+  /**
+   * The role's elevated grants, for the UI to flag: its tools among AGENT_IMPORT_ELEVATED_TOOLS (Bash, Edit, Write,
+   * NotebookEdit), plus 'canSpawn' when it may spawn agents and 'mcp' when it keeps a replaced role's MCP grants.
+   * Empty for a read-only role.
+   */
+  elevatedTools: string[]
+  action: AgentImportAction
+  /** For 'replace': the existing role it takes the place of. */
+  replacesRoleId?: string
+  /** A role with this slug already exists (merge mode). */
+  slugConflict: boolean
+  /** Readable notes: renamed slug, truncated prompt, tier fallback... */
+  notes: string[]
+}
+
+/** projects:previewImport: what applyImport would save. Nothing is saved. */
+export interface AgentImportPreview {
+  mode: AgentImportMode
+  /** The project's full resulting roles. */
+  roles: Role[]
+  items: AgentImportItem[]
+  /** Existing roles that the result drops (replace mode, or replaced by an item). */
+  replacedRoleIds: string[]
+  /** Scan warnings plus the roll-up: unmapped models, duplicate slugs, no orchestrator, instruction files not imported, family mix. */
+  warnings: string[]
+  connection: ConnectionId
+  /** Instruction-only files that were not turned into roles. */
+  instructionFiles: string[]
+  /** sha256 of the scanned definitions; pass it back as AgentImportInput.digest so apply refuses a changed folder. */
+  digest: string
+}
+
+/** projects:applyImport output. Undo = save previousRoles through projects:save. */
+export interface AgentImportApplyResult {
+  project: Project
+  previousRoles: Role[]
+}
+
+/** projects:exportOrg output: the absolute path of the written `.orgai/org.json`. */
+export interface OrgExportResult {
+  path: string
 }
 
 /** runs:start. `scaffold` marks a new project's first build run so the setup banner can step aside. */
@@ -1614,6 +1821,14 @@ export interface OrgAIApi {
     remapModels(input: RemapModelsInput): Promise<RemapModelsOutput>
     /** Dry run of remapModels: the RemapResult it would produce, computed by the main process. Saves nothing. */
     previewRemap(input: RemapModelsInput): Promise<RemapResult>
+    /** Agent definitions other harnesses (or OrgAI's export) left in a folder. Read-only and token-free; never rejects. */
+    scanAgents(path: string): Promise<AgentImportScan>
+    /** The org chart an import would produce, with models mapped to the project's connection. Saves nothing. */
+    previewImport(input: AgentImportInput): Promise<AgentImportPreview>
+    /** Re-scan the folder, apply the import (and the choices) and save. Returns the project and the roles it replaced. */
+    applyImport(input: AgentImportApplyInput): Promise<AgentImportApplyResult>
+    /** Write the project's org chart to `<project>/.orgai/org.json` (no ids, positions, secrets or MCP specs). */
+    exportOrg(projectId: string): Promise<OrgExportResult>
   }
   connections: {
     /** Every connection record (CONNECTION_IDS order) with its live status. */
@@ -1847,6 +2062,10 @@ export const IPC = {
   projectsRemove: 'projects:remove',
   projectsPickDir: 'projects:pickDirectory',
   projectsCheckPath: 'projects:checkPath',
+  projectsScanAgents: 'projects:scanAgents',
+  projectsPreviewImport: 'projects:previewImport',
+  projectsApplyImport: 'projects:applyImport',
+  projectsExportOrg: 'projects:exportOrg',
   draftOrgChart: 'draft:orgChart',
   runsStart: 'runs:start',
   runsSend: 'runs:send',

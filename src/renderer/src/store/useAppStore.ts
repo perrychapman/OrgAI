@@ -4,6 +4,8 @@ import { defaultRunToOpen } from '../lib/needsYou'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
+import { cleanIpcError } from '../lib/ipcError'
+import { withRunTitle } from '../lib/runTitle'
 import { describeRemap, type ProjectChanges } from '../lib/remap'
 import type {
   AppInfo,
@@ -43,6 +45,17 @@ import type {
 import { HARNESS_PROJECT_ID, parseRunWindowHash } from '@shared/types'
 
 /** Project tabs: run (Live), history, org (Org chart), settings. projects and appSettings are app-level. */
+/** The Banner after an agent import: what came in, and what Undo restores. */
+export interface ImportNotice {
+  count: number
+  summary: string
+  previousRoles: Role[]
+  /** The roles right after the import. Undo is only offered while the chart still matches them. */
+  importedRoles: Role[]
+  state: 'available' | 'busy' | 'reverted' | 'error' | 'expired'
+  error?: string
+}
+
 export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'logs'
@@ -124,6 +137,9 @@ interface AppState {
   /** The virtual project that hosts library assistant runs. It is never in `projects`. */
   harnessProject: Project | null
   mcpFocus: McpFocus | null
+  /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
+  projectSettingsPane: Record<string, string>
+  setProjectSettingsPane(projectId: string, pane: string): void
   /** Show the app settings MCP library, optionally on one entry. */
   openMcpLibrary(libraryId?: string): void
   /** Show a project's settings on its MCP servers section, optionally on one server. */
@@ -162,6 +178,8 @@ interface AppState {
   loadLiveRuns(): Promise<void>
   /** Run whose first decision card should take focus once its view is on screen. */
   pendingDecisionFocus: string | null
+  /** The request id that jump asked to open (a specific card in the tray); null opens the default card. */
+  pendingDecisionRequest: string | null
   clearDecisionFocus(): void
   /** Run whose composer should open on "Continue this run" (set by History's Continue). */
   continueIntent: string | null
@@ -176,7 +194,7 @@ interface AppState {
   /** Select a project and open the run that needs the user, else the last viewed one, else the newest. */
   openProject(projectId: string): Promise<void>
   /** Select the project, open the run and ask its decision card to take focus. */
-  jumpToDecision(projectId: string, runId: string): Promise<void>
+  jumpToDecision(projectId: string, runId: string, requestId?: string): Promise<void>
   /** Latest plan usage reported by any live session. */
   usage: UsageStatus | null
   /** Ask the main process to read plan usage now (no run needed). */
@@ -186,6 +204,10 @@ interface AppState {
   /** Static app facts (version, folders, mock availability). null until loaded. */
   appInfo: AppInfo | null
   loadAppInfo(): Promise<void>
+  /** AppSettings.defaultConnection, mirrored for the Connections pane and the new-project form. null until loaded. */
+  defaultConnection: ConnectionId | null
+  loadDefaultConnection(): Promise<void>
+  setDefaultConnection(id: ConnectionId): Promise<void>
   connections: ConnectionInfo[] | null
   connectionsError: string | null
   /** Model catalogs by connection. */
@@ -201,6 +223,13 @@ interface AppState {
   /** Show a notice for results. `before` holds the pre-change copies of the projects, for Undo. */
   pushRemapNotice(cause: string, results: RemapResult[], before: Project[]): void
   dismissRemapNotice(id: string): void
+  /** Agent import: a pending request to open the review dialog on the Org chart tab, and the notice after an apply. */
+  importRequest: { projectId: string; fresh: boolean } | null
+  importNotices: Record<string, ImportNotice>
+  requestImport(request: { projectId: string; fresh: boolean } | null): void
+  recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
+  undoImport(projectId: string): Promise<void>
+  dismissImportNotice(projectId: string): void
   undoRemap(noticeId: string, projectId: string): Promise<void>
   /** Save a project right away and replace the store copy with what the main process returns. */
   saveProjectNow(project: Project): Promise<Project>
@@ -388,10 +417,13 @@ function showContinuation(summary: RunSummary): void {
   void getState().loadHistory()
 }
 
+let defaultConnectionWatch: (() => void) | null = null
+
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   harnessProject: null,
   mcpFocus: null,
+  projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
   saveStatus: { state: 'idle' },
@@ -410,6 +442,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tabNotice: null,
   unreadByRun: {},
   pendingDecisionFocus: null,
+  pendingDecisionRequest: null,
   continueIntent: null,
   historyByProject: {},
   usage: null,
@@ -420,6 +453,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelsError: {},
   login: null,
   remapNotices: [],
+  importRequest: null,
+  importNotices: {},
+
+  defaultConnection: null,
+  async loadDefaultConnection() {
+    try {
+      const s = await window.orgai.settings.get()
+      set({ defaultConnection: s.defaultConnection ?? 'anthropic' })
+      if (!defaultConnectionWatch) defaultConnectionWatch = window.orgai.onSettingsChanged((n) => set({ defaultConnection: n.defaultConnection ?? 'anthropic' }))
+    } catch {
+      // Unknown: callers fall back to Anthropic wording.
+    }
+  },
+  async setDefaultConnection(id) {
+    const { dataDir: _d, appVersion: _v, ...cur } = await window.orgai.settings.get()
+    const saved = await window.orgai.settings.set({ ...cur, defaultConnection: id })
+    set({ defaultConnection: saved.defaultConnection ?? id })
+  },
 
   async loadAppInfo() {
     if (get().appInfo) return
@@ -473,6 +524,40 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissRemapNotice(id) {
     set((s) => ({ remapNotices: s.remapNotices.filter((n) => n.id !== id) }))
+  },
+
+  requestImport(request) {
+    set({ importRequest: request })
+  },
+
+  recordImport(projectId, notice) {
+    set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...notice, state: 'available' } } }))
+  },
+
+  async undoImport(projectId) {
+    const notice = get().importNotices[projectId]
+    const current = get().projects.find((p) => p.id === projectId)
+    if (!notice || !current) return
+    if (JSON.stringify(current.roles) !== JSON.stringify(notice.importedRoles)) {
+      // The chart changed since the import: restoring the old one would drop those edits.
+      set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...notice, state: 'expired', error: undefined } } }))
+      return
+    }
+    const patch = (p: Partial<ImportNotice>): void => set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...s.importNotices[projectId], ...p } } }))
+    patch({ state: 'busy', error: undefined })
+    try {
+      await get().saveProjectNow({ ...current, roles: notice.previousRoles })
+      patch({ state: 'reverted' })
+    } catch (e) {
+      patch({ state: 'error', error: cleanIpcError(e) })
+    }
+  },
+
+  dismissImportNotice(projectId) {
+    set((s) => {
+      const { [projectId]: _gone, ...importNotices } = s.importNotices
+      return { importNotices }
+    })
   },
 
   async undoRemap(noticeId, projectId) {
@@ -535,7 +620,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearDecisionFocus() {
-    set({ pendingDecisionFocus: null })
+    set({ pendingDecisionFocus: null, pendingDecisionRequest: null })
   },
 
   async continueFromHistory(runId) {
@@ -575,9 +660,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     else get().openDraft()
   },
 
-  async jumpToDecision(projectId, runId) {
+  async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
-    set({ pendingDecisionFocus: runId })
+    set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
   },
 
   async refreshUsage() {
@@ -670,7 +755,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateProject(project) {
-    set((s) => ({ projects: s.projects.map((p) => (p.id === project.id ? project : p)) }))
+    set((s) => {
+      const notice = s.importNotices[project.id]
+      // The first chart edit after an import ends Undo: it would discard that edit.
+      const expire =
+        notice && (notice.state === 'available' || notice.state === 'error') && JSON.stringify(project.roles) !== JSON.stringify(notice.importedRoles)
+      return {
+        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
+        ...(expire ? { importNotices: { ...s.importNotices, [project.id]: { ...notice, state: 'expired' as const, error: undefined } } } : {})
+      }
+    })
     debouncedSave(project)
   },
 
@@ -769,7 +863,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openProjectMcp(projectId, serverId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
-    set({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId } })
+    set((s) => ({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId }, projectSettingsPane: { ...s.projectSettingsPane, [projectId]: 'tools' } }))
+  },
+
+  setProjectSettingsPane(projectId, pane) {
+    set((s) => ({ projectSettingsPane: { ...s.projectSettingsPane, [projectId]: pane } }))
   },
 
   clearMcpFocus() {
@@ -928,6 +1026,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set((s) => {
       const existing = s.runs[e.runId]
+      // A title for a run the store never loaded: the record already carries it when fetched. No placeholder run.
+      if (e.type === 'run.title' && !existing) {
+        const title = e.title
+        return {
+          history: withRunTitle(s.history, e.runId, title),
+          historyByProject: Object.fromEntries(Object.entries(s.historyByProject).map(([id, list]) => [id, withRunTitle(list, e.runId, title)]))
+        }
+      }
       const run: RunState = existing
         ? { ...existing }
         : emptyRun({ id: e.runId, projectId: '', kind: 'work', prompt: '', status: 'starting', startedAt: Date.now(), totalCostUsd: 0 })
@@ -1009,6 +1115,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
           break
+        case 'run.title':
+          run.summary = { ...run.summary, title: e.title }
+          break
         case 'plan.updated':
           run.plan = e.plan
           break
@@ -1032,6 +1141,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       const next: Partial<AppState> = { runs: { ...s.runs, [e.runId]: run } }
+      // A title can land after the run ended: the history rows carry it too.
+      if (e.type === 'run.title') {
+        const withTitle = (list: RunSummary[]): RunSummary[] => withRunTitle(list, e.runId, e.title)
+        next.history = withTitle(s.history)
+        next.historyByProject = Object.fromEntries(Object.entries(s.historyByProject).map(([id, list]) => [id, withTitle(list)]))
+      }
       // Terminal run: its tab no longer has anything unread to show.
       if ((e.type === 'run.status' && (e.status === 'finished' || e.status === 'error')) && s.unreadByRun[e.runId]) {
         const { [e.runId]: _u, ...rest } = s.unreadByRun
@@ -1102,7 +1217,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!run) return {}
         const { projectId, kind, prompt, startedAt, resumedFrom } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}) }
+        const title = run.summary.title ?? record.summary.title
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]

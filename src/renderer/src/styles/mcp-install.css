@@ -1,14 +1,22 @@
 /* Live-run MCP install approval card (docs/design/providers-and-mcp.md section 6). Shell is DecisionCard. */
 
 .mcp-install {
+  /* A flex column so the card inside can shrink to the tray: its body scrolls and the action row stays in view. */
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+}
+.mcp-install > .decision-card {
+  flex: 1 1 auto;
 }
 .mcpi-meta {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   flex: none;
-  font-size: var(--text-small);
+  font-size: var(--text-caption);
   color: var(--text-secondary);
 }
 

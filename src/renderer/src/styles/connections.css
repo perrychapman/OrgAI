@@ -16,6 +16,7 @@
   gap: var(--space-2);
 }
 .conn-head {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -449,12 +450,6 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.settings-col.flow {
-  gap: 0;
-}
-.settings-col.flow > section {
-  margin-top: var(--space-6);
-}
 
 .pconn-card .badge {
   align-self: flex-start;
@@ -479,26 +474,6 @@
 .pconn-cards:disabled {
   opacity: 0.8;
 }
-.about-list {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--space-2) var(--space-4);
-  margin: 0;
-  align-items: center;
-}
-.about-list dt {
-  color: var(--text-faint);
-}
-.about-list dd {
-  margin: 0;
-  min-width: 0;
-}
-.about-path {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
 .about-path > :not(.mono) {
   flex-shrink: 0;
 }
@@ -517,4 +492,19 @@
 .skeleton.w-70 {
   width: 70%;
   margin-top: var(--space-2);
+}
+
+/* Accent "Custom" hex field (App settings > Appearance) */
+.accent-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-2);
+}
+.accent-custom-label {
+  color: var(--text-secondary);
+}
+.accent-custom .input {
+  width: 96px;
 }

@@ -227,8 +227,8 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  /* Side column narrows with the main area (cqi of .main), capped at 400px. */
-  grid-template-columns: minmax(0, 1fr) clamp(280px, 32cqi, 400px);
+  /* Side column narrows with the main area (cqi of .main), capped at 400px, unless the user dragged it (--side-panel-w). */
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, clamp(280px, 28cqi, 400px));
   grid-template-rows: minmax(0, 1fr) auto;
 }
 .run-body:has(> .side-panel[data-collapsed='true']) {
@@ -283,10 +283,9 @@
   grid-column: 1;
   border-top: 1px solid var(--border-default);
   background: var(--surface-1);
-  padding: 10px 12px;
+  padding: var(--space-1h) var(--space-3);
   display: flex;
-  gap: 10px;
-  align-items: flex-end;
+  min-width: 0;
 }
 .composer.drag {
   outline: 2px dashed var(--accent);
@@ -297,13 +296,61 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
-.composer textarea {
-  width: 100%;
-  min-height: 44px;
+/* Label line (28 px): what Send does, the mode toggle right next to it, a "?" for the keyboard hints. */
+.composer-mode {
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--control-sm) - var(--space-1));
+  gap: var(--space-3);
+  min-width: 0;
+}
+.composer-mode-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.composer-hint {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.composer-hint svg {
+  flex: none;
+}
+.composer-hint-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Input row: attach, a two-line textarea (56 px), Send centred beside it. */
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.composer-row textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 55px;
   max-height: 160px;
   resize: none;
+}
+.composer-row .btn {
+  flex: none;
 }
 .composer-notice {
   font-size: var(--text-caption);
@@ -315,29 +362,6 @@
 }
 .composer-notice .link-btn {
   margin-left: var(--space-2);
-}
-.composer-mode {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1h) var(--space-3);
-}
-.composer-mode-label {
-  min-width: 0;
-  font-size: var(--text-small);
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
-}
-.composer-foot {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.composer-help {
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
 }
 .attach-strip {
   list-style: none;
@@ -437,47 +461,14 @@
   flex: none;
 }
 
-/* ---------- Plan progress pill in the run header ---------- */
-
-.pill.plan-pill {
-  cursor: pointer;
-  font-family: var(--font-sans);
-}
-.pill.plan-pill:hover {
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-}
-.pill.plan-pill.done {
-  border-color: var(--success-border);
-  color: var(--success-text);
-}
-.pill.plan-pill.blocked {
-  border-color: var(--warning-border);
-  color: var(--warning-text);
-}
-
-/* ---------- Run header helpers ---------- */
+/* ---------- Run strip helpers ---------- */
 
 .run-act {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
 }
-.run-act-help,
-.run-header-note,
-.run-header-auto {
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  color: var(--text-secondary);
-}
-.run-act-help {
-  color: var(--text-tertiary);
-}
-.run-header-auto,
-.run-header-note {
-  flex: none;
-  white-space: nowrap;
-}
-.pill.plan-pill .lucide {
-  flex: none;
+.run-act-end {
+  display: inline-flex;
+  margin-left: var(--space-2);
 }

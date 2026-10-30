@@ -1,8 +1,9 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Copy, ExternalLink, Network, RefreshCw, Sparkles } from 'lucide-react'
 import type { ConnectionId, ConnectionInfo, ConnectionLoginStart, OpenAIConnection, AnthropicConnection, LiteLLMConnection, ProviderConnection } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
+import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { ConfirmDialog } from '../ui/Dialog'
@@ -39,13 +40,44 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const loadModels = useAppStore((s) => s.loadModels)
   const models = useAppStore((s) => s.models[id])
   const modelsError = useAppStore((s) => s.modelsError[id])
-  const [open, setOpen] = useState(true)
+  // Collapsed by default, connected or not: a provider the user did not ask about stays one line with a Connect
+  // button. Opens by itself only when something is wrong or a sign-in is pending.
+  const [open, setOpen] = useState(info.status.state === 'error' || info.status.state === 'connecting')
+  const card = useRef<HTMLElement>(null)
+  const focusOnOpen = useRef(false)
   const [busy, setBusy] = useState<null | 'refresh' | 'connect'>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [announce, setAnnounce] = useState('')
   const state = info.status.state
   const connected = state === 'connected'
+  const defaultId = useAppStore((s) => s.defaultConnection)
+  const loadDefault = useAppStore((s) => s.loadDefaultConnection)
+  const isDefault = defaultId === id
+  useEffect(() => {
+    void loadDefault()
+  }, [loadDefault])
+  const makeDefault = async (): Promise<void> => {
+    try {
+      await useAppStore.getState().setDefaultConnection(id)
+      setAnnounce(`${meta.name} is now the default for new projects`)
+      requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h3')?.focus())
+    } catch (e) {
+      setError(errText(e))
+    }
+  }
+
+  useEffect(() => {
+    if (state === 'error' || state === 'connecting') setOpen(true)
+  }, [state])
+
+  // After the header's Connect button opened the card, move focus to its first control.
+  useEffect(() => {
+    if (!open || !focusOnOpen.current) return
+    focusOnOpen.current = false
+    card.current?.querySelector<HTMLElement>('.conn-auth input, .conn-auth button')?.focus()
+  }, [open])
 
   useEffect(() => {
     if (connected && !models) void loadModels(id)
@@ -114,30 +146,58 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
 
   const detail = useMemo(() => {
     if (state === 'connected') {
-      const parts = [info.status.account, info.status.detail].filter(Boolean)
+      // One-line summary: auth kind, model count, freshness.
+      const conn = info.connection as AnthropicConnection | OpenAIConnection | LiteLLMConnection
+      const auth = id === 'litellm' ? 'Proxy key' : (conn as AnthropicConnection).auth.kind === 'apiKey' ? 'API key' : id === 'anthropic' ? 'Claude Code login' : 'ChatGPT sign-in'
       const when = relativeTime(info.status.checkedAt)
-      return [...parts, when ? `Updated ${when}` : ''].filter(Boolean).join(' · ') || 'Connected'
+      return [info.status.account, auth, models ? `${models.length} models` : '', when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
     }
     if (state === 'connecting') return info.status.detail ?? (id === 'litellm' ? 'Testing the proxy' : 'Waiting for the browser sign-in')
     if (state === 'error') return info.status.detail ?? 'Something went wrong.'
     const usesKey = (info.connection as AnthropicConnection | OpenAIConnection).auth?.kind === 'apiKey'
     if (usesKey && info.status.detail) return `Not connected: ${info.status.detail}`
     return info.status.detail ?? meta.hint
-  }, [state, info.status, info.connection, id, meta.hint])
+  }, [state, info.status, info.connection, id, meta.hint, models])
 
   return (
-    <section className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
+    <section ref={card} className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
       <header className="card-sec conn-head">
         <span className="conn-mark">
           <Icon icon={meta.icon} size="lg" />
         </span>
         <div className="conn-title">
-          <h3>{meta.name}</h3>
+          <h3 tabIndex={-1}>{meta.name}</h3>
           <p className={state === 'error' ? 'conn-detail invalid-text' : 'conn-detail'} role="status" aria-live="polite" data-testid="connection-status">
             {detail}
           </p>
         </div>
         <ConnectionStatusBadge state={state} />
+        {isDefault && (
+          <Badge tone="accent" testId="default-connection-badge">
+            Default for new projects
+          </Badge>
+        )}
+        {connected && defaultId !== null && !isDefault && (
+          <Button size="sm" variant="secondary" ariaLabel={`Use ${meta.name} for new projects`} onClick={() => void makeDefault()}>
+            Use for new projects
+          </Button>
+        )}
+        {!connected && !open && (
+          <Button
+            size="sm"
+            variant="primary"
+            ariaLabel={`Connect ${meta.name}`}
+            onClick={() => {
+              focusOnOpen.current = true
+              setOpen(true)
+            }}
+          >
+            Connect
+          </Button>
+        )}
+        <span className="sr-only" role="status" aria-live="polite">
+          {announce}
+        </span>
         <IconButton
           icon={RefreshCw}
           label={`Refresh ${meta.name} status and models`}
@@ -221,6 +281,16 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   )
 }
 
+/** Long caveat behind a native "Learn more" disclosure (same look as SettingRow's). */
+function More({ children }: { children: string }): ReactElement {
+  return (
+    <details className="setting-row-more">
+      <summary>Learn more</summary>
+      <div className="setting-row-more-body">{children}</div>
+    </details>
+  )
+}
+
 function CopyDetails({ text }: { text: string }): ReactElement {
   return (
     <Button size="sm" variant="ghost" icon={Copy} onClick={() => void navigator.clipboard?.writeText(text)}>
@@ -300,7 +370,7 @@ function AnthropicAuth({
           </Button>
         )}
       </div>
-      {connected && <p className="muted">OrgAI stops using this connection. Your Claude Code login on this machine is not changed.</p>}
+      {connected && <More>OrgAI stops using this connection. Your Claude Code login on this machine is not changed.</More>}
     </div>
   )
 }
@@ -402,14 +472,14 @@ function OpenAIAuth({
           <div className="conn-actions">
             {connected ? <Button onClick={() => void onDisconnect()}>Sign out of OrgAI</Button> : <Button variant="primary" loading={busy} onClick={() => void onConnect()}>Connect</Button>}
           </div>
-          {connected && <p className="muted">OrgAI stops using this connection. The environment variable is not changed.</p>}
+          {connected && <More>OrgAI stops using this connection. The environment variable is not changed.</More>}
         </>
       ) : connected ? (
         <>
           <div className="conn-actions">
             <Button onClick={() => void onDisconnect()}>Sign out of ChatGPT</Button>
           </div>
-          <p className="muted">Removes the ChatGPT login OrgAI keeps for Codex.</p>
+          <More>Removes the ChatGPT login OrgAI keeps for Codex.</More>
         </>
       ) : (
         <>
@@ -515,9 +585,8 @@ function LiteLLMAuth({
           />
         </div>
       </div>
-      <p className="muted">The key is stored encrypted on this machine. It is never written to your project or shown again.</p>
+      <More>The key is stored encrypted on this machine. It is never written to your project or shown again. Disconnecting deletes the stored key and keeps the proxy URL.</More>
       {connected && changed && <p className="muted">Changed. Test and connect to apply.</p>}
-      {connected && <p className="muted">Disconnecting deletes the stored API key. The proxy URL stays.</p>}
       <div className="conn-actions">
         <Button variant="primary" loading={busy} disabled={!valid} onClick={() => void onConnect({ ...conn, baseUrl: url.trim() })}>
           Test and connect

@@ -6,6 +6,8 @@ import { isWholeToolRule } from '@shared/types'
 import { Button } from './ui/Button'
 import { IconButton } from './ui/IconButton'
 import { Input } from './ui/Input'
+import { SettingsCard } from './settings/SettingsCard'
+import { SettingsSection } from './settings/SettingsSection'
 
 const EXAMPLES = ['Bash(git status:*)', 'Bash(npm test)', 'WebSearch']
 
@@ -66,24 +68,20 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
   }
 
   return (
-    <section className="field" aria-labelledby={`${inputId}-title`}>
-      <div className="row between">
-        <label id={`${inputId}-title`} htmlFor={inputId}>
-          Saved permission rules
-        </label>
-        <IconButton icon={RefreshCw} label="Reload saved rules" size="sm" disabled={busy !== null} onClick={() => void refresh()} />
-      </div>
-      {rules === null ? (
-        <span className="hint">Loading…</span>
-      ) : rules.length === 0 ? (
-        <span className="hint">
-          None yet. Choose “Always allow (project)” on an approval card, or approve the commands the Architect proposes, to stop being asked.
-        </span>
-      ) : (
-        <ul className="maint-list" aria-label="Saved permission rules">
-          {rules.map((rule) => (
-            <li key={rule} className="maint-row">
-              <div className="row gap-2">
+    <SettingsSection
+      id="settings-section-rules"
+      title="Saved permission rules"
+      actions={<IconButton icon={RefreshCw} label="Reload saved rules" size="sm" disabled={busy !== null} onClick={() => void refresh()} />}
+    >
+      <SettingsCard>
+        {rules === null ? (
+          <p className="settings-card-note">Loading…</p>
+        ) : rules.length === 0 ? (
+          <p className="settings-card-note">No saved rules yet.</p>
+        ) : (
+          <ul className="settings-card-list" aria-label="Saved permission rules">
+            {rules.map((rule) => (
+              <li key={rule} className="settings-card-item">
                 <code className="rule-code">{rule}</code>
                 {isWholeToolRule(rule) && (
                   <span className="chip" title={`Approves every ${rule} call before any prompt, whatever its input`}>
@@ -94,57 +92,64 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
                 <Button size="sm" variant="danger" ariaLabel={`Remove rule ${rule}`} disabled={busy !== null} onClick={() => void remove(rule)}>
                   {busy === rule ? 'Removing…' : 'Remove'}
                 </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {listError && (
+          <p className="field-error" role="alert">
+            {listError}
+          </p>
+        )}
+        <div className="settings-card-add">
+          <div className="row gap-2">
+            <div className="grow">
+              <Input
+                id={inputId}
+                aria-label="New permission rule"
+                mono
+                value={draft}
+                disabled={busy !== null}
+                placeholder="Bash(gh repo create:*)"
+                spellCheck={false}
+                invalid={!!error}
+                aria-describedby={error ? errorId : undefined}
+                onChange={(v) => {
+                  setDraft(v)
+                  if (error) setError(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void add()
+                  }
+                }}
+              />
+            </div>
+            <Button size="sm" onClick={() => void add()} disabled={busy !== null}>
+              Add rule
+            </Button>
+          </div>
+          {error && (
+            <span className="field-error" id={errorId} role="alert">
+              {error}
+            </span>
+          )}
+          <details className="rule-examples">
+            <summary>Examples</summary>
+            <div className="rule-examples-body">
+              <span className="settings-card-hint">A command prefix, an exact command or a whole tool. Applies to open runs too.</span>
+              <div className="chip-row" role="group" aria-label="Rule examples">
+                {EXAMPLES.map((ex) => (
+                  <button key={ex} type="button" className="chip chip-btn" onClick={() => setDraft(ex)} title="Use this example">
+                    {ex}
+                  </button>
+                ))}
               </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {listError && (
-        <span className="field-error" role="alert">
-          {listError}
-        </span>
-      )}
-      <div className="row gap-2">
-        <div className="grow">
-          <Input
-            id={inputId}
-            mono
-            value={draft}
-            disabled={busy !== null}
-            placeholder="Bash(gh repo create:*)"
-            spellCheck={false}
-            invalid={!!error}
-            aria-describedby={error ? errorId : undefined}
-            onChange={(v) => {
-              setDraft(v)
-              if (error) setError(null)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                void add()
-              }
-            }}
-          />
+            </div>
+          </details>
         </div>
-        <Button size="sm" onClick={() => void add()} disabled={busy !== null}>
-          Add rule
-        </Button>
-      </div>
-      {error && (
-        <span className="field-error" id={errorId} role="alert">
-          {error}
-        </span>
-      )}
-      <span className="hint">Allow a command prefix, one exact command, or a whole tool. Applies to new runs and to open runs of this project.</span>
-      <div className="chip-row" aria-label="Rule examples">
-        <span className="hint">Examples</span>
-        {EXAMPLES.map((ex) => (
-          <button key={ex} type="button" className="chip chip-btn" onClick={() => setDraft(ex)} title="Use this example">
-            {ex}
-          </button>
-        ))}
-      </div>
-    </section>
+      </SettingsCard>
+    </SettingsSection>
   )
 }

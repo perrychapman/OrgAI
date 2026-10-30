@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, agentMcpServerNames, buildAgents, buildEnv, collectSecrets, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -171,5 +171,105 @@ describe('HarnessCallerTracker', () => {
     const t = new HarnessCallerTracker()
     expect(t.resolve(T, 5)).toBeUndefined()
     expect(t.resolve(T, { 'claudecode/toolUseId': 'zzz' })).toBeUndefined()
+  })
+})
+
+describe('completionEnv', () => {
+  const base = { ANTHROPIC_API_KEY: 'k', PATH: 'p', ANTHROPIC_BASE_URL: 'leak', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' }
+  it('without a connection is isolated but keeps the legacy ANTHROPIC_API_KEY', () => {
+    expect(completionEnv(undefined, base)).toEqual({ ANTHROPIC_API_KEY: 'k', PATH: 'p', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' })
+  })
+  it('merges litellm env and drops the inherited key, routing vars and oauth token', () => {
+    const env = completionEnv({ connection: 'litellm', adapter: 'claude', env: { ANTHROPIC_BASE_URL: 'u' } }, base)
+    expect(env).toEqual({ PATH: 'p', ANTHROPIC_BASE_URL: 'u' })
+  })
+  it('takes the anthropic key from connection.env, not from base', () => {
+    const env = completionEnv({ connection: 'anthropic', adapter: 'claude', env: { ANTHROPIC_API_KEY: 'from-conn' } }, base)
+    expect(env.ANTHROPIC_API_KEY).toBe('from-conn')
+    expect('ANTHROPIC_BASE_URL' in env).toBe(false)
+    expect(completionEnv({ connection: 'anthropic', adapter: 'claude', env: {} }, base).ANTHROPIC_API_KEY).toBeUndefined()
+  })
+})
+
+describe('env isolation in buildEnv', () => {
+  const leaky = { PATH: '/bin', ANTHROPIC_BASE_URL: 'http://mine', ANTHROPIC_MODEL: 'x', CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_API_KEY: 'stray', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' }
+  it('never lets leaked routing vars through on anthropic or litellm', () => {
+    for (const connection of ['anthropic', 'litellm'] as const) {
+      const env = buildEnv(fakeCtx({ connection: { connection, adapter: 'claude', env: {} } }), leaky)
+      expect(env.PATH).toBe('/bin')
+      expect('ANTHROPIC_BASE_URL' in env).toBe(false)
+      expect('ANTHROPIC_MODEL' in env).toBe(false)
+      expect('CLAUDE_CODE_USE_BEDROCK' in env).toBe(false)
+    }
+  })
+  it('a subscription project drops an inherited ANTHROPIC_API_KEY but keeps the oauth token', () => {
+    const env = buildEnv(fakeCtx({ connection: { connection: 'anthropic', adapter: 'claude', env: {} } }), leaky)
+    expect('ANTHROPIC_API_KEY' in env).toBe(false)
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth')
+  })
+  it('litellm drops CLAUDE_CODE_OAUTH_TOKEN', () => {
+    const env = buildEnv(fakeCtx({ connection: { connection: 'litellm', adapter: 'claude', env: { ANTHROPIC_AUTH_TOKEN: 't' } } }), leaky)
+    expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false)
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('t')
+  })
+})
+
+describe('authFailureDetail', () => {
+  it('masks echoed key fragments and exact secrets, one line, capped', () => {
+    const out = authFailureDetail('401 Received API Key = sk-...1234\nBearer abc.def exact-secret', ['exact-secret'])
+    expect(out).not.toMatch(/sk-|abc\.def|exact-secret|\n/)
+    expect(authFailureDetail('x'.repeat(900), [])).toHaveLength(400)
+  })
+})
+
+describe('authFailureFrom', () => {
+  const assistant = (text: string, error?: string): never => ({ type: 'assistant', error, message: { content: [{ type: 'text', text }] } }) as never
+  it('detects the error code and the CLI wording on assistant messages', () => {
+    expect(authFailureFrom(assistant('Invalid API key · Please run /login'))).toBe('Invalid API key · Please run /login')
+    expect(authFailureFrom(assistant('', 'authentication_failed'))).toBe('')
+    expect(authFailureFrom(assistant('Here is how to rotate an API key safely.'))).toBeNull()
+  })
+  it('only treats authentication error codes as enabling the loose text match', () => {
+    const text = 'Request failed: unauthorized'
+    expect(authFailureFrom(assistant(text, 'rate_limit'))).toBeNull()
+    expect(authFailureFrom(assistant(text, 'billing_error'))).toBeNull()
+    expect(authFailureFrom(assistant(text, 'authentication_failed'))).toBe(text)
+    expect(authFailureFrom(assistant(text, 'cloud_credential_error'))).toBe(text)
+    expect(authFailureFrom(assistant(text, 'oauth_org_not_allowed'))).toBe(text)
+  })
+  it('detects an error result and ignores a normal one', () => {
+    expect(authFailureFrom({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login' } as never)).not.toBeNull()
+    expect(authFailureFrom({ type: 'result', subtype: 'success', is_error: false, result: 'Done.' } as never)).toBeNull()
+    expect(authFailureFrom({ type: 'system', subtype: 'init' } as never)).toBeNull()
+  })
+})
+
+describe('linkAbortSignal', () => {
+  it('aborts the controller when the signal aborts', () => {
+    const ac = new AbortController()
+    const { controller } = linkAbortSignal(ac.signal)
+    expect(controller.signal.aborted).toBe(false)
+    ac.abort()
+    expect(controller.signal.aborted).toBe(true)
+  })
+  it('stops listening after dispose', () => {
+    const ac = new AbortController()
+    const { controller, dispose } = linkAbortSignal(ac.signal)
+    dispose()
+    ac.abort()
+    expect(controller.signal.aborted).toBe(false)
+  })
+  it('throws when already aborted', () => {
+    const ac = new AbortController()
+    ac.abort()
+    expect(() => linkAbortSignal(ac.signal)).toThrow('Completion cancelled')
+  })
+})
+
+describe('buildCompletionOptions', () => {
+  it('blocks ambient MCP servers', () => {
+    const o = buildCompletionOptions({ cwd: process.cwd(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])
+    expect(o.strictMcpConfig).toBe(true)
+    expect(o.mcpServers).toEqual({})
   })
 })

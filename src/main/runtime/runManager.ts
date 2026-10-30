@@ -48,6 +48,7 @@ import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext } from '../mcp/assist'
+import { generateRunTitle } from '../ai/runTitle'
 
 /** The path as the file system spells it (true case on Windows). Falls back to the input when it cannot be resolved. */
 export function canonicalPath(p: string): string {
@@ -111,6 +112,8 @@ interface ActiveRun {
   limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
+  titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
   outcome?: RunOutcome
   /** Agents still live when the run ended; they read Stopped / Failed however the adapter re-reports them. */
@@ -240,6 +243,11 @@ export interface RunManagerOptions {
   catalog?: () => ProviderModel[]
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
+  /**
+   * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = 'haiku' on the
+   * Claude adapter, the adapter's default model elsewhere.
+   */
+  fastModel?: (project: Project, choice: AdapterChoice) => string | undefined
   /** MCP servers and secrets (McpService). Missing = runs have no MCP servers and cannot install any. */
   mcp?: {
     enabledServers(project: Project): McpServerSpec[]
@@ -315,12 +323,18 @@ export interface StartInput {
   images?: ImageAttachment[]
   /** An info line logged on the new run right after it starts. */
   notice?: string
+  /** A title carried over from the run being continued (auto-resume); no new title is generated. */
+  title?: string
+  /** Continuations: the continued run's title (or prompt excerpt), given to the title model as context. */
+  titleContext?: string
 }
 
 export class RunManager {
   private runs = new Map<string, ActiveRun>()
   /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
-  private resumeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
+  private titleAborts = new Map<AbortController, string>()
+  private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -334,6 +348,8 @@ export class RunManager {
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
   async removeProject(projectId: string): Promise<void> {
+    // Pending titles of the project's runs, live or already ended, are cancelled.
+    for (const [a, pid] of this.titleAborts) if (pid === projectId) a.abort()
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
         r.userStopped = true
@@ -384,7 +400,9 @@ export class RunManager {
     resumeBaseCostUsd,
     plan: carriedPlan,
     images: rawImages,
-    notice
+    notice,
+    title: carriedTitle,
+    titleContext
   }: StartInput): Promise<RunSummary> {
     // The virtual harness project exists only for the library MCP assistant.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
@@ -406,6 +424,7 @@ export class RunManager {
       totalCostUsd: 0
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
+    if (carriedTitle && kind === 'work') summary.title = carriedTitle
     const active: ActiveRun = {
       summary,
       pending: new Map(),
@@ -483,6 +502,17 @@ export class RunManager {
     emit({ type: 'run.status', runId: summary.id, status: 'starting' })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
+    // Advisory title from the fast model; never awaited, never fails the run.
+    // The harness's own resume message is never titled (the continued run's title is carried instead).
+    if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
+      void this.titleRun(active, adapter, {
+        prompt,
+        cwd: project.path,
+        model: this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined),
+        connection,
+        ...(titleContext ? { continues: titleContext } : {})
+      })
+    }
 
     const updatePlan = async (plan: RunPlan): Promise<void> => {
       const previous = active.record.plan
@@ -637,6 +667,8 @@ export class RunManager {
     const runId = active.summary.id
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     cancelPending(active, runId, this.broadcast)
+    // A stopped run's pending title is dropped; a run that ended on its own may still get its title afterwards.
+    if (active.userStopped) active.titleAbort?.abort()
     // Servers approved for this run only (and their secrets) are forgotten.
     active.runServers.clear()
     // Held peer messages are dropped; their senders are told if they are still live.
@@ -651,6 +683,46 @@ export class RunManager {
     this.flush(active)
     this.runs.delete(runId)
     this.store.prune(this.keepRunsFor)
+  }
+
+  /**
+   * Generate the run's title and publish it: summary (index and record), then run.title. Runs after the session may
+   * have ended; a run already deleted (project removed, pruned) is left alone. Never throws.
+   */
+  private async titleRun(
+    active: ActiveRun,
+    adapter: RuntimeAdapter,
+    input: { prompt: string; cwd: string; model?: string; connection?: RunConnection; continues?: string }
+  ): Promise<void> {
+    const runId = active.summary.id
+    // Provider error text is cut short and stripped of the run connection's secret values before it is logged.
+    const secrets = [input.connection?.apiKey, ...Object.entries(input.connection?.env ?? {}).filter(([k]) => /TOKEN|KEY|SECRET|PASSWORD/i.test(k)).map(([, v]) => v)]
+      .filter((v): v is string => typeof v === 'string' && v.length >= 4)
+    const scrub = (m: string): string => secrets.reduce((acc, s) => acc.split(s).join('[redacted]'), m).replace(/\s+/g, ' ').slice(0, 200)
+    const abort = new AbortController()
+    active.titleAbort = abort
+    this.titleAborts.set(abort, active.summary.projectId)
+    try {
+      const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
+      if (!title || abort.signal.aborted) return
+      const live = this.runs.get(runId) === active
+      if (!live && !this.store.get(runId)) return
+      active.summary.title = title
+      this.store.upsert(active.summary)
+      if (live) {
+        active.emit({ type: 'run.title', runId, title })
+      } else {
+        // The session already ended and its record was flushed; record.summary is active.summary, so save it again.
+        this.flush(active)
+        logRunEvent(active.summary, { type: 'run.title', runId, title })
+        this.broadcast({ type: 'run.title', runId, title })
+      }
+    } catch (e) {
+      log.warn(`Run ${runId}: title failed: ${scrub(String((e as Error)?.message ?? e))}`)
+    } finally {
+      this.titleAborts.delete(abort)
+      if (active.titleAbort === abort) active.titleAbort = undefined
+    }
   }
 
   private recordEvent(active: ActiveRun, e: RunEvent): void {
@@ -670,6 +742,10 @@ export class RunManager {
         break
       case 'plan.updated':
         r.plan = e.plan
+        break
+      case 'run.title':
+        // record.summary is the live summary object; this only schedules the save.
+        r.summary.title = e.title
         break
       default:
         return
@@ -1173,6 +1249,7 @@ export class RunManager {
     const active = this.runs.get(runId)
     if (!active?.session) return
     active.userStopped = true
+    active.titleAbort?.abort()
     active.emit({ type: 'run.status', runId, status: 'stopping' })
     await active.session.stop()
   }
@@ -1180,6 +1257,8 @@ export class RunManager {
   async stopAll(): Promise<void> {
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
     for (const r of this.runs.values()) r.userStopped = true
+    // Titles still pending for runs that already ended are cancelled too (app quit).
+    for (const a of this.titleAborts.keys()) a.abort()
     await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
     for (const r of this.runs.values()) this.flush(r)
   }
@@ -1239,6 +1318,11 @@ export class RunManager {
       prompt,
       images,
       kind: target.kind,
+      // The harness's own resume message is not a new task: keep the title of the run it continues.
+      // A follow-up is titled with the task it continues as context, so it stays recognisable.
+      ...(prompt === RESUME_TEXT.trim() && target.title
+        ? { title: target.title }
+        : { titleContext: target.title ?? excerpt(target.prompt, 200) }),
       hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
       resumeSessionId: sessionId,
       resumedFrom: target.id,

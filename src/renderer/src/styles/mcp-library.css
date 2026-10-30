@@ -1,17 +1,4 @@
 /* ---------- MCP library, linked rows, authorization (providers-and-mcp.md section 12) ---------- */
-.mcp-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.mcp-group-title {
-  margin: 0;
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  font-weight: var(--weight-semibold);
-  color: var(--text-secondary);
-}
 .mcp-lib-main {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

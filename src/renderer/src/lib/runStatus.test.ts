@@ -30,6 +30,14 @@ describe('runStatus', () => {
     }
   })
 
+  it('gives a stopped run the neutral stopped tone, not the info blue of Idle', () => {
+    expect(runStatus('finished', { stopped: true })).toMatchObject({ word: 'Stopped', tone: 'stopped' })
+    expect(runStatus('idle').tone).toBe('idle')
+    // A run cut off when the app closed is an abnormal end: neutral, never the success tone.
+    expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Finished', tone: 'stopped', note: 'Ended when OrgAI closed' })
+    expect(runStatus('finished').tone).toBe('ok')
+  })
+
   it('explains a run that ended with the app, only when finished', () => {
     expect(runStatus('finished', { endedWithApp: true }).note).toBe('Ended when OrgAI closed')
     expect(runStatus('finished').note).toBeUndefined()

@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import type { AgentInstance, AgentState, RunStatus } from '@shared/types'
+import type { AgentInstance, AgentState, ConnectionId, RunStatus } from '@shared/types'
 import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
@@ -133,4 +133,66 @@ export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunO
   if (activity === agent.activity && state === agent.state) return agent
   const endedAt = agent.endedAt ?? (state !== agent.state ? Date.now() : undefined)
   return { ...agent, activity, state, ...(endedAt !== undefined ? { endedAt } : {}) }
+}
+
+// ---------- Authentication failures ----------
+
+/**
+ * How the Claude Code CLI's own auth-failure text starts ("Invalid API key · Please run /login", "API Error: 401
+ * {...authentication_error...}"). Anchored, and trusted only when the adapter reports an auth-related error
+ * (`isError`), so a model reply such as "Invalid API key handling is fixed" never matches.
+ */
+const AUTH_FAILURE_LEAD = /^(?:invalid api key|please run \/login|api error: 401\b|oauth token (?:has )?expired|failed to authenticate|invalid bearer token)/i
+/**
+ * The CLI's bare logged-out reply, which arrives as an ordinary (non-error) assistant message. The whole text must
+ * be exactly this phrase (separator "·", "-" or "."), so it is the one text match that needs no error flag.
+ */
+const AUTH_FAILURE_BARE = /^invalid api key\s*[·.-]\s*please run \/login\s*$/i
+/** Anywhere in the text, trusted only when the adapter knows the turn errored (`isError`). */
+const AUTH_FAILURE_ANYWHERE = /invalid api key|please run \/login|authentication_error|invalid bearer token|oauth token (?:has )?expired|invalid x-api-key|\b401\b|unauthori[sz]ed/i
+/** Longer text is a model's own answer, which may well discuss API keys. */
+const AUTH_FAILURE_MAX_CHARS = 400
+
+/**
+ * True when a turn's outcome is an authentication failure rather than a reply: the SDK's assistant error code
+ * 'authentication_failed'; the CLI's exact bare reply "Invalid API key · Please run /login"; short text that
+ * STARTS with the CLI's auth wording when the adapter reports an auth-related error (`isError`); or short
+ * text containing auth wording, a 401 or "unauthorized" only with `isError`. Adapters set `isError` only for
+ * errors about authentication (or an errored result). Vendor-neutral: adapters pass what their SDK reports.
+ */
+export function isAuthFailure(input: { errorCode?: string | null; text?: string | null; isError?: boolean }): boolean {
+  if (input.errorCode === 'authentication_failed') return true
+  const text = (input.text ?? '').trim()
+  if (!text || text.length > AUTH_FAILURE_MAX_CHARS) return false
+  if (AUTH_FAILURE_BARE.test(text)) return true
+  if (input.isError && AUTH_FAILURE_LEAD.test(text)) return true
+  return !!input.isError && AUTH_FAILURE_ANYWHERE.test(text)
+}
+
+/**
+ * Raw provider text for a harness transcript detail: key-like tokens (sk-..., pk-..., Bearer ...) masked, because
+ * gateways echo a masked key fragment that exact-value redaction cannot match. One line, at most 400 characters.
+ */
+export function scrubAuthDetail(text: string): string {
+  return text
+    .replace(/\bBearer\s+\S+/gi, 'Bearer ***')
+    .replace(/\b(?:sk|pk|rk)-[\w.*-]{3,}/gi, '***')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, AUTH_FAILURE_MAX_CHARS)
+}
+
+/**
+ * The one-line run error for an authentication failure on `connection`. It names the connection and says where
+ * to fix it. Never includes the raw provider text (it may echo a key fragment).
+ */
+export function authFailureMessage(connection: ConnectionId | undefined): string {
+  switch (connection) {
+    case 'litellm':
+      return 'The LiteLLM connection was refused: the proxy did not accept the API key. Check the key and base URL in Settings > Connections.'
+    case 'openai':
+      return 'The OpenAI connection was refused: sign in again or check the API key in Settings > Connections.'
+    default:
+      return 'The Anthropic connection was refused: Claude Code is not logged in for OrgAI. Run claude and /login on this machine, set an API key, or choose another connection in Settings > Connections.'
+  }
 }

@@ -1,6 +1,6 @@
 // SPENDS TOKENS. A work run with two parallel writing reports: checks each runs in an isolated git worktree and the
 // harness merges both back into the main checkout. Usage: node e2e/worktree.mjs --yes
-import { check, cleanup, createProject, endSession, finish, gitSafe, launch, log, makeFixtureRepo, removeFixture, requireYes, sleep } from './lib.mjs'
+import { check, cleanup, createProject, endSession, finish, gitSafe, launch, log, makeFixtureRepo, projectTab, removeFixture, requireYes, sleep } from './lib.mjs'
 
 requireYes('e2e/worktree', '$0.20-$1.00 (opus orchestrator, sonnet implementers); about 2-5 minutes')
 
@@ -15,7 +15,7 @@ const repo = makeFixtureRepo('worktree')
 const { app, page, shot } = await launch({ shotPrefix: 'worktree' })
 try {
   await createProject(page, { mode: 'existing', path: repo, name: NAME })
-  await page.locator('.topbar .tabs').getByRole('button', { name: 'Live', exact: true }).click()
+  await projectTab(page, 'Live').click()
   await sleep(500)
   await page.locator('.composer textarea').fill(TASK)
   await page.getByRole('button', { name: 'Start', exact: true }).click()
@@ -40,7 +40,7 @@ try {
       log('worktree badges:', badges.join(' | '))
       await shot('isolated')
     }
-    const status = await page.locator('.topbar .pill .dot').first().locator('..').innerText().catch(() => '')
+    const status = await page.locator('.run-tab[aria-selected=true]').first().innerText().catch(() => '')
     const rootActivity = await page.locator('.agent-node .activity').first().innerText().catch(() => '')
     if (Date.now() - lastShot > 40_000) {
       lastShot = Date.now()
@@ -65,7 +65,7 @@ try {
   check(seenIsolated, 'reports ran in isolated worktrees')
   check(badges.filter((b) => /merged/.test(b)).length >= 2, 'both reports merged', badges.join(' | '))
   log('final root text:', (await page.locator('.transcript .entry.text').last().innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 700))
-  await page.locator('.side .tabs').getByRole('button', { name: 'Logs' }).click().catch(() => {})
+  await page.locator('.side [role=tablist]').getByRole('tab', { name: 'Logs' }).click().catch(() => {})
   log('logs:\n' + (await page.locator('.logs').innerText().catch(() => '')).slice(0, 2500))
   await endSession(page)
 } catch (e) {

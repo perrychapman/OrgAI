@@ -4,6 +4,7 @@ import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, Shield
 import type { McpLibraryInfo, McpTestResult } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
+import { focusPaneHeading } from '../../lib/settingsTarget'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -11,6 +12,7 @@ import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { SecretField } from '../ui/SecretField'
+import { SettingsSection } from '../settings/SettingsSection'
 import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpAssistDialog from './McpAssistDialog'
 import McpServerForm from './McpServerForm'
@@ -43,9 +45,12 @@ export default function McpLibrarySection(): ReactElement {
     if (focus?.kind !== 'library') return
     if (focus.libraryId && library === null) return
     const row = focus.libraryId ? section.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(focus.libraryId)}"]`) : null
-    const target = row ?? section.current
-    target?.scrollIntoView({ block: 'start' })
-    row?.querySelector<HTMLElement>('button')?.focus()
+    if (row) {
+      row.scrollIntoView({ block: 'start' })
+      row.querySelector<HTMLElement>('button')?.focus()
+    } else {
+      focusPaneHeading()
+    }
     clearMcpFocus()
   }, [focus, library, clearMcpFocus])
 
@@ -64,13 +69,14 @@ export default function McpLibrarySection(): ReactElement {
 
   const infos = library ?? []
   return (
-    <section ref={section} id="appsettings-section-mcp-library" className="settings-section mcp-section" aria-labelledby="mcp-library-title" data-testid="mcp-library-section" tabIndex={-1}>
-      <div className="section-head">
-        <div>
-          <h2 id="mcp-library-title">MCP library</h2>
-          <p>Define tool servers once, then add them to any project. Credentials and sign-in live here.</p>
-        </div>
-        <div className="section-actions mcp-actions">
+    <SettingsSection
+      id="appsettings-section-mcp-library"
+      title="MCP library"
+      description="Define a server once; any project can link it."
+      testId="mcp-library-section"
+      sectionRef={section}
+      actions={
+        <>
           <Button variant="primary" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>
             Add from registry
           </Button>
@@ -80,81 +86,84 @@ export default function McpLibrarySection(): ReactElement {
           <Button icon={Sparkles} testId="mcp-library-assist" onClick={() => setModal({ kind: 'assist' })}>
             Configure with AI
           </Button>
-        </div>
-      </div>
-      {assistRun && (
-        <Banner
-          tone="neutral"
-          testId="mcp-library-assist-banner"
-          actions={
-            <Button size="sm" onClick={() => void openRun(assistRun.summary.id)}>
-              Open run
-            </Button>
-          }
-        >
-          An assistant run is configuring your library.
-        </Banner>
-      )}
-      {openError && (
-        <Banner tone="danger" title="Could not open the run">
-          {openError}
-        </Banner>
-      )}
-      {error ? (
-        <Banner
-          tone="danger"
-          title="Could not load the MCP library"
-          actions={
-            <Button size="sm" onClick={refresh}>
-              Retry
-            </Button>
-          }
-        >
-          {error}
-        </Banner>
-      ) : library === null ? (
-        <div className="card-block mcp-list" aria-busy="true" aria-label="Loading the MCP library">
-          {[0, 1].map((i) => (
-            <div key={i} className="card-sec">
-              <div className="skeleton mcp-sk" />
-            </div>
-          ))}
-        </div>
-      ) : infos.length === 0 ? (
-        <div className="card-block mcp-empty">
-          <Icon icon={Library} size="lg" />
-          <strong>Your library is empty</strong>
-          <p className="muted">Add a server from the registry or by hand, or ask an assistant to set one up. Projects then pick what they need.</p>
-        </div>
-      ) : (
-        <ul className="card-block mcp-list" aria-label="MCP library">
-          {infos.map((info) => (
-            <LibraryRow key={info.entry.id} info={info} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
-          ))}
-        </ul>
-      )}
+        </>
+      }
+    >
+      <div className="mcp-body">
+        {assistRun && (
+          <Banner
+            tone="neutral"
+            testId="mcp-library-assist-banner"
+            actions={
+              <Button size="sm" onClick={() => void openRun(assistRun.summary.id)}>
+                Open run
+              </Button>
+            }
+          >
+            An assistant run is configuring your library.
+          </Banner>
+        )}
+        {openError && (
+          <Banner tone="danger" title="Could not open the run">
+            {openError}
+          </Banner>
+        )}
+        {error ? (
+          <Banner
+            tone="danger"
+            title="Could not load the MCP library"
+            actions={
+              <Button size="sm" onClick={refresh}>
+                Retry
+              </Button>
+            }
+          >
+            {error}
+          </Banner>
+        ) : library === null ? (
+          <div className="card-block mcp-list" aria-busy="true" aria-label="Loading the MCP library">
+            {[0, 1].map((i) => (
+              <div key={i} className="card-sec">
+                <div className="skeleton mcp-sk" />
+              </div>
+            ))}
+          </div>
+        ) : infos.length === 0 ? (
+          <div className="card-block mcp-empty">
+            <Icon icon={Library} size="lg" />
+            <strong>Your library is empty</strong>
+            <p className="muted">Add a server to reuse it across projects.</p>
+          </div>
+        ) : (
+          <ul className="card-block mcp-list" aria-label="MCP library">
+            {infos.map((info) => (
+              <LibraryRow key={info.entry.id} info={info} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
+            ))}
+          </ul>
+        )}
 
-      {modal?.kind === 'registry' && (
-        <RegistryDialog writer={writer} servers={infos.map(infoFromLibrary)} onClose={() => setModal(null)} onAddManually={() => setModal({ kind: 'form' })} />
-      )}
-      {modal?.kind === 'form' && (
-        <McpServerForm
-          key={modal.editing?.entry.id ?? 'new'}
-          writer={writer}
-          servers={infos.map(infoFromLibrary)}
-          editing={modal.editing ? infoFromLibrary(modal.editing) : undefined}
+        {modal?.kind === 'registry' && (
+          <RegistryDialog writer={writer} servers={infos.map(infoFromLibrary)} onClose={() => setModal(null)} onAddManually={() => setModal({ kind: 'form' })} />
+        )}
+        {modal?.kind === 'form' && (
+          <McpServerForm
+            key={modal.editing?.entry.id ?? 'new'}
+            writer={writer}
+            servers={infos.map(infoFromLibrary)}
+            editing={modal.editing ? infoFromLibrary(modal.editing) : undefined}
+            onClose={() => setModal(null)}
+          />
+        )}
+        <McpAssistDialog
+          open={modal?.kind === 'assist'}
           onClose={() => setModal(null)}
+          onStart={startAssist}
+          title="Configure the MCP library with AI"
+          description="An assistant run proposes library servers in its own window. You approve each one there."
+          placeholder="Connect GitHub and a Postgres database..."
         />
-      )}
-      <McpAssistDialog
-        open={modal?.kind === 'assist'}
-        onClose={() => setModal(null)}
-        onStart={startAssist}
-        title="Configure the MCP library with AI"
-        description="An assistant run proposes library servers in its own window. You approve each one there."
-        placeholder="Connect GitHub and a Postgres database..."
-      />
-    </section>
+      </div>
+    </SettingsSection>
   )
 }
 

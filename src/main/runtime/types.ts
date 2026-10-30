@@ -51,10 +51,13 @@ export interface RunConnection {
   /** The adapter adapterForProject chose; equals the adapter receiving this context. */
   adapter: ProviderId
   /**
-   * Extra environment for the adapter's child process, merged over process.env.
+   * Extra environment for the adapter's child process. The Claude adapter merges it over an isolated copy of
+   * process.env (childEnv.ts isolateClaudeEnv: a user's gateway, model and cloud-provider variables never reach a
+   * run), so this is the only source of routing variables.
    * Claude adapter on LiteLLM: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
-   * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL; empty for the anthropic connection (auth stays on
-   * project.provider.auth / ANTHROPIC_API_KEY as today).
+   * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL. On the anthropic connection: ANTHROPIC_API_KEY (copied from
+   * the project's auth.envVar) for an API-key project whose variable is set, else empty (the Claude Code login or
+   * CLAUDE_CODE_OAUTH_TOKEN authenticates). Secret values here are redacted from logs (collectSecrets).
    * Codex adapter: always CODEX_HOME = codexHomeDir(dataDir) (codexAppServer.ts), so runs use OrgAI's own
    * ChatGPT login and config, never the user's ~/.codex/config.toml.
    */
@@ -263,6 +266,24 @@ export interface CompletionInput {
   prompt: string
   cwd?: string
   model?: string
+  /**
+   * What the completion is for. 'draft' (default): the org chart drafter, answered with JSON. 'title': a run title
+   * (src/main/ai/runTitle.ts), answered with one short line. Adapters only use it where they must (the mock answers
+   * deterministically per kind).
+   */
+  kind?: 'draft' | 'title'
+  /**
+   * How to reach the models, as RunManager resolved it for a run (env, API key, base URL, Codex home). Claude merges
+   * `connection.env` over the process environment (and drops ANTHROPIC_API_KEY on a non-anthropic connection, like
+   * a run does); Codex uses it instead of its completionConnection. Missing = the adapter's default route.
+   * Holds secrets: never log, emit or persist it.
+   */
+  connection?: RunConnection
+  /**
+   * Aborted when the caller gives up (the run-title timeout). Adapters stop the completion's query or process and
+   * reject. Missing = the completion runs to its own end.
+   */
+  signal?: AbortSignal
 }
 
 /**

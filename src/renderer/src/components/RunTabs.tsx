@@ -1,13 +1,16 @@
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AppWindow, ChevronDown, CircleAlert, EyeOff, Link2, Pencil, Plus, X } from 'lucide-react'
+import { AppWindow, ChevronDown, CircleAlert, EyeOff, Pencil, Plus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import type { Project } from '@shared/types'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
 import { needsYou } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { runName, runTag, shortPrompt } from '../lib/runLabels'
 import { autoContinueState, isStoppedRun, runStatus, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+
+/** Longest prompt excerpt put in a tab tooltip. */
+const PROMPT_TIP_CHARS = 300
 
 const DRAFT_ID = 'new'
 
@@ -23,6 +26,8 @@ interface TabView {
   tooltip: string
   label: string
   tone: RunTone | 'none'
+  /** Status word from lib/runStatus (read by screen readers and e2e); empty for the New run tab. */
+  word: string
   waiting: boolean
   hasDraft: boolean
   unread: number
@@ -102,6 +107,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
         tooltip: 'New run: a blank page for a new task. The other runs keep going.',
         label: draftOnPage ? 'New run. Has an unsent draft.' : 'New run',
         tone: 'none',
+        word: '',
         waiting: false,
         hasDraft: draftOnPage,
         unread: 0,
@@ -124,15 +130,17 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       autoContinuing: auto.active
     })
     const tag = runTag(indexes.get(run.summary.id))
-    const full = promptLine(run.summary.prompt)
+    // Untrusted text in a tooltip: capped. The full prompt lives only in the transcript.
+    const full = shortPrompt(run.summary.prompt, PROMPT_TIP_CHARS)
     const hasDraft = draftKeys.includes(run.summary.id)
     const unread = unreadByRun[run.summary.id] ?? 0
     return {
       tag,
-      title: shortPrompt(run.summary.prompt, 60),
+      title: runName(run.summary),
       tooltip: `${tag}: ${full}\n${st.word}${st.note ? ` (${st.note})` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
-      label: `${tag}: ${shortPrompt(run.summary.prompt, 60)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
+      label: `${tag}: ${runName(run.summary)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
       tone: st.tone,
+      word: st.word,
       waiting,
       hasDraft,
       unread,
@@ -328,13 +336,13 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   }
 
   return (
-    <div className="run-tabs" ref={barRef}>
+    <div className="run-tabs" ref={barRef} data-testid="run-tabs">
       <div className="run-tablist" role="tablist" aria-label="Open runs" aria-orientation="horizontal" ref={listRef} onKeyDown={onKeyDown}>
         {visible.map((item) => {
           const v = view(item)
           const selected = item.id === selectedId
           return (
-            <div key={item.id} className={`run-tab-wrap ${selected ? 'selected' : ''} ${v.waiting ? 'waiting' : ''}`} role="presentation" data-run={item.id}>
+            <div key={item.id} className={`run-tab-wrap ${selected ? 'selected' : ''}`} role="presentation" data-run={item.id}>
               <button
                 type="button"
                 role="tab"
@@ -343,6 +351,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 aria-selected={selected}
                 aria-controls="run-panel"
                 aria-label={v.label}
+                aria-describedby={`run-tab-desc-${item.id}`}
                 title={v.tooltip}
                 tabIndex={item.id === rovingId ? 0 : -1}
                 ref={(el) => {
@@ -350,6 +359,8 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                   else tabRefs.current.delete(item.id)
                 }}
                 onFocus={() => setRoving(item.id)}
+                onPointerDown={(e) => e.currentTarget.setAttribute('data-pointer', '')}
+                onBlur={(e) => e.currentTarget.removeAttribute('data-pointer')}
                 onClick={() => activate(item)}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -361,26 +372,15 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                     <Icon icon={Plus} size="xs" />
                   </span>
                 ) : (
-                  <span className={`run-dot ${v.tone}`} aria-hidden="true" />
+                  <span className={`run-dot ${v.tone}${v.hasDraft || v.unread > 0 ? ' marked' : ''}`} aria-hidden="true" />
                 )}
                 <span className="run-tab-index">{v.tag}</span>
                 <span className="run-tab-title">{v.title}</span>
-                <span className="run-tab-badge" aria-hidden="true">
-                  {v.waiting ? (
-                    <span className="badge-warn" title="Waiting for you">
-                      <Icon icon={CircleAlert} size="xs" />
-                    </span>
-                  ) : v.unread > 0 ? (
-                    <span className="badge-unread" title={`${v.unread} unread note${v.unread === 1 ? '' : 's'} from other runs`}>
-                      <Icon icon={Link2} size="xs" />
-                    </span>
-                  ) : v.hasDraft ? (
-                    <span className="badge-draft" title="Unsent draft">
-                      <Icon icon={Pencil} size="xs" />
-                    </span>
-                  ) : null}
-                </span>
+                {v.word && <span className="sr-only">{v.word}</span>}
               </button>
+              <span className="sr-only" id={`run-tab-desc-${item.id}`}>
+                {v.tooltip}
+              </span>
               {v.closable && (
                 <button type="button" className="run-tab-close" tabIndex={-1} aria-label={`Hide ${v.tag || 'New run'}`} title="Hide this tab (Ctrl+W)" onClick={() => hide(item)}>
                   <Icon icon={X} size="xs" />
@@ -416,6 +416,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                     type="button"
                     role="menuitem"
                     className="run-tab-menuitem"
+                    title={v.tooltip}
                     onClick={() => {
                       setMenuOpen(false)
                       activate(item)
@@ -442,7 +443,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
             <div
               className="run-tab-menu run-tab-ctx"
               role="menu"
-              aria-label={`${v.tag || 'New run'} actions`}
+              aria-label={`${v.tag ? `${v.tag}: ${v.title}` : 'New run'} actions`}
               ref={ctxRef}
               style={{ left: ctx.left, top: ctx.top }}
               onKeyDown={(e) => onMenuKey(e, ctxRef.current, closeCtx)}

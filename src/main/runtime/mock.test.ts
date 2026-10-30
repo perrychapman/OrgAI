@@ -3,6 +3,7 @@ import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '
 import { MockAdapter, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage } from './types'
 import { peerMessageText } from './prompts'
+import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 
 const png: ImageAttachment = { mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
@@ -250,5 +251,74 @@ describe('mock adapter MCP library steps', () => {
     expect(p.payload.scope).toBe('library')
     expect(p.payload.upsert).toHaveLength(1)
     expect(p.payload.upsert[0]).toMatchObject({ name: 'mock-fs' })
+  })
+})
+
+describe('mock adapter auth failure', () => {
+  const message = authFailureMessage('litellm')
+  const connection = { connection: 'litellm' as const, adapter: 'claude' as const, env: {} }
+  function check(ctx: ReturnType<typeof fakeCtx>): void {
+    const status = ctx.events.filter((e) => e.type === 'run.status').map((e) => (e as { status: string }).status)
+    expect(status).toContain('error')
+    expect(status).not.toContain('finished')
+    const err = ctx.events.find((e) => e.type === 'run.status' && e.status === 'error')
+    expect(err).toMatchObject({ error: message })
+    const row = ctx.events.find((e) => e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' && e.entry.block.text === message)
+    expect(row).toBeTruthy()
+    const root = [...ctx.events].reverse().find((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID)
+    expect(root).toMatchObject({ agent: { state: 'error' } })
+  }
+  it('fails the run from the first prompt', async () => {
+    const ctx = fakeCtx({ prompt: 'hello [mock:auth-fail]', connection })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await session.finished
+    check(ctx)
+  })
+  it('fails the run from a later user message', async () => {
+    const ctx = fakeCtx({ prompt: 'hello', connection })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await session.send('now [mock:auth-fail]')
+    await session.finished
+    check(ctx)
+  })
+  it('makes complete() throw the readable message', async () => {
+    await expect(new MockAdapter().complete({ system: 's', prompt: '[mock:auth-fail]', kind: 'title', connection })).rejects.toThrow(message)
+  })
+})
+
+describe('mock adapter complete', () => {
+  const adapter = new MockAdapter({ script: { delayMs: 0 } })
+  const sys = 's'
+  it('derives a title from the first four words inside <message>', async () => {
+    const prompt = 'Instructions\n<message>\nfix the "login" bug, now please\n</message>'
+    expect(await adapter.complete({ system: sys, prompt, kind: 'title' })).toBe('Fix the login bug')
+  })
+  it('uses the whole prompt without markers and returns empty for nothing', async () => {
+    expect(await adapter.complete({ system: sys, prompt: "don't panic", kind: 'title' })).toBe("Don't panic")
+    expect(await adapter.complete({ system: sys, prompt: '!!! ???', kind: 'title' })).toBe('')
+  })
+  it('fails on the failure marker', async () => {
+    await expect(adapter.complete({ system: sys, prompt: '<message>[mock:title-fail]</message>', kind: 'title' })).rejects.toThrow('Mock title failure')
+  })
+  it('rejects when the signal is already aborted', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    await expect(adapter.complete({ system: sys, prompt: 'x', kind: 'title', signal: ac.signal })).rejects.toThrow('cancelled')
+  })
+  it('rejects when the signal aborts during the slow wait', async () => {
+    const ac = new AbortController()
+    const p = adapter.complete({ system: sys, prompt: '<message>[mock:title-slow]</message>', kind: 'title', signal: ac.signal })
+    ac.abort()
+    await expect(p).rejects.toThrow('Completion cancelled')
+  })
+  it('completes the slow title when never aborted', async () => {
+    const ac = new AbortController()
+    expect(await adapter.complete({ system: sys, prompt: '<message>[mock:title-slow] hi</message>', kind: 'title', signal: ac.signal })).toMatch(/hi/)
+  })
+  it('still answers drafts with parseable JSON roles', async () => {
+    for (const kind of [undefined, 'draft' as const]) {
+      const out = JSON.parse(await adapter.complete({ system: sys, prompt: 'x', kind }))
+      expect(Array.isArray(out.roles)).toBe(true)
+    }
   })
 })

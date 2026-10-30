@@ -14,15 +14,21 @@ function clock(at: number): string {
 export function SaveIndicator(): ReactElement {
   const status = useAppStore((s) => s.saveStatus)
   return (
-    <span className={`save-indicator is-${status.state}`} role="status" aria-live="polite" data-testid="save-indicator">
+    <span
+      className={`save-indicator is-${status.state}`}
+      role="status"
+      aria-live="polite"
+      data-testid="save-indicator"
+      title={status.state === 'saved' && status.at !== undefined ? `Saved ${clock(status.at)}` : status.state === 'saving' ? 'Saving…' : undefined}
+    >
       {status.state === 'saving' && (
         <>
-          <Icon icon={LoaderCircle} size="sm" /> Saving…
+          <Icon icon={LoaderCircle} size="sm" /> <span className="save-text">Saving…</span>
         </>
       )}
       {status.state === 'saved' && status.at !== undefined && (
         <>
-          <Icon icon={Check} size="sm" /> Saved {clock(status.at)}
+          <Icon icon={Check} size="sm" /> <span className="save-text" title={`Saved ${clock(status.at)}`}>Saved {clock(status.at)}</span>
         </>
       )}
       {status.state === 'error' && (

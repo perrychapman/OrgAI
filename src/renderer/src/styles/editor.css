@@ -4,7 +4,7 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, 360px);
 }
 .canvas {
   position: relative;
@@ -95,14 +95,25 @@
   width: 32px;
   height: 32px;
   border-radius: var(--radius-full);
-  background: var(--role);
-  color: var(--text-on-role);
+  /* Role identity is the initials plus a tint, never a saturated fill (ui-review-2.md C.4). */
+  --avatar-ring: 50%;
+  background: color-mix(in oklab, var(--role) 24%, var(--surface-2));
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--role) var(--avatar-ring), transparent);
   display: grid;
   place-items: center;
   font-size: var(--text-caption);
   font-weight: var(--weight-semibold);
   flex: none;
   letter-spacing: 0.3px;
+}
+:root[data-theme='light'] .avatar {
+  --avatar-ring: 60%;
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'] .avatar {
+    --avatar-ring: 60%;
+  }
 }
 .role-node .name {
   font-weight: var(--weight-semibold);

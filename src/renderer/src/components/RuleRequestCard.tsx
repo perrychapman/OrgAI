@@ -6,6 +6,7 @@ import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
+import { rulesTitle } from '../lib/decisionTitle'
 
 interface Props {
   runId: string
@@ -30,13 +31,17 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
   }
 
   const flagged = new Set(request.flagged ?? [])
+  const risky = request.rules.filter((r) => flagged.has(r) || isWholeToolRule(r)).length
   return (
     <DecisionCard
       kind="rules"
       error={error}
       runId={runId}
       who={who}
-      title="asks to allow these rules"
+      agentId={request.agentId}
+      title={rulesTitle(request.rules, risky)}
+      focusDetails={risky > 0}
+      headerExtra={risky > 0 ? <Badge tone="danger">{risky === 1 ? 'Broad rule' : `${risky} broad rules`}</Badge> : undefined}
       helper={
         <ul className="decision-scopes">
           <li>Allow for this run: takes effect now for this run and its reports.</li>

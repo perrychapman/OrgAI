@@ -5,7 +5,9 @@ import type { MergeDecision, MergeReview } from '@shared/types'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import DiffView from './DiffView'
 import { Button } from './ui/Button'
+import { Icon } from './ui/Icon'
 import { ConfirmDialog } from './ui/Dialog'
+import { mergeTitle } from '../lib/decisionTitle'
 
 interface Props {
   runId: string
@@ -33,8 +35,13 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
         error={error}
         runId={runId}
         who={review.agentName}
-        title="changes ready to merge"
-        headerExtra={<code className="mono-dim">{review.branch}</code>}
+        agentId={review.agentId}
+        title={mergeTitle(review.agentName)}
+        headerExtra={
+          <code className="mono-dim decision-branch" title={review.branch}>
+            {review.branch}
+          </code>
+        }
         helper="Merge brings these changes into the main checkout. Hold keeps the branch for later (maintenance panel or the orchestrator's retry). Discard deletes it."
         primary={
           <Button variant="primary" size="sm" disabled={busy} onClick={() => decide({ behavior: 'merge' })}>
@@ -46,9 +53,10 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
             <Button size="sm" disabled={busy} onClick={() => decide({ behavior: 'hold' })}>
               Hold for later
             </Button>
-            <Button size="sm" variant="ghost" icon={showPatch ? ChevronDown : ChevronRight} onClick={() => setShowPatch((v) => !v)}>
+            <button type="button" className="btn ghost sm" aria-expanded={showPatch} onClick={() => setShowPatch((v) => !v)}>
+              <Icon icon={showPatch ? ChevronDown : ChevronRight} size="sm" />
               {showPatch ? 'Hide patch' : 'Show patch'}
-            </Button>
+            </button>
           </>
         }
         deny={

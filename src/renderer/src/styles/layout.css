@@ -12,8 +12,10 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  /* The stage keeps at least 40% of the frame; the tray takes what it needs up to 60% and its card body scrolls. */
-  grid-template-rows: auto minmax(max(96px, 40cqh), 1fr) minmax(0, max-content) auto;
+  /* The stage keeps at least 55% of the frame; the tray takes what it needs up to the rest and scrolls inside it.
+     While a question is open its options are the action, so the stage may drop to 36% to give the tray 64%. */
+  --stage-min: 55cqh;
+  grid-template-rows: auto minmax(max(96px, var(--stage-min)), 1fr) minmax(0, max-content) auto;
   grid-template-areas:
     'toolbar'
     'stage'
@@ -49,10 +51,14 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  overflow: hidden;
-  /* Share the frame height with the stage: never more than 60% of the frame. */
-  max-height: min(60cqh, calc(100cqh - 160px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* A share of the frame, not of the window: the stage keeps its minimum and the 32px toolbar comes off the tray's share. */
+  max-height: calc(100cqh - var(--stage-min) - var(--toolbar-h, 32px));
   min-height: 0;
+  /* The tray is a container too: the decision chips follow its width, not the frame's (it can sit beside the stage). */
+  container-type: inline-size;
+  container-name: tray;
   background: var(--surface-1);
   border-top: 1px solid var(--border-default);
 }
@@ -69,16 +75,21 @@
 }
 .frame-footer i {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: var(--space-2);
+  height: var(--space-2);
   border-radius: var(--radius-full);
   margin-right: var(--space-1h);
   vertical-align: middle;
 }
-/* Wide or short frame: the tray docks beside the canvas and keeps its own scroll. */
-@container frame (min-width: 760px) or (max-height: 420px) {
+/* The question's options are the action: while one is open the stage may shrink to 36% of the frame. */
+.frame-grid:has(> .frame-tray .decision-card[data-inline='true']) {
+  --stage-min: 36cqh;
+}
+/* Only a roomy frame (1500 x 560 or more) docks the tray beside the canvas; a narrower or shorter one stacks, so
+   collapsing the side panel never moves the tray sideways. The beside tray is at least 420 px wide. */
+@container frame (min-width: 1500px) and (min-height: 560px) {
   .frame-grid:has(> .frame-tray) {
-    grid-template-columns: minmax(0, 1fr) clamp(280px, 40cqi, 360px);
+    grid-template-columns: minmax(0, 1fr) clamp(420px, 30cqi, 480px);
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
       'toolbar toolbar'
@@ -91,6 +102,11 @@
     border-left: 1px solid var(--border-default);
   }
 }
+/* Compact tray (frame under 480px high, data-compact set by CanvasFrame): tighter padding; the cards fold their body. */
+.frame-tray[data-compact='true'] {
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+}
 .frame-tray:empty {
   display: none;
 }
@@ -100,12 +116,86 @@
   min-width: 0;
   max-width: 100%;
 }
-.frame-toolbar .run-strip {
-  flex: 1 1 100%;
+/* The selected card takes the tray's remaining height and its body shrinks (the card footer keeps its own space). */
+.frame-tray > .decision {
+  flex: 1 1 auto;
+}
+.frame-tray {
+  scroll-padding-bottom: var(--space-3);
+}
+
+/* Drag handle on a column edge (ResizeHandle). It sits inside its own column, never over the canvas. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.resize-handle[data-edge='end'] {
+  right: 0;
+}
+.resize-handle[data-edge='start'] {
+  left: 0;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background-color var(--dur-fast, 120ms) ease;
+}
+.resize-handle[data-edge='end']::after {
+  right: 0;
+}
+.resize-handle[data-edge='start']::after {
+  left: 0;
+}
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 28px;
+  margin-top: -14px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--dur-fast, 120ms) ease;
+}
+.resize-handle[data-edge='end']::before {
+  right: 0;
+}
+.resize-handle[data-edge='start']::before {
+  left: 0;
+}
+.resize-handle:hover::before,
+.resize-handle:focus-visible::before {
+  opacity: 1;
+}
+.resize-handle:hover::after {
+  background: var(--focus-ring);
+}
+.resize-handle:active::after,
+.resize-handle:focus-visible::after {
+  background: var(--focus-ring);
+}
+html[data-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+html[data-resizing] * {
+  cursor: col-resize !important;
 }
 
 /* Side panel: a collapsible column of .editor / .live. */
 .side-panel {
+  position: relative;
   container-type: inline-size;
   container-name: side;
 }
@@ -166,9 +256,279 @@
   }
 }
 
-/* Stacked tray (frame narrower than 760px): the legend gives its row back to the card while a decision is pending. */
-@container frame (max-width: 759px) {
-  .frame-grid:has(> .frame-tray) .frame-footer {
+/* ---------- Run toolbar (32 px, inside the frame): metadata at the start, switch, zoom and legend at the end ---------- */
+
+.frame-toolbar.frame-toolbar-dense {
+  --toolbar-h: 32px;
+  flex-wrap: nowrap;
+  height: var(--toolbar-h);
+  padding: 0 var(--space-3);
+  gap: var(--space-3);
+  overflow: hidden;
+}
+.frame-toolbar-end {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.run-meta {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.run-meta-item {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.run-meta-chain {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.run-meta-chain .link-btn {
+  font-size: inherit;
+}
+button.run-meta-item {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+button.run-meta-item:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+button.run-meta-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.run-meta-steps.blocked {
+  color: var(--warning-text);
+}
+.run-meta-steps.done {
+  color: var(--success-text);
+}
+.run-meta-unattended {
+  color: var(--text-secondary);
+}
+/* A narrow frame drops the least useful items first. */
+@container frame (max-width: 760px) {
+  .run-meta-started,
+  .run-meta-auto {
     display: none;
   }
+}
+@container frame (max-width: 560px) {
+  .fold-long {
+    display: none;
+  }
+}
+@container frame (max-width: 420px) {
+  .run-meta-cost,
+  .run-meta-agents {
+    display: none;
+  }
+}
+@container frame (max-width: 340px) {
+  .fold-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+.fold-short {
+  display: none;
+}
+@container frame (max-width: 560px) {
+  .fold-short {
+    display: inline;
+  }
+}
+.run-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0h);
+}
+
+/* Legend popover: the shape each state has on its node, plus the word (never colour alone). */
+.legend-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 200px;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-primary);
+}
+.legend-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.legend-shape {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+}
+.legend-ring {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--info);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--info) 25%, transparent);
+}
+.legend-line {
+  width: 18px;
+  border-top: 2px dashed var(--edge-message);
+}
+.legend-warn {
+  color: var(--warning-text);
+}
+.legend-ok {
+  color: var(--success-text);
+}
+.legend-bad {
+  color: var(--danger-text);
+}
+
+/* ---------- Decision list in the tray (chips for every open decision) ---------- */
+
+.frame-tray .decision-stepper {
+  position: sticky;
+  top: calc(-1 * var(--space-3));
+  z-index: var(--z-sticky);
+  min-width: 0;
+  margin: calc(-1 * var(--space-1)) 0 0;
+  padding: var(--space-1) 0;
+  background: var(--surface-1);
+}
+.frame-tray .decision-stepper-title {
+  flex: none;
+  margin-right: 0;
+}
+.frame-tray .decision-stepper .icon-btn {
+  min-width: var(--control-sm);
+  min-height: var(--control-sm);
+}
+.decision-count {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.decision-list {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  /* No scrollbar: the chips never shrink; Previous/Next and the arrow keys bring the rest into view. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.decision-list::-webkit-scrollbar {
+  display: none;
+}
+.decision-list li {
+  flex: 0 0 auto;
+}
+/* A tray under 700 px wide shows numbered chips; the label stays in the tooltip and the aria-label. */
+@container tray (max-width: 699px) {
+  .decision-chip-label {
+    display: none;
+  }
+  .decision-chip {
+    min-width: var(--control-sm);
+    justify-content: center;
+    padding: 0 var(--space-2);
+  }
+  .decision-chip-n {
+    color: inherit;
+  }
+}
+.decision-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  max-width: 180px;
+  height: var(--control-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.decision-chip:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.decision-chip[aria-current='true'] {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.decision-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.decision-chip-n {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.decision-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-steps {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
 }

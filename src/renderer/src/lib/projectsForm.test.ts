@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectPathCheck } from '@shared/types'
-import { effectiveName, isFullPath, pathStatus, submitBlocker } from './projectsForm'
+import { effectiveName, isFullPath, newProjectConnectionLine, pathStatus, submitBlocker } from './projectsForm'
+
+describe('newProjectConnectionLine', () => {
+  const status = { state: 'connected' }
+  const lite = (baseUrl: string, hasApiKey: boolean): never => ({ connection: { id: 'litellm', enabled: true, tierModels: {}, baseUrl, hasApiKey }, status, modelCount: 0 }) as never
+  const oai = (enabled: boolean): never => ({ connection: { id: 'openai', enabled, tierModels: {}, auth: { kind: 'chatgpt' } }, status, modelCount: 0 }) as never
+  it('uses the default when it is usable', () => {
+    expect(newProjectConnectionLine('litellm', [lite('http://x', true)])).toContain('Runs on LiteLLM.')
+    expect(newProjectConnectionLine('openai', [oai(true)])).toContain('Runs on OpenAI.')
+  })
+  it('says the mock adapter when it is ticked', () => {
+    expect(newProjectConnectionLine('litellm', [lite('http://x', true)], true)).toBe('Runs on the mock adapter (no tokens).')
+  })
+  it('falls back to Anthropic when it is not', () => {
+    expect(newProjectConnectionLine('litellm', [lite('', true)])).toContain('so this project runs on Anthropic.')
+    expect(newProjectConnectionLine('litellm', [lite('http://x', false)])).toContain('so this project runs on Anthropic.')
+    expect(newProjectConnectionLine('openai', [oai(false)])).toBe('OpenAI is not connected, so this project runs on Anthropic. Change in App settings > Defaults.')
+    expect(newProjectConnectionLine('litellm', null)).toContain('LiteLLM is not connected, so this project runs on Anthropic.')
+    expect(newProjectConnectionLine(null, null)).toContain('Runs on Anthropic.')
+  })
+})
 
 const chk = (o: Partial<ProjectPathCheck> = {}): ProjectPathCheck => ({ exists: true, isDirectory: true, isGitRepo: true, suggestedName: 'app', empty: false, ...o })
 

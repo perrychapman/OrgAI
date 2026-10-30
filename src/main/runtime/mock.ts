@@ -5,7 +5,7 @@ import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
-import { describeTool, harnessToolActivity } from './activity'
+import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
@@ -183,6 +183,9 @@ export function loadMockScript(env: NodeJS.ProcessEnv = process.env): { script: 
 const STOPPED = Symbol('stopped')
 /** Synthetic price per token so the canvas shows moving numbers. */
 const USD_PER_TOKEN = 0.000003
+
+/** Trigger token: the mock behaves as if the provider refused the credentials. */
+const AUTH_FAIL_TOKEN = '[mock:auth-fail]'
 
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
@@ -442,11 +445,13 @@ export class MockSession implements RuntimeSession {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
       const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
+      if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
       await this.turn(this.firstTurnSteps())
       while (!this.stopped) {
         const next = await this.nextMessage()
         if (next === null) break
         if (!next.text) continue
+        if (!next.harness && next.text.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
         this.emit({ type: 'run.status', runId, status: 'running' })
         if (next.harness) await this.turn(this.continueTurns.shift() ?? [{ type: 'text', text: 'Mock: continuing with the plan.' }])
         else await this.turn([{ type: 'text', text: this.script.reply.replace('{text}', next.text) }])
@@ -467,6 +472,15 @@ export class MockSession implements RuntimeSession {
         }
       }
     }
+  }
+
+  /** Like the Claude path on an auth failure: one harness row, the root in error, the run ends 'error'. */
+  private failAuth(): void {
+    const message = authFailureMessage(this.ctx.connection?.connection)
+    this.transcript(ROOT_AGENT_ID, { kind: 'system', text: message, detail: 'Invalid API key · Please run /login' }, { source: 'harness' })
+    this.log('error', 'Authentication failed: Invalid API key · Please run /login')
+    this.setState(ROOT_AGENT_ID, 'error', 'Connection refused')
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'error', error: message })
   }
 
   /**
@@ -732,9 +746,39 @@ export class MockAdapter implements RuntimeAdapter {
   }
 
   /** A fixed org chart draft, in the JSON shape the drafter expects. */
-  async complete(_input: CompletionInput): Promise<string> {
+  async complete(input: CompletionInput): Promise<string> {
+    if (input.signal?.aborted) throw new Error('Completion cancelled')
+    if (input.prompt.includes(AUTH_FAIL_TOKEN)) throw new Error(authFailureMessage(input.connection?.connection))
+    if (input.kind === 'title') {
+      if (input.prompt.includes('[mock:title-fail]')) throw new Error('Mock title failure')
+      if (input.prompt.includes('[mock:title-slow]')) await abortableDelay(50, input.signal)
+      const m = /<message>\s*([\s\S]*?)\s*<\/message>/.exec(input.prompt)
+      const words = (m ? m[1]! : input.prompt)
+        .split(/\s+/)
+        .map((w) => w.replace(/[^\p{L}\p{N}'-]/gu, ''))
+        .filter(Boolean)
+        .slice(0, 4)
+      const title = words.join(' ')
+      return title.charAt(0).toUpperCase() + title.slice(1)
+    }
     const setupStep = DEFAULT_SETUP.find((s): s is Extract<MockStep, { type: 'harness' }> => s.type === 'harness' && s.name === 'propose_org_chart')
     const args = setupStep?.args ?? { rationale: '', roles: [] }
     return JSON.stringify({ rationale: args.rationale, roles: args.roles })
   }
+}
+
+/** A timer that rejects with 'Completion cancelled' when the signal aborts first. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('Completion cancelled'))
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new Error('Completion cancelled'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }

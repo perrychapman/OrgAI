@@ -5,6 +5,8 @@ import { useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import RemapNotices from '../RemapNotices'
+import { APP_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
+import { SettingsSection } from '../settings/SettingsSection'
 import ConnectionCard from './ConnectionCard'
 
 /** App settings > Connections: notices, the three provider cards and page states. */
@@ -30,18 +32,17 @@ export default function ConnectionsPanel(): ReactElement {
 
   const none = connections && connections.every((c) => c.status.state !== 'connected')
   return (
-    <section className="conn-panel" aria-labelledby="connections-title">
-      <div className="section-head">
-        <div>
-          <h2 id="connections-title">Connections</h2>
-          <p>Where agents get their models. Each project picks one connection.</p>
-        </div>
-        <div className="section-actions">
-          <Button icon={undefined} loading={busy} title="Reload status and model lists" onClick={() => void refreshAll()}>
-            Refresh all
-          </Button>
-        </div>
-      </div>
+    <SettingsSection
+      id={APP_SETTINGS_SECTIONS.connections}
+      titleId="connections-title"
+      title="Connections"
+      description="Where agents get their models. One connection is the default for new projects; each project can switch in its own Settings."
+      actions={
+        <Button loading={busy} title="Reload status and model lists" onClick={() => void refreshAll()}>
+          Refresh all
+        </Button>
+      }
+    >
       <RemapNotices />
       {error && !connections ? (
         <Banner tone="danger" title="Could not load connections" actions={<Button size="sm" onClick={() => void load()}>Retry</Button>}>
@@ -68,6 +69,6 @@ export default function ConnectionsPanel(): ReactElement {
           </div>
         </>
       )}
-    </section>
+    </SettingsSection>
   )
 }
