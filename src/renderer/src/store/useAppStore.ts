@@ -4,6 +4,7 @@ import { defaultRunToOpen } from '../lib/needsYou'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
+import { cleanIpcError } from '../lib/ipcError'
 import { withRunTitle } from '../lib/runTitle'
 import { describeRemap, type ProjectChanges } from '../lib/remap'
 import type {
@@ -49,7 +50,9 @@ export interface ImportNotice {
   count: number
   summary: string
   previousRoles: Role[]
-  state: 'available' | 'busy' | 'reverted' | 'error'
+  /** The roles right after the import. Undo is only offered while the chart still matches them. */
+  importedRoles: Role[]
+  state: 'available' | 'busy' | 'reverted' | 'error' | 'expired'
   error?: string
 }
 
@@ -535,13 +538,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     const notice = get().importNotices[projectId]
     const current = get().projects.find((p) => p.id === projectId)
     if (!notice || !current) return
+    if (JSON.stringify(current.roles) !== JSON.stringify(notice.importedRoles)) {
+      // The chart changed since the import: restoring the old one would drop those edits.
+      set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...notice, state: 'expired', error: undefined } } }))
+      return
+    }
     const patch = (p: Partial<ImportNotice>): void => set((s) => ({ importNotices: { ...s.importNotices, [projectId]: { ...s.importNotices[projectId], ...p } } }))
     patch({ state: 'busy', error: undefined })
     try {
       await get().saveProjectNow({ ...current, roles: notice.previousRoles })
       patch({ state: 'reverted' })
     } catch (e) {
-      patch({ state: 'error', error: (e as Error).message })
+      patch({ state: 'error', error: cleanIpcError(e) })
     }
   },
 
@@ -747,7 +755,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateProject(project) {
-    set((s) => ({ projects: s.projects.map((p) => (p.id === project.id ? project : p)) }))
+    set((s) => {
+      const notice = s.importNotices[project.id]
+      // The first chart edit after an import ends Undo: it would discard that edit.
+      const expire =
+        notice && (notice.state === 'available' || notice.state === 'error') && JSON.stringify(project.roles) !== JSON.stringify(notice.importedRoles)
+      return {
+        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
+        ...(expire ? { importNotices: { ...s.importNotices, [project.id]: { ...notice, state: 'expired' as const, error: undefined } } } : {})
+      }
+    })
     debouncedSave(project)
   },
 

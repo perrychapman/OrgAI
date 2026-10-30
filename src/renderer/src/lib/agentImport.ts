@@ -1,4 +1,4 @@
-import type { AgentImportAction, AgentImportChoice, AgentImportItem, AgentImportPreview, AgentImportSource, ProjectPathCheck, Role } from '@shared/types'
+import type { AgentImportAction, AgentImportChoice, AgentImportMode, AgentImportItem, AgentImportPreview, AgentImportSource, ProjectPathCheck, Role } from '@shared/types'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 
 /** What a new project does with the agent files found in its folder. */
@@ -46,7 +46,7 @@ export function effectiveSetupChoice(hasAgents: boolean, picked: SetupChoice | n
 }
 
 export function setupSubmitLabel(choice: SetupChoice, busy: boolean): string {
-  if (choice === 'import') return busy ? 'Creating…' : 'Review import'
+  if (choice === 'import') return busy ? 'Creating…' : 'Create project and review import'
   if (choice === 'architect') return busy ? 'Scanning and starting the Architect…' : 'Create and start setup'
   return busy ? 'Creating…' : 'Create project'
 }
@@ -73,8 +73,29 @@ export function importCount(preview: Pick<AgentImportPreview, 'items'> | null | 
   return (preview?.items ?? []).filter((i) => i.action !== 'skip').length
 }
 
-export function importButtonLabel(count: number): string {
-  return `Import ${count} role${count === 1 ? '' : 's'}`
+export function importButtonLabel(count: number, mode: AgentImportMode = 'merge'): string {
+  const roles = `${count} role${count === 1 ? '' : 's'}`
+  return mode === 'replace' ? `Replace chart with ${roles}` : `Import ${roles}`
+}
+
+/** One line on what the chosen mode does to the chart, with counts. */
+export function modeLine(mode: AgentImportMode, imported: number, existing: number): string {
+  const n = (c: number): string => `${c} role${c === 1 ? '' : 's'}`
+  return mode === 'replace' ? `Replaces your ${n(existing)} with these ${imported}.` : `Adds ${n(imported)} next to the ${existing} you have.`
+}
+
+const ELEVATED_TEXT: Record<string, string> = {
+  Bash: 'Runs commands',
+  Edit: 'Edits files',
+  Write: 'Edits files',
+  NotebookEdit: 'Edits files',
+  canSpawn: 'Can start other agents',
+  mcp: "Keeps the replaced role's MCP access"
+}
+
+/** Visible wording for a role's elevated grants: deduplicated, only what is present, unknown values shown as-is. */
+export function elevatedLabels(elevated: string[]): string[] {
+  return [...new Set(elevated.map((e) => ELEVATED_TEXT[e] ?? e))]
 }
 
 /** The slug of the role an item reports to in the result, matched by slug, id or name; '' for the root. */
