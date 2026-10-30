@@ -84,7 +84,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       )}
       {showCost && (
         <span className="run-meta-item run-meta-cost">
-          <Cost value={cost} />
+          <Cost value={cost} labelled />
         </span>
       )}
       <span className="run-meta-item run-meta-started" title={new Date(summary.startedAt).toLocaleString()}>

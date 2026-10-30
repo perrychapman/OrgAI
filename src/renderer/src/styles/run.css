@@ -25,7 +25,11 @@
 }
 /* Ended without a result: quiet dim, the tooltip says why. Selection restores full strength. */
 .agent-node.no-result:not(.selected) {
-  opacity: 0.7;
+  opacity: var(--dim-opacity);
+}
+/* A non-colour cue that survives selection: dashed outline, and the activity line says why. */
+.agent-node.no-result {
+  border-style: dashed;
 }
 .agent-node.state-waiting {
   border-color: var(--warning);

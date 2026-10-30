@@ -39,6 +39,11 @@ export function formatHitRate(t: TokenUsage): string {
 export interface AgentRow {
   id: string
   name: string
+  /** How the row names the agent: its handle (implementer-2), else role-slug plus an index when several share a role, else its name. */
+  label: string
+  /** Second line: the role name when the label differs from it. */
+  sub?: string
+  isRoot: boolean
   roleSlug: string
   tokens: TokenUsage
   total: number
@@ -56,9 +61,13 @@ export interface AgentRow {
 export function agentRow(agent: AgentInstance): AgentRow {
   const u: AgentUsage | undefined = agent.usage
   const tokens: TokenUsage = u ? u.tokens : { input: agent.inputTokens, output: agent.outputTokens, cacheRead: 0, cacheWrite: 0 }
+  const isRoot = agent.id === 'root' || !agent.parentId
   return {
     id: agent.id,
     name: agent.name,
+    label: agent.handle ?? agent.name,
+    sub: agent.handle && agent.handle !== agent.name ? agent.name : undefined,
+    isRoot,
     roleSlug: agent.roleSlug,
     tokens,
     total: totalTokens(tokens),
@@ -66,7 +75,8 @@ export function agentRow(agent: AgentInstance): AgentRow {
     turns: u?.turns ?? 0,
     toolCalls: u?.toolCalls ?? 0,
     retries: u?.retries ?? 0,
-    producedNothing: u?.producedNothing === true || agentProducedNothing(agent),
+    // The orchestrator speaks the answer; it is never counted as producing nothing.
+    producedNothing: !isRoot && (u?.producedNothing === true || agentProducedNothing(agent)),
     legacy: u?.legacy === true,
     approximate: !u || u.legacy === true
   }
@@ -75,7 +85,18 @@ export function agentRow(agent: AgentInstance): AgentRow {
 /** Agent rows, most tokens first (ties by name). */
 export function agentRows(agents: Record<string, AgentInstance> | AgentInstance[]): AgentRow[] {
   const list = Array.isArray(agents) ? agents : Object.values(agents)
-  return list.map(agentRow).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+  const rows = list.map(agentRow)
+  // Agents without a handle that share a role get role-slug-N (spawn order) so two rows never read the same.
+  const bySlug = new Map<string, AgentInstance[]>()
+  for (const a of list) if (!a.handle) bySlug.set(a.roleSlug, [...(bySlug.get(a.roleSlug) ?? []), a])
+  for (const r of rows) {
+    const same = bySlug.get(r.roleSlug)
+    if (!same || same.length < 2 || r.label !== r.name) continue
+    const n = [...same].sort((x, y) => x.startedAt - y.startedAt).findIndex((a) => a.id === r.id) + 1
+    r.label = `${r.roleSlug}-${n}`
+    r.sub = r.name
+  }
+  return rows.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -83,10 +104,14 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /** Plain-sentence efficiency signals for a whole run. Empty when nothing stands out. */
-export function runSignals(u: RunUsage): string[] {
+export function runSignals(u: RunUsage, rows?: readonly AgentRow[]): string[] {
   const out: string[] = []
-  if (u.agentsWithoutResult > 0) {
-    out.push(`${plural(u.agentsWithoutResult, 'agent', 'agents')} spent ${formatTokens(u.noResultTokens)} tokens and produced no result.`)
+  // With the agent rows at hand the count is taken here and never includes the root.
+  const idle = rows ? rows.filter((r) => !r.isRoot && r.producedNothing) : undefined
+  const without = idle ? idle.length : u.agentsWithoutResult
+  const wasted = idle ? idle.reduce((n, r) => n + r.total, 0) : u.noResultTokens
+  if (without > 0) {
+    out.push(`${plural(without, 'agent', 'agents')} spent ${formatTokens(wasted)} tokens and produced no result.`)
   }
   if (u.retries > 0) out.push(`${plural(u.retries, 'API retry', 'API retries')} slowed the run down.`)
   if (u.waitingMs >= WAITING_MIN_MS && u.wallMs > 0 && u.waitingMs / u.wallMs >= WAITING_SHARE) {
@@ -121,14 +146,19 @@ export function timeRows(u: RunUsage): TimeRow[] {
 }
 
 /** Role rollup rows, most tokens first; a role whose agents all produced nothing is dimmed. */
-export function roleRows(u: RunUsage): Array<{ key: string; name: string; agents: number; total: number; dim: boolean; role: RunUsage['roles'][number] }> {
+export function roleRows(u: RunUsage, rows?: readonly AgentRow[]): Array<{ key: string; name: string; agents: number; total: number; dim: boolean; role: RunUsage['roles'][number] }> {
   return u.roles
-    .map((role) => ({
+    .map((role) => {
+      // Dim only a role whose non-root agents all produced nothing.
+      const mine = rows?.filter((r) => r.roleSlug === role.roleSlug && !r.isRoot)
+      return { role, dim: mine ? mine.length > 0 && mine.every((r) => r.producedNothing) : role.agents > 0 && role.agentsWithoutResult >= role.agents }
+    })
+    .map(({ role, dim }) => ({
       key: role.roleId ?? `slug:${role.roleSlug}`,
       name: role.roleName || role.roleSlug,
       agents: role.agents,
       total: totalTokens(role.tokens),
-      dim: role.agents > 0 && role.agentsWithoutResult >= role.agents,
+      dim,
       role
     }))
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))

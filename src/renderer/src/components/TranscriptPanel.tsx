@@ -200,10 +200,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const index = useRunIndexes().get(runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
-  // The Usage tab is local to this panel (the store's SideTab has no 'usage'); picking any other tab leaves it.
-  const [usageRun, setUsageRun] = useState<string | null>(null)
-  const usageOpen = usageRun === runId
-  const tab: SideTab | 'usage' = usageOpen ? 'usage' : planTab
+  const tab: SideTab = planTab
 
   useEffect(() => {
     // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
@@ -242,13 +239,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
             </span>
           )}
         </div>
-        <Tabs tabs={tabs} value={tab} onChange={(id) => {
-            if (id === 'usage') setUsageRun(runId)
-            else {
-              setUsageRun(null)
-              setTab(id as SideTab)
-            }
-          }} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
+        <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
       </div>
       {tab === 'plan' && (
         <TabPanel idPrefix={idPrefix} id="plan" value={tab}>
@@ -271,7 +262,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>
-          <Cost value={agentCostInput(agent)} hideEmpty />
+          <Cost value={agentCostInput(agent)} hideEmpty labelled />
           <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>
           <span>{agent.state}</span>
           {agent.worktree && (

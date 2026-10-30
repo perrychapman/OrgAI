@@ -129,3 +129,10 @@
     text-align: left;
   }
 }
+
+.model-prices-form {
+  scroll-margin-top: var(--space-4);
+}
+.model-prices-more {
+  margin: 0;
+}

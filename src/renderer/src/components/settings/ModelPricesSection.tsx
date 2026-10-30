@@ -1,18 +1,22 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Pencil, Plus, RotateCcw } from 'lucide-react'
 import type { ConnectionId, ModelPriceInfo, ModelPriceOverride } from '@shared/types'
 import { CONNECTION_IDS } from '@shared/types'
 import { MODEL_PRICE_ID_MAX_CHARS } from '@shared/defaults'
 import { CONNECTION_NAME } from '../../lib/settingsCopy'
-import { displayPerMTok, draftFromInfo, EMPTY_DRAFT, upsertOverride, removeOverride, validateDraft } from '../../lib/modelPrices'
+import { displayPerMTok, draftFromInfo, EMPTY_DRAFT, upsertOverride, removeOverride, validateDraft, visiblePriceRows } from '../../lib/modelPrices'
+import { APP_SETTINGS_SECTIONS, takeModelPriceTarget } from '../../lib/settingsTarget'
+import { useAppStore } from '../../store/useAppStore'
 import type { PriceDraft, PriceErrors, PriceField } from '../../lib/modelPrices'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 import { Input } from '../ui/Input'
 import { Select } from '../ui/Select'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { SettingsCard } from './SettingsCard'
+import { SettingsSection } from './SettingsSection'
 
 const SOURCE_LABEL: Record<ModelPriceInfo['source'], string> = { override: 'Override', proxy: 'Proxy', builtin: 'Built-in' }
 
@@ -53,14 +57,39 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
   useEffect(() => {
     void load()
   }, [load])
+  // "Set a price" from an unknown cost lands here with the model id to price.
+  useEffect(() => {
+    const model = takeModelPriceTarget()
+    if (model) open({ draft: { ...EMPTY_DRAFT, model } })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const { confirm, dialog } = useConfirm()
+  const [showAll, setShowAll] = useState(false)
+  const runs = useAppStore((s) => s.runs)
+  const projects = useAppStore((s) => s.projects)
+  // Models the user's work touches: used by loaded runs, or set on a project's roles.
+  const inUse = useMemo(() => {
+    const ids = new Set<string>()
+    for (const r of Object.values(runs)) {
+      for (const m of r.summary.usage?.models ?? []) ids.add(m.model)
+      for (const a of Object.values(r.agents)) {
+        if (a.model) ids.add(a.model)
+        for (const m of a.usage?.models ?? []) ids.add(m.model)
+      }
+    }
+    for (const p of projects) for (const role of p.roles) if (role.model && role.model !== 'inherit') ids.add(role.model)
+    return ids
+  }, [runs, projects])
 
   const open = (next: Editing): void => {
     setEditing(next)
     setErrors({})
     setSaveError(null)
     requestAnimationFrame(() => {
-      formRef.current?.scrollIntoView({ block: 'nearest' })
-      document.getElementById('model-price-model')?.focus()
+      formRef.current?.scrollIntoView({ block: 'start' })
+      // Focus the first empty field (the model id, unless a deep link pre-filled it); the form is already in view.
+      const empty = (['model-price-model', 'model-price-input'] as const).find((id) => !(document.getElementById(id) as HTMLInputElement | null)?.value)
+      document.getElementById(empty ?? 'model-price-model')?.focus({ preventScroll: true })
     })
   }
   const close = (): void => {
@@ -101,6 +130,13 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
   }
 
   const clear = async (row: ModelPriceInfo): Promise<void> => {
+    const ok = await confirm({
+      title: `Clear the override for ${row.model}?`,
+      body: 'The model goes back to its proxy or built-in price. Costs already recorded do not change.',
+      confirmLabel: 'Clear override',
+      danger: true
+    })
+    if (!ok) return
     setSaveError(null)
     await persist(removeOverride(overrides, row.model, row.connection))
   }
@@ -113,12 +149,20 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
 
   const rowKey = (r: ModelPriceInfo): string => `${r.connection ?? ''}|${r.model}|${r.source}`
 
+  const shown = rows ? visiblePriceRows(rows, inUse, showAll) : []
+
   return (
-    <>
+    <SettingsSection
+      id={APP_SETTINGS_SECTIONS.modelPrices}
+      title="Model prices"
+      description="USD per million tokens, used to estimate cost when the provider does not report it. An override wins over a proxy price, and a proxy price wins over the built-in table."
+      actions={
+        <Button icon={Plus} testId="model-price-add" disabled={!!editing} onClick={() => open({ draft: EMPTY_DRAFT })}>
+          Add override
+        </Button>
+      }
+    >
       <div className="model-prices" data-testid="model-prices">
-        <p className="muted model-prices-lead">
-          USD per million tokens, used to estimate cost when the provider does not report it. An override wins over a proxy price, and a proxy price wins over the built-in table.
-        </p>
         {saveError && !editing && (
           <Banner tone="danger" title="Could not save prices">
             {saveError}
@@ -214,9 +258,9 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
           </div>
         ) : (
           <SettingsCard>
-            {rows.length === 0 ? (
+            {rows.length === 0 || shown.length === 0 ? (
               <p className="settings-card-note" data-testid="model-prices-empty">
-                No prices are known yet. Add an override to price a model.
+                {rows.length === 0 ? 'No prices are known yet. Add an override to price a model.' : 'No overrides yet and none of your models are listed. Add an override, or show all prices.'}
               </p>
             ) : (
               <table className="model-prices-table">
@@ -225,7 +269,7 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
                   <tr>
                     <th scope="col">Model</th>
                     <th scope="col">Source</th>
-                    <th scope="col" className="num">Input</th>
+                    <th scope="col" className="num">Input<span className="sr-only"> per 1M tokens</span></th>
                     <th scope="col" className="num">Output</th>
                     <th scope="col" className="num">Cache read</th>
                     <th scope="col" className="num">Cache write</th>
@@ -235,7 +279,7 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {shown.map((r) => (
                     <tr key={rowKey(r)} data-testid="model-price-row" data-model={r.model} data-source={r.source}>
                       <th scope="row" className="model-prices-name">
                         <span className="mono" title={r.model}>
@@ -269,14 +313,23 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
             )}
           </SettingsCard>
         )}
-        {!editing && (
-          <div>
-            <Button icon={Plus} testId="model-price-add" onClick={() => open({ draft: EMPTY_DRAFT })}>
-              Add override
-            </Button>
-          </div>
+        {rows && rows.length > shown.length && !showAll && (
+          <p className="settings-card-note model-prices-more">
+            Showing overrides and models you use.{' '}
+            <button type="button" className="link-btn" data-testid="model-prices-show-all" onClick={() => setShowAll(true)}>
+              Show all {rows.length} prices
+            </button>
+          </p>
+        )}
+        {showAll && rows && visiblePriceRows(rows, inUse, false).length < rows.length && (
+          <p className="settings-card-note model-prices-more">
+            <button type="button" className="link-btn" onClick={() => setShowAll(false)}>
+              Show only overrides and models in use
+            </button>
+          </p>
         )}
       </div>
-    </>
+      {dialog}
+    </SettingsSection>
   )
 }

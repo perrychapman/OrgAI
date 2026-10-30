@@ -111,7 +111,7 @@
   white-space: nowrap;
 }
 .usage-table tr.dim {
-  opacity: 0.6;
+  opacity: var(--dim-opacity);
 }
 .usage-table tr.current {
   background: var(--accent-soft);
@@ -151,4 +151,85 @@
   .usage-table .opt {
     display: none;
   }
+}
+
+/* summary first: four tiles, the signals, the tables, then the rest behind a disclosure */
+@container usage (min-width: 360px) {
+  .usage-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.usage-stat dd {
+  overflow-wrap: anywhere;
+}
+.usage-more summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  border-radius: var(--radius-xs);
+}
+.usage-more summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.usage-list {
+  margin: var(--space-2) 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--space-4);
+}
+.usage-list .usage-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: none;
+}
+.usage-list .usage-stat dd {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+@container usage (max-width: 359px) {
+  .usage-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.usage-unpriced {
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+.usage-unpriced p {
+  margin: 0;
+}
+.usage-unpriced ul {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.usage-unpriced li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.usage-unpriced code {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-table tr.current {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
 }

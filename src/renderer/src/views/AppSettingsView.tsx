@@ -92,7 +92,7 @@ export default function AppSettingsView(): ReactElement {
   const focusHex = useRef(false)
   const [highlightUsage, setHighlightUsage] = useState(false)
   // Set by a deep link; the first render that has the page loaded moves focus to the pane heading.
-  const pendingFocus = useRef<{ usage: boolean } | null>(null)
+  const pendingFocus = useRef<{ usage: boolean; section?: string } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
@@ -105,7 +105,7 @@ export default function AppSettingsView(): ReactElement {
       const next = target ? appPaneForSection(target) : undefined
       if (next) {
         setPane(next)
-        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage }
+        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage, section: target === APP_SETTINGS_SECTIONS.modelPrices ? target : undefined }
       }
     }
     take()
@@ -122,7 +122,18 @@ export default function AppSettingsView(): ReactElement {
     const pf = pendingFocus.current
     if (!pf || !ready) return
     pendingFocus.current = null
-    focusPaneHeading({ preventScroll: pf.usage })
+    focusPaneHeading({ preventScroll: pf.usage || !!pf.section })
+    if (pf.section) {
+      // Land on the section itself: scroll its title to the top and focus it (an add form pre-filled by a deep link then takes focus).
+      // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
+      const land = (): void => document.getElementById(pf.section!)?.scrollIntoView({ block: 'start' })
+      land()
+      setTimeout(land, 350)
+      setTimeout(land, 900)
+      const title = document.getElementById(pf.section)?.querySelector<HTMLElement>('.settings-section-title')
+      title?.setAttribute('tabindex', '-1')
+      title?.focus({ preventScroll: true })
+    }
     if (pf.usage) {
       document.getElementById(APP_SETTINGS_SECTIONS.usage)?.scrollIntoView({ block: 'center' })
       setHighlightUsage(true)
@@ -397,9 +408,7 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'connections' && (
           <>
             <ConnectionsPanel />
-            <SettingsSection id="appsettings-section-model-prices" title="Model prices" description="What each model costs, used to estimate spend.">
-              <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
-            </SettingsSection>
+            <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
           </>
         )}
         {pane === 'mcp-library' && <McpLibrarySection />}

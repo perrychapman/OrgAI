@@ -5,6 +5,7 @@ export const APP_SETTINGS_SECTIONS = {
   appearance: 'appsettings-section-appearance',
   notifications: 'appsettings-section-notifications',
   connections: 'appsettings-section-connections',
+  modelPrices: 'appsettings-section-model-prices',
   mcpLibrary: 'appsettings-section-mcp-library',
   defaults: 'appsettings-section-defaults',
   usage: 'appsettings-section-usage',
@@ -36,6 +37,7 @@ const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
   [APP_SETTINGS_SECTIONS.appearance]: 'general',
   [APP_SETTINGS_SECTIONS.notifications]: 'general',
   [APP_SETTINGS_SECTIONS.connections]: 'connections',
+  [APP_SETTINGS_SECTIONS.modelPrices]: 'connections',
   [APP_SETTINGS_SECTIONS.mcpLibrary]: 'mcp-library',
   [APP_SETTINGS_SECTIONS.defaults]: 'defaults',
   [APP_SETTINGS_SECTIONS.usage]: 'defaults',
@@ -71,6 +73,33 @@ export function takeAppSettingsSection(): string | null {
     const id = sessionStorage.getItem(KEY)
     if (id) sessionStorage.removeItem(KEY)
     return id
+  } catch {
+    return null
+  }
+}
+
+const PRICE_KEY = 'orgai.pendingModelPrice'
+
+/**
+ * Open App settings > Connections > Model prices (scrolled to and focused), optionally with the add form pre-filled
+ * with a model id. The caller still switches the view (`setView('appSettings')`).
+ */
+export function requestModelPrice(model?: string): void {
+  requestAppSettingsSection(APP_SETTINGS_SECTIONS.modelPrices)
+  try {
+    if (model) sessionStorage.setItem(PRICE_KEY, model.slice(0, 200))
+    else sessionStorage.removeItem(PRICE_KEY)
+  } catch {
+    /* storage unavailable: the section just opens without a pre-filled model */
+  }
+}
+
+/** Read and clear the model id to pre-fill in the Model prices add form. */
+export function takeModelPriceTarget(): string | null {
+  try {
+    const m = sessionStorage.getItem(PRICE_KEY)
+    if (m) sessionStorage.removeItem(PRICE_KEY)
+    return m
   } catch {
     return null
   }

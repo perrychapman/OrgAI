@@ -1,4 +1,4 @@
-import type { AgentInstance, CostSource, RunSummary } from '@shared/types'
+import type { AgentInstance, CostSource, ModelUsageEntry, RunSummary } from '@shared/types'
 
 export { formatTokens } from './layout'
 
@@ -11,6 +11,10 @@ export interface CostInput {
   costPartial?: boolean
   /** Recorded before usage tracking: approximate. */
   legacy?: boolean
+  /** An aggregate over runs of different sources: the tooltip says "reported or computed" instead of naming one. */
+  sourceMixed?: boolean
+  /** Per-model breakdown (AgentUsage / RunUsage / RoleUsage carry it); names the unpriced models in the tooltip. */
+  models?: readonly (Pick<ModelUsageEntry, 'model' | 'costUsd' | 'priceSource'> | string)[]
 }
 
 export interface CostView {
@@ -27,15 +31,37 @@ export const COST_TITLES = {
   provider: 'Reported by the provider',
   computed: 'Computed by OrgAI from model prices',
   unknown: 'Cost unknown: no price is known for the model used. Tokens are still counted.',
+  /** An aggregate (trends) that may mix provider-reported and computed costs. */
+  mixed: 'Reported by the provider or computed by OrgAI from model prices',
   none: 'Nothing spent yet',
   legacy: 'Recorded before usage tracking; approximate.'
 } as const
 
-/** "$0.00", "$0.0042" (under a cent), "$12.50". */
+/**
+ * One precision rule for every figure (rows and totals alike, so a total never rounds below its rows): 2 decimals from
+ * $1 up; below $1 four significant digits with trailing zeros trimmed to at least 2 decimals ("$0.42", "$0.0057",
+ * "$0.1257"); under $0.0001 "<$0.0001".
+ */
 export function formatUsd(usd: number): string {
   if (usd === 0) return '$0.00'
-  if (usd < 0.01) return `$${usd.toFixed(4)}`
-  return `$${usd.toFixed(2)}`
+  if (usd >= 1) return `$${usd.toFixed(2)}`
+  if (usd < 0.0001) return '<$0.0001'
+  const digits = Math.min(8, Math.max(2, 3 - Math.floor(Math.log10(usd))))
+  let t = usd.toFixed(digits)
+  while (t.endsWith('0') && t.length - t.indexOf('.') - 1 > 2) t = t.slice(0, -1)
+  return `$${t}`
+}
+
+/** Model ids with tokens but no known price (priceSource 'unknown' or a null cost), unique, in first-seen order. */
+export function unpricedModels(models: CostInput['models']): string[] {
+  const out: string[] = []
+  for (const m of models ?? []) if (typeof m !== 'string' && (m.priceSource === 'unknown' || m.costUsd === null) && m.model && !out.includes(m.model)) out.push(m.model)
+  return out
+}
+
+function unpricedNote(models: CostInput['models']): string {
+  const ids = unpricedModels(models)
+  return ids.length > 0 ? ` No price for ${ids.join(', ')}; set one in App settings > Connections > Model prices.` : ''
 }
 
 /** Describes one cost figure. The single place cost wording lives. */
@@ -46,13 +72,13 @@ export function costView(input: CostInput): CostView {
     return { text: '—', title: COST_TITLES.none, kind: 'none', empty: true }
   }
   if (costUsd === null || costSource === 'unknown') {
-    return { text: 'unknown', title: COST_TITLES.unknown + legacy, kind: 'unknown', empty: false }
+    return { text: 'unknown', title: COST_TITLES.unknown + unpricedNote(input.models) + legacy, kind: 'unknown', empty: false }
   }
-  const how = costSource === 'computed' ? COST_TITLES.computed : COST_TITLES.provider
+  const how = costSource === 'computed' ? COST_TITLES.computed : input.sourceMixed ? COST_TITLES.mixed : COST_TITLES.provider
   if (input.costPartial) {
     return {
       text: `${formatUsd(costUsd)}+`,
-      title: `At least ${formatUsd(costUsd)}: some models have no known price. ${how}.${legacy}`,
+      title: `At least ${formatUsd(costUsd)}: some models have no known price. ${how}.${unpricedNote(input.models)}${legacy}`,
       kind: 'partial',
       empty: false
     }
@@ -83,8 +109,10 @@ export function sumCosts(inputs: CostInput[]): CostInput {
   let partial = false
   let computed = false
   let legacy = false
+  const models: NonNullable<CostInput['models']>[number][] = []
   for (const c of inputs) {
     if (c.legacy) legacy = true
+    if (c.models) models.push(...c.models)
     if (c.costSource === 'none' && !c.costUsd) continue
     if (c.costUsd === null || c.costSource === 'unknown') {
       anyUnknown = true
@@ -95,7 +123,7 @@ export function sumCosts(inputs: CostInput[]): CostInput {
     if (c.costPartial) partial = true
     if (c.costSource === 'computed') computed = true
   }
-  const base = { ...(legacy ? { legacy: true } : {}) }
+  const base = { ...(legacy ? { legacy: true } : {}), ...(models.length > 0 ? { models } : {}) }
   if (!anyKnown && !anyUnknown) return { costUsd: 0, costSource: 'none', ...base }
   if (!anyKnown) return { costUsd: null, costSource: 'unknown', ...base }
   return { costUsd: known, costSource: computed ? 'computed' : 'provider', ...(partial || anyUnknown ? { costPartial: true } : {}), ...base }
