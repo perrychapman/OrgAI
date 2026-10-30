@@ -3,7 +3,7 @@ import { CircleAlert, CircleCheck, CircleDashed, TriangleAlert } from 'lucide-re
 import type { ConnectorInfo } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
-import { CATEGORY_LABELS, stateChip } from '../../lib/connectors'
+import { CATEGORY_LABELS, clampText, stateChip } from '../../lib/connectors'
 import { ConnectorLogo } from './ConnectorLogo'
 
 const CHIP_ICON = { success: CircleCheck, warning: TriangleAlert, danger: CircleAlert, neutral: CircleDashed }
@@ -20,7 +20,8 @@ export function actionLabel(state: ConnectorInfo['state']): string {
 export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: () => void }): ReactElement {
   const def = info.connector
   const chip = stateChip(info)
-  const account = info.state === 'connected' ? info.library?.auth.account : undefined
+  const rawAccount = info.state === 'connected' ? info.library?.auth.account : undefined
+  const account = rawAccount ? clampText(rawAccount, 200) : undefined
   const label = actionLabel(info.state)
   return (
     <li className="connector-tile" data-testid="connector-tile" data-connector={def.id} data-state={info.state}>
