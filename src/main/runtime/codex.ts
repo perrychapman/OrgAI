@@ -424,7 +424,7 @@ class CodexSession implements RuntimeSession {
     const policy = this.policyFor(role)
     const own = codexModelFor(role.model)
     if (!own && typeof role.model === 'string' && role.model.trim() && !validModelId(role.model.trim())) {
-      this.log('warn', `Ignoring the invalid model of ${role.name}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
+      this.log('warn', `Ignoring the invalid model of ${String(role.name).replace(/[^ -~]/g, "?").slice(0, 80)}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
     }
     const model = own ?? (validModelId(parentModel) ? parentModel : undefined)
     return {
