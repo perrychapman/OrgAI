@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { ROLE_COLORS, adapterForProject, newId, slugify } from '@shared/defaults'
 import type {
   AgentImportAction,
@@ -124,6 +125,8 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
     const mapped = choice?.model !== undefined ? mapChosenModel(choice.model, ctx, agent.name) : mapImportedModel(agent.model, ctx, agent.tier)
     if (mapped.note) notes.push(mapped.note)
     if (mappedTools.dropped.length) notes.push(`Tools with no OrgAI equivalent were dropped: ${mappedTools.dropped.join(', ')}.`)
+    if (agent.tools === undefined && agent.source !== 'orgai') notes.push(`No tool list given, so it gets ${mappedTools.tools.join(', ') || 'no tools'}.`)
+    if (agent.prompt.length > PROMPT_EXCERPT_CHARS) notes.push(`The prompt is ${agent.prompt.length.toLocaleString('en-US')} characters; review all of it before applying.`)
     const prompt = agent.prompt.trim() || describe(agent)
     if (!agent.prompt.trim()) notes.push('The definition has no prompt; its description is used.')
     const role: Role = {
@@ -179,6 +182,7 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
   const replaced = new Set<string>()
   for (const d of included) {
     const clash = base.find((r) => r.slug === d.role.slug && !replaced.has(r.id))
+    const before = d.role.slug
     if (clash) {
       d.slugConflict = true
       if (d.action === 'replace') {
@@ -202,7 +206,7 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
       d.notes.push(`Slug "${d.role.slug}" is used by another imported agent; renamed to "${renamed}".`)
       d.role.slug = renamed
     }
-    if (d.action === 'replace' && !d.replacesRoleId) d.notes.push('No existing role has this slug, so it is added.')
+    if (d.action === 'replace' && !d.replacesRoleId && before === d.role.slug) d.notes.push('No existing role has this slug, so it is added.')
     taken.add(d.role.slug)
   }
   for (const d of included) if (d.action === 'replace' && !d.replacesRoleId) d.action = 'add'
@@ -247,7 +251,9 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
   const slugToId = new Map(roles.map((r) => [r.slug, r.id]))
   for (const d of included) {
     const fromExport = (d.agent.spawnable ?? []).map((s) => exportSlugs.get(slugify(s))?.id ?? slugToId.get(s)).filter((x): x is string => !!x)
-    d.role.spawnable = fromExport
+    // A replacement keeps the spawnable list of the role it replaces (cross-team grants included).
+    const kept = d.replacesRoleId ? base.find((r) => r.id === d.replacesRoleId)?.spawnable ?? [] : []
+    d.role.spawnable = [...kept, ...fromExport]
   }
   for (const r of roles) {
     const reports = roles.filter((x) => x.reportsTo === r.id).map((x) => x.id)
@@ -320,11 +326,33 @@ function finish(input: ConvertInput, roles: Role[], drafts: Draft[], replacedRol
       canSpawn: d.role.canSpawn,
       reportsTo: d.action === 'skip' ? null : manager ? manager.slug : null,
       promptExcerpt: d.agent.prompt.slice(0, PROMPT_EXCERPT_CHARS),
+      promptLength: d.agent.prompt.length,
       action: d.action,
       ...(d.replacesRoleId ? { replacesRoleId: d.replacesRoleId } : {}),
       slugConflict: d.slugConflict,
       notes: d.notes
     }
   })
-  return { mode: input.mode, roles, items, replacedRoleIds, warnings, connection: input.model.connection, instructionFiles: [...instructionFiles] }
+  return {
+    mode: input.mode,
+    roles,
+    items,
+    replacedRoleIds,
+    warnings,
+    connection: input.model.connection,
+    instructionFiles: [...instructionFiles],
+    digest: importDigest(input.agents)
+  }
+}
+
+/** sha256 over what an import takes from each definition, so apply can refuse a folder that changed since the preview. */
+export function importDigest(agents: readonly ImportedAgent[]): string {
+  const h = createHash('sha256')
+  for (const a of agents) {
+    h.update(
+      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.tier, a.primary])
+    )
+    h.update('\n')
+  }
+  return h.digest('hex')
 }

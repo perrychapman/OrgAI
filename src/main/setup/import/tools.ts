@@ -61,7 +61,8 @@ function mapOne(name: string): One {
   const base = baseName(name).toLowerCase()
   if (!base || base.startsWith('mcp__')) return { tools: [], spawn: false, known: false }
   if (SPAWN_NAMES.has(base)) return { tools: [], spawn: true, known: true }
-  const hit = TABLE[base]
+  // Own keys only: repo-controlled names such as "constructor" or "__proto__" must not reach Object.prototype.
+  const hit = Object.hasOwn(TABLE, base) ? TABLE[base] : undefined
   return hit ? { tools: hit, spawn: false, known: true } : { tools: [], spawn: false, known: false }
 }
 

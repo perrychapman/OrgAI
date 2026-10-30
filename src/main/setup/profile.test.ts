@@ -33,6 +33,17 @@ describe('profileRepo', () => {
     expect(typeof p.scannedAt).toBe('string')
   })
 
+  it('lists agent definition locations that the tree leaves out', async () => {
+    put('src/a.ts', 'x')
+    expect((await profileRepo(root)).agentDefinitions).toBeUndefined()
+    put('.claude/agents/a.md', '---\nname: a\n---\nA')
+    put('.orgai/org.json', '{}')
+    put('.codex/agents/b.toml', 'name = "b"')
+    const p = await profileRepo(root)
+    expect(p.agentDefinitions).toEqual(['.orgai/org.json', '.claude/agents', '.codex/agents'])
+    expect(renderProfile(p)).toContain('Agent definitions present: .orgai/org.json, .claude/agents, .codex/agents.')
+  })
+
   it('treats a file path like a missing directory', async () => {
     put('file.txt', 'x')
     const p = await profileRepo(join(root, 'file.txt'))

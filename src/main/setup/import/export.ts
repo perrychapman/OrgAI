@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Effort, ModelRef, ModelTier, Project, ToolName } from '@shared/types'
 
@@ -70,9 +71,15 @@ export function writeOrgExport(project: Pick<Project, 'name' | 'roles' | 'path'>
   } else mkdirSync(dir)
   const file = join(dir, 'org.json')
   if (isLink(file) || (existsSync(file) && !lstatSync(file).isFile())) throw new Error('.orgai/org.json is not a plain file, so the org chart was not exported.')
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(buildOrgExport(project, now), null, 2)}\n`, 'utf8')
-  renameSync(tmp, file)
+  // A random name created exclusively ('wx' fails on any existing entry, a planted symlink included).
+  const tmp = `${file}.${randomBytes(8).toString('hex')}.tmp`
+  try {
+    writeFileSync(tmp, `${JSON.stringify(buildOrgExport(project, now), null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
+    renameSync(tmp, file)
+  } catch (e) {
+    rmSync(tmp, { force: true })
+    throw e
+  }
   return file
 }
 

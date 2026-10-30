@@ -125,7 +125,8 @@ export function parseOrgExport(text: string, file: string): ParseResult {
     if (!Array.isArray(roles)) return none(file, 'export has no roles list')
     const agents: ImportedAgent[] = []
     const warnings: string[] = []
-    roles.forEach((r, i) => {
+    if (roles.length > IMPORT_LIMITS.maxAgents) warnings.push(`${file}: only the first ${IMPORT_LIMITS.maxAgents} of ${roles.length} roles are read`)
+    roles.slice(0, IMPORT_LIMITS.maxAgents).forEach((r, i) => {
       if (!isObj(r)) { warnings.push(`${file}: role ${i + 1} is not an object, skipped`); return }
       const notes: string[] = []
       const slug = str(r.slug)
@@ -235,7 +236,10 @@ export function parseOpencodeConfig(text: string, file: string, readRelative: (r
     if (!isObj(agentMap)) return none(file, '"agent" is not an object')
     const agents: ImportedAgent[] = []
     const warnings: string[] = []
-    for (const [key, v] of Object.entries(agentMap)) {
+    // Cap before resolving any {file:} prompt, so one config cannot force thousands of reads.
+    const entries = Object.entries(agentMap)
+    if (entries.length > IMPORT_LIMITS.maxAgents) warnings.push(`${file}: only the first ${IMPORT_LIMITS.maxAgents} of ${entries.length} agents are read`)
+    for (const [key, v] of entries.slice(0, IMPORT_LIMITS.maxAgents)) {
       if (!isObj(v)) { warnings.push(`${file}: agent "${key}" is not an object, skipped`); continue }
       if (v.disable === true) { warnings.push(`${file}: agent "${key}" is disabled, skipped`); continue }
       let prompt = ''
@@ -352,7 +356,8 @@ export function parseRooModes(text: string, file: string): ParseResult {
     if (!isObj(doc) || !Array.isArray(doc.customModes)) return none(file, 'no customModes list')
     const agents: ImportedAgent[] = []
     const warnings: string[] = []
-    doc.customModes.forEach((m, i) => {
+    if (doc.customModes.length > IMPORT_LIMITS.maxAgents) warnings.push(`${file}: only the first ${IMPORT_LIMITS.maxAgents} of ${doc.customModes.length} modes are read`)
+    doc.customModes.slice(0, IMPORT_LIMITS.maxAgents).forEach((m, i) => {
       if (!isObj(m)) { warnings.push(`${file}: mode ${i + 1} is not an object, skipped`); return }
       const slug = str(m.slug)
       const name = str(m.name) ?? slug

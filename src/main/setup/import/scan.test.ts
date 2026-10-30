@@ -156,3 +156,47 @@ describe('scanAgentSources', () => {
     expect(scanAgentSources(root).agents.map((a) => a.name)).toEqual(['ok'])
   })
 })
+
+describe('scanAgentSources hardening', () => {
+  it('reads referenced prompts only from .md/.txt/.prompt files outside .git, once each', () => {
+    put('.env', 'SECRET=1')
+    put('.git/notes.md', 'git internals')
+    put('.opencode/prompts/a.md', 'Shared prompt')
+    put(
+      'opencode.json',
+      JSON.stringify({
+        agent: {
+          env: { prompt: '{file:./.env}' },
+          git: { prompt: '{file:./.git/notes.md}' },
+          a: { prompt: '{file:./.opencode/prompts/a.md}' },
+          b: { prompt: '{file:./.opencode/prompts/a.md}' }
+        }
+      })
+    )
+    const r = scanAgentSources(root)
+    const byName = new Map(r.agents.map((a) => [a.name, a.prompt]))
+    expect(byName.get('env')).toBe('')
+    expect(byName.get('git')).toBe('')
+    expect(byName.get('a')).toBe('Shared prompt')
+    expect(byName.get('b')).toBe('Shared prompt')
+    expect(r.scan.warnings.some((w) => w.includes('.env'))).toBe(true)
+  })
+
+  it('caps agents per config file before resolving prompt files', () => {
+    const agent: Record<string, unknown> = {}
+    for (let i = 0; i < 300; i++) agent[`a${i}`] = { prompt: `{file:./p${i}.md}` }
+    put('opencode.json', JSON.stringify({ agent }))
+    for (let i = 0; i < 300; i++) put(`p${i}.md`, `prompt ${i}`)
+    const r = scanAgentSources(root)
+    expect(r.agents).toHaveLength(40)
+    expect(r.scan.warnings.some((w) => w.includes('only the first 40 of 300'))).toBe(true)
+  })
+
+  it('bounds the directory entries it looks at', () => {
+    for (let i = 0; i < 5100; i++) put(`.claude/agents/x${String(i).padStart(5, '0')}.txt`, '')
+    put('.claude/agents/zz.md', claude('late'))
+    const r = scanAgentSources(root)
+    expect(r.agents).toHaveLength(0)
+    expect(r.scan.warnings.some((w) => w.includes('More than 5000 entries'))).toBe(true)
+  })
+})

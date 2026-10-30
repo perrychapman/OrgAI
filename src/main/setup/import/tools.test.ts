@@ -31,3 +31,11 @@ describe('rooGroupTools', () => {
     expect(rooGroupTools(undefined)).toEqual([])
   })
 })
+
+describe('mapTools with hostile names', () => {
+  it('treats Object.prototype member names as unknown tools instead of throwing', () => {
+    const r = mapTools(['constructor', '__proto__', 'toString', 'read'], ['constructor', '__proto__', 'hasOwnProperty'])
+    expect(r.tools).toEqual(['Read'])
+    expect(r.dropped).toEqual(['constructor', '__proto__', 'toString'])
+  })
+})

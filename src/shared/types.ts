@@ -1659,6 +1659,11 @@ export interface AgentImportInput {
   sources?: AgentImportSource[]
   mode: AgentImportMode
   choices?: AgentImportChoice[]
+  /**
+   * applyImport only: AgentImportPreview.digest of the preview the user reviewed. When given and the folder's
+   * definitions changed since (another prompt, tool list or model under the same name), apply refuses.
+   */
+  digest?: string
 }
 
 /**
@@ -1692,6 +1697,8 @@ export interface AgentImportItem {
   reportsTo: string | null
   /** The first 600 characters of the imported prompt. */
   promptExcerpt: string
+  /** Length of the whole imported prompt (at most 20,000), so the UI can say how much the excerpt leaves out. */
+  promptLength: number
   action: AgentImportAction
   /** For 'replace': the existing role it takes the place of. */
   replacesRoleId?: string
@@ -1714,6 +1721,8 @@ export interface AgentImportPreview {
   connection: ConnectionId
   /** Instruction-only files that were not turned into roles. */
   instructionFiles: string[]
+  /** sha256 of the scanned definitions; pass it back as AgentImportInput.digest so apply refuses a changed folder. */
+  digest: string
 }
 
 /** projects:applyImport output. Undo = save previousRoles through projects:save. */

@@ -40,3 +40,13 @@ describe('parseToml', () => {
     expect(parseToml('a = """unterminated').error).toBeTruthy()
   })
 })
+
+describe('parseToml on large bad input', () => {
+  it('stays linear with many erroring lines and reports the first one', () => {
+    const text = 'x\n'.repeat(100_000)
+    const started = Date.now()
+    const r = parseToml(text)
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(r.error).toMatch(/^line 1:/)
+  })
+})

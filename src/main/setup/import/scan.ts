@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { AGENT_IMPORT_SOURCES, AGENT_IMPORT_SOURCE_LABELS, type AgentImportSource, type AgentImportSourceSummary } from '@shared/types'
 import {
@@ -37,6 +37,10 @@ const AGENT_LOCATIONS = [
   '.roomodes'
 ]
 const CLAUDE_DEPTH = 4
+/** Directory entries looked at in one scan (all agent folders together), so a huge folder cannot stall the main process. */
+export const MAX_VISITED_ENTRIES = 5000
+/** Prompt files another definition may reference ({file:...}, file://). */
+const PROMPT_FILE = /\.(md|txt|prompt)$/i
 
 export function importKey(agent: ImportedAgent): string {
   return `${agent.source}:${agent.file}#${agent.name}`
@@ -68,6 +72,8 @@ class Scanner {
   readonly warnings: string[] = []
   private filesCounted = 0
   private limitWarned = false
+  private visited = 0
+  private visitWarned = false
   constructor(readonly rootReal: string) {}
 
   /** The real path of `abs` when it exists and stays inside the root, else null (with a warning for an escape). */
@@ -130,6 +136,13 @@ class Scanner {
       }
       names.sort()
       for (const name of names) {
+        if (++this.visited > MAX_VISITED_ENTRIES) {
+          if (!this.visitWarned) {
+            this.visitWarned = true
+            this.warnings.push(`More than ${MAX_VISITED_ENTRIES} entries in the agent folders: the rest were not looked at (first skipped: ${rel}/${name})`)
+          }
+          return
+        }
         const childRel = `${rel}/${name}`
         const child = this.entry(childRel)
         if (!child) continue
@@ -161,35 +174,73 @@ class Scanner {
     return true
   }
 
+  /**
+   * Read a regular file through one descriptor: fstat, then at most maxFileBytes + 1 bytes, so a file that grows
+   * between the size check and the read still cannot exceed the cap. Returns 'big' over the cap.
+   */
+  private boundedRead(real: string): string | 'big' | null {
+    let fd: number | undefined
+    try {
+      fd = openSync(real, 'r')
+      const st = fstatSync(fd)
+      if (!st.isFile()) return null
+      if (st.size > IMPORT_LIMITS.maxFileBytes) return 'big'
+      const buf = Buffer.alloc(IMPORT_LIMITS.maxFileBytes + 1)
+      let len = 0
+      while (len < buf.length) {
+        const n = readSync(fd, buf, len, buf.length - len, len)
+        if (n <= 0) break
+        len += n
+      }
+      if (len > IMPORT_LIMITS.maxFileBytes) return 'big'
+      return buf.subarray(0, len).toString('utf8')
+    } finally {
+      if (fd !== undefined) closeSync(fd)
+    }
+  }
+
   /** Reads a counted file, applying the size cap. Null (with a warning) when skipped. */
   read(f: Found): string | null {
     if (!this.take(f.rel)) return null
     try {
-      const size = statSync(f.real).size
-      if (size > IMPORT_LIMITS.maxFileBytes) {
-        this.warnings.push(`${f.rel}: ${Math.round(size / 1024)} KB is over the ${IMPORT_LIMITS.maxFileBytes / 1024} KB limit, skipped`)
+      const text = this.boundedRead(f.real)
+      if (text === 'big') {
+        this.warnings.push(`${f.rel}: over the ${IMPORT_LIMITS.maxFileBytes / 1024} KB limit, skipped`)
         return null
       }
-      return readFileSync(f.real, 'utf8')
+      return text
     } catch (err) {
       this.warnings.push(`${f.rel}: could not be read (${err instanceof Error ? err.message : 'error'})`)
       return null
     }
   }
 
-  /** Reads a file referenced from another file (opencode `{file:...}`), confined to the root. Null on any failure. */
+  private relativeCache = new Map<string, string | null>()
+
+  /**
+   * Reads a prompt file referenced from another file (opencode `{file:...}`, Kiro `file://`), confined to the
+   * root: only .md, .txt and .prompt files outside .git, counted toward maxFiles, read once per real path.
+   * Null on any failure.
+   */
   readRelativeTo(fromRel: string, relPath: string): string | null {
     try {
       const p = relPath.replace(/\\/g, '/')
       if (!p || isAbsolute(p) || /^[A-Za-z]:/.test(p) || p.startsWith('/') || p.startsWith('~')) return null
+      if (!PROMPT_FILE.test(p)) return null
       const base = dirname(fromRel.split('/').join(sep))
       const abs = resolve(this.rootReal, base, p)
       if (!isInside(this.rootReal, abs)) return null
       const real = this.resolveInside(abs, p, false)
       if (!real) return null
-      const st = statSync(real)
-      if (!st.isFile() || st.size > IMPORT_LIMITS.maxFileBytes) return null
-      return readFileSync(real, 'utf8')
+      const inRoot = relative(this.rootReal, real).split(sep)
+      // Prompt files often live in .opencode/ or .kiro/, so dot folders are allowed, but never git internals.
+      if (inRoot.some((seg) => seg.toLowerCase() === '.git')) return null
+      if (this.relativeCache.has(real)) return this.relativeCache.get(real) ?? null
+      if (!this.take(p)) return null
+      const text = this.boundedRead(real)
+      const out = text === 'big' ? null : text
+      this.relativeCache.set(real, out)
+      return out
     } catch {
       return null
     }

@@ -1,4 +1,5 @@
-import { AGENT_IMPORT_SOURCES, HARNESS_PROJECT_ID, isAgentImportSource } from '@shared/types'
+import { isAbsolute } from 'node:path'
+import { HARNESS_PROJECT_ID, isAgentImportSource } from '@shared/types'
 import type {
   AgentImportApplyResult,
   AgentImportInput,
@@ -83,6 +84,8 @@ export class AgentImportService {
     if (!isSafeId(projectId) || projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
     const project = this.deps.projects.get(projectId)
     if (!project) throw new Error('Project not found')
+    // A relative or empty path would resolve against the app's cwd.
+    if (!project.path || !(isAbsolute(project.path) || /^[a-zA-Z]:[\\/]/.test(project.path))) throw new Error('The project has no folder to scan.')
     return project
   }
 
@@ -111,6 +114,9 @@ export class AgentImportService {
   apply(input: AgentImportInput): AgentImportApplyResult {
     const project = this.stored(input?.projectId)
     const preview = this.compute(project, input)
+    if (typeof input.digest === 'string' && input.digest !== preview.digest) {
+      throw new Error('The agent definitions in the folder changed since the preview. Review the import again.')
+    }
     if (!preview.items.some((i) => i.action !== 'skip')) throw new Error('There is nothing to import.')
     const next = this.adapt({ ...project, roles: preview.roles })
     const saved = this.deps.projects.save(next)
@@ -127,7 +133,7 @@ export class AgentImportService {
     const wanted = cleanSources(sources)
     if (!wanted?.length) return project
     try {
-      const preview = this.compute(project, { sources: wanted.filter((s) => AGENT_IMPORT_SOURCES.includes(s)), mode: 'replace' })
+      const preview = this.compute(project, { sources: wanted, mode: 'replace' })
       if (!preview.items.some((i) => i.action !== 'skip')) return project
       return this.adapt({ ...project, roles: preview.roles })
     } catch (e) {

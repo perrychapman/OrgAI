@@ -148,4 +148,24 @@ describe('creating projects', () => {
     expect(mock.provider).toMatchObject({ id: 'mock' })
     expect(mock.provider.connection).not.toBe('litellm')
   })
+
+  it('create imports agents after prepare, so their models map to the chosen connection', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const order: string[] = []
+    const prepare = (p: Project): Project => {
+      order.push('prepare')
+      return { ...p, provider: { ...p.provider, connection: 'openai' } }
+    }
+    const importRoles = (p: Project, sources: unknown): Project => {
+      order.push(`import:${p.provider.connection}:${JSON.stringify(sources)}`)
+      return { ...p, roles: [role({ id: 'r1', slug: 'imported' })] }
+    }
+    const p = store.create({ name: 'Y', path: d, brief: '', importAgents: ['claude'] }, undefined, { prepare, importRoles })
+    expect(order).toEqual(['prepare', 'import:openai:["claude"]'])
+    expect(store.get(p.id)?.roles.map((r) => r.slug)).toEqual(['imported'])
+    order.length = 0
+    store.create({ name: 'Z', path: d, brief: '' }, undefined, { prepare, importRoles })
+    expect(order).toEqual(['prepare'])
+  })
 })

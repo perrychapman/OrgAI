@@ -247,8 +247,8 @@ export function parseToml(text: string): { data: Record<string, unknown>; error?
         r.skipComment()
         if (!r.eof() && r.s[r.pos] !== '\n') throw new TomlError('unexpected text after value')
       } catch (err) {
-        const line = r.s.slice(0, lineStart).split('\n').length
-        if (!error) error = `line ${line}: ${err instanceof Error ? err.message : 'invalid TOML'}`
+        // Count lines only for the first error: doing it for every bad line is quadratic on a large file.
+        if (!error) error = `line ${r.s.slice(0, lineStart).split('\n').length}: ${err instanceof Error ? err.message : 'invalid TOML'}`
         r.pos = lineStart
         r.skipLine()
       }
