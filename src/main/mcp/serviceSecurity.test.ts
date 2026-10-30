@@ -210,3 +210,14 @@ describe('L12: promote', () => {
     expect(secrets.keys('mcplib:').some((k) => k.endsWith('GITHUB_TOKEN'))).toBe(false)
   })
 })
+
+describe('persistInstall ordering', () => {
+  it('a failed project save leaves no secrets and no library entry behind', () => {
+    vi.spyOn(projects, 'save').mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    expect(() => svc.persistInstall(pid, spec({ id: 'n3', name: 'n3' }), { GITHUB_TOKEN: 'T' }, 'library')).toThrow(/disk full/)
+    expect(library.list().some((e) => e.name === 'n3')).toBe(false)
+    expect(secrets.keys().some((k) => k.endsWith('GITHUB_TOKEN'))).toBe(false)
+  })
+})

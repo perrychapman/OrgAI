@@ -757,18 +757,26 @@ export class McpService {
       const entry = libraryEntryFromSpec(saved, newId('mcpl'))
       assertValidLibraryEntry(entry, lib.list())
       const owner: McpSecretOwner = { libraryId: entry.id }
-      for (const n of entry.secretEnv ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), secrets[n])
-      for (const n of entry.secretHeaders ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), secrets[n])
       lib.save(entry)
       const link = linkedSpec(entry, { id: saved.id, enabled: saved.enabled, ...(saved.roles ? { roles: saved.roles } : {}), addedAt: saved.addedAt })
-      const out = this.projects.save({ ...project, mcpServers: [...existing, link] })
+      let out: Project
+      try {
+        out = this.projects.save({ ...project, mcpServers: [...existing, link] })
+      } catch (e) {
+        lib.remove(entry.id)
+        throw e
+      }
+      // Secrets only after both saves, so a failed save leaves none behind.
+      for (const n of entry.secretEnv ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), secrets[n])
+      for (const n of entry.secretHeaders ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), secrets[n])
       this.notifyLibrary()
       return out
     }
     const owner: McpSecretOwner = { projectId, serverId: saved.id }
+    const out = this.projects.save({ ...project, mcpServers: [...existing, saved] })
     for (const n of saved.secretEnv ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'env', n), secrets[n])
     for (const n of saved.secretHeaders ?? []) if (secrets[n]) this.secrets.set(mcpOwnerSecretKey(owner, 'header', n), secrets[n])
-    return this.projects.save({ ...project, mcpServers: [...existing, saved] })
+    return out
   }
 
   // ---------- applying MCP proposals (SetupService) ----------

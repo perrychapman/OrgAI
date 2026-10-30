@@ -263,3 +263,11 @@ describe('untilFromRateLimits', () => {
     expect(untilFromRateLimits('x')).toBeUndefined()
   })
 })
+
+describe('displayUrl', () => {
+  it('drops userinfo and query strings from summaries', async () => {
+    const { displayUrl } = await import('./codexProtocol')
+    expect(displayUrl('https://user:pw@api.test/mcp?key=SECRET')).toBe('https://api.test/mcp')
+    expect(displayUrl('not a url')).toBe('(invalid url)')
+  })
+})

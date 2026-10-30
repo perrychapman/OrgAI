@@ -804,3 +804,15 @@ describe('runAuthorization stored client scoping', () => {
     expect(calls.find((c) => c.url === `${AS}/token`)!.body).toContain('client_secret=kept-secret')
   })
 })
+
+describe('isPrivateHost follow-ups (review of the security fixes)', () => {
+  it('treats a trailing-dot localhost and the extra reserved ranges as private', async () => {
+    const { isPrivateHost, isLoopbackUrl } = await import('./oauth')
+    for (const h of ['localhost.', '127.0.0.1.', '192.0.0.1', '198.18.0.1', '224.0.0.1', '240.0.0.1', '[64:ff9b::a00:1]', '[ff02::1]']) {
+      expect(isPrivateHost(h), h).toBe(true)
+    }
+    expect(isLoopbackUrl('http://localhost./mcp')).toBe(true)
+    expect(isPrivateHost('example.com')).toBe(false)
+    expect(isPrivateHost('8.8.8.8')).toBe(false)
+  })
+})

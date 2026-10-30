@@ -158,7 +158,8 @@ export function canonicalResource(url: string): string {
 }
 
 function bareHost(h: string): string {
-  return h.toLowerCase().replace(/^\[|\]$/g, '')
+  // A trailing dot is the same DNS name ("localhost." is localhost).
+  return h.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
 }
 
 /** localhost, 127/8 and ::1. */
@@ -176,7 +177,10 @@ function privateV4(a: number, b: number): boolean {
     (a === 100 && b >= 64 && b <= 127) ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168)
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
   )
 }
 
@@ -194,8 +198,9 @@ export function isPrivateHost(hostname: string): boolean {
     const hi = parseInt(mapped[3], 16)
     return privateV4(hi >> 8, hi & 0xff)
   }
+  if (/^64:ff9b::/.test(h)) return true // NAT64 maps to IPv4
   const first = parseInt(h.split(':')[0] || '0', 16)
-  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00
 }
 
 /** True when the MCP server URL itself is a loopback address (then, and only then, server-named URLs may be local). */
