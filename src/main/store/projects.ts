@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AppSettings, Project, ProjectCreateInput, ProjectPathCheck } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
@@ -13,6 +13,13 @@ export interface PathFs {
 
 const nodeFs: PathFs = { statSync, existsSync, readdirSync: (path) => readdirSync(path) }
 
+/** Trim and drop one pair of surrounding quotes (a path pasted from Explorer's "Copy as path"). */
+export function cleanProjectPath(path: unknown): string {
+  const t = typeof path === 'string' ? path.trim() : ''
+  const m = /^"(.*)"$/.exec(t) ?? /^'(.*)'$/.exec(t)
+  return (m ? m[1] : t).trim()
+}
+
 /** Last path segment, either separator, '' for a drive or file-system root. */
 export function suggestedProjectName(path: string): string {
   const trimmed = path.trim().replace(/[\\/]+$/, '')
@@ -22,7 +29,7 @@ export function suggestedProjectName(path: string): string {
 
 /** What is at `path` (projects:checkPath). Never throws: anything unreadable reports exists false. */
 export function checkProjectPath(path: unknown, fs: PathFs = nodeFs): ProjectPathCheck {
-  const raw = typeof path === 'string' ? path.trim() : ''
+  const raw = cleanProjectPath(path)
   const none: ProjectPathCheck = { exists: false, isDirectory: false, isGitRepo: false, suggestedName: suggestedProjectName(raw), empty: false }
   if (!raw) return none
   try {
@@ -47,8 +54,9 @@ export function checkProjectPath(path: unknown, fs: PathFs = nodeFs): ProjectPat
  * existing-repository project needs a folder that exists. A new idea may name a folder that does not exist yet.
  */
 export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupKind'>, check: ProjectPathCheck): string | null {
-  const path = typeof input.path === 'string' ? input.path.trim() : ''
+  const path = cleanProjectPath(input.path)
   if (!path) return 'Choose a folder for the project.'
+  if (!isAbsolute(path) && !/^[a-zA-Z]:[\\/]/.test(path)) return `Use a full path, for example ${process.platform === 'win32' ? 'C:\\Projects\\shop' : '/Users/you/projects/shop'}.`
   if (check.exists && !check.isDirectory) return `${path} is a file, not a folder. Choose the project's folder.`
   if (input.setupKind === 'existing' && !check.exists) return `There is no folder at ${path}. Check the path, or choose "New idea" to start in a new folder.`
   return null
@@ -115,7 +123,7 @@ export class ProjectStore {
     const error = createPathError(input, checkProjectPath(input.path, opts.fs))
     if (error) throw new Error(error)
     if (input.mock && !opts.mockAvailable) throw new Error('The mock adapter is not available. Start OrgAI with ORGAI_MOCK=1 to use it.')
-    const project = newProject({ name: input.name, path: input.path.trim(), brief: input.brief, setupKind: input.setupKind }, settings)
+    const project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind }, settings)
     if (input.mock) project.provider = { ...project.provider, id: 'mock' }
     this.projects.push(project)
     this.persist()

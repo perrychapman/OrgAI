@@ -123,7 +123,7 @@ const live = isLiveAgent
  */
 export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunOutcome, rootId: string): AgentInstance {
   // The label check covers adapters that mark agents done before the terminal status (Codex).
-  const wasLive = cutOff || live(agent) || /^(Needs approval|Waiting\b)/.test(agent.activity)
+  const wasLive = cutOff || live(agent) || /^(Needs approval|Waiting for you)/.test(agent.activity)
   let activity = agent.activity
   if (agent.id === rootId) activity = TERMINAL_ACTIVITY[outcome]
   else if (wasLive) activity = outcome === 'failed' ? TERMINAL_ACTIVITY.failed : TERMINAL_ACTIVITY.stopped

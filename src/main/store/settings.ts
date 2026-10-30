@@ -194,10 +194,14 @@ export class SettingsStore {
 
   /**
    * Save settings from the renderer. LiteLLM's hasApiKey is owned by the main process and kept as stored.
-   * A caller that leaves out appearance (an older renderer) keeps the stored one instead of resetting it.
+   * appearance merges over the stored value, so a caller that leaves it out (or sends part of it) keeps the rest.
    */
   set(next: Partial<AppSettings>): AppSettings {
-    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, next.appearance === undefined ? { ...next, appearance: this.settings.appearance } : next))
+    // A partial appearance (or none, from an older renderer) is merged over the stored one, not the defaults.
+    const stored = this.settings.appearance
+    const given = (next.appearance ?? {}) as Partial<AppearanceSettings>
+    const appearance = { ...stored, ...given, canvas: { ...stored.canvas, ...(given.canvas ?? {}) } }
+    const normalized = normalizeSettings(reconcileAnthropicAuth(this.settings, { ...next, appearance }))
     normalized.connections.litellm.hasApiKey = this.settings.connections.litellm.hasApiKey
     this.settings = normalized
     this.persist()

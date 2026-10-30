@@ -311,6 +311,8 @@ export class RunManager {
         // No card outlives its run: answer every pending item (cancelled) before the terminal status goes out.
         this.settlePending(active)
       }
+      // A paused session ended too (it continues as a new run): its cards go before the paused status.
+      if (e.type === 'run.status' && e.status === 'paused') this.settlePending(active)
       if (e.type === 'agent.upsert' && active.outcome) {
         if (isLiveAgent(e.agent)) active.cutOff?.add(e.agent.id)
         const settled = settleAgent(e.agent, !!active.cutOff?.has(e.agent.id), active.outcome, ROOT_AGENT_ID)

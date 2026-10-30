@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { McpServerSpec, PluginSpec } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, checkProjectPath, createPathError, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, checkProjectPath, cleanProjectPath, createPathError, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 const dirs: string[] = []
@@ -120,6 +120,9 @@ describe('creating projects', () => {
     expect(createPathError({ path: 'C:/a.txt' }, { ...missing, exists: true })).toContain('is a file, not a folder')
     expect(createPathError({ path: 'C:/new/idea', setupKind: 'new' }, missing)).toBeNull()
     expect(createPathError({ path: 'C:/skip' }, missing)).toBeNull()
+    expect(createPathError({ path: 'shop' }, missing)).toMatch(/^Use a full path/)
+    expect(createPathError({ path: '"C:\\work\\shop"', setupKind: 'new' }, missing)).toBeNull()
+    expect(cleanProjectPath(' "C:\\work\\shop" ')).toBe('C:\\work\\shop')
   })
 
   it('create throws the message, and takes the mock adapter only when it is available', () => {

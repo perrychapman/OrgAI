@@ -94,6 +94,18 @@ describe('SettingsStore', () => {
     }
   })
 
+  it('merges a partial appearance over the stored one', () => {
+    const dir = tmp()
+    try {
+      const store = new SettingsStore(dir)
+      store.set({ ...store.get(), appearance: { ...DEFAULT_APPEARANCE, accent: '#22c58b', canvas: { ...DEFAULT_APPEARANCE.canvas, minimap: true } } })
+      store.set({ ...store.get(), appearance: { theme: 'light', canvas: { pattern: 'grid' } } as never })
+      expect(store.get().appearance).toEqual({ ...DEFAULT_APPEARANCE, theme: 'light', accent: '#22c58b', canvas: { ...DEFAULT_APPEARANCE.canvas, pattern: 'grid', minimap: true } })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('tells listeners about every save until they unsubscribe', () => {
     const dir = tmp()
     try {

@@ -304,7 +304,8 @@ describe('RunManager with the mock adapter', () => {
       const req = await waitFor(isType('rules.request'))
       await m.stop(run.id)
       const resolved = await waitFor(isType('rules.resolved'))
-      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' } })
+      expect(resolved).toMatchObject({ requestId: req.request.id, decision: { behavior: 'deny', message: 'Run ended' }, cancelled: true })
+      expect(events.filter(isType('rules.resolved'))).toHaveLength(1)
     })
   })
 

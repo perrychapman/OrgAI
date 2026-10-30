@@ -115,6 +115,9 @@ describe('terminal labels', () => {
   it('sets endedAt only when it settles a live agent and keeps an existing one', () => {
     expect(settleAgent(agent({ state: 'thinking', activity: 'x' }), false, 'stopped', 'root').endedAt).toBeTypeOf('number')
     expect(settleAgent(agent({ state: 'thinking', activity: 'x', endedAt: 5 }), false, 'stopped', 'root').endedAt).toBe(5)
-    expect('endedAt' in settleAgent(agent({ activity: 'Waiting on reports…' }), false, 'stopped', 'root')).toBe(false)
+    expect('endedAt' in settleAgent(agent({ activity: 'Waiting for you' }), false, 'stopped', 'root')).toBe(false)
+    // A finished report keeps a label that merely starts with "Waiting".
+    const done = agent({ activity: 'Waiting on the build, then reported' })
+    expect(settleAgent(done, false, 'finished', 'root')).toBe(done)
   })
 })
