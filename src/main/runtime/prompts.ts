@@ -21,6 +21,16 @@ export interface PromptFlags {
   isSetup: boolean
   /** Writing reports run in their own git worktrees. */
   isolation: boolean
+  /**
+   * The skills this role is granted in this run (RunSkill name and description), for a short "Skills available to
+   * you" paragraph. Missing or empty = no paragraph.
+   */
+  skills?: { name: string; description: string }[]
+  /**
+   * How the role loads a skill: 'Skill' (Claude's native tool; names are "orgai:<name>") or 'load_skill' (the harness
+   * tool on Codex and mock). Default 'load_skill'.
+   */
+  skillTool?: 'Skill' | 'load_skill'
 }
 
 /** The roles this role may delegate to. */
