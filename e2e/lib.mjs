@@ -222,6 +222,19 @@ export async function launch({ shotPrefix = 'shot' } = {}) {
   })
   page.on('pageerror', (e) => log('pageerror:', e.message.slice(0, 200)))
   await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  // A shared ORGAI_DATA_DIR (CI) keeps the renderer's localStorage between scripts, so an earlier script's UI choices
+  // (orgai.sidebar, orgai.sidePanel.*, widths) would leak into this one. Start every script from auto state; projects
+  // and runs live in the main process data and are untouched.
+  const cleared = await page.evaluate(() => {
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith('orgai.'))
+    keys.forEach((k) => localStorage.removeItem(k))
+    return keys
+  })
+  if (cleared.length) {
+    log('cleared stale UI preferences from a shared data dir:', cleared.join(', '))
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  }
   await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
