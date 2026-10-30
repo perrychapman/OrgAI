@@ -1,6 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AppWindow, ChevronDown, CircleAlert, EyeOff, Link2, Pencil, Plus, X } from 'lucide-react'
+import { AppWindow, ChevronDown, CircleAlert, EyeOff, Pencil, Plus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import type { Project } from '@shared/types'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
@@ -23,6 +23,8 @@ interface TabView {
   tooltip: string
   label: string
   tone: RunTone | 'none'
+  /** Status word from lib/runStatus (read by screen readers and e2e); empty for the New run tab. */
+  word: string
   waiting: boolean
   hasDraft: boolean
   unread: number
@@ -102,6 +104,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
         tooltip: 'New run: a blank page for a new task. The other runs keep going.',
         label: draftOnPage ? 'New run. Has an unsent draft.' : 'New run',
         tone: 'none',
+        word: '',
         waiting: false,
         hasDraft: draftOnPage,
         unread: 0,
@@ -133,6 +136,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       tooltip: `${tag}: ${full}\n${st.word}${st.note ? ` (${st.note})` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
       label: `${tag}: ${runName(run.summary)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
       tone: st.tone,
+      word: st.word,
       waiting,
       hasDraft,
       unread,
@@ -328,13 +332,13 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   }
 
   return (
-    <div className="run-tabs" ref={barRef}>
+    <div className="run-tabs" ref={barRef} data-testid="run-tabs">
       <div className="run-tablist" role="tablist" aria-label="Open runs" aria-orientation="horizontal" ref={listRef} onKeyDown={onKeyDown}>
         {visible.map((item) => {
           const v = view(item)
           const selected = item.id === selectedId
           return (
-            <div key={item.id} className={`run-tab-wrap ${selected ? 'selected' : ''} ${v.waiting ? 'waiting' : ''}`} role="presentation" data-run={item.id}>
+            <div key={item.id} className={`run-tab-wrap ${selected ? 'selected' : ''}`} role="presentation" data-run={item.id}>
               <button
                 type="button"
                 role="tab"
@@ -361,25 +365,11 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                     <Icon icon={Plus} size="xs" />
                   </span>
                 ) : (
-                  <span className={`run-dot ${v.tone}`} aria-hidden="true" />
+                  <span className={`run-dot ${v.tone}${v.hasDraft || v.unread > 0 ? ' marked' : ''}`} aria-hidden="true" />
                 )}
                 <span className="run-tab-index">{v.tag}</span>
                 <span className="run-tab-title">{v.title}</span>
-                <span className="run-tab-badge" aria-hidden="true">
-                  {v.waiting ? (
-                    <span className="badge-warn" title="Waiting for you">
-                      <Icon icon={CircleAlert} size="xs" />
-                    </span>
-                  ) : v.unread > 0 ? (
-                    <span className="badge-unread" title={`${v.unread} unread note${v.unread === 1 ? '' : 's'} from other runs`}>
-                      <Icon icon={Link2} size="xs" />
-                    </span>
-                  ) : v.hasDraft ? (
-                    <span className="badge-draft" title="Unsent draft">
-                      <Icon icon={Pencil} size="xs" />
-                    </span>
-                  ) : null}
-                </span>
+                {v.word && <span className="sr-only">{v.word}</span>}
               </button>
               {v.closable && (
                 <button type="button" className="run-tab-close" tabIndex={-1} aria-label={`Hide ${v.tag || 'New run'}`} title="Hide this tab (Ctrl+W)" onClick={() => hide(item)}>

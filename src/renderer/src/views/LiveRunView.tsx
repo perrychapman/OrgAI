@@ -1,10 +1,9 @@
-import type { ReactElement, ReactNode } from 'react'
+import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   MarkerType,
   useReactFlow,
@@ -15,11 +14,16 @@ import {
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import McpInstallCard from '../components/McpInstallCard'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { Bell, CircleCheck, CircleHelp, Maximize, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
 import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
-import { decisionFocus } from '../components/DecisionCard'
+import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
+import { Icon } from '../components/ui/Icon'
+import { Popover } from '../components/ui/Popover'
+import { Switch } from '../components/ui/Switch'
+import RunActions from '../components/RunActions'
+import RunMeta from '../components/RunMeta'
 import { useCssVar } from '../lib/useCssVar'
 import { activeRun, isRunLive, useAppStore, useProjectSummaries } from '../store/useAppStore'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
@@ -34,9 +38,8 @@ import QuestionCard from '../components/QuestionCard'
 import RuleRequestCard from '../components/RuleRequestCard'
 import MergeReviewCard from '../components/MergeReviewCard'
 import { SidePanel } from '../components/layout/SidePanel'
-import { CanvasFrame, FrameFooter, FrameStage, FrameTray } from '../components/layout/CanvasFrame'
+import { CanvasFrame, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
 import RunTabs from '../components/RunTabs'
-import RunHeader from '../components/RunHeader'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
 import { formatUntil, treeLayout } from '../lib/layout'
@@ -104,8 +107,8 @@ function readCollapsePref(): boolean {
 }
 
 /**
- * The project's run workspace: run tabs on top, then either one run (header, decisions, canvas, composer, side
- * panel) or the blank New run page. Each run is keyed, so its local state (images, folded groups, picked installs,
+ * The project's run workspace: the run strip on top (tabs and the viewed run's actions), then either one run (canvas
+ * toolbar, decisions, canvas, composer, side panel) or the blank New run page. Each run is keyed, so its local state (images, folded groups, picked installs,
  * the session block) never leaks into another run.
  */
 export default function LiveRunView({ project }: { project: Project }): ReactElement {
@@ -120,7 +123,10 @@ export default function LiveRunView({ project }: { project: Project }): ReactEle
 
   return (
     <div className="run-workspace">
-      <RunTabs project={project} />
+      <div className="run-strip" data-testid="run-strip">
+        <RunTabs project={project} />
+        {runId && <RunActions runId={runId} />}
+      </div>
       <div className="run-panel" id="run-panel" role="tabpanel" aria-labelledby={`run-tab-${runId ?? 'new'}`}>
         {runId ? (
           <ReactFlowProvider key={`${project.id}:${runId}`}>
@@ -161,7 +167,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const focusComposer = useAppStore((s) => s.focusComposer)
   const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
-  const { fitView } = useReactFlow()
+  const { fitView, zoomIn, zoomOut } = useReactFlow()
   const setView = useAppStore((s) => s.setView)
   const stopRun = useAppStore((s) => s.stopRun)
   const messageColor = useCssVar('--edge-message')
@@ -505,37 +511,52 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     }
   }, [fitView])
 
+  // Keyboard zoom while the canvas has focus: + / - and 0 to fit (the toolbar buttons do the same).
+  const onCanvasKey = (e: React.KeyboardEvent): void => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    if (e.key === '+' || e.key === '=') void zoomIn({ duration: 150 })
+    else if (e.key === '-' || e.key === '_') void zoomOut({ duration: 150 })
+    else if (e.key === '0') void fitView({ padding: 0.25, maxZoom: 1, duration: 150 })
+  }
+
   const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
   const entries = useMemo(
     () => (selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
     [run, selectedAgentId]
   )
 
-  // Every open decision as one card; the tray shows one at a time with a stepper (spec 12.1). The newest is selected.
+  // Every open decision as one card; the tray lists them all and shows one at a time. The newest is selected.
   const who = (agentId: string): string => run.agents[agentId]?.name ?? 'An agent'
-  const decisionItems: { key: string; node: ReactNode }[] = [
+  const short = (t: string, n = 40): string => (t.length > n ? `${t.slice(0, n - 1)}…` : t)
+  const decisionItems: DecisionItem[] = [
     ...(run.ruleRequests ?? []).map((r) => ({
       key: r.id,
+      label: `Rules: ${short(r.rules.join(', '))}`,
       node: <RuleRequestCard runId={runId} request={r} who={who(r.agentId)} onDecide={(d) => decideRules(r.id, d)} />
     })),
     ...(run.questions ?? []).map((q) => ({
       key: q.id,
+      label: `Question: ${short(q.question)}`,
       node: <QuestionCard runId={runId} question={q} who={isSetupRun ? 'The Architect' : who(q.agentId)} onAnswer={(a) => answerQuestion(q.id, a)} />
     })),
     ...run.proposals.map((p) => ({
       key: p.id,
+      label: short(p.title),
       node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : undefined} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
     })),
     ...(run.mergeReviews ?? []).map((m) => ({
       key: m.id,
+      label: `Merge ${short(m.agentName, 24)}`,
       node: <MergeReviewCard runId={runId} review={m} onDecide={(d) => decideMerge(m.id, d)} />
     })),
     ...run.permissions.map((p) => ({
       key: p.id,
+      label: short(`${p.toolName}: ${p.summary}`),
       node: <PermissionCard runId={runId} request={p} who={who(p.agentId)} onDecide={(d) => decide(p.id, d)} />
     })),
     ...cardItems.map((it) => ({
       key: it.request.id,
+      label: `Install ${short(it.request.spec.name, 28)}`,
       node: (
         <McpInstallCard
           runId={runId}
@@ -558,10 +579,6 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const pinShown = (): void => {
     if (shownKey && shownKey !== pickedDecision) setPickedDecision(shownKey)
   }
-  const step = (to: number): void => {
-    decisionFocus.suppress = true
-    setPickedDecision(decisionItems[to].key)
-  }
 
   // What the user approved in this view; the setup banner only claims what was actually applied.
   const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
@@ -573,7 +590,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   return (
     <div className="run-view">
-      <RunHeader run={run} project={project} agentCount={agents.length} collapseFinished={collapseFinished} finishedCount={finishedCount} onToggleCollapse={toggleCollapse} />
+      {!sessionOpen && run.summary.error && (
+        <Banner tone="danger" testId="run-error" title="This run failed">
+          {run.summary.error}
+        </Banner>
+      )}
       {setupDone && (
         <Banner
           tone="success"
@@ -598,6 +619,20 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       <div className="run-body" ref={bodyRef}>
 
         <CanvasFrame frameRef={canvasRef}>
+          <FrameToolbar dense label="Canvas toolbar">
+            <RunMeta run={run} project={project} agentCount={agents.length} />
+            <div className="frame-toolbar-end">
+              {agents.length > 1 && (
+                <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
+                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" />
+                  <span className="fold-label" aria-hidden="true">
+                    Hide finished agents{collapseFinished && finishedCount ? ` (${finishedCount})` : ''}
+                  </span>
+                </span>
+              )}
+              <CanvasTools />
+            </div>
+          </FrameToolbar>
           <FrameStage>
             <ReactFlow
               nodes={nodes}
@@ -612,9 +647,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               proOptions={{ hideAttribution: true }}
               deleteKeyCode={null}
               minZoom={0.3}
+              onKeyDown={onCanvasKey}
             >
               {patternKind !== 'none' && <Background variant={PATTERN_VARIANT[patternKind as 'dots' | 'grid'] ?? BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />}
-              <Controls showInteractive={false} />
               {showMinimap && <MiniMap pannable zoomable ariaLabel="Run minimap" nodeColor={neutralRoleColor} />}
             </ReactFlow>
           </FrameStage>
@@ -643,46 +678,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </div>
           )}
 
-          {decisionItems.length > 0 && (
-            <>
-              {decisionItems.length > 1 && (
-                <div className="decision-stepper" role="group" aria-label="Pending decisions">
-                  <span className="decision-stepper-title">Decisions</span>
-                  <IconButton icon={ChevronLeft} label="Previous decision" disabled={selectedDecision === 0} onClick={() => step(selectedDecision - 1)} />
-                  <span aria-live="polite">
-                    {selectedDecision + 1} of {decisionItems.length}
-                  </span>
-                  <IconButton icon={ChevronRight} label="Next decision" disabled={selectedDecision === decisionItems.length - 1} onClick={() => step(selectedDecision + 1)} />
-                </div>
-              )}
-              <div key={decisionItems[selectedDecision].key} className="decision" onPointerDownCapture={pinShown} onKeyDownCapture={pinShown}>
-                {decisionItems[selectedDecision].node}
-              </div>
-            </>
-          )}
+          <DecisionTray items={decisionItems} selected={selectedDecision} onSelect={(i) => setPickedDecision(decisionItems[i].key)} onPin={pinShown} />
         </FrameTray>
-          <FrameFooter>
-            <span>
-              <i style={{ background: 'var(--accent)' }} />
-              working
-            </span>
-            <span>
-              <i style={{ background: 'var(--warning)' }} />
-              needs approval
-            </span>
-            <span>
-              <i style={{ background: 'var(--success)' }} />
-              done
-            </span>
-            <span>
-              <i style={{ background: 'var(--danger)' }} />
-              error
-            </span>
-            <span>
-              <i style={{ background: 'var(--edge-message)' }} />
-              message
-            </span>
-          </FrameFooter>
         </CanvasFrame>
 
         <Composer
@@ -739,13 +736,69 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           }}
         />
 
-        <SidePanel label="run panel">
+        <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId}>
           <div className="live-panel">
             <TranscriptPanel runId={runId} agent={selectedAgent} entries={entries} logs={run.logs ?? []} finished={finishedGroup} />
           </div>
         </SidePanel>
       </div>
     </div>
+  )
+}
+
+/** Zoom out, zoom in, fit and the legend: the canvas controls, in the toolbar so nothing sits on the canvas. */
+function CanvasTools(): ReactElement {
+  const { zoomIn, zoomOut, fitView } = useReactFlow()
+  return (
+    <>
+      <span className="zoom-group" role="group" aria-label="Canvas zoom">
+        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => void zoomOut({ duration: 150 })} />
+        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => void zoomIn({ duration: 150 })} />
+        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => void fitView({ padding: 0.25, maxZoom: 1, duration: 150 })} />
+      </span>
+      <Popover
+        label="Canvas legend"
+        placement="bottom-end"
+        triggerClassName="icon-btn size-sm"
+        triggerLabel="Canvas legend"
+        trigger={<Icon icon={CircleHelp} size="sm" />}
+        testId="canvas-legend"
+        triggerTestId="canvas-legend-trigger"
+      >
+        <ul className="legend-list">
+          <li>
+            <span className="legend-shape">
+              <span className="legend-ring" />
+            </span>
+            Working
+          </li>
+          <li>
+            <span className="legend-shape legend-warn">
+              <Icon icon={Bell} size="sm" />
+            </span>
+            Needs approval
+          </li>
+          <li>
+            <span className="legend-shape legend-ok">
+              <Icon icon={CircleCheck} size="sm" />
+            </span>
+            Done
+          </li>
+          <li>
+            <span className="legend-shape legend-bad">
+              <Icon icon={TriangleAlert} size="sm" />
+            </span>
+            Error
+          </li>
+          <li>
+            <span className="legend-shape">
+              <span className="legend-line" />
+            </span>
+            Message between agents
+          </li>
+        </ul>
+      </Popover>
+    </>
   )
 }
 

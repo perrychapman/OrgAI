@@ -4,7 +4,7 @@
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, makeFixtureRepo, openProject, projectTab, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, makeFixtureRepo, openProject, projectTab, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -33,22 +33,22 @@ try {
   await page.locator('.new-run').waitFor({ timeout: 10_000 })
 
   await startOnPage('First concurrent task')
-  await page.locator('.run-header').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
-  check((await page.locator('.run-header').count()) === 0 && (await page.locator('.agent-node').count()) === 0, 'New run page shows no old run header or nodes')
+  check((await page.locator('[data-testid=run-meta]').count()) === 0 && (await page.locator('.agent-node').count()) === 0, 'New run page shows no old run metadata or nodes')
   await startOnPage('Second concurrent task')
   await page.waitForFunction(() => document.querySelectorAll('.run-tablist [role="tab"]').length === 2 && !document.querySelector('.new-run'), null, { timeout: 15_000 })
   await sleep(600)
 
   const tabs = await page.locator('.run-tablist [role="tab"] .run-tab-index').allInnerTexts()
   check(tabs.length === 2 && new Set(tabs).size === 2 && tabs.includes('R1') && tabs.includes('R2'), 'two concurrent runs have distinct R1/R2 tabs', tabs.join(','))
-  const hdr2 = (await page.locator('.run-header').getAttribute('aria-label')) ?? ''
-  check(hdr2.startsWith('R2') && /Second concurrent/.test(hdr2), 'header names the viewed run (R2)', hdr2)
+  const hdr2 = (await page.locator('[data-testid=run-strip] .run-tab[aria-selected=true]').getAttribute('aria-label')) ?? ''
+  check(hdr2.startsWith('R2') && /Second concurrent/.test(hdr2), 'the active run tab names the viewed run (R2)', hdr2)
   await page.locator('.run-tablist [role="tab"]', { hasText: 'R1' }).click()
   await sleep(500)
-  const hdr1 = (await page.locator('.run-header').getAttribute('aria-label')) ?? ''
-  check(hdr1.startsWith('R1') && /First concurrent/.test(hdr1), 'switching tabs changes the header to R1', hdr1)
+  const hdr1 = (await page.locator('[data-testid=run-strip] .run-tab[aria-selected=true]').getAttribute('aria-label')) ?? ''
+  check(hdr1.startsWith('R1') && /First concurrent/.test(hdr1), 'switching tabs changes the active tab to R1', hdr1)
   const liveRuns = await page.evaluate(() => window.orgai.runs.listLive())
   check(Array.isArray(liveRuns) && liveRuns.length === 2, 'runs.listLive reports both runs', String(liveRuns?.length))
 
@@ -71,7 +71,7 @@ try {
   }
   check(!!win2, 'window:openRun opens a second window')
   if (win2) {
-    await win2.waitForSelector('.run-header', { timeout: 20_000 }).catch(() => {})
+    await win2.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
     await sleep(500)
     check(win2.url().includes(`#/run/${proj.id}/${r1.id}`), 'second window loads the run hash', win2.url())
     const title = await win2.title()
@@ -93,6 +93,25 @@ try {
   if (permBefore >= 1) {
     const needsRow = page.locator('[data-testid=needs-you-row]')
     check((await needsRow.count()) >= 1, 'the Needs you row appears in the sidebar while a decision is pending')
+  }
+  if (permBefore >= 1) {
+    // Tray placement at 1024x640: under the stage (never beside it), the stage keeps 55 percent of the frame, cards go compact.
+    const prevSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
+    await sleep(700)
+    const tm = await page.evaluate(() => {
+      const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
+      const btn = document.querySelector('section.frame-tray .decision-footer .btn')?.getBoundingClientRect()
+      return { stage: r('.frame-stage'), tray: r('section.frame-tray'), frame: r('.canvas-frame'), compact: document.querySelector('section.frame-tray')?.getAttribute('data-compact'), ih: window.innerHeight, btnBottom: btn?.bottom, strip: r('[data-testid=run-strip]'), toolbar: r('.frame-toolbar'), topbar: r('main .topbar') }
+    })
+    check(!!tm.tray && !!tm.stage && tm.tray.t >= tm.stage.b - 0.5 && tm.tray.l <= tm.stage.l + 0.5, 'the tray sits under the stage at 1024x640', JSON.stringify(tm))
+    check(!!tm.frame && !!tm.stage && (tm.stage.b - tm.stage.t) >= 0.55 * (tm.frame.b - tm.frame.t) - 1, 'the stage keeps at least 55 percent of the frame with the tray open', JSON.stringify(tm))
+    check(tm.compact === 'true', 'the tray is compact (data-compact) in a frame under 480 px high', String(tm.compact))
+    check(tm.btnBottom === undefined || tm.btnBottom <= tm.ih + 0.5, 'the card action row is reachable inside the window at 1024x640', String(tm.btnBottom))
+    log('chrome above the canvas at 1024x640 (px from window top to stage):', Math.round(tm.stage?.t ?? 0), 'stage', `${Math.round((tm.stage?.r ?? 0) - (tm.stage?.l ?? 0))}x${Math.round((tm.stage?.b ?? 0) - (tm.stage?.t ?? 0))}`)
+    await shot('tray-1024x640')
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prevSize)
+    await sleep(500)
   }
   await endSession(page)
   await sleep(500)
@@ -148,7 +167,7 @@ try {
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
   await startOnPage(TITLED_PROMPT)
-  await page.locator('.run-header').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
   const projNow = await findProject(page, NAME)
   const summaryFor = async (needle) => (await page.evaluate((id) => window.orgai.runs.list(id), projNow.id)).find((r) => r.prompt.includes(needle))
   let titled
@@ -163,16 +182,11 @@ try {
   check(tabText.includes(TITLE) && !tabText.includes('module'), 'the run tab shows the 4-word title, not the prompt', tabText)
   const tabTip = (await titledTab.first().getAttribute('title').catch(() => '')) ?? ''
   check(tabTip.includes(TITLED_PROMPT), 'the run tab tooltip still carries the full prompt', tabTip)
-  const head = ((await page.locator('.run-header-prompt').first().innerText()) || '').replace(/\s+/g, ' ').trim()
-  check(head === TITLE, 'the run header heading shows the title', head)
-  const promptToggle = page.locator('.run-header .run-header-prompt-toggle')
-  check((await promptToggle.getAttribute('aria-expanded')) === 'false', 'the Show prompt toggle starts collapsed')
-  check(!(await page.locator('.run-header').innerText()).includes('add tests'), 'the full prompt is hidden until asked for')
-  await promptToggle.click()
-  await sleep(200)
-  check((await promptToggle.getAttribute('aria-expanded')) === 'true' && (await page.locator('.run-header').innerText()).includes(TITLED_PROMPT), 'Show prompt reveals the full prompt text')
-  await promptToggle.click()
-  check((await promptToggle.getAttribute('aria-expanded')) === 'false', 'Hide prompt collapses it again')
+  const head = ((await page.locator('[data-testid=run-strip] .run-tab[aria-selected=true] .run-tab-title').first().innerText()) || '').replace(/\s+/g, ' ').trim()
+  check(head === TITLE, 'the active run tab shows the title', head)
+  check((await page.locator('.run-header').count()) === 0, 'the 44 px run header is gone (strip + toolbar)')
+  const metaText = ((await page.locator('[data-testid=run-meta]').innerText()) || '').toLowerCase()
+  check(!metaText.includes('add tests') && /agent/.test(metaText), 'the metadata line shows facts, not the prompt', metaText.slice(0, 120))
   const sbToggle = page.locator('.sidebar button.nav-chevron').first()
   if ((await sbToggle.getAttribute('aria-expanded')) !== 'true') await sbToggle.click()
   await sleep(200)
@@ -188,9 +202,9 @@ try {
     if (!win3) await sleep(500)
   }
   if (win3) {
-    await win3.waitForSelector('.run-header', { timeout: 20_000 }).catch(() => {})
+    await win3.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
     await sleep(500)
-    const heading = ((await win3.locator('.run-header-prompt').first().innerText().catch(() => '')) || '').trim()
+    const heading = ((await win3.locator('[data-testid=run-strip] .run-tab[aria-selected=true] .run-tab-title').first().innerText().catch(() => '')) || '').trim()
     check(heading === TITLE, 'a run opened in a new window still shows the title', heading)
     const wt = await win3.title()
     check(wt.includes(TITLE), 'the run window document title carries the run title', wt)
@@ -203,7 +217,7 @@ try {
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
   await startOnPage(FAIL_PROMPT)
-  await page.locator('.run-header').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
   await sleep(2500)
   const failed = await summaryFor('title-fail')
   check(!!failed && !failed.title, 'a failed title generation leaves RunSummary.title unset', String(failed?.title))
