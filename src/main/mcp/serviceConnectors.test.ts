@@ -120,6 +120,17 @@ describe('connector fields are main-process only', () => {
     expect(library.get(entry.id)!.url).toBe('https://gmailmcp.googleapis.com/mcp/v1')
   })
 
+  it('a proposal that redefines a connector entry drops the connector id and its OAuth state', async () => {
+    const svc = build(true)
+    const { entry } = svc.connectorsAdd({ connectorId: 'notion' })
+    await svc.authorize({ libraryId: entry.id })
+    svc.applyLibraryProposal({ scope: 'library', upsert: [{ ...entry, enabled: true, headers: { 'X-Extra': '1' } } as McpServerSpec] } as Parameters<McpService['applyLibraryProposal']>[0])
+    const after = library.get(entry.id)!
+    expect(after.connectorId).toBeUndefined()
+    expect(after.oauth).toBeUndefined()
+    expect(secrets.get(mcpLibraryOAuthKey(entry.id, 'accessToken'))).toBeUndefined()
+  })
+
   it('a project-only server and an install never carry a connector id', () => {
     const svc = build()
     const spec: McpServerSpec = { id: 'mcp-x', name: 'x', transport: 'http', url: 'https://x.example/mcp', enabled: true, source: 'user', addedAt: '2026-01-01T00:00:00.000Z', connectorId: 'slack' }
@@ -252,6 +263,18 @@ describe('ORGAI_MOCK=1 connectors', () => {
     expect((await svc.authorize({ libraryId: entry.id })).state).toBe('authorized')
     svc.revokeAuth({ libraryId: entry.id })
     expect(svc.connectorsList().find((c) => c.connector.id === 'notion')!.state).toBe('needsSetup')
+  })
+
+  it('a mock token left in the data dir is never used outside mock mode', async () => {
+    const mockSvc = build(true)
+    const { entry } = mockSvc.connectorsAdd({ connectorId: 'notion' })
+    await mockSvc.authorize({ libraryId: entry.id })
+    mockSvc.linkLibrary({ projectId: pid, libraryId: entry.id })
+    const real = build(false)
+    expect(real.connectorsList().find((c) => c.connector.id === 'notion')!.state).toBe('needsSetup')
+    const link = projects.get(pid)!.mcpServers![0]
+    expect(real.resolve(pid, link).headers.Authorization).toBeUndefined()
+    expect(await real.prepareForRun(pid, [link])).toEqual(['notion'])
   })
 
   it('ordinary library entries are untouched by the mock', async () => {

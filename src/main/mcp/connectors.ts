@@ -72,7 +72,8 @@ export function buildConnectorEntry(def: ConnectorDef, variant: ConnectorVariant
 export function tokenHeaderValue(auth: Extract<ConnectorAuth, { kind: 'token' }>, token: string): string {
   const t = token.trim()
   if (!t) throw new Error(`Enter the ${auth.label.toLowerCase()}.`)
-  if (/[\r\n\0]/.test(t)) throw new Error('The token must be a single line.')
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(t)) throw new Error('The token must be a single line without control characters.')
   if (t.length > 4000) throw new Error('The token is too long.')
   const prefix = auth.prefix ?? ''
   return prefix && t.toLowerCase().startsWith(prefix.toLowerCase()) ? `${prefix}${t.slice(prefix.length).trim()}` : `${prefix}${t}`

@@ -216,7 +216,14 @@ export class McpService {
   }
 
   private hasToken(owner: McpSecretOwner, slot: 'accessToken' | 'refreshToken' | 'clientSecret'): boolean {
+    if (slot === 'accessToken' && !this.mock) return this.realAccessToken(owner) !== undefined
     return this.secrets.has(mcpOwnerOAuthKey(owner, slot))
+  }
+
+  /** The stored access token, except the ORGAI_MOCK=1 stand-in outside mock mode (a data dir shared across modes). */
+  private realAccessToken(owner: McpSecretOwner): string | undefined {
+    const token = this.secrets.get(mcpOwnerOAuthKey(owner, 'accessToken'))
+    return token && (this.mock || token !== MOCK_CONNECTOR_TOKEN) ? token : undefined
   }
 
   // ---------- library ----------
@@ -251,13 +258,16 @@ export class McpService {
     const prev = lib.get(incoming.id)
     const entry: McpLibraryEntry = withOAuth({ ...noConnector(incoming), source: normalSource(incoming.source) }, undefined)
     // A connector entry stays one only while it still connects exactly as its preset says.
-    if (prev?.connectorId && sameDefinition(prev, entry)) {
+    const keepsConnector = !!prev?.connectorId && sameDefinition(prev, entry)
+    if (prev?.connectorId && keepsConnector) {
       entry.connectorId = prev.connectorId
       if (prev.connectorVariant) entry.connectorVariant = prev.connectorVariant
     }
     const owner: McpSecretOwner = { libraryId: entry.id }
     if (prev) this.retarget(owner, prev, entry, opts.applied === true)
-    if (prev?.oauth && sameEndpoint(prev, entry)) entry.oauth = prev.oauth
+    // An entry that stops being a connector loses the preset-made OAuth state and tokens with it.
+    if (prev?.connectorId && !keepsConnector) this.secrets.deletePrefix(`${mcpOwnerPrefix(owner)}oauth:`)
+    else if (prev?.oauth && sameEndpoint(prev, entry)) entry.oauth = prev.oauth
     if (prev) this.dropOrphanSecrets(owner, prev, entry)
     return lib.save(entry)
   }
@@ -575,7 +585,8 @@ export class McpService {
           ...(cur ?? {}),
           ...(clientId ? { clientId, clientSource: 'manual' as const } : {}),
           // A preset's issuer ties the entered client to that authorization server, so a retry can reuse it.
-          ...(clientId && preset?.issuer && !cur?.authorizationServer ? { authorizationServer: preset.issuer } : {}),
+          // Only with 'replace': in 'fallback' discovery may name another issuer, which records its own after the flow.
+          ...(clientId && preset?.issuer && preset.endpointsMode === 'replace' && !cur?.authorizationServer ? { authorizationServer: preset.issuer } : {}),
           ...(enteredSecret ? { hasClientSecret: true } : {})
         })
       }
@@ -704,7 +715,7 @@ export class McpService {
 
   /** A stored access token that has not expired, or undefined. */
   private usableToken(owner: McpSecretOwner, config: McpOAuthConfig | undefined): string | undefined {
-    const token = this.secrets.get(mcpOwnerOAuthKey(owner, 'accessToken'))
+    const token = this.realAccessToken(owner)
     if (!token) return undefined
     const expires = config?.expiresAt ? Date.parse(config.expiresAt) : NaN
     if (Number.isFinite(expires) && expires <= this.now()) return undefined
