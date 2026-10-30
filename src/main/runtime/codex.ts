@@ -979,7 +979,7 @@ export class CodexAdapter implements RuntimeAdapter {
    * developer instructions. Returns the final agent message.
    */
   async complete(input: CompletionInput): Promise<string> {
-    const connection = await this.options.completionConnection?.()
+    const connection = input.connection ?? (await this.options.completionConnection?.())
     const launch = buildLaunchConfig(connection, [])
     const options: CodexAppServerOptions = { cwd: input.cwd, env: launch.env, config: launch.config }
     const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
