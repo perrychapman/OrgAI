@@ -40,7 +40,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   mirror) are saved through `settings:set`, which broadcasts `settings:changed`. The renderer applies appearance only
   in `lib/theme.ts` (`initTheme` in `main.tsx`) as `data-theme`, `data-canvas-*`, `data-reduce-motion` and `--canvas-*`
   on `<html>`. Views never read appearance settings themselves. `AppSettings.setupModel` / `mcpAssistModel` (default
-  'opus', normalized in `store/settings.ts`) pick the built-in Architect and MCP assistant models, resolved per run by
+  'deep', normalized in `store/settings.ts`; values are tier names or concrete ids, an old saved default 'opus' loads as 'deep') pick the built-in Architect and MCP assistant models, resolved per run by
   `runtime/builtinModel.ts` (deep-tier fallback, one run warning). They are edited in App settings > Defaults >
   "Assistants"; the MCP assist dialog hint and the Org retrospective tooltip name them (`lib/assistantModels.ts`).
   The `orgai:settings-section` window event switches a mounted App settings page to the requested pane.
@@ -163,6 +163,18 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 - Smoke tests cost real tokens (fractions of a cent on haiku). Do not run them in loops.
 
 ## Connections, Codex, LiteLLM, MCP and macOS
+
+- Model-agnostic defaults: every default is a tier ('top' | 'deep' | 'everyday' | 'fast', `ModelSetting`) resolved
+  through the connection's `tierModels` (`defaults.ts` `modelForTier` / `resolveModelSetting`), never a vendor alias.
+  The default chart, `newProject`, built-in roles (fallback 'inherit'), run titles, org chart proposals and the drafter
+  (`draft.ts` `toRoles` maps tier names per connection) follow it. Near the plan limit, deep/top spawns move to the
+  everyday tier (`Project.preferEverydayNearLimit`; the legacy `preferSonnetNearLimit` is mirrored on renderer saves).
+  Verified by unit tests.
+- Model discovery: Anthropic via `ClaudeAdapter.listModels` (SDK `supportedModels()`, typings 0.3.312 sdk.d.ts:3096,
+  no prompt, `strictMcpConfig`, 10 s timeout). The live list (whether it has 'default', which ids, descriptions that
+  feed `catalog.ts` `tierFromDescription`) is UNVERIFIED: `scripts/smoke-models.mjs` (token-free, spawns the CLI)
+  has not been run. Anthropic `/v1/models` is not used. The scheduled refresh and autoTiers are unit-tested only.
+- Community prices (LiteLLM's public JSON) are unit-tested with a fake fetch; the live JSON shape is unverified.
 
 Each fact says how it was checked. "Unverified" means it comes from docs or typings and no live run has confirmed it.
 
