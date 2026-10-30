@@ -155,32 +155,29 @@ jobs:
             [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ] || {
             echo "::error::Publishable macOS builds require signing and notarization credentials."; exit 1;
           }
-      - name: Package
-        # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
-        # administrator, so winCodeSign's symlinks extract. If this step fails extracting winCodeSign, append
-        # `-c.win.signAndEditExecutable=false` to the windows args above (OrgAI.exe then keeps Electron's icon).
-        # Signing secrets reach the mac legs only (a mac .p12 in CSC_LINK must not be tried on Windows), and only
-        # when set: electron-builder reads an empty CSC_LINK as a certificate path and fails with "<repo> not a file",
-        # so absent secrets are left unset and the build is unsigned (CSC_IDENTITY_AUTO_DISCOVERY=false).
-        shell: bash
+      - name: Package unsigned dry run
+        if: needs.meta.outputs.publish != 'true'
         env:
-          PUBLISH: ${{ needs.meta.outputs.publish }}
-          SECRET_WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          SECRET_WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          SECRET_MAC_CSC_LINK: ${{ secrets.CSC_LINK }}
-          SECRET_MAC_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          SECRET_APPLE_ID: ${{ secrets.APPLE_ID }}
-          SECRET_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          export CSC_IDENTITY_AUTO_DISCOVERY=false
-          if [ "$PUBLISH" = "true" ] && [ "$RUNNER_OS" = "Windows" ]; then
-            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$SECRET_WIN_CSC_LINK" CSC_KEY_PASSWORD="$SECRET_WIN_CSC_KEY_PASSWORD"
-          elif [ "$PUBLISH" = "true" ] && [ "$RUNNER_OS" = "macOS" ]; then
-            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$SECRET_MAC_CSC_LINK" CSC_KEY_PASSWORD="$SECRET_MAC_CSC_KEY_PASSWORD"
-            export APPLE_ID="$SECRET_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$SECRET_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$SECRET_APPLE_TEAM_ID"
-          fi
-          npx electron-builder ${{ matrix.args }} --publish never
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder ${{ matrix.args }} --publish never
+      - name: Package signed Windows release
+        if: needs.meta.outputs.publish == 'true' && runner.os == 'Windows'
+        # Windows keeps signAndEditExecutable enabled so both installer and portable executables are signed.
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
+      - name: Package signed and notarized macOS release
+        if: needs.meta.outputs.publish == 'true' && runner.os == 'macOS'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
       - name: Verify Windows signatures
         if: needs.meta.outputs.publish == 'true' && runner.os == 'Windows'
         shell: pwsh
