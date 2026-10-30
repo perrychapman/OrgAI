@@ -1,5 +1,5 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
-import { isModelTier } from '@shared/types'
+import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
@@ -10,6 +10,7 @@ import {
   codexToolName,
   dynamicToolSpec,
   harnessToolName,
+  lockNativeSkills,
   matchesBashRule,
   mcpToolPrefix,
   parseCommandApproval,
@@ -407,7 +408,9 @@ class CodexSession implements RuntimeSession {
 
   private instructionsFor(role: Role, isRoot: boolean): string {
     const isSetup = this.setupLike
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation })
+    const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
+    const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -434,6 +437,14 @@ class CodexSession implements RuntimeSession {
   /** thread/start; when the server rejects the unstable approvalsReviewer field, retry without it. */
   private async startThread(params: Record<string, unknown>, method: string = METHOD.threadStart): Promise<{ threadId: string; model?: string }> {
     let res: unknown
+    // Codex discovers skills itself (repo .agents/skills, the user's and the admin folders); OrgAI hands out only the
+    // granted ones through load_skill, so every thread's native skills are switched off first (best effort, warned).
+    if (typeof params.cwd === 'string') {
+      const lock = await lockNativeSkills((m, p) => this.server.request(m, p), params.cwd)
+      if (lock.error || lock.failed || lock.skipped) {
+        this.log('warn', `Codex native skills could not all be disabled (${lock.error ?? `${lock.failed} failed, ${lock.skipped} over the limit`}); the agent may see skills the role was not granted.`)
+      }
+    }
     try {
       res = await this.server.request(method, params)
     } catch (e) {
@@ -777,7 +788,9 @@ class CodexSession implements RuntimeSession {
     if (!tool || !(agentId === ROOT_AGENT_ID || tool.audience === 'all' || (role.canSpawn && tool.audience === 'spawners'))) return toolResponse(`Unknown tool ${call.tool}.`, false)
     if (isBlockingHarnessTool(tool.name)) this.setState(agentId, 'waiting', describeTool(tool.name, call.arguments, { harness: true }))
     try {
-      const text = await tool.call(call.arguments, { agentId })
+      // The role id is passed only when the thread resolves to a role (or is the root): skills never fall back to the root's.
+      const resolved = agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(agentId)
+      const text = await tool.call(call.arguments, resolved ? { agentId, roleId: resolved.id } : { agentId })
       return toolResponse(text, true)
     } catch (e) {
       return toolResponse(`${tool.name} failed: ${(e as Error).message}`, false)
@@ -1025,11 +1038,14 @@ export class CodexAdapter implements RuntimeAdapter {
     let text = ''
     let final = ''
     let failure: string | undefined
+    let tokens: { input: number; output: number; cachedInput: number } | undefined
     let done!: () => void
     const completed = new Promise<void>((resolve) => (done = resolve))
     const mapper = new CodexEventMapper()
     server.onNotification((method, params) => {
       for (const u of mapper.handle(method, params)) {
+        // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
+        if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
         if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
         if (u.type === 'turnCompleted') {
           final = u.result ?? ''
@@ -1081,6 +1097,17 @@ export class CodexAdapter implements RuntimeAdapter {
       await step(server.request(METHOD.turnStart, { threadId: thread.threadId, input: userInput(input.prompt) }))
       await Promise.race([completed, new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error('Completion timed out')), this.options.completionTimeoutMs ?? 180_000)))])
       if (failure) throw new Error(`Completion failed: ${failure}`)
+      if (tokens && input.onUsage) {
+        // Codex's input count includes cached tokens (same split as a run's agents).
+        try {
+          input.onUsage({
+            tokens: { input: Math.max(0, tokens.input - tokens.cachedInput), output: tokens.output, cacheRead: Math.min(tokens.cachedInput, tokens.input), cacheWrite: 0 },
+            ...(model ? { model } : {})
+          })
+        } catch {
+          // A reporting failure never fails the completion.
+        }
+      }
       return final || text
     } finally {
       clearTimeout(timer)

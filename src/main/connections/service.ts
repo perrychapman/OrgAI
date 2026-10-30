@@ -37,7 +37,7 @@ import { anthropicStatus } from './anthropicAuth'
 import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
 import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
-import { fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
+import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
 
@@ -134,6 +134,7 @@ export class ConnectionService {
         const list = parsed.models?.[id]
         if (Array.isArray(list)) {
           this.discovered[id] = list
+            .slice(0, LITELLM_MAX_MODELS)
             .filter((m): m is ProviderModel => !!m && typeof m === 'object' && typeof (m as ProviderModel).id === 'string' && validModelId((m as ProviderModel).id) && (m as ProviderModel).connection === id)
             .map((m) => {
               // A stored price is untrusted file data: keep it only when it is valid, as a fresh object.

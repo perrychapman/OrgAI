@@ -36,15 +36,17 @@ import type {
   RunPlan,
   RunRecord,
   RunSummary,
+  SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
+import { adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, projectConnection, runMessagingOn } from '@shared/defaults'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
-import { IntervalTimer, buildUsageStats, computeRunUsage, legacySummaryUsage, normalizeRunRecord, usageFromLegacyAgent } from './runUsage'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
+import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 import { architectRole, mcpAssistantRole } from '@shared/setup'
 import { MCP_ASSIST_MODEL_LABEL, SETUP_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -69,6 +71,8 @@ export function canonicalPath(p: string): string {
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
+export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
 export const USAGE_THROTTLE_MS = 1000
 /** When a usage limit gives no reset time, try again after this long. */
@@ -135,6 +139,11 @@ interface ActiveRun {
   emit: (e: RunEvent) => void
   /** The adapter's last run.cost total (the provider's own figure; resume base already subtracted). */
   providerTotalUsd?: number
+  /** The run's skills, read once at start (RuntimeContext.skills). skill.used events for any other id are dropped. */
+  skills: RunSkill[]
+  /** Counted skill loads by skill id (RunUsage.skills) and their total (capped at RUN_SKILL_LOAD_LIMIT). */
+  skillCounts: Map<string, SkillUseCount>
+  skillLoads: number
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
   /** Time held on a usage limit, until the user's next send or the run's end. */
@@ -249,11 +258,11 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
 }
 
 /**
- * A priced copy of an agent for agent.upsert: usage priced (an agent the adapter gave no usage is built from its
- * token fields), producedNothing set from the agent's final state and the legacy costUsd mirrored. Never mutates the input.
+ * A priced copy of an agent for agent.upsert: usage priced (a live agent the adapter gave no usage starts empty: its
+ * legacy cost field is an adapter estimate and must not read as the provider's), producedNothing set from the agent's final state and the legacy costUsd mirrored. Never mutates the input.
  */
 function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
-  const priced = priceAgentUsage(agent.usage ?? usageFromLegacyAgent(agent, false), ctx)
+  const priced = priceAgentUsage(agent.usage ?? emptyAgentUsage(), ctx)
   if (agentProducedNothing(agent)) priced.producedNothing = true
   else delete priced.producedNothing
   return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
@@ -272,6 +281,8 @@ function sanitizeUsageQuery(raw: UsageStatsQuery): UsageStatsQuery & { kinds: Ru
   }
   if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
   if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  const limit = typeof q.limit === 'number' && Number.isFinite(q.limit) ? Math.floor(q.limit) : USAGE_STATS_DEFAULT_LIMIT
+  out.limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, limit))
   return out
 }
 
@@ -322,6 +333,19 @@ export interface RunManagerOptions {
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
   }
+  /** Project skills for work runs (SkillService, RuntimeContext.skills). Missing = runs have no skills. */
+  skills?: SkillRunSource
+}
+
+/** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
+export interface ProjectCompletionInput {
+  system: string
+  prompt: string
+  kind: NonNullable<CompletionInput['kind']>
+  /** Which tier of the project's connection answers. 'fast' uses RunManagerOptions.fastModel like run titles. */
+  tier: 'fast' | 'everyday'
+  signal?: AbortSignal
+  onUsage?: CompletionInput['onUsage']
 }
 
 /** The install-card fields a user may edit before approving; everything else stays as the agent requested it. */
@@ -440,6 +464,38 @@ export class RunManager {
   }
 
   /**
+   * A one-shot completion (no tools) on the project's adapter and connection, with the tier's model. For helpers that
+   * are not runs (skill evaluation). Resolves with the text and the model used.
+   * Model: tier 'fast' is the run-title model (fastModel, else haiku on Claude); 'everyday' is the connection's
+   * everyday tier model (AppSettings.connections), else the model of the project's first everyday-tier role, else
+   * the adapter's default. Never for the harness project.
+   */
+  async completeForProject(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
+    if (project.id === HARNESS_PROJECT_ID) throw new Error('The harness project has no model connection for completions.')
+    const { adapter, choice } = this.choose(project, 'setup')
+    const connection = this.options.resolveConnection?.(project, choice)
+    let model: string | undefined
+    if (input.tier === 'fast') {
+      model = this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined)
+    } else if (choice.adapter !== 'mock') {
+      const tiered = this.options.appSettings?.().connections?.[choice.connection]?.tierModels?.everyday
+      const fromRole = project.roles.find((r) => r.tier === 'everyday' && r.model !== 'inherit')?.model
+      model = (typeof tiered === 'string' && tiered.trim()) || fromRole || undefined
+    }
+    const text = await adapter.complete({
+      system: input.system,
+      prompt: input.prompt,
+      kind: input.kind,
+      cwd: project.path,
+      ...(model ? { model } : {}),
+      ...(connection ? { connection } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.onUsage ? { onUsage: input.onUsage } : {})
+    })
+    return { text, ...(model ? { model } : {}) }
+  }
+
+  /**
    * Pick the adapter for a run. Work runs refuse to start when some roles would need the other adapter;
    * setup-like runs use a built-in role and only need the root's adapter.
    */
@@ -530,6 +586,9 @@ export class RunManager {
       projectPath: project.path,
       runServers: new Map(),
       emit: () => {},
+      skills: [],
+      skillCounts: new Map(),
+      skillLoads: 0,
       projectName: project.name,
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
       messagesSent: new Map(),
@@ -565,6 +624,7 @@ export class RunManager {
     const emit = (raw: RunEvent): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage') return
+      if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
       // A session that ends after a usage-limit rejection is paused, not finished.
       if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
@@ -605,12 +665,13 @@ export class RunManager {
         this.store.upsert(summary)
       } else if (e.type === 'run.cost') {
         // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
-        active.providerTotalUsd = e.totalCostUsd
+        // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
+        if (!connection?.pricing) active.providerTotalUsd = e.totalCostUsd
       }
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
-      if (e.type === 'agent.upsert' || e.type === 'run.cost' || e.type === 'run.status' || e.type === 'plan.updated') {
+      if (e.type === 'agent.upsert' || e.type === 'run.cost' || e.type === 'run.status' || e.type === 'plan.updated' || e.type === 'skill.used') {
         if (closing) this.closeTimers(active)
         this.refreshUsage(active, closing)
       }
@@ -705,6 +766,14 @@ export class RunManager {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
       }
+      // Work runs only; read once and kept for the session (grants do not change mid-run).
+      if (!setupLike && project.id !== HARNESS_PROJECT_ID && this.options.skills) {
+        try {
+          active.skills = this.options.skills.forRun(live, project.roles) ?? []
+        } catch (e) {
+          log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
+        }
+      }
       const builtinModel = this.builtinRoleModel(kind, project, choice)
       if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
       const ctx: RuntimeContext = {
@@ -752,6 +821,7 @@ export class RunManager {
           return specs.map(resolveOne)
         },
         plugins: () => (setupLike ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
+        skills: () => active.skills,
         requestQuestion: (req) => this.requestQuestion(active, req),
         requestPermissionRules: (req) => this.requestRules(active, req),
         allowedRules: () => [...new Set([...listRules(project.path), ...active.runRules])],
@@ -803,8 +873,34 @@ export class RunManager {
       waitingMs: a.waiting.elapsed(now),
       limitHoldMs: a.limitTimer.elapsed(now),
       idleMs: a.idleTimer.elapsed(now),
-      now
+      now,
+      skills: [...a.skillCounts.values()]
     })
+  }
+
+  /**
+   * Count a skill.used event into the run. False = drop it (a skill the run does not have, or the per-run cap). A
+   * counted load also appends a harness transcript row on the loading agent. The name shown is the run skill's own.
+   */
+  private noteSkillUsed(a: ActiveRun, e: Extract<RunEvent, { type: 'skill.used' }>): boolean {
+    const skill = a.skills.find((s) => s.id === e.skillId)
+    if (!skill) {
+      log.warn(`Run ${a.summary.id}: dropped skill.used for unknown skill ${String(e.skillId).slice(0, 80)}`)
+      return false
+    }
+    if (a.skillLoads >= RUN_SKILL_LOAD_LIMIT) {
+      if (a.skillLoads === RUN_SKILL_LOAD_LIMIT) log.warn(`Run ${a.summary.id}: skill load limit (${RUN_SKILL_LOAD_LIMIT}) reached; later loads are not counted`)
+      a.skillLoads++
+      return false
+    }
+    a.skillLoads++
+    const slug = a.record.agents[e.agentId]?.roleSlug
+    const count = a.skillCounts.get(skill.id) ?? { skillId: skill.id, name: skill.name, loads: 0, roles: [] }
+    count.loads++
+    if (slug && !count.roles.includes(slug)) count.roles.push(slug)
+    a.skillCounts.set(skill.id, count)
+    a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: e.agentId, at: e.at, source: 'harness', block: { kind: 'system', text: `Loaded skill ${skill.name}` } } })
+    return true
   }
 
   /**
@@ -1546,7 +1642,8 @@ export class RunManager {
       resumeSessionId: sessionId,
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
-      resumeBaseCostUsd: target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
+      // On a LiteLLM project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
+      resumeBaseCostUsd: projectConnection(project) === 'litellm' ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }

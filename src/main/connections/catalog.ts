@@ -1,7 +1,7 @@
 import { adapterForFamily, builtinModels, defaultTierModels, tierForModel } from '@shared/defaults'
 import { MODEL_TIERS } from '@shared/types'
-import type { AdapterModelInfo } from '../runtime/types'
 import { sanitizeModelPrice } from '../runtime/pricing'
+import type { AdapterModelInfo } from '../runtime/types'
 import { validModelId } from './codexAccount'
 import type { ConnectionId, ModelFamily, ModelPrice, ModelRef, ModelTier, ProviderModel } from '@shared/types'
 
@@ -74,7 +74,11 @@ export interface DiscoveredModelInput {
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
-  const price = m.price === undefined ? undefined : sanitizeModelPrice(m.price)
+  // Proxy text is untrusted: bounded here, prices must be within range or they are dropped.
+  const cap = (v: string | undefined): string | undefined => v?.slice(0, 200)
+  const price = sanitizeModelPrice(m.price)
+  const upstream = cap(m.upstream)
+  m = { ...m, label: cap(m.label), litellmProvider: cap(m.litellmProvider ?? undefined) ?? null }
   const family = m.family ?? classifyFamily(m.id, m.litellmProvider)
   const tier = m.tier ?? inferTier(m.id, family)
   return {
@@ -89,7 +93,7 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     source: 'discovered',
     ...(m.recommended ? { recommended: true } : {}),
     ...(price ? { price } : {}),
-    ...(m.upstream ? { upstream: m.upstream } : {})
+    ...(upstream ? { upstream } : {})
   }
 }
 

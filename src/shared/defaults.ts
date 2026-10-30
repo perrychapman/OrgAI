@@ -17,10 +17,12 @@ import type {
   ProviderModel,
   Role,
   SetupKind,
+  SkillEvaluationSettings,
+  SkillSpec,
   TokenUsage,
   ToolName
 } from './types'
-import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, isModelTier } from './types'
+import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, isModelTier } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -580,10 +582,13 @@ export function emptyTokens(): TokenUsage {
 }
 
 /**
- * An agent that ended (state done or error) with no result text: the "no result" signal behind
- * AgentUsage.producedNothing and RunUsage.noResultTokens. A live agent never counts.
+ * A report (never the root orchestrator, which speaks to the user) that ended (state done or error) with no result
+ * and no final text: the "no result" signal behind AgentUsage.producedNothing and RunUsage / RoleUsage
+ * agentsWithoutResult and noResultTokens. A live agent never counts; neither does an agent with parentId null or id
+ * 'root'.
  */
-export function agentProducedNothing(agent: Pick<AgentInstance, 'state' | 'result'>): boolean {
+export function agentProducedNothing(agent: Pick<AgentInstance, 'state' | 'result'> & Partial<Pick<AgentInstance, 'id' | 'parentId'>>): boolean {
+  if (agent.id === 'root' || agent.parentId === null) return false
   return (agent.state === 'done' || agent.state === 'error') && !agent.result?.trim()
 }
 
@@ -596,4 +601,49 @@ export function totalTokens(t: TokenUsage): number {
 export function cacheHitRate(t: TokenUsage): number | null {
   const prompt = t.input + t.cacheRead + t.cacheWrite
   return prompt > 0 ? t.cacheRead / prompt : null
+}
+
+// ---------- Skills ----------
+
+/** Project.skillEvaluation when unset: off, with a modest budget for the model-assisted step. */
+export const DEFAULT_SKILL_EVALUATION: SkillEvaluationSettings = { enabled: false, tokenBudget: 20_000 }
+/** Bounds of SkillEvaluationSettings.tokenBudget (settings inputs, store normalization). */
+export const SKILL_EVAL_MIN_BUDGET = 1_000
+export const SKILL_EVAL_MAX_BUDGET = 500_000
+/** How many of a project's newest work runs skills:evaluate reads. */
+export const SKILL_EVALUATION_RUNS = 20
+/** Most suggestions the model-assisted step may draft. */
+export const SKILL_MAX_SUGGESTIONS = 3
+
+/** The project's evaluation settings with defaults filled in and the budget clamped. */
+export function skillEvaluationOf(project: Pick<Project, 'skillEvaluation'> | null | undefined): SkillEvaluationSettings {
+  const s = project?.skillEvaluation
+  const budget = typeof s?.tokenBudget === 'number' && Number.isFinite(s.tokenBudget) ? Math.round(s.tokenBudget) : DEFAULT_SKILL_EVALUATION.tokenBudget
+  return {
+    enabled: s?.enabled === true,
+    tokenBudget: Math.min(SKILL_EVAL_MAX_BUDGET, Math.max(SKILL_EVAL_MIN_BUDGET, budget))
+  }
+}
+
+/** Why a SKILL.md `name` is not acceptable, or null. Stricter than the CLIs: [a-z0-9-], no "anthropic" / "claude". */
+export function skillNameProblem(name: unknown): string | null {
+  if (typeof name !== 'string' || !name) return 'A skill needs a name.'
+  if (name.length > SKILL_NAME_MAX) return `A skill name has at most ${SKILL_NAME_MAX} characters.`
+  if (!/^[a-z0-9-]+$/.test(name)) return 'A skill name uses only lowercase letters, digits and hyphens.'
+  if (/anthropic|claude/.test(name)) return 'A skill name may not contain "anthropic" or "claude".'
+  return null
+}
+
+/** Why a SKILL.md `description` is not acceptable, or null: 1 to SKILL_DESCRIPTION_MAX characters, no < or >. */
+export function skillDescriptionProblem(description: unknown): string | null {
+  if (typeof description !== 'string' || !description.trim()) return 'A skill needs a description that says when to use it.'
+  if (description.length > SKILL_DESCRIPTION_MAX) return `A skill description has at most ${SKILL_DESCRIPTION_MAX} characters.`
+  if (/[<>]/.test(description)) return 'A skill description may not contain < or >.'
+  return null
+}
+
+/** The project skills a role is granted (Role.skills), in project order. Enabled-ness and library links are not checked here. */
+export function skillsForRole(project: Pick<Project, 'skills'>, role: Pick<Role, 'skills'>): SkillSpec[] {
+  const ids = new Set(role.skills ?? [])
+  return (project.skills ?? []).filter((s) => ids.has(s.id))
 }

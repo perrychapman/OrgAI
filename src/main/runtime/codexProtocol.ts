@@ -24,6 +24,8 @@ export const METHOD = {
   mcpReload: 'config/mcpServer/reload',
   mcpStatusList: 'mcpServerStatus/list',
   configValueWrite: 'config/value/write',
+  skillsList: 'skills/list',
+  skillsConfigWrite: 'skills/config/write',
   rateLimitsRead: 'account/rateLimits/read'
 } as const
 
@@ -432,7 +434,7 @@ export interface LaunchConfig {
  * gets the value inline in `env` (visible in the process arguments) and the summary says so.
  */
 export function buildLaunchConfig(connection: RunConnection | undefined, servers: ResolvedMcpServer[]): LaunchConfig {
-  const config: string[] = []
+  const config: string[] = [...NATIVE_SKILL_CONFIG]
   const env: Record<string, string> = { ...(connection?.env ?? {}) }
   const summary: string[] = []
   const skipped: LaunchConfig['skipped'] = []
@@ -518,6 +520,76 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
     }
   })
   return { config, env, summary, skipped }
+}
+
+// ---------- native skill discovery ----------
+
+/**
+ * `-c` overrides that quiet Codex's own skill machinery. Both keys are accepted by codex 0.166.0 (VERIFIED token-free
+ * with skills/list: no error). `skills.bundled.enabled=false` VERIFIED to drop the five built-in "system" skills from
+ * skills/list. `skills.include_instructions=false` (do not put the skill list in the prompt) is accepted but its effect
+ * on the prompt needs a model turn to confirm (UNVERIFIED). Neither stops discovery of repo, user or admin skills:
+ * `skills.enabled=false` and `features.skip_host_skill_discovery=true` changed nothing in skills/list (VERIFIED), so
+ * the per-cwd lock below is what disables those.
+ */
+export const NATIVE_SKILL_CONFIG: readonly string[] = ['skills.bundled.enabled=false', 'skills.include_instructions=false']
+
+/** Most skills one lock disables per call (a folder with more is warned about; the rest stay enabled). */
+export const NATIVE_SKILL_DISABLE_LIMIT = 500
+
+/** One skill from a skills/list result. */
+export interface NativeSkillInfo {
+  name: string
+  path: string
+  enabled: boolean
+  scope?: string
+}
+
+/** The skills of a `skills/list` result ({ data: [{ cwd, skills: [{ name, path, enabled, scope }] }] }), deduplicated by path. */
+export function parseSkillsList(v: unknown): NativeSkillInfo[] {
+  if (!isRec(v) || !Array.isArray(v.data)) return []
+  const seen = new Map<string, NativeSkillInfo>()
+  for (const entry of v.data) {
+    if (!isRec(entry) || !Array.isArray(entry.skills)) continue
+    for (const s of entry.skills) {
+      if (!isRec(s) || typeof s.path !== 'string' || !s.path) continue
+      seen.set(s.path, { name: str(s.name) ?? '', path: s.path, enabled: s.enabled !== false, ...(str(s.scope) ? { scope: str(s.scope) } : {}) })
+    }
+  }
+  return [...seen.values()]
+}
+
+/**
+ * Disable every natively discovered skill for `cwd`: skills/list (cache bypassed), then one skills/config/write
+ * { path, enabled: false } per enabled skill. VERIFIED token-free against codex 0.166.0: the write lands as a
+ * `[[skills.config]]` entry in $CODEX_HOME/config.toml (OrgAI's own CODEX_HOME), takes effect at once and a later
+ * skills/list reports enabled=false; the selector is the path, so a worktree copy of the same skill is a different
+ * entry (call this for each thread's cwd), and a skill added later is enabled until the next call. UNVERIFIED: that a
+ * disabled skill is absent from a model turn's prompt. Never throws; returns what it did.
+ */
+export async function lockNativeSkills(
+  request: (method: string, params: unknown) => Promise<unknown>,
+  cwd: string
+): Promise<{ disabled: number; failed: number; skipped: number; error?: string }> {
+  let listed: NativeSkillInfo[]
+  try {
+    listed = parseSkillsList(await request(METHOD.skillsList, { cwds: [cwd], forceReload: true }))
+  } catch (e) {
+    return { disabled: 0, failed: 0, skipped: 0, error: (e as Error).message }
+  }
+  const enabled = listed.filter((s) => s.enabled)
+  const todo = enabled.slice(0, NATIVE_SKILL_DISABLE_LIMIT)
+  let disabled = 0
+  let failed = 0
+  for (const s of todo) {
+    try {
+      await request(METHOD.skillsConfigWrite, { path: s.path, enabled: false })
+      disabled++
+    } catch {
+      failed++
+    }
+  }
+  return { disabled, failed, skipped: enabled.length - todo.length }
 }
 
 /** The prefix an agent uses for a server's tools. Codex names MCP tools mcp__<server>__<tool> (same convention as Claude Code; UNVERIFIED). */

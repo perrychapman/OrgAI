@@ -31,13 +31,19 @@ const finite = (n: number): number => (Number.isFinite(n) && n > 0 ? n : 0)
 
 /** USD for a token mix at one price. Missing cache prices fall back to the input price. */
 export function costFromPrice(mix: PricedTokens, price: ModelPrice): number {
+  return costOrNull(mix, price) ?? 0
+}
+
+/** Like costFromPrice, but null when the sum is not finite (an absurd price), so a caller can report "unknown". */
+export function costOrNull(mix: PricedTokens, price: ModelPrice): number | null {
   const input = price.inputPerToken
   const usd =
     finite(mix.input) * input +
     finite(mix.output) * price.outputPerToken +
     finite(mix.cacheRead) * (price.cacheReadPerToken ?? input) +
     finite(mix.cacheCreation) * (price.cacheCreationPerToken ?? input)
-  return Number.isFinite(usd) && usd > 0 ? usd : 0
+  if (!Number.isFinite(usd)) return null
+  return usd > 0 ? usd : 0
 }
 
 /** A Codex / OpenAI style total (input includes cached input) as PricedTokens. */
@@ -73,13 +79,50 @@ function sameModelVersioned(a: string, b: string): boolean {
 export function priceFor(pricing: Record<string, ModelPrice> | undefined, model: string | undefined): ModelPrice | undefined {
   if (!pricing || !model) return undefined
   if (Object.prototype.hasOwnProperty.call(pricing, model)) return pricing[model]
-  const want = normalizeModelKey(model)
-  if (!want) return undefined
-  let best: { len: number; price: ModelPrice } | undefined
-  for (const [key, price] of Object.entries(pricing)) {
+  const index = indexFor(pricing)
+  if (index.cache.has(model)) return index.cache.get(model)
+  const price = lookupNormalized(index, model)
+  if (index.cache.size >= PRICE_CACHE_MAX) index.cache.clear()
+  index.cache.set(model, price)
+  return price
+}
+
+interface PriceIndex {
+  keyCount: number
+  entries: { k: string; price: ModelPrice }[]
+  byKey: Map<string, ModelPrice>
+  cache: Map<string, ModelPrice | undefined>
+}
+
+const PRICE_CACHE_MAX = 500
+const priceIndexes = new WeakMap<object, PriceIndex>()
+
+/** Normalized keys of a pricing record, built once per record (rebuilt if its key count changes). */
+function indexFor(pricing: Record<string, ModelPrice>): PriceIndex {
+  const keys = Object.keys(pricing)
+  const hit = priceIndexes.get(pricing)
+  if (hit && hit.keyCount === keys.length) return hit
+  const entries: PriceIndex['entries'] = []
+  const byKey = new Map<string, ModelPrice>()
+  for (const key of keys) {
     const k = normalizeModelKey(key)
     if (!k) continue
-    if (k === want) return price
+    const price = pricing[key]!
+    entries.push({ k, price })
+    if (!byKey.has(k)) byKey.set(k, price)
+  }
+  const index: PriceIndex = { keyCount: keys.length, entries, byKey, cache: new Map() }
+  priceIndexes.set(pricing, index)
+  return index
+}
+
+function lookupNormalized(index: PriceIndex, model: string): ModelPrice | undefined {
+  const want = normalizeModelKey(model)
+  if (!want) return undefined
+  const exact = index.byKey.get(want)
+  if (exact) return exact
+  let best: { len: number; price: ModelPrice } | undefined
+  for (const { k, price } of index.entries) {
     if (sameModelVersioned(k, want)) {
       const len = Math.min(k.length, want.length)
       if (!best || len > best.len) best = { len, price }
@@ -105,27 +148,14 @@ export function pricingFromCatalog(
   for (const m of priced) {
     if (typeof m.upstream !== 'string') continue
     const bare = m.upstream.slice(m.upstream.lastIndexOf('/') + 1).trim()
-    if (bare && !Object.prototype.hasOwnProperty.call(out, bare)) out[bare] = { ...m.price }
+    if (bare && bare.length <= 200 && !Object.prototype.hasOwnProperty.call(out, bare)) out[bare] = { ...m.price }
   }
   return Object.keys(out).length ? { ...out } : undefined
 }
 
-const rate = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined)
-
-/** A price with only finite, non-negative numbers (models.json is re-read from disk); undefined when unusable. */
+/** A price with only finite, non-negative numbers within MODEL_PRICE_MAX_PER_TOKEN; undefined when unusable. */
 export function cleanPrice(p: ModelPrice | undefined): ModelPrice | undefined {
-  if (!p || typeof p !== 'object') return undefined
-  const input = rate(p.inputPerToken)
-  const output = rate(p.outputPerToken)
-  if (input === undefined || output === undefined) return undefined
-  const cacheRead = rate(p.cacheReadPerToken)
-  const cacheCreation = rate(p.cacheCreationPerToken)
-  return {
-    inputPerToken: input,
-    outputPerToken: output,
-    ...(cacheRead !== undefined ? { cacheReadPerToken: cacheRead } : {}),
-    ...(cacheCreation !== undefined ? { cacheCreationPerToken: cacheCreation } : {})
-  }
+  return sanitizeModelPrice(p)
 }
 
 // ---------- host-side resolution (RunManager, models:prices, settings) ----------
@@ -222,7 +252,7 @@ export function normalizeModelId(id: string): string {
 }
 
 const VARIANT_WORDS: ReadonlySet<string> = new Set(['codex', 'mini', 'nano', 'pro'])
-const BUILTIN_KEYS =Object.keys(BUILTIN_PRICES).sort((a, b) => b.length - a.length)
+const BUILTIN_KEYS = Object.keys(BUILTIN_PRICES).sort((a, b) => b.length - a.length)
 
 /** Table lookup: exact normalized id, else the longest key that prefixes it on a '-' boundary. */
 export function builtinPrice(model: string): ModelPrice | null {
@@ -241,8 +271,10 @@ export function builtinPrice(model: string): ModelPrice | null {
 
 /** USD for these tokens at this price (costFromPrice with TokenUsage). */
 export function costFor(tokens: TokenUsage, price: ModelPrice): number {
-  return costFromPrice({ input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheCreation: tokens.cacheWrite }, price)
+  return costFromPrice(tokensMix(tokens), price)
 }
+
+const tokensMix = (tokens: TokenUsage): PricedTokens => ({ input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheCreation: tokens.cacheWrite })
 
 function applyAlias(model: string, ctx: PricingContext): string {
   const aliases = ctx.aliases
@@ -263,10 +295,10 @@ function overrideFor(id: string, ctx: PricingContext): ModelPrice | null {
 }
 
 function proxyFor(served: string, id: string, ctx: PricingContext): ModelPrice | null {
-  if (ctx.pricing) return priceFor(ctx.pricing, served) ?? null
+  if (ctx.pricing) return sanitizeModelPrice(priceFor(ctx.pricing, served)) ?? null
   if (!ctx.connection || !ctx.catalog) return null
   for (const m of ctx.catalog) {
-    if (m.connection === ctx.connection && m.price && normalizeModelId(m.id) === id) return m.price
+    if (m.connection === ctx.connection && m.price && normalizeModelId(m.id) === id) return sanitizeModelPrice(m.price) ?? null
   }
   return null
 }
@@ -324,16 +356,18 @@ export function rollupCosts(entries: readonly Pick<ModelUsageEntry, 'tokens' | '
   let priced = 0
   let allProvider = true
   let sum = 0
+  let bad = false
   for (const e of entries) {
     if (totalTokens(e.tokens) <= 0 && !(e.providerCostUsd && e.providerCostUsd > 0)) continue
     active++
     if (e.costUsd === null) continue
     priced++
-    sum += e.costUsd
+    if (Number.isFinite(e.costUsd)) sum += e.costUsd
+    else bad = true
     if (e.priceSource !== 'provider') allProvider = false
   }
   if (active === 0) return { costUsd: 0, costSource: 'none' }
-  if (priced === 0) return { costUsd: null, costSource: 'unknown' }
+  if (priced === 0 || bad || !Number.isFinite(sum)) return { costUsd: null, costSource: 'unknown' }
   const out: CostRollup = { costUsd: sum, costSource: allProvider ? 'provider' : 'computed' }
   if (priced < active) out.costPartial = true
   return out
@@ -345,14 +379,15 @@ export function priceAgentUsage(usage: AgentUsage, ctx: PricingContext): AgentUs
     const entry: ModelUsageEntry = { ...m, tokens: { ...m.tokens } }
     const resolved = resolvePrice(m.model, ctx)
     const provider = m.providerCostUsd !== undefined && Number.isFinite(m.providerCostUsd) && m.providerCostUsd > 0 ? m.providerCostUsd : 0
-    if (resolved?.source === 'override') {
-      entry.costUsd = costFor(m.tokens, resolved.price)
+    const computed = resolved ? costOrNull(tokensMix(m.tokens), resolved.price) : null
+    if (resolved?.source === 'override' && computed !== null) {
+      entry.costUsd = computed
       entry.priceSource = 'override'
     } else if (provider > 0) {
       entry.costUsd = provider
       entry.priceSource = 'provider'
-    } else if (resolved) {
-      entry.costUsd = costFor(m.tokens, resolved.price)
+    } else if (resolved && computed !== null) {
+      entry.costUsd = computed
       entry.priceSource = resolved.source
     } else if (totalTokens(m.tokens) <= 0) {
       entry.costUsd = 0
@@ -424,9 +459,10 @@ export function listModelPrices(query: ModelPricesQuery | undefined, overrides: 
     rows.push(row)
   }
   for (const m of catalog) {
-    if (!m.price) continue
+    const price = sanitizeModelPrice(m.price)
+    if (!price) continue
     if (conn && m.connection !== conn) continue
-    rows.push({ model: m.id, connection: m.connection, price: m.price, source: 'proxy' })
+    rows.push({ model: m.id, connection: m.connection, price, source: 'proxy' })
   }
   for (const [model, price] of Object.entries(BUILTIN_PRICES)) {
     const anthropic = model.startsWith('claude')

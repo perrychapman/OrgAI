@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { LITELLM_MAX_ID_CHARS, LITELLM_MAX_MODELS, buildLiteLLMModels, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl, parseKeyInfo, parseModelIds, parseModelInfo, parsePrice } from './litellm'
+import { LITELLM_MAX_BODY_BYTES, LITELLM_MAX_ID_CHARS, LITELLM_MAX_MODELS, buildLiteLLMModels, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl, parseKeyInfo, parseModelIds, parseModelInfo, parsePrice } from './litellm'
 
 const fx = (name: string): unknown => JSON.parse(readFileSync(join(__dirname, 'fixtures', name), 'utf8'))
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -154,5 +154,25 @@ describe('discovery bounds', () => {
   it('runs /model/info prices through sanitizeModelPrice (ceiling applied)', () => {
     expect(parsePrice({ input_cost_per_token: 1e9, output_cost_per_token: 1e-6 })).toBeUndefined()
     expect(parsePrice({ input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, cache_read_input_token_cost: 1e9 })).toEqual({ inputPerToken: 1e-6, outputPerToken: 2e-6 })
+  })
+})
+
+describe('proxy output bounds', () => {
+  it('drops out-of-range prices instead of passing them on', () => {
+    expect(parsePrice({ input_cost_per_token: 1e300, output_cost_per_token: 0.000001 })).toBeUndefined()
+    expect(parsePrice({ input_cost_per_token: '1e300', output_cost_per_token: 0.000001 })).toBeUndefined()
+    expect(parsePrice({ input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 })).toEqual({ inputPerToken: 0.000001, outputPerToken: 0.000002 })
+  })
+  it('stops parsing at the model cap and ignores overlong ids', () => {
+    const data = Array.from({ length: LITELLM_MAX_MODELS + 50 }, (_, i) => ({ id: `m${i}` }))
+    expect(parseModelIds({ data })).toHaveLength(LITELLM_MAX_MODELS)
+    expect(parseModelIds({ data: [{ id: 'a' }, { id: 'a' }, { id: 'x'.repeat(LITELLM_MAX_ID_CHARS + 1) }] })).toEqual(['a'])
+    const info = parseModelInfo({ data: data.map((d) => ({ model_name: d.id })) })
+    expect(info.size).toBe(LITELLM_MAX_MODELS)
+  })
+  it('refuses a response body over the byte cap', async () => {
+    const big = (): Response => new Response('x'.repeat(LITELLM_MAX_BODY_BYTES + 10), { status: 200 })
+    const fetchImpl = (async () => big()) as unknown as typeof fetch
+    await expect(fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl)).rejects.toThrow(/too large/)
   })
 })

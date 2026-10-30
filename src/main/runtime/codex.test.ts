@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -591,7 +591,119 @@ describe('CodexAdapter session', () => {
   })
 })
 
+describe('CodexAdapter skills', () => {
+  let dir = ''
+  let session: RuntimeSession | undefined
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-codex-skills-'))
+    mkdirSync(join(dir, 'sk'))
+    writeFileSync(join(dir, 'sk', 'SKILL.md'), '---\nname: pdf-fill\n---\nStep one.')
+  })
+  afterEach(async () => {
+    await session?.stop()
+    session = undefined
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const runSkill = (roleIds: string[]) => ({ id: 'sk1', name: 'pdf-fill', description: 'Fill <b>forms</b>', dir: join(dir, 'sk'), files: [{ path: 'SKILL.md' }] as never, roleIds })
+
+  it('gives the root the granted skills in its prompt and load_skill with its role, and counts the load', async () => {
+    const { adapter, servers } = setup()
+    const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, skills: () => [runSkill(['r-lead'])] })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const start = s.of('thread/start')[0].params
+    expect(start.developerInstructions).toContain('Skills available to you')
+    expect(start.developerInstructions).toContain('- pdf-fill: Fill ‹b›forms‹/b›')
+    expect(start.developerInstructions).toContain('Call load_skill')
+    expect(start.dynamicTools.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-skill', namespace: null, tool: 'load_skill', arguments: { name: 'orgai:pdf-fill' } })
+    expect(out.success).toBe(true)
+    expect(JSON.stringify(out)).toContain('Step one.')
+    expect(ctx.events).toContainEqual(expect.objectContaining({ type: 'skill.used', skillId: 'sk1', name: 'pdf-fill', agentId: 'root' }))
+  })
+
+  it('refuses a skill granted to another role', async () => {
+    const { adapter, servers } = setup()
+    const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, skills: () => [runSkill(['r-eng'])] })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(s.of('thread/start')[0].params.developerInstructions).not.toContain('Skills available to you')
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-skill', namespace: null, tool: 'load_skill', arguments: { name: 'pdf-fill' } })
+    expect(JSON.stringify(out)).toContain('REFUSED')
+    expect(ctx.events.some((e) => e.type === 'skill.used')).toBe(false)
+  })
+
+  it('has no skill tools without skills', async () => {
+    const { adapter, servers } = setup()
+    session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(s.of('thread/start')[0].params.dynamicTools.map((t: { name: string }) => t.name)).not.toContain('load_skill')
+  })
+
+  it('switches off Codex native skills for the thread cwd before it starts, and launches with bundled skills off', async () => {
+    const { adapter, servers } = setup()
+    session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
+    const s = servers[0]
+    expect(s.options.config).toEqual(expect.arrayContaining(['skills.bundled.enabled=false', 'skills.include_instructions=false']))
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const order = s.requests.map((r) => r.method)
+    expect(order.indexOf('skills/list')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('skills/list')).toBeLessThan(order.indexOf('thread/start'))
+    expect(s.of('skills/list')[0].params).toMatchObject({ forceReload: true })
+  })
+
+  it('writes a disable entry for each native skill found', async () => {
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = new FakeServer(o)
+        s.overrides['skills/list'] = () => ({ data: [{ cwd: dir, errors: [], skills: [{ name: 'x', path: join(dir, '.agents', 'skills', 'x', 'SKILL.md'), enabled: true, scope: 'repo' }] }] })
+        servers.push(s)
+        return s
+      }
+    })
+    session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(s.of('skills/config/write').map((r) => r.params)).toEqual([{ path: join(dir, '.agents', 'skills', 'x', 'SKILL.md'), enabled: false }])
+  })
+
+  it('a failing skills/list only warns and the thread still starts', async () => {
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = new FakeServer(o)
+        s.overrides['skills/list'] = () => {
+          throw new Error('unknown method')
+        }
+        servers.push(s)
+        return s
+      }
+    })
+    const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 })
+    session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers[0].turnStarts('th-1')).toHaveLength(1))
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && /native skills/.test(e.message))).toBe(true)
+  })
+})
+
 describe('CodexAdapter.complete', () => {
+  it('reports the turn token usage through onUsage', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)), completionConnection: () => ({ connection: 'chatgpt' as never, adapter: 'codex', env: {} }) })
+    const onUsage = vi.fn()
+    const promise = adapter.complete({ system: 's', prompt: 'p', onUsage })
+    await vi.waitFor(() => expect(server?.of('turn/start')).toHaveLength(1))
+    server.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 50, cachedInputTokens: 400 }, last: {}, modelContextWindow: null } })
+    server.push('item/completed', agentMessage('th-1', 'm', 'ok'))
+    server.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await expect(promise).resolves.toBe('ok')
+    expect(onUsage).toHaveBeenCalledWith({ tokens: { input: 600, output: 50, cacheRead: 400, cacheWrite: 0 } })
+  })
+
   it('runs one tool-less ephemeral turn and returns the final message', async () => {
     let server!: FakeServer
     const adapter = new CodexAdapter({

@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal, RunPeer } from '@shared/types'
-import type { RunMessageOutcome } from './types'
+import { ROOT_AGENT_ID, type RunMessageOutcome, type RunSkill } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, answerText, harnessToolsFor, isBlockingHarnessTool, setupTools, workTools, type HarnessTool } from './harnessTools'
@@ -657,5 +660,131 @@ describe('cross-run tools', () => {
     expect(await run({ result: 'refused', refusal: 'self' })).toMatch(/^REFUSED: that is this run/)
     expect(await run({ result: 'refused', refusal: 'empty' })).toMatch(/^REFUSED: the message is empty/)
     expect(await byName(workTools(fakeCtx()), 'message_run').call({ runId: 'x', message: 'y' })).toMatch(/^NOT LIVE/)
+  })
+})
+
+describe('list_skills and load_skill', () => {
+  let root: string
+  let skillDir: string
+  const mkSkill = (over: Partial<RunSkill> = {}): RunSkill => ({
+    id: 'sk1',
+    name: 'pdf-fill',
+    description: 'Fill <b>PDF</b> forms',
+    dir: skillDir,
+    files: [{ path: 'SKILL.md' }, { path: 'ref.md' }, { path: 'big.txt' }, { path: 'bin.dat' }, { path: 'link/secret.txt' }] as RunSkill['files'],
+    roleIds: ['r-eng'],
+    ...over
+  })
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'orgai-skilltool-'))
+    skillDir = path.join(root, 'skill')
+    mkdirSync(skillDir)
+    writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: pdf-fill\n---\nDo the thing.')
+    writeFileSync(path.join(skillDir, 'ref.md'), 'reference text')
+    writeFileSync(path.join(skillDir, 'big.txt'), 'x'.repeat(70 * 1024))
+    writeFileSync(path.join(skillDir, 'bin.dat'), Buffer.from([1, 2, 0, 3]))
+    mkdirSync(path.join(root, 'outside'))
+    writeFileSync(path.join(root, 'outside', 'secret.txt'), 'LEAKED-CONTENT')
+    symlinkSync(path.join(root, 'outside'), path.join(skillDir, 'link'), 'junction')
+    writeFileSync(path.join(root, 'top-secret.txt'), 'top')
+  })
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  const toolsFor = (skills: RunSkill[], opts: { nativeSkills?: boolean } = {}) => {
+    const ctx = fakeCtx({ skills: () => skills })
+    return { ctx, tools: harnessToolsFor(ctx, {}, opts) }
+  }
+
+  it('is absent with nativeSkills, with no skills, and in setup', () => {
+    const names = (t: HarnessTool[]) => t.map((x) => x.name)
+    expect(names(toolsFor([mkSkill()]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
+    expect(names(toolsFor([mkSkill()], { nativeSkills: true }).tools)).not.toContain('load_skill')
+    expect(names(toolsFor([]).tools)).not.toContain('list_skills')
+    expect(names(setupTools(fakeCtx({ skills: () => [mkSkill()] })))).not.toContain('load_skill')
+    expect(isBlockingHarnessTool('load_skill')).toBe(false)
+    expect(isBlockingHarnessTool('list_skills')).toBe(false)
+  })
+
+  it("shows only the caller role's skills (the root when no role is given)", async () => {
+    const { tools } = toolsFor([mkSkill(), mkSkill({ id: 'sk2', name: 'lead-only', roleIds: ['r-lead'] })])
+    const list = byName(tools, 'list_skills')
+    const eng = await list.call({}, { roleId: 'r-eng' })
+    expect(eng).toContain('pdf-fill | Fill ‹b›PDF‹/b› forms')
+    expect(eng).not.toContain('lead-only')
+    const asRoot = await list.call({})
+    expect(asRoot).toContain('lead-only')
+    expect(asRoot).not.toContain('pdf-fill')
+    expect(await list.call({}, { roleId: 'r-rev' })).toBe('No skills are granted to your role.')
+  })
+
+  it("refuses an ungranted or unknown skill and names only the caller's grants", async () => {
+    const { tools, ctx } = toolsFor([mkSkill(), mkSkill({ id: 'sk2', name: 'lead-only', roleIds: ['r-lead'] })])
+    const load = byName(tools, 'load_skill')
+    const text = await load.call({ name: 'lead-only' }, { roleId: 'r-eng' })
+    expect(text).toMatch(/^REFUSED/)
+    expect(text).toContain('Skills granted to you: pdf-fill.')
+    expect(await load.call({ name: 'nope' }, { roleId: 'r-rev' })).toContain('No skills are granted to your role.')
+    expect(ctx.events).toEqual([])
+  })
+
+  it('loads SKILL.md by either name form, lists files and emits skill.used once per load', async () => {
+    const { tools, ctx } = toolsFor([mkSkill()])
+    const load = byName(tools, 'load_skill')
+    const a = await load.call({ name: 'pdf-fill' }, { roleId: 'r-eng', agentId: 'agent-7' })
+    expect(a).toContain('Do the thing.')
+    expect(a).toContain('Resource files you can load with file: ref.md, big.txt, bin.dat, link/secret.txt')
+    const b = await load.call({ name: 'orgai:pdf-fill' }, { roleId: 'r-eng' })
+    expect(b).toContain('Do the thing.')
+    const used = ctx.events.filter((e) => e.type === 'skill.used')
+    expect(used).toHaveLength(2)
+    expect(used[0]).toMatchObject({ runId: 'run-1', agentId: 'agent-7', skillId: 'sk1', name: 'pdf-fill' })
+    expect(used[1]).toMatchObject({ agentId: ROOT_AGENT_ID })
+  })
+
+  it('reads a listed resource file without emitting skill.used', async () => {
+    const { tools, ctx } = toolsFor([mkSkill()])
+    expect(await byName(tools, 'load_skill').call({ name: 'pdf-fill', file: 'ref.md' }, { roleId: 'r-eng' })).toBe('reference text')
+    expect(ctx.events).toEqual([])
+  })
+
+  it('refuses traversal, absolute paths, unlisted files and links that leave the folder', async () => {
+    const { tools } = toolsFor([mkSkill({ files: [{ path: 'SKILL.md' }, { path: 'link/secret.txt' }] as RunSkill['files'] })])
+    const load = byName(tools, 'load_skill')
+    const caller = { roleId: 'r-eng' }
+    for (const file of ['../top-secret.txt', '..\\top-secret.txt', path.join(root, 'top-secret.txt'), '/etc/passwd', 'C:\\Windows\\win.ini', 'ref.md', 'a/../SKILL.md']) {
+      expect(await load.call({ name: 'pdf-fill', file }, caller)).toMatch(/^REFUSED/)
+    }
+    const viaLink = await load.call({ name: 'pdf-fill', file: 'link/secret.txt' }, caller)
+    expect(viaLink).toMatch(/^REFUSED/)
+    expect(viaLink).not.toContain('LEAKED-CONTENT')
+  })
+
+  it('accepts backslash separators for listed files', async () => {
+    mkdirSync(path.join(skillDir, 'sub'))
+    writeFileSync(path.join(skillDir, 'sub', 'a.md'), 'nested')
+    const { tools } = toolsFor([mkSkill({ files: [{ path: 'SKILL.md' }, { path: 'sub/a.md' }] as RunSkill['files'] })])
+    expect(await byName(tools, 'load_skill').call({ name: 'pdf-fill', file: 'sub\\a.md' }, { roleId: 'r-eng' })).toBe('nested')
+  })
+
+  it('truncates large files at 64 KB and refuses binary files', async () => {
+    const { tools } = toolsFor([mkSkill()])
+    const load = byName(tools, 'load_skill')
+    const big = await load.call({ name: 'pdf-fill', file: 'big.txt' }, { roleId: 'r-eng' })
+    expect(big.startsWith('x'.repeat(64 * 1024))).toBe(true)
+    expect(big).toContain('Truncated: only the first 64 KB')
+    expect(big.length).toBeLessThan(65 * 1024 + 200)
+    expect(await load.call({ name: 'pdf-fill', file: 'bin.dat' }, { roleId: 'r-eng' })).toMatch(/binary file/)
+  })
+})
+
+describe('skill tools: unknown caller role', () => {
+  it('gives a subagent with no resolved role no skills, but the root and unnamed callers get the root role', async () => {
+    const ctx = fakeCtx({ skills: () => [{ id: 'sk', name: 'pdf-fill', description: 'd', dir: '/x', files: [], roleIds: ['r-lead'] } as RunSkill] })
+    const tools = harnessToolsFor(ctx, {}, {})
+    const list = byName(tools, 'list_skills')
+    expect(await list.call({}, { agentId: 'agent-9' })).toBe('No skills are granted to your role.')
+    expect(await list.call({}, { agentId: ROOT_AGENT_ID })).toContain('pdf-fill')
+    expect(await list.call({})).toContain('pdf-fill')
+    expect(await byName(tools, 'load_skill').call({ name: 'pdf-fill' }, { agentId: 'agent-9' })).toContain('No skills are granted')
   })
 })

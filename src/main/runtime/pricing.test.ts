@@ -309,8 +309,35 @@ describe('pricingFromCatalog', () => {
     expect(pricingFromCatalog([{ id: 'x' }])).toBeUndefined()
   })
   it('cleanPrice drops non-finite and negative rates', () => {
-    expect(cleanPrice({ inputPerToken: 1, outputPerToken: 2, cacheReadPerToken: -1 })).toEqual({ inputPerToken: 1, outputPerToken: 2 })
+    expect(cleanPrice({ inputPerToken: 0.001, outputPerToken: 0.002, cacheReadPerToken: -1 })).toEqual({ inputPerToken: 0.001, outputPerToken: 0.002 })
     expect(cleanPrice({ inputPerToken: '1' as unknown as number, outputPerToken: 2 })).toBeUndefined()
     expect(cleanPrice(undefined)).toBeUndefined()
+  })
+})
+
+describe('price bounds', () => {
+  const huge = { inputPerToken: 1e300, outputPerToken: 1e300 }
+  const ok = { inputPerToken: 0.000003, outputPerToken: 0.000015 }
+  it('drops out-of-range prices from a catalog, a proxy map and the price list', () => {
+    expect(pricingFromCatalog([{ id: 'x', price: huge }])).toBeUndefined()
+    expect(cleanPrice(huge)).toBeUndefined()
+    expect(resolvePrice('big', { overrides: [], pricing: { big: huge } })).toBeNull()
+    const rows = listModelPrices({ connection: 'litellm' }, [], [
+      { id: 'big', label: 'big', connection: 'litellm', family: 'other', adapter: 'claude', source: 'discovered', price: huge },
+      { id: 'fine', label: 'fine', connection: 'litellm', family: 'other', adapter: 'claude', source: 'discovered', price: ok }
+    ] as never)
+    expect(rows.filter((r) => r.source === 'proxy').map((r) => r.model)).toEqual(['fine'])
+  })
+  it('reports a non-finite sum as unknown, never 0', () => {
+    const usage = { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, models: [{ model: 'm', tokens: { input: Number.MAX_VALUE, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: null, priceSource: 'unknown' as const }], costUsd: null, costSource: 'none' as const, turns: 0, toolCalls: 0, retries: 0 }
+    const out = priceAgentUsage(usage, { overrides: [{ model: 'm', price: { inputPerToken: 10, outputPerToken: 10 } }] })
+    expect(out.costUsd).toBeNull()
+    expect(out.costSource).toBe('unknown')
+  })
+  it('memoizes priceFor per pricing record', () => {
+    const pricing = { 'claude-sonnet-4-5-v2': ok }
+    expect(priceFor(pricing, 'claude-sonnet-4-5')).toBe(ok)
+    expect(priceFor(pricing, 'claude-sonnet-4-5')).toBe(ok)
+    expect(priceFor(pricing, 'claude-sonnet-4')).toBeUndefined()
   })
 })

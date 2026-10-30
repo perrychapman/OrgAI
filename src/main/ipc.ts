@@ -60,6 +60,21 @@ import type {
   PendingCards,
   RunSummary,
   SendRunInput,
+  SkillApplySuggestionInput,
+  SkillContent,
+  SkillCreateInput,
+  SkillDraft,
+  SkillEvaluationReport,
+  SkillImportApplyInput,
+  SkillImportApplyResult,
+  SkillImportInput,
+  SkillImportPreview,
+  SkillInfo,
+  SkillLibraryFolderInput,
+  SkillLibraryInfo,
+  SkillLinkLibraryInput,
+  SkillMutationResult,
+  SkillUpdateInput,
   StartRunInput
 } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC } from '@shared/types'
@@ -71,6 +86,7 @@ import type { SettingsStore } from './store/settings'
 import type { ConnectionService } from './connections/service'
 import type { McpService } from './mcp/service'
 import type { AgentImportService } from './setup/import/importer'
+import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from './skills/types'
 import { claudeAuthStatus } from './connections/anthropicAuth'
 import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
@@ -101,9 +117,13 @@ export interface IpcServices {
   openRunWindow(target: FocusRunTarget): void
   /** Agent import and org export (src/main/setup/import/importer.ts). */
   importer: AgentImportService
+  /** Project skills, the skill library and the repo skill import (src/main/skills/service.ts). */
+  skills: SkillServiceApi
+  /** Skill evaluation (src/main/skills/evaluation.ts). */
+  skillEvaluation: SkillEvaluationApi
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation }: IpcServices): void {
   /** A stored project, or the virtual harness project that owns harness-level runs. Never listed by projects:list. */
   const projectOrHarness = (id: string): Project | null => (id === HARNESS_PROJECT_ID ? harnessProject() : projects.get(id))
   ipcMain.handle(IPC.projectsList, () => projects.list())
@@ -137,6 +157,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be removed.')
     await runs.removeProject(id)
     mcp.removeProjectSecrets(id)
+    skills.removeProjectFiles(id)
     projects.remove(id)
   })
   ipcMain.handle(IPC.projectsPickDir, async (e) => {
@@ -144,7 +165,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     const result = win
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-    return result.canceled ? null : result.filePaths[0] ?? null
+    const picked = result.canceled ? null : result.filePaths[0] ?? null
+    if (picked) rememberPickedFolder(picked)
+    return picked
   })
 
   ipcMain.handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
@@ -304,6 +327,98 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
 
   registerConnectionIpc(projects, connections)
   registerMcpIpc(runs, mcp, projectOrHarness)
+  registerSkillIpc(skills, skillEvaluation)
+}
+
+/**
+ * Folders the user chose in the main-process folder dialog (projects:pickDirectory), newest last, at most 20.
+ * skillLibrary:addFromFolder accepts only these, so a compromised renderer cannot copy an arbitrary folder (or a UNC
+ * share) into the library and read it back.
+ */
+const pickedFolders: string[] = []
+function rememberPickedFolder(path: string): void {
+  const i = pickedFolders.indexOf(path)
+  if (i !== -1) pickedFolders.splice(i, 1)
+  pickedFolders.push(path)
+  if (pickedFolders.length > 20) pickedFolders.shift()
+}
+/** For tests. */
+export function wasPickedFolder(path: string): boolean {
+  return pickedFolders.includes(path)
+}
+
+/** A plain object argument, or {} (handlers validate the fields; services re-check ids against the stores). */
+function obj<T>(input: unknown): T {
+  return (input && typeof input === 'object' ? input : {}) as T
+}
+
+/** A project id that may name a stored project (the harness project has no skills). */
+function projectIdArg(id: unknown): string {
+  if (!isValidId(id) || id === HARNESS_PROJECT_ID) throw new Error('Project not found')
+  return id
+}
+
+/** Project skills, the skill library, the repo import and evaluation: the services 1:1, ids checked first. */
+function registerSkillIpc(skills: SkillServiceApi, evaluation: SkillEvaluationApi): void {
+  type ProjectSkill = { projectId: string; skillId: string }
+  const projectSkill = (input: unknown): ProjectSkill => {
+    const i = obj<ProjectSkill>(input)
+    projectIdArg(i.projectId)
+    if (!isValidId(i.skillId)) throw new Error('Skill not found')
+    return { projectId: i.projectId, skillId: i.skillId }
+  }
+  const withProject = <T extends { projectId: string }>(input: unknown): T => {
+    const i = obj<T>(input)
+    projectIdArg(i.projectId)
+    return i
+  }
+  const libraryArg = (input: unknown): { libraryId: string } => {
+    const i = obj<{ libraryId: string }>(input)
+    if (!isValidId(i.libraryId)) throw new Error('Library skill not found')
+    return { libraryId: i.libraryId }
+  }
+  ipcMain.handle(IPC.skillsList, (_e, projectId: unknown): SkillInfo[] => skills.list(projectIdArg(projectId)))
+  ipcMain.handle(IPC.skillsRead, (_e, input: unknown): SkillContent => skills.read(projectSkill(input)))
+  ipcMain.handle(IPC.skillsCreate, (_e, input: unknown): SkillMutationResult => skills.create(withProject<SkillCreateInput>(input)))
+  ipcMain.handle(IPC.skillsUpdate, (_e, input: unknown): SkillMutationResult => {
+    const i = withProject<SkillUpdateInput>(input)
+    return skills.update({ ...i, ...projectSkill(i) })
+  })
+  ipcMain.handle(IPC.skillsRemove, (_e, input: unknown): SkillMutationResult => skills.remove(projectSkill(input)))
+  ipcMain.handle(IPC.skillsLinkLibrary, (_e, input: unknown): SkillMutationResult => {
+    const i = withProject<SkillLinkLibraryInput>(input)
+    return skills.linkLibrary({ ...i, ...libraryArg(i) })
+  })
+  ipcMain.handle(IPC.skillsPromote, (_e, input: unknown): SkillMutationResult => skills.promote(projectSkill(input)))
+  // Import: read-only scans of the stored project's folder; the renderer supplies choices and the preview digest.
+  ipcMain.handle(IPC.skillsPreviewImport, (_e, input: unknown): SkillImportPreview => skills.previewImport(withProject<SkillImportInput>(input)))
+  ipcMain.handle(IPC.skillsApplyImport, (_e, input: unknown): SkillImportApplyResult => skills.applyImport(withProject<SkillImportApplyInput>(input)))
+  ipcMain.handle(IPC.skillsUndoImport, (_e, input: unknown): SkillMutationResult => {
+    const i = withProject<{ projectId: string; undoId: string }>(input)
+    if (!isValidId(i.undoId)) throw new Error('Nothing to undo')
+    return skills.undoImport({ projectId: i.projectId, undoId: i.undoId })
+  })
+  ipcMain.handle(IPC.skillsEvaluate, (_e, projectId: unknown): Promise<SkillEvaluationReport> => evaluation.evaluate(projectIdArg(projectId)))
+  ipcMain.handle(IPC.skillsLastEvaluation, (_e, projectId: unknown): SkillEvaluationReport | null => evaluation.last(projectIdArg(projectId)))
+  ipcMain.handle(IPC.skillsApplySuggestion, (_e, input: unknown): SkillMutationResult => {
+    const i = withProject<SkillApplySuggestionInput>(input)
+    if (!isValidId(i.suggestionId)) throw new Error('Suggestion not found')
+    return applySuggestion(skills, evaluation, i)
+  })
+  ipcMain.handle(IPC.skillLibraryList, (): SkillLibraryInfo[] => skills.libraryList())
+  ipcMain.handle(IPC.skillLibraryRead, (_e, input: unknown): SkillContent => skills.libraryRead(libraryArg(input)))
+  ipcMain.handle(IPC.skillLibraryCreate, (_e, draft: unknown): SkillLibraryInfo[] => skills.libraryCreate(obj<SkillDraft>(draft)))
+  ipcMain.handle(IPC.skillLibraryAddFromFolder, (_e, input: unknown): SkillLibraryInfo[] => {
+    const i = obj<SkillLibraryFolderInput>(input)
+    if (typeof i.path !== 'string' || !i.path) throw new Error('Choose a skill folder.')
+    if (!wasPickedFolder(i.path)) throw new Error('Choose the skill folder with the folder picker first.')
+    return skills.libraryAddFromFolder({ path: i.path })
+  })
+  ipcMain.handle(IPC.skillLibraryUpdate, (_e, input: unknown): SkillLibraryInfo[] => {
+    const i = obj<{ libraryId: string; draft: SkillDraft }>(input)
+    return skills.libraryUpdate({ ...libraryArg(i), draft: obj<SkillDraft>(i.draft) })
+  })
+  ipcMain.handle(IPC.skillLibraryRemove, (_e, input: unknown): SkillLibraryInfo[] => skills.libraryRemove(libraryArg(input)))
 }
 
 /** Connections, model catalog and remaps: ConnectionService 1:1. */

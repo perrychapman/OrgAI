@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AppSettings, Project, ProjectCreateInput, ProjectPathCheck } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
-import { isSafeId, newProject, preferEverydayNearLimit } from '@shared/defaults'
+import { isSafeId, newProject, preferEverydayNearLimit, skillEvaluationOf } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 
 /**
@@ -184,6 +184,18 @@ export class ProjectStore {
     else delete next.mcpServers
     if (stored.plugins !== undefined) next.plugins = stored.plugins
     else delete next.plugins
+    // Skills change only through skills:*: the stored list wins, and a role keeps only grants that exist there.
+    if (stored.skills !== undefined) next.skills = stored.skills
+    else delete next.skills
+    const known = new Set((stored.skills ?? []).map((s) => s.id))
+    if (Array.isArray(next.roles)) {
+      next.roles = next.roles.map((r) => {
+        if (!r || r.skills === undefined) return r
+        const kept = Array.isArray(r.skills) ? [...new Set(r.skills.filter((id) => typeof id === 'string' && known.has(id)))] : []
+        return { ...r, skills: kept }
+      })
+    }
+    if (next.skillEvaluation !== undefined) next.skillEvaluation = skillEvaluationOf(next)
     return this.save(next)
   }
 

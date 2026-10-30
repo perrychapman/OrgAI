@@ -17,6 +17,8 @@ import { sanitizeModelPrice } from '../runtime/pricing'
  */
 
 const TIMEOUT_MS = 10_000
+/** Largest response body read from a proxy. */
+export const LITELLM_MAX_BODY_BYTES = 5 * 1024 * 1024
 
 type FetchLike = typeof fetch
 
@@ -80,11 +82,42 @@ async function getJson(path: string, base: string, key: string, fetchImpl: Fetch
     }
     throw new Error(`${res.status} from ${path}: ${reason || 'error'}`)
   }
+  let text: string
   try {
-    return await res.json()
+    text = await readCapped(res, LITELLM_MAX_BODY_BYTES)
+  } catch {
+    throw new Error(`${path} response was too large or unreadable`)
+  }
+  try {
+    return JSON.parse(text) as unknown
   } catch {
     throw new Error(`${path} did not return JSON`)
   }
+}
+
+/** The body as text, failing once it passes `max` bytes (the stream is cancelled). */
+async function readCapped(res: Response, max: number): Promise<string> {
+  const declared = Number(res.headers?.get?.('content-length'))
+  if (Number.isFinite(declared) && declared > max) throw new Error('too large')
+  if (!res.body) {
+    const t = await res.text()
+    if (t.length > max) throw new Error('too large')
+    return t
+  }
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('too large')
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
@@ -94,12 +127,13 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' && Number
 /** Model ids from a /v1/models body. Tolerates `{ data: [...] }`, a bare array, and string entries. */
 export function parseModelIds(body: unknown): string[] {
   const list = Array.isArray(body) ? body : Array.isArray(obj(body).data) ? (obj(body).data as unknown[]) : []
-  const ids: string[] = []
+  const ids = new Set<string>()
   for (const item of list) {
-    const id = typeof item === 'string' ? item : str(obj(item).id) ?? str(obj(item).model_name)
-    if (id && !ids.includes(id)) ids.push(id)
+    if (ids.size >= LITELLM_MAX_MODELS) break
+    const raw = typeof item === 'string' ? item.trim() : str(obj(item).id) ?? str(obj(item).model_name)
+    if (raw && raw.length <= LITELLM_MAX_ID_CHARS) ids.add(raw)
   }
-  return ids
+  return [...ids]
 }
 
 export interface ModelInfoEntry {
@@ -114,7 +148,7 @@ export interface ModelInfoEntry {
 
 /** A finite number >= 0, from a number or a numeric string. */
 function amount(v: unknown): number | undefined {
-  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*[\d.eE+-]+\s*$/.test(v) ? Number(v) : NaN
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.length <= 40 && /^\s*[\d.eE+-]+\s*$/.test(v) ? Number(v) : NaN
   return Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
@@ -125,7 +159,7 @@ export function parsePrice(info: Record<string, unknown>): ModelPrice | undefine
   if (input === undefined && output === undefined) return undefined
   const cacheRead = amount(info.cache_read_input_token_cost)
   const cacheCreation = amount(info.cache_creation_input_token_cost)
-  // sanitizeModelPrice applies the per-token ceiling and returns a fresh object (untrusted proxy data).
+  // Out-of-range prices (1e300 and the like) are dropped, never clamped.
   return sanitizeModelPrice({
     inputPerToken: input ?? 0,
     outputPerToken: output ?? 0,
@@ -141,19 +175,20 @@ export function parseModelInfo(body: unknown): Map<string, ModelInfoEntry> {
   for (const item of list) {
     const e = obj(item)
     const name = str(e.model_name)
-    if (!name) continue
+    if (!name || name.length > LITELLM_MAX_ID_CHARS) continue
+    if (out.size >= LITELLM_MAX_MODELS && !out.has(name)) continue
     const info = obj(e.model_info)
     const params = obj(e.litellm_params)
     // model_info.litellm_provider is the cleanest; else the "provider/" prefix of litellm_params.model.
-    const paramModel = str(params.model)
-    const provider = str(info.litellm_provider) ?? (paramModel?.includes('/') ? paramModel.slice(0, paramModel.indexOf('/')) : undefined)
+    const paramModel = str(params.model)?.slice(0, LITELLM_MAX_ID_CHARS)
+    const provider = (str(info.litellm_provider) ?? (paramModel?.includes('/') ? paramModel.slice(0, paramModel.indexOf('/')) : undefined))?.slice(0, LITELLM_MAX_ID_CHARS)
     const prev = out.get(name)
     const price = prev?.price ?? parsePrice(info)
     const upstream = prev?.upstream ?? paramModel
     out.set(name, {
       litellmProvider: prev?.litellmProvider ?? provider,
       contextWindow: prev?.contextWindow ?? num(info.max_input_tokens) ?? num(info.max_tokens),
-      mode: prev?.mode ?? str(info.mode),
+      mode: prev?.mode ?? str(info.mode)?.slice(0, 40),
       ...(price ? { price } : {}),
       ...(upstream ? { upstream } : {})
     })

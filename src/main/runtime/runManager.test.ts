@@ -4,9 +4,9 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, RunEvent, RunSummary, TokenUsage } from '@shared/types'
 import { setModelTokens } from './runUsage'
-import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
@@ -223,13 +223,43 @@ describe('RunManager usage and pricing', () => {
   it('builds usage for an agent the adapter gave none and sets producedNothing from the final state', async () => {
     const { m, p, ctxs } = setup()
     const run = await m.start({ project: p, prompt: 'go' })
-    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', parentId: 'root', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
     const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
-    expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'computed' })
+    expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'none' })
     expect(up.agent.usage!.legacy).toBeUndefined()
-    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', state: 'done', result: 'fine' }) })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', parentId: 'root', state: 'done', result: 'fine' }) })
     const again = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
     expect(again.agent.usage!.producedNothing).toBeUndefined()
+  })
+
+  it('does not label a live agent adapter estimate as provider cost', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'mystery', inputTokens: 10, costUsd: 0.5 }) })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent.usage!.costSource).not.toBe('provider')
+    expect(up.agent.usage!.models.some((x) => x.priceSource === 'provider')).toBe(false)
+  })
+
+  it('ignores the adapter run.cost on a priced (LiteLLM) connection but keeps it elsewhere', async () => {
+    const proxy = setup({ resolveConnection: () => ({ connection: 'litellm', env: {}, pricing: { m: { inputPerToken: 0.000001, outputPerToken: 0.000002 } } }) as never })
+    const r1 = await proxy.m.start({ project: proxy.p, prompt: 'go' })
+    proxy.ctxs[0]!.emit({ type: 'run.cost', runId: r1.id, totalCostUsd: 7 })
+    expect(proxy.m.summaryOf(r1.id)!.usage!.providerCostUsd).toBeUndefined()
+    expect(proxy.m.summaryOf(r1.id)!.usage!.costSource).not.toBe('provider')
+    const plain = setup()
+    const r2 = await plain.m.start({ project: plain.p, prompt: 'go' })
+    plain.ctxs[0]!.emit({ type: 'run.cost', runId: r2.id, totalCostUsd: 7 })
+    expect(plain.m.summaryOf(r2.id)!.usage!.providerCostUsd).toBe(7)
+  })
+
+  it('caps runs:usageStats rows at the requested limit and flags truncation', async () => {
+    const { m, p, store } = setup()
+    for (let i = 0; i < 3; i++) store.upsert(runSummary({ id: `r${i}`, projectId: p.id, startedAt: 1000 + i }))
+    const stats = m.usageStats({ projectId: p.id, limit: 2 })
+    expect(stats.runs.map((r) => r.runId)).toEqual(['r2', 'r1'])
+    expect(stats.truncated).toBe(true)
+    expect(m.usageStats({ projectId: p.id }).truncated).toBeUndefined()
   })
 
   it('reports an unpriced model as unknown with a legacy cost of 0', async () => {
@@ -2421,5 +2451,80 @@ describe('run titles', () => {
     await sleep(20)
     expect(prompts).toHaveLength(2)
     expect(store.get(second.id)?.title).toBe('Title 2')
+  })
+})
+
+describe('skills in runs', () => {
+  const skill = (over: Partial<RunSkill> = {}): RunSkill => ({ id: 'sk1', name: 'pdf-fill', description: 'Fill forms', dir: join(dir, 'sk'), files: [{ path: 'SKILL.md' }] as RunSkill['files'], roleIds: ['r-lead'], ...over })
+  function fakeAdapter() {
+    const ctxs: RuntimeContext[] = []
+    const completes: Parameters<RuntimeAdapter['complete']>[0][] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async (input) => {
+        completes.push(input)
+        input.onUsage?.({ tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } })
+        return input.kind === 'title' ? 'T' : 'answer'
+      },
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    return { adapter, ctxs, completes }
+  }
+  const build = (skills: RunSkill[] | undefined, options: RunManagerOptions = {}) => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const f = fakeAdapter()
+    const forRun = vi.fn(() => skills ?? [])
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: f.adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100, { ...(skills ? { skills: { forRun } } : {}), ...options })
+    return { p, m, forRun, store, ...f }
+  }
+  const used = (runId: string, over: Partial<Extract<RunEvent, { type: 'skill.used' }>> = {}): RunEvent => ({ type: 'skill.used', runId, agentId: ROOT_AGENT_ID, skillId: 'sk1', name: 'x', at: 5, ...over })
+
+  it('gives work runs the skills once and setup runs none', async () => {
+    const { p, m, ctxs, forRun } = build([skill()])
+    await m.start({ project: p, prompt: 'work' })
+    await m.start({ project: p, prompt: 'setup', kind: 'setup' })
+    expect(forRun).toHaveBeenCalledTimes(1)
+    expect(ctxs[0]!.skills!().map((s) => s.id)).toEqual(['sk1'])
+    expect(ctxs[0]!.skills!()).toBe(ctxs[0]!.skills!())
+    expect(ctxs[1]!.skills!()).toEqual([])
+  })
+
+  it('counts skill.used into RunUsage.skills, writes a harness row and drops unknown skills', async () => {
+    const { p, m, ctxs } = build([skill()])
+    const run = await m.start({ project: p, prompt: 'work' })
+    const ctx = ctxs[0]!
+    ctx.emit(used(run.id))
+    ctx.emit(used(run.id))
+    ctx.emit(used(run.id, { skillId: 'ghost', name: 'ghost' }))
+    expect(events.filter(isType('skill.used'))).toHaveLength(2)
+    const rows = events.filter(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.source === 'harness'))
+    expect(rows.filter((r) => (r.entry.block as { text: string }).text === 'Loaded skill pdf-fill')).toHaveLength(2)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.usage?.skills).toEqual([{ skillId: 'sk1', name: 'pdf-fill', loads: 2, roles: [] }]))
+  })
+
+  it('caps counted loads per run', async () => {
+    const { p, m, ctxs } = build([skill()])
+    const run = await m.start({ project: p, prompt: 'work' })
+    for (let i = 0; i < RUN_SKILL_LOAD_LIMIT + 5; i++) ctxs[0]!.emit(used(run.id))
+    expect(events.filter(isType('skill.used'))).toHaveLength(RUN_SKILL_LOAD_LIMIT)
+  })
+
+  it('completeForProject uses the project adapter, connection and tier model', async () => {
+    const connection = { connection: 'litellm' as const, adapter: 'mock' as const, env: {} }
+    const { p, m, completes } = build(undefined, { resolveConnection: () => connection, fastModel: () => 'fast-x' })
+    const signal = new AbortController().signal
+    const onUsage = vi.fn()
+    const fast = await m.completeForProject(p, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast', signal, onUsage })
+    expect(fast).toEqual({ text: 'answer', model: 'fast-x' })
+    expect(completes[0]).toMatchObject({ kind: 'skills', system: 's', prompt: 'p', model: 'fast-x', connection, cwd: p.path, signal })
+    expect(onUsage).toHaveBeenCalled()
+    await m.completeForProject(p, { system: 's', prompt: 'p', kind: 'skills', tier: 'everyday' })
+    expect(completes[1]!.kind).toBe('skills')
+    await expect(m.completeForProject({ ...p, id: 'harness' }, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast' })).rejects.toThrow(/harness/)
   })
 })

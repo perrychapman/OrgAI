@@ -29,6 +29,8 @@ import type {
   RunPeer,
   RunPlan,
   RunSummary,
+  SkillFileInfo,
+  TokenUsage,
   UsageStatus,
   UserQuestion
 } from '@shared/types'
@@ -109,6 +111,23 @@ export interface ResolvedMcpServer {
   env: Record<string, string>
   /** spec.headers plus secretHeaders values (http / sse). */
   headers: Record<string, string>
+}
+
+/**
+ * A project skill ready for a run (RuntimeContext.skills): enabled, its library link present, granted to at least one
+ * role of the run. `dir` is OrgAI's own stored copy (under the data dir), never the repository.
+ */
+export interface RunSkill {
+  /** SkillSpec.id (the project skill id, also for a linked skill). */
+  id: string
+  name: string
+  description: string
+  /** Absolute folder holding SKILL.md and the resource files. */
+  dir: string
+  /** The stored files, SKILL.md first (only these may be read or copied). */
+  files: SkillFileInfo[]
+  /** Ids of the run's roles granted this skill (Role.skills). */
+  roleIds: string[]
 }
 
 /** What message_run achieved (RuntimeContext.messageRun). */
@@ -253,6 +272,13 @@ export interface RuntimeContext {
   resolvedMcpServers?(): Promise<ResolvedMcpServer[]>
   /** Enabled project plugins (Claude adapter only). Optional: missing = none. */
   plugins?(): PluginSpec[]
+  /**
+   * Work runs: the project skills granted to at least one role in `roles` (RunSkill.roleIds says which). Setup-like
+   * runs get none. Read once at session start (the set does not change mid-run). Missing = none.
+   * Grants are enforced per agent: Claude gates the Skill tool in PreToolUse, list_skills / load_skill filter by the
+   * caller's role (HarnessToolCaller.roleId). Adapters emit `skill.used` when a granted skill loads.
+   */
+  skills?(): RunSkill[]
   /** Model access for this run. Missing = the anthropic connection with project.provider.auth (tests, older code). */
   connection?: RunConnection
   /**
@@ -304,9 +330,10 @@ export interface CompletionInput {
   /**
    * What the completion is for. 'draft' (default): the org chart drafter, answered with JSON. 'title': a run title
    * (src/main/ai/runTitle.ts), answered with one short line. Adapters only use it where they must (the mock answers
-   * deterministically per kind).
+   * deterministically per kind). 'skills': the skill evaluation's suggestion drafter (src/main/skills/), answered
+   * with JSON `{ "suggestions": [{ name, description, body, rationale, findingIds }] }`.
    */
-  kind?: 'draft' | 'title'
+  kind?: 'draft' | 'title' | 'skills'
   /**
    * How to reach the models, as RunManager resolved it for a run (env, API key, base URL, Codex home). Claude merges
    * `connection.env` over the process environment (and drops ANTHROPIC_API_KEY on a non-anthropic connection, like
@@ -319,6 +346,11 @@ export interface CompletionInput {
    * reject. Missing = the completion runs to its own end.
    */
   signal?: AbortSignal
+  /**
+   * Called once when the completion finished, with what it spent if the adapter knows (Claude: the result message's
+   * usage and total_cost_usd; Codex: the turn's token usage; mock: a fixed small figure). Missing = not reported.
+   */
+  onUsage?(usage: { tokens: TokenUsage; costUsd?: number; model?: string }): void
 }
 
 /**
