@@ -369,3 +369,12 @@
   --font: var(--font-sans);
   --mono: var(--font-mono);
 }
+
+/* ---------- 7. Appearance switches (lib/theme.ts sets the data attributes on <html>) ---------- */
+
+:root[data-canvas-tint='off'] {
+  --canvas-wash-opacity: 0;
+}
+:root[data-canvas-pattern='none'] {
+  --canvas-pattern: transparent;
+}

@@ -52,8 +52,8 @@ export default function ConnectionsPanel(): ReactElement {
           {CONNECTION_IDS.map((id) => (
             <div key={id} className="card-block">
               <div className="card-sec">
-                <div className="skeleton" style={{ width: '40%' }} />
-                <div className="skeleton" style={{ width: '70%', marginTop: 'var(--space-2)' }} />
+                <div className="skeleton w-40" />
+                <div className="skeleton w-70" />
               </div>
             </div>
           ))}
