@@ -1,7 +1,40 @@
 import { describe, expect, it } from 'vitest'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance } from '@shared/types'
-import { TERMINAL_ACTIVITY, describeTool, harnessToolActivity, runOutcome, settleAgent } from './activity'
+import { TERMINAL_ACTIVITY, authFailureMessage, describeTool, harnessToolActivity, isAuthFailure, runOutcome, settleAgent } from './activity'
+
+describe('isAuthFailure', () => {
+  it('trusts the SDK error code', () => {
+    expect(isAuthFailure({ errorCode: 'authentication_failed' })).toBe(true)
+    expect(isAuthFailure({ errorCode: 'rate_limit', text: 'Rate limited' })).toBe(false)
+  })
+  it("matches the CLI's auth wording in short text", () => {
+    expect(isAuthFailure({ text: 'Invalid API key · Please run /login' })).toBe(true)
+    expect(isAuthFailure({ text: 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}' })).toBe(true)
+    expect(isAuthFailure({ text: 'OAuth token has expired. Please obtain a new token or refresh your existing token.' })).toBe(true)
+  })
+  it('counts a bare 401 or unauthorized only on an error result', () => {
+    expect(isAuthFailure({ text: 'API Error: 401 Unauthorized' })).toBe(false)
+    expect(isAuthFailure({ text: 'API Error: 401 Unauthorized', isError: true })).toBe(true)
+  })
+  it('never flags an ordinary or long answer', () => {
+    expect(isAuthFailure({ text: 'Done. I added the login page.' })).toBe(false)
+    expect(isAuthFailure({ text: `${'x'.repeat(500)} invalid api key` })).toBe(false)
+    expect(isAuthFailure({})).toBe(false)
+  })
+})
+
+describe('authFailureMessage', () => {
+  it('names the connection on one line and points to Settings > Connections', () => {
+    for (const c of ['anthropic', 'openai', 'litellm', undefined] as const) {
+      const m = authFailureMessage(c)
+      expect(m).toMatch(/Settings > Connections/)
+      expect(m).not.toMatch(/\n/)
+    }
+    expect(authFailureMessage('litellm')).toMatch(/LiteLLM/)
+    expect(authFailureMessage('anthropic')).toMatch(/Anthropic/)
+  })
+})
 
 describe('describeTool', () => {
   it.each([

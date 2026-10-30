@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import type { AgentInstance, AgentState, RunStatus } from '@shared/types'
+import type { AgentInstance, AgentState, ConnectionId, RunStatus } from '@shared/types'
 import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
@@ -133,4 +133,42 @@ export function settleAgent(agent: AgentInstance, cutOff: boolean, outcome: RunO
   if (activity === agent.activity && state === agent.state) return agent
   const endedAt = agent.endedAt ?? (state !== agent.state ? Date.now() : undefined)
   return { ...agent, activity, state, ...(endedAt !== undefined ? { endedAt } : {}) }
+}
+
+// ---------- Authentication failures ----------
+
+/** Phrases the Claude Code CLI (and gateways behind it) use when a request is refused for bad or missing auth. */
+const AUTH_FAILURE_STRONG = /invalid api key|please run \/login|authentication_error|invalid bearer token|oauth token (?:has )?expired|invalid x-api-key/i
+/** Weaker signals, trusted only on an error result: an HTTP 401 or "unauthorized". */
+const AUTH_FAILURE_WEAK = /\b401\b|unauthori[sz]ed/i
+/** Longer text is a model's own answer, which may well discuss API keys. */
+const AUTH_FAILURE_MAX_CHARS = 400
+
+/**
+ * True when a turn's outcome is an authentication failure rather than a reply: the SDK's assistant error code
+ * 'authentication_failed', or short text with the CLI's auth wording ("Invalid API key · Please run /login",
+ * authentication_error). A 401 or "unauthorized" counts only when the adapter knows the turn errored (`isError`).
+ * Vendor-neutral: adapters pass what their SDK reports.
+ */
+export function isAuthFailure(input: { errorCode?: string | null; text?: string | null; isError?: boolean }): boolean {
+  if (input.errorCode === 'authentication_failed') return true
+  const text = (input.text ?? '').trim()
+  if (!text || text.length > AUTH_FAILURE_MAX_CHARS) return false
+  if (AUTH_FAILURE_STRONG.test(text)) return true
+  return !!input.isError && AUTH_FAILURE_WEAK.test(text)
+}
+
+/**
+ * The one-line run error for an authentication failure on `connection`. It names the connection and says where
+ * to fix it. Never includes the raw provider text (it may echo a key fragment).
+ */
+export function authFailureMessage(connection: ConnectionId | undefined): string {
+  switch (connection) {
+    case 'litellm':
+      return 'The LiteLLM connection was refused: the proxy did not accept the API key. Check the key and base URL in Settings > Connections.'
+    case 'openai':
+      return 'The OpenAI connection was refused: sign in again or check the API key in Settings > Connections.'
+    default:
+      return 'The Anthropic connection was refused: Claude Code is not logged in for OrgAI. Run claude and /login on this machine, set an API key, or choose another connection in Settings > Connections.'
+  }
 }

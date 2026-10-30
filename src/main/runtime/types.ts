@@ -51,10 +51,13 @@ export interface RunConnection {
   /** The adapter adapterForProject chose; equals the adapter receiving this context. */
   adapter: ProviderId
   /**
-   * Extra environment for the adapter's child process, merged over process.env.
+   * Extra environment for the adapter's child process. The Claude adapter merges it over an isolated copy of
+   * process.env (childEnv.ts isolateClaudeEnv: a user's gateway, model and cloud-provider variables never reach a
+   * run), so this is the only source of routing variables.
    * Claude adapter on LiteLLM: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
-   * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL; empty for the anthropic connection (auth stays on
-   * project.provider.auth / ANTHROPIC_API_KEY as today).
+   * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL. On the anthropic connection: ANTHROPIC_API_KEY (copied from
+   * the project's auth.envVar) for an API-key project whose variable is set, else empty (the Claude Code login or
+   * CLAUDE_CODE_OAUTH_TOKEN authenticates). Secret values here are redacted from logs (collectSecrets).
    * Codex adapter: always CODEX_HOME = codexHomeDir(dataDir) (codexAppServer.ts), so runs use OrgAI's own
    * ChatGPT login and config, never the user's ~/.codex/config.toml.
    */
