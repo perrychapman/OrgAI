@@ -21,6 +21,13 @@ describe('decisionTitle', () => {
     expect(oneLine('x'.repeat(300)).length).toBe(120)
     expect(baseName('a\\b/c.txt')).toBe('c.txt')
   })
+  it('clips at exactly 120 characters with an ellipsis and strips isolates', () => {
+    expect(oneLine('y'.repeat(120))).toBe('y'.repeat(120))
+    expect(oneLine('y'.repeat(121))).toBe(`${'y'.repeat(119)}…`)
+    expect(oneLine('a⁦b⁩c‪d')).toBe('a b c d')
+    expect(oneLine(42)).toBe('')
+    expect(permissionTitle('Bash', { command: 'echo ‮hi\nsecond' })).toBe('Run echo hi')
+  })
   it('builds the other kinds', () => {
     expect(questionTitle('Which db?')).toBe('Answer: Which db?')
     expect(rulesTitle(['Bash(npm test:*)'])).toBe('Allow Bash(npm test:*)')
