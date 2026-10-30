@@ -196,3 +196,109 @@
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-default);
 }
+
+/* ---------- skills import (components/skills/SkillImportControls, ImportSkillsDialog) ---------- */
+.skill-import-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  align-items: flex-start;
+}
+.skill-import-controls > .banner {
+  align-self: stretch;
+}
+.skill-import-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  min-width: 0;
+}
+.skill-import-row.is-skipped {
+  opacity: 0.7;
+}
+.skill-import-notes {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.skill-import-scripts {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+  font-size: var(--text-small);
+}
+.skill-import-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.skill-import-files {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.skill-import-files li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.skill-import-files li > span:first-child {
+  overflow-wrap: anywhere;
+}
+.skill-import-roles {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.skill-import-roles legend {
+  padding: 0;
+  margin-bottom: var(--space-1);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.skill-import-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+.skill-import-invalid {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--surface-1);
+}
+.skill-import-invalid-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+.skill-import-invalid ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+}
+.skill-import-invalid li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+/* ---------- end skills import ---------- */
