@@ -13,7 +13,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   /* The stage keeps at least 55% of the frame; the tray takes what it needs up to the rest and scrolls inside it.
-     While a question is open its options are the action, so the stage may drop to 38% to give the tray 62%. */
+     While a question is open its options are the action, so the stage may drop to 36% to give the tray 64%. */
   --stage-min: 55cqh;
   grid-template-rows: auto minmax(max(96px, var(--stage-min)), 1fr) minmax(0, max-content) auto;
   grid-template-areas:
@@ -81,9 +81,9 @@
   margin-right: var(--space-1h);
   vertical-align: middle;
 }
-/* The question's options are the action: while one is open the stage may shrink to 38% of the frame. */
+/* The question's options are the action: while one is open the stage may shrink to 36% of the frame. */
 .frame-grid:has(> .frame-tray .decision-card[data-inline='true']) {
-  --stage-min: 38cqh;
+  --stage-min: 36cqh;
 }
 /* Only a roomy frame (1500 x 560 or more) docks the tray beside the canvas; a narrower or shorter one stacks, so
    collapsing the side panel never moves the tray sideways. The beside tray is at least 420 px wide. */

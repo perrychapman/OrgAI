@@ -74,7 +74,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
               )
             }
             return (
-              <label key={o.label} className={`question-option${checked ? ' selected' : ''}`}>
+              <label key={o.label} className={`question-option${checked ? ' selected' : ''}`} title={o.description}>
                 <input
                   type="radio"
                   name={`q-${question.id}`}
