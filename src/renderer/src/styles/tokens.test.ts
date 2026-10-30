@@ -54,6 +54,13 @@ function luminance(hex: string): number {
   return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
 }
 
+/** Alpha-blends `fg` at `pct` percent over `bg` (what color-mix(fg pct%, transparent) paints on a surface). */
+function blend(fg: string, pct: number, bg: string): string {
+  const ch = (h: string, i: number): number => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16)
+  const out = [0, 1, 2].map((i) => Math.round(ch(fg, i) * (pct / 100) + ch(bg, i) * (1 - pct / 100)))
+  return `#${out.map((n) => n.toString(16).padStart(2, '0')).join('')}`
+}
+
 function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
   return (hi + 0.05) / (lo + 0.05)
@@ -129,6 +136,29 @@ describe('brand tokens (ui-review-2.md C)', () => {
         for (const t of ['--success-text', '--warning-text', '--danger-text', '--info-text']) {
           expect(contrast(v(t), v('--surface-2'))).toBeGreaterThanOrEqual(4.5)
         }
+      })
+
+      it('badge text passes 4.5 on every soft fill over surface-1 to surface-3', () => {
+        const soft = (name: string): number => {
+          const m = value(body, name).match(/color-mix\(in oklab,\s*var\((--[a-z-]+)\)\s+(\d+)%/)
+          if (!m) throw new Error(`${name} is not a color-mix`)
+          return Number(m[2])
+        }
+        const pairs: Array<[string, string, string]> = [
+          ['--success-soft', '--success', '--success-text'],
+          ['--warning-soft', '--warning', '--warning-text'],
+          ['--danger-soft', '--danger', '--danger-text'],
+          ['--info-soft', '--info', '--info-text'],
+          ['--accent-soft', '--accent', '--accent-text']
+        ]
+        for (const [softName, base, text] of pairs) {
+          for (const s of ['--surface-1', '--surface-2', '--surface-3']) {
+            const fill = blend(v(base), soft(softName), v(s))
+            expect(contrast(v(text), fill), `${text} on ${softName} over ${s}`).toBeGreaterThanOrEqual(4.5)
+          }
+        }
+        // The neutral badge is --text-secondary on the plain surface.
+        for (const s of ['--surface-1', '--surface-2', '--surface-3']) expect(contrast(v('--text-secondary'), v(s))).toBeGreaterThanOrEqual(4.5)
       })
     })
   }

@@ -1,7 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
+import { useEffect, useRef } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { decisionFocus } from './DecisionCard'
-import { IconButton } from './ui/IconButton'
+import { Icon } from './ui/Icon'
 
 export interface DecisionItem {
   key: string
@@ -26,6 +27,11 @@ export default function DecisionTray({
   onSelect: (index: number) => void
   onPin: () => void
 }): ReactElement | null {
+  const listRef = useRef<HTMLUListElement>(null)
+  // Keep the selected chip in view when stepping with Previous/Next.
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
+  }, [selected, items.length])
   if (items.length === 0) return null
   const go = (to: number): void => {
     decisionFocus.suppress = true
@@ -39,7 +45,7 @@ export default function DecisionTray({
           <span className="decision-stepper-title">
             Decisions <span className="decision-count">{items.length}</span>
           </span>
-          <ul className="decision-list">
+          <ul className="decision-list" ref={listRef}>
             {items.map((it, i) => (
               <li key={it.key}>
                 <button
@@ -56,11 +62,33 @@ export default function DecisionTray({
             ))}
           </ul>
           <span className="decision-steps">
-            <IconButton icon={ChevronLeft} label="Previous decision" size="sm" disabled={selected === 0} onClick={() => go(selected - 1)} />
-            <span aria-live="polite">
+            <button
+              type="button"
+              className="icon-btn size-sm"
+              aria-label="Previous decision"
+              title="Previous decision"
+              aria-disabled={selected === 0 || undefined}
+              onClick={() => {
+                if (selected > 0) go(selected - 1)
+              }}
+            >
+              <Icon icon={ChevronLeft} size="sm" />
+            </button>
+            <span>
               {selected + 1} of {items.length}
             </span>
-            <IconButton icon={ChevronRight} label="Next decision" size="sm" disabled={selected === items.length - 1} onClick={() => go(selected + 1)} />
+            <button
+              type="button"
+              className="icon-btn size-sm"
+              aria-label="Next decision"
+              title="Next decision"
+              aria-disabled={selected === items.length - 1 || undefined}
+              onClick={() => {
+                if (selected < items.length - 1) go(selected + 1)
+              }}
+            >
+              <Icon icon={ChevronRight} size="sm" />
+            </button>
           </span>
         </div>
       )}

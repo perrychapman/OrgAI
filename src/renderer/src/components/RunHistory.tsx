@@ -207,7 +207,7 @@ function HistoryRow({
             Open
           </Button>
           {viewed && (
-            <Badge tone="info" title="You are viewing this run">
+            <Badge tone="accent" title="You are viewing this run">
               Viewing
             </Badge>
           )}

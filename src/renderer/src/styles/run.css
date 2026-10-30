@@ -317,20 +317,23 @@
   color: var(--text-primary);
 }
 .composer-hint {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
   margin-left: auto;
   color: var(--text-tertiary);
-  border-radius: var(--radius-sm);
-  cursor: help;
+  font-size: var(--text-caption);
 }
-.composer-hint:hover {
-  color: var(--text-primary);
+.composer-hint svg {
+  flex: none;
 }
-.composer-hint:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+.composer-hint-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Input row: attach, a two-line textarea (56 px), Send centred beside it. */
 .composer-row {

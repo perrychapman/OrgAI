@@ -27,6 +27,7 @@ export function Tabs({
   label,
   idPrefix,
   compact,
+  controls = true,
   className
 }: {
   tabs: TabItem[]
@@ -38,6 +39,8 @@ export function Tabs({
   idPrefix: string
   /** 32 px high instead of 40. */
   compact?: boolean
+  /** Set false when no TabPanel follows (a topbar switcher), so aria-controls does not dangle. */
+  controls?: boolean
   className?: string
 }): ReactElement {
   const refs = useRef(new Map<string, HTMLButtonElement>())
@@ -78,7 +81,7 @@ export function Tabs({
             role="tab"
             id={tabDomId(idPrefix, t.id)}
             aria-selected={selected}
-            aria-controls={panelDomId(idPrefix, t.id)}
+            aria-controls={controls ? panelDomId(idPrefix, t.id) : undefined}
             tabIndex={selected ? 0 : -1}
             disabled={t.disabled}
             className="tabs-tab"

@@ -137,6 +137,7 @@ export default function App(): ReactElement {
                   onChange={(id) => setView(id as SectionView)}
                   label="Project sections"
                   idPrefix="project"
+                  controls={false}
                   className="topbar-tabs"
                 />
                 <div className="spacer" />

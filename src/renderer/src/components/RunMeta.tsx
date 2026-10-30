@@ -4,7 +4,7 @@ import type { Project } from '@shared/types'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { costLabel, planProgress } from '../lib/layout'
 import { predecessorOf, relativeTime } from '../lib/runChains'
-import { promptLine, runName, runTag } from '../lib/runLabels'
+import { runName, runTag, shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 
@@ -36,7 +36,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <span className="run-meta-item run-meta-chain">
           Continues{' '}
           {before ? (
-            <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={promptLine(before.prompt)}>
+            <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={shortPrompt(before.prompt, 300)}>
               {runTag(indexes.get(before.id))}: {runName(before)}
             </button>
           ) : (
@@ -53,7 +53,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <button
           type="button"
           className={`run-meta-item run-meta-steps ${run.plan.status}`}
-          title={`Plan ${run.plan.status === 'active' ? 'in progress' : run.plan.status}: ${run.plan.goal}. Click to open the plan.`}
+          title={`Plan ${run.plan.status === 'active' ? 'in progress' : run.plan.status}: ${shortPrompt(run.plan.goal, 300)}. Click to open the plan.`}
           onClick={() => setSideTab('plan')}
         >
           <Icon icon={ClipboardList} size="xs" />

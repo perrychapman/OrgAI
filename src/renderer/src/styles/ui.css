@@ -799,13 +799,35 @@ ul.maint-list {
   height: 28px;
 }
 button.brand-lockup-expand {
-  display: inline-grid;
-  place-items: center;
-  padding: 0;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0h);
+  padding: var(--space-1);
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
+  color: var(--text-tertiary);
   cursor: pointer;
+}
+button.brand-lockup-expand:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.brand-lockup span[role='img'] {
+  position: relative;
+  display: inline-grid;
+}
+/* Mock mode in the rail: the MOCK badge does not fit, so a dot on the mark carries it (tooltip on the button). */
+.brand-lockup-dot {
+  position: absolute;
+  top: var(--space-0h);
+  left: calc(var(--space-1) + 20px);
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--warning);
+  box-shadow: 0 0 0 2px var(--surface-1);
 }
 button.brand-lockup-expand:focus-visible {
   outline: 2px solid var(--focus-ring);

@@ -5,9 +5,12 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Project } from '@shared/types'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
 import { needsYou } from '../lib/runChains'
-import { promptLine, runName, runTag } from '../lib/runLabels'
+import { runName, runTag, shortPrompt } from '../lib/runLabels'
 import { autoContinueState, isStoppedRun, runStatus, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+
+/** Longest prompt excerpt put in a tab tooltip. */
+const PROMPT_TIP_CHARS = 300
 
 const DRAFT_ID = 'new'
 
@@ -127,7 +130,8 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       autoContinuing: auto.active
     })
     const tag = runTag(indexes.get(run.summary.id))
-    const full = promptLine(run.summary.prompt)
+    // Untrusted text in a tooltip: capped. The full prompt lives only in the transcript.
+    const full = shortPrompt(run.summary.prompt, PROMPT_TIP_CHARS)
     const hasDraft = draftKeys.includes(run.summary.id)
     const unread = unreadByRun[run.summary.id] ?? 0
     return {
@@ -347,6 +351,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 aria-selected={selected}
                 aria-controls="run-panel"
                 aria-label={v.label}
+                aria-describedby={`run-tab-desc-${item.id}`}
                 title={v.tooltip}
                 tabIndex={item.id === rovingId ? 0 : -1}
                 ref={(el) => {
@@ -354,6 +359,8 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                   else tabRefs.current.delete(item.id)
                 }}
                 onFocus={() => setRoving(item.id)}
+                onPointerDown={(e) => e.currentTarget.setAttribute('data-pointer', '')}
+                onBlur={(e) => e.currentTarget.removeAttribute('data-pointer')}
                 onClick={() => activate(item)}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -371,6 +378,9 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 <span className="run-tab-title">{v.title}</span>
                 {v.word && <span className="sr-only">{v.word}</span>}
               </button>
+              <span className="sr-only" id={`run-tab-desc-${item.id}`}>
+                {v.tooltip}
+              </span>
               {v.closable && (
                 <button type="button" className="run-tab-close" tabIndex={-1} aria-label={`Hide ${v.tag || 'New run'}`} title="Hide this tab (Ctrl+W)" onClick={() => hide(item)}>
                   <Icon icon={X} size="xs" />

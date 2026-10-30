@@ -118,16 +118,16 @@
   --focus-ring: var(--accent-text);
 
   --success: #12a06f;
-  --success-text: #0b7a53;
+  --success-text: #096a48;
   --success-soft: color-mix(in oklab, var(--success) 10%, transparent);
   --warning: #e08a00;
-  --warning-text: #8f5400;
+  --warning-text: #7d4a00;
   --warning-soft: color-mix(in oklab, var(--warning) 10%, transparent);
   --danger: #d9363e;
-  --danger-text: #c62f3b;
+  --danger-text: #b3242f;
   --danger-soft: color-mix(in oklab, var(--danger) 10%, transparent);
   --info: #1a86d9;
-  --info-text: #0b6bb5;
+  --info-text: #0a5fa2;
   --info-soft: color-mix(in oklab, var(--info) 10%, transparent);
 
   --code-bg: #f1f3f8;
@@ -186,16 +186,16 @@
     --focus-ring: var(--accent-text);
 
     --success: #12a06f;
-    --success-text: #0b7a53;
+    --success-text: #096a48;
     --success-soft: color-mix(in oklab, var(--success) 10%, transparent);
     --warning: #e08a00;
-    --warning-text: #8f5400;
+    --warning-text: #7d4a00;
     --warning-soft: color-mix(in oklab, var(--warning) 10%, transparent);
     --danger: #d9363e;
-    --danger-text: #c62f3b;
+    --danger-text: #b3242f;
     --danger-soft: color-mix(in oklab, var(--danger) 10%, transparent);
     --info: #1a86d9;
-    --info-text: #0b6bb5;
+    --info-text: #0a5fa2;
     --info-soft: color-mix(in oklab, var(--info) 10%, transparent);
 
     --code-bg: #f1f3f8;
