@@ -41,6 +41,29 @@ describe('cleanTitle', () => {
     expect(cleanTitle('x'.repeat(RUN_TITLE_MAX_CHARS + 5), PROMPT)).toBeUndefined()
   })
 
+  it('drops control, zero-width and bidi characters', () => {
+    expect(cleanTitle('Fix\u0000 login​ bug‮', PROMPT)).toBe('Fix login bug')
+    expect(cleanTitle('⁦Add⁩ dark mode\u0007', PROMPT)).toBe('Add dark mode')
+  })
+
+  it('cuts an over-long title in a script without spaces, on code points', () => {
+    const t = cleanTitle('設定画面にダークモードの切り替えを追加して保存できるようにする作業の計画', 'x')!
+    expect(t.endsWith('…')).toBe(true)
+    expect(Array.from(t).length).toBe(RUN_TITLE_MAX_CHARS)
+    const emoji = cleanTitle(`${'😀'.repeat(40)}`, 'x')
+    expect(emoji).toBeUndefined()
+  })
+
+  it('aborts the completion when the title times out', async () => {
+    let signal: AbortSignal | undefined
+    const complete = vi.fn((i: CompletionInput) => {
+      signal = i.signal
+      return new Promise<string>(() => {})
+    })
+    expect(await generateRunTitle({ complete }, { prompt: PROMPT, timeoutMs: 10 })).toBeUndefined()
+    expect(signal?.aborted).toBe(true)
+  })
+
   it('keeps non-English titles', () => {
     expect(cleanTitle('Ajouter un mode sombre', 'Ajoute un mode sombre à la page des réglages')).toBe('Ajouter un mode sombre')
   })

@@ -276,6 +276,11 @@ export interface CompletionInput {
    * Holds secrets: never log, emit or persist it.
    */
   connection?: RunConnection
+  /**
+   * Aborted when the caller gives up (the run-title timeout). Adapters stop the completion's query or process and
+   * reject. Missing = the completion runs to its own end.
+   */
+  signal?: AbortSignal
 }
 
 /**

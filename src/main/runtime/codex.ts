@@ -1009,8 +1009,17 @@ export class CodexAdapter implements RuntimeAdapter {
       failure ??= error?.message ?? `codex app-server exited (code ${code ?? 'unknown'})`
       done()
     })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // The caller gave up (run-title timeout): end the turn wait and close the app-server in finally.
+    const onAbort = (): void => {
+      failure ??= 'the completion was cancelled'
+      done()
+    }
+    if (input.signal?.aborted) throw new Error('Completion cancelled')
+    input.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       await server.start(this.options.clientVersion)
+      if (input.signal?.aborted) throw new Error('Completion cancelled')
       const model = codexModelFor(input.model)
       const res = await server.request(METHOD.threadStart, {
         ephemeral: true,
@@ -1024,10 +1033,12 @@ export class CodexAdapter implements RuntimeAdapter {
       const thread = parseThreadResult(res)
       if (!thread) throw new Error('thread/start returned no thread id')
       await server.request(METHOD.turnStart, { threadId: thread.threadId, input: userInput(input.prompt) })
-      await Promise.race([completed, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Completion timed out')), this.options.completionTimeoutMs ?? 180_000))])
+      await Promise.race([completed, new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error('Completion timed out')), this.options.completionTimeoutMs ?? 180_000)))])
       if (failure) throw new Error(`Completion failed: ${failure}`)
       return final || text
     } finally {
+      clearTimeout(timer)
+      input.signal?.removeEventListener('abort', onAbort)
       server.close()
     }
   }

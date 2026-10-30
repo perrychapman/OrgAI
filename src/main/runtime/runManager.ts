@@ -688,7 +688,11 @@ export class RunManager {
   ): Promise<void> {
     const runId = active.summary.id
     try {
-      const title = await generateRunTitle(adapter, input, (message) => log.info(`Run ${runId}: no title (${message})`))
+      // Provider error text is cut short and stripped of the run connection's secret values before it is logged.
+      const secrets = [input.connection?.apiKey, ...Object.entries(input.connection?.env ?? {}).filter(([k]) => /TOKEN|KEY|SECRET|PASSWORD/i.test(k)).map(([, v]) => v)]
+        .filter((v): v is string => typeof v === 'string' && v.length >= 4)
+      const scrub = (m: string): string => secrets.reduce((acc, s) => acc.split(s).join('[redacted]'), m).replace(/\s+/g, ' ').slice(0, 200)
+      const title = await generateRunTitle(adapter, input, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title) return
       const live = this.runs.get(runId) === active
       if (!live && !this.store.get(runId)) return

@@ -35,15 +35,22 @@ const PREFIX = /^(?:#+\s*)?(?:run\s+)?title\s*[:\-–—]\s*/i
 const REFUSAL = /^(?:i\s+(?:can(?:'|’)?t|cannot|won(?:'|’)?t|am unable|'m unable|’m unable|'m sorry|’m sorry)|sorry\b|as an ai\b)/i
 
 const squash = (s: string): string => s.replace(/\s+/g, ' ').trim()
+/** C0/C1 controls except the newline (kept for line splitting): read as spaces. */
+const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g
+/** Zero-width and bidi override/isolate characters: removed outright. */
+const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g
+/** Scripts written without spaces between words: an over-long title is cut mid-text instead of rejected. */
+const NO_SPACE_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}]/u
 
 /**
  * A model's raw answer as a run title, or undefined when it is unusable. Takes the first non-empty line, strips
  * quotes, backticks, Markdown emphasis, a "Title:" prefix and trailing periods, collapses whitespace and caps the
- * result at RUN_TITLE_MAX_CHARS (cut on a word boundary with …). Refusals, echoes of the whole prompt and a single
- * over-long word are rejected. Pure.
+ * result at RUN_TITLE_MAX_CHARS code points (cut on a word boundary with …, or mid-text for scripts written without
+ * spaces). Control characters become spaces; zero-width and bidi controls are removed. Refusals, echoes of the whole
+ * prompt and a single over-long word in a spaced script are rejected. Pure.
  */
 export function cleanTitle(raw: string, prompt: string): string | undefined {
-  const line = (typeof raw === 'string' ? raw : '').split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0)
+  const line = (typeof raw === 'string' ? raw : '').replace(CONTROL, ' ').replace(INVISIBLE, '').split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0)
   if (!line) return undefined
   let t = squash(line)
   for (let i = 0; i < 3; i++) {
@@ -57,19 +64,26 @@ export function cleanTitle(raw: string, prompt: string): string | undefined {
   const echo = squash(prompt).replace(/[.。]+$/, '').toLowerCase()
   // An echo of the whole message adds nothing over the prompt the UI falls back to.
   if (echo && t.toLowerCase() === echo) return undefined
-  if (t.length > RUN_TITLE_MAX_CHARS) {
-    const room = t.slice(0, RUN_TITLE_MAX_CHARS - 1)
+  // Lengths in code points, so a cut never splits a surrogate pair.
+  const chars = Array.from(t)
+  if (chars.length > RUN_TITLE_MAX_CHARS) {
+    const room = chars.slice(0, RUN_TITLE_MAX_CHARS - 1).join('')
     const cut = room.lastIndexOf(' ')
-    if (cut <= 0) return undefined
-    t = `${room.slice(0, cut).replace(/[\s,;:.\-–—]+$/, '')}…`
+    if (cut > 0) t = `${room.slice(0, cut).replace(/[\s,;:.\-–—]+$/, '')}…`
+    else if (NO_SPACE_SCRIPT.test(room)) t = `${room.trim()}…`
+    else return undefined
   }
   return t || undefined
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+/** Races `p` against `ms`; on timeout `abort` is aborted so the adapter can stop the completion it started. */
+function withTimeout<T>(p: Promise<T>, ms: number, abort: AbortController): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Title timed out after ${Math.round(ms / 1000)} s`)), ms)
+    timer = setTimeout(() => {
+      abort.abort()
+      reject(new Error(`Title timed out after ${Math.round(ms / 1000)} s`))
+    }, ms)
   })
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
 }
@@ -90,9 +104,11 @@ export async function generateRunTitle(
   const earlier = squash((input.continues ?? '').replace(/[<>]/g, ' ')).slice(0, CONTINUES_CHARS)
   const context = earlier ? `This continues the task: <earlier_task>${earlier}</earlier_task>\n\n` : ''
   const prompt = `${context}Write the title for this message.\n\n<message>\n${excerpt}\n</message>`
+  const abort = new AbortController()
   try {
     const raw = await withTimeout(
       adapter.complete({
+        signal: abort.signal,
         kind: 'title',
         system: SYSTEM,
         prompt,
@@ -100,7 +116,8 @@ export async function generateRunTitle(
         ...(input.model ? { model: input.model } : {}),
         ...(input.connection ? { connection: input.connection } : {})
       }),
-      input.timeoutMs ?? RUN_TITLE_TIMEOUT_MS
+      input.timeoutMs ?? RUN_TITLE_TIMEOUT_MS,
+      abort
     )
     const title = cleanTitle(raw, text)
     if (!title) onError?.('the model returned no usable title')

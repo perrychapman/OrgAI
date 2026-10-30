@@ -1902,6 +1902,28 @@ describe('run titles', () => {
     expect(new RunStore(join(dir, 'data')).getRecord(run.id)?.summary.title).toBe('Ship the release notes')
   })
 
+  it('a title that lands after the project was deleted writes nothing', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let release!: (t: string) => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: () => new Promise<string>((r) => (release = r)),
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-1' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await m.removeProject(p.id)
+    release('Ship the release notes')
+    await sleep(20)
+    expect(events.some((e) => e.type === 'run.title')).toBe(false)
+    expect(store.get(run.id)).toBeNull()
+    expect(new RunStore(join(dir, 'data')).getRecord(run.id)).toBeNull()
+  })
+
   it('a continuation gets its own title; an auto-resume keeps the earlier one', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const prompts: string[] = []
