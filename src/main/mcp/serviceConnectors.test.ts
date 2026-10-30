@@ -219,6 +219,69 @@ describe('authorize with a connector preset (real flow, faked)', () => {
     expect(refreshTokens.mock.calls[0][1]).toMatchObject({ refreshToken: 'RT-1', clientSecret: 'shh', sendResource: false })
   })
 
+  it('a second fixed-port sign-in aborts the pending one and starts only after it released the port', async () => {
+    const svc = build()
+    const gmail = svc.connectorsAdd({ connectorId: 'gmail' }).entry
+    const slack = svc.connectorsAdd({ connectorId: 'slack' }).entry
+    const order: string[] = []
+    runAuthorization.mockImplementationOnce(
+      (input: AuthorizeFlowInput) =>
+        new Promise((_resolve, reject) => {
+          input.signal!.addEventListener('abort', () => {
+            // The real flow closes its listener before it settles.
+            order.push('first released')
+            reject(new Error('Authorization was cancelled.'))
+          })
+        })
+    )
+    runAuthorization.mockImplementationOnce(async (input: AuthorizeFlowInput) => {
+      order.push('second started')
+      expect(input.signal!.aborted).toBe(false)
+      return { ...flowResult(input.url), config: { ...flowResult(input.url).config, authorizationServer: 'https://slack.com' } }
+    })
+    const first = svc.authorize({ libraryId: gmail.id, clientId: 'gcp', clientSecret: 'shh' })
+    await vi.waitFor(() => expect(runAuthorization).toHaveBeenCalledTimes(1))
+    const second = await svc.authorize({ libraryId: slack.id, clientId: 'slk', clientSecret: 'sec' })
+    expect(second.state).toBe('authorized')
+    expect(await first).toEqual({ state: 'error', error: 'Authorization was cancelled: another sign-in started.' })
+    expect(order).toEqual(['first released', 'second started'])
+    // The superseded flow leaves no sticky error behind.
+    expect(svc.authStatus({ libraryId: gmail.id }).state).not.toBe('error')
+  })
+
+  it('a DCR (ephemeral port) sign-in never aborts a pending fixed-port one', async () => {
+    const svc = build()
+    const gmail = svc.connectorsAdd({ connectorId: 'gmail' }).entry
+    const notion = svc.connectorsAdd({ connectorId: 'notion' }).entry
+    let firstSignal: AbortSignal | undefined
+    runAuthorization.mockImplementationOnce((input: AuthorizeFlowInput) => {
+      firstSignal = input.signal
+      return new Promise(() => {})
+    })
+    runAuthorization.mockRejectedValueOnce(new Error('dcr failed'))
+    void svc.authorize({ libraryId: gmail.id, clientId: 'gcp', clientSecret: 'shh' })
+    await vi.waitFor(() => expect(runAuthorization).toHaveBeenCalledTimes(1))
+    await svc.authorize({ libraryId: notion.id })
+    expect(firstSignal!.aborted).toBe(false)
+    svc.cancelAuthorize({ libraryId: gmail.id })
+  })
+
+  it('rejects client ids and secrets with control characters or past the length caps', async () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'gmail' })
+    await expect(svc.authorize({ libraryId: entry.id, clientId: 'a\nb', clientSecret: 's' })).rejects.toThrow(/client id must be a single line/)
+    await expect(svc.authorize({ libraryId: entry.id, clientId: 'a\u007fb' })).rejects.toThrow(/client id/)
+    await expect(svc.authorize({ libraryId: entry.id, clientId: 'x'.repeat(513) })).rejects.toThrow(/client id is too long/)
+    await expect(svc.authorize({ libraryId: entry.id, clientId: 'gcp', clientSecret: 's\u0000' })).rejects.toThrow(/client secret must be a single line/)
+    await expect(svc.authorize({ libraryId: entry.id, clientId: 'gcp', clientSecret: 's'.repeat(4001) })).rejects.toThrow(/client secret is too long/)
+    // Nothing was stored by a refused call.
+    expect(library.get(entry.id)!.oauth?.clientId).toBeUndefined()
+    expect(secrets.get(mcpLibraryOAuthKey(entry.id, 'clientSecret'))).toBeUndefined()
+    runAuthorization.mockResolvedValue(flowResult(entry.url!))
+    const ok = await svc.authorize({ libraryId: entry.id, clientId: 'x'.repeat(512), clientSecret: 's'.repeat(4000) })
+    expect(ok.state).toBe('authorized')
+  })
+
   it('a token connector is never authorized with OAuth', async () => {
     const svc = build()
     const { entry } = svc.connectorsAdd({ connectorId: 'github' })
@@ -275,6 +338,22 @@ describe('ORGAI_MOCK=1 connectors', () => {
     const link = projects.get(pid)!.mcpServers![0]
     expect(real.resolve(pid, link).headers.Authorization).toBeUndefined()
     expect(await real.prepareForRun(pid, [link])).toEqual(['notion'])
+  })
+
+  it('never stores a placeholder client id, and ignores a legacy one outside mock mode', async () => {
+    const svc = build(true)
+    const notion = svc.connectorsAdd({ connectorId: 'notion' }).entry
+    await svc.authorize({ libraryId: notion.id })
+    expect(library.get(notion.id)!.oauth?.clientId).toBeUndefined()
+    expect(library.get(notion.id)!.oauth?.clientSource).toBeUndefined()
+    // A gmail entry an older mock build left with 'mock-client' still needs the user's own app outside mock mode.
+    const gmail = svc.connectorsAdd({ connectorId: 'gmail' }).entry
+    library.save({ ...library.get(gmail.id)!, oauth: { resource: gmail.url!, clientId: 'mock-client', clientSource: 'manual', hasClientSecret: true } })
+    secrets.set(mcpLibraryOAuthKey(gmail.id, 'clientSecret'), 'shh')
+    const real = build(false)
+    const s = await real.authorize({ libraryId: gmail.id })
+    expect(s).toMatchObject({ state: 'error', needsClientId: true })
+    expect(runAuthorization).not.toHaveBeenCalled()
   })
 
   it('ordinary library entries are untouched by the mock', async () => {

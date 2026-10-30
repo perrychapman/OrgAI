@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { McpAuthStatus, McpOAuthConfig } from '@shared/types'
+import { RESERVED_AUTH_PARAMS } from '@shared/connectors'
 
 /**
  * OAuth 2.1 authorization for remote MCP servers (MCP authorization spec 2025-06-18 / 2025-11-25): protected
@@ -95,8 +96,8 @@ export interface OAuthPreset {
   redirectPort?: number
 }
 
-/** Authorization-URL parameters a preset can never set. */
-const RESERVED_PARAMS = new Set(['response_type', 'client_id', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'resource', 'scope'])
+/** Authorization-URL parameters a preset can never set (the catalog's list, compared case-insensitively). */
+const RESERVED_PARAMS: ReadonlySet<string> = new Set(RESERVED_AUTH_PARAMS.map((p) => p.toLowerCase()))
 
 /** Per-request options shared by the token and refresh calls. */
 export interface TokenRequestOptions {
@@ -416,12 +417,48 @@ export async function discoverWithPreset(resourceUrl: string, fetchImpl: FetchLi
   }
   const hasEndpoints = !!preset?.authorizationEndpoint && !!preset?.tokenEndpoint
   if (hasEndpoints && preset?.endpointsMode === 'replace') return scoped(fromPreset())
+  let found: OAuthDiscovery
   try {
-    return scoped(await discover(resourceUrl, fetchImpl))
+    found = await discover(resourceUrl, fetchImpl)
   } catch (e) {
     if (hasEndpoints && e instanceof OAuthError) return scoped(fromPreset())
     throw e
   }
+  // 'fallback': the client secret goes to the token endpoint, so discovered endpoints must stay on the preset's
+  // registrable domain (the same host or a subdomain); otherwise the preset's endpoints are used.
+  if (
+    hasEndpoints &&
+    (!onRegistrableDomain(found.tokenEndpoint, preset!.tokenEndpoint!) || !onRegistrableDomain(found.authorizationEndpoint, preset!.authorizationEndpoint!))
+  ) {
+    return scoped(fromPreset())
+  }
+  return scoped(found)
+}
+
+/**
+ * The registrable host of a preset URL, approximated as its last two DNS labels (slack.com,
+ * googleapis.com). Presets are curated public hosts, so no public-suffix list is needed.
+ */
+export function registrableHost(url: string): string | undefined {
+  try {
+    const labels = new URL(url).hostname.toLowerCase().replace(/\.$/, '').split('.')
+    return labels.length >= 2 ? labels.slice(-2).join('.') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** True when `url`'s host equals, or is a subdomain of, the registrable host of `presetUrl`. */
+export function onRegistrableDomain(url: string, presetUrl: string): boolean {
+  const base = registrableHost(presetUrl)
+  if (!base) return false
+  let host: string
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '')
+  } catch {
+    return false
+  }
+  return host === base || host.endsWith(`.${base}`)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -518,6 +555,8 @@ export interface LoopbackServer {
   close(): void
 }
 
+const STRICT_PORT_RETRY_MS = 200
+
 const PAGE_OK = 'Authorization received. You can close this window and return to OrgAI.'
 const PAGE_ERR = 'Authorization failed. You can close this window and return to OrgAI.'
 
@@ -601,13 +640,18 @@ export async function startLoopback(opts: { port?: number; strict?: boolean } = 
     try {
       await listen(opts.port)
     } catch {
-      if (opts.strict) {
-        throw new OAuthError(
-          'authorization',
-          `OrgAI could not listen on 127.0.0.1:${opts.port} for the sign-in redirect; another program is using that port. Close it and authorize again.`
-        )
+      if (!opts.strict) await listen(0)
+      else {
+        // A superseded flow of our own may have closed this port a moment ago: retry once before giving up.
+        await new Promise((r) => setTimeout(r, STRICT_PORT_RETRY_MS))
+        const port = opts.port
+        await listen(port).catch(() => {
+          throw new OAuthError(
+            'authorization',
+            `OrgAI could not listen on 127.0.0.1:${port} for the sign-in redirect; another program is using that port. Close it and authorize again.`
+          )
+        })
       }
-      await listen(0)
     }
   } else await listen(0)
   const port = (server.address() as AddressInfo).port

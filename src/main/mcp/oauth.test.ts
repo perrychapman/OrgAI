@@ -9,8 +9,10 @@ import {
   createPkce,
   discover,
   exchangeCode,
+  onRegistrableDomain,
   parseWwwAuthenticate,
   redactOAuth,
+  registrableHost,
   refreshTokens,
   registerClient,
   runAuthorization,
@@ -19,6 +21,7 @@ import {
   type LoopbackServer,
   type OAuthDiscovery
 } from './oauth'
+import { RESERVED_AUTH_PARAMS } from '@shared/connectors'
 
 type Handler = (url: URL, init: RequestInit | undefined) => Response | undefined | Promise<Response | undefined>
 
@@ -397,6 +400,32 @@ describe('loopback', () => {
     expect(b.redirectUri).not.toBe(a.redirectUri)
     a.close()
     b.close()
+  })
+})
+
+describe('preset domain checks and reserved parameters', () => {
+  it('registrableHost / onRegistrableDomain compare on the last two labels', () => {
+    expect(registrableHost('https://slack.com/api/x')).toBe('slack.com')
+    expect(registrableHost('https://oauth2.googleapis.com/token')).toBe('googleapis.com')
+    expect(registrableHost('not a url')).toBeUndefined()
+    expect(onRegistrableDomain('https://api.slack.com/t', 'https://slack.com/x')).toBe(true)
+    expect(onRegistrableDomain('https://SLACK.com./t', 'https://slack.com/x')).toBe(true)
+    expect(onRegistrableDomain('https://evilslack.com/t', 'https://slack.com/x')).toBe(false)
+    expect(onRegistrableDomain('https://slack.com.evil.example/t', 'https://slack.com/x')).toBe(false)
+    expect(onRegistrableDomain('nope', 'https://slack.com/x')).toBe(false)
+  })
+
+  it('buildAuthorizeUrl refuses every catalog-reserved parameter from a preset', () => {
+    const extraParams = Object.fromEntries(RESERVED_AUTH_PARAMS.map((p) => [p.toUpperCase(), 'evil']))
+    const url = new URL(
+      buildAuthorizeUrl(
+        { resource: MCP, authorizationServer: AS, authorizationEndpoint: `${AS}/authorize`, tokenEndpoint: `${AS}/token` },
+        { clientId: 'cid', source: 'manual' },
+        { redirectUri: 'http://127.0.0.1:1/callback', state: 'st', challenge: 'ch', extraParams }
+      )
+    )
+    for (const p of RESERVED_AUTH_PARAMS) expect(url.searchParams.get(p.toUpperCase()), p).toBeNull()
+    expect(url.searchParams.get('client_id')).toBe('cid')
   })
 })
 

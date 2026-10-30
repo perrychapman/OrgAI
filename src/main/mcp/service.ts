@@ -114,6 +114,20 @@ function sameTarget(a: McpServerSpec | McpLibraryEntry, b: McpServerSpec | McpLi
 
 const isSecretKind = (k: unknown): k is 'env' | 'header' => k === 'env' || k === 'header'
 
+/** The abort reason of a fixed-port sign-in that a newer one replaced. */
+const SUPERSEDED = 'orgai:superseded-sign-in'
+/** The placeholder client id older mock builds stored for DCR connectors; ignored outside mock mode. */
+const MOCK_CLIENT_ID = 'mock-client'
+const CLIENT_ID_MAX = 512
+const CLIENT_SECRET_MAX = 4000
+
+/** mcp:authorize input checks: one line, no control characters, bounded length. Throws a plain Error. */
+function checkClientCredential(value: string, label: string, max: number): void {
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(value)) throw new Error(`The ${label} must be a single line without control characters.`)
+  if (value.length > max) throw new Error(`The ${label} is too long (at most ${max} characters).`)
+}
+
 /**
  * The main-process side of MCP servers, the app-wide library and OAuth: persists Project.mcpServers /
  * Project.plugins and the library, keeps secret values and tokens in the SecretStore and nowhere else, and hands
@@ -134,6 +148,11 @@ export class McpService {
   private mock: boolean
   /** One interactive authorization per owner; a new call aborts the previous. */
   private flows = new Map<string, AbortController>()
+  /**
+   * The pending flow on a connector's fixed loopback port (one at a time across owners): a newer one aborts it
+   * with SUPERSEDED and waits for `done` (the port released) before listening.
+   */
+  private fixedPortFlow?: { ac: AbortController; done: Promise<void> }
   /** In-flight refreshes per owner: refresh tokens rotate, so a second concurrent refresh would be fatal. */
   private refreshing = new Map<string, Promise<void>>()
   /** The last failed authorization per owner, shown as state 'error' until it succeeds or is revoked. */
@@ -565,12 +584,16 @@ export class McpService {
   async authorize(input: McpAuthorizeInput): Promise<McpAuthStatus> {
     const ref = this.targetRef(input)
     if (!mcpSupportsOAuth(ref.spec)) throw new Error('Only http and sse servers can use OAuth.')
+    const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : ''
+    const enteredSecret = typeof input.clientSecret === 'string' && input.clientSecret ? input.clientSecret : undefined
+    checkClientCredential(clientId, 'client id', CLIENT_ID_MAX)
+    if (enteredSecret) checkClientCredential(enteredSecret, 'client secret', CLIENT_SECRET_MAX)
     const key = mcpOwnerPrefix(ref.owner)
     this.flows.get(key)?.abort()
     const ac = new AbortController()
     this.flows.set(key, ac)
-    const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : ''
-    const enteredSecret = typeof input.clientSecret === 'string' && input.clientSecret ? input.clientSecret : undefined
+    let settled!: () => void
+    const done = new Promise<void>((r) => (settled = r))
     const secretOf = (): string | undefined => this.secrets.get(mcpOwnerOAuthKey(ref.owner, 'clientSecret'))
     const connector = connectorOf(ref.spec)
     const preset = oauthPresetFor(ref.spec)
@@ -593,7 +616,9 @@ export class McpService {
       if (connector?.variant.auth.kind === 'oauthClient') {
         const cfg = this.refFromOwner(ref.owner)?.spec.oauth
         const needsSecret = connector.variant.auth.clientSecret === 'required'
-        if (!cfg?.clientId || (needsSecret && !enteredSecret && !secretOf())) {
+        // A placeholder id an older mock build stored is never a real client outside mock mode.
+        const realClientId = cfg?.clientId && (this.mock || cfg.clientId !== MOCK_CLIENT_ID) ? cfg.clientId : undefined
+        if (!realClientId || (needsSecret && !enteredSecret && !secretOf())) {
           throw new OAuthError(
             'registration',
             `${connector.def.name} needs your own OAuth app: enter its client id${needsSecret ? ' and client secret' : ''}, then authorize again.`,
@@ -602,6 +627,16 @@ export class McpService {
         }
       }
       if (this.mock && connector) return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
+      if (preset?.redirectPort) {
+        // One sign-in on the fixed port at a time: the newer one wins, the older resolves 'error'.
+        const prev = this.fixedPortFlow
+        this.fixedPortFlow = { ac, done }
+        if (prev && prev.ac !== ac) {
+          prev.ac.abort(SUPERSEDED)
+          await prev.done
+        }
+        if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
+      }
       const config = this.refFromOwner(ref.owner)?.spec.oauth
       // Only a newly entered secret goes as clientSecret; the stored one is reused only for its own authorization server.
       const storedSecret = enteredSecret ? undefined : secretOf()
@@ -634,7 +669,11 @@ export class McpService {
     } catch (e) {
       const secrets = [enteredSecret ?? '', secretOf() ?? '']
       const cancelled = ac.signal.aborted
-      const message = cancelled ? 'Authorization was cancelled.' : redactOAuth(e instanceof Error ? e.message : String(e), secrets)
+      const message = cancelled
+        ? ac.signal.reason === SUPERSEDED
+          ? 'Authorization was cancelled: another sign-in started.'
+          : 'Authorization was cancelled.'
+        : redactOAuth(e instanceof Error ? e.message : String(e), secrets)
       const status: McpAuthStatus = {
         state: 'error',
         error: message,
@@ -644,6 +683,8 @@ export class McpService {
       return status
     } finally {
       if (this.flows.get(key) === ac) this.flows.delete(key)
+      if (this.fixedPortFlow?.ac === ac) this.fixedPortFlow = undefined
+      settled()
       if (ref.library) this.notifyLibrary()
     }
   }
@@ -815,12 +856,13 @@ export class McpService {
   private mockAuthorize(ref: AuthRef, manualClient: boolean, enteredClientId: string): McpAuthStatus {
     const cur = this.refFromOwner(ref.owner)?.spec.oauth
     const preset = oauthPresetFor(ref.spec)
+    const clientId = enteredClientId || (cur?.clientId !== MOCK_CLIENT_ID ? cur?.clientId : undefined)
     const config: McpOAuthConfig = {
       resource: resourceOf(ref.spec.url),
       authorizationServer: preset?.issuer ?? 'https://mock.invalid',
       ...(preset?.scopes ? { scopes: [...preset.scopes] } : {}),
-      clientId: enteredClientId || cur?.clientId || 'mock-client',
-      clientSource: manualClient ? 'manual' : 'dcr',
+      // No placeholder client id: a fake one would pass the real preflight later.
+      ...(clientId ? { clientId, clientSource: manualClient ? ('manual' as const) : ('dcr' as const) } : {}),
       hasClientSecret: !!cur?.hasClientSecret,
       authorizedAt: new Date(this.now()).toISOString(),
       account: MOCK_CONNECTOR_ACCOUNT
