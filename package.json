@@ -14,9 +14,13 @@
     "start": "electron-vite preview",
     "icon": "node scripts/make-icon.mjs",
     "dist": "npm run build && electron-builder --win",
+    "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac:arm64": "npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run build && electron-builder --mac --x64",
     "dist:mac:unsigned": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
     "dist:dir": "npm run build && electron-builder --dir",
+    "pack": "npm run build && electron-builder --dir --publish never",
     "test:watch": "vitest",
     "e2e:free": "node e2e/layout.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs"
   },
