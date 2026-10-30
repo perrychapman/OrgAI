@@ -8,6 +8,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
+import { Switch } from '../ui/Switch'
 import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
 import { Icon } from '../ui/Icon'
 import RemapPreviewDialog from '../RemapPreviewDialog'
@@ -24,6 +25,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   const models = useAppStore((s) => s.models)
   const loadModels = useAppStore((s) => s.loadModels)
   const setView = useAppStore((s) => s.setView)
+  const appInfo = useAppStore((s) => s.appInfo)
+  const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const current = projectConnection(project)
   const [pending, setPending] = useState<ConnectionId | null>(null)
   const [preview, setPreview] = useState(false)
@@ -31,6 +34,9 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   const [error, setError] = useState<string | null>(null)
   const target = pending ?? current
 
+  useEffect(() => {
+    void loadAppInfo()
+  }, [loadAppInfo])
   useEffect(() => {
     if (!connections) void loadConnections()
   }, [connections, loadConnections])
@@ -70,6 +76,20 @@ export default function ProjectConnection({ project }: { project: Project }): Re
     }
   }
 
+  const mock = project.provider.id === 'mock'
+  const toggleMock = async (on: boolean): Promise<void> => {
+    setError(null)
+    try {
+      const provider = on
+        ? { ...project.provider, id: 'mock' as const }
+        : { ...project.provider, id: adapterForProject({ ...project, provider: { ...project.provider, id: 'claude' } }, catalog).adapter }
+      await useAppStore.getState().saveProjectNow({ ...project, provider })
+      setPending(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
   const rolesOn = project.roles.length
   const everyday = tierModels.everyday
   const disconnected = (id: ConnectionId): boolean => infoOf(id)?.status.state !== 'connected'
@@ -99,6 +119,17 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           </p>
         </div>
       </div>
+      {appInfo?.mockAdapter && (
+        <div className="pconn-mock">
+          <Switch checked={mock} onChange={(on) => void toggleMock(on)} label="Run on the scripted mock adapter (no tokens)" testId="mock-adapter-toggle" />
+          <div>
+            <span>Run on the scripted mock adapter (no tokens)</span>
+            <p className="muted">Plays scripted runs, approvals and proposals so you can test the app without a connection.</p>
+          </div>
+        </div>
+      )}
+      {mock && appInfo?.mockAdapter && <p className="muted">The mock adapter is on, so the connection below does not apply to runs.</p>}
+      {error && !preview && <Banner tone="danger">{error}</Banner>}
       {!connections ? (
         <div className="pconn-cards" aria-busy="true">
           {CONNECTION_IDS.map((id) => (
@@ -109,7 +140,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           ))}
         </div>
       ) : (
-        <fieldset className="pconn-cards" data-testid="project-connection">
+        <fieldset className="pconn-cards" data-testid="project-connection" disabled={mock && !!appInfo?.mockAdapter}>
           <legend className="sr-only">Connection</legend>
           {CONNECTION_IDS.map((id) => {
             const info = infoOf(id)
@@ -127,7 +158,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         </fieldset>
       )}
 
-      {connections && disconnected(target) && (
+      {connections && !mock && disconnected(target) && (
         <Banner
           tone="warning"
           actions={<Button size="sm" onClick={() => setView('appSettings')}>Open connections</Button>}

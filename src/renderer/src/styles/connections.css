@@ -462,3 +462,42 @@
 .role-model .select {
   width: 100%;
 }
+
+/* Mock adapter toggle (only when the app runs with ORGAI_MOCK=1) */
+.pconn-mock {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.pconn-mock p {
+  margin: 0;
+}
+.pconn-cards:disabled {
+  opacity: 0.5;
+}
+.about-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  align-items: center;
+}
+.about-list dt {
+  color: var(--text-faint);
+}
+.about-list dd {
+  margin: 0;
+  min-width: 0;
+}
+.about-path {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.about-path .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}

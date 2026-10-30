@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { isOpenStatus } from '../lib/runChains'
 import { describeRemap, type ProjectChanges } from '../lib/remap'
 import type {
+  AppInfo,
   AgentInstance,
   AgentMessage,
   AuthStatusResult,
@@ -114,6 +115,9 @@ interface AppState {
   refreshUsage(): Promise<void>
 
   /** App-wide connections (records plus live status). null until the first load. */
+  /** Static app facts (version, folders, mock availability). null until loaded. */
+  appInfo: AppInfo | null
+  loadAppInfo(): Promise<void>
   connections: ConnectionInfo[] | null
   connectionsError: string | null
   /** Model catalogs by connection. */
@@ -272,12 +276,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   composerMode: 'reply',
   sideTab: 'transcript',
   usage: null,
+  appInfo: null,
   connections: null,
   connectionsError: null,
   models: {},
   modelsError: {},
   login: null,
   remapNotices: [],
+
+  async loadAppInfo() {
+    if (get().appInfo) return
+    try {
+      set({ appInfo: await window.orgai.app.info() })
+    } catch {
+      /* optional diagnostics; the mock toggle just stays hidden */
+    }
+  },
 
   async loadConnections() {
     try {
