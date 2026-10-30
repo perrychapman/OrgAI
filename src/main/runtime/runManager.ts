@@ -112,6 +112,8 @@ interface ActiveRun {
   limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
+  titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
   outcome?: RunOutcome
   /** Agents still live when the run ended; they read Stopped / Failed however the adapter re-reports them. */
@@ -330,7 +332,9 @@ export interface StartInput {
 export class RunManager {
   private runs = new Map<string, ActiveRun>()
   /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
-  private resumeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Every pending title query, live run or not; stopAll aborts them all. */
+  private titleAborts = new Set<AbortController>()
+  private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -347,6 +351,7 @@ export class RunManager {
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
         r.userStopped = true
+        r.titleAbort?.abort()
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         this.runs.delete(r.summary.id)
@@ -661,6 +666,8 @@ export class RunManager {
     const runId = active.summary.id
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     cancelPending(active, runId, this.broadcast)
+    // A stopped run's pending title is dropped; a run that ended on its own may still get its title afterwards.
+    if (active.userStopped) active.titleAbort?.abort()
     // Servers approved for this run only (and their secrets) are forgotten.
     active.runServers.clear()
     // Held peer messages are dropped; their senders are told if they are still live.
@@ -687,13 +694,16 @@ export class RunManager {
     input: { prompt: string; cwd: string; model?: string; connection?: RunConnection; continues?: string }
   ): Promise<void> {
     const runId = active.summary.id
+    // Provider error text is cut short and stripped of the run connection's secret values before it is logged.
+    const secrets = [input.connection?.apiKey, ...Object.entries(input.connection?.env ?? {}).filter(([k]) => /TOKEN|KEY|SECRET|PASSWORD/i.test(k)).map(([, v]) => v)]
+      .filter((v): v is string => typeof v === 'string' && v.length >= 4)
+    const scrub = (m: string): string => secrets.reduce((acc, s) => acc.split(s).join('[redacted]'), m).replace(/\s+/g, ' ').slice(0, 200)
+    const abort = new AbortController()
+    active.titleAbort = abort
+    this.titleAborts.add(abort)
     try {
-      // Provider error text is cut short and stripped of the run connection's secret values before it is logged.
-      const secrets = [input.connection?.apiKey, ...Object.entries(input.connection?.env ?? {}).filter(([k]) => /TOKEN|KEY|SECRET|PASSWORD/i.test(k)).map(([, v]) => v)]
-        .filter((v): v is string => typeof v === 'string' && v.length >= 4)
-      const scrub = (m: string): string => secrets.reduce((acc, s) => acc.split(s).join('[redacted]'), m).replace(/\s+/g, ' ').slice(0, 200)
-      const title = await generateRunTitle(adapter, input, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
-      if (!title) return
+      const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
+      if (!title || abort.signal.aborted) return
       const live = this.runs.get(runId) === active
       if (!live && !this.store.get(runId)) return
       active.summary.title = title
@@ -707,7 +717,10 @@ export class RunManager {
         this.broadcast({ type: 'run.title', runId, title })
       }
     } catch (e) {
-      log.warn(`Run ${runId}: title failed: ${(e as Error).message}`)
+      log.warn(`Run ${runId}: title failed: ${scrub(String((e as Error)?.message ?? e))}`)
+    } finally {
+      this.titleAborts.delete(abort)
+      if (active.titleAbort === abort) active.titleAbort = undefined
     }
   }
 
@@ -1235,6 +1248,7 @@ export class RunManager {
     const active = this.runs.get(runId)
     if (!active?.session) return
     active.userStopped = true
+    active.titleAbort?.abort()
     active.emit({ type: 'run.status', runId, status: 'stopping' })
     await active.session.stop()
   }
@@ -1242,6 +1256,8 @@ export class RunManager {
   async stopAll(): Promise<void> {
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
     for (const r of this.runs.values()) r.userStopped = true
+    // Titles still pending for runs that already ended are cancelled too (app quit).
+    for (const a of this.titleAborts) a.abort()
     await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
     for (const r of this.runs.values()) this.flush(r)
   }

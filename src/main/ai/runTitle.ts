@@ -28,6 +28,8 @@ export interface RunTitleInput {
   continues?: string
   /** Overrides RUN_TITLE_TIMEOUT_MS (tests). */
   timeoutMs?: number
+  /** Cancels the title (run stopped, app quitting): the completion is aborted and no title is returned. */
+  signal?: AbortSignal
 }
 
 const QUOTES = /^["'`“”‘’«»*_]+|["'`“”‘’«»*_]+$/g
@@ -37,8 +39,11 @@ const REFUSAL = /^(?:i\s+(?:can(?:'|’)?t|cannot|won(?:'|’)?t|am unable|'m un
 const squash = (s: string): string => s.replace(/\s+/g, ' ').trim()
 /** C0/C1 controls except the newline (kept for line splitting): read as spaces. */
 const CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g
-/** Zero-width and bidi override/isolate characters: removed outright. */
-const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g
+/**
+ * Zero-width and bidi mark/override/isolate characters (incl. the Arabic letter mark and Mongolian vowel separator),
+ * variation selectors and tag characters: removed outright.
+ */
+const INVISIBLE = /[\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFE00-\uFE0F\uFEFF\u{E0000}-\u{E007F}]/gu
 /** Scripts written without spaces between words: an over-long title is cut mid-text instead of rejected. */
 const NO_SPACE_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}]/u
 
@@ -79,13 +84,20 @@ export function cleanTitle(raw: string, prompt: string): string | undefined {
 /** Races `p` against `ms`; on timeout `abort` is aborted so the adapter can stop the completion it started. */
 function withTimeout<T>(p: Promise<T>, ms: number, abort: AbortController): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      abort.abort()
       reject(new Error(`Title timed out after ${Math.round(ms / 1000)} s`))
+      abort.abort()
     }, ms)
+    // A cancellation from outside settles at once, even if the adapter ignores its signal.
+    onAbort = () => reject(new Error('cancelled'))
+    abort.signal.addEventListener('abort', onAbort, { once: true })
   })
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
+  return Promise.race([p, timeout]).finally(() => {
+    clearTimeout(timer)
+    if (onAbort) abort.signal.removeEventListener('abort', onAbort)
+  })
 }
 
 /**
@@ -105,6 +117,12 @@ export async function generateRunTitle(
   const context = earlier ? `This continues the task: <earlier_task>${earlier}</earlier_task>\n\n` : ''
   const prompt = `${context}Write the title for this message.\n\n<message>\n${excerpt}\n</message>`
   const abort = new AbortController()
+  if (input.signal?.aborted) {
+    onError?.('cancelled')
+    return undefined
+  }
+  const onCancel = (): void => abort.abort()
+  input.signal?.addEventListener('abort', onCancel, { once: true })
   try {
     const raw = await withTimeout(
       adapter.complete({
@@ -119,11 +137,17 @@ export async function generateRunTitle(
       input.timeoutMs ?? RUN_TITLE_TIMEOUT_MS,
       abort
     )
+    if (input.signal?.aborted) {
+      onError?.('cancelled')
+      return undefined
+    }
     const title = cleanTitle(raw, text)
     if (!title) onError?.('the model returned no usable title')
     return title
   } catch (e) {
-    onError?.((e as Error)?.message ?? String(e))
+    onError?.(input.signal?.aborted ? 'cancelled' : ((e as Error)?.message ?? String(e)))
     return undefined
+  } finally {
+    input.signal?.removeEventListener('abort', onCancel)
   }
 }

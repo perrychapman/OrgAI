@@ -46,6 +46,12 @@ describe('cleanTitle', () => {
     expect(cleanTitle('⁦Add⁩ dark mode\u0007', PROMPT)).toBe('Add dark mode')
   })
 
+  it('drops the Arabic letter mark, Mongolian vowel separator, variation selectors and tag characters', () => {
+    expect(cleanTitle('Fix؜ login᠎ bug', PROMPT)).toBe('Fix login bug')
+    expect(cleanTitle('Add️ dark︀ mode', PROMPT)).toBe('Add dark mode')
+    expect(cleanTitle('Add dark mode\u{E0001}\u{E0069}\u{E0067}\u{E007F}', PROMPT)).toBe('Add dark mode')
+  })
+
   it('cuts an over-long title in a script without spaces, on code points', () => {
     const t = cleanTitle('設定画面にダークモードの切り替えを追加して保存できるようにする作業の計画', 'x')!
     expect(t.endsWith('…')).toBe(true)
@@ -104,6 +110,27 @@ describe('generateRunTitle', () => {
     expect(onError.mock.lastCall?.[0]).toMatch(/timed out/)
     expect(await generateRunTitle({ complete: async () => '' }, { prompt: PROMPT }, onError)).toBeUndefined()
     expect(onError).toHaveBeenCalledTimes(3)
+  })
+
+  it('a cancelled title aborts the completion and returns nothing, even if the adapter ignores the signal', async () => {
+    let signal: AbortSignal | undefined
+    const complete = vi.fn((i: CompletionInput) => {
+      signal = i.signal
+      return new Promise<string>(() => {})
+    })
+    const onError = vi.fn()
+    const cancel = new AbortController()
+    const p = generateRunTitle({ complete }, { prompt: PROMPT, signal: cancel.signal }, onError)
+    cancel.abort()
+    expect(await p).toBeUndefined()
+    expect(signal?.aborted).toBe(true)
+    expect(onError).toHaveBeenCalledWith('cancelled')
+
+    const late = vi.fn(async () => 'Late title')
+    const done = new AbortController()
+    done.abort()
+    expect(await generateRunTitle({ complete: late }, { prompt: PROMPT, signal: done.signal })).toBeUndefined()
+    expect(late).not.toHaveBeenCalled()
   })
 
   it('cuts a very long message before sending it', async () => {
