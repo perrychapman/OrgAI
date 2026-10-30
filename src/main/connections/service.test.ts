@@ -240,8 +240,8 @@ describe('prepareNewProject', () => {
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
     const s = ctx.settings.get()
-    const { fast: _fast, ...partial } = s.connections.litellm.tierModels
-    void _fast
+    const { everyday: _everyday, ...partial } = s.connections.litellm.tierModels
+    void _everyday
     ctx.settings.set({ ...s, defaultConnection: 'litellm', connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: partial } } })
     const p = fresh(ctx.settings)
     expect(ctx.service.prepareNewProject(p)).toEqual(p)
