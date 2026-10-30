@@ -14,6 +14,8 @@ describe('appPaneForSection', () => {
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.connections)).toBe('connections')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.modelPrices)).toBe('connections')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.mcpLibrary)).toBe('mcp-library')
+    expect(appPaneForSection(APP_SETTINGS_SECTIONS.skillLibrary)).toBe('skill-library')
+    expect(appPaneForSection('skill-library')).toBe('skill-library')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.appearance)).toBe('general')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.notifications)).toBe('general')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.about)).toBe('about')

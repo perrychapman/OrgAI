@@ -8,6 +8,7 @@ import {
   CircleDot,
   FileText,
   HelpCircle,
+  BookOpen,
   Info,
   ListChecks,
   MessageSquare,
@@ -315,12 +316,13 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
                 const peer = parsePeerNote(b.text)
                 if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
                 const harness = e.source === 'harness'
+                const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
                 // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
                 return (
                   <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
-                    <Icon icon={harness ? Info : MessageSquare} size="sm" />
+                    <Icon icon={skillName ? BookOpen : harness ? Info : MessageSquare} size="sm" />
                     <div className="tool-main">
-                      <Markdown text={b.text} />
+                      {skillName ? <span className="entry-plain">{b.text}</span> : <Markdown text={b.text} />}
                       {b.detail && (
                         <details className="entry-detail">
                           <summary>Show instruction</summary>

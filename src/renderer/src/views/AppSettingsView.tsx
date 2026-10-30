@@ -31,6 +31,7 @@ import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
+import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -78,6 +79,7 @@ const PANES: SettingsNavItem[] = [
   { id: APP_SETTINGS_PANES.general, label: 'General' },
   { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
   { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
+  { id: APP_SETTINGS_PANES.skillLibrary, label: 'Skill library' },
   { id: APP_SETTINGS_PANES.defaults, label: 'Defaults' },
   { id: APP_SETTINGS_PANES.about, label: 'About' }
 ]
@@ -448,6 +450,7 @@ export default function AppSettingsView(): ReactElement {
             <McpLibrarySection />
           </>
         )}
+        {pane === 'skill-library' && <SkillLibrarySection />}
         {pane === 'defaults' && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="Starting values for new projects, plus the assistants that work across all projects.">
             <SettingsGroup title="Connection">

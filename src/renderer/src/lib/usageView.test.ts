@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, RunUsage } from '@shared/types'
-import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, timeRows, tokenRows } from './usageView'
+import { agentRow, agentRows, agentSignals, formatHitRate, roleRows, runSignals, timeRows, tokenRows, skillRows } from './usageView'
 
 const tokens = { input: 100, output: 50, cacheRead: 300, cacheWrite: 100 }
 
@@ -108,5 +108,17 @@ describe('usageView', () => {
   it('dims roles that produced nothing', () => {
     const role = { roleId: 'r', roleSlug: 'qa', roleName: 'QA', agents: 2, tokens, costUsd: 1, costSource: 'computed' as const, turns: 1, toolCalls: 1, retries: 0, agentWallMs: 1, agentsWithoutResult: 2, noResultTokens: 5, models: [] }
     expect(roleRows(usage({ roles: [role] }))[0].dim).toBe(true)
+  })
+})
+
+describe('skillRows', () => {
+  it('sorts by loads, words the count and joins roles', () => {
+    const rows = skillRows({ skills: [{ skillId: 'a', name: 'a', loads: 1, roles: [] }, { skillId: 'b', name: 'b', loads: 3, roles: ['qa', 'dev'] }] })
+    expect(rows.map((r) => r.name)).toEqual(['b', 'a'])
+    expect(rows[0]).toMatchObject({ loadsText: '3 loads', roles: 'qa, dev' })
+    expect(rows[1].loadsText).toBe('1 load')
+  })
+  it('is empty without skills', () => {
+    expect(skillRows({})).toEqual([])
   })
 })
