@@ -150,6 +150,18 @@
     color: hsl(var(--connector-hue) 70% 76%);
   }
 }
+/* Brand marks: a neutral tile, the mark in its brand colour (or the theme text colour for black brands). */
+.connector-logo.has-mark,
+:root[data-theme] .connector-logo.has-mark {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+.connector-logo .brand-mark,
+.conn-mark .brand-mark {
+  width: 60%;
+  height: 60%;
+  display: block;
+}
 .connector-logo.size-lg {
   width: var(--space-12);
   height: var(--space-12);
