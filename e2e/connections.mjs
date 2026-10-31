@@ -246,6 +246,7 @@ try {
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
   const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
   if ((await lite.count()) === 1) {
+    check((await lite.locator('.conn-mark svg').count()) >= 1, 'LiteLLM card renders its fallback icon svg in .conn-mark')
     if ((await lite.locator('#litellm-url').count()) === 0) await lite.getByRole('button', { name: /^Expand/ }).click()
     const stored = await page.evaluate((k) => window.orgai.connections.setSecret({ id: 'litellm', apiKey: k }).then(() => true, () => false), CANARY)
     console.log('canary key stored:', stored)
