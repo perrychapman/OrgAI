@@ -153,7 +153,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
               <label key={id} className={`pconn-card ${pending === id || (!pending && current === id) ? 'on' : ''} ${current === id ? 'current' : ''}`}>
                 <input type="radio" name={`pconn-${project.id}`} checked={target === id} onChange={() => setPending(id === current ? null : id)} />
                 <span className="pconn-name">
-                  {brandMark(id) ? <span className="pconn-mark"><BrandMark id={id} /></span> : <Icon icon={ICON[id]} size="md" />} {NAME[id]}
+                  <span className="pconn-mark">{brandMark(id) ? <BrandMark id={id} /> : <Icon icon={ICON[id]} size="sm" />}</span> {NAME[id]}
                   {current === id && pending && <span className="muted"> (current)</span>}
                 </span>
                 <ConnectionStatusBadge state={info?.status.state ?? 'disconnected'} />

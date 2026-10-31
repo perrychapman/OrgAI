@@ -157,10 +157,20 @@
   color: var(--text-primary);
 }
 .connector-logo .brand-mark,
-.conn-mark .brand-mark {
+.conn-mark .brand-mark,
+.pconn-mark .brand-mark {
   width: 60%;
   height: 60%;
   display: block;
+}
+/* Dark tiles: marks with a lighter brand tint use it (>= 3:1). */
+:root[data-theme='dark'] .brand-mark[data-dark] {
+  fill: var(--brand-dark);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .brand-mark[data-dark] {
+    fill: var(--brand-dark);
+  }
 }
 .connector-logo.size-lg {
   width: var(--space-12);

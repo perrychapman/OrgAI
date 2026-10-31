@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { brandMark } from './brandMarks'
 
 /** Inline SVG brand mark, or null when the id has none. Decorative: the name is always text beside it. */
@@ -12,6 +12,8 @@ export function BrandMark({ id }: { id: string }): ReactElement | null {
       aria-hidden="true"
       focusable="false"
       fill={mark.hex ?? 'currentColor'}
+      data-dark={mark.darkHex ? '' : undefined}
+      style={mark.darkHex ? ({ '--brand-dark': mark.darkHex } as CSSProperties) : undefined}
       fillRule={mark.evenodd ? 'evenodd' : undefined}
     >
       <path d={mark.d} />
