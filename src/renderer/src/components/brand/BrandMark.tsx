@@ -6,8 +6,18 @@ export function BrandMark({ id }: { id: string }): ReactElement | null {
   const mark = brandMark(id)
   if (!mark) return null
   return (
-    <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill={mark.hex ?? 'currentColor'}>
+    <svg
+      className="brand-mark"
+      viewBox={mark.viewBox ?? '0 0 24 24'}
+      aria-hidden="true"
+      focusable="false"
+      fill={mark.hex ?? 'currentColor'}
+      fillRule={mark.evenodd ? 'evenodd' : undefined}
+    >
       <path d={mark.d} />
+      {mark.extra?.map((p) => (
+        <path key={p.hex} d={p.d} fill={p.hex} />
+      ))}
     </svg>
   )
 }

@@ -10,6 +10,8 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Switch } from '../ui/Switch'
 import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
+import { BrandMark } from '../brand/BrandMark'
+import { brandMark } from '../brand/brandMarks'
 import { Icon } from '../ui/Icon'
 import { SettingsCard } from '../settings/SettingsCard'
 import { SettingsSection } from '../settings/SettingsSection'
@@ -151,7 +153,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
               <label key={id} className={`pconn-card ${pending === id || (!pending && current === id) ? 'on' : ''} ${current === id ? 'current' : ''}`}>
                 <input type="radio" name={`pconn-${project.id}`} checked={target === id} onChange={() => setPending(id === current ? null : id)} />
                 <span className="pconn-name">
-                  <Icon icon={ICON[id]} size="md" /> {NAME[id]}
+                  {brandMark(id) ? <span className="pconn-mark"><BrandMark id={id} /></span> : <Icon icon={ICON[id]} size="md" />} {NAME[id]}
                   {current === id && pending && <span className="muted"> (current)</span>}
                 </span>
                 <ConnectionStatusBadge state={info?.status.state ?? 'disconnected'} />
