@@ -28,8 +28,9 @@ describe('brand marks', () => {
   it('path data is non-empty SVG path characters and colours are hex', () => {
     for (const [id, m] of Object.entries(BRAND_MARKS)) {
       expect(m.d.length, id).toBeGreaterThan(20)
-      expect(m.d, id).toMatch(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s-]+$/)
-      if (m.hex !== null) expect(m.hex, id).toMatch(/^#[0-9A-F]{6}$/)
+      for (const d of [m.d, ...(m.extra ?? []).map((p) => p.d)]) expect(d, id).toMatch(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s-]+$/)
+      for (const h of [m.hex, ...(m.extra ?? []).map((p) => p.hex)]) if (h !== null) expect(h, id).toMatch(/^#[0-9A-F]{6}$/)
+      if (m.viewBox) expect(m.viewBox, id).toMatch(/^0 0 \d+ \d+$/)
     }
   })
   it('gaps have no mark', () => {
