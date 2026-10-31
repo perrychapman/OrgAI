@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
+import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import type { ConnectionId } from '@shared/types'
 import { CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
@@ -666,6 +667,12 @@ export default function AppSettingsView(): ReactElement {
                 <dt>Version</dt>
                 <dd>
                   {appInfo.version}
+                  {isDevBuild(appInfo.version) && (
+                    <span title={devBuildLabel(appInfo.version)}>
+                      {' '}
+                      <Badge tone="info">Dev build</Badge>
+                    </span>
+                  )}
                   {appInfo.mockAdapter && (
                     <span title="This build can run scripted projects without a connection.">
                       {' '}

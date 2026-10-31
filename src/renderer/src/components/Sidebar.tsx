@@ -14,6 +14,7 @@ import { projectStatus } from '../lib/projectStatus'
 import { initials } from '../lib/layout'
 import { currentPlatform, isMacPlatform, modKeyLabel } from '../lib/platform'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
+import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
 import { CONNECTION_LABEL, currentConnection, spendAria, spendLabel, spendLevel } from '../lib/usage'
@@ -102,6 +103,9 @@ export default function Sidebar({
   const currentStatus = connections?.find((c) => c.connection.id === current)?.status
   const litellmEnabled = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
   const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage)
+  const appVersion = useAppStore((s) => s.appInfo?.version)
+  const devBuild = isDevBuild(appVersion)
+  const devLabel = devBuild && appVersion ? devBuildLabel(appVersion) : ''
   const mockAdapter = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const runs = useAppStore((s) => s.runs)
   const history = useAppStore((s) => s.historyByProject)
@@ -128,13 +132,31 @@ export default function Sidebar({
       <BrandLockup
         collapsed={rail}
         onExpand={() => setCollapsed(false)}
-        railNote={mockAdapter ? MOCK_TIP : undefined}
+        railNote={[mockAdapter ? MOCK_TIP : '', devLabel].filter(Boolean).join('. ') || undefined}
+        railPip={
+          devBuild ? (
+            <span className="brand-lockup-pip" data-testid="dev-build-badge" aria-hidden="true">
+              D
+            </span>
+          ) : undefined
+        }
         shortcut={sidebarKey}
         tag={
-          mockAdapter ? (
-            <Badge tone="neutral" testId="mock-mode-badge" title={MOCK_TIP}>
-              MOCK
-            </Badge>
+          mockAdapter || devBuild ? (
+            <>
+              {mockAdapter && (
+                <Badge tone="neutral" testId="mock-mode-badge" title={MOCK_TIP}>
+                  MOCK
+                </Badge>
+              )}
+              {devBuild && (
+                <span role="img" aria-label={devLabel} className="brand-lockup-devtag">
+                  <Badge tone="info" testId="dev-build-badge" title={devLabel}>
+                    Dev
+                  </Badge>
+                </span>
+              )}
+            </>
           ) : undefined
         }
         trailing={<IconButton icon={PanelLeftClose} label={`Collapse sidebar (${sidebarKey})`} size="sm" testId="sidebar-toggle" onClick={toggle} />}

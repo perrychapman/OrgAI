@@ -834,6 +834,27 @@ button.brand-lockup-expand:hover {
   background: var(--warning);
   box-shadow: 0 0 0 2px var(--surface-1);
 }
+/* Dev build: the full sidebar shows an info Badge; the rail shows a 14 px "D" pip on the mark's lower corner. */
+.brand-lockup-devtag {
+  display: inline-flex;
+  flex: none;
+}
+.brand-lockup-pip {
+  position: absolute;
+  bottom: var(--space-0h);
+  left: calc(var(--space-1) + 18px);
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--info);
+  color: var(--surface-1);
+  font-size: 9px;
+  line-height: 1;
+  font-weight: var(--weight-semibold);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
 button.brand-lockup-expand:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;

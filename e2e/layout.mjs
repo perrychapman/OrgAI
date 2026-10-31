@@ -180,6 +180,18 @@ try {
       check(Math.abs(shellM.brand - 48) <= 1, `brand row is 48 px high at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       check(w < 1180 ? Math.abs(shellM.side - 56) <= 1 : Math.abs(shellM.side - 232) <= 1, `sidebar is ${w < 1180 ? 'a 56 px rail' : '232 px wide'} at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       if (w >= 1180) check(shellM.footer < 80, `sidebar footer is under 80 px at ${w}x${h} ${theme}`, JSON.stringify(shellM))
+      // package.json carries a -dev version on dev branches, so the badge is expected there; a release version has none.
+      const pkgVersion = JSON.parse((await import('node:fs')).readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+      const wantDev = /^\d+\.\d+\.\d+-.*dev/i.test(pkgVersion)
+      const devBadge = page.locator('[data-testid=dev-build-badge]')
+      check((await devBadge.count()) === (wantDev ? 1 : 0), `dev build badge ${wantDev ? 'shows' : 'is absent'} for version ${pkgVersion} at ${w}x${h} ${theme}`)
+      if (wantDev) {
+        const bb = await devBadge.boundingBox()
+        const sb = await page.locator('.sidebar').boundingBox()
+        const label = w < 1180 ? await page.locator('.brand-lockup-expand').getAttribute('aria-label') : await page.locator('.brand-lockup-devtag').getAttribute('aria-label')
+        check(!!bb && !!sb && bb.x >= sb.x && bb.x + bb.width <= sb.x + sb.width + 0.5, `dev badge sits inside the sidebar at ${w}x${h} ${theme}`, JSON.stringify({ bb, sb }))
+        check(String(label).includes(`Dev build ${pkgVersion}`), `dev badge label names the version at ${w}x${h} ${theme}`, String(label))
+      }
       check((await page.locator('main .topbar .badge').count()) === 0, `no status badge in the topbar on Live at ${w}x${h} ${theme}`)
       check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
       check(inside(m.tabs), `run tabs inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.tabs))
