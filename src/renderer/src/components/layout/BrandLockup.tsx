@@ -14,7 +14,8 @@ export function BrandLockup({
   trailing,
   onExpand,
   railNote,
-  shortcut
+  shortcut,
+  railPip
 }: {
   collapsed?: boolean
   /** Rendered after the wordmark, e.g. `<Badge testId="mock-mode-badge">MOCK</Badge>`. Hidden when collapsed. */
@@ -27,6 +28,8 @@ export function BrandLockup({
   railNote?: string
   /** Collapsed only: the shortcut shown in the expand tooltip ("Ctrl+B"). */
   shortcut?: string
+  /** Collapsed only: a compact marker on the mark (the dev-build pip); it carries its own data-testid. */
+  railPip?: ReactNode
 }): ReactElement {
   const img = <img className="brand-lockup-mark" src={mark} alt="" width={collapsed ? 28 : 32} height={collapsed ? 28 : 32} />
   if (collapsed) {
@@ -39,12 +42,14 @@ export function BrandLockup({
           <button type="button" className="brand-lockup-expand" aria-label={label} title={label} onClick={onExpand}>
             {img}
             {dot}
+            {railPip}
             <Icon icon={ChevronRight} size="xs" />
           </button>
         ) : (
           <span role="img" aria-label={railNote ? `OrgAI. ${railNote}` : 'OrgAI'} title={railNote}>
             {img}
             {dot}
+            {railPip}
           </span>
         )}
       </div>
