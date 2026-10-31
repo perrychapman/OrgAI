@@ -17,6 +17,26 @@ import {
   stateChip
 } from './connectors'
 
+import { BRAND_GAPS, BRAND_MARKS, brandMark } from '../components/brand/brandMarks'
+
+describe('brand marks', () => {
+  it('every connector and provider id has a mark or is a listed gap', () => {
+    for (const id of [...CONNECTORS.map((c) => c.id), 'anthropic', 'openai', 'litellm']) {
+      expect(brandMark(id) !== null || (BRAND_GAPS as readonly string[]).includes(id), id).toBe(true)
+    }
+  })
+  it('path data is non-empty SVG path characters and colours are hex', () => {
+    for (const [id, m] of Object.entries(BRAND_MARKS)) {
+      expect(m.d.length, id).toBeGreaterThan(20)
+      expect(m.d, id).toMatch(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s-]+$/)
+      if (m.hex !== null) expect(m.hex, id).toMatch(/^#[0-9A-F]{6}$/)
+    }
+  })
+  it('gaps have no mark', () => {
+    for (const id of BRAND_GAPS) expect(brandMark(id)).toBeNull()
+  })
+})
+
 const info = (i: number, state: ConnectorInfo['state']): ConnectorInfo => ({ connector: CONNECTORS[i], state })
 
 describe('connectors lib', () => {
