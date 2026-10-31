@@ -1,0 +1,22 @@
+# UX review: brand logos (mock data)
+
+Walked the built app (`ORGAI_MOCK=1`, fresh temp `ORGAI_DATA_DIR`) at 1024x640 and 1600x1000 in dark and light. Screenshots are in `docs/design/ux-review-logos-shots/` (`gallery-*`, `dialog-*`, `connections-*`, `tools-*`, `add-service-*`, `project-connection-*`, `zoom-gallery-*`). Surfaces: App settings > Connectors (gallery, ConnectorDialog), Connections cards, project Tools (Add a service, connected-service row), project Settings > Connection. Slack, Notion and GitHub were connected to see connected states. Contrast figures are measured on the computed fill against the tile background.
+
+Verdict: the marks work. All 11 connector marks plus Anthropic and OpenAI render, are centred (dx/dy 0), sit in a uniform 36 px tile with a 22 px mark, align with the name, and never clip. Mono marks follow the theme (Notion, GitHub and Sentry fill `rgb(232,235,243)` in dark and `rgb(18,21,31)` in light, 12.6:1 and 15.4:1). No invisible mark. LiteLLM keeps its lucide Network icon.
+
+## Findings, ranked
+
+1. **Low: Atlassian blue is dim on the dark tile.** `connector-logo.has-mark` in dark: `#0052CC` on `rgb(32,38,58)` measures 2.2:1 (every other colour mark is 3.2 to 4.2:1). Visible in `gallery-1600x1000-dark-scrolled.png`, but the weakest mark in the set. Linear (`#5E6AD2`) and Stripe (`#635BFF`) are next at 3.19:1. Fix: add a dark-theme brand override in `brandMarks.ts` (for example Atlassian `#2684FF`, its lighter brand blue), or give `.connector-logo.has-mark` a lighter tile in dark theme.
+2. **Low: inconsistent treatment on the project Connection chooser.** `project-connection-1024x640-dark.png`, `ProjectConnection.tsx` `.pconn-mark`: Anthropic and OpenAI are bare 14 px marks with no tile, and LiteLLM is a thin outline lucide icon. The OpenAI mark is mono and legible, but beside the filled orange Anthropic burst the LiteLLM outline looks like a lighter, different weight. App settings > Connections (`connection-card`) uses the same three in a 36 px tile and looks consistent (`connections-1600x1000-*.png`), so only the project chooser is off. Fix: either tile the marks in the chooser too, or accept it as a compact variant and keep LiteLLM at `strokeWidth` 2 to match the visual weight.
+3. **Low, untested: the initial-tile fallback has no live surface.** Every catalog connector now has a mark, so `ConnectorLogo`'s initial tile never renders in the built app. Custom servers do not use `ConnectorLogo`, so the "custom servers keep an initial tile" expectation does not apply to the current UI: the Custom servers list is empty here (`gallery-*-scrolled.png`) and I did not add one. Fix: none needed, but a future connector without a mark relies on the untested `--connector-hue` tile, so add a unit or e2e check that renders one.
+4. **Info: Slack and Google Calendar and Drive are multicolour and read fine.** Slack first-path contrast 3.2:1 (dark) and 3.95:1 (light). Google marks are single-colour `#4285F4` (Drive and Calendar are not the four-colour Google style, only one blue). Acceptable and consistent with Gmail, but a user may notice Drive looks monochrome versus the real logo. No change needed.
+5. **Info, outside scope: the sidebar brand lockup at 1600x1000 shows a stray "(" glyph next to the MOCK and Dev pills** (`gallery-1600x1000-dark.png`, top left; the wordmark is missing). Likely the BrandLockup wordmark clipped by the narrow column, not a connector logo. Worth a look by the UI Lead.
+6. **Info, outside scope: project Settings sidebar highlights both Limits and Connection** (`project-connection-1024x640-dark.png`): Limits has a filled background while Connection is the active section. Probably hover or stale focus from the click; check that only the current section looks selected.
+
+## Checked and fine
+
+- Size and weight consistency across the 11 tiles: identical 36 px tile and 22 px mark at both window sizes; no layout change between 1024 and 1600.
+- Dialog header mark (`size-lg`) for GitHub in both themes: legible, aligned with the "by GitHub" text.
+- Add a service list (`add-service-*`): marks left-aligned at the same size, rows keep the name aligned. The Sentry row is partly cut by the scroll area, which is normal.
+- Connected-service row on Tools (`tools-rows-*`): mark left of the name, no squeeze.
+- Light theme: the neutral tile (`rgb(233,236,244)`) gives colour marks 3.0 to 4.0:1 (Google blue and Figma orange lowest at 3.02:1) and mono marks 15.4:1.
