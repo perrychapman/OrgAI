@@ -54,6 +54,7 @@ try {
   await sleep(300)
   await openGallery()
   check((await tile('notion').getAttribute('data-state')) === 'available', 'Notion starts available')
+  if ((await tile('gmail').count()) === 1) check((await tile('gmail').locator('.connector-logo svg').count()) >= 1, 'Gmail tile renders its brand mark svg in .connector-logo')
 
   // search filters the gallery
   const search = page.locator('[data-testid=connector-search]')
