@@ -383,8 +383,11 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     redirects and refuse private-IP literals (no DNS check). All of this is unit-tested only.
 - Connectors (`src/shared/connectors.ts` catalog, `src/main/mcp/connectors.ts`, `McpService.connectors*`): curated
   presets for official remote MCP servers that become library entries (`McpLibraryEntry.connectorId`, written only by
-  `connectors:add`, which is idempotent and takes only `{ connectorId, variant? }`). IPC `connectors:list`
-  (`ConnectorInfo`), `connectors:add`, `connectors:setToken` (token connectors; prefix added in main); everything else
+  `connectors:add`, which is idempotent and takes only `{ connectorId, variant? }`; because it is idempotent, switching
+  a keyless entry such as Exa or Context7 to its key variant means removing the entry first). IPC `connectors:list`
+  (`ConnectorInfo`), `connectors:add`, `connectors:setToken` (token connectors; prefix added in main); ipc.ts
+  `connectorArgs` rebuilds both inputs (kebab-case ids at most 64 chars, a token string of at most 4,000 chars or null,
+  every other shape refused, extra fields dropped; `ipc.test.ts`); everything else
   reuses mcp:* / mcpLibrary:*. `oauthClient` connectors (Google, Slack) use the user's own client and the fixed
   redirect `http://127.0.0.1:38917/callback` (`CONNECTOR_REDIRECT_URI`, strict listen, no ephemeral fallback).
   ORGAI_MOCK=1 makes connector authorize/test network-free (mock@example.com, fake tools); the stand-in token is
@@ -401,14 +404,32 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     set, or add of a 'none' preset; cleared by revokeAuth, token null, or losing the connector; stripped from renderer
     writes and linked specs; malformed values dropped on read) surfaced as `ConnectorInfo.connectedAt` only while the
     card is 'connected'.
-  - Catalog (29 entries): added Google Docs, Sheets, Slides, Chat (hosts follow the Gmail pattern, unverified;
-    People omitted), Intercom (US/EU), Supabase (read-only `?read_only=true` default), DeepWiki and Exa (keyless
-    'none' default; Exa also an `x-api-key` token variant), Cloudflare (oauth + token), Datadog (US1, EU1, plus
-    US3/US5/AP1 inferred from the pattern, unverified), Vercel (reviewed clients only), Asana, HubSpot, Box
-    (oauthClient), PayPal (live/sandbox, oauth best effort). Stripe's key variant is now an "Agent API key" (Dec 2026
-    rule); Google setup names the Developer Preview Program and the "Use this client for an AI-powered agent" box;
-    Slack notes say no DCR and Marketplace/internal apps only. `status` labels of the new entries are unverified.
-    New ids are in renderer `BRAND_GAPS` until their marks are sourced.
+  - Catalog (41 entries): added Google Docs, Sheets, Slides, Chat (People omitted), Intercom (US/EU), Supabase
+    (read-only `?read_only=true` default), DeepWiki and Exa (keyless 'none' default; Exa also an `x-api-key` token
+    variant), Cloudflare (oauth + token), Datadog (US1, EU1, US3, US5, AP1), Vercel (reviewed clients only), Asana,
+    HubSpot, Box (oauthClient), PayPal (live/sandbox, oauth best effort). Second wave (2026-10-31): Microsoft Learn,
+    AWS Knowledge (none), Context7 (keyless 'none' default plus a Bearer key variant), Granola, Neon (read-only
+    `?readonly=true` default, full, API key), Amplitude (US/EU), PostHog, Webflow, Miro, GitLab (gitlab.com only)
+    (oauth), Zoom (oauthClient, issuer `https://zoom.us`), Zapier (Bearer connection token). A "Not yet" comment at
+    the end of the catalog lists vendors left out and why. Every oauthClient preset sets `overrides.issuer` (Asana
+    `https://app.asana.com`, HubSpot `https://mcp.hubspot.com`, Box `https://api.box.com`, Zoom; Google and Slack
+    carry endpoints); these issuers come from the probe, unverified in a live sign-in. Stripe's key variant is an
+    "Agent API key" (Dec 2026 rule); Google setup names the Developer Preview Program and the "Use this client for an
+    AI-powered agent" box; Slack notes say no DCR and Marketplace/internal apps only. `status` labels of the new
+    entries are unverified. New ids are in renderer `BRAND_GAPS` until their marks are sourced.
+  - Probe (`scripts/probe-connectors.mjs`, `npm run probe:connectors`; `--list` parses the catalog without network,
+    `--only a,b`, `--out file`): token-free but network-using, so it needs the user's consent each time it runs. It
+    POSTs an unauthenticated JSON-RPC initialize to every http variant, follows a 401's `resource_metadata` to the
+    RFC 9728 and RFC 8414 / OIDC metadata and reports DCR, CIMD, PKCE methods, the RFC 9207 iss flag, scopes and, for
+    'none' variants, whether initialize answered 200 (no credentials, no redirects, 10 s, 64 KB, JSON only, public
+    https hosts only after DNS, 6 in flight). Run once on 2026-10-31 (`docs/connector-probe-2026-10-31.json`):
+    every oauth entry advertises DCR; CIMD: Notion, Linear, Sentry, Cloudflare, Atlassian, Vercel, Granola, Neon,
+    Amplitude, PostHog; iss: Notion, Linear, Sentry, Figma, Supabase, Cloudflare, Neon, Google; DeepWiki, Exa,
+    Microsoft Learn, AWS Knowledge and Context7 answer initialize 200 without a key; Datadog US3/US5/AP1 and the
+    Google Docs/Sheets/Slides/Chat hosts answer; Slack's metadata issuer is `https://mcp.slack.com` (the preset's
+    slack.com endpoints are the fallback only); Zoom's resource metadata names `https://mcp.zoom.us/...`, not the
+    documented URL; PayPal's POST /http answers 404, not 401, though resource metadata exists. Advertised metadata
+    only: no sign-in was attempted, so DCR plus loopback acceptance is still unverified everywhere.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.

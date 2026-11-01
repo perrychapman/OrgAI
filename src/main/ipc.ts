@@ -630,8 +630,44 @@ function registerMcpIpc(runs: RunManager, mcp: McpService, projectOrHarness: (id
   ipcMain.handle(IPC.mcpLibraryTest, (_e, input: { libraryId: string }): Promise<McpTestResult> => mcp.libraryTest(input))
   // Connectors: the renderer names a preset (and a variant); main builds the entry from src/shared/connectors.ts.
   ipcMain.handle(IPC.connectorsList, (): ConnectorInfo[] => mcp.connectorsList())
-  ipcMain.handle(IPC.connectorsAdd, (_e, input: ConnectorAddInput): McpLibraryInfo => mcp.connectorsAdd(input))
-  ipcMain.handle(IPC.connectorsSetToken, (_e, input: ConnectorTokenInput): McpLibraryInfo => mcp.connectorsSetToken(input))
+  ipcMain.handle(IPC.connectorsAdd, (_e, input: unknown): McpLibraryInfo => mcp.connectorsAdd(connectorArgs.add(input)))
+  ipcMain.handle(IPC.connectorsSetToken, (_e, input: unknown): McpLibraryInfo => mcp.connectorsSetToken(connectorArgs.setToken(input)))
   ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
   ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
+}
+
+/** Longest pasted connector token accepted over IPC; McpService re-checks the header value it builds. */
+export const CONNECTOR_TOKEN_MAX_CHARS = 4000
+/** Catalog ids and variant ids are lowercase kebab-case, at most 64 chars. */
+const CONNECTOR_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
+
+function connectorObject(input: unknown): Record<string, unknown> & { connectorId: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Unknown connector.')
+  const i = input as Record<string, unknown>
+  if (typeof i.connectorId !== 'string' || !CONNECTOR_ID_RE.test(i.connectorId)) throw new Error('Unknown connector.')
+  return i as Record<string, unknown> & { connectorId: string }
+}
+
+/**
+ * Renderer input for connectors:add / connectors:setToken rebuilt field by field: a catalog-shaped connector id (and
+ * variant id), or a bounded token string / null; any other field is dropped and a wrong shape is refused. McpService
+ * still resolves the ids against the catalog. Exported for tests.
+ */
+export const connectorArgs = {
+  add(input: unknown): ConnectorAddInput {
+    const i = connectorObject(input)
+    const out: ConnectorAddInput = { connectorId: i.connectorId }
+    if (i.variant !== undefined) {
+      if (typeof i.variant !== 'string' || !CONNECTOR_ID_RE.test(i.variant)) throw new Error('Unknown connector variant.')
+      out.variant = i.variant
+    }
+    return out
+  },
+  setToken(input: unknown): ConnectorTokenInput {
+    const i = connectorObject(input)
+    if (i.token === null) return { connectorId: i.connectorId, token: null }
+    if (typeof i.token !== 'string') throw new Error('The token must be text.')
+    if (i.token.length > CONNECTOR_TOKEN_MAX_CHARS) throw new Error(`The token is too long (at most ${CONNECTOR_TOKEN_MAX_CHARS} characters).`)
+    return { connectorId: i.connectorId, token: i.token }
+  }
 }

@@ -171,6 +171,58 @@ describe('connector catalog', () => {
     expect(connectorById('google-people')).toBeUndefined()
   })
 
+  it('includes the second-wave entries with their URLs, categories and easiest defaults', () => {
+    const url = (id: string, variant?: string): string => connectorVariant(connectorById(id)!, variant).url
+    const expected: Record<string, [string, ConnectorDef['category'], string]> = {
+      'microsoft-learn': ['https://learn.microsoft.com/api/mcp', 'knowledge', 'none'],
+      'aws-knowledge': ['https://knowledge-mcp.global.api.aws', 'knowledge', 'none'],
+      context7: ['https://mcp.context7.com/mcp', 'knowledge', 'none'],
+      granola: ['https://mcp.granola.ai/mcp', 'meetings', 'signIn'],
+      neon: ['https://mcp.neon.tech/mcp?readonly=true', 'cloud', 'signIn'],
+      amplitude: ['https://mcp.amplitude.com/mcp', 'data', 'signIn'],
+      posthog: ['https://mcp.posthog.com/mcp', 'data', 'signIn'],
+      webflow: ['https://mcp.webflow.com/mcp', 'design', 'signIn'],
+      miro: ['https://mcp.miro.com/', 'design', 'signIn'],
+      zoom: ['https://zoom.us/mcp/meeting/streamable', 'meetings', 'ownApp'],
+      zapier: ['https://mcp.zapier.com/api/v1/connect', 'automation', 'token'],
+      gitlab: ['https://gitlab.com/api/v4/mcp', 'dev', 'signIn']
+    }
+    for (const [id, [u, category, ease]] of Object.entries(expected)) {
+      const def = connectorById(id)
+      expect(def, id).toBeDefined()
+      expect(url(id), id).toBe(u)
+      expect(def!.category, id).toBe(category)
+      expect(connectorEase(def!), id).toBe(ease)
+    }
+    expect(url('neon', 'full')).toBe('https://mcp.neon.tech/mcp')
+    expect(connectorEase(connectorById('neon')!, 'key')).toBe('token')
+    expect(url('amplitude', 'eu')).toBe('https://mcp.eu.amplitude.com/mcp')
+    // Context7 answers without a key: the keyless variant is the default, the key one sends a Bearer header.
+    const c7 = connectorById('context7')!
+    expect(c7.defaultVariant).toBe('free')
+    expect(connectorVariant(c7).auth).toEqual({ kind: 'none' })
+    expect(connectorVariant(c7, 'key').auth).toMatchObject({ kind: 'token', header: 'Authorization', prefix: 'Bearer ' })
+    expect(connectorVariant(connectorById('zapier')!).auth).toMatchObject({ kind: 'token', header: 'Authorization', prefix: 'Bearer ' })
+    expect(connectorMatches(connectorById('microsoft-learn')!, 'azure docs')).toBe(true)
+    expect(connectorMatches(c7, 'upstash')).toBe(true)
+  })
+
+  it('every oauthClient preset names its issuer, and Google hosts carry no inferred-host note', () => {
+    for (const c of CONNECTORS) {
+      for (const v of c.variants) if (v.auth.kind === 'oauthClient') expect(v.auth.overrides?.issuer, `${c.id}/${v.id}`).toBeTruthy()
+    }
+    const issuer = (id: string): string | undefined => {
+      const a = connectorVariant(connectorById(id)!).auth
+      return a.kind === 'oauthClient' ? a.overrides?.issuer : undefined
+    }
+    expect(issuer('asana')).toBe('https://app.asana.com')
+    expect(issuer('hubspot')).toBe('https://mcp.hubspot.com')
+    expect(issuer('box')).toBe('https://api.box.com')
+    expect(issuer('zoom')).toBe('https://zoom.us')
+    for (const c of CONNECTORS.filter((d) => d.vendor === 'Google')) expect(JSON.stringify(c.notes), c.id).not.toContain('follows the pattern')
+    expect(JSON.stringify(connectorById('datadog'))).not.toContain('inferred')
+  })
+
   it('Google setup names the AI-agent client box and the Developer Preview Program', () => {
     for (const c of CONNECTORS.filter((d) => d.vendor === 'Google')) {
       const text = c.setup.join(' ')
