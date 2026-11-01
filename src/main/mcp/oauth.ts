@@ -55,6 +55,10 @@ export interface OAuthDiscovery {
   scopes?: string[]
   /** code_challenge_methods_supported as advertised; runAuthorization refuses when S256 is not in it. */
   codeChallengeMethods?: string[]
+  /** The issuer the callback's `iss` must equal (RFC 9207): the AS metadata's `issuer`, else `authorizationServer`. */
+  issuer?: string
+  /** Set when the AS metadata has authorization_response_iss_parameter_supported === true (RFC 9207); then `iss` is required. */
+  issParameterSupported?: true
 }
 
 export interface OAuthClient {
@@ -385,7 +389,10 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
   const registrationEndpoint = meta.registration_endpoint === undefined ? undefined : requireSecure(meta.registration_endpoint, 'registration_endpoint', loopback)
   const scopes = challengeScopes?.length ? challengeScopes : (stringList(prm.scopes_supported) ?? stringList(meta.scopes_supported))
   const codeChallengeMethods = stringList(meta.code_challenge_methods_supported)
+  const metaIssuer = typeof meta.issuer === 'string' && meta.issuer ? meta.issuer : undefined
   return {
+    issuer: metaIssuer ?? issuer,
+    ...(meta.authorization_response_iss_parameter_supported === true ? { issParameterSupported: true as const } : {}),
     resource,
     authorizationServer: issuer,
     authorizationEndpoint,
@@ -478,6 +485,7 @@ export async function registerClient(d: OAuthDiscovery, redirectUri: string, fet
       body: JSON.stringify({
         client_name: 'OrgAI',
         redirect_uris: [redirectUri],
+        application_type: 'native',
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none'
@@ -541,6 +549,12 @@ export function buildAuthorizeUrl(
 // Loopback
 
 /** A one-shot loopback redirect listener on 127.0.0.1. */
+/** The accepted callback: the code and the RFC 9207 `iss` parameter when the server sent one. */
+export interface LoopbackCallback {
+  code: string
+  iss?: string
+}
+
 export interface LoopbackServer {
   /** http://127.0.0.1:<port>/callback */
   redirectUri: string
@@ -551,7 +565,7 @@ export interface LoopbackServer {
    * cancel the flow by probing the port. The page served is plain static HTML without scripts and never echoes
    * query parameters.
    */
-  waitForCode(state: string, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<string>
+  waitForCode(state: string, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<LoopbackCallback>
   close(): void
 }
 
@@ -578,6 +592,7 @@ export async function startLoopback(opts: { port?: number; strict?: boolean } = 
   interface Callback {
     code?: string
     state?: string
+    iss?: string
     error?: string
     description?: string
   }
@@ -600,6 +615,7 @@ export async function startLoopback(opts: { port?: number; strict?: boolean } = 
     const cb: Callback = {
       code: url.searchParams.get('code') ?? undefined,
       state: url.searchParams.get('state') ?? undefined,
+      iss: url.searchParams.get('iss') ?? undefined,
       error: url.searchParams.get('error') ?? undefined,
       description: url.searchParams.get('error_description') ?? undefined
     }
@@ -668,7 +684,7 @@ export async function startLoopback(opts: { port?: number; strict?: boolean } = 
     redirectUri: `http://127.0.0.1:${port}/callback`,
     close,
     waitForCode(state, { timeoutMs, signal }) {
-      return new Promise<string>((resolve, reject) => {
+      return new Promise<LoopbackCallback>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined
         let done = false
         const finish = (fn: () => void): void => {
@@ -688,7 +704,7 @@ export async function startLoopback(opts: { port?: number; strict?: boolean } = 
               reject(new OAuthError('callback', `Authorization was denied (${cb.error.replace(/[^\w.-]/g, '').slice(0, 40)}${desc}).`))
             } else if (!cb.code || !cb.state || !sameString(cb.state, state)) {
               reject(new OAuthError('callback', 'Authorization response did not match this request (state mismatch).'))
-            } else resolve(cb.code)
+            } else resolve({ code: cb.code, ...(cb.iss !== undefined ? { iss: cb.iss } : {}) })
           })
         if (signal?.aborted) return onAbort()
         signal?.addEventListener('abort', onAbort, { once: true })
@@ -939,7 +955,16 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
       listener.close()
       throw new OAuthError('authorization', `Could not open the browser: ${excerpt((e as Error).message)}`)
     }
-    const code = await codeP
+    const { code, iss } = await codeP
+    // RFC 9207: check the issuer before the code goes anywhere. Exact string comparison, no normalisation.
+    const expectedIssuer = d.issuer ?? d.authorizationServer
+    if (iss === undefined) {
+      if (d.issParameterSupported) {
+        throw new OAuthError('callback', 'Authorization response did not identify its issuer (iss), which this authorization server promises to send. The code was not used.')
+      }
+    } else if (iss !== expectedIssuer) {
+      throw new OAuthError('callback', `Authorization response came from a different issuer (${excerpt(iss)}) than the one this sign-in started with. The code was not used.`)
+    }
     const tokens = await exchangeCode(d, client, { code, verifier, redirectUri }, input.fetch, now, {
       ...(preset?.sendResource === false ? { sendResource: false } : {}),
       ...(preset?.tokenResponse ? { tokenResponse: preset.tokenResponse } : {})
