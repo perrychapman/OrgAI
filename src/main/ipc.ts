@@ -10,6 +10,14 @@ import type {
   AppSettings,
   AppSettingsInfo,
   AuthStatusResult,
+  CapabilityApplyInput,
+  CapabilityApplyResult,
+  CapabilityDiscoverInput,
+  CapabilityDiscovery,
+  CapabilityGrantInput,
+  CapabilityRecommendInput,
+  CapabilityUndoInput,
+  CapabilityUndoResult,
   ConnectionId,
   ConnectionInfo,
   ConnectionLoginMethod,
@@ -75,7 +83,8 @@ import type {
   SkillLinkLibraryInput,
   SkillMutationResult,
   SkillUpdateInput,
-  StartRunInput
+  StartRunInput,
+  TeamRecommendations
 } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
@@ -87,6 +96,7 @@ import type { ConnectionService } from './connections/service'
 import type { McpService } from './mcp/service'
 import type { AgentImportService } from './setup/import/importer'
 import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from './skills/types'
+import type { CapabilityServiceApi } from './capabilities/types'
 import { claudeAuthStatus } from './connections/anthropicAuth'
 import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
@@ -121,9 +131,11 @@ export interface IpcServices {
   skills: SkillServiceApi
   /** Skill evaluation (src/main/skills/evaluation.ts). */
   skillEvaluation: SkillEvaluationApi
+  /** The Team assistant: discovery, recommendations, apply and grants (src/main/capabilities/service.ts). */
+  capabilities: CapabilityServiceApi
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities }: IpcServices): void {
   /** A stored project, or the virtual harness project that owns harness-level runs. Never listed by projects:list. */
   const projectOrHarness = (id: string): Project | null => (id === HARNESS_PROJECT_ID ? harnessProject() : projects.get(id))
   ipcMain.handle(IPC.projectsList, () => projects.list())
@@ -158,6 +170,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     await runs.removeProject(id)
     mcp.removeProjectSecrets(id)
     skills.removeProjectFiles(id)
+    capabilities.forgetProject(id)
     projects.remove(id)
   })
   ipcMain.handle(IPC.projectsPickDir, async (e) => {
@@ -328,6 +341,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   registerConnectionIpc(projects, connections)
   registerMcpIpc(runs, mcp, projectOrHarness)
   registerSkillIpc(skills, skillEvaluation)
+  registerCapabilityIpc(capabilities)
 }
 
 /**
@@ -444,6 +458,87 @@ function registerSkillIpc(skills: SkillServiceApi, evaluation: SkillEvaluationAp
     return skills.libraryUpdate({ ...libraryArg(i), draft: obj<SkillDraft>(i.draft) })
   })
   ipcMain.handle(IPC.skillLibraryRemove, (_e, input: unknown): SkillLibraryInfo[] => skills.libraryRemove(libraryArg(input)))
+}
+
+/** Role ids per apply; more is refused. */
+const CAPABILITY_MAX_ROLE_IDS = 100
+
+/**
+ * Renderer input for capabilities:* rebuilt field by field: only known fields with the right shape reach the service,
+ * so a renderer can never smuggle a path, a spec or file content into apply. Exported for tests.
+ */
+export const capabilityArgs = {
+  discover(input: unknown): CapabilityDiscoverInput {
+    const i = obj<Record<string, unknown>>(input)
+    const out: CapabilityDiscoverInput = { projectId: projectIdArg(i.projectId), includeOutside: i.includeOutside === true }
+    if (typeof i.query === 'string' && i.query.trim()) out.query = i.query.trim().slice(0, 100)
+    if (i.requestId !== undefined) {
+      if (!isValidId(i.requestId)) throw new Error('Invalid request id')
+      out.requestId = i.requestId
+    }
+    return out
+  },
+  recommend(input: unknown): CapabilityRecommendInput {
+    const i = obj<Record<string, unknown>>(input)
+    const out: CapabilityRecommendInput = { ...capabilityArgs.discover(input), scope: {} }
+    const scope = obj<Record<string, unknown>>(i.scope)
+    if (scope.roleId !== undefined) {
+      if (!isValidId(scope.roleId)) throw new Error('Role not found')
+      out.scope = { roleId: scope.roleId }
+    }
+    return out
+  },
+  apply(input: unknown): CapabilityApplyInput {
+    const i = obj<Record<string, unknown>>(input)
+    if (typeof i.digest !== 'string' || !/^[a-f0-9]{64}$/.test(i.digest)) throw new Error('Run the recommendations again first: the result is missing or out of date.')
+    if (!Array.isArray(i.roleIds) || i.roleIds.length === 0) throw new Error('Choose at least one role.')
+    if (i.roleIds.length > CAPABILITY_MAX_ROLE_IDS || !i.roleIds.every((r) => isValidId(r))) throw new Error('Unknown role in the choice.')
+    const out: CapabilityApplyInput = {
+      projectId: projectIdArg(i.projectId),
+      digest: i.digest,
+      roleIds: [...new Set(i.roleIds as string[])],
+      access: i.access === 'full' ? 'full' : 'read'
+    }
+    if (i.access !== undefined && i.access !== 'read' && i.access !== 'full') throw new Error('Access must be read or full.')
+    if (i.recommendationId !== undefined) {
+      if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
+      out.recommendationId = i.recommendationId
+    }
+    if (i.candidateId !== undefined) {
+      if (!isValidId(i.candidateId)) throw new Error('Candidate not found')
+      out.candidateId = i.candidateId
+    }
+    if (!out.recommendationId && !out.candidateId) throw new Error('Name a recommendation or a candidate.')
+    return out
+  },
+  undo(input: unknown): CapabilityUndoInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = projectIdArg(i.projectId)
+    if (!isValidId(i.undoId)) throw new Error('Nothing to undo')
+    return { projectId, undoId: i.undoId }
+  },
+  setGrant(input: unknown): CapabilityGrantInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = projectIdArg(i.projectId)
+    if (!isValidId(i.roleId)) throw new Error('Role not found')
+    if (i.kind !== 'skill' && i.kind !== 'mcp') throw new Error('Unknown kind')
+    if (!isValidId(i.id)) throw new Error(i.kind === 'skill' ? 'Skill not found' : 'Server not found')
+    if (typeof i.granted !== 'boolean') throw new Error('granted must be true or false')
+    return { projectId, roleId: i.roleId, kind: i.kind, id: i.id, granted: i.granted }
+  }
+}
+
+/** The Team assistant: CapabilityServiceApi 1:1, inputs rebuilt by capabilityArgs, the harness project refused. */
+function registerCapabilityIpc(capabilities: CapabilityServiceApi): void {
+  ipcMain.handle(IPC.capabilitiesDiscover, (_e, input: unknown): Promise<CapabilityDiscovery> => capabilities.discover(capabilityArgs.discover(input)))
+  ipcMain.handle(IPC.capabilitiesRecommend, (_e, input: unknown): Promise<TeamRecommendations> => capabilities.recommend(capabilityArgs.recommend(input)))
+  ipcMain.handle(IPC.capabilitiesCancel, (_e, input: unknown): void => {
+    const i = obj<{ requestId?: unknown }>(input)
+    if (isValidId(i.requestId)) capabilities.cancel(i.requestId)
+  })
+  ipcMain.handle(IPC.capabilitiesApply, (_e, input: unknown): Promise<CapabilityApplyResult> => capabilities.apply(capabilityArgs.apply(input)))
+  ipcMain.handle(IPC.capabilitiesUndo, (_e, input: unknown): CapabilityUndoResult => capabilities.undo(capabilityArgs.undo(input)))
+  ipcMain.handle(IPC.capabilitiesSetGrant, (_e, input: unknown): Project => capabilities.setGrant(capabilityArgs.setGrant(input)))
 }
 
 /** Connections, model catalog and remaps: ConnectionService 1:1. */
