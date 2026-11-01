@@ -165,6 +165,9 @@ try {
       // Role inspector model picker
       await projectTab(page, 'Team').click()
       await page.locator('.react-flow__node').first().click()
+      // The Model fold is closed when the inspector is not roomy; open it first.
+      await page.waitForSelector('[data-testid=role-model-fold]', { timeout: 5000 })
+      await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-fold]'); if (d) d.open = true })
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
       await shot(`role-model-${w}x${h}-${theme}`)
