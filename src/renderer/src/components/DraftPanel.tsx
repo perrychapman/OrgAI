@@ -1,20 +1,67 @@
 import type { ReactElement } from 'react'
-import { X } from 'lucide-react'
 import { useState } from 'react'
 import type { Project } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { Button } from './ui/Button'
-import { IconButton } from './ui/IconButton'
+import ProposalCard from './ProposalCard'
+import QuestionCard from './QuestionCard'
+import { cleanIpcError } from '../lib/ipcError'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
 import { useConfirm } from './ui/ConfirmDialog'
+
+/** The open questions and proposals of a Team-tab Architect session, answered in place (the run is not on the Live strip). */
+function ArchitectRunCards({ runId, project }: { runId: string; project: Project }): ReactElement | null {
+  const run = useAppStore((s) => s.runs[runId])
+  const [error, setError] = useState<string | null>(null)
+  if (!run) return null
+  const guard = async (p: Promise<void>): Promise<void> => {
+    setError(null)
+    try {
+      await p
+    } catch (e) {
+      setError(cleanIpcError(e))
+    }
+  }
+  const questions = run.questions ?? []
+  const proposals = run.proposals ?? []
+  const status = run.summary.status
+  const live = status === 'starting' || status === 'running'
+  return (
+    <section className="draft-box stack-2" aria-label="Architect session" data-testid="architect-session" data-status={status}>
+      <p className="hint" role="status">
+        {questions.length + proposals.length > 0
+          ? 'The Architect needs your answer.'
+          : live
+            ? 'The Architect is working. Its questions and proposals appear here.'
+            : status === 'finished' || status === 'idle'
+              ? 'The Architect session ended.'
+              : 'The Architect session stopped.'}
+      </p>
+      {error && (
+        <p className="capability-warn" role="alert">
+          {error}
+        </p>
+      )}
+      {questions.map((q) => (
+        <QuestionCard key={q.id} runId={runId} question={q} who="The Architect" onAnswer={(a) => guard(window.orgai.setup.answer({ runId, questionId: q.id, answer: a }))} />
+      ))}
+      {proposals.map((p) => (
+        <ProposalCard key={p.id} runId={runId} who="The Architect" proposal={p} currentRoles={project.roles} onDecide={(d) => guard(window.orgai.setup.decide({ runId, proposalId: p.id, decision: d }))} />
+      ))}
+    </section>
+  )
+}
 
 /**
  * The Architect and quick draft. `variant="tray"` is the Team tab's tray form (a header row with a close button and no
  * sticky side header); `panel` is the old side-panel form.
  */
 export default function DraftPanel({ project, variant = 'panel', onClose }: { project: Project; variant?: 'panel' | 'tray'; onClose?: () => void }): ReactElement {
+  void onClose
+  const [teamRunId, setTeamRunId] = useState<string | null>(null)
+  const [startError, setStartError] = useState<string | null>(null)
   const tray = variant === 'tray'
   const drafting = useAppStore((s) => s.drafting)
   const draftResult = useAppStore((s) => s.draftResult)
@@ -42,13 +89,21 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
       if (!ok) return
     }
     setArchitectBusy(true)
+    setStartError(null)
+    const instruction = text
+      ? `Revise this project's org chart and setup: ${text}`
+      : 'Review this project and revise its architecture document, org chart and settings where they no longer fit the code.'
     try {
-      await startSetup(
-        text
-          ? `Revise this project's org chart and setup: ${text}`
-          : 'Review this project and revise its architecture document, org chart and settings where they no longer fit the code.'
-      )
+      if (tray) {
+        // A Team-tab session stays on the Team tab: no navigation to Live, no run tab.
+        const summary = await window.orgai.setup.start({ projectId: project.id, instruction, surface: 'team' })
+        setTeamRunId(summary.id)
+      } else {
+        await startSetup(instruction)
+      }
       setRevision('')
+    } catch (e) {
+      setStartError(cleanIpcError(e))
     } finally {
       setArchitectBusy(false)
     }
@@ -56,13 +111,7 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
 
   return (
     <>
-      {tray ? (
-        <div className="team-tray-head">
-          <h2>Design the org chart with the Architect</h2>
-          <div className="grow" />
-          {onClose && <IconButton icon={X} label="Close the Architect" size="sm" onClick={onClose} testId="architect-close" />}
-        </div>
-      ) : (
+      {!tray && (
         <div className="side-header">
           <h2>Design the org chart with AI</h2>
         </div>
@@ -90,7 +139,13 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
             </Button>
             <span className="hint">Starts an Architect session {cost}.</span>
           </div>
+          {startError && (
+            <p className="capability-warn" role="alert">
+              {startError}
+            </p>
+          )}
         </section>
+        {teamRunId && <ArchitectRunCards runId={teamRunId} project={project} />}
 
         <details className="disclosure">
           <summary>Advanced: quick draft</summary>

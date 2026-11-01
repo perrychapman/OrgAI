@@ -135,7 +135,6 @@ const PHASE_LABEL: Partial<Record<CapabilitySourceId | 'model', string>> = {
   'claude-code-mcp': 'Checking Claude Code connections',
   'claude-desktop-mcp': 'Checking Claude Desktop connections',
   'cursor-mcp': 'Checking Cursor connections',
-  'vscode-mcp': 'Checking VS Code connections',
   'codex-mcp': 'Checking Codex connections',
   library: 'Checking your library',
   project: 'Checking this project',

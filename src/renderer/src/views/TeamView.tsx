@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, LayoutGrid, MousePointerClick, Plus, Sparkles, Undo2, Upload } from 'lucide-react'
+import { Download, LayoutGrid, MousePointerClick, Plus, Undo2, Upload } from 'lucide-react'
 import {
   ReactFlow,
   Background,
@@ -89,7 +89,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const [panelOpen, setPanelOpen] = useState(true)
   // Role | Catalog. A role gets selected -> Role; the user's explicit choice sticks until the selection goes from nothing to something.
   const [panelTab, setPanelTab] = useState<PanelTab>(() => (useAppStore.getState().selectedRoleId ? 'role' : 'catalog'))
-  const [assistant, setAssistant] = useState<TeamAssistantMode>('closed')
+  const [assistant, setAssistant] = useState<TeamAssistantMode>('recommend')
   const hadSelection = useRef(!!selectedRoleId)
   useEffect(() => {
     if (selectedRoleId && !hadSelection.current) setPanelTab('role')
@@ -396,12 +396,11 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     }
   }
 
-  // The Architect lives in the tray under the chart, so the role inspector stays in the side panel.
-  const openArchitect = (): void => {
-    setAssistant('design')
-    window.requestAnimationFrame(() =>
-      rootRef.current?.querySelector<HTMLElement>('[data-testid=team-assistant] textarea')?.focus()
-    )
+  // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
+  // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.
+  const openAssistant = (): void => {
+    setAssistant('recommend')
+    window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus())
   }
 
   const autoLayout = (): void => {
@@ -428,9 +427,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             </Button>
             <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
               Auto-layout
-            </Button>
-            <Button size="sm" icon={Sparkles} onClick={openArchitect} testId="architect-open" title="Opens the Architect below the chart. It designs roles and reporting lines.">
-              Design with the Architect
             </Button>
             <span className="toolbar-note">{addParent ? `New roles report to ${addParent.name}.` : 'The first role becomes the root.'}</span>
             {undo && (
@@ -579,7 +575,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
                 onRemove={() => void requestRemove(selectedRole.id)}
                 onEscape={() => returnToNode(selectedRole.id)}
-                onAskAssistant={() => openArchitect()}
+                onAskAssistant={() => openAssistant()}
               />
             ) : (
               <EmptyState compact icon={MousePointerClick} title="No role selected" description="Select a role on the chart to edit what it can use." testId="team-no-role" />
