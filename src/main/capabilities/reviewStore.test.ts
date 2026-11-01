@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TeamReview } from '@shared/types'
-import { normalizeReview, readReview, removeReview, reviewFile, reviewSummary, writeReview } from './reviewStore'
+import { normalizeReview, readReview, removeReview, REVIEW_MAX_ROLE_IDS, reviewFile, reviewSummary, writeReview } from './reviewStore'
 
 let dir: string
 beforeEach(() => {
@@ -61,6 +61,68 @@ describe('normalizeReview', () => {
     expect(n.recommendations).toEqual([rec])
     expect(n.runsSinceModel).toBe(0)
     expect(normalizeReview({ ...review(), runsSinceModel: 2.7 }, 'p1')!.runsSinceModel).toBe(2)
+  })
+})
+
+describe('normalizeReview field by field (review L1)', () => {
+  it('rebuilds recommendations: bad kind or roles drop the entry, reason and access are coerced, extra keys go', () => {
+    const n = normalizeReview(
+      {
+        ...review(),
+        recommendations: [
+          { ...rec, reason: { evil: true }, access: 'admin', extra: 'x' },
+          { ...rec, id: 'rec-2', kind: 'plugin' },
+          { ...rec, id: 'rec-3', roleIds: ['../x', 'a b'] },
+          { ...rec, id: 'rec-4', roleIds: ['r1', 'r1', '../x', 'r2'], reason: `long ${'y'.repeat(400)}‮`, access: 'full' }
+        ]
+      },
+      'p1'
+    )!
+    expect(n.recommendations).toHaveLength(2)
+    expect(n.recommendations[0]).toEqual({ id: 'rec-1', candidateId: 'cap-1', kind: 'skill', roleIds: ['r1'], reason: '', access: 'read' })
+    expect(n.recommendations[1]!.roleIds).toEqual(['r1', 'r2'])
+    expect(n.recommendations[1]!.access).toBe('full')
+    expect(n.recommendations[1]!.reason.length).toBeLessThanOrEqual(300)
+    expect(n.recommendations[1]!.reason).not.toContain('‮')
+  })
+
+  it('caps role ids per recommendation', () => {
+    const roleIds = Array.from({ length: REVIEW_MAX_ROLE_IDS + 20 }, (_, i) => `r${i}`)
+    expect(normalizeReview(review({ recommendations: [{ ...rec, roleIds }] }), 'p1')!.recommendations[0]!.roleIds).toHaveLength(REVIEW_MAX_ROLE_IDS)
+  })
+
+  it('rebuilds dismissals: clamped name, whitelisted kind, cleaned recommendation, no other keys', () => {
+    const n = normalizeReview(
+      {
+        ...review(),
+        dismissed: [
+          { candidateId: 'cap-1', fingerprint: 'f', at: 'now', name: `n${'z'.repeat(100)}`, kind: 'weird', extra: 1, recommendation: { ...rec, reason: { o: 1 }, access: 'yes' } },
+          { candidateId: 'cap-2', fingerprint: 'f', at: 'now', kind: 'mcp', recommendation: { ...rec, kind: 'nope' } },
+          { candidateId: 'cap-3', fingerprint: 5, at: 'now' },
+          'junk'
+        ]
+      },
+      'p1'
+    )!
+    expect(n.dismissed).toHaveLength(2)
+    const [one, two] = n.dismissed
+    expect(Object.keys(one!).sort()).toEqual(['at', 'candidateId', 'fingerprint', 'name', 'recommendation'])
+    expect(one!.name!.length).toBeLessThanOrEqual(64)
+    expect(one!.recommendation).toEqual({ ...rec, reason: '', access: 'read' })
+    expect(two).toEqual({ candidateId: 'cap-2', fingerprint: 'f', at: 'now', kind: 'mcp' })
+  })
+
+  it('drops unknown top-level keys and bad optional fields', () => {
+    const n = normalizeReview({ ...review(), extra: 'x', stub: 'yes', modelInput: 'all', modelSkipped: 'whatever', tokensUsed: -1, trigger: 'weird', newCandidateIds: ['a', 2] }, 'p1')! as unknown as Record<string, unknown>
+    expect(n.extra).toBeUndefined()
+    expect(n.stub).toBeUndefined()
+    expect(n.modelInput).toBeUndefined()
+    expect(n.modelSkipped).toBeUndefined()
+    expect(n.tokensUsed).toBeUndefined()
+    expect(n.trigger).toBe('manual')
+    expect(n.newCandidateIds).toEqual(['a'])
+    const ok = normalizeReview(review({ stub: true, modelInput: 'proactive', modelSkipped: 'pendingFull', tokensUsed: 12, trigger: 'runEnded' }), 'p1')!
+    expect(ok).toMatchObject({ stub: true, modelInput: 'proactive', modelSkipped: 'pendingFull', tokensUsed: 12, trigger: 'runEnded' })
   })
 })
 
