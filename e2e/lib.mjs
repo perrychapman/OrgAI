@@ -406,7 +406,11 @@ export function runRecordsDir() {
 
 /** A tab of the project topbar (Live, History, Team, Settings). */
 export function projectTab(page, name) {
-  return page.getByRole('tablist', { name: 'Project sections' }).getByRole('tab', { name, exact: true })
+  // A tab with a count badge is named "<label>, <countLabel>" (Team: ", N suggestions"), so match the bare
+  // label or the label plus that suffix, and nothing looser.
+  const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`^${esc}(, \\d+\\+? [a-z ]+)?$`)
+  return page.getByRole('tablist', { name: 'Project sections' }).getByRole('tab', { name: re })
 }
 
 /** Open the project's Team tab (`tab-team`). */
