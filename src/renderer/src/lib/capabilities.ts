@@ -13,6 +13,7 @@ import type {
   TeamReviewSummary
 } from '@shared/types'
 import { CAPABILITY_OUTSIDE_ORIGINS, CAPABILITY_WRITE_TOOLS } from '@shared/types'
+import { connectorById } from '@shared/connectors'
 
 /**
  * The one adapter between the Team assistant UI and `window.orgai.capabilities`: a fresh request id per call, one
@@ -76,7 +77,7 @@ export function isOutside(item: Pick<CapabilityItem, 'origin'>): boolean {
 }
 
 /** Source badge text per origin (docs/design/team-tab.md). */
-export function sourceBadge(item: Pick<CapabilityItem, 'origin' | 'sourceLabel'>): string {
+export function sourceBadge(item: Pick<CapabilityItem, 'origin' | 'sourceLabel'> & { connectorId?: string; name?: string }): string {
   const label = clampText(item.sourceLabel, 40)
   switch (item.origin) {
     case 'repo':
@@ -87,8 +88,10 @@ export function sourceBadge(item: Pick<CapabilityItem, 'origin' | 'sourceLabel'>
       return 'Your library'
     case 'project':
       return 'This project'
-    case 'catalog':
-      return 'Curated'
+    case 'catalog': {
+      const vendor = clampText(item.connectorId ? connectorById(item.connectorId)?.vendor : undefined, 40) || clampText(item.name, 40)
+      return vendor ? `Curated · ${vendor}` : 'Curated'
+    }
     default:
       return label || 'Outside source'
   }
@@ -263,6 +266,68 @@ export function suggestionsLine(summary: Pick<TeamReviewSummary, 'pendingCount' 
   return summary.newCount > 0 ? `${n} ${noun} since your last run` : `${n} ${noun} waiting`
 }
 
+/** How many proactive cards show before "Show all". */
+export const PROACTIVE_VISIBLE = 3
+
+/** "3 suggestions since your last run" / "1 suggestion since your last run". */
+export function sinceLine(n: number): string | null {
+  return n > 0 ? `${n} ${n === 1 ? 'suggestion' : 'suggestions'} since your last run` : null
+}
+
+/** Skill matches first, otherwise the given order (stable). */
+export function skillsFirst<T extends { candidateId: string }>(recs: readonly T[], items: Record<string, Pick<CapabilityItem, 'kind'> | undefined>): T[] {
+  const rank = (r: T): number => (items[r.candidateId]?.kind === 'skill' ? 0 : 1)
+  return recs.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i).map((x) => x.r)
+}
+
+/** The results heading: "3 to review for Reviewer", with the rest of the team's count when the list is narrower than the badge. */
+export function resultsHeadText(open: number, scopeName: string, pending: number | undefined, scoped: boolean): string {
+  if (!scoped) return `${open} to review`
+  const base = `${open} to review for ${scopeName}`
+  return pending !== undefined && pending > open ? `${base} · ${pending - open} waiting for the whole team` : base
+}
+
+/** "and 1 gap" / "and 3 gaps". */
+export function gapsJumpText(n: number): string {
+  return `and ${n} ${n === 1 ? 'gap' : 'gaps'}`
+}
+
+/** A dismissed candidate, as the tray lists it for Restore. */
+export interface DismissedEntry {
+  candidateId: string
+  name: string
+  kind: string
+  dismissedAt: string
+}
+
+/**
+ * The review's dismissed list, validated. Reads `{ candidateId, name, kind, dismissedAt }` (the restore contract) and
+ * also the older `{ candidateId, at }`, taking the name from the review's items. Anything else is dropped.
+ */
+export function readDismissed(review: { dismissed?: unknown; discovery?: { items?: readonly Pick<CapabilityItem, 'id' | 'name' | 'kind'>[] } } | null | undefined): DismissedEntry[] {
+  const raw = review?.dismissed
+  if (!Array.isArray(raw)) return []
+  const items = review?.discovery?.items ?? []
+  const out: DismissedEntry[] = []
+  const seen = new Set<string>()
+  for (const e of raw.slice(0, 200)) {
+    if (!e || typeof e !== 'object') continue
+    const o = e as Record<string, unknown>
+    if (typeof o.candidateId !== 'string' || !o.candidateId || seen.has(o.candidateId)) continue
+    const item = items.find((i) => i.id === o.candidateId)
+    const name = clampText(typeof o.name === 'string' && o.name ? o.name : item?.name, 80)
+    if (!name) continue
+    seen.add(o.candidateId)
+    out.push({
+      candidateId: o.candidateId,
+      name,
+      kind: typeof o.kind === 'string' ? o.kind : (item?.kind ?? 'mcp'),
+      dismissedAt: typeof o.dismissedAt === 'string' ? o.dismissedAt : typeof o.at === 'string' ? o.at : ''
+    })
+  }
+  return out
+}
+
 /** The capabilities API through the preload (a seam so the tray never reaches into window.orgai itself). */
 export const capabilitiesApi = {
   recommend: (projectId: string, requestId: string, includeOutside: boolean, roleId?: string) =>
@@ -276,6 +341,11 @@ export const capabilitiesApi = {
     window.orgai.capabilities.dismiss({ projectId, recommendationId, candidateId } as Parameters<typeof window.orgai.capabilities.dismiss>[0]),
   apply: (input: Parameters<typeof window.orgai.capabilities.apply>[0]) => window.orgai.capabilities.apply(input),
   undo: (projectId: string, undoId: string) => window.orgai.capabilities.undo({ projectId, undoId }),
+  /** Undo a dismissal in main. Absent until the contract lands: the caller then only restores the card in the session. */
+  restore: (projectId: string, candidateId: string): Promise<TeamReview> | null => {
+    const fn = (window.orgai.capabilities as { restore?: (i: { projectId: string; candidateId: string }) => Promise<TeamReview> }).restore
+    return fn ? fn({ projectId, candidateId }) : null
+  },
   onProgress: (cb: (e: CapabilityProgressEvent) => void) => window.orgai.onCapabilityProgress(cb)
 }
 

@@ -19,7 +19,7 @@ export function CapabilityGaps({
   if (gaps.length === 0) return null
   return (
     <section className="capability-gaps" aria-labelledby="capability-gaps-title" data-testid="capability-gaps">
-      <h3 className="side-section-title" id="capability-gaps-title">
+      <h3 className="side-section-title" id="capability-gaps-title" tabIndex={-1} data-testid="capability-gaps-title">
         Gaps
       </h3>
       <ul className="capability-gap-list">

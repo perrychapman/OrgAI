@@ -433,9 +433,19 @@
   margin: 0;
 }
 .capability-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
+}
+/* A wide tray (about 900 px) sets the cards in two columns; one-line rows span both. */
+@container tray (min-width: 900px) {
+  .capability-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+  .capability-list > .capability-applied {
+    grid-column: 1 / -1;
+  }
 }
 .capability-card .decision-body {
   display: flex;
@@ -580,6 +590,43 @@
   outline: 2px solid var(--focus-ring, currentColor);
   outline-offset: 2px;
 }
+.team-results-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.team-results-row .team-results-head {
+  margin: 0;
+}
+.capability-location-full {
+  overflow-wrap: anywhere;
+  font-size: var(--text-caption);
+}
+.capability-details > summary {
+  cursor: pointer;
+  font-size: var(--text-caption);
+}
+.team-dismissed > summary {
+  cursor: pointer;
+}
+/* Design: while a session runs (or ended), the revise form folds to a heading and the field so the first decision card stays in view. */
+.team-tray-body:has([data-testid='architect-session']) #draft-architect + .rationale,
+.team-tray-body:has([data-testid='architect-session']) .draft-box:has(#draft-architect) .hint {
+  display: none;
+}
+.team-tray-body:has([data-testid='architect-session']) .draft-box:has(#draft-architect) .textarea {
+  min-height: 0;
+  height: 2.25rem;
+  resize: none;
+}
+/* The session box holds only its status line until a decision arrives: no empty frame around it. */
+.draft-box[data-testid='architect-session']:not(:has(.decision-card)):not(:has(.architect-decisions > *)) {
+  padding: var(--space-2) var(--space-3);
+  border-style: solid;
+  background: transparent;
+}
+
 /* Denser card: tighter body, the command folds away when long. */
 .capability-card .decision-body {
   gap: var(--space-1);
