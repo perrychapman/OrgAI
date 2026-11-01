@@ -871,7 +871,9 @@ export class MockAdapter implements RuntimeAdapter {
       this.usage(input)
       return title.charAt(0).toUpperCase() + title.slice(1)
     }
+    if (input.kind === 'recommend' && input.prompt.includes('[mock:recommend-fail]')) throw new Error('Mock recommend failure')
     this.usage(input)
+    if (input.kind === 'recommend') return mockRecommend(input.prompt)
     if (input.kind === 'skills') {
       return JSON.stringify({
         suggestions: [
@@ -889,6 +891,40 @@ export class MockAdapter implements RuntimeAdapter {
     const args = setupStep?.args ?? { rationale: '', roles: [] }
     return JSON.stringify({ rationale: args.rationale, roles: args.roles })
   }
+}
+
+function dataFields(rest: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const part of rest.split(' | ')) {
+    const i = part.indexOf('=')
+    if (i > 0 && !(part.slice(0, i).trim() in out)) out[part.slice(0, i).trim()] = part.slice(i + 1).trim()
+  }
+  return out
+}
+
+/** Deterministic answer to the Team recommend prompt; parses its line-anchored data lines. */
+function mockRecommend(prompt: string): string {
+  const scope = /^scope (\S+)\s*$/m.exec(prompt)?.[1]
+  const roles = [...prompt.matchAll(/^role (\S+) \|(.*)$/gm)].map((m) => ({ id: m[1]!, f: dataFields(m[2]!.replace(/^\s*/, '')) }))
+  const candidates = [...prompt.matchAll(/^candidate (\S+) \|(.*)$/gm)].map((m) => ({ id: m[1]!, f: dataFields(m[2]!.replace(/^\s*/, '')) }))
+  if (roles.length === 0) return JSON.stringify({ recommendations: [], gaps: [] })
+  const target = scope ?? (roles.find((r) => r.f.root === 'no') ?? roles[0]!).id
+  const picks: { id: string; reason: string }[] = []
+  const add = (c: { id: string } | undefined, reason: string): void => {
+    if (c && !picks.some((p) => p.id === c.id)) picks.push({ id: c.id, reason })
+  }
+  add(candidates.find((c) => c.f.kind === 'skill' && c.f.origin === 'repo'), 'Mock: this repo skill fits the role.')
+  add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'local'), 'Mock: this local MCP server fits the role.')
+  add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'registry'), 'Mock: this registry MCP server fits the role.')
+  add(
+    candidates.find((c) => c.f.kind === 'connector' && (c.f.name ?? '').toLowerCase().includes('github')) ?? candidates.find((c) => c.f.kind === 'connector'),
+    'Mock: this connector fits the role.'
+  )
+  if (picks.length === 0) for (const c of candidates.slice(0, 3)) add(c, `Mock: this ${c.f.kind ?? 'capability'} fits the role.`)
+  return JSON.stringify({
+    recommendations: picks.map((p) => ({ candidateId: p.id, roleIds: [target], reason: p.reason, access: 'read' })),
+    gaps: [{ roleId: target, need: 'No skill covers writing tests for this role (mock gap).' }]
+  })
 }
 
 /** A timer that rejects with 'Completion cancelled' when the signal aborts first. */
