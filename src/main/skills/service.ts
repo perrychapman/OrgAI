@@ -1,4 +1,5 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
   SKILL_MAX_FILE_BYTES,
@@ -637,8 +638,48 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
    * item is validated before anything is written. Returns the saved project (project session) or null (library).
    * Items are applied in order through the same paths as the UI (create, update, libraryCreate, libraryUpdate); the
    * checks (skillProposalProblem plus capacity and rename clashes with linked projects) run first, so a refused item
-   * leaves everything untouched. A write that still fails midway throws and keeps what was already written.
+   * leaves everything untouched. A write that still fails midway rolls back everything (snapshotForProposal) and throws.
    */
+  /**
+   * Snapshot what applyProposal can touch (library entries and files, every project's skills and roles, project skill
+   * files) so a failure midway puts it all back. Call the result to restore, `.discard()` when done.
+   */
+  private snapshotForProposal(): (() => void) & { discard: () => void } {
+    const tmp = mkdtempSync(join(tmpdir(), 'orgai-skills-snap-'))
+    const entries = this.library.list()
+    const projects = this.deps.projects.list().map((p) => structuredClone(p))
+    const copy = (from: string, name: string): void => {
+      if (existsSync(from)) cpSync(from, join(tmp, name), { recursive: true, verbatimSymlinks: true })
+    }
+    copy(this.libRoot, 'lib')
+    projects.forEach((p, i) => {
+      if (isSafeId(p.id)) copy(childPath(this.projRoot, p.id), `proj-${i}`)
+    })
+    const restore = (): void => {
+      try {
+        const keep = new Set(entries.map((e) => e.id))
+        for (const e of this.library.list()) if (!keep.has(e.id)) this.library.remove(e.id)
+        for (const e of entries) this.library.save(e)
+        rmSync(this.libRoot, { recursive: true, force: true })
+        if (existsSync(join(tmp, 'lib'))) cpSync(join(tmp, 'lib'), this.libRoot, { recursive: true, verbatimSymlinks: true })
+        projects.forEach((p, i) => {
+          if (!isSafeId(p.id)) return
+          const dir = childPath(this.projRoot, p.id)
+          rmSync(dir, { recursive: true, force: true })
+          if (existsSync(join(tmp, `proj-${i}`))) cpSync(join(tmp, `proj-${i}`), dir, { recursive: true, verbatimSymlinks: true })
+          const saved = this.deps.projects.save(p)
+          this.deps.onProjectChanged?.(saved)
+        })
+        this.notifyLibrary()
+      } catch (err) {
+        console.error('Skill proposal rollback failed:', err instanceof Error ? err.message : err)
+      } finally {
+        rmSync(tmp, { recursive: true, force: true })
+      }
+    }
+    return Object.assign(restore, { discard: () => rmSync(tmp, { recursive: true, force: true }) })
+  }
+
   applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null {
     const items = payload?.items
     const project = projectId === null ? null : this.project(projectId)
@@ -669,22 +710,29 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
       return role.id
     }
     const roleIds = (item: SkillProposalItem): string[] | undefined => (item.roles === undefined ? undefined : [...new Set(item.roles.map(roleIdOf))])
-    for (const it of items) {
-      if (it.scope === 'library') {
-        if (it.action === 'create') this.libraryCreate(it.draft)
-        else this.libraryUpdate({ libraryId: it.libraryId as string, draft: it.draft })
-        continue
+    const restore = this.snapshotForProposal()
+    try {
+      for (const it of items) {
+        if (it.scope === 'library') {
+          if (it.action === 'create') this.libraryCreate(it.draft)
+          else this.libraryUpdate({ libraryId: it.libraryId as string, draft: it.draft })
+          continue
+        }
+        const ids = roleIds(it)
+        if (it.action === 'create') {
+          this.create({ projectId: project!.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) }, 'user')
+        } else {
+          const name = it.draft.name.trim()
+          const skill = (this.refreshed(this.project(project!.id)).project.skills ?? []).find((s) => s.name === name)
+          if (!skill) throw new Error(`This project has no skill named "${name}".`)
+          this.update({ projectId: project!.id, skillId: skill.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) })
+        }
       }
-      const ids = roleIds(it)
-      if (it.action === 'create') {
-        this.create({ projectId: project!.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) }, 'user')
-      } else {
-        const name = it.draft.name.trim()
-        const skill = (this.refreshed(this.project(project!.id)).project.skills ?? []).find((s) => s.name === name)
-        if (!skill) throw new Error(`This project has no skill named "${name}".`)
-        this.update({ projectId: project!.id, skillId: skill.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) })
-      }
+    } catch (e) {
+      restore()
+      throw e
     }
+    restore.discard()
     return project ? this.project(project.id) : null
   }
 

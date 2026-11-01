@@ -457,6 +457,25 @@ describe('applyProposal', () => {
     expect(kept?.roles.find((r) => r.slug === 'reviewer')?.skills).toEqual([id])
   })
 
+  it('rolls everything back when a later item fails midway (L7)', () => {
+    svc.libraryCreate(draft('keep'))
+    const before = JSON.stringify(svc.libraryList().map((l) => l.entry.name))
+    const real = svc.libraryCreate.bind(svc)
+    let calls = 0
+    vi.spyOn(svc, 'libraryCreate').mockImplementation((d) => {
+      if (++calls === 2) throw new Error('disk full')
+      return real(d)
+    })
+    expect(() =>
+      svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('proj-one'), roles: ['engineer'] }), item({ draft: draft('lib-a') }), item({ draft: draft('lib-b') })))
+    ).toThrow(/disk full/)
+    expect(JSON.stringify(svc.libraryList().map((l) => l.entry.name))).toBe(before)
+    expect(store.get('p1')?.skills ?? []).toEqual([])
+    expect(store.get('p1')?.roles.every((r) => !(r.skills ?? []).length)).toBe(true)
+    const projDir = join(dataDir, 'project-skills', 'p1')
+    expect(existsSync(projDir) ? readdirSync(projDir).filter((n) => n !== '.undo') : []).toEqual([])
+  })
+
   it('refuses unknown role slugs, duplicates, linked updates and unknown libraryIds without writing', () => {
     expect(() => svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('a-skill'), roles: ['ghost'] })))).toThrow(/no role "ghost"/)
     expect(store.get('p1')?.skills ?? []).toEqual([])

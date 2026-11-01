@@ -173,7 +173,7 @@ export interface QuickFolderCheck {
 /**
  * Validate a user-chosen folder for a Chat run, in the main process only. Throws a readable message for: a
  * non-string or empty value, a relative path, a UNC or device path (`\\server\share`, `\\?\`, `\\.\`, also when the
- * real path of a mapped drive turns out to be one), a missing folder, a file, the data dir or anything under it,
+ * real path of a mapped drive turns out to be one), a missing folder, a file, the data dir, anything under it or a folder that contains it,
  * and a folder that cannot be read.
  */
 export function validateQuickFolder(raw: unknown, dataDir: string): QuickFolderCheck {
@@ -204,6 +204,10 @@ export function validateQuickFolder(raw: unknown, dataDir: string): QuickFolderC
   const data = canonical(dataDir)
   if (isInside(data, real) || isInside(dataDir, real)) {
     throw new Error("That is OrgAI's own data folder. Choose another folder, or leave it empty to work in a scratch area.")
+  }
+  // M3: a folder that contains the data dir (Home, a drive root) would expose runs, settings and secrets ciphertext.
+  if (isInside(real, data) || isInside(real, dataDir)) {
+    throw new Error("That folder contains OrgAI's data; choose a folder outside it or a subfolder.")
   }
   let entries: string[]
   try {
