@@ -15,4 +15,10 @@ describe('brand marks on the dark tile', () => {
     const m = BRAND_MARKS.atlassian
     expect(ratio(m.darkHex ?? m.hex!, '#20263a')).toBeGreaterThanOrEqual(3)
   })
+  it('every mark colour is at least 3:1 on the dark tile', () => {
+    for (const [id, m] of Object.entries(BRAND_MARKS)) {
+      const colours = [m.darkHex ?? m.hex, ...(m.extra ?? []).map((p) => p.hex)]
+      for (const c of colours) if (c !== null) expect(ratio(c, '#20263a'), `${id} ${c}`).toBeGreaterThanOrEqual(3)
+    }
+  })
 })
