@@ -9,6 +9,8 @@ import InstructionStartPage from './InstructionStartPage'
 export default function McpAssistantStartPage({ project: _project }: { project: Project }): ReactElement {
   const [allowBuild, setAllowBuild] = useState(false)
   const hintId = useId()
+  // The workspace is a fresh folder under OrgAI's data folder, made when the session starts, so it has no name yet.
+  const buildLabel = "Let it build a server in its workspace, in OrgAI's data folder"
   return (
     <InstructionStartPage
       id="harness"
@@ -21,8 +23,13 @@ export default function McpAssistantStartPage({ project: _project }: { project: 
       }}
       extras={
         <div className="assistant-switch-row">
-          <span id={hintId}>Let it build a server here (asks before every command and edit)</span>
-          <Switch testId="mcp-allow-build" label="Let it build a server here" describedBy={hintId} checked={allowBuild} onChange={setAllowBuild} />
+          <div className="assistant-switch-text">
+            <span>{buildLabel}</span>
+            <span className="muted chat-edits-hint" id={hintId}>
+              It asks before every command and edit.
+            </span>
+          </div>
+          <Switch testId="mcp-allow-build" label={buildLabel} describedBy={hintId} checked={allowBuild} onChange={setAllowBuild} />
         </div>
       }
     />

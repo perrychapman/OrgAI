@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
 import { FolderPlus } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
-import { QUICK_PROJECT_ID, RUN_KIND_LABELS } from '@shared/types'
+import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
 import { runCostInput } from '../lib/cost'
@@ -16,7 +16,7 @@ import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
-import { canPromote, offersRetro, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
+import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
 
 type Filter = 'all' | 'work' | 'setup'
 type HistoryView = 'runs' | 'trends'
@@ -66,7 +66,7 @@ export default function RunHistory(): ReactElement {
             ]}
             onChange={setView}
           />
-          {view === 'runs' && (
+          {view === 'runs' && !(project && isVirtualProjectId(project.id)) && (
             <SegmentedControl<Filter>
               label="Show runs of kind"
               value={filter}
@@ -258,16 +258,17 @@ function HistoryRow({
               Continue
             </Button>
           )}
-          {chat && r.quick && !open && (
+          {chat && offersSaveAsProject(r) && !open && (
             canPromote(r).ok ? (
               <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" title="Save this chat as a project in its folder" onClick={onSave}>
                 Save as project
               </Button>
             ) : (
-              <button type="button" className="btn sm run-save" aria-disabled="true" data-testid="history-save-as-project" title={SCRATCH_PROMOTE_REASON}>
-                <Icon icon={FolderPlus} size="sm" />
-                Save as project
-              </button>
+              <span className="run-act-disabled" title={SCRATCH_PROMOTE_REASON}>
+                <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" disabled>
+                  Save as project
+                </Button>
+              </span>
             )
           )}
           {offersRetro(r) && (

@@ -1,7 +1,8 @@
 // Token-free (mock adapter). The Assistants group: sidebar rows, virtual-project topbar and tabs, the three start pages,
 // Ctrl+Shift+N, the Projects view entry points, App settings > Defaults rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
-import { check, cleanup, createProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, removeFixture, sleep } from './lib.mjs'
+import path from 'node:path'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
@@ -120,9 +121,27 @@ try {
         await shot(`start-${id}-${w}x${h}-${theme}`)
 
         if (id === 'quick') {
-          check((await page.locator('[data-testid=chat-folder]').innerText().catch(() => '')).includes('No folder (a scratch area)'), `chat-folder says "No folder (a scratch area)" ${tag}`)
+          check((await page.locator('[data-testid=chat-folder-input]').getAttribute('placeholder').catch(() => '')) === 'No folder (a scratch area)', `chat-folder-input says "No folder (a scratch area)" ${tag}`)
           const st = await switchState('[data-testid=chat-allow-edits]')
           check(!!st && st.disabled && !st.checked, `chat-allow-edits is a disabled, unchecked switch for scratch ${tag}`, JSON.stringify(st))
+          // L2: aria-disabled keeps it in the tab order, with the hint as a separate described-by element.
+          const edits = await page.locator('[data-testid=chat-allow-edits]').evaluate((el) => ({
+            native: el.disabled === true,
+            tab: el.tabIndex,
+            hint: document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent?.trim() ?? '',
+            label: document.getElementById(el.getAttribute('aria-labelledby') ?? '')?.textContent?.trim() ?? ''
+          }))
+          check(!edits.native && edits.tab >= 0 && edits.hint === 'Choose a folder to allow edits.' && edits.label === 'Allow edits in this folder', `scratch edits switch stays focusable with its hint ${tag}`, JSON.stringify(edits))
+          // M6: composer, Start and the trust line are in view without scrolling the page.
+          const fit = await page.evaluate(() => {
+            const pane = document.querySelector('[data-testid=assistant-start-quick]')
+            const comp = pane?.querySelector('.composer')
+            const send = pane?.querySelector('.composer button.btn.primary, .composer button[type=submit]')
+            const r = pane?.getBoundingClientRect()
+            const c = comp?.getBoundingClientRect()
+            return { paneBottom: r ? Math.round(r.bottom) : 0, compBottom: c ? Math.round(c.bottom) : 0, scroll: pane ? pane.scrollHeight - pane.clientHeight : -1, send: !!send }
+          })
+          check(fit.scroll <= 1 && fit.compBottom <= fit.paneBottom, `Chat start page fits without scrolling ${tag}`, JSON.stringify(fit))
           const team = page.locator('[data-testid=chat-team]')
           check((await team.count()) === 1, `chat-team disclosure exists ${tag}`)
           if (await team.count()) {
@@ -136,6 +155,8 @@ try {
           const st = await switchState('[data-testid=mcp-allow-build]')
           check(!!st && !st.checked, `mcp-allow-build switch exists and is off ${tag}`, JSON.stringify(st))
           check(await visible('[data-testid=assistant-start]'), `MCP start page has a Start button ${tag}`)
+          const buildLabel = await page.locator('[data-testid=mcp-allow-build]').getAttribute('aria-label')
+          check(/data folder/.test(buildLabel ?? ''), `mcp-allow-build names where it builds ${tag}`, buildLabel ?? '')
         } else {
           check((await page.locator('textarea[data-testid=assistant-instruction]').count()) === 1, `Skill start page has the instruction textarea ${tag}`)
           check(await visible('[data-testid=assistant-start]'), `Skill start page has a Start button ${tag}`)
@@ -188,11 +209,62 @@ try {
     const save = page.locator('[data-testid=run-save-as-project]')
     const saveOff = (await save.getAttribute('aria-disabled').catch(() => null)) === 'true' || (await save.isDisabled().catch(() => false))
     check((await save.count()) === 1 && saveOff, 'Save as project is disabled for a scratch chat')
-    check(/scratch/i.test((await save.getAttribute('title').catch(() => '')) ?? ''), 'the disabled Save as project explains why')
+    check(/scratch/i.test((await save.locator('xpath=..').getAttribute('title').catch(() => '')) ?? ''), 'the disabled Save as project explains why')
+    const looks = await save.evaluate((el) => ({ disabled: el.disabled, opacity: Number(getComputedStyle(el).opacity) }))
+    check(looks.disabled || looks.opacity < 1, 'the disabled Save as project looks disabled', JSON.stringify(looks))
+    check((await page.locator('.run-tab-new').getAttribute('aria-label')) === 'New chat', 'the "+" tab reads "New chat" on Chat')
+    check(!/unattended/i.test(await page.locator('[data-testid=run-meta]').innerText().catch(() => '')), 'Chat run metadata has no "unattended"')
     await page.locator('[data-testid=tab-history]').click()
     await sleep(800)
     check(((await page.locator('[data-testid=history-folder]').first().innerText().catch(() => '')) || '').trim() === 'Scratch', 'Chat History shows "Scratch" in history-folder')
+    check((await page.getByRole('radio', { name: 'Run', exact: true }).count()) === 0, 'Chat History has no kind filter chips')
+    const histSave = page.locator('[data-testid=history-save-as-project]').first()
+    check((await histSave.count()) === 1 && (await histSave.isDisabled()), 'the scratch chat row in History has a disabled Save as project')
     await shot('chat-history-1600x1000')
+
+    // An ended Chat: the sidebar row opens the start page, not the stopped run.
+    await row('quick').click()
+    await sleep(600)
+    check(await visible('[data-testid=assistant-start-quick]'), 'Chat sidebar row after an ended chat shows the start page')
+
+    // Save as project from a chat in a real folder: typed path, then the action is gone once the project exists.
+    const chatRepo = makeFixtureRepo('chat-promote')
+    const chatProject = path.basename(chatRepo)
+    await openAssistant('quick')
+    const folderInput = page.locator('[data-testid=chat-folder-input]')
+    await folderInput.fill(path.join(TMP, 'orgai-e2e-no-such-folder-xyz'))
+    await sleep(900)
+    check(await visible('[data-testid=chat-folder-error]'), 'a typed folder that does not exist shows an error')
+    await folderInput.fill(chatRepo)
+    await sleep(900)
+    check(!(await visible('[data-testid=chat-folder-error]')), 'a valid typed folder clears the error')
+    check((await switchState('[data-testid=chat-allow-edits]'))?.disabled === false, 'a folder enables the edits switch')
+    await setSize(1024, 640)
+    const fitWithFolder = await page.evaluate(() => {
+      const pane = document.querySelector('[data-testid=assistant-start-quick]')
+      const c = pane?.querySelector('.composer')?.getBoundingClientRect()
+      return { scroll: pane ? pane.scrollHeight - pane.clientHeight : -1, over: c && pane ? Math.round(c.bottom - pane.getBoundingClientRect().bottom) : 0 }
+    })
+    check(fitWithFolder.scroll <= 1 && fitWithFolder.over <= 0, 'Chat start page with a folder chosen fits at 1024x640', JSON.stringify(fitWithFolder))
+    await shot('start-quick-folder-1024x640')
+    await setSize(1600, 1000)
+    await page.locator('[data-testid=assistant-start-quick] .composer textarea').fill('Say hello in one short sentence.')
+    await page.locator('[data-testid=assistant-start-quick] .composer textarea').press('Enter')
+    await page.getByText('Done. Ask a follow-up or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    await endSession(page)
+    const promote = page.locator('[data-testid=run-save-as-project]')
+    check((await promote.count()) === 1 && !(await promote.isDisabled()), 'Save as project is enabled for a chat in a folder')
+    await promote.click()
+    await page.locator('[data-testid=save-as-project-confirm]').click()
+    await page.locator('[data-testid=save-as-project-dialog]').waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+    await sleep(800)
+    check((await page.locator('main .topbar h1').first().innerText().catch(() => '')).trim() === chatProject, 'the new project is selected after Save as project', await page.locator('main .topbar h1').first().innerText().catch(() => ''))
+    check((await page.locator('[data-testid=run-save-as-project]').count()) === 0, 'Save as project is gone from the run strip once the run moved')
+    await page.locator('[data-testid=tab-history]').click()
+    await sleep(800)
+    check((await page.locator('[data-testid=history-save-as-project]').count()) === 0, 'History of the new project has no Save as project')
+    await deleteProject(page, chatProject).catch(() => {})
+    removeFixture(chatRepo)
 
     // Skill assistant
     await openAssistant('skills')
@@ -203,10 +275,13 @@ try {
     check((await item.count()) > 0, 'Skill assistant raises a proposal with proposal-skill-item')
     if (await item.count()) {
       await shot('skill-proposal-1600x1000')
+      check((await page.locator('.run-tab-new').getAttribute('aria-label')) === 'New session', 'the "+" tab reads "New session" on the Skill assistant')
+      check(!/unattended/i.test(await page.locator('[data-testid=run-meta]').innerText().catch(() => '')), 'Skill assistant run metadata has no "unattended"')
       const card = page.locator('article.decision-card', { has: page.locator('[data-testid=proposal-skill-item]') }).first()
       await card.getByRole('button', { name: 'Approve' }).click()
       await sleep(2000)
       check((await page.locator('[data-testid=proposal-skill-item]').count()) === 0, 'approving the skills proposal resolves the card')
+      check(await visible('[data-testid=proposal-next-skills]'), 'an approved library skills proposal leaves a link to the Skill library')
     }
     await endSession(page)
   }
@@ -219,7 +294,19 @@ try {
     await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
     check((await page.locator('.run-tab[aria-selected=true]').count()) === 1, 'MCP assistant run opens a tab in the main window')
     check(app.windows().length === 1, 'the MCP assistant opens no new window', String(app.windows().length))
+    check((await page.locator('.run-tab-new').getAttribute('aria-label')) === 'New session', 'the "+" tab reads "New session" on the MCP assistant')
+    check(!/unattended/i.test(await page.locator('[data-testid=run-meta]').innerText().catch(() => '')), 'MCP assistant run metadata has no "unattended"')
     await endSession(page)
+    // An ended MCP run: the sidebar row and Configure with AI both land on the start page.
+    await row('harness').click()
+    await sleep(600)
+    check(await visible('[data-testid=assistant-start-harness]'), 'MCP assistant sidebar row after an ended run shows the start page')
+    await gotoProjects(page)
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    await page.locator('[data-testid=mcp-library-assist]').click()
+    await sleep(800)
+    check(await visible('[data-testid=assistant-start-harness]'), 'Configure with AI after an ended MCP run shows the start page')
   }
 } catch (e) {
   check(false, 'script ran to the end', e.stack?.split('\n').slice(0, 3).join(' | ') ?? String(e))
