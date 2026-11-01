@@ -145,6 +145,20 @@ describe('built-in role models', () => {
   })
 })
 
+describe('assistant models', () => {
+  it('defaults the Skill assistant to deep and the Chat assistant to everyday', () => {
+    expect(normalizeSettings({})).toMatchObject({ skillAssistModel: 'deep', quickRunModel: 'everyday' })
+  })
+
+  it('keeps model ids, migrates an old opus Skill assistant model and drops bad values', () => {
+    expect(normalizeSettings({ skillAssistModel: ' sonnet ', quickRunModel: 'gpt-5-mini' })).toMatchObject({ skillAssistModel: 'sonnet', quickRunModel: 'gpt-5-mini' })
+    expect(normalizeSettings({ skillAssistModel: 'opus', quickRunModel: 'fast' })).toMatchObject({ skillAssistModel: 'deep', quickRunModel: 'fast' })
+    for (const bad of [42, '', 'inherit', 'two words', 'x'.repeat(201), null, { id: 'opus' }]) {
+      expect(normalizeSettings({ skillAssistModel: bad, quickRunModel: bad } as never)).toMatchObject({ skillAssistModel: 'deep', quickRunModel: 'everyday' })
+    }
+  })
+})
+
 describe('near-limit everyday steering', () => {
   it('reads the legacy field when the new one is missing and mirrors both', () => {
     expect(normalizeSettings({ defaultPreferSonnetNearLimit: true })).toMatchObject({ defaultPreferEverydayNearLimit: true, defaultPreferSonnetNearLimit: true })

@@ -39,11 +39,12 @@ import type {
 export const ROOT_AGENT_ID = 'root'
 
 /**
- * Setup-like runs ('setup' and 'mcp-assist') run a built-in role instead of the project's org chart, get
- * their own harness tool set and are never nudged by the ContinuationDriver.
+ * Setup-like runs ('setup', 'mcp-assist' and 'skill-assist') run a built-in role instead of the project's org
+ * chart, get their own harness tool set, are never nudged by the ContinuationDriver, never get cross-run messaging
+ * and never load skills. A quick run is a 'work' run, not setup-like.
  */
 export function isSetupLikeRun(kind: RunKind): boolean {
-  return kind === 'setup' || kind === 'mcp-assist'
+  return kind === 'setup' || kind === 'mcp-assist' || kind === 'skill-assist'
 }
 
 /**

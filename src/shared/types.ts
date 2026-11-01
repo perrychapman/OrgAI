@@ -1416,6 +1416,12 @@ export interface McpAssistInput {
   scope?: 'project' | 'library'
   /** What the user wants, e.g. "connect our Postgres and GitHub". */
   instruction?: string
+  /**
+   * Default false. When true the assistant may also build a local stdio MCP server in its workspace: it gets Edit,
+   * Write and Bash under permission mode 'default' (every command and edit asks the user), then proposes the server
+   * through propose_mcp_servers like any other. Only the literal true turns it on.
+   */
+  allowBuild?: boolean
 }
 
 /**
@@ -1496,6 +1502,13 @@ export interface AppSettings {
   setupModel: ModelSetting
   /** Model for MCP assistant runs; resolved like setupModel. Default 'deep'. */
   mcpAssistModel: ModelSetting
+  /** Model for Skill assistant runs; resolved like setupModel. Default 'deep' (normalized; an old 'opus' loads as 'deep'). */
+  skillAssistModel?: ModelSetting
+  /**
+   * Model of the Chat's single assistant (quick runs with team 'single'); resolved like setupModel but falls back
+   * to the everyday tier. Default 'everyday' (normalized).
+   */
+  quickRunModel?: ModelSetting
   /**
    * Legacy Anthropic auth, kept as a mirror of connections.anthropic.auth so older code keeps working.
    * settings:set keeps the two in sync (whichever one the caller changed wins).
@@ -1664,7 +1677,33 @@ export interface McpServersProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers'
+/** At most this many items in one propose_skills proposal. */
+export const SKILL_PROPOSAL_MAX_ITEMS = 10
+
+/**
+ * One skill change in a Skill assistant proposal. 'create' writes a new skill; 'update' rewrites SKILL.md of an
+ * existing one (resource files kept). scope 'library' targets the skill library (libraryId names the entry on
+ * update); scope 'project' targets the session's project (libraryId unused; the skill is matched by draft.name on
+ * update). The draft follows the skill limits (name [a-z0-9-] at most 64, never "anthropic" or "claude";
+ * description 1..1024 without < or >; body at most SKILL_BODY_MAX_CHARS; no shell injection).
+ */
+export interface SkillProposalItem {
+  action: 'create' | 'update'
+  /** Library entry id; 'update' with scope 'library' only. */
+  libraryId?: string
+  draft: SkillDraft
+  /** Role slugs to grant the skill to after creating or updating it. Project scope only; ignored for the library. */
+  roles?: string[]
+  scope: 'library' | 'project'
+}
+
+/** Skill proposal (propose_skills, from the Skill assistant): at most SKILL_PROPOSAL_MAX_ITEMS items. */
+export interface SkillsProposalPayload {
+  items: SkillProposalItem[]
+  rationale: string
+}
+
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills'
 
 interface ProposalBase {
   id: string
@@ -1679,6 +1718,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'orgChart'; payload: OrgChartProposalPayload })
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
+  | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
 
 export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
 
@@ -2148,9 +2188,21 @@ export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished
 /**
  * 'work' runs the project's org chart; 'setup' runs the built-in Architect that designs it; 'mcp-assist' runs
  * a built-in MCP assistant (like setup, never the project's roles, never nudged) that proposes McpServerSpec
- * changes through the proposal mechanism (kind 'mcpServers').
+ * changes through the proposal mechanism (kind 'mcpServers'); 'skill-assist' runs the built-in Skill assistant
+ * (setup-like as well) that proposes skill library or project skill changes (proposal kind 'skills').
+ * A quick run (RunSummary.quick) is a 'work' run.
  */
-export type RunKind = 'work' | 'setup' | 'mcp-assist'
+export type RunKind = 'work' | 'setup' | 'mcp-assist' | 'skill-assist'
+
+/** Plain words for each RunKind (History kind chips and filters). Never show the raw kind. */
+export const RUN_KIND_LABELS: Record<RunKind, string> = {
+  work: 'Run',
+  setup: 'Setup',
+  'mcp-assist': 'MCP assistant',
+  'skill-assist': 'Skill assistant'
+}
+
+// ---------- Assistants: virtual projects ----------
 
 /**
  * Project id of the virtual harness project that owns harness-level runs (the library MCP assistant). It is built
@@ -2158,6 +2210,143 @@ export type RunKind = 'work' | 'setup' | 'mcp-assist'
  * projects:list; projects:get(HARNESS_PROJECT_ID) returns it so a run window can render it.
  */
 export const HARNESS_PROJECT_ID = 'harness'
+
+/**
+ * Project id of the virtual project that owns quick runs (the "Chat" assistant: project-less work runs, see
+ * QuickRunInput). Built in the main process per run (the run's folder, default chart or a single assistant).
+ */
+export const QUICK_PROJECT_ID = 'quick'
+
+/** Project id of the virtual project that owns library-scope Skill assistant runs (RunKind 'skill-assist'). */
+export const SKILLS_PROJECT_ID = 'skills'
+
+/**
+ * The virtual projects behind the sidebar "Assistants" section. None is ever stored in projects.json or listed by
+ * projects:list; projects:get(id) returns a display project for each (no stored roles); projects:save and
+ * projects:remove refuse them. The ids pass SAFE_ID; every guard compares by value (isVirtualProjectId).
+ */
+export const VIRTUAL_PROJECT_IDS = [HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID] as const
+export type VirtualProjectId = (typeof VIRTUAL_PROJECT_IDS)[number]
+
+/** True for HARNESS_PROJECT_ID, QUICK_PROJECT_ID and SKILLS_PROJECT_ID. */
+export function isVirtualProjectId(id: string): id is VirtualProjectId {
+  return (VIRTUAL_PROJECT_IDS as readonly string[]).includes(id)
+}
+
+/** Display names of the virtual projects (sidebar Assistants rows, Needs-you locations, display projects). */
+export const VIRTUAL_PROJECT_LABELS: Record<VirtualProjectId, string> = {
+  harness: 'MCP assistant',
+  quick: 'Chat',
+  skills: 'Skill assistant'
+}
+
+// ---------- Assistants: quick runs (Chat) ----------
+
+/**
+ * Who works on a quick run: 'single' = one built-in assistant (default, model AppSettings.quickRunModel);
+ * 'default' = the app's default org chart (defaultRoles), tools filtered through quickRoleTools.
+ */
+export type QuickRunTeam = 'single' | 'default'
+export const QUICK_RUN_TEAMS: readonly QuickRunTeam[] = ['single', 'default']
+/** A longer QuickRunInput.prompt is refused, never cut. */
+export const QUICK_RUN_MAX_PROMPT_CHARS = 100_000
+
+/**
+ * runs:startQuick input. A project-less work run on the virtual project QUICK_PROJECT_ID (RunSummary.kind 'work',
+ * RunSummary.quick set). Never permission mode 'auto' (see quickRunPermissionMode); read-only unless allowEdits;
+ * no project MCP servers, plugins or skills; run messaging off.
+ */
+export interface QuickRunInput {
+  prompt: string
+  /**
+   * Absolute folder to work in (must exist, a directory, not the data dir or under it, no UNC or device path).
+   * Missing = a fresh scratch dir under `<data>/quick/`.
+   */
+  folder?: string
+  /** Default 'single'. */
+  team?: QuickRunTeam
+  /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
+  allowEdits?: boolean
+  images?: ImageAttachment[]
+}
+
+/** RunSummary.quick: how a quick run was started. Kept by continuations. */
+export interface QuickRunInfo {
+  /** The real working dir, the scratch dir included. */
+  folder: string
+  /** The folder is a scratch dir OrgAI made (cannot be promoted to a project). */
+  scratch?: true
+  team: QuickRunTeam
+  allowEdits: boolean
+  /** The folder was a git repository at start. */
+  gitRepo: boolean
+}
+
+/** runs:promoteQuick input: save a quick run's session chain as a new project named `name` (default chart). */
+export interface QuickRunPromoteInput {
+  runId: string
+  name: string
+}
+
+/**
+ * runs:promoteQuick result. 'created': the project was created and the whole run chain moved into it (one
+ * run.moved event per run); `run` is the promoted run's summary with its new projectId. 'existing': the folder is
+ * already a project; nothing moved (the UI offers "Open <name>"). Refused (rejects) for a scratch run or while any
+ * run of the chain is live.
+ */
+export type QuickRunPromoteResult =
+  | { kind: 'created'; project: Project; run: RunSummary }
+  | { kind: 'existing'; projectId: string; name: string }
+
+/**
+ * Harness tools of a quick run's root (bare names). list_projects is read-only: every stored project's id, name,
+ * folder path, brief excerpt, roles (slug: name), connection and its newest run's status, title and time. Never
+ * virtual projects, never secrets. The tool answers text; ProjectPeek is its data shape.
+ */
+export const CHAT_HARNESS_TOOLS = ['list_projects'] as const
+export type ChatHarnessToolName = (typeof CHAT_HARNESS_TOOLS)[number]
+/** list_projects: at most this many characters of each project's brief. */
+export const PROJECT_PEEK_BRIEF_CHARS = 400
+
+/** One project as list_projects reports it (secret-free, structured-clone safe). */
+export interface ProjectPeek {
+  id: string
+  name: string
+  path: string
+  /** The brief on one line, at most PROJECT_PEEK_BRIEF_CHARS characters. */
+  brief: string
+  /** "slug: Name" per role. */
+  roles: string[]
+  connection: ConnectionId
+  lastRun?: { runId: string; status: RunStatus; title?: string; startedAt: number }
+}
+
+// ---------- Assistants: Skill assistant ----------
+
+/**
+ * Harness tools of the Skill assistant (bare names; adapters expose them under their harness server).
+ * list_skill_library: the library entries (and, in a project session, the project's skills with the roles that
+ * load them). read_library_skill: one entry's SKILL.md and file list. propose_skills: a 'skills' proposal that
+ * blocks until the user decides (APPROVED / REVISE).
+ */
+export const SKILL_ASSIST_HARNESS_TOOLS = {
+  list: 'list_skill_library',
+  read: 'read_library_skill',
+  propose: 'propose_skills'
+} as const
+export type SkillAssistHarnessToolName = (typeof SKILL_ASSIST_HARNESS_TOOLS)[keyof typeof SKILL_ASSIST_HARNESS_TOOLS]
+
+/**
+ * skills:startAssist input. scope 'project' (default when projectId is given) starts the Skill assistant on that
+ * project; scope 'library' (default without projectId) runs it on the virtual project SKILLS_PROJECT_ID, where it
+ * proposes library entries only.
+ */
+export interface SkillAssistInput {
+  projectId?: string
+  scope?: 'project' | 'library'
+  /** What the user wants, e.g. "review our skills" or "write a skill for our release checklist". */
+  instruction?: string
+}
 
 /**
  * Where a run is hosted in the UI when it is not a Live-view run. 'team' = an Architect (setup) session started from
@@ -2223,6 +2412,8 @@ export interface RunSummary {
    * continuations (runs:continue) and auto-resume. Missing = shown in the Live run strip and History as usual.
    */
   surface?: RunSurface
+  /** Quick runs only (projectId QUICK_PROJECT_ID, kind 'work'): where and how it works. Kept by continuations. */
+  quick?: QuickRunInfo
 }
 
 /**
@@ -2445,6 +2636,11 @@ export type RunEvent =
    * after the run ended. The summary in runs:list / runs:get carries it from then on.
    */
   | { type: 'run.title'; runId: string; title: string }
+  /**
+   * A run moved to another project (a quick run promoted with runs:promoteQuick). One event per moved run; from now
+   * on runs:list(projectId) returns it and RunSummary.projectId is `projectId`.
+   */
+  | { type: 'run.moved'; runId: string; fromProjectId: string; projectId: string }
   | { type: 'agent.upsert'; runId: string; agent: AgentInstance }
   | { type: 'agent.remove'; runId: string; agentId: string }
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
@@ -3399,6 +3595,11 @@ export interface OrgAIApi {
     /** Restore the skills, files and grants an applyImport replaced. Rejects when the undo expired. */
     undoImport(input: { projectId: string; undoId: string }): Promise<SkillMutationResult>
     /**
+     * Start the Skill assistant session (RunKind 'skill-assist'); its proposals (kind 'skills') are answered with
+     * setup.decide. scope 'library' runs it on the virtual project SKILLS_PROJECT_ID.
+     */
+    startAssist(input: SkillAssistInput): Promise<RunSummary>
+    /**
      * Run the skill evaluation now: deterministic checks over the skills and the newest runs, plus (only with
      * Project.skillEvaluation.enabled and within its tokenBudget) a one-shot model call drafting up to 3 suggestions.
      * Persists and returns the report. Never applies anything.
@@ -3522,6 +3723,13 @@ export interface OrgAIApi {
      * unknown project. Never spends tokens.
      */
     usageStats(query: UsageStatsQuery): Promise<UsageStats>
+    /**
+     * Start a quick run (the Chat assistant): a project-less work run on QUICK_PROJECT_ID (RunSummary.quick set).
+     * Rejects on an empty or too long prompt (QUICK_RUN_MAX_PROMPT_CHARS) or an invalid folder.
+     */
+    startQuick(input: QuickRunInput): Promise<RunSummary>
+    /** Save a quick run's session chain as a new project (see QuickRunPromoteResult). */
+    promoteQuick(input: QuickRunPromoteInput): Promise<QuickRunPromoteResult>
   }
   window: {
     /**
@@ -3687,6 +3895,8 @@ export const IPC = {
   runsListLive: 'runs:listLive',
   runsPendingCards: 'runs:pendingCards',
   runsUsageStats: 'runs:usageStats',
+  runsStartQuick: 'runs:startQuick',
+  runsPromoteQuick: 'runs:promoteQuick',
   modelsPrices: 'models:prices',
   windowOpenRun: 'window:openRun',
   skillsList: 'skills:list',
@@ -3702,6 +3912,7 @@ export const IPC = {
   skillsEvaluate: 'skills:evaluate',
   skillsLastEvaluation: 'skills:lastEvaluation',
   skillsApplySuggestion: 'skills:applySuggestion',
+  skillsStartAssist: 'skills:startAssist',
   skillLibraryList: 'skillLibrary:list',
   skillLibraryRead: 'skillLibrary:read',
   skillLibraryCreate: 'skillLibrary:create',

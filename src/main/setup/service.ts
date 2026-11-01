@@ -209,6 +209,9 @@ export class SetupService {
       case 'mcpServers':
         if (proposal.payload.scope === 'library') throw new Error('A library proposal cannot be applied to a project.')
         return this.hooks.mcp ? this.hooks.mcp.applyProposal(project.id, proposal.payload) : this.applyMcpServers(project, proposal.payload)
+      case 'skills':
+        // Placeholder from the Assistants contract (phase 1): skill proposals are applied by the skill service in phase 2.
+        throw new Error('Skill proposals are not applied here yet.')
     }
   }
 

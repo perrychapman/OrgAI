@@ -176,7 +176,7 @@ export function reconcileNearLimit(prev: AppSettings, next: Partial<AppSettings>
 
 /**
  * Model settings saved while the defaults were Claude aliases: a value equal to that old default becomes its tier
- * (defaultRootModel / setupModel / mcpAssistModel 'opus' -> 'deep', defaultReportModel 'sonnet' -> 'everyday').
+ * (defaultRootModel / setupModel / mcpAssistModel / skillAssistModel 'opus' -> 'deep', defaultReportModel 'sonnet' -> 'everyday').
  * Any other value, aliases included, is kept (a legacy alias still stands for its tier at resolution).
  */
 const LEGACY_MODEL_DEFAULTS = { root: ['opus', 'deep'], report: ['sonnet', 'everyday'], builtin: ['opus', 'deep'] } as const
@@ -221,6 +221,8 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultReportModel: migrateModelDefault(str(r.defaultReportModel, d.defaultReportModel), 'report'),
     setupModel: migrateModelDefault(modelRef(r.setupModel, d.setupModel), 'builtin'),
     mcpAssistModel: migrateModelDefault(modelRef(r.mcpAssistModel, d.mcpAssistModel), 'builtin'),
+    skillAssistModel: migrateModelDefault(modelRef(r.skillAssistModel, d.skillAssistModel ?? 'deep'), 'builtin'),
+    quickRunModel: modelRef(r.quickRunModel, d.quickRunModel ?? 'everyday'),
     // The connection is authoritative; the legacy field mirrors it (see reconcileAnthropicAuth).
     providerAuth: { ...connections.anthropic.auth },
     connections,

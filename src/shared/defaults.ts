@@ -10,11 +10,13 @@ import type {
   ModelFamily,
   ModelRef,
   ModelTier,
+  PermissionMode,
   Project,
   ProviderAuth,
   ProviderConnections,
   ProviderId,
   ProviderModel,
+  QuickRunTeam,
   Role,
   SetupKind,
   SkillEvaluationSettings,
@@ -353,6 +355,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultReportModel: 'everyday',
   setupModel: 'deep',
   mcpAssistModel: 'deep',
+  skillAssistModel: 'deep',
+  quickRunModel: 'everyday',
   providerAuth: { kind: 'subscription' },
   connections: defaultConnections(),
   defaultConnection: 'anthropic',
@@ -364,6 +368,45 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   communityPrices: true,
   defaultAutoContinue: true,
   defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES
+}
+
+// ---------- Quick runs (Chat) ----------
+
+/** Role slug of a quick run's single assistant (team 'single'). */
+export const QUICK_ASSISTANT_SLUG = 'assistant'
+
+/** Tools a quick run with edits off never gets. */
+export const QUICK_EDIT_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash', 'NotebookEdit']
+
+/** A role's tools on a quick run: unchanged with edits on; Edit, Write, Bash and NotebookEdit removed with edits off. */
+export function quickRoleTools(tools: readonly ToolName[], allowEdits: boolean): ToolName[] {
+  return allowEdits ? [...tools] : tools.filter((t) => !QUICK_EDIT_TOOLS.includes(t))
+}
+
+const QUICK_SINGLE_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch']
+
+/**
+ * Tools per role slug for a quick run. 'single': { assistant: Read, Glob, Grep, WebSearch, WebFetch, plus Edit,
+ * Write and Bash with edits on }. 'default': each defaultRoles() role (orchestrator, implementer, reviewer,
+ * researcher) with its tools filtered through quickRoleTools.
+ */
+export function quickRunTools(team: QuickRunTeam, allowEdits: boolean): Record<string, ToolName[]> {
+  if (team === 'single') {
+    return { [QUICK_ASSISTANT_SLUG]: allowEdits ? [...QUICK_SINGLE_TOOLS, 'Edit', 'Write', 'Bash'] : [...QUICK_SINGLE_TOOLS] }
+  }
+  const out: Record<string, ToolName[]> = {}
+  for (const role of defaultRoles()) out[role.slug] = quickRoleTools(role.tools, allowEdits)
+  return out
+}
+
+/**
+ * Permission mode of a quick run: always 'default', edits on or off. Never 'auto' (a classifier would approve calls
+ * in a folder the user never set up), 'acceptEdits' (edits would land unasked) or 'dontAsk' (a read outside the
+ * folder would be silently denied instead of raising a card the user can answer). Every edit and command asks.
+ */
+export function quickRunPermissionMode(allowEdits: boolean): PermissionMode {
+  void allowEdits
+  return 'default'
 }
 
 /** Provider label matching an auth choice. */
