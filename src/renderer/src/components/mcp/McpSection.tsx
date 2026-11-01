@@ -116,6 +116,17 @@ export default function McpSection({ project, onSelectRole }: { project: Project
   useEffect(() => {
     if (focus?.kind !== 'server' || focus.projectId !== project.id || servers === null) return
     if (!(focus.serverId && focusRow(root.current, { id: focus.serverId }))) root.current?.scrollIntoView({ block: 'start' })
+    // Finish setup: a project-level server with a missing secret opens its edit form on that secret.
+    const target = focus.edit ? servers.find((s) => s.spec.id === focus.serverId) : undefined
+    if (target && !target.spec.libraryId && target.missingSecrets.length > 0) {
+      setModal({ kind: 'form', editing: target })
+      const missing = target.missingSecrets[0]
+      window.setTimeout(() => {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-testid=mcp-form] .mcp-var-row'))
+        const row = rows.find((r) => r.querySelector<HTMLInputElement>('input')?.value === missing)
+        row?.querySelector<HTMLElement>('.mcp-var-value button:not([disabled]), .mcp-var-value input:not([disabled])')?.focus()
+      }, 200)
+    }
     clearMcpFocus()
   }, [focus, servers, project.id, clearMcpFocus])
 
@@ -244,7 +255,7 @@ export default function McpSection({ project, onSelectRole }: { project: Project
                 </SettingsGroup>
               </div>
             )}
-            {(linked.length > 0 || !hasConnectedServices) && (
+            {(linked.length > 0 || (!hasConnectedServices && local.length === 0)) && (
             <div data-testid="mcp-group-library">
               <SettingsGroup title="Custom servers you added">
                 {linked.length === 0 ? (

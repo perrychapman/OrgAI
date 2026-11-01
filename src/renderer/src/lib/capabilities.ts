@@ -242,6 +242,19 @@ export function fromReview(r: TeamReview): AssistantResult {
   }
 }
 
+/**
+ * The one word for finishing an applied item's setup, used on the card, the applied row and the destination:
+ * "Sign in" (OAuth connector), "Add token" (token connector) or "Add GITHUB_TOKEN" (a project server's env slot).
+ */
+export function setupLabel(info: { connectorId?: string; libraryId?: string; needsSetup?: { secrets: string[]; signIn: boolean } }): string {
+  const n = info.needsSetup
+  if (!n) return 'Finish setup'
+  if (n.signIn) return 'Sign in'
+  if (info.connectorId) return 'Add token'
+  const first = n.secrets[0]
+  return first ? `Add ${clampText(first, 40)}${n.secrets.length > 1 ? ` +${n.secrets.length - 1}` : ''}` : 'Add token'
+}
+
 /** "3 suggestions since your last run" / "1 suggestion waiting" / null. */
 export function suggestionsLine(summary: Pick<TeamReviewSummary, 'pendingCount' | 'newCount'> | undefined): string | null {
   if (!summary || summary.pendingCount <= 0) return null

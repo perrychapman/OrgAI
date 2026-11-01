@@ -15,6 +15,7 @@ import {
   fullAllowed,
   isOutside,
   pinLabel,
+  setupLabel,
   stripControl,
   sourceBadge
 } from '../../lib/capabilities'
@@ -254,13 +255,13 @@ export function AppliedRow({
         <span>
           Applied <strong>{clampText(info.name, 60)}</strong> to {who}
           {info.access === 'full' ? ' (can read and change)' : ''}.
-          {needs ? ` It stays off until you ${needs.signIn ? 'sign in' : `add ${needs.secrets.map((s) => clampText(s, 40)).join(', ')}`}.` : ''}
+          {needs ? ` It stays off until you ${needs.signIn ? 'sign in' : info.connectorId ? 'add a token' : `add ${needs.secrets.map((s) => clampText(s, 40)).join(', ')}`}.` : ''}
         </span>
       </span>
       <span className="row gap-2">
         {needs && onSetup && (
           <Button size="sm" onClick={onSetup} testId="capability-setup">
-            Finish setup
+            {setupLabel(info)}
           </Button>
         )}
         {info.superseded ? (

@@ -17,7 +17,7 @@ import {
   type ProgressRow
 } from '../../lib/capabilities'
 import { cleanIpcError } from '../../lib/ipcError'
-import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { openConnectorSetup } from './openConnectorSetup'
 import DraftPanel from '../DraftPanel'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -300,11 +300,10 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     const st = useAppStore.getState()
     if (info.connectorId || info.libraryId) {
       // A connector or library entry keeps its sign-in and secrets in App settings > Connectors.
-      requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
-      st.openMcpLibrary(info.libraryId)
+      openConnectorSetup(info.connectorId, info.libraryId)
     } else {
-      // A project-level server: Team > Catalog, on that server's row.
-      st.openProjectMcp(project.id, info.appliedId)
+      // A project-level server with a missing env var: Team > Catalog, its edit form on that variable.
+      st.openProjectMcp(project.id, info.appliedId, { edit: true })
     }
   }
 
