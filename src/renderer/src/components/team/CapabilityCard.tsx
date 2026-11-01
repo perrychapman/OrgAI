@@ -74,6 +74,8 @@ export function CapabilityCard({
   const flags = item.kind !== 'skill' && item.target ? allFlags.filter((f) => f.key !== 'runsCode') : allFlags
   const pin = pinLabel(item)
   const outside = isOutside(item)
+  /** Curated, registry and GitHub items carry a URL: it goes in Details, never the header (walk 3 N14). */
+  const locationInDetails = item.origin === 'catalog' || item.origin === 'registry' || item.origin === 'github'
   const blocked = item.blockedReason ? clampText(item.blockedReason, 160) : null
   const noRole = chosen.length === 0
   const needsPin = outside && !pin
@@ -102,7 +104,7 @@ export function CapabilityCard({
             {sourceBadge(item)}
           </Badge>
           <Badge tone="neutral">{item.kind === 'skill' ? 'Skill' : 'Connection'}</Badge>
-          {item.location && item.origin !== 'catalog' && (
+          {item.location && !locationInDetails && (
             <span className="capability-location mono" title={clampText(item.location, 200)}>
               {clampText(item.location, 80)}
             </span>
@@ -207,11 +209,11 @@ export function CapabilityCard({
           </div>
         </details>
         {noRole && <p className="hint">Choose a role. Nobody gets it until you do.</p>}
-        {item.origin === 'catalog' && item.location && (
+        {locationInDetails && item.location && (
           <details className="disclosure capability-details" data-testid="capability-details">
             <summary>Details</summary>
             <div className="disclosure-body">
-              <span className="hint">Documentation</span>{' '}
+              <span className="hint">{item.origin === 'catalog' ? 'Documentation' : 'Source'}</span>{' '}
               <span className="mono capability-location-full">{clampText(item.location, 200)}</span>
             </div>
           </details>
