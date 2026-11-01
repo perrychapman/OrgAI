@@ -22,3 +22,13 @@ describe('brand marks on the dark tile', () => {
     }
   })
 })
+
+describe('brand marks on the light tile', () => {
+  it('Intercom and Exa are at least 3:1 on the light tile', () => {
+    for (const id of ['intercom', 'exa']) expect(ratio(BRAND_MARKS[id].hex!, '#e9ecf4'), id).toBeGreaterThanOrEqual(3)
+  })
+  it('Exa keeps a strong tint on the dark tile (thin outline mark)', () => {
+    const m = BRAND_MARKS.exa
+    expect(ratio(m.darkHex ?? m.hex!, '#20263a')).toBeGreaterThanOrEqual(6)
+  })
+})
