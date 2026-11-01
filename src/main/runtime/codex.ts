@@ -51,6 +51,8 @@ import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
+import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { tmpdir } from 'node:os'
 
 /**
  * The Codex adapter: drives `codex app-server` (JSON-RPC over stdio, codexAppServer.ts) and maps its threads,
@@ -398,7 +400,7 @@ class CodexSession implements RuntimeSession {
   // ---------- start ----------
 
   private policyFor(role: Role): PolicyChoice {
-    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike })
+    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' })
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
@@ -541,7 +543,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
-      this.launch = buildLaunchConfig(ctx.connection, servers)
+      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       this.server = this.createServer(this.launch)
@@ -822,7 +824,9 @@ class CodexSession implements RuntimeSession {
       })
       let granted = false
       if (decision.behavior === 'allow') {
-        const scoped = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+        // Never write rules into an untrusted folder: a 'project' grant becomes a run grant (RunManager downgrades first).
+        const safe = isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' as const } : decision
+        const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message))
         if (scoped) {
           granted = true
           this.sessionRules.push(...allowRuleStrings(scoped))
@@ -845,7 +849,7 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
-    const rules = [...(this.ctx.allowedRules?.() ?? listRules(this.ctx.project.path)), ...this.sessionRules]
+    const rules = [...(this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))), ...this.sessionRules]
     if (req.command && matchesBashRule(req.command, rules)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
     const { decision, granted } = await this.ask(agentId, 'Bash', input)
@@ -860,9 +864,16 @@ class CodexSession implements RuntimeSession {
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { decision: 'decline' }
     if (policy?.autoAcceptEdits) return { decision: 'accept' }
-    if (listRules(this.ctx.project.path).some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    const buildWorkspace = this.ctx.run.buildWorkspace
+    if (buildWorkspace && (changes.length ? changes.some((c) => isWorkspaceConfigPath(buildWorkspace, c.path)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
+      this.log('warn', 'Declined a change under .claude/ in the build workspace.')
+      this.transcript(agentId, { kind: 'system', text: 'Build sessions cannot write settings under .claude/ in the workspace.' }, { source: 'harness' })
+      return { decision: 'decline' }
+    }
+    const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
+    if ([...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     const input: Record<string, unknown> = {
       file_path: changes[0]?.path ?? req.grantRoot ?? '',
       ...(changes.length ? { changes } : {}),
@@ -989,7 +1000,7 @@ class CodexSession implements RuntimeSession {
     this.mcpRestartPending = false
     try {
       const servers = await this.ctx.resolvedMcpServers!()
-      const launch = buildLaunchConfig(this.ctx.connection, servers)
+      const launch = buildLaunchConfig(this.ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(this.ctx.run) })
       const old = this.server
       this.unwire()
       old.close()
@@ -1040,8 +1051,11 @@ export class CodexAdapter implements RuntimeAdapter {
    */
   async complete(input: CompletionInput): Promise<string> {
     const connection = input.connection ?? (await this.options.completionConnection?.())
-    const launch = buildLaunchConfig(connection, [])
-    const options: CodexAppServerOptions = { cwd: input.cwd, env: launch.env, config: launch.config }
+    // One-shot completions never run in the project folder: its AGENTS.md must not reach the model (project docs off,
+    // empty temp dir as cwd). Nothing in a tool-less read-only thread needs the folder.
+    const launch = buildLaunchConfig(connection, [], { noProjectDocs: true })
+    const scratchCwd = tmpdir()
+    const options: CodexAppServerOptions = { cwd: scratchCwd, env: launch.env, config: launch.config }
     const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
     let text = ''
     let final = ''
@@ -1096,7 +1110,7 @@ export class CodexAdapter implements RuntimeAdapter {
         approvalPolicy: 'never',
         sandbox: 'read-only',
         developerInstructions: input.system,
-        ...(input.cwd ? { cwd: input.cwd } : {}),
+        cwd: scratchCwd,
         ...(model ? { model } : {}),
         serviceName: ORGAI_SERVICE
       }))

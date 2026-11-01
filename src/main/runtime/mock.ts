@@ -7,6 +7,7 @@ import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harn
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -719,6 +720,16 @@ export class MockSession implements RuntimeSession {
     this.charge(agentId, JSON.stringify(input))
     countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
+    // Same refusal as the Claude adapter's PreToolUse deny: build sessions never write <workspace>/.claude (no card, no allow rule).
+    const ws = this.ctx.run.buildWorkspace
+    if (ws && MOCK_CONFIG_WRITE_TOOLS.has(step.name)) {
+      const target = step.name === 'NotebookEdit' ? (input.notebook_path ?? input.file_path) : (input.file_path ?? input.notebook_path)
+      if (isWorkspaceConfigPath(ws, target)) {
+        this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: 'Build sessions cannot write OrgAI or Claude settings under .claude/ in the workspace.', isError: true })
+        this.setState(agentId, 'thinking', 'Thinking…')
+        return
+      }
+    }
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
@@ -734,8 +745,8 @@ export class MockSession implements RuntimeSession {
     if (step.ask) {
       const suggestions = chooseSuggestions(step.name, input, undefined)
       const rules = allowRuleStrings(suggestions)
-      // A quick run never reads saved rules from the user's folder (same as the Claude adapter).
-      const saved = new Set([...(this.ctx.run.quick ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
+      // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
+      const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       const live = this.ctx.allowedRules?.() ?? []
       const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
@@ -758,7 +769,7 @@ export class MockSession implements RuntimeSession {
           this.setState(agentId, 'thinking', 'Thinking…')
           return
         }
-        const granted = applyAllowScope(this.ctx.project.path, this.ctx.run.quick && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision, suggestions, (level, message) => this.log(level, message))
+        const granted = applyAllowScope(this.ctx.project.path, isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision, suggestions, (level, message) => this.log(level, message))
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
       }
     }
@@ -868,6 +879,8 @@ export interface MockAdapterOptions {
   /** Use this script instead of ORGAI_MOCK_SCRIPT or the default. Missing fields come from the default. */
   script?: MockScript
 }
+
+const MOCK_CONFIG_WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 export class MockAdapter implements RuntimeAdapter {
   readonly id = 'mock' as const

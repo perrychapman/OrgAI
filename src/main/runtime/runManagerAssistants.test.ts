@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSettings, Project, ProjectPeek, Proposal, QuickRunInfo, RunEvent, SkillsProposalPayload } from '@shared/types'
+import type { AppSettings, Project, RunSummary, ProjectPeek, Proposal, QuickRunInfo, RunEvent, SkillsProposalPayload } from '@shared/types'
 import { DEFAULT_APP_SETTINGS, defaultConnections } from '@shared/defaults'
 import { harnessProject } from '../mcp/assist'
 import { RunManager, type RunManagerOptions } from './runManager'
@@ -334,5 +334,70 @@ describe('cross-run messaging and virtual projects', () => {
     expect(ctxs[0].listRuns?.()).toEqual([])
     expect(await ctxs[0].messageRun?.(q.id, 'hi')).toMatchObject({ result: 'refused', refusal: 'not-work' })
     expect(a.id).not.toBe(q.id)
+  })
+})
+
+describe('trust-restricted runs (quick runs and build sessions)', () => {
+  async function restrictedRuns(m: ReturnType<typeof rig>['m']) {
+    const ws = join(dir, 'data', 'quick', 'quick_build1')
+    mkdirSync(ws, { recursive: true })
+    const build = await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    const qf = folder()
+    const q = await m.start({ project: quickProj({ path: qf }), prompt: 'q', quick: quickInfo({ folder: qf }) })
+    return { build, q, ws, qf }
+  }
+
+  it('narrows a project-scope permission decision to the session and writes nothing', async () => {
+    const { m, ctxs } = rig({}, { live: true })
+    const { build, q, ws, qf } = await restrictedRuns(m)
+    for (const [i, run, path] of [[0, build, ws], [1, q, qf]] as const) {
+      const pending = ctxs[i].requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'x' })
+      const req = events.filter((e) => e.type === 'permission.request' && e.runId === run.id).at(-1) as Extract<RunEvent, { type: 'permission.request' }>
+      m.decide(run.id, req.request.id, { behavior: 'allow', scope: 'project' })
+      expect(await pending).toEqual({ behavior: 'allow', scope: 'session' })
+      expect(existsSync(join(path, '.claude', 'settings.local.json'))).toBe(false)
+    }
+  })
+
+  it('keeps a project grant for an ordinary project run', async () => {
+    const { m, ctxs } = rig({}, { live: true })
+    await m.start({ project: makeProject({ path: folder() }), prompt: 'x' })
+    const pending = ctxs[0].requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'x' })
+    const req = events.find((e) => e.type === 'permission.request') as Extract<RunEvent, { type: 'permission.request' }>
+    m.decide(req.runId, req.request.id, { behavior: 'allow', scope: 'project' })
+    expect(await pending).toEqual({ behavior: 'allow', scope: 'project' })
+  })
+
+  it('allowedRules never reads the workspace rules file of a build session', async () => {
+    const { m, ctxs } = rig({}, { live: true })
+    const ws = join(dir, 'data', 'quick', 'quick_build2')
+    mkdirSync(join(ws, '.claude'), { recursive: true })
+    writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }))
+    expect(listRules(ws)).toContain('Bash')
+    await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    expect(ctxs[0].allowedRules?.()).not.toContain('Bash')
+  })
+
+  it('a build session project-scope rule grant stays on the run', async () => {
+    const { m, ctxs } = rig({}, { live: true })
+    const { build, ws } = await restrictedRuns(m)
+    void ctxs[0].requestPermissionRules?.({ agentId: 'root', rules: ['Bash(ls:*)'], reason: 'r' })
+    const req = events.find((e) => e.type === 'rules.request' && e.runId === build.id) as Extract<RunEvent, { type: 'rules.request' }>
+    m.decideRules(build.id, req.request.id, { behavior: 'grant', scope: 'project' })
+    expect(existsSync(join(ws, '.claude', 'settings.local.json'))).toBe(false)
+    expect(ctxs[0].allowedRules?.()).toContain('Bash(ls:*)')
+  })
+
+  it('auto-resume rebuilds a build session through buildProject and fails when it throws', async () => {
+    const ws = folder()
+    const buildProject = vi.fn((): Project => {
+      throw new Error("This build session's workspace is gone; start a new one.")
+    })
+    const { m, store } = rig({ buildProject })
+    const run = await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.status ?? store.get(run.id)?.status).toBe('finished'))
+    store.upsert({ ...(store.get(run.id) as RunSummary), status: 'paused' })
+    await expect(m.resumeNow(run.id)).rejects.toThrow(/workspace is gone/)
+    expect(buildProject).toHaveBeenCalled()
   })
 })

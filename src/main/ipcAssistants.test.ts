@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -238,7 +238,8 @@ describe('registered handlers', () => {
 
   it('runs:continue rebuilds a quick run from its summary, never from a stored project', async () => {
     const { call, runs, quick } = register()
-    const info = { folder: dir, team: 'single', allowEdits: false, gitRepo: false }
+    const work = mkdtempSync(join(tmpdir(), 'orgai-work-'))
+    const info = { folder: work, team: 'single', allowEdits: false, gitRepo: false }
     const summary = { id: 'run_q', projectId: 'quick', kind: 'work', quick: info } as unknown as RunSummary
     runs.summary.mockReturnValue(summary)
     const rebuilt = makeProject({ id: 'quick' })
@@ -246,6 +247,41 @@ describe('registered handlers', () => {
     await call(IPC.runsContinue, { runId: 'run_q', text: 'more' })
     expect(quick.projectFor).toHaveBeenCalledWith(summary)
     expect(runs.continueRun).toHaveBeenCalledWith(rebuilt, 'run_q', 'more', undefined)
+  })
+
+  it('runs:continue and runs:send refuse an over-long quick message and a quick folder that is now the data dir', async () => {
+    const { call, runs } = register()
+    const work = mkdtempSync(join(tmpdir(), 'orgai-work-'))
+    const quickRun = (folder: string, extra: object = {}) =>
+      ({ id: 'run_q', projectId: 'quick', kind: 'work', quick: { folder, team: 'single', allowEdits: false, gitRepo: false, ...extra } }) as unknown as RunSummary
+    runs.summary.mockReturnValue(quickRun(work))
+    const long = 'x'.repeat(QUICK_RUN_MAX_PROMPT_CHARS + 1)
+    await expect(call(IPC.runsContinue, { runId: 'run_q', text: long })).rejects.toThrow(/too long/)
+    expect(() => call(IPC.runsSend, { runId: 'run_q', text: long })).toThrow(/too long/)
+    runs.summary.mockReturnValue(quickRun(dir))
+    await expect(call(IPC.runsContinue, { runId: 'run_q', text: 'ok' })).rejects.toThrow()
+    expect(runs.continueRun).not.toHaveBeenCalled()
+    // A scratch folder skips the folder check (it is OrgAI's own dir under <data>/quick).
+    runs.summary.mockReturnValue(quickRun(dir, { scratch: true }))
+    await expect(call(IPC.runsContinue, { runId: 'run_q', text: 'ok' })).rejects.toThrow(/Project not found/)
+  })
+
+  it('runs:continue rebuilds a build session with its workspace, and refuses a gone or forged one', async () => {
+    const { call, runs } = register()
+    const ws = join(dir, 'quick', 'quick_abc123')
+    mkdirSync(ws, { recursive: true })
+    const build = (buildWorkspace: string) => ({ id: 'run_b', projectId: 'harness', kind: 'mcp-assist', buildWorkspace }) as unknown as RunSummary
+    runs.summary.mockReturnValue(build(ws))
+    await call(IPC.runsContinue, { runId: 'run_b', text: 'more' })
+    const project = (runs.continueRun.mock.calls as unknown as Project[][])[0][0]
+    expect(project.id).toBe('harness')
+    expect(project.path).toBe(ws)
+    runs.continueRun.mockClear()
+    rmSync(ws, { recursive: true })
+    await expect(call(IPC.runsContinue, { runId: 'run_b', text: 'more' })).rejects.toThrow(/workspace is gone/)
+    runs.summary.mockReturnValue(build(join(dir, 'elsewhere', 'quick_abc123')))
+    await expect(call(IPC.runsContinue, { runId: 'run_b', text: 'more' })).rejects.toThrow(/workspace is gone/)
+    expect(runs.continueRun).not.toHaveBeenCalled()
   })
 
   it('skills channels refuse every virtual id', () => {

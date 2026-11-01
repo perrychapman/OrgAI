@@ -48,6 +48,7 @@ import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
+import { isTrustRestrictedRun } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
 import type { SkillRunSource } from '../skills/types'
@@ -273,9 +274,9 @@ function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
   return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
 }
 
-/** An allowBuild MCP assistant session (isBuildWorkspaceProject) also gets Edit, Write and Bash; every call asks. */
-function withBuildTools(role: Role, project: Project): Role {
-  const extra = buildToolsFor(project)
+/** An allowBuild MCP assistant session (RunSummary.buildWorkspace) also gets Edit, Write and Bash; every call asks. */
+function withBuildTools(role: Role, run: Pick<RunSummary, 'kind' | 'buildWorkspace'>): Role {
+  const extra = buildToolsFor(run)
   return extra.length ? { ...role, tools: [...new Set([...role.tools, ...extra])] } : role
 }
 
@@ -354,6 +355,8 @@ export interface RunManagerOptions {
    * Missing = a paused quick run cannot auto-resume.
    */
   quickProject?: (summary: RunSummary) => Project | null | undefined
+  /** The project of an MCP assistant build session being auto-resumed (workspace checked); throws when it is gone. */
+  buildProject?: (summary: RunSummary) => Project | null | undefined
   /** list_projects for quick runs only (RuntimeContext.listProjects): stored projects, never virtual ones. */
   listProjects?: () => ProjectPeek[]
   /**
@@ -617,6 +620,7 @@ export class RunManager {
   /** The project a stored or live run continues in: a quick run's rebuilt project, else the current saved one. */
   private projectOfRun(run: RunSummary): Project | null | undefined {
     if (run.quick) return this.options.quickProject?.(run)
+    if (run.buildWorkspace) return this.options.buildProject?.(run)
     return this.options.resolveProject?.(run.projectId)
   }
 
@@ -828,6 +832,8 @@ export class RunManager {
     // Setup-like runs and the virtual projects (harness, skills, Chat) carry no project MCP servers, plugins or skills.
     const bare = setupLike || isVirtualProjectId(project.id)
     const isQuick = project.id === QUICK_PROJECT_ID
+    // Quick runs and build sessions: the folder is untrusted, so its saved rules file never counts.
+    const restricted = isQuick || isTrustRestrictedRun(summary)
     const mcp = this.options.mcp
     /** The project as saved after installs this run made; the canonical path is kept. */
     let live: Project = project
@@ -923,7 +929,7 @@ export class RunManager {
         project,
         roles:
           kind === 'setup' ? [architectRole(builtinModel)]
-          : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), project)]
+          : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
           : project.roles,
         prompt,
@@ -972,7 +978,7 @@ export class RunManager {
         requestPermissionRules: (req) => this.requestRules(active, req),
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
-        allowedRules: () => [...new Set([...(isQuick ? [] : listRules(project.path)), ...active.runRules])],
+        allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
@@ -1459,12 +1465,21 @@ export class RunManager {
     })
   }
 
+  /** Quick runs and build sessions never save anything into their folder (isTrustRestrictedRun, plus the quick project). */
+  private isRestricted(summary: RunSummary): boolean {
+    return summary.projectId === QUICK_PROJECT_ID || isTrustRestrictedRun(summary)
+  }
+
   decide(runId: string, requestId: string, decision: PermissionDecision): void {
     const active = this.runs.get(runId)
     const pending = active?.pending.get(requestId)
     if (!active || !pending) return
     active.pending.delete(requestId)
-    pending.resolve(decision)
+    // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
+    // save rules into it. Narrow to the session here so every adapter is covered.
+    const narrowed: PermissionDecision =
+      decision?.behavior === 'allow' && decision.scope === 'project' && this.isRestricted(active.summary) ? { ...decision, scope: 'session' } : decision
+    pending.resolve(narrowed)
     this.broadcast({ type: 'permission.resolved', runId, requestId })
     this.cardSettled(active)
   }
@@ -1482,7 +1497,7 @@ export class RunManager {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
-              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload)
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
@@ -1604,7 +1619,7 @@ export class RunManager {
     let clean: PermissionRuleDecision
     if (decision?.behavior === 'grant') {
       // A quick run's folder is not a project: a grant there stays on this run and nothing is written into the folder.
-      const scope = decision.scope === 'project' && active.summary.projectId !== QUICK_PROJECT_ID ? 'project' : 'run'
+      const scope = decision.scope === 'project' && !this.isRestricted(active.summary) ? 'project' : 'run'
       clean = { behavior: 'grant', scope }
       for (const r of rules) if (!active.runRules.includes(r)) active.runRules.push(r)
       if (scope === 'project') {

@@ -25,11 +25,12 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
@@ -389,31 +390,43 @@ function setupRunCanWrite(ctx: RuntimeContext): boolean {
 export function claudePermissionMode(ctx: RuntimeContext): Options['permissionMode'] {
   const mode = ctx.project.permissionMode
   const askOnly = (): Options['permissionMode'] => (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode)
-  if (ctx.run.quick) return askOnly()
+  if (isTrustRestrictedRun(ctx.run)) return askOnly()
   if (isSetupLikeRun(ctx.run.kind)) return setupRunCanWrite(ctx) ? askOnly() : mode === 'auto' ? 'auto' : 'acceptEdits'
   return mode
 }
 
 export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
-  return !isSetupLikeRun(ctx.run.kind) && !ctx.run.quick && ctx.project.permissionMode === 'bypassPermissions'
+  return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && ctx.project.permissionMode === 'bypassPermissions'
 }
 
-/** A quick run's folder is untrusted: its .claude/settings*.json (rules, hooks) must not load. */
+/** A quick run's folder and a build session's scratch dir are untrusted: .claude/settings*.json (rules, hooks) must not load. */
 export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
-  return ctx.run.quick ? [] : ['project']
+  return isTrustRestrictedRun(ctx.run) ? [] : ['project']
 }
 
 /** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
 export function claudeSavedRules(ctx: RuntimeContext): string[] {
-  return ctx.run.quick ? [] : listRules(ctx.project.path)
+  return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
 }
 
-/** A quick run's "project" scope becomes "session": nothing is ever written into the user's folder. */
+/** A quick or build run's "project" scope becomes "session": nothing is ever written into the user's folder. */
 export function quickSafeDecision(
   ctx: RuntimeContext,
   decision: Extract<PermissionDecision, { behavior: 'allow' }>
 ): Extract<PermissionDecision, { behavior: 'allow' }> {
-  return ctx.run.quick && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision
+  return isTrustRestrictedRun(ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision
+}
+
+const BUILD_CONFIG_WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+export const BUILD_CONFIG_DENY = 'Build sessions cannot write OrgAI or Claude settings under .claude/ in the workspace.'
+
+/** Deny reason when a build session's file tool targets <workspace>/.claude (a missing path is denied too); undefined otherwise. */
+export function buildConfigWriteDenial(run: Pick<RunSummary, 'buildWorkspace'>, toolName: string, toolInput: unknown): string | undefined {
+  const ws = run.buildWorkspace
+  if (!ws || !BUILD_CONFIG_WRITE_TOOLS.has(toolName)) return undefined
+  const i = (toolInput ?? {}) as Record<string, unknown>
+  const target = toolName === 'NotebookEdit' ? (i.notebook_path ?? i.file_path) : (i.file_path ?? i.notebook_path)
+  return isWorkspaceConfigPath(ws, target) || typeof target !== 'string' || !target ? BUILD_CONFIG_DENY : undefined
 }
 
 /**
@@ -914,6 +927,12 @@ export class ClaudeSession implements RuntimeSession {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      // Build sessions never write their own .claude settings (hooks, rules): denied before any allow rule or hook-allow path.
+      const configDenial = buildConfigWriteDenial(this.ctx.run, input.tool_name, input.tool_input)
+      if (configDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${configDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: configDenial } }
+      }
       // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
       if (input.tool_name === 'Skill') {
         const roleId = input.agent_id ? (this.agents.get(agentId)?.roleId ?? this.rolesBySlug.get(input.agent_type ?? '')?.id ?? '') : this.root.id

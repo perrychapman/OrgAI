@@ -52,12 +52,14 @@ import {
   oauthPresetFor,
   tokenHeaderValue
 } from './connectors'
+import { insideWorkspace, removeBuildDir, rewritePath, stageBuild, type InstalledBuild } from './builds'
+import { scratchDirFor } from '../quick/scratch'
 import type { ConnectorAddInput, ConnectorInfo, ConnectorTokenInput } from '@shared/types'
 
-/** Connector fields are written by the main process only (connectors:add): drop whatever an input carries. */
+/** Connector fields and buildDigest are written by the main process only: drop whatever an input carries. */
 function noConnector<T extends { connectorId?: string; connectorVariant?: string }>(x: T): T {
-  if (!x || typeof x !== 'object' || (!('connectorId' in x) && !('connectorVariant' in x) && !('connectedAt' in x))) return x
-  const { connectorId: _c, connectorVariant: _v, connectedAt: _at, ...rest } = x as T & { connectedAt?: number }
+  if (!x || typeof x !== 'object' || (!('connectorId' in x) && !('connectorVariant' in x) && !('connectedAt' in x) && !('buildDigest' in x))) return x
+  const { connectorId: _c, connectorVariant: _v, connectedAt: _at, buildDigest: _bd, ...rest } = x as T & { connectedAt?: number; buildDigest?: string }
   return rest as T
 }
 
@@ -68,6 +70,15 @@ function withConnectedAt(entry: McpLibraryEntry, at: number | undefined): McpLib
 }
 
 /** The OAuth functions McpService calls; tests inject fakes. */
+/**
+ * Options for McpService.applyLibraryProposal. buildWorkspace: the proposing run was an allowBuild MCP assistant
+ * session (RunSummary.buildWorkspace); a stdio server whose command or args point into it is copied to
+ * `<data>/mcp-builds/<entryId>/` on approval and its entry gets buildDigest (review M5).
+ */
+export interface LibraryProposalOptions {
+  buildWorkspace?: string
+}
+
 export interface McpOAuthFns {
   runAuthorization: typeof runAuthorization
   refreshTokens: typeof refreshTokens
@@ -152,6 +163,7 @@ export class McpService {
   private now: () => number
   /** ORGAI_MOCK=1: connector entries authorize and test without network (see mockAuthorize). Never set otherwise. */
   private mock: boolean
+  private dataDir?: string
   /** One interactive authorization per owner; a new call aborts the previous. */
   private flows = new Map<string, AbortController>()
   /**
@@ -179,10 +191,13 @@ export class McpService {
     /** Tests inject fakes for the OAuth flow and refresh. */
     oauth?: Partial<McpOAuthFns>
     now?: () => number
+    /** The data dir: built servers are kept in `<dataDir>/mcp-builds/<entryId>/` (index.ts passes dataDir). */
+    dataDir?: string
     /** index.ts passes process.env.ORGAI_MOCK === '1': connector authorize/test then run without network. */
     mock?: boolean
   }) {
     this.mock = deps.mock === true
+    this.dataDir = deps.dataDir
     this.projects = deps.projects
     this.secrets = deps.secrets
     this.library = deps.library
@@ -278,7 +293,7 @@ export class McpService {
   }
 
   /** Validate and persist one entry (no broadcasts). Linked projects are re-saved by the caller. */
-  private commitEntry(incoming: McpLibraryEntry, opts: { applied?: boolean } = {}): McpLibraryEntry {
+  private commitEntry(incoming: McpLibraryEntry, opts: { applied?: boolean; buildDigest?: string } = {}): McpLibraryEntry {
     const lib = this.lib()
     const prev = lib.get(incoming.id)
     const entry: McpLibraryEntry = withOAuth({ ...noConnector(incoming), source: normalSource(incoming.source) }, undefined)
@@ -289,6 +304,9 @@ export class McpService {
       if (prev.connectorVariant) entry.connectorVariant = prev.connectorVariant
       if (prev.connectedAt !== undefined) entry.connectedAt = prev.connectedAt
     }
+    // buildDigest is main-only: an edit keeps it while the command and args are unchanged, else it is dropped.
+    if (prev?.buildDigest && sameTarget(prev, entry)) entry.buildDigest = prev.buildDigest
+    else if (opts.buildDigest) entry.buildDigest = opts.buildDigest
     const owner: McpSecretOwner = { libraryId: entry.id }
     if (prev) this.retarget(owner, prev, entry, opts.applied === true)
     // An entry that stops being a connector loses the preset-made OAuth state and tokens with it.
@@ -336,6 +354,7 @@ export class McpService {
   /** Delete one entry, its secrets, every link to it and the grants to those links (no broadcasts of the library). */
   private removeEntry(libraryId: string): void {
     this.lib().remove(libraryId)
+    if (this.dataDir) removeBuildDir(this.dataDir, libraryId)
     this.secrets.deletePrefix(mcpLibraryPrefix(libraryId))
     this.flows.get(mcpLibraryPrefix(libraryId))?.abort()
     this.lastErrors.delete(mcpLibraryPrefix(libraryId))
@@ -1062,7 +1081,14 @@ export class McpService {
    * Apply an approved library-scope proposal (the harness-level assistant): upsert entries (matched by id, else by
    * name) and remove entries by id. Everything is validated first; nothing is saved on any problem.
    */
-  applyLibraryProposal(p: McpServersProposalPayload): void {
+  /** The build workspace as a genuine `<data>/quick/quick_<id>` dir, or a refusal. */
+  private genuineWorkspace(workspace: string): string {
+    const ws = this.dataDir ? scratchDirFor(this.dataDir, workspace) : null
+    if (!ws) throw new Error('That build folder is not one OrgAI created, so its files were not saved.')
+    return ws
+  }
+
+  applyLibraryProposal(p: McpServersProposalPayload, opts: LibraryProposalOptions = {}): void {
     const lib = this.lib()
     const removeIds = new Set((Array.isArray(p.remove) ? p.remove : []).filter((id): id is string => typeof id === 'string'))
     let planned = lib.list().filter((e) => !removeIds.has(e.id))
@@ -1083,8 +1109,40 @@ export class McpService {
       commits.push(entry)
     }
     if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
-    for (const id of removeIds) if (lib.get(id)) this.removeEntry(id)
-    for (const entry of commits) this.relinkProjects(this.commitEntry(entry, { applied: true }))
+    // M5: a stdio server that points into the build workspace is copied to <data>/mcp-builds/<entryId>/ first.
+    const staged: Array<{ entry: McpLibraryEntry; digest: string; install: () => InstalledBuild; discard: () => void }> = []
+    const installed: InstalledBuild[] = []
+    try {
+      if (opts.buildWorkspace !== undefined) {
+        const ws = this.genuineWorkspace(opts.buildWorkspace)
+        const wsKeys = [ws, ...(ws === opts.buildWorkspace ? [] : [opts.buildWorkspace])]
+        for (const entry of commits) {
+          if (entry.transport !== 'stdio') continue
+          const inWs = (v: unknown): v is string => wsKeys.some((k) => insideWorkspace(k, v))
+          if (!inWs(entry.command) && !(entry.args ?? []).some(inWs)) continue
+          if (!this.dataDir) throw new Error('Built servers cannot be saved here: no data folder is configured.')
+          const root = wsKeys.find((k) => inWs(entry.command) || (entry.args ?? []).some((a) => insideWorkspace(k, a))) ?? ws
+          const st = stageBuild(this.dataDir, entry.id, ws)
+          staged.push({ entry, digest: st.digest, install: st.install, discard: st.discard })
+          const dir = join(this.dataDir, 'mcp-builds', entry.id)
+          const map = (v: string): string => (insideWorkspace(root, v) ? rewritePath(root, dir, v) : v)
+          const cmd = entry.command
+          if (typeof cmd === 'string') entry.command = map(cmd)
+          if (entry.args) entry.args = entry.args.map(map)
+        }
+      }
+      for (const id of removeIds) if (lib.get(id)) this.removeEntry(id)
+      for (const s of staged) installed.push(s.install())
+      for (const entry of commits) {
+        const st = staged.find((s) => s.entry === entry)
+        this.relinkProjects(this.commitEntry(entry, { applied: true, ...(st ? { buildDigest: st.digest } : {}) }))
+      }
+    } catch (e) {
+      for (const i of installed) i.rollback()
+      for (const s of staged) s.discard()
+      throw e
+    }
+    for (const i of installed) i.finish()
     this.notifyLibrary()
   }
 

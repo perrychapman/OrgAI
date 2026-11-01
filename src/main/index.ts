@@ -34,7 +34,7 @@ import { MockAdapter } from './runtime/mock'
 import { sweepStaleSkillDirs } from './runtime/claudeSkills'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
-import { registerIpc } from './ipc'
+import { registerIpc, harnessProjectFor } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
@@ -282,7 +282,7 @@ app.whenReady().then(() => {
     mcp: {
       libraryEntries: () => mcp.libraryEntries(),
       applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
-      applyLibraryProposal: (payload) => mcp.applyLibraryProposal(payload)
+      applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
     },
     skills: { applyProposal: (projectId, payload) => skills.applyProposal(projectId, payload) }
   })
@@ -327,6 +327,8 @@ app.whenReady().then(() => {
   }
   runManager = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     resolveProject: (projectId) => projectOrHarness(projectId),
+    // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
+    buildProject: (summary) => harnessProjectFor(summary, settings.get(), dataDir, mockAdapter),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
     appSettings: () => settings.get(),

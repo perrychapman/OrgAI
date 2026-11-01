@@ -42,6 +42,15 @@ describe('validateQuickFolder', () => {
     expect(validateQuickFolder(`"${f}"`, data).folder).toBe(validateQuickFolder(f, data).folder)
   })
 
+  it('refuses a folder that contains the data dir and accepts a sibling (M3)', () => {
+    const outer = userFolder('outer')
+    const nested = join(outer, 'orgai-data')
+    mkdirSync(nested)
+    expect(() => validateQuickFolder(outer, nested)).toThrow("That folder contains OrgAI's data; choose a folder outside it or a subfolder.")
+    expect(() => validateQuickFolder(outer, join(nested, 'not-yet-created'))).toThrow(/contains OrgAI's data/)
+    expect(validateQuickFolder(userFolder('sibling'), nested).folder).toBeTruthy()
+  })
+
   it('refuses non-strings, empty, relative, UNC and device paths', () => {
     expect(() => validateQuickFolder(7, data)).toThrow(/as text/)
     expect(() => validateQuickFolder('   ', data)).toThrow(/Choose a folder/)
@@ -362,6 +371,16 @@ describe('QuickRunService', () => {
       live.add('second')
       expect(() => svc.promote({ runId: first.id, name: 'Repo' })).toThrow(/End the session/)
       expect(runStore.list('quick')).toHaveLength(2)
+    })
+
+    it('treats a paused run that will auto-resume as live (L3), but not a plain paused one', async () => {
+      const { svc, runStore } = make()
+      const first = await svc.start({ prompt: 'first', folder: userFolder('repo') })
+      runStore.upsert(run('second', { quick: first.quick, resumedFrom: first.id, startedAt: 20, status: 'paused', pausedUntil: 99, autoResume: true }))
+      expect(() => svc.promote({ runId: first.id, name: 'Repo' })).toThrow(/End the session/)
+      expect(runStore.list('quick')).toHaveLength(2)
+      runStore.upsert(run('second', { quick: first.quick, resumedFrom: first.id, startedAt: 20, status: 'paused', pausedUntil: 99, autoResume: false }))
+      expect(svc.promote({ runId: first.id, name: 'Repo' }).kind).toBe('created')
     })
 
     it('refuses scratch runs, unknown or non-quick runs and bad names', async () => {

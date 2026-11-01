@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { HARNESS_PROJECT_ID, type McpLibraryEntry } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
-import { assistContext, assistPrompt, describeLibrary, describeServer, harnessProject, promptDatum, isBuildWorkspaceProject, buildToolsFor } from './assist'
+import { assistContext, assistPrompt, describeLibrary, describeServer, harnessProject, promptDatum, buildToolsFor } from './assist'
 import { mcpSpec, project } from '../runtime/testHelpers'
 
 const entry: McpLibraryEntry = {
@@ -86,11 +86,12 @@ describe('allowBuild', () => {
       expect(h.path).toBe(ws)
       expect(existsSync(ws)).toBe(true)
       expect(h).toMatchObject({ id: HARNESS_PROJECT_ID, roles: [], mcpServers: [] })
-      expect(isBuildWorkspaceProject(h)).toBe(true)
-      expect(buildToolsFor(h)).toEqual(['Edit', 'Write', 'Bash'])
-      expect(isBuildWorkspaceProject(plain)).toBe(false)
-      expect(buildToolsFor(plain)).toEqual([])
-      expect(buildToolsFor(project({ path: ws, permissionMode: 'default' }))).toEqual([])
+      // Build tools come from the run's buildWorkspace, never from the project's path (review L1).
+      expect(buildToolsFor({ kind: 'mcp-assist', buildWorkspace: ws })).toEqual(['Edit', 'Write', 'Bash'])
+      expect(buildToolsFor({ kind: 'mcp-assist' })).toEqual([])
+      expect(buildToolsFor({ kind: 'mcp-assist', buildWorkspace: '' })).toEqual([])
+      expect(buildToolsFor({ kind: 'work', buildWorkspace: ws })).toEqual([])
+      expect(buildToolsFor({ kind: 'setup', buildWorkspace: ws })).toEqual([])
     } finally {
       rmSync(d, { recursive: true, force: true })
     }

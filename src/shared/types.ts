@@ -840,6 +840,14 @@ export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'library
    * renderer-sent value is ignored. Older records simply lack it.
    */
   connectedAt?: number
+  /**
+   * Built servers only, written by the main process: when an MCP assistant build session (allowBuild) proposed this
+   * stdio server with its command or args pointing into the session's scratch workspace, approval copies the workspace
+   * to `<data>/mcp-builds/<entryId>/`, rewrites command/args to the copy and records the copy's content digest here
+   * (sha256 hex over the sorted relative paths and file bytes). A renderer-sent value is ignored. Removing the entry
+   * deletes the build dir.
+   */
+  buildDigest?: string
 }
 
 /** Which secret slot a value fills: an entry of McpServerSpec.secretEnv or of .secretHeaders. */

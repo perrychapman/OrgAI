@@ -59,6 +59,22 @@ describe('policyFor (permission mode -> approval policy + sandbox)', () => {
     const plan = policyFor('plan', { writes: true, setupLike: true })
     expect(plan).toMatchObject({ sandbox: 'read-only', approvalPolicy: 'untrusted', denyApprovals: false })
   })
+
+  it('lets a build session with write tools write its workspace, still asking for every change', () => {
+    for (const mode of ['default', 'auto', 'acceptEdits', 'bypassPermissions'] as const) {
+      const p = policyFor(mode, { writes: true, setupLike: true, setupWrites: true })
+      expect(p).toMatchObject({ approvalPolicy: 'untrusted', sandbox: 'workspace-write', autoAcceptEdits: false, denyApprovals: false })
+      expect(p.approvalsReviewer).toBeUndefined()
+    }
+    expect(policyFor('plan', { writes: true, setupLike: true, setupWrites: true })).toMatchObject({ sandbox: 'read-only', denyApprovals: true })
+    expect(policyFor('default', { writes: false, setupLike: true, setupWrites: true }).sandbox).toBe('read-only')
+  })
+
+  it('asks for every change in a quick run whatever the project mode', () => {
+    for (const mode of ['auto', 'acceptEdits', 'bypassPermissions'] as const) {
+      expect(policyFor(mode, { writes: true, setupLike: false, quick: true })).toMatchObject({ approvalPolicy: 'untrusted', autoAcceptEdits: false, denyApprovals: false })
+    }
+  })
 })
 
 describe('matchesBashRule (saved allow rules)', () => {
@@ -209,6 +225,13 @@ describe('native skill discovery', () => {
       return {}
     }
     expect(await lockNativeSkills(flaky, '/repo')).toEqual({ disabled: 2, failed: 1, skipped: 0 })
+  })
+})
+
+describe('buildLaunchConfig project docs', () => {
+  it('turns project docs off only on request (project_doc_max_bytes=0)', () => {
+    expect(buildLaunchConfig(undefined, [], { noProjectDocs: true }).config).toContain('project_doc_max_bytes=0')
+    expect(buildLaunchConfig(undefined, []).config).not.toContain('project_doc_max_bytes=0')
   })
 })
 
