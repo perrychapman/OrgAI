@@ -10,6 +10,7 @@ import { isTeamSurfaceRun } from '../lib/runSurface'
 import { cleanIpcError } from '../lib/ipcError'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
+import { Input } from './ui/Input'
 import { useConfirm } from './ui/ConfirmDialog'
 
 /** Status line and every open decision of a Team-tab Architect session, answered in place (the run is not on the Live strip). */
@@ -19,16 +20,26 @@ function ArchitectRunCards({ runId, project }: { runId: string; project: Project
   const open = (run.questions?.length ?? 0) + run.proposals.length + run.permissions.length + (run.ruleRequests?.length ?? 0) + (run.mergeReviews?.length ?? 0) + (run.mcpInstalls?.length ?? 0)
   const status = run.summary.status
   const live = status === 'starting' || status === 'running'
+  const message =
+    open > 0
+      ? `The Architect needs ${open === 1 ? 'your decision' : `your ${open} decisions`}.`
+      : live
+        ? 'The Architect is working. Its questions, permission requests and proposals appear here.'
+        : status === 'finished' || status === 'idle'
+          ? 'The Architect session ended.'
+          : 'The Architect session stopped.'
+  // Nothing to answer and nothing running: only the status line, no box around it.
+  if (open === 0 && !live) {
+    return (
+      <p className="hint" role="status" data-testid="architect-session" data-status={status}>
+        {message}
+      </p>
+    )
+  }
   return (
     <section className="draft-box stack-2" aria-label="Architect session" data-testid="architect-session" data-status={status}>
       <p className="hint" role="status">
-        {open > 0
-          ? `The Architect needs ${open === 1 ? 'your decision' : `your ${open} decisions`}.`
-          : live
-            ? 'The Architect is working. Its questions, permission requests and proposals appear here.'
-            : status === 'finished' || status === 'idle'
-              ? 'The Architect session ended.'
-              : 'The Architect session stopped.'}
+        {message}
       </p>
       <ArchitectDecisions runId={runId} project={project} />
     </section>
@@ -54,6 +65,8 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
     return best?.id ?? null
   })
   const teamRunId = storedRun ?? liveTeamRun
+  const sessionStatus = useAppStore((s) => (teamRunId ? s.runs[teamRunId]?.summary.status : undefined))
+  const sessionLive = sessionStatus === 'starting' || sessionStatus === 'running'
   const [startError, setStartError] = useState<string | null>(null)
   const tray = variant === 'tray'
   const drafting = useAppStore((s) => s.drafting)
@@ -110,34 +123,51 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
         </div>
       )}
       <div className={tray ? 'team-tray-body stack-3' : 'side-body stack-3'}>
-        <section className="draft-box stack-2" aria-labelledby="draft-architect">
-          <h3 className="side-section-title" id="draft-architect">
-            Revise with the Architect
-          </h3>
-          <p className="rationale">
-            Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles
-            {tray ? ' in the tray' : ' on the live view'} for you to approve. Leave it empty for a full review.
-            {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
-          </p>
-          <Textarea
-            aria-label="What should change"
-            rows={4}
-            value={revision}
-            onChange={setRevision}
-            placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to the fast tier."'
-          />
-          <div className="row gap-2 wrap">
+        {tray && sessionLive ? (
+          <section className="draft-revise-line" aria-labelledby="draft-architect">
+            <h3 className="sr-only" id="draft-architect">
+              Revise with the Architect
+            </h3>
+            <Input aria-label="What should change" value={revision} onChange={setRevision} placeholder="Say what else should change" />
             <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>
               {architectBusy ? 'Starting…' : 'Revise with the Architect'}
             </Button>
-            <span className="hint">Starts an Architect session {cost}.</span>
-          </div>
-          {startError && (
-            <p className="capability-warn" role="alert">
-              {startError}
+            {startError && (
+              <p className="capability-warn" role="alert">
+                {startError}
+              </p>
+            )}
+          </section>
+        ) : (
+          <section className="draft-box stack-2" aria-labelledby="draft-architect">
+            <h3 className="side-section-title" id="draft-architect">
+              Revise with the Architect
+            </h3>
+            <p className="rationale">
+              Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles
+              {tray ? ' in the tray' : ' on the live view'} for you to approve. Leave it empty for a full review.
+              {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
             </p>
-          )}
-        </section>
+            <Textarea
+              aria-label="What should change"
+              rows={4}
+              value={revision}
+              onChange={setRevision}
+              placeholder='e.g. "Add a database specialist under the orchestrator, make the reviewer check accessibility, and move the researcher to the fast tier."'
+            />
+            <div className="row gap-2 wrap">
+              <Button variant="primary" loading={architectBusy} onClick={() => void reviseWithArchitect()}>
+                {architectBusy ? 'Starting…' : 'Revise with the Architect'}
+              </Button>
+              <span className="hint">Starts an Architect session {cost}.</span>
+            </div>
+            {startError && (
+              <p className="capability-warn" role="alert">
+                {startError}
+              </p>
+            )}
+          </section>
+        )}
         {teamRunId && <ArchitectRunCards runId={teamRunId} project={project} />}
 
         <details className="disclosure">
