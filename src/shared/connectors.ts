@@ -93,8 +93,6 @@ const google = (
   verified: false
 })
 
-const googleHostNote = (host: string): string => `Unverified: the host ${host} follows the pattern of the Gmail, Calendar and Drive servers.`
-
 const dcrSetup = (service: string): string[] => [
   `Add the connector, then Authorize: your browser opens ${service}'s sign-in page.`,
   'Approve access, then return to OrgAI.',
@@ -164,8 +162,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     'Google Docs API',
     ['https://www.googleapis.com/auth/documents.readonly'],
     GOOGLE_MCP_GUIDE,
-    ['documents', 'writing', 'word processing', 'gdocs'],
-    [googleHostNote('docsmcp.googleapis.com')]
+    ['documents', 'writing', 'word processing', 'gdocs']
   ),
   google(
     'google-sheets',
@@ -176,8 +173,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     'Google Sheets API',
     ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     GOOGLE_MCP_GUIDE,
-    ['spreadsheets', 'tables', 'excel', 'gsheets'],
-    [googleHostNote('sheetsmcp.googleapis.com')]
+    ['spreadsheets', 'tables', 'excel', 'gsheets']
   ),
   google(
     'google-slides',
@@ -188,8 +184,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     'Google Slides API',
     ['https://www.googleapis.com/auth/presentations.readonly'],
     GOOGLE_MCP_GUIDE,
-    ['presentations', 'decks', 'slides', 'powerpoint'],
-    [googleHostNote('slidesmcp.googleapis.com')]
+    ['presentations', 'decks', 'slides', 'powerpoint']
   ),
   google(
     'google-chat',
@@ -201,7 +196,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     ['https://www.googleapis.com/auth/chat.spaces.readonly', 'https://www.googleapis.com/auth/chat.messages.readonly'],
     GOOGLE_MCP_GUIDE,
     ['messages', 'team chat', 'spaces', 'hangouts'],
-    [googleHostNote('chatmcp.googleapis.com'), 'The Google Chat API may also need a Chat app configured in the same Cloud project.']
+    ['The Google Chat API may also need a Chat app configured in the same Cloud project.']
   ),
   {
     id: 'slack',
@@ -245,7 +240,8 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       'Slack has no dynamic client registration: it needs a registered Slack app, and only apps published in the Slack Marketplace or internal to your workspace may use the MCP server.',
       'The server includes write tools (sending messages); grant it only to roles that should act in Slack.',
       'Slack documents that redirect URLs must use HTTPS, so it may refuse OrgAI\'s http loopback redirect. Unverified.',
-      'Unverified: the token response shape of oauth.v2.user.access and which scopes the server expects (OrgAI uses the scopes Slack\'s discovery metadata lists).'
+      'Unverified: the token response shape of oauth.v2.user.access and which scopes the server expects (OrgAI uses the scopes Slack\'s discovery metadata lists).',
+      'The server\'s own authorization metadata names the issuer https://mcp.slack.com, not slack.com (probed 2026-10-31); the slack.com issuer and endpoints here are used only when discovery fails.'
     ],
     aliases: ['chat', 'messages', 'channels', 'team chat'],
     verified: false
@@ -580,7 +576,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       {
         id: 'us3',
         label: 'US3 site',
-        description: 'us3.datadoghq.com (address inferred, unverified)',
+        description: 'us3.datadoghq.com',
         transport: 'http',
         url: 'https://mcp.us3.datadoghq.com/v1/mcp',
         readOnly: false,
@@ -589,7 +585,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       {
         id: 'us5',
         label: 'US5 site',
-        description: 'us5.datadoghq.com (address inferred, unverified)',
+        description: 'us5.datadoghq.com',
         transport: 'http',
         url: 'https://mcp.us5.datadoghq.com/v1/mcp',
         readOnly: false,
@@ -598,7 +594,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       {
         id: 'ap1',
         label: 'AP1 site',
-        description: 'ap1.datadoghq.com (address inferred, unverified)',
+        description: 'ap1.datadoghq.com',
         transport: 'http',
         url: 'https://mcp.ap1.datadoghq.com/v1/mcp',
         readOnly: false,
@@ -609,7 +605,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     setup: dcrSetup('Datadog'),
     notes: [
       'Pick the variant for your Datadog site (the host in your Datadog web address).',
-      'The US3, US5 and AP1 addresses are inferred from the US1 and EU1 pattern and have not been checked.',
+      'The US3, US5 and AP1 addresses follow the US1 and EU1 pattern; a token-free probe on 2026-10-31 found all three answering.',
       DCR_UNVERIFIED
     ],
     aliases: ['logs', 'metrics', 'traces', 'observability', 'apm'],
@@ -647,12 +643,16 @@ export const CONNECTORS: readonly ConnectorDef[] = [
         transport: 'http',
         url: 'https://mcp.asana.com/v2/mcp',
         readOnly: false,
-        auth: { kind: 'oauthClient', consoleUrl: 'https://app.asana.com/0/my-apps', clientSecret: 'required' }
+        auth: { kind: 'oauthClient', overrides: { issuer: 'https://app.asana.com' }, consoleUrl: 'https://app.asana.com/0/my-apps', clientSecret: 'required' }
       }
     ],
     defaultVariant: 'full',
     setup: ownAppSetup('Asana', ['In the Asana developer console, create an app for the MCP server (Asana offers no dynamic client registration).']),
-    notes: ['The server includes write tools (creating and updating tasks).', 'Unverified: that Asana accepts an http loopback redirect URL.'],
+    notes: [
+      'The server includes write tools (creating and updating tasks).',
+      'Unverified: that Asana accepts an http loopback redirect URL.',
+      'The issuer https://app.asana.com is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.'
+    ],
     aliases: ['tasks', 'projects', 'project management', 'to-do'],
     verified: false
   },
@@ -672,12 +672,12 @@ export const CONNECTORS: readonly ConnectorDef[] = [
         transport: 'http',
         url: 'https://mcp.hubspot.com',
         readOnly: false,
-        auth: { kind: 'oauthClient', consoleUrl: 'https://developers.hubspot.com/mcp', clientSecret: 'required' }
+        auth: { kind: 'oauthClient', overrides: { issuer: 'https://mcp.hubspot.com' }, consoleUrl: 'https://developers.hubspot.com/mcp', clientSecret: 'required' }
       }
     ],
     defaultVariant: 'full',
     setup: ownAppSetup('HubSpot', ['Following HubSpot\'s MCP guide, create a user-level developer app for the MCP server in your HubSpot account.']),
-    notes: ['Unverified: that HubSpot accepts an http loopback redirect URL, and which scopes the app needs.'],
+    notes: ['Unverified: that HubSpot accepts an http loopback redirect URL, and which scopes the app needs.', 'The issuer https://mcp.hubspot.com is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.'],
     aliases: ['crm', 'contacts', 'deals', 'sales', 'marketing'],
     verified: false
   },
@@ -697,7 +697,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
         transport: 'http',
         url: 'https://mcp.box.com',
         readOnly: false,
-        auth: { kind: 'oauthClient', consoleUrl: 'https://app.box.com/developers/console', clientSecret: 'required' }
+        auth: { kind: 'oauthClient', overrides: { issuer: 'https://api.box.com' }, consoleUrl: 'https://app.box.com/developers/console', clientSecret: 'required' }
       }
     ],
     defaultVariant: 'full',
@@ -705,7 +705,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       'Ask a Box admin to enable the Box MCP server for your enterprise.',
       'In the Box developer console, create the MCP integration and copy its Integration Credentials (client id and secret).'
     ]),
-    notes: ['A Box admin must enable the MCP server first.', 'Unverified: that Box accepts an http loopback redirect URL.'],
+    notes: ['A Box admin must enable the MCP server first.', 'Unverified: that Box accepts an http loopback redirect URL.', 'The issuer https://api.box.com is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.'],
     aliases: ['files', 'documents', 'storage', 'cloud storage'],
     verified: false
   },
@@ -734,12 +734,302 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     setup: dcrSetup('PayPal'),
     notes: [
       'The server includes write tools (creating invoices, refunds); try the Sandbox variant first.',
-      'Unverified: how PayPal\'s server authenticates. OrgAI tries sign-in with dynamic client registration; if it asks for a client id, create a REST app in the PayPal developer dashboard.'
+      'Unverified: how PayPal\'s server authenticates. OrgAI tries sign-in with dynamic client registration; if it asks for a client id, create a REST app in the PayPal developer dashboard.',
+      'A token-free probe on 2026-10-31 got 404 (not 401) from POST /http although resource metadata exists, so the server address may be wrong.'
     ],
     aliases: ['payments', 'invoices', 'transactions', 'checkout'],
     verified: false
+  },
+  {
+    id: 'microsoft-learn',
+    name: 'Microsoft Learn',
+    vendor: 'Microsoft',
+    publisher: 'official',
+    category: 'knowledge',
+    description: 'Search and read Microsoft and Azure documentation and code samples.',
+    status: 'stable',
+    docsUrl: 'https://learn.microsoft.com/en-us/training/support/mcp',
+    variants: [{ id: 'public', label: 'Public docs', transport: 'http', url: 'https://learn.microsoft.com/api/mcp', readOnly: true, auth: { kind: 'none' } }],
+    defaultVariant: 'public',
+    setup: noAuthSetup('Microsoft Learn'),
+    notes: ['Public documentation only; it cannot reach your Microsoft or Azure account.'],
+    aliases: ['microsoft docs', 'ms learn', 'azure docs', 'documentation', 'dotnet'],
+    verified: false
+  },
+  {
+    id: 'aws-knowledge',
+    name: 'AWS Knowledge',
+    vendor: 'Amazon Web Services',
+    publisher: 'official',
+    category: 'knowledge',
+    description: 'Search AWS documentation, guidance and regional availability.',
+    status: 'stable',
+    docsUrl: 'https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server',
+    variants: [{ id: 'public', label: 'Public docs', transport: 'http', url: 'https://knowledge-mcp.global.api.aws', readOnly: true, auth: { kind: 'none' } }],
+    defaultVariant: 'public',
+    setup: noAuthSetup('AWS Knowledge'),
+    notes: ['Public documentation only; it cannot reach your AWS account.', 'AWS rate-limits the server, so heavy use may be throttled.'],
+    aliases: ['aws docs', 'amazon docs', 'amazon', 'documentation', 'cloud docs'],
+    verified: false
+  },
+  {
+    id: 'context7',
+    name: 'Context7',
+    vendor: 'Upstash',
+    publisher: 'official',
+    category: 'knowledge',
+    description: 'Fetch current documentation and examples for libraries and frameworks.',
+    status: 'stable',
+    docsUrl: 'https://context7.com/docs/resources/all-clients',
+    variants: [
+      {
+        id: 'free',
+        label: 'Without a key',
+        description: 'No sign-in; Context7 applies its free limits.',
+        transport: 'http',
+        url: 'https://mcp.context7.com/mcp',
+        readOnly: true,
+        auth: { kind: 'none' }
+      },
+      {
+        id: 'key',
+        label: 'With an API key',
+        description: 'Higher limits on your Context7 account.',
+        transport: 'http',
+        url: 'https://mcp.context7.com/mcp',
+        readOnly: true,
+        auth: tokenAuth('Context7 API key', 'An API key from your Context7 dashboard.', 'https://context7.com/dashboard')
+      }
+    ],
+    defaultVariant: 'free',
+    setup: noAuthSetup('Context7'),
+    notes: [
+      'A token-free probe on 2026-10-31 found that the server answers without a key; add a key for higher limits.',
+      'To switch to the key variant later, remove the connector and add it again with a key.'
+    ],
+    aliases: ['library docs', 'package docs', 'upstash', 'documentation', 'frameworks'],
+    verified: false
+  },
+  {
+    id: 'granola',
+    name: 'Granola',
+    vendor: 'Granola',
+    publisher: 'official',
+    category: 'meetings',
+    description: 'Search and read your Granola meeting notes and transcripts.',
+    status: 'stable',
+    docsUrl: 'https://docs.granola.ai/help-center/sharing/integrations/mcp',
+    variants: [{ id: 'full', label: 'Your notes', transport: 'http', url: 'https://mcp.granola.ai/mcp', readOnly: true, auth: { kind: 'oauth' } }],
+    defaultVariant: 'full',
+    setup: dcrSetup('Granola'),
+    notes: ['Granola documents dynamic client registration for its MCP server.', DCR_UNVERIFIED],
+    aliases: ['meeting notes', 'transcripts', 'notes', 'meetings'],
+    verified: false
+  },
+  {
+    id: 'neon',
+    name: 'Neon',
+    vendor: 'Neon',
+    publisher: 'official',
+    category: 'cloud',
+    description: 'Query and manage your Neon Postgres projects, branches and databases.',
+    status: 'stable',
+    docsUrl: 'https://neon.com/docs/ai/neon-mcp-server',
+    variants: [
+      { id: 'readonly', label: 'Read-only', transport: 'http', url: 'https://mcp.neon.tech/mcp?readonly=true', readOnly: true, auth: { kind: 'oauth' } },
+      { id: 'full', label: 'Full access', transport: 'http', url: 'https://mcp.neon.tech/mcp', readOnly: false, auth: { kind: 'oauth' } },
+      {
+        id: 'key',
+        label: 'API key',
+        description: 'The key\'s account decides what agents can reach.',
+        transport: 'http',
+        url: 'https://mcp.neon.tech/mcp',
+        readOnly: false,
+        auth: tokenAuth('Neon API key', 'A Neon API key with only the access agents need.', 'https://console.neon.tech/app/settings/api-keys')
+      }
+    ],
+    defaultVariant: 'readonly',
+    setup: dcrSetup('Neon'),
+    notes: [
+      'Full access can create and delete projects, branches and databases.',
+      'The server advertises dynamic client registration (probed 2026-10-31).',
+      DCR_UNVERIFIED
+    ],
+    aliases: ['postgres', 'database', 'sql', 'serverless postgres'],
+    verified: false
+  },
+  {
+    id: 'amplitude',
+    name: 'Amplitude',
+    vendor: 'Amplitude',
+    publisher: 'official',
+    category: 'data',
+    description: 'Query Amplitude charts, dashboards, events and experiments.',
+    status: 'stable',
+    docsUrl: 'https://amplitude.com/docs/amplitude-ai/amplitude-mcp/other-clients',
+    variants: [
+      { id: 'us', label: 'US data center', transport: 'http', url: 'https://mcp.amplitude.com/mcp', readOnly: false, auth: { kind: 'oauth' } },
+      { id: 'eu', label: 'EU data center', transport: 'http', url: 'https://mcp.eu.amplitude.com/mcp', readOnly: false, auth: { kind: 'oauth' } }
+    ],
+    defaultVariant: 'us',
+    setup: dcrSetup('Amplitude'),
+    notes: ['Pick the variant for the data center your Amplitude organization uses.', DCR_UNVERIFIED],
+    aliases: ['analytics', 'product analytics', 'events', 'experiments'],
+    verified: false
+  },
+  {
+    id: 'posthog',
+    name: 'PostHog',
+    vendor: 'PostHog',
+    publisher: 'official',
+    category: 'data',
+    description: 'Query PostHog insights, events, feature flags and errors.',
+    status: 'stable',
+    docsUrl: 'https://posthog.com/docs/model-context-protocol',
+    variants: [{ id: 'full', label: 'Full access', transport: 'http', url: 'https://mcp.posthog.com/mcp', readOnly: false, auth: { kind: 'oauth' } }],
+    defaultVariant: 'full',
+    setup: dcrSetup('PostHog'),
+    notes: [
+      'The server can change feature flags and other project settings.',
+      'Sign-in runs at oauth.posthog.com, which advertises dynamic client registration and client id metadata documents (probed 2026-10-31).',
+      DCR_UNVERIFIED
+    ],
+    aliases: ['analytics', 'product analytics', 'feature flags', 'session replay', 'events'],
+    verified: false
+  },
+  {
+    id: 'webflow',
+    name: 'Webflow',
+    vendor: 'Webflow',
+    publisher: 'official',
+    category: 'design',
+    description: 'Read and edit Webflow sites, pages and CMS collections.',
+    status: 'stable',
+    docsUrl: 'https://developers.webflow.com/mcp/reference/how-it-works',
+    variants: [{ id: 'full', label: 'Full access', transport: 'http', url: 'https://mcp.webflow.com/mcp', readOnly: false, auth: { kind: 'oauth' } }],
+    defaultVariant: 'full',
+    setup: dcrSetup('Webflow'),
+    notes: ['The server can change site content and CMS items.', DCR_UNVERIFIED],
+    aliases: ['website', 'cms', 'site builder', 'web design'],
+    verified: false
+  },
+  {
+    id: 'miro',
+    name: 'Miro',
+    vendor: 'Miro',
+    publisher: 'official',
+    category: 'design',
+    description: 'Read Miro boards and create diagrams and content on them.',
+    status: 'preview',
+    docsUrl: 'https://developers.miro.com/docs/connecting-to-miro-mcp',
+    variants: [{ id: 'full', label: 'Full access', transport: 'http', url: 'https://mcp.miro.com/', readOnly: false, auth: { kind: 'oauth' } }],
+    defaultVariant: 'full',
+    setup: dcrSetup('Miro'),
+    notes: ['The server can add content to boards.', DCR_UNVERIFIED],
+    aliases: ['whiteboard', 'boards', 'diagrams', 'brainstorming'],
+    verified: false
+  },
+  {
+    id: 'zoom',
+    name: 'Zoom',
+    vendor: 'Zoom',
+    publisher: 'official',
+    category: 'meetings',
+    description: 'Look up Zoom meetings, recordings and meeting summaries.',
+    status: 'preview',
+    docsUrl: 'https://developers.zoom.us/docs/mcp/servers/',
+    variants: [
+      {
+        id: 'full',
+        label: 'Meetings',
+        transport: 'http',
+        url: 'https://zoom.us/mcp/meeting/streamable',
+        readOnly: false,
+        auth: { kind: 'oauthClient', overrides: { issuer: 'https://zoom.us' }, consoleUrl: 'https://marketplace.zoom.us/develop/create', clientSecret: 'required' }
+      }
+    ],
+    defaultVariant: 'full',
+    setup: ownAppSetup('Zoom', [
+      'In the Zoom App Marketplace, choose Develop > Build App and create a General app (Zoom offers no dynamic client registration).',
+      'Add the meeting scopes the MCP server needs and enable the app for your account.'
+    ]),
+    notes: [
+      'Zoom offers neither dynamic client registration nor client id metadata documents, so it needs an app you register.',
+      'The server\'s resource metadata names https://mcp.zoom.us/mcp/meeting/streamable, not the documented address (probed 2026-10-31); sign-in may fail on that mismatch.',
+      'The issuer https://zoom.us is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.',
+      'Unverified: that Zoom accepts an http loopback redirect URL, and which scopes the server needs.'
+    ],
+    aliases: ['video calls', 'meetings', 'recordings', 'video conferencing'],
+    verified: false
+  },
+  {
+    id: 'zapier',
+    name: 'Zapier',
+    vendor: 'Zapier',
+    publisher: 'official',
+    category: 'automation',
+    description: 'Run the actions you enabled in Zapier across thousands of apps.',
+    status: 'stable',
+    docsUrl: 'https://docs.zapier.com/mcp/overview',
+    variants: [
+      {
+        id: 'token',
+        label: 'Connection token',
+        description: 'Agents can run only the actions you enable for this connection.',
+        transport: 'http',
+        url: 'https://mcp.zapier.com/api/v1/connect',
+        readOnly: false,
+        auth: tokenAuth('Connection token', 'The token of an MCP connection you set up in Zapier, with only the actions agents need.', 'https://mcp.zapier.com/')
+      }
+    ],
+    defaultVariant: 'token',
+    setup: [
+      'At mcp.zapier.com, create an MCP connection and enable the actions agents may run.',
+      'Copy the connection\'s token and paste it into OrgAI.',
+      'Link it to a project and grant it to the roles that need it.'
+    ],
+    notes: ['Each action runs in your connected apps (sending email, creating records); enable only what agents need.', 'Zapier counts tool calls against your plan\'s task limits.'],
+    aliases: ['workflows', 'integrations', 'zaps', 'no-code'],
+    verified: false
+  },
+  {
+    id: 'gitlab',
+    name: 'GitLab',
+    vendor: 'GitLab',
+    publisher: 'official',
+    category: 'dev',
+    description: 'Read GitLab issues, merge requests, pipelines and code on gitlab.com.',
+    status: 'preview',
+    docsUrl: 'https://docs.gitlab.com/user/gitlab_duo/model_context_protocol/mcp_server',
+    variants: [{ id: 'full', label: 'gitlab.com', transport: 'http', url: 'https://gitlab.com/api/v4/mcp', readOnly: false, auth: { kind: 'oauth' } }],
+    defaultVariant: 'full',
+    setup: dcrSetup('GitLab'),
+    notes: [
+      'gitlab.com only: a self-managed GitLab needs a custom server with your instance\'s address.',
+      'The server can create issues and merge requests.',
+      DCR_UNVERIFIED
+    ],
+    aliases: ['git', 'repositories', 'merge requests', 'ci', 'pipelines'],
+    verified: false
   }
 ]
+
+/*
+ * Not yet in the catalog (checked 2026-10-31):
+ * - Canva: its MCP server accepts only allowlisted redirect URIs of reviewed clients.
+ * - Honeycomb: no official page for a remote server we could confirm.
+ * - Mixpanel: the documented endpoint and auth conflict with what the server answers.
+ * - Airtable: no official remote MCP server.
+ * - Monday: the documented endpoint and auth conflict with what the server answers.
+ * - Netlify: no official remote server page (its server runs locally).
+ * - PagerDuty: no official page for a remote server we could confirm.
+ * - Square: allowlisted redirect URIs only.
+ * - Shopify: per-store (per-account) URL.
+ * - Salesforce: per-org (per-account) URL and allowlisted connected apps.
+ * - Snowflake: per-account URL.
+ * - Databricks: per-workspace (per-account) URL.
+ * - Microsoft 365: no official remote MCP server for mail and files.
+ */
 
 export function connectorById(id: string): ConnectorDef | undefined {
   return typeof id === 'string' ? CONNECTORS.find((c) => c.id === id) : undefined
