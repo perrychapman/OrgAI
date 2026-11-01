@@ -67,7 +67,7 @@ export function SkillRolePicker({
   )
 }
 
-/** "Roles: Writer, QA" button that discloses the checklist in flow. Esc closes and returns focus to the button. */
+/** "Change roles" button that discloses the checklist in flow. Esc closes and returns focus to the button. */
 export function SkillRoleAccess({
   skillName,
   roles,
@@ -121,7 +121,7 @@ export function SkillRoleAccess({
         disabled={disabled}
         onClick={() => setOpen(!open)}
       >
-        <span className="mcp-link-text">{summary}</span>
+        <span className="mcp-link-text">Change roles</span>
         <Icon icon={ChevronDown} size="xs" />
       </button>
       {open && (
