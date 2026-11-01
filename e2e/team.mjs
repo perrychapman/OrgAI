@@ -2,7 +2,7 @@
 // skills granted from the scoped chooser (this role only), revoke, the node capability line, the "Needs sign in" path and
 // the keyboard rules (Escape from the chooser returns focus to "+ Add"). Sections are named so later briefs (the Team
 // assistant tray) can add their own below.
-import { check, cleanup, createProject, finish, findProject, launch, log, makeFixtureRepo, openProject, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
+import { check, cleanup, createProject, endSession, finish, findProject, launch, log, makeFixtureRepo, openProject, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E team (orgai test)'
@@ -258,9 +258,15 @@ async function sectionFirstConnection(page, shot) {
   const add = page.locator('[data-testid=add-service-dialog]')
   await add.waitFor({ timeout: 10_000 })
   check((await page.locator('[data-testid=capability-chooser]:visible').count()) === 0, 'with nothing to pick, + Add opens the service picker directly')
+  // Walk 4 S3: the picker names the role that gets the service.
+  const addHead = await add.locator('.dialog-head').innerText()
+  check(/Add a service for Reviewer/.test(addHead) && /Only Reviewer gets it/.test(addHead), 'Add a service names the role', addHead)
   await add.locator('[data-testid=add-service-option][data-connector=github]').click()
   const dlg = page.locator('[data-testid=connector-dialog]')
   await dlg.waitFor({ timeout: 10_000 })
+  // Walk 4 S2: the token dialog opens on its token field, not on Close dialog.
+  await sleep(200)
+  check(await dlg.getByLabel('Personal access token', { exact: true }).evaluate((el) => el === document.activeElement), 'the token dialog focuses the token field')
   await dlg.getByLabel('Personal access token', { exact: true }).fill('ghp_e2e_fake_token')
   await shot('first-connection-token')
   await dlg.locator('[data-testid=connector-connect]').click()
@@ -347,17 +353,22 @@ async function sectionLocalSkill(page) {
   await block.locator('[data-testid=role-add-skill]').click()
   const dlg = page.locator('[data-testid=capability-chooser]')
   await dlg.waitFor({ timeout: 5000 })
+  await dlg.locator('[data-tab-ready=true]').waitFor({ timeout: 15_000 })
   await sleep(300)
   check(
     await page.evaluate(() => document.activeElement?.getAttribute('role') === 'tab' && document.activeElement.getAttribute('aria-selected') === 'true'),
     'the chooser opens with focus on the selected tab'
   )
+  // Walk 4 S1: it opens on the first tab that has something to add (never an empty This project).
+  const opened = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
+  const listed = await dlg.locator('[data-testid=capability-chooser-item]').count()
+  check(listed > 0 || opened === 'chooser-tab-repo' || opened === 'chooser-tab-new', 'the skill chooser opens on a tab with items', `${opened} (${listed})`)
   const first = await page.evaluate(() => document.activeElement?.textContent)
   await page.keyboard.press('ArrowRight')
   const next = await page.evaluate(() => (document.activeElement?.getAttribute('aria-selected') === 'true' ? document.activeElement.textContent : null))
   check(!!next && next !== first, 'ArrowRight moves the selected chooser tab', `${first} -> ${next}`)
   await page.keyboard.press('Home')
-  check((await page.evaluate(() => document.activeElement?.textContent)) === first, 'Home returns to the first tab')
+  check((await page.evaluate(() => document.activeElement?.textContent)) === 'This project', 'Home goes to the first tab')
   await dlg.locator('[data-testid=chooser-tab-local]').click()
   const item = dlg.locator('[data-testid=capability-chooser-item][data-name=code-review]')
   await item.waitFor({ timeout: 15_000 })
@@ -398,8 +409,11 @@ async function sectionRiskAndKeyboard(page) {
 }
 
 /** Walk 3 N4 + N12: the dismiss row with Undo, the announcement, the Dismissed list with Restore, the gap jump. */
-async function sectionDismiss(page, shot) {
+async function sectionDismiss(page, shot, app) {
   const tray = page.locator('[data-testid=team-assistant]')
+  // Walk 4 M1 is a short-tray problem: dismiss at 1024x640.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
+  await sleep(600)
   await tray.locator('[data-testid=team-scope] select').selectOption('team')
   await tray.locator('[data-testid=team-recommend]').click()
   await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
@@ -412,6 +426,21 @@ async function sectionDismiss(page, shot) {
   check((await row.innerText()).includes(`Dismissed ${name}`), 'Dismiss leaves a "Dismissed <name>" row', await row.innerText())
   check(await row.locator('[data-testid=capability-dismiss-undo]').evaluate((el) => el === document.activeElement), 'focus lands on the row Undo')
   check((await page.locator('[data-testid=team-announce]').innerText()).includes(`Dismissed ${name}`), 'the live region names the dismissed item')
+  await sleep(400)
+  // Walk 4 M1: the row sits inside the tray's visible box (every scrolling ancestor and the window).
+  const vis = await row.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    let box = { top: 0, bottom: window.innerHeight }
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const oy = getComputedStyle(p).overflowY
+      if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) {
+        const b = p.getBoundingClientRect()
+        box = { top: Math.max(box.top, b.top), bottom: Math.min(box.bottom, b.bottom) }
+      }
+    }
+    return { top: r.top, bottom: r.bottom, boxTop: box.top, boxBottom: box.bottom }
+  })
+  check(vis.top >= vis.boxTop - 1 && vis.bottom <= vis.boxBottom + 1, 'the Dismissed row is inside the visible tray at 1024x640', JSON.stringify(vis))
   check(await tray.locator('[data-testid=team-results-head]').isVisible(), 'the results head stays after Dismiss')
   await shot('dismissed-row')
   await row.locator('[data-testid=capability-dismiss-undo]').click()
@@ -433,8 +462,44 @@ async function sectionDismiss(page, shot) {
     await sleep(300)
     check(await page.evaluate(() => document.activeElement?.id === 'capability-gaps-title'), 'the gap link focuses the Gaps heading')
   }
+}
+
+/**
+ * Walk 4 M2: two mock work runs end, the proactive review lands, and opening Team shows "N suggestions since your last
+ * run" once; leaving and coming back without a new run does not show it again.
+ */
+async function sectionRunsEnded(page) {
+  const live = async () => {
+    await page.locator('[data-testid=tab-live]').click()
+    await page.locator('.new-run, [data-testid=run-meta]').first().waitFor({ timeout: 10_000 })
+    if ((await page.locator('.new-run').count()) === 0) {
+      await page.keyboard.press('Control+t')
+      await page.locator('.new-run').waitFor({ timeout: 5000 })
+    }
+  }
+  for (const text of ['First team review task', 'Second team review task']) {
+    await live()
+    const ta = page.locator('.composer textarea')
+    await ta.waitFor({ timeout: 10_000 })
+    await ta.fill(text)
+    await page.locator('.composer .btn.primary').click()
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    await sleep(2000)
+    await endSession(page)
+  }
+  // The review runs 3 s after the last run ends; the Team tab badge shows its count.
+  await page.locator('[data-testid=team-tab-badge]').waitFor({ timeout: 20_000 })
+  await sleep(500)
+  await openTeam(page)
+  const tray = page.locator('[data-testid=team-assistant]')
   const since = tray.locator('[data-testid=team-since]')
-  if ((await since.count()) > 0) check(/^\d+ suggestions? since your last run$/.test((await since.innerText()).trim()), 'team-since says "since your last run"')
+  await since.waitFor({ timeout: 10_000 }).catch(() => {})
+  const text = (await since.count()) > 0 ? (await since.innerText()).trim() : ''
+  check(/^\d+ suggestions? since your last run$/.test(text), 'after runs end, Team shows "N suggestions since your last run"', text)
+  await live()
+  await openTeam(page)
+  await sleep(1500)
+  check((await tray.locator('[data-testid=team-since]').count()) === 0, 'the since line is not repeated without a new run')
 }
 
 const { app, page, shot } = await launch({ shotPrefix: 'team' })
@@ -449,8 +514,9 @@ try {
   await sectionConnections(page, shot)
   await sectionLocalSkill(page)
   await sectionRiskAndKeyboard(page)
+  await sectionRunsEnded(page)
   await sectionAssistant(page, shot)
-  await sectionDismiss(page, shot)
+  await sectionDismiss(page, shot, app)
   await sectionDesignDecisions(page, shot)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
