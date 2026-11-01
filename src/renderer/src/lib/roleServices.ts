@@ -10,6 +10,8 @@ export interface RoleService {
   initial: string
   hue: number
   custom: boolean
+  /** The catalog id when it is a connector (for its brand mark). */
+  connectorId?: string
 }
 
 /** Display label and look for one server spec. */
@@ -21,7 +23,8 @@ export function serviceFor(spec: Pick<McpServerSpec, 'id' | 'name' | 'connectorI
     label,
     initial: connectorInitial({ name: label }),
     hue: connectorHue(spec.connectorId ?? spec.id),
-    custom: !spec.connectorId
+    custom: !spec.connectorId,
+    connectorId: def ? def.id : undefined
   }
 }
 

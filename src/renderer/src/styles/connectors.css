@@ -29,34 +29,117 @@
   padding: 0;
   list-style: none;
 }
+/* The Connectors pane uses the width it has: the settings column stops at 720 px elsewhere, which would leave a 1600 px
+   window two columns wide. The grid itself steps 1 / 2 / 3 columns on the column's own width. */
+.settings-col:has(.connectors-body) {
+  max-width: 1120px;
+}
 @container settings-col (min-width: 560px) {
   .connector-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-.connector-tile {
+@container settings-col (min-width: 900px) {
+  .connector-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.connector-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.connector-group {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+.connector-group-title {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.connector-group-n {
+  font-weight: var(--weight-regular, 400);
+}
+.connector-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+.connector-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-4);
+}
+.connector-chip {
+  padding: 0 var(--space-3);
+  height: var(--control-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.connector-chip:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.connector-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+  color: var(--text-primary);
+}
+.connector-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.connector-chip-n {
+  color: var(--text-tertiary);
+}
+.connector-count {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.connector-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+/* A tile is one row: logo, name + method badge + one line, and one button. About 80 px tall. */
+.connector-tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
   background: var(--surface-1);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
 }
 .connector-tile[data-state='connected'] {
   border-color: var(--success-border);
 }
-.connector-tile-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-width: 0;
-}
-.connector-tile-id {
+.connector-tile-main {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
+}
+.connector-tile-act {
+  display: flex;
+  align-items: center;
 }
 .connector-name {
   margin: 0;
@@ -64,37 +147,48 @@
   line-height: var(--text-body-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.connector-cat {
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
+.connector-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
 .connector-desc {
-  margin: 0;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .connector-badges {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
 }
-.connector-tile-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-top: auto;
-  padding-top: var(--space-1);
+.connector-lead {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+.connector-setup > summary {
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.connector-setup > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.connector-setup[open] > summary {
+  margin-bottom: var(--space-2);
+}
+.connector-have {
+  align-self: flex-start;
 }
 .connector-state {
   display: inline-flex;
@@ -394,4 +488,116 @@
 .connector-foot-status {
   margin-right: auto;
   align-self: center;
+}
+
+/* Small logo for the role inspector. */
+.connector-logo.size-sm {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+}
+.role-service-more {
+  border-style: dashed;
+  padding: 0 var(--space-2);
+}
+
+/* ---------- Add a service (project picker) ---------- */
+.addsvc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.addsvc-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.addsvc-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.addsvc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.addsvc-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  cursor: pointer;
+}
+.addsvc-opt:hover {
+  background: var(--surface-2);
+  border-color: var(--border-default);
+}
+.addsvc-opt[aria-selected='true'] {
+  border-color: var(--accent-soft-border);
+}
+.addsvc-opt:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.addsvc-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.addsvc-desc {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.addsvc-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.addsvc-access {
+  font-size: var(--text-caption);
+}
+.addsvc-act {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
+}
+.addsvc-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+.addsvc-foot-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-small);
+}
+.addsvc-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.addsvc-foot-actions .btn:last-child {
+  margin-left: auto;
+}
+@container dialog-lg (max-width: 600px) {
+  .addsvc-opt {
+    flex-wrap: wrap;
+  }
 }

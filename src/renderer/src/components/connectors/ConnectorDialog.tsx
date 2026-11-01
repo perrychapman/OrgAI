@@ -2,17 +2,33 @@ import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { ExternalLink, PlugZap, ShieldCheck, Unplug } from 'lucide-react'
 import type { ConnectorInfo, McpTestResult } from '@shared/types'
-import { CONNECTOR_REDIRECT_URI, connectorVariant } from '@shared/connectors'
+import { CONNECTOR_REDIRECT_URI, connectorEase, connectorVariant } from '@shared/connectors'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { CopyButton } from '../ui/CopyButton'
 import { ConfirmDialog, Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
-import { accessWords, clampText, connectMissing, defaultVariantId, honestyNote, missingSentence, noteForUser, plainToolName, removeConsequence, variantExplain } from '../../lib/connectors'
-import { authFailure, disconnectKind, httpsUrl, testFailure } from '../../lib/connectorFlow'
+import {
+  accessLine,
+  accessWords,
+  clampText,
+  connectLabel,
+  connectMissing,
+  defaultVariantId,
+  dialogLead,
+  dialogTitle,
+  honestyNote,
+  missingSentence,
+  noteForUser,
+  plainToolName,
+  removeConsequence,
+  variantExplain
+} from '../../lib/connectors'
+import { authFailure, connectStep, disconnectKind, httpsUrl, testFailure } from '../../lib/connectorFlow'
 import { errMessage } from '../mcp/mcpHelpers'
 import { ConnectorLogo } from './ConnectorLogo'
+import { EaseBadge } from './ConnectorTile'
 import { useConnectors } from './useConnectors'
 
 type Phase = 'idle' | 'working' | 'waiting'
@@ -37,6 +53,8 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const [variantId, setVariantId] = useState(() => info.variant ?? defaultVariantId(def))
   const variant = connectorVariant(def, entry ? live.variant : variantId)
   const auth = variant.auth
+  const ease = connectorEase(def, variant.id)
+  const [haveClient, setHaveClient] = useState(false)
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [token, setToken] = useState('')
@@ -92,13 +110,14 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
       let failure: string | undefined
       // The entry may already exist with its own variant: branch on that, not on what the form showed.
       const usedAuth = connectorVariant(def, lib.entry.connectorVariant).auth
-      if (usedAuth.kind === 'token') {
+      const step = connectStep(usedAuth)
+      if (step === 'token') {
         try {
           await window.orgai.connectors.setToken({ connectorId: def.id, token: token.trim() })
         } catch (e) {
           failure = errMessage(e)
         }
-      } else {
+      } else if (step === 'authorize') {
         setPhase('waiting')
         const withClient = usedAuth.kind === 'oauthClient' ? { clientId: clientId.trim(), ...(clientSecret ? { clientSecret } : {}) } : {}
         const status = await window.orgai.mcp.authorize({ libraryId: id, ...withClient })
@@ -172,12 +191,55 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const missingId = `${ids}-missing`
   const formId = `${ids}-form`
   const notes = connected ? [] : noteForUser(def.notes, def.name)
+  /** A token service leads with the token field; the access choice and notes come after it. */
+  const tokenFirst = form && auth.kind === 'token'
+  const extras = (
+    <>
+      {multi && (
+        <fieldset className="connector-variants" disabled={!!entry || busy}>
+          <legend>What agents can do</legend>
+          {def.variants.map((v) => (
+            <label key={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
+              <input type="radio" name={`${ids}-variant`} value={v.id} checked={v.id === variant.id} onChange={() => setVariantId(v.id)} />
+              <span className="connector-variant-text">
+                <strong>
+                  {v.label} <span className="muted">· {accessWords(v)}</span>
+                </strong>
+                <span className="muted">
+                  {v.description ? `${v.description} ` : ''}
+                  {variantExplain(v)}
+                </span>
+              </span>
+            </label>
+          ))}
+          {entry && <p className="muted connector-locked">Access is set when the service is added. To switch it, remove the service and add it again.</p>}
+        </fieldset>
+      )}
+      {!multi && (
+        <p className="muted connector-access">
+          <Icon icon={ShieldCheck} size="xs" /> {accessLine(def, variant)}
+        </p>
+      )}
+      {notes.length > 0 && (
+        <ul className="muted connector-notes" aria-label="Good to know">
+          {notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
+      {note && (
+        <p className="muted connector-honesty" data-testid="connector-honesty">
+          {note}
+        </p>
+      )}
+    </>
+  )
 
   return (
     <Dialog
       open
       onClose={requestClose}
-      title={def.name}
+      title={dialogTitle(def, ease, connected)}
       size="md"
       testId="connector-dialog"
       footer={
@@ -203,9 +265,10 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 disabled={missing.length > 0 || busy}
                 aria-describedby={sentence ? missingId : undefined}
                 aria-busy={phase === 'working' || undefined}
+                aria-label={ease === 'signIn' && !error && !priorError ? `Sign in with ${def.name}` : undefined}
               >
                 <Icon icon={PlugZap} size="sm" />
-                {error || priorError ? 'Try again' : 'Connect'}
+                {connectLabel(ease, !!(error || priorError))}
               </button>
             </>
           )}
@@ -223,50 +286,18 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
           <div className="connector-dlg-id">
             <span className="connector-dlg-vendor">by {def.vendor}</span>
             <div className="connector-badges">
-              <Badge tone="info">Official</Badge>
+              {!connected && <EaseBadge ease={ease} />}
               {def.status === 'preview' && <Badge>Preview</Badge>}
             </div>
-            {note && <span className="muted connector-honesty">{note}</span>}
           </div>
           <ExtLink href={def.docsUrl}>{`About ${def.name}`}</ExtLink>
         </div>
-
-        {multi && (
-          <fieldset className="connector-variants" disabled={!!entry || busy}>
-            <legend>What agents can do</legend>
-            {def.variants.map((v) => (
-              <label key={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
-                <input
-                  type="radio"
-                  name={`${ids}-variant`}
-                  value={v.id}
-                  checked={v.id === variant.id}
-                  onChange={() => setVariantId(v.id)}
-                />
-                <span className="connector-variant-text">
-                  <strong>
-                    {v.label} <span className="muted">· {accessWords(v)}</span>
-                  </strong>
-                  <span className="muted">{v.description ? `${v.description} ` : ''}{variantExplain(v)}</span>
-                </span>
-              </label>
-            ))}
-            {entry && <p className="muted connector-locked">Access is set when the service is added. To switch it, remove the service and add it again.</p>}
-          </fieldset>
-        )}
-        {!multi && (
-          <p className="muted connector-access">
-            <Icon icon={ShieldCheck} size="xs" /> {accessWords(variant)}. {variantExplain(variant)}
+        {form && (
+          <p className="connector-lead" data-testid="connector-lead">
+            {dialogLead(ease)}
           </p>
         )}
-
-        {notes.length > 0 && (
-          <ul className="muted connector-notes" aria-label="Good to know">
-            {notes.map((n) => (
-              <li key={n}>{n}</li>
-            ))}
-          </ul>
-        )}
+        {!tokenFirst && extras}
 
         {form && (
           <form
@@ -279,22 +310,37 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
           >
             {auth.kind === 'oauthClient' && (
               <>
-                <h3 className="connector-step-title">Before you connect</h3>
-                <ol className="connector-steps">
-                  {def.setup.map((s) => (
-                    <li key={s}>{s}</li>
-                  ))}
-                </ol>
-                <div className="connector-uri">
-                  <span className="muted">Redirect address to register</span>
-                  <div className="connector-uri-row">
-                    <code className="mono" data-testid="connector-redirect-uri">
-                      {CONNECTOR_REDIRECT_URI}
-                    </code>
-                    <CopyButton text={CONNECTOR_REDIRECT_URI} label="Copy redirect address" />
+                <details className="connector-setup" open={!haveClient} onToggle={(e) => setHaveClient(!e.currentTarget.open)} data-testid="connector-setup-steps">
+                  <summary className="connector-step-title">Before you connect</summary>
+                  <ol className="connector-steps">
+                    {def.setup.map((s) => (
+                      <li key={s}>{s}</li>
+                    ))}
+                  </ol>
+                  <div className="connector-uri">
+                    <span className="muted">Redirect address to register</span>
+                    <div className="connector-uri-row">
+                      <code className="mono" data-testid="connector-redirect-uri">
+                        {CONNECTOR_REDIRECT_URI}
+                      </code>
+                      <CopyButton text={CONNECTOR_REDIRECT_URI} label="Copy redirect address" />
+                    </div>
+                    <ExtLink href={auth.consoleUrl}>Open the developer console</ExtLink>
                   </div>
-                  <ExtLink href={auth.consoleUrl}>Open the developer console</ExtLink>
-                </div>
+                </details>
+                {!haveClient && (
+                  <button
+                    type="button"
+                    className="link-btn connector-have"
+                    data-testid="connector-have-client"
+                    onClick={() => {
+                      setHaveClient(true)
+                      document.getElementById(`${ids}-cid`)?.focus()
+                    }}
+                  >
+                    I already have a client ID
+                  </button>
+                )}
                 <div className="field">
                   <label htmlFor={`${ids}-cid`}>Client ID</label>
                   <Input id={`${ids}-cid`} mono value={clientId} autoComplete="off" spellCheck={false} disabled={busy} onChange={setClientId} />
@@ -315,7 +361,6 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 <span className="hint">Stored encrypted on this computer and never shown again.</span>
               </div>
             )}
-            {auth.kind === 'oauth' && <p className="muted">Your browser opens the service's sign-in page. Approve access, then come back to OrgAI.</p>}
 
             {(error ?? priorError) && (
               <p className="invalid-text connector-error" role="alert" data-testid="connector-error">
@@ -339,6 +384,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
             )}
           </form>
         )}
+        {tokenFirst && extras}
 
         {connected && entry && (
           <div className="connector-connected">
@@ -389,14 +435,16 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 {actionError}
               </p>
             )}
-            <div className="connector-danger-row">
-              <p className="muted">{disconnectKind(auth) === 'clearToken' ? 'Disconnect clears the saved token but keeps the service here.' : 'Disconnect signs out but keeps the service here.'}</p>
-              {connected && (
-                <Button icon={Unplug} testId="connector-disconnect" onClick={() => setConfirm('disconnect')}>
-                  Disconnect
-                </Button>
-              )}
-            </div>
+            {disconnectKind(auth) !== 'none' && (
+              <div className="connector-danger-row">
+                <p className="muted">{disconnectKind(auth) === 'clearToken' ? 'Disconnect clears the saved token but keeps the service here.' : 'Disconnect signs out but keeps the service here.'}</p>
+                {connected && (
+                  <Button icon={Unplug} testId="connector-disconnect" onClick={() => setConfirm('disconnect')}>
+                    Disconnect
+                  </Button>
+                )}
+              </div>
+            )}
             <div className="connector-danger-row">
               <p className="muted">Remove deletes the service and its saved sign-in from this computer.</p>
               <Button variant="danger" testId="connector-remove" onClick={() => setConfirm('remove')}>
