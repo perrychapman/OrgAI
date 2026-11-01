@@ -830,3 +830,80 @@ describe('review', () => {
     expect(r.applied.name).toBe('code-review')
   })
 })
+
+// ---------- final security review fixes ----------
+
+describe('review fixes', () => {
+  it('shows the full MCP command and applies exactly that spec', async () => {
+    const tail = `--opt=${'a'.repeat(294)}`
+    const write = (last: string, env: Record<string, string> = {}): void =>
+      put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', `${tail.slice(0, -1)}${last}`], env } } }))
+    write('a')
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const item = pick(d, 'mcp', 'tailed')
+    expect(item.target).toBe(`npx -y pkg@1.0.0 ${tail}`)
+    // Same sources after a restart: the applied spec is exactly the reviewed one.
+    const ok = await rig.make().apply({ projectId: 'p1', digest: d.digest, candidateId: item.id, roleIds: [ENG] })
+    expect(stored().mcpServers!.find((s) => s.id === ok.applied.id)!.args).toEqual(['-y', 'pkg@1.0.0', tail])
+  })
+
+  it('refuses an apply after the command tail changed', async () => {
+    const tail = `--opt=${'a'.repeat(294)}`
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', tail] } } }))
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const id = pick(d, 'mcp', 'tailed').id
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', `${tail.slice(0, -1)}b`] } } }))
+    await expect(rig.make().apply({ projectId: 'p1', digest: d.digest, candidateId: id, roleIds: [ENG] })).rejects.toThrow(/out of date/)
+    expect(stored().mcpServers ?? []).toHaveLength(0)
+    // A secret slot change alone (same command) changes the digest too.
+    const d1 = await rig.svc.discover({ projectId: 'p1' })
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', `${tail.slice(0, -1)}b`], env: { NEW_TOKEN: '' } } } }))
+    const d2 = await rig.svc.discover({ projectId: 'p1' })
+    expect(pick(d2, 'mcp', 'tailed').target).toBe(pick(d1, 'mcp', 'tailed').target)
+    expect(d2.digest).not.toBe(d1.digest)
+  })
+
+  it('blocks a command over 400 chars so it can never be applied', async () => {
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { huge: { command: 'npx', args: ['-y', 'pkg@1.0.0', `--opt=${'z'.repeat(494)}`] } } }))
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const item = pick(d, 'mcp', 'huge')
+    expect(item.blockedReason).toBe('Command too long to review')
+    await expect(rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: item.id, roleIds: [ENG] })).rejects.toThrow(/Command too long to review/)
+  })
+
+  it('applies six recommendations from one recommend result without going stale', async () => {
+    const names = ['alpha-tool', 'beta-tool', 'gamma-tool', 'delta-tool', 'epsilon-tool', 'zeta-tool']
+    for (const n of names) put(join(rig.repo, '.claude', 'skills', n, 'SKILL.md'), SKILL_MD(n, `Helps with ${n} chores.`))
+    // A persisted review makes every apply re-bind it (refreshReview), which used to evict the result's snapshot.
+    await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    rig.complete.mockResolvedValue({ text: answer(names.map((n) => ({ candidateId: pick(d, 'skill', n).id, roleIds: [ENG], reason: 'Fits.' }))) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    expect(res.recommendations).toHaveLength(6)
+    for (const rec of res.recommendations) {
+      const r = await rig.svc.apply({ projectId: 'p1', digest: res.digest, recommendationId: rec.id, roleIds: [ENG] })
+      expect(r.applied.action).toBe('added')
+    }
+    expect(roleOf(ENG).skills).toHaveLength(6)
+  })
+
+  it('dismisses a card from a fresh recommend result (no review yet) and remembers it', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const cand = pick(d, 'skill', 'repo-helper')
+    const other = pick(d, 'skill', 'code-review')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: cand.id, roleIds: [ENG], reason: 'Fits.' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    expect(readReview(rig.data, 'p1')).toBeNull()
+    expect(() => rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id, candidateId: other.id })).toThrow(/do not match/)
+    const out = rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id })
+    expect(out.dismissed).toEqual([expect.objectContaining({ candidateId: cand.id, fingerprint: fingerprintOf(cand, cand.id) })])
+    expect(out.pendingCount).toBe(0)
+    expect(readReview(rig.data, 'p1')!.dismissed).toHaveLength(1)
+    // By candidate id too, and an unknown one is refused.
+    expect(rig.svc.dismiss({ projectId: 'p1', candidateId: other.id }).dismissed.map((x) => x.candidateId)).toEqual([cand.id, other.id])
+    expect(() => rig.svc.dismiss({ projectId: 'p1', candidateId: 'cap-none' })).toThrow(/Candidate not found/)
+    expect(() => rig.svc.dismiss({ projectId: 'p1' })).toThrow(/not found/)
+    // The next model check does not offer the dismissed candidate again.
+    expect((await rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })).pendingCount).toBe(0)
+  })
+})
