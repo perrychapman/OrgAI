@@ -14,7 +14,8 @@ import type {
   Project,
   RunEvent,
   SendRunInput,
-  StartRunInput
+  StartRunInput,
+  TeamReviewSummary
 } from '../shared/types'
 import { IPC } from '../shared/types'
 
@@ -120,7 +121,15 @@ const api: OrgAIApi = {
     cancel: (input) => ipcRenderer.invoke(IPC.capabilitiesCancel, { requestId: input?.requestId }),
     apply: (input) => ipcRenderer.invoke(IPC.capabilitiesApply, input),
     undo: (input) => ipcRenderer.invoke(IPC.capabilitiesUndo, input),
-    setGrant: (input) => ipcRenderer.invoke(IPC.capabilitiesSetGrant, input)
+    setGrant: (input) => ipcRenderer.invoke(IPC.capabilitiesSetGrant, input),
+    review: (input) => ipcRenderer.invoke(IPC.capabilitiesReview, input),
+    lastReview: (projectId: string) => ipcRenderer.invoke(IPC.capabilitiesLastReview, projectId),
+    dismiss: (input) => ipcRenderer.invoke(IPC.capabilitiesDismiss, input)
+  },
+  onTeamReviewUpdated: (cb) => {
+    const listener = (_e: IpcRendererEvent, summary: TeamReviewSummary): void => cb(summary)
+    ipcRenderer.on(IPC.capabilitiesReviewUpdated, listener)
+    return () => ipcRenderer.removeListener(IPC.capabilitiesReviewUpdated, listener)
   },
   onCapabilityProgress: (cb) => {
     const listener = (_e: IpcRendererEvent, event: CapabilityProgressEvent): void => cb(event)

@@ -89,7 +89,6 @@ describe('discoverLocalSkills', () => {
     mkdirSync(join(home, '.claude', 'skills'), { recursive: true })
     if (!link(join(root, 'elsewhere', 'linked'), join(home, '.claude', 'skills', 'linked'))) return
     skill(join(root, 'realroot'), 'viaroot')
-    if (!link(join(root, 'realroot'), join(home, '.agents', 'skills')) && false) return
     const r = discoverLocalSkills(ctx())
     expect(r.candidates.find((c) => c.item.name === 'linked')).toBeUndefined()
     expect(r.warnings.some((w) => /link/.test(w.message))).toBe(true)

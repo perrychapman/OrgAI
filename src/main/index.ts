@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, CapabilityProgressEvent, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
+import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
 import { HARNESS_PROJECT_ID, IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
@@ -94,6 +94,12 @@ function broadcastMcpLibrary(entries: McpLibraryInfo[]): void {
 function broadcastCapabilityProgress(event: CapabilityProgressEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesProgress, event)
+  }
+}
+
+function broadcastTeamReview(summary: TeamReviewSummary): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesReviewUpdated, summary)
   }
 }
 
@@ -290,9 +296,15 @@ app.whenReady().then(() => {
   // writes); each end restarts the one timer, so the last run's spend is read. Set once the usage monitor exists.
   let refreshLiteLLMSpend: (() => void) | undefined
   let spendTimer: ReturnType<typeof setTimeout> | undefined
+  // Set once RunManager exists; work-run ends feed the proactive Team review (never setup-like or harness runs).
+  let capabilities: CapabilityService | undefined
   const runBroadcast = (event: RunEvent): void => {
     broadcast(event)
     if (event.type !== 'run.status' || !['finished', 'error', 'paused'].includes(event.status)) return
+    if (event.status !== 'paused') {
+      const summary = runManager?.summaryOf(event.runId)
+      if (summary?.kind === 'work' && summary.projectId !== HARNESS_PROJECT_ID) capabilities?.runEnded(summary.projectId, event.runId)
+    }
     if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
     clearTimeout(spendTimer)
     spendTimer = setTimeout(() => {
@@ -328,6 +340,24 @@ app.whenReady().then(() => {
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
   })
+  capabilities = new CapabilityService({
+    projects,
+    skills,
+    mcp,
+    dataDir,
+    complete: (project, input) => rm.completeForProject(project, input),
+    listRuns: (projectId) => rm.list(projectId),
+    getRun: (runId) => rm.get(runId),
+    progress: broadcastCapabilityProgress,
+    reviewUpdated: broadcastTeamReview,
+    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project }),
+    // ORGAI_MOCK=1 only: local discovery reads seeded fixtures under the data dir, never the real home.
+    homeDir: mockAdapter ? join(dataDir, 'mock-home') : homedir(),
+    env: process.env,
+    platform: process.platform,
+    mock: mockAdapter
+  })
+  const caps = capabilities
   registerIpc({
     projects,
     runs: runManager,
@@ -347,24 +377,13 @@ app.whenReady().then(() => {
     }),
     skills,
     skillEvaluation,
-    capabilities: new CapabilityService({
-      projects,
-      skills,
-      mcp,
-      complete: (project, input) => rm.completeForProject(project, input),
-      progress: broadcastCapabilityProgress,
-      onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project }),
-      // ORGAI_MOCK=1: local discovery reads seeded fixtures under the data dir, never the real home.
-      homeDir: mockAdapter ? join(dataDir, 'mock-home') : homedir(),
-      env: process.env,
-      platform: process.platform,
-      mock: mockAdapter
-    })
+    capabilities: caps
   })
   connections.init()
   connections.startDiscovery()
   if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
   app.on('before-quit', () => {
+    caps.dispose()
     connections.dispose()
     communityPrices.dispose()
   })

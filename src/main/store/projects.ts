@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
 import { HARNESS_PROJECT_ID, isModelTier } from '@shared/types'
-import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, type TierContext } from '@shared/defaults'
+import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 
@@ -259,6 +259,7 @@ export class ProjectStore {
       })
     }
     if (next.skillEvaluation !== undefined) next.skillEvaluation = skillEvaluationOf(next)
+    if (next.teamReview !== undefined) next.teamReview = teamReviewOf(next)
     return this.save(next)
   }
 

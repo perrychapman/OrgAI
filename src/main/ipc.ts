@@ -84,7 +84,10 @@ import type {
   SkillMutationResult,
   SkillUpdateInput,
   StartRunInput,
-  TeamRecommendations
+  TeamDismissInput,
+  TeamRecommendations,
+  TeamReview,
+  TeamReviewInput
 } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC } from '@shared/types'
 import type { ProjectStore } from './store/projects'
@@ -525,6 +528,27 @@ export const capabilityArgs = {
     if (!isValidId(i.id)) throw new Error(i.kind === 'skill' ? 'Skill not found' : 'Server not found')
     if (typeof i.granted !== 'boolean') throw new Error('granted must be true or false')
     return { projectId, roleId: i.roleId, kind: i.kind, id: i.id, granted: i.granted }
+  },
+  review(input: unknown): TeamReviewInput {
+    const i = obj<Record<string, unknown>>(input)
+    const trigger = i.trigger === 'opened' ? 'opened' : 'manual'
+    const out: TeamReviewInput = { projectId: projectIdArg(i.projectId), trigger }
+    if (i.requestId !== undefined) {
+      if (!isValidId(i.requestId)) throw new Error('Invalid request id')
+      out.requestId = i.requestId
+    }
+    // Outside fetches and the model step are the user's explicit call: never on the throttled 'opened' trigger.
+    if (trigger === 'manual') {
+      out.includeOutside = i.includeOutside === true
+      out.useModel = i.useModel === true
+    }
+    return out
+  },
+  dismiss(input: unknown): TeamDismissInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = projectIdArg(i.projectId)
+    if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
+    return { projectId, recommendationId: i.recommendationId }
   }
 }
 
@@ -539,6 +563,9 @@ function registerCapabilityIpc(capabilities: CapabilityServiceApi): void {
   ipcMain.handle(IPC.capabilitiesApply, (_e, input: unknown): Promise<CapabilityApplyResult> => capabilities.apply(capabilityArgs.apply(input)))
   ipcMain.handle(IPC.capabilitiesUndo, (_e, input: unknown): CapabilityUndoResult => capabilities.undo(capabilityArgs.undo(input)))
   ipcMain.handle(IPC.capabilitiesSetGrant, (_e, input: unknown): Project => capabilities.setGrant(capabilityArgs.setGrant(input)))
+  ipcMain.handle(IPC.capabilitiesReview, (_e, input: unknown): Promise<TeamReview> => capabilities.review(capabilityArgs.review(input)))
+  ipcMain.handle(IPC.capabilitiesLastReview, (_e, projectId: unknown): TeamReview | null => capabilities.lastReview(projectIdArg(projectId)))
+  ipcMain.handle(IPC.capabilitiesDismiss, (_e, input: unknown): TeamReview => capabilities.dismiss(capabilityArgs.dismiss(input)))
 }
 
 /** Connections, model catalog and remaps: ConnectionService 1:1. */
