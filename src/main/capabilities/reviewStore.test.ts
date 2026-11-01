@@ -89,3 +89,22 @@ describe('persistence', () => {
     expect(reviewSummary(review({ recommendations: [rec], newCandidateIds: ['a', 'b'] }))).toMatchObject({ projectId: 'p1', pendingCount: 1, newCount: 2, evidenceCount: 0, trigger: 'manual', mode: 'free' })
   })
 })
+
+describe('normalizeReview dismissals', () => {
+  it('drops malformed entries, forgets a malformed held recommendation and fills a missing name from the discovery', () => {
+    const item = { id: 'cap-1', kind: 'skill', origin: 'repo', source: 'repo-skills', sourceLabel: 'x', name: 'code-review', description: '', flags: [], needsSecrets: [], notes: [] }
+    const r = review({
+      discovery: { projectId: 'p1', items: [item as never], sources: [], warnings: [], includeOutside: false, digest: 'd', createdAt: '2026-01-01T00:00:00.000Z' },
+      dismissed: [
+        { candidateId: 'cap-1', fingerprint: 'f', at: 'a' },
+        { candidateId: 'cap-2', fingerprint: 'f', at: 'a', name: 'kept', kind: 'mcp', recommendation: { id: 'rec-1', candidateId: 'cap-2', roleIds: 'r1' } as never },
+        { candidateId: 7, fingerprint: 'f', at: 'a' } as never
+      ]
+    })
+    const out = normalizeReview(JSON.parse(JSON.stringify(r)), 'p1')!
+    expect(out.dismissed).toEqual([
+      { candidateId: 'cap-1', fingerprint: 'f', at: 'a', name: 'code-review', kind: 'skill' },
+      { candidateId: 'cap-2', fingerprint: 'f', at: 'a', name: 'kept', kind: 'mcp' }
+    ])
+  })
+})
