@@ -70,7 +70,7 @@ describe('connectors lib', () => {
     expect(missingSentence([])).toBe('')
   })
   it('honesty note', () => {
-    expect(honestyNote({ status: 'preview', verified: false })).toMatch(/not yet tested/)
+    expect(honestyNote({ status: 'preview', verified: false })).toMatch(/not yet tested/i)
     expect(honestyNote({ status: 'stable', verified: true })).toBeUndefined()
   })
   it('plain tool names', () => {
