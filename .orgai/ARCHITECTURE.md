@@ -113,7 +113,7 @@ ConnectionService covers:
 - community prices (communityPrices.ts): LiteLLM's public model_prices_and_context_window.json fetched at most daily (redirect error, 20 s, 8 MB, sanitized, cached in <data>/model-prices.json), the last price fallback after the builtin table, off with AppSettings.communityPrices false and never in mock mode
 - LiteLLM discovery caps (#10, litellm.ts): a response body over LITELLM_MAX_BODY_BYTES (5 MB) is refused, at most LITELLM_MAX_MODELS (2,000) models are kept, ids must pass validModelId (at most 200 printable chars, no whitespace, no leading '-'), and /model/info prices are sanitized (sanitizeModelPrice) before they become ProviderModel.price. ConnectionService.prices backs models:prices
 - tier mapping and project remaps, including the projects:previewRemap dry run
-- the per-run RunConnection (LiteLLM runs carry `pricing`), Codex plan usage and the LiteLLM key spend (probeLiteLLMUsage, /key/info)
+- the per-run RunConnection (LiteLLM runs carry `pricing`), Codex plan usage and the LiteLLM key spend (probeLiteLLMUsage, /key/info). Both idle probes (boot, idle timer, usage:refresh) run only while their connection is in use (`connectionInUse` in shared/defaults.ts: enabled and the default connection or some project's), so an enabled but unused ChatGPT login never spawns the Codex app-server; live Codex runs still report their own usage. Verified by unit tests
 
 - default connection at creation: prepareNewProject puts a new project on AppSettings.defaultConnection when creationConnection (defaults.ts) finds it usable and it maps every tier the roles use, else on anthropic (projects:create passes it to ProjectStore.create; mock and existing projects are untouched)
 
