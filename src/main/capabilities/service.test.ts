@@ -228,7 +228,6 @@ describe('harness project', () => {
     await expect(rig.svc.apply({ projectId: h, digest: 'x', candidateId: 'y', roleIds: ['a'] })).rejects.toThrow(/not found/i)
     await expect(rig.svc.review({ projectId: h })).rejects.toThrow(/not found/i)
     expect(() => rig.svc.undo({ projectId: h, undoId: 'u' })).toThrow(/not found/i)
-    expect(() => rig.svc.setGrant({ projectId: h, roleId: 'r', kind: 'skill', id: 's', granted: true })).toThrow(/not found/i)
     expect(() => rig.svc.dismiss({ projectId: h, recommendationId: 'r' })).toThrow(/not found/i)
     expect(rig.svc.lastReview(h)).toBeNull()
     expect(() => rig.svc.forgetProject(h)).not.toThrow()
@@ -597,42 +596,6 @@ describe('apply', () => {
       expect(r.applied.name).toBe('repo-helper')
       expect(readReview(rig.data, 'p1')!.recommendations).toHaveLength(0)
     })
-  })
-})
-
-describe('setGrant', () => {
-  it('grants and revokes a skill', async () => {
-    const d = await rig.svc.discover({ projectId: 'p1' })
-    const r = await rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: pick(d, 'skill', 'repo-helper').id, roleIds: [ENG] })
-    let p = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'skill', id: r.applied.id, granted: true })
-    expect(p.roles.find((x) => x.id === REV)!.skills).toEqual([r.applied.id])
-    p = rig.svc.setGrant({ projectId: 'p1', roleId: ENG, kind: 'skill', id: r.applied.id, granted: false })
-    expect(p.roles.find((x) => x.id === ENG)!.skills).toEqual([])
-    expect(() => rig.svc.setGrant({ projectId: 'p1', roleId: ENG, kind: 'skill', id: 'nope', granted: true })).toThrow(/Skill not found/)
-    expect(() => rig.svc.setGrant({ projectId: 'p1', roleId: 'ghost', kind: 'skill', id: r.applied.id, granted: true })).toThrow(/Role not found/)
-  })
-
-  it('revoking a role from an every-role server expands to an explicit slug list without it', async () => {
-    const info = rig.mcp.connectorsAdd({ connectorId: 'github', variant: 'readonly' })
-    const link = rig.mcp.linkLibrary({ projectId: 'p1', libraryId: info.entry.id }).project.mcpServers![0]!
-    expect(link.roles).toBeUndefined()
-    const p = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'mcp', id: link.id, granted: false })
-    expect(p.mcpServers![0]!.roles).toEqual(['lead', 'engineer'])
-    const back = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'mcp', id: link.id, granted: true })
-    expect(back.mcpServers![0]!.roles).toEqual(['lead', 'engineer', 'reviewer'])
-    // Granting an every-role server changes nothing.
-    const every = rig.mcp.linkLibrary({ projectId: 'p1', libraryId: rig.mcp.connectorsAdd({ connectorId: 'linear', variant: 'readonly' }).entry.id }).project.mcpServers!.find((s) => s.libraryId !== info.entry.id)!
-    expect(rig.svc.setGrant({ projectId: 'p1', roleId: ENG, kind: 'mcp', id: every.id, granted: true }).mcpServers!.find((s) => s.id === every.id)!.roles).toBeUndefined()
-  })
-
-  it('revoke also drops an explicit Role.mcpServers grant', async () => {
-    const d = await rig.svc.discover({ projectId: 'p1' })
-    const r = await rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: pick(d, 'mcp', 'mock-docs').id, roleIds: [LEAD] })
-    const p = stored()
-    rig.store.save({ ...p, roles: p.roles.map((x) => (x.id === REV ? { ...x, mcpServers: [r.applied.id] } : x)) })
-    const out = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'mcp', id: r.applied.id, granted: false })
-    expect(out.roles.find((x) => x.id === REV)!.mcpServers).toEqual([])
-    expect(out.mcpServers![0]!.roles).toEqual(['lead'])
   })
 })
 

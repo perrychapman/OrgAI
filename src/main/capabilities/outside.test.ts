@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CAPABILITY_DESCRIPTION_MAX } from '@shared/types'
-import { discoverGithubSkills, discoverRegistry } from './outside'
+import { discoverGithubSkills, discoverRegistry, safeSkillDir } from './outside'
 import type { OutsideContext } from './types'
 
 type Call = { url: string; init: RequestInit }
@@ -232,5 +232,41 @@ describe('discoverGithubSkills', () => {
     const r = await discoverGithubSkills({ fetch: fetchFn as unknown as typeof fetch, mock: true, queries: [] })
     expect(fetchFn).not.toHaveBeenCalled()
     expect(r.candidates.map((c) => c.item.name)).toEqual(['webapp-testing', 'pdf'])
+  })
+})
+
+describe('outside hardening', () => {
+  it('safeSkillDir refuses dot names and names not starting with a letter or digit', () => {
+    for (const ok of ['pdf', 'webapp-testing', 'a.b', '9lives', 'x'.repeat(64)]) expect(safeSkillDir(ok)).toBe(true)
+    for (const bad of ['.', '..', '.hidden', '-x', '_x', 'a/b', '', 'x'.repeat(65)]) expect(safeSkillDir(bad)).toBe(false)
+  })
+
+  it('never fetches a "." or ".." skill folder from the listing', async () => {
+    const { ctx, calls } = mkctx((url) => (url.endsWith('/contents/skills') ? json([{ type: 'dir', name: '..' }, { type: 'dir', name: '.' }]) : new Response('', { status: 404 })))
+    await discoverGithubSkills(ctx)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('blocks registry remotes on http or a private-IP literal and stores the scrubbed URL', async () => {
+    const remote = (name: string, url: string): unknown => ({ server: { name, description: 'd', version: '1.0.0', remotes: [{ type: 'streamable-http', url }] }, _meta: {} })
+    const { ctx } = mkctx(() =>
+      json({
+        servers: [
+          remote('io.github.a/plain', 'http://docs.example.com/mcp'),
+          remote('io.github.a/private', 'https://10.0.0.5/mcp'),
+          remote('io.github.a/loop', 'https://[::1]/mcp'),
+          remote('io.github.a/ok', 'https://user:pw@docs.example.com/mcp?key=abc#frag')
+        ]
+      })
+    )
+    const r = await discoverRegistry(ctx)
+    const items = r.candidates.map((c) => c.item)
+    expect(items).toHaveLength(4)
+    expect(items[0]!.blockedReason).toBe('The server address is not https.')
+    expect(items[1]!.blockedReason).toBe('The server address points to a private network.')
+    expect(items[2]!.blockedReason).toBe('The server address points to a private network.')
+    expect(items[3]!.blockedReason).toBeUndefined()
+    expect((r.candidates[3]!.payload as { spec: { url: string } }).spec.url).toBe('https://docs.example.com/mcp')
+    expect(items[3]!.target).toBe('https://docs.example.com/mcp')
   })
 })

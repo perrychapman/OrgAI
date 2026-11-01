@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeArgs, isCredentialArg, capabilityId, clampText, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName } from './sanitize'
+import { sanitizeArgs, isCredentialArg, capabilityId, clampText, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
 
 describe('clampText', () => {
   it('removes controls and bidi characters, collapses whitespace and clamps', () => {
@@ -89,5 +89,32 @@ describe('sanitizeArgs', () => {
     expect(r.dropped).toBe(3)
     expect(r.notes.join(' ')).toContain('--header')
     expect(r.notes.join(' ')).not.toContain('SECRET')
+  })
+})
+
+describe('reviewTarget and mcpSpecDigest', () => {
+  const base = { id: '', name: 'x', transport: 'stdio' as const, enabled: true, source: 'local' as const, addedAt: '', command: 'npx', args: ['-y', 'pkg@1.0.0'] }
+
+  it('reviewTarget is the whole command up to MCP_TARGET_MAX and blocks anything longer', () => {
+    expect(reviewTarget(base)).toEqual({ target: 'npx -y pkg@1.0.0' })
+    const at = reviewTarget({ ...base, args: ['x'.repeat(MCP_TARGET_MAX - 4)] })
+    expect(at.target.length).toBe(MCP_TARGET_MAX)
+    expect(at.blockedReason).toBeUndefined()
+    expect(reviewTarget({ ...base, args: ['x'.repeat(MCP_TARGET_MAX)] }).blockedReason).toBe('Command too long to review')
+    expect(reviewTarget({ transport: 'http', url: `https://h.example/${'p'.repeat(400)}` }).blockedReason).toBe('Address too long to review')
+    expect(reviewTarget({ ...base, args: ['a\nb'] }).blockedReason).toMatch(/hidden or control/)
+  })
+
+  it('mcpSpecDigest changes with the args tail, the URL and the secret slots', () => {
+    const d = mcpSpecDigest(base)
+    expect(mcpSpecDigest({ ...base })).toBe(d)
+    expect(mcpSpecDigest({ ...base, args: ['-y', 'pkg@1.0.1'] })).not.toBe(d)
+    expect(mcpSpecDigest({ ...base, args: ['-y', 'pkg@1.0.0', '--extra'] })).not.toBe(d)
+    expect(mcpSpecDigest({ ...base, secretEnv: ['TOKEN'] })).not.toBe(d)
+    expect(mcpSpecDigest({ ...base, secretHeaders: ['Authorization'] })).not.toBe(d)
+    expect(mcpSpecDigest({ ...base, env: { MODE: 'fast' } })).not.toBe(d)
+    expect(mcpSpecDigest({ ...base, transport: 'http', url: 'https://a.example/mcp' })).not.toBe(mcpSpecDigest({ ...base, transport: 'http', url: 'https://b.example/mcp' }))
+    // Order of slot names does not matter.
+    expect(mcpSpecDigest({ ...base, secretEnv: ['A', 'B'] })).toBe(mcpSpecDigest({ ...base, secretEnv: ['B', 'A'] }))
   })
 })

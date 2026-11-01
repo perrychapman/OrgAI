@@ -82,7 +82,8 @@ export const RECOMMEND_SYSTEM = [
 
 /**
  * `localDetail` 'minimal' (automatic reviews) sends local-machine items (origin 'local') as kind, name and a redacted
- * target only: no description, no location, no notes. 'full' (the user's own Re-check or recommend) sends everything.
+ * target only: no description, no location, no notes. Library and project MCP servers keep their description but
+ * their target is redacted the same way. 'full' (the user's own Re-check or recommend) sends everything.
  */
 export function buildRecommendPrompt(
   project: Project,
@@ -116,7 +117,9 @@ export function buildRecommendPrompt(
     const parts = [`candidate ${c.id}`, `kind=${c.kind}`, `origin=${c.origin}`, `name=${field(c.name, 64)}`]
     if (!local) parts.push(`description=${field(c.description, 200)}`)
     if (c.kind === 'mcp' && c.target) {
-      const target = local ? redactedTarget(c) : field(c.target, 160)
+      // Library and project servers may have come from this computer too: their command keeps only package-like args.
+      const redact = minimal && (local || c.origin === 'library' || c.origin === 'project')
+      const target = redact ? redactedTarget(c) : field(c.target, 160)
       if (target) parts.push(`target=${field(target, 160)}`)
     }
     if (c.inProject) parts.push(`grantedTo=${c.inProject.grantedTo.join(',') || 'none'}`)

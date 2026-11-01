@@ -118,6 +118,19 @@ describe('buildRecommendPrompt', () => {
       expect(prompt).toContain('description=Library description kept')
     })
 
+    it('minimal also redacts library and project MCP targets, keeping their descriptions', () => {
+      const libMcp = item({ id: 'cap-lmcp', kind: 'mcp', name: 'lib-db', description: 'Library server kept', origin: 'library', source: 'library', transport: 'stdio', target: 'node C:/Users/alice/tools/db.js --token-file C:/secret' })
+      const projMcp = item({ id: 'cap-pmcp', kind: 'mcp', name: 'proj-db', description: 'Project server kept', origin: 'project', source: 'project', transport: 'stdio', target: 'npx -y pkg@1.0.0 /home/alice/private' })
+      const { prompt } = buildRecommendPrompt(project, [libMcp, projMcp], {}, { localDetail: 'minimal' })
+      const lines = prompt.split('\n')
+      expect(lines.find((l) => l.startsWith('candidate cap-lmcp'))).toBe('candidate cap-lmcp | kind=mcp | origin=library | name=lib-db | description=Library server kept | target=node')
+      expect(lines.find((l) => l.startsWith('candidate cap-pmcp'))).toContain('target=npx -y pkg@1.0.0')
+      expect(prompt).not.toContain('alice')
+      expect(prompt).not.toContain('secret')
+      // The user's own Re-check sends them in full.
+      expect(buildRecommendPrompt(project, [libMcp], {}, { localDetail: 'full' }).prompt).toContain('C:/Users/alice/tools/db.js')
+    })
+
     it('full (the default) sends local descriptions and targets', () => {
       for (const p of [buildRecommendPrompt(project, all, {}).prompt, buildRecommendPrompt(project, all, {}, { localDetail: 'full' }).prompt]) {
         expect(p).toContain('description=Secret internal playbook for AcmeCorp')

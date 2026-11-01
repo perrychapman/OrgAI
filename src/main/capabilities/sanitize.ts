@@ -185,8 +185,9 @@ const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/
  */
 export function reviewTarget(spec: Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url'>): { target: string; blockedReason?: string } {
   const quote = (a: string): string => (a === '' || /[\s"']/.test(a) ? JSON.stringify(a) : a)
+  const raw = spec.transport === 'stdio' ? [spec.command ?? '', ...(spec.args ?? [])] : [spec.url ?? '']
   const full = spec.transport === 'stdio' ? [spec.command ?? '', ...(spec.args ?? []).map(quote)].join(' ') : (spec.url ?? '')
-  if (HIDDEN_CHARS.test(full)) return { target: clampText(full, MCP_TARGET_MAX), blockedReason: 'The command contains hidden or control characters.' }
+  if (raw.some((part) => HIDDEN_CHARS.test(part))) return { target: clampText(full, MCP_TARGET_MAX), blockedReason: 'The command contains hidden or control characters.' }
   if (full.length > MCP_TARGET_MAX) {
     return { target: clampText(full, MCP_TARGET_MAX), blockedReason: spec.transport === 'stdio' ? 'Command too long to review' : 'Address too long to review' }
   }
