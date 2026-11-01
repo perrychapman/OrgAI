@@ -196,6 +196,8 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
   const evaluateButton = (
     <span aria-busy={evaluation.evaluating}>
       <Button
+        size="sm"
+        variant="ghost"
         icon={evaluation.evaluating ? LoaderCircle : ClipboardCheck}
         testId="skill-evaluate"
         className={evaluation.evaluating ? 'is-busy' : undefined}
