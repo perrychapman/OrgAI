@@ -390,6 +390,11 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
   const scopes = challengeScopes?.length ? challengeScopes : (stringList(prm.scopes_supported) ?? stringList(meta.scopes_supported))
   const codeChallengeMethods = stringList(meta.code_challenge_methods_supported)
   const metaIssuer = typeof meta.issuer === 'string' && meta.issuer ? meta.issuer : undefined
+  // RFC 8414 section 3.3: the metadata's issuer must be the issuer it was fetched for (trailing slashes aside), so a
+  // document cannot name another issuer for the RFC 9207 iss check. The iss comparison itself stays exact.
+  if (metaIssuer && metaIssuer.replace(/\/+$/, '') !== issuer.replace(/\/+$/, '')) {
+    throw new OAuthError('discovery', `Discovery failed: the authorization server metadata names a different issuer (${excerpt(metaIssuer)}).`)
+  }
   return {
     issuer: metaIssuer ?? issuer,
     ...(meta.authorization_response_iss_parameter_supported === true ? { issParameterSupported: true as const } : {}),

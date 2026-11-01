@@ -367,3 +367,134 @@ describe('ORGAI_MOCK=1 connectors', () => {
     expect(t.tools).toBeUndefined()
   })
 })
+
+describe('auth kind none (DeepWiki, keyless Exa)', () => {
+  it('adds with no secret slots or OAuth, is connected at once and stamps connectedAt', () => {
+    const svc = build()
+    const info = svc.connectorsAdd({ connectorId: 'deepwiki' })
+    expect(info.entry).toMatchObject({ url: 'https://mcp.deepwiki.com/mcp', connectorId: 'deepwiki', connectedAt: NOW })
+    expect(info.entry.secretHeaders).toBeUndefined()
+    expect(info.entry.oauth).toBeUndefined()
+    expect(info.missingSecrets).toEqual([])
+    expect(info.auth.state).toBe('notRequired')
+    expect(svc.connectorsList().find((c) => c.connector.id === 'deepwiki')).toMatchObject({ state: 'connected', connectedAt: NOW })
+  })
+
+  it('authorize answers notRequired without a flow, setToken refuses; a link resolves with no auth header and never copies connectedAt', async () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'exa' })
+    expect(entry.connectorVariant).toBe('free')
+    const s = await svc.authorize({ libraryId: entry.id })
+    expect(s).toEqual({ state: 'notRequired' })
+    expect(runAuthorization).not.toHaveBeenCalled()
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(library.get(entry.id)!.oauth).toBeUndefined()
+    expect(() => svc.connectorsSetToken({ connectorId: 'exa', token: 'k' })).toThrow(/needs no sign-in/)
+    svc.linkLibrary({ projectId: pid, libraryId: entry.id })
+    const link = projects.get(pid)!.mcpServers![0]
+    expect('connectedAt' in link).toBe(false)
+    expect(svc.resolve(pid, link).headers).toEqual({})
+    expect(await svc.prepareForRun(pid, [link])).toEqual([])
+  })
+
+  it('the keyed Exa variant is a token connector with an x-api-key slot', () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'exa', variant: 'key' })
+    expect(entry.secretHeaders).toEqual(['x-api-key'])
+    svc.connectorsSetToken({ connectorId: 'exa', token: 'exa-key' })
+    expect(secrets.get(mcpLibrarySecretKey(entry.id, 'header', 'x-api-key'))).toBe('exa-key')
+  })
+
+  it('ORGAI_MOCK=1: tests without network and lists mock tools', async () => {
+    const svc = build(true)
+    const { entry } = svc.connectorsAdd({ connectorId: 'deepwiki' })
+    const t = await svc.libraryTest({ libraryId: entry.id })
+    expect(t.ok).toBe(true)
+    expect(t.tools).toEqual(['search', 'read_page', 'ask_question'])
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('ORGAI_MOCK=1 covers every catalog entry', () => {
+  it('each connector connects (authorize, token or nothing) and tests without network', async () => {
+    const svc = build(true)
+    for (const def of CONNECTORS) {
+      const { entry } = svc.connectorsAdd({ connectorId: def.id })
+      const kind = def.variants.find((v) => v.id === def.defaultVariant)!.auth.kind
+      if (kind === 'token') svc.connectorsSetToken({ connectorId: def.id, token: 'tok' })
+      else if (kind === 'oauth') expect((await svc.authorize({ libraryId: entry.id })).state, def.id).toBe('authorized')
+      else if (kind === 'oauthClient') expect((await svc.authorize({ libraryId: entry.id, clientId: 'c', clientSecret: 's' })).state, def.id).toBe('authorized')
+      const t = await svc.libraryTest({ libraryId: entry.id })
+      expect(t.ok, def.id).toBe(true)
+      expect(t.tools!.length, def.id).toBeGreaterThan(0)
+      expect(svc.connectorsList().find((c) => c.connector.id === def.id)!.connectedAt, def.id).toBe(NOW)
+    }
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(runAuthorization).not.toHaveBeenCalled()
+  })
+})
+
+describe('connectedAt', () => {
+  it('is set by a token and cleared with it', () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'github' })
+    expect(entry.connectedAt).toBeUndefined()
+    expect(svc.connectorsList().find((c) => c.connector.id === 'github')!.connectedAt).toBeUndefined()
+    const info = svc.connectorsSetToken({ connectorId: 'github', token: 'ghp_1' })
+    expect(info.entry.connectedAt).toBe(NOW)
+    expect(svc.connectorsList().find((c) => c.connector.id === 'github')!.connectedAt).toBe(NOW)
+    svc.connectorsSetToken({ connectorId: 'github', token: null })
+    expect(library.get(entry.id)!.connectedAt).toBeUndefined()
+  })
+
+  it('is set by a real authorize, kept on a same-target edit, cleared by revoke', async () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'notion' })
+    runAuthorization.mockResolvedValue({
+      config: { resource: 'https://mcp.notion.com/mcp', authorizationServer: 'https://mcp.notion.com', clientId: 'c', clientSource: 'dcr', authorizedAt: new Date(NOW).toISOString() },
+      tokens: { accessToken: 'AT' }
+    })
+    expect((await svc.authorize({ libraryId: entry.id })).state).toBe('authorized')
+    expect(library.get(entry.id)!.connectedAt).toBe(NOW)
+    svc.libraryUpsert({ ...library.get(entry.id)!, description: 'mine', connectedAt: 1 })
+    expect(library.get(entry.id)!.connectedAt).toBe(NOW)
+    svc.revokeAuth({ libraryId: entry.id })
+    expect(library.get(entry.id)!.connectedAt).toBeUndefined()
+    expect(svc.connectorsList().find((c) => c.connector.id === 'notion')!.connectedAt).toBeUndefined()
+  })
+
+  it('is set by a mock authorize; a failed authorize leaves it unset; a mock stamp is hidden outside mock mode', async () => {
+    const svc = build(true)
+    const { entry } = svc.connectorsAdd({ connectorId: 'linear' })
+    expect((await svc.authorize({ libraryId: entry.id })).state).toBe('authorized')
+    expect(library.get(entry.id)!.connectedAt).toBe(NOW)
+    const real = build(false)
+    const gmail = real.connectorsAdd({ connectorId: 'gmail' }).entry
+    await real.authorize({ libraryId: gmail.id })
+    expect(library.get(gmail.id)!.connectedAt).toBeUndefined()
+    const card = real.connectorsList().find((c) => c.connector.id === 'linear')!
+    expect(card.state).toBe('needsSetup')
+    expect(card.connectedAt).toBeUndefined()
+  })
+
+  it('cannot be forged through mcpLibrary:upsert on a custom entry', () => {
+    const svc = build()
+    svc.libraryUpsert({ id: 'mcpl_c', name: 'c', transport: 'http', url: 'https://c.example/mcp', source: 'user', addedAt: '2026-01-01T00:00:00.000Z', connectedAt: 5 })
+    expect(library.get('mcpl_c')!.connectedAt).toBeUndefined()
+  })
+
+  it('old records load without it; malformed values are dropped on read', () => {
+    const base = { transport: 'http' as const, source: 'user' as const, addedAt: '2026-01-01T00:00:00.000Z' }
+    library.save({ ...base, id: 'mcpl_a', name: 'a', url: 'https://a.example/mcp', connectorId: 'notion', connectedAt: NOW })
+    library.save({ ...base, id: 'mcpl_b', name: 'b', url: 'https://b.example/mcp', connectorId: 'linear', connectedAt: 'yesterday' as unknown as number })
+    library.save({ ...base, id: 'mcpl_c', name: 'c', url: 'https://c.example/mcp', connectedAt: NOW })
+    library.save({ ...base, id: 'mcpl_d', name: 'd', url: 'https://d.example/mcp' })
+    const reread = new McpLibraryStore(join(dir, 'data'))
+    expect(reread.get('mcpl_a')!.connectedAt).toBe(NOW)
+    expect('connectedAt' in reread.get('mcpl_b')!).toBe(false)
+    expect('connectedAt' in reread.get('mcpl_c')!).toBe(false)
+    expect('connectedAt' in reread.get('mcpl_d')!).toBe(false)
+    expect(structuredClone(reread.list())).toEqual(reread.list())
+  })
+})

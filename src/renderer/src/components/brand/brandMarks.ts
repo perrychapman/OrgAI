@@ -76,6 +76,24 @@ export const BRAND_MARKS: Record<string, BrandMarkDef> = {
 }
 
 /** Ids with no vendor mark available (in none of Simple Icons, Lobe Icons or SVG Logos); they keep the initial tile or icon. */
-export const BRAND_GAPS = ['litellm'] as const
+export const BRAND_GAPS = [
+  'litellm',
+  // Catalog entries added 2026-10-31 whose marks have not been sourced yet (move each to BRAND_MARKS when added).
+  'google-docs',
+  'google-sheets',
+  'google-slides',
+  'google-chat',
+  'intercom',
+  'supabase',
+  'deepwiki',
+  'exa',
+  'cloudflare',
+  'datadog',
+  'vercel',
+  'asana',
+  'hubspot',
+  'box',
+  'paypal'
+] as const
 
 export const brandMark = (id: string): BrandMarkDef | null => (Object.prototype.hasOwnProperty.call(BRAND_MARKS, id) ? BRAND_MARKS[id] : null)
