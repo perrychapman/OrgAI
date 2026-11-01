@@ -30,14 +30,17 @@ const KIND_LABEL: Record<Proposal['kind'], string> = {
   architecture: 'Architecture',
   orgChart: 'Org chart',
   settings: 'Run settings',
-  mcpServers: 'MCP servers'
+  mcpServers: 'MCP servers',
+  skills: 'Skills'
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
   settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.',
-  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.'
+  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.',
+  // Placeholder from the Assistants contract (phase 1); the UI phase writes the skills body and final copy.
+  skills: 'Approving saves these skills.'
 }
 
 export default function ProposalCard({ proposal, runId, currentRoles, who, onDecide }: Props): ReactElement {

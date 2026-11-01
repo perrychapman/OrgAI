@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit } from './defaults'
+import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG } from './defaults'
 import type { ProviderModel } from './types'
+import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
+import { isSafeId } from './defaults'
+
+describe('virtual projects (Assistants)', () => {
+  it('recognises exactly the three virtual ids, which still pass SAFE_ID', () => {
+    expect([...VIRTUAL_PROJECT_IDS]).toEqual(['harness', 'quick', 'skills'])
+    for (const id of VIRTUAL_PROJECT_IDS) {
+      expect(isVirtualProjectId(id)).toBe(true)
+      expect(isSafeId(id)).toBe(true)
+      expect(VIRTUAL_PROJECT_LABELS[id]).toBeTruthy()
+    }
+    for (const id of ['', 'Quick', 'harness ', 'project-1', 'skill']) expect(isVirtualProjectId(id)).toBe(false)
+    expect(VIRTUAL_PROJECT_LABELS).toEqual({ harness: 'MCP assistant', quick: 'Chat', skills: 'Skill assistant' })
+  })
+
+  it('labels every run kind in plain words', () => {
+    expect(RUN_KIND_LABELS).toEqual({ work: 'Run', setup: 'Setup', 'mcp-assist': 'MCP assistant', 'skill-assist': 'Skill assistant' })
+  })
+})
 
 describe('tier-based model defaults', () => {
   const catalog: ProviderModel[] = [
@@ -259,5 +278,42 @@ describe('importTierForModel', () => {
     expect(tierForModel('gpt-5')).toBeUndefined()
     expect(tierForModel('best')).toBeUndefined()
     expect(modelFamily('sonnet[1m]')).toBe('claude')
+  })
+})
+
+describe('quick run tools and permissions', () => {
+  it('removes Edit, Write, Bash and NotebookEdit only with edits off', () => {
+    const tools = ['Read', 'Edit', 'Write', 'Bash', 'NotebookEdit', 'Grep', 'WebFetch'] as const
+    expect(quickRoleTools(tools, false)).toEqual(['Read', 'Grep', 'WebFetch'])
+    expect(quickRoleTools(tools, true)).toEqual([...tools])
+    const input = ['Read', 'Bash'] as ('Read' | 'Bash')[]
+    quickRoleTools(input, false)
+    expect(input).toEqual(['Read', 'Bash'])
+  })
+
+  it('gives the single assistant read and web tools, plus Edit, Write and Bash with edits on', () => {
+    expect(quickRunTools('single', false)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'] })
+    expect(quickRunTools('single', true)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash'] })
+  })
+
+  it('filters the default chart for the default team', () => {
+    const off = quickRunTools('default', false)
+    expect(Object.keys(off).sort()).toEqual(['implementer', 'orchestrator', 'researcher', 'reviewer'])
+    for (const tools of Object.values(off)) {
+      for (const t of ['Edit', 'Write', 'Bash', 'NotebookEdit']) expect(tools).not.toContain(t)
+    }
+    expect(off.researcher).toEqual(['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'])
+    const on = quickRunTools('default', true)
+    for (const role of defaultRoles()) expect(on[role.slug]).toEqual(role.tools)
+  })
+
+  it('always uses permission mode default', () => {
+    expect(quickRunPermissionMode(false)).toBe('default')
+    expect(quickRunPermissionMode(true)).toBe('default')
+  })
+
+  it('defaults the assistant models', () => {
+    expect(DEFAULT_APP_SETTINGS.skillAssistModel).toBe('deep')
+    expect(DEFAULT_APP_SETTINGS.quickRunModel).toBe('everyday')
   })
 })

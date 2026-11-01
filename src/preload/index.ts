@@ -98,6 +98,7 @@ const api: OrgAIApi = {
     previewImport: (input) => ipcRenderer.invoke(IPC.skillsPreviewImport, input),
     applyImport: (input) => ipcRenderer.invoke(IPC.skillsApplyImport, input),
     undoImport: (input) => ipcRenderer.invoke(IPC.skillsUndoImport, input),
+    startAssist: (input) => ipcRenderer.invoke(IPC.skillsStartAssist, input),
     evaluate: (projectId) => ipcRenderer.invoke(IPC.skillsEvaluate, projectId),
     lastEvaluation: (projectId) => ipcRenderer.invoke(IPC.skillsLastEvaluation, projectId),
     applySuggestion: (input) => ipcRenderer.invoke(IPC.skillsApplySuggestion, input)
@@ -157,7 +158,9 @@ const api: OrgAIApi = {
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
     pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
-    usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query)
+    usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query),
+    startQuick: (input) => ipcRenderer.invoke(IPC.runsStartQuick, input),
+    promoteQuick: (input) => ipcRenderer.invoke(IPC.runsPromoteQuick, input)
   },
   window: {
     // Only the two ids cross; main validates them against the stores before opening anything.
