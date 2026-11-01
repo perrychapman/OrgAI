@@ -71,8 +71,10 @@ describe('discoverLocalSkills', () => {
     expect(by('beta').item.sourceLabel).toBe('Agent skills folder')
     expect(by('gamma').item.sourceLabel).toBe('GitHub Copilot')
     expect(by('alpha').payload).toMatchObject({ type: 'skillFolder', source: 'local', sourceRef: '~/.claude/skills/alpha' })
-    const files = (by('alpha').payload as { files: Array<{ path: string; data: Buffer }> }).files
-    expect(files[0]!.data.toString()).not.toContain('allowed-tools')
+    const payload = by('alpha').payload as Extract<CandidatePayload, { type: 'skillFolder' }>
+    expect('files' in payload).toBe(false)
+    const again = rereadSkillFolder(payload)
+    expect(again.ok && again.files[0]!.data.toString()).not.toContain('allowed-tools')
     expect(r.sources.find((s) => s.source === 'claude-plugins')!.state).toBe('missing')
     expect(r.sources.find((s) => s.source === 'agents-skills')).toMatchObject({ state: 'found', count: 1 })
   })
@@ -167,6 +169,39 @@ describe('rereadSkillFolder', () => {
     writeFileSync(join(payload.dir, 'extra.txt'), 'new')
     const bad = rereadSkillFolder(payload)
     expect(bad).toEqual({ ok: false, reason: 'The skill changed since the recommendation; run it again.' })
+  })
+
+  it('leaves private-looking files out of a home skill, at discovery and at apply', () => {
+    const dir = join(home, '.claude', 'skills')
+    skill(dir, 'alpha')
+    put(join(dir, 'alpha', '.env'), 'SECRET=1')
+    put(join(dir, 'alpha', '.env.local'), 'SECRET=2')
+    put(join(dir, 'alpha', 'KEY.PEM'), 'x')
+    put(join(dir, 'alpha', 'id.key'), 'x')
+    put(join(dir, 'alpha', '.hidden', 'a.txt'), 'x')
+    put(join(dir, 'alpha', 'notes.md'), 'public')
+    const c = discoverLocalSkills(ctx()).candidates[0]!
+    const payload = c.payload as Extract<CandidatePayload, { type: 'skillFolder' }>
+    expect(c.item.notes[0]).toMatch(/^Left out 5 private-looking files: /)
+    const ok = rereadSkillFolder(payload)
+    expect(ok.ok).toBe(true)
+    if (!ok.ok) return
+    expect(ok.files.map((f) => f.path).sort()).toEqual(['SKILL.md', 'notes.md'])
+    expect(ok.skipped).toEqual(['.env', '.env.local', '.hidden/a.txt', 'KEY.PEM', 'id.key'])
+    expect(ok.digest).toBe(c.item.digest)
+    put(join(dir, 'alpha', '.env'), 'CHANGED')
+    expect(rereadSkillFolder(payload).ok).toBe(true)
+    put(join(dir, 'alpha', 'notes.md'), 'edited')
+    expect(rereadSkillFolder(payload).ok).toBe(false)
+  })
+
+  it('does not filter repo skills', () => {
+    skill(join(proj, '.claude', 'skills'), 'review')
+    put(join(proj, '.claude', 'skills', 'review', '.env.example'), 'A=')
+    const c = discoverRepoSkills(ctx()).candidates[0]!
+    const ok = rereadSkillFolder(c.payload as Extract<CandidatePayload, { type: 'skillFolder' }>)
+    expect(ok.ok && ok.skipped).toEqual([])
+    expect(ok.ok && ok.files.some((f) => f.path === '.env.example')).toBe(true)
   })
 
   it('refuses a folder that became a link', () => {
