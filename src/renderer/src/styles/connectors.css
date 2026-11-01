@@ -615,3 +615,20 @@
     flex-wrap: wrap;
   }
 }
+
+/* Back to Team: in flow at the top of the Connectors pane after a deep link from the Team tab. */
+.connectors-back {
+  display: flex;
+  margin-bottom: var(--space-3);
+}
+/* Elevated tools named in a Tools summary. */
+.role-tool-elevated-text {
+  color: var(--warning-text);
+}
+/* Role node: marks a role that can run commands or change files. */
+.role-node .caps-elevated {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-left: var(--space-1);
+  color: var(--warning-text);
+}

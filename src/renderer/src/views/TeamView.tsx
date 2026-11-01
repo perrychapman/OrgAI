@@ -72,6 +72,33 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       ro.disconnect()
     }
   }, [])
+  // The tray opening, closing or changing phase resizes the stage without resizing the frame: refit when the stage
+  // height moves by more than 24 px, so a user's own pan and zoom survive small layout shifts.
+  useEffect(() => {
+    const stage = frameRef.current?.querySelector<HTMLElement>('.frame-stage')
+    if (!stage || typeof ResizeObserver === 'undefined') return undefined
+    let t: ReturnType<typeof setTimeout> | undefined
+    let last = -1
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height ?? stage.clientHeight
+      if (last < 0) {
+        last = h
+        return
+      }
+      if (Math.abs(h - last) <= 24) return
+      clearTimeout(t)
+      t = setTimeout(() => {
+        last = stage.clientHeight
+        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+      }, 150)
+    })
+    ro.observe(stage)
+    return () => {
+      clearTimeout(t)
+      ro.disconnect()
+    }
+  }, [])
   const selectedRoleId = useAppStore((s) => s.selectedRoleId)
   const selectRole = useAppStore((s) => s.selectRole)
   const updateRoles = useAppStore((s) => s.updateRoles)
@@ -413,6 +440,20 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   return (
     <div className="editor" ref={rootRef} onKeyDownCapture={onRootKeyDownCapture}>
+      <a
+        href="#team-panel"
+        className="skip-link"
+        data-testid="skip-to-role-panel"
+        onClick={(e) => {
+          e.preventDefault()
+          setPanelOpen(true)
+          window.requestAnimationFrame(() =>
+            rootRef.current?.querySelector<HTMLElement>('.team-panel-tabs [role=tab][aria-selected=true]')?.focus()
+          )
+        }}
+      >
+        Skip to role panel
+      </a>
       <CanvasFrame frameRef={frameRef}>
         <div className="frame-top">
           <FrameToolbar label="Team actions">
@@ -523,7 +564,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             proOptions={{ hideAttribution: true }}
             deleteKeyCode={['Delete', 'Backspace']}
             elementsSelectable
-            edgesFocusable
+            edgesFocusable={false}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />
             <Controls showInteractive={false} />

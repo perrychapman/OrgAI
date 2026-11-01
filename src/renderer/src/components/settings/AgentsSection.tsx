@@ -108,7 +108,7 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
             control={<Switch checked={runMessagingOn(project)} label="Let runs message each other" describedBy={settingDescId(row('msg-row'))} onChange={(next) => patch({ runMessaging: next })} />}
           />
         </SettingsCard>
-        <SettingsGroup title="Team review">
+        <SettingsGroup title="Team assistant: review">
           <p className="hint">Looks now and then for tools and skills your team is missing, and suggests them on the Team tab.</p>
           <SettingsCard>
           <SettingRow

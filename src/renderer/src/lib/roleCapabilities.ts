@@ -75,16 +75,56 @@ export function accessSentence(roleName: string, serviceLabel: string, readOnly:
   return `${roleName} can use the tools ${serviceLabel} offers.`
 }
 
-/** "Read, Glob, Grep + 2": the first three tools by catalog order, then how many more. */
-export function toolsSummary(tools: readonly string[], catalog: readonly string[]): string {
-  if (tools.length === 0) return 'No tools'
+/** Tools that change files or run commands; shown by name and in the warning colour. */
+export const ELEVATED_TOOL_NAMES: readonly string[] = ['Bash', 'Edit', 'Write', 'NotebookEdit']
+
+export function isElevatedTool(tool: string): boolean {
+  return ELEVATED_TOOL_NAMES.includes(tool)
+}
+
+function sortByCatalog(tools: readonly string[], catalog: readonly string[]): string[] {
   const rank = (t: string): number => {
     const i = catalog.indexOf(t)
     return i < 0 ? catalog.length : i
   }
-  const sorted = [...tools].sort((a, b) => rank(a) - rank(b))
-  const shown = sorted.slice(0, 3).join(', ')
-  return sorted.length > 3 ? `${shown} + ${sorted.length - 3}` : shown
+  return [...tools].sort((a, b) => rank(a) - rank(b))
+}
+
+/** The elevated tools a role has, in catalog order. */
+export function elevatedTools(tools: readonly string[], catalog: readonly string[]): string[] {
+  return sortByCatalog(tools, catalog).filter(isElevatedTool)
+}
+
+export interface ToolsSummaryParts {
+  /** The first three ordinary tools by catalog order. */
+  base: string[]
+  /** Every elevated tool, by name. */
+  elevated: string[]
+  /** Ordinary tools not named in `base`. */
+  more: number
+}
+
+export function toolsSummaryParts(tools: readonly string[], catalog: readonly string[]): ToolsSummaryParts {
+  const sorted = sortByCatalog(tools, catalog)
+  const ordinary = sorted.filter((t) => !isElevatedTool(t))
+  return { base: ordinary.slice(0, 3), elevated: sorted.filter(isElevatedTool), more: Math.max(0, ordinary.length - 3) }
+}
+
+/** "Read, Glob, Grep + Bash, Edit": the first three ordinary tools, then every elevated tool by name, then "2 more". */
+export function toolsSummary(tools: readonly string[], catalog: readonly string[]): string {
+  if (tools.length === 0) return 'No tools'
+  const { base, elevated, more } = toolsSummaryParts(tools, catalog)
+  const tail = [...elevated, ...(more > 0 ? [`${more} more`] : [])]
+  const head = base.join(', ')
+  if (tail.length === 0) return head
+  return head ? `${head} + ${tail.join(', ')}` : tail.join(', ')
+}
+
+/** Spoken tools count for a node: "5 tools including Bash, Edit" (no "including" when nothing is elevated). */
+export function toolsAriaLabel(tools: readonly string[], catalog: readonly string[]): string {
+  const n = `${tools.length} ${tools.length === 1 ? 'tool' : 'tools'}`
+  const el = elevatedTools(tools, catalog)
+  return el.length > 0 ? `${n} including ${el.join(', ')}` : n
 }
 
 /** The access words for a connection, or null when it is a custom server with no stated access. */
@@ -105,8 +145,10 @@ export function grantableServers<T extends { spec: Pick<McpServerSpec, 'id' | 'r
 
 /** The server cannot be used until the user signs in or sets a secret (App settings > Connectors). */
 export function needsSignIn(info: { spec: Pick<McpServerSpec, 'enabled'>; auth: { state: string }; missingSecrets: readonly string[]; libraryMissing?: true }): boolean {
-  if (!info.spec.enabled || info.libraryMissing) return false
-  return info.auth.state === 'notAuthorized' || info.auth.state === 'expired' || info.missingSecrets.length > 0
+  if (info.libraryMissing) return false
+  // A server saved with an empty secret slot is switched off until it is filled, so a missing secret counts either way.
+  if (info.missingSecrets.length > 0) return true
+  return info.spec.enabled && (info.auth.state === 'notAuthorized' || info.auth.state === 'expired')
 }
 
 export interface RevokePlan {

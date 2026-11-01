@@ -214,7 +214,7 @@ try {
   await use.locator('[data-testid=connector-use-confirm]').click()
   await use.waitFor({ state: 'detached', timeout: 10_000 })
   await row.locator('.mcp-role-access button').first().waitFor({ timeout: 10_000 })
-  check(new RegExp(`Can use: ${role}`).test((await row.textContent()) ?? ''), `Catalog row shows "Can use: ${role}"`, ((await row.textContent()) ?? '').slice(0, 200))
+  check((await row.locator(`[data-testid=catalog-used-by-role]`, { hasText: role }).count()) === 1, `Catalog row shows "Used by ${role}"`, ((await row.textContent()) ?? "").slice(0, 200))
   check((await row.locator('[data-testid=connector-use]').count()) === 0, 'the Use button is gone once linked')
 
   // ---- Add a service: search-first picker ----

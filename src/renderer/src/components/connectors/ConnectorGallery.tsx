@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Search } from 'lucide-react'
+import { ArrowLeft, Plus, Search } from 'lucide-react'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
@@ -8,7 +8,8 @@ import { Input } from '../ui/Input'
 import { SettingsSection } from '../settings/SettingsSection'
 import { CATEGORY_GROUP_THRESHOLD, CATEGORY_LABELS, categoriesPresent, gallerySections, matchesFilter, serviceCount } from '../../lib/connectors'
 import type { GalleryFilter } from '../../lib/connectors'
-import { takeConnectorTarget } from '../../lib/settingsTarget'
+import { clearTeamOrigin, peekTeamOrigin, takeConnectorTarget, type TeamOrigin } from '../../lib/settingsTarget'
+import { useAppStore } from '../../store/useAppStore'
 import { ConnectorTile } from './ConnectorTile'
 import ConnectorDialog from './ConnectorDialog'
 import { useConnectors } from './useConnectors'
@@ -46,16 +47,31 @@ export function ConnectorGallery(): ReactElement {
 
   const [pending, setPending] = useState<string | null>(() => takeConnectorTarget())
   const [announce, setAnnounce] = useState('')
+  // "Back to Team" shows when the deep link started on the Team tab (openConnectorSetup remembers the project and role).
+  const [origin, setOrigin] = useState<TeamOrigin | null>(() => peekTeamOrigin())
+  const backToTeam = (): void => {
+    const o = peekTeamOrigin() ?? origin
+    clearTeamOrigin()
+    setOrigin(null)
+    if (!o) return
+    const st = useAppStore.getState()
+    if (st.selectedProjectId !== o.projectId) st.selectProject(o.projectId)
+    st.setView('team')
+    if (o.roleId) useAppStore.getState().selectRole(o.roleId)
+  }
   const highlightTimer = useRef<number | undefined>(undefined)
 
   // A deep link (requestConnector) may arrive before mount (key read above) or while mounted (event).
   useEffect(() => {
     const onEvent = (): void => {
+      setOrigin(peekTeamOrigin())
       const id = takeConnectorTarget()
       if (id) setPending(id)
     }
     window.addEventListener('orgai:settings-section', onEvent)
     return () => {
+      // Leaving App settings for good (not just switching panes) drops the way back.
+      if (useAppStore.getState().view !== 'appSettings') clearTeamOrigin()
       window.removeEventListener('orgai:settings-section', onEvent)
       window.clearTimeout(highlightTimer.current)
     }
@@ -101,6 +117,13 @@ export function ConnectorGallery(): ReactElement {
       testId="connectors-section"
     >
       <div className="connectors-body">
+        {origin && (
+          <div className="connectors-back">
+            <Button variant="ghost" size="sm" icon={ArrowLeft} testId="back-to-team" onClick={backToTeam}>
+              Back to Team
+            </Button>
+          </div>
+        )}
         <p className="sr-only" role="status" aria-live="polite" data-testid="connector-announce">
           {announce}
         </p>

@@ -8,6 +8,7 @@ import {
   revokePlan,
   roleSkillSplit,
   toolsSummary,
+  toolsAriaLabel,
   capabilityCounts,
   countsSummary,
   grantServerRoles,
@@ -80,9 +81,13 @@ describe('counts and sentences', () => {
 describe('role editor helpers', () => {
   const catalog = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']
   it('summarises tools in catalog order', () => {
-    expect(toolsSummary(['Bash', 'Grep', 'Read', 'Glob', 'Edit'], catalog)).toBe('Read, Glob, Grep + 2')
+    expect(toolsSummary(['Bash', 'Grep', 'Read', 'Glob', 'Edit'], catalog)).toBe('Read, Glob, Grep + Edit, Bash')
     expect(toolsSummary(['Read'], catalog)).toBe('Read')
     expect(toolsSummary([], catalog)).toBe('No tools')
+    expect(toolsSummary(['Read', 'Glob', 'Grep', 'WebFetch', 'Bash'], [...catalog, 'WebFetch'])).toBe('Read, Glob, Grep + Bash, 1 more')
+    expect(toolsSummary(['Bash'], catalog)).toBe('Bash')
+    expect(toolsAriaLabel(['Bash', 'Grep', 'Read', 'Glob', 'Edit'], catalog)).toBe('5 tools including Edit, Bash')
+    expect(toolsAriaLabel(['Read'], catalog)).toBe('1 tool')
   })
   it('words access', () => {
     expect(accessLabel(true)).toBe('Can read')
@@ -100,6 +105,8 @@ describe('role editor helpers', () => {
     expect(needsSignIn(base)).toBe(false)
     expect(needsSignIn({ ...base, auth: { state: 'expired' } })).toBe(true)
     expect(needsSignIn({ ...base, missingSecrets: ['TOKEN'] })).toBe(true)
+    expect(needsSignIn({ ...base, spec: { enabled: false }, missingSecrets: ['TOKEN'] })).toBe(true)
+    expect(needsSignIn({ ...base, missingSecrets: ['TOKEN'], libraryMissing: true })).toBe(false)
     expect(needsSignIn({ ...base, auth: { state: 'notAuthorized' }, spec: { enabled: false } })).toBe(false)
     expect(needsSignIn({ ...base, auth: { state: 'notAuthorized' }, libraryMissing: true })).toBe(false)
   })

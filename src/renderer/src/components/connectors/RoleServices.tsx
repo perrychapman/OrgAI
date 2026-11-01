@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { LogIn, X } from 'lucide-react'
 import type { McpServerInfo, Role } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { openConnectorSetup } from '../team/openConnectorSetup'
 import { serviceFor } from '../../lib/roleServices'
 import { capList } from '../../lib/connectors'
 import { accessLabel, grantedServers, needsSignIn, serverReadOnly } from '../../lib/roleCapabilities'
@@ -37,13 +37,17 @@ export default function RoleServices({
   onAdd: () => void
   onAsk?: () => void
 }): ReactElement {
-  const setView = useAppStore((s) => s.setView)
+  const projectId = useAppStore((s) => s.selectedProjectId)
   const granted = grantedServers(servers ?? [], role)
   const [showAll, setShowAll] = useState(false)
   const { shown, more } = capList(granted, showAll ? granted.length : ROLE_SERVICES_CAP)
-  const signIn = (): void => {
-    requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
-    setView('appSettings')
+  // Where the Team assistant tray goes: a connector's gallery tile, a library entry's row, or the project server's edit form
+  // with the empty secret focused.
+  const signIn = (info: McpServerInfo): void => {
+    const connectorId = info.spec.connectorId
+    const libraryId = info.spec.libraryId
+    if (connectorId || libraryId || !projectId) openConnectorSetup(connectorId, libraryId)
+    else useAppStore.getState().openProjectMcp(projectId, info.spec.id, { edit: true })
   }
   const waiting = granted.filter(needsSignIn).length
   const summary =
@@ -97,7 +101,7 @@ export default function RoleServices({
                   <span className="role-service-name">{s.label}</span>
                   <span className="role-cap-sub">
                     {access ?? 'Custom connection'}
-                    {info.spec.enabled ? '' : ' (paused in this project)'}
+                    {needs && info.missingSecrets.length > 0 ? ' (waiting for a secret)' : info.spec.enabled ? '' : ' (paused in this project)'}
                   </span>
                 </span>
                 <span className="role-cap-tags">
@@ -106,7 +110,7 @@ export default function RoleServices({
                       <Badge tone="attention" testId="role-needs-signin">
                         Needs sign in
                       </Badge>
-                      <Button size="sm" icon={LogIn} ariaLabel={`Sign in to ${s.label} in App settings`} testId="role-signin" onClick={signIn}>
+                      <Button size="sm" icon={LogIn} ariaLabel={`Sign in to ${s.label}`} testId="role-signin" onClick={() => signIn(info)}>
                         Sign in
                       </Button>
                     </>

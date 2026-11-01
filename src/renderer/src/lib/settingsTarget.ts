@@ -147,3 +147,42 @@ export function takeModelPriceTarget(): string | null {
     return null
   }
 }
+
+const TEAM_ORIGIN_KEY = 'orgai.teamOrigin'
+
+export interface TeamOrigin {
+  projectId: string
+  /** The role that was selected when the deep link started, if any. */
+  roleId?: string
+}
+
+/** Remember that a deep link into App settings started on the Team tab, so the destination can offer "Back to Team". */
+export function rememberTeamOrigin(origin: TeamOrigin): void {
+  try {
+    sessionStorage.setItem(TEAM_ORIGIN_KEY, JSON.stringify(origin))
+  } catch {
+    /* storage unavailable: no Back button */
+  }
+}
+
+/** Read the Team origin without clearing it (null when none or malformed). */
+export function peekTeamOrigin(): TeamOrigin | null {
+  try {
+    const raw = sessionStorage.getItem(TEAM_ORIGIN_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw) as Partial<TeamOrigin> | null
+    if (!v || typeof v.projectId !== 'string' || v.projectId.length === 0 || v.projectId.length > 200) return null
+    if (v.roleId !== undefined && (typeof v.roleId !== 'string' || v.roleId.length > 200)) return null
+    return v.roleId ? { projectId: v.projectId, roleId: v.roleId } : { projectId: v.projectId }
+  } catch {
+    return null
+  }
+}
+
+export function clearTeamOrigin(): void {
+  try {
+    sessionStorage.removeItem(TEAM_ORIGIN_KEY)
+  } catch {
+    /* nothing to clear */
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SAFE_ID } from '@shared/defaults'
-import { accessChoiceOffered, accessSentence, clampText, flagViews, foldProgress, fullAllowed, newRequestId, pinLabel, sourceBadge, stripControl, suggestionsLine } from './capabilities'
+import { accessChoiceOffered, accessSentence, clampText, flagViews, foldProgress, fullAllowed, newRequestId, pinLabel, sourceBadge, stripControl, suggestionsLine, sinceLine, skillsFirst, resultsHeadText, gapsJumpText, readDismissed } from './capabilities'
 
 describe('capabilities helpers', () => {
   it('makes safe request ids', () => {
@@ -52,5 +52,32 @@ describe('capabilities helpers', () => {
     expect(suggestionsLine(undefined)).toBeNull()
     expect(suggestionsLine({ pendingCount: 3, newCount: 3 })).toBe('3 suggestions since your last run')
     expect(suggestionsLine({ pendingCount: 1, newCount: 0 })).toBe('1 suggestion waiting')
+  })
+  it('words the since line and gaps jump', () => {
+    expect(sinceLine(1)).toBe('1 suggestion since your last run')
+    expect(sinceLine(12)).toBe('12 suggestions since your last run')
+    expect(sinceLine(0)).toBeNull()
+    expect(gapsJumpText(1)).toBe('and 1 gap')
+    expect(gapsJumpText(2)).toBe('and 2 gaps')
+  })
+  it('orders skills first, stably', () => {
+    const items = { a: { kind: 'connector' as const }, b: { kind: 'skill' as const }, c: { kind: 'connector' as const }, d: { kind: 'skill' as const } }
+    expect(skillsFirst([{ candidateId: 'a' }, { candidateId: 'b' }, { candidateId: 'c' }, { candidateId: 'd' }], items).map((r) => r.candidateId)).toEqual(['b', 'd', 'a', 'c'])
+  })
+  it('words the results head', () => {
+    expect(resultsHeadText(2, 'the whole team', 2, false)).toBe('2 to review')
+    expect(resultsHeadText(3, 'Reviewer', 14, true)).toBe('3 to review for Reviewer · 11 waiting for the whole team')
+  })
+  it('validates the dismissed list', () => {
+    const review = { dismissed: [{ candidateId: 'x', name: 'Alpha', kind: 'skill', dismissedAt: 't' }, { candidateId: 'y', at: 'u' }, { nope: 1 }, null], discovery: { items: [{ id: 'y', name: 'Beta', kind: 'connector' as const }] } }
+    expect(readDismissed(review)).toEqual([
+      { candidateId: 'x', name: 'Alpha', kind: 'skill', dismissedAt: 't' },
+      { candidateId: 'y', name: 'Beta', kind: 'connector', dismissedAt: 'u' }
+    ])
+    expect(readDismissed({ dismissed: 'bad' })).toEqual([])
+    expect(readDismissed(null)).toEqual([])
+  })
+  it('names the curated vendor', () => {
+    expect(sourceBadge({ origin: 'catalog', sourceLabel: 'x', name: 'Whatever' })).toBe('Curated · Whatever')
   })
 })

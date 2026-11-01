@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Check, Plug, Undo2 } from 'lucide-react'
+import { BookOpen, Check, Plug, RotateCcw, Undo2 } from 'lucide-react'
 import type { CapabilityAccess, CapabilityItem, CapabilityRecommendation, Role } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -11,6 +11,7 @@ import {
   accessChoiceOffered,
   accessSentence,
   clampText,
+  type DismissedEntry,
   flagViews,
   fullAllowed,
   isOutside,
@@ -101,7 +102,7 @@ export function CapabilityCard({
             {sourceBadge(item)}
           </Badge>
           <Badge tone="neutral">{item.kind === 'skill' ? 'Skill' : 'Connection'}</Badge>
-          {item.location && (
+          {item.location && item.origin !== 'catalog' && (
             <span className="capability-location mono" title={clampText(item.location, 200)}>
               {clampText(item.location, 80)}
             </span>
@@ -206,6 +207,15 @@ export function CapabilityCard({
           </div>
         </details>
         {noRole && <p className="hint">Choose a role. Nobody gets it until you do.</p>}
+        {item.origin === 'catalog' && item.location && (
+          <details className="disclosure capability-details" data-testid="capability-details">
+            <summary>Details</summary>
+            <div className="disclosure-body">
+              <span className="hint">Documentation</span>{' '}
+              <span className="mono capability-location-full">{clampText(item.location, 200)}</span>
+            </div>
+          </details>
+        )}
         {item.notes.length > 0 && <p className="hint">{item.notes.map((n) => clampText(n, 120)).join(' ')}</p>}
       </div>
       {error && (
@@ -290,5 +300,46 @@ export function AppliedRow({
         </p>
       )}
     </div>
+  )
+}
+
+/** What replaces a dismissed card for a few seconds, in its list position. */
+export function DismissedRow({ name, recId, onUndo }: { name: string; recId?: string; onUndo: () => void }): ReactElement {
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    // Focus follows the card that was replaced, on its Undo; the row keeps the card's place so the list does not jump.
+    rootRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
+  }, [])
+  return (
+    <div className="capability-applied capability-dismissed" ref={rootRef} data-testid="capability-dismissed" data-rec={recId} role="group" aria-label={`Dismissed ${name}`}>
+      <span className="capability-applied-text">
+        <span>
+          Dismissed <strong>{clampText(name, 60)}</strong>.
+        </span>
+      </span>
+      <Button size="sm" variant="ghost" icon={Undo2} ariaLabel={`Undo dismissing ${name}`} testId="capability-dismiss-undo" onClick={onUndo}>
+        Undo
+      </Button>
+    </div>
+  )
+}
+
+/** Dismissed suggestions, kept at the bottom of the results so a mistake is never final. */
+export function DismissedList({ entries, onRestore }: { entries: DismissedEntry[]; onRestore: (candidateId: string) => void }): ReactElement | null {
+  if (entries.length === 0) return null
+  return (
+    <details className="disclosure team-dismissed" data-testid="team-dismissed">
+      <summary data-testid="team-dismissed-toggle">Dismissed ({entries.length})</summary>
+      <ul className="disclosure-body team-looked-list">
+        {entries.map((e) => (
+          <li key={e.candidateId} data-testid="team-dismissed-item">
+            <span>{clampText(e.name, 60)}</span>
+            <Button size="sm" variant="ghost" icon={RotateCcw} ariaLabel={`Restore ${e.name}`} testId="team-dismissed-restore" onClick={() => onRestore(e.candidateId)}>
+              Restore
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }

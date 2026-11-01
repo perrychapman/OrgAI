@@ -21,7 +21,7 @@ export function CapabilityGroup({
 }: {
   id: string
   title: string
-  summary?: string
+  summary?: ReactNode
   helper?: string
   /** Right of the heading when the group has content (the "+ Add" or "Edit" button). */
   actions?: ReactNode
@@ -38,7 +38,7 @@ export function CapabilityGroup({
         </h4>
         {!empty && actions && <div className="role-cap-actions">{actions}</div>}
       </div>
-      {summary && !empty && <p className="role-cap-summary">{summary}</p>}
+      {summary && !empty && <p className="role-cap-summary" data-testid={`${testId}-summary`}>{summary}</p>}
       {helper && <p className="hint">{helper}</p>}
       {empty ? (
         <div className="role-cap-empty">

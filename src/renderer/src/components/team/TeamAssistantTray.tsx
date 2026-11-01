@@ -10,10 +10,16 @@ import {
   foldProgress,
   fromRecommendations,
   fromReview,
+  gapsJumpText,
   newRequestId,
+  PROACTIVE_VISIBLE,
+  readDismissed,
+  resultsHeadText,
+  sinceLine,
+  skillsFirst,
   sourceProblems,
-  suggestionsLine,
   type AssistantResult,
+  type DismissedEntry,
   type ProgressRow
 } from '../../lib/capabilities'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -25,7 +31,7 @@ import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { Select } from '../ui/Select'
 import { Tabs, panelDomId } from '../ui/Tabs'
-import { AppliedRow, CapabilityCard, type AppliedInfo } from './CapabilityCard'
+import { AppliedRow, CapabilityCard, DismissedList, DismissedRow, type AppliedInfo } from './CapabilityCard'
 import { CapabilityGaps } from './CapabilityGaps'
 
 /** What the Team assistant is looking at: the whole team, or one role. Follows the canvas selection unless pinned. */
@@ -70,8 +76,20 @@ export default function TeamAssistantTray({
     if (jumpFor) onModeChange('design')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpFor])
+  const hasResults = useTeamAssistantStore((s) => !!s.sessions[project.id]?.result)
+  const designRunId = useTeamAssistantStore((s) => s.designRun[project.id])
+  // Design: working or waiting on decisions changes the tray's height, so the phase says which.
+  const designPhase = useAppStore((s) => {
+    const run = designRunId ? s.runs[designRunId] : undefined
+    if (!run) return 'design'
+    const open = (run.questions?.length ?? 0) + run.proposals.length + run.permissions.length + (run.ruleRequests?.length ?? 0) + (run.mergeReviews?.length ?? 0) + (run.mcpInstalls?.length ?? 0)
+    if (open > 0) return 'design-decisions'
+    const st = run.summary.status
+    return st === 'starting' || st === 'running' ? 'design-running' : 'design'
+  })
+  const trayPhase = mode === 'design' ? designPhase : hasResults ? 'results' : 'recommend'
   return (
-    <div className="team-assistant" data-testid="team-assistant" data-mode={mode}>
+    <div className="team-assistant" data-testid="team-assistant" data-mode={mode} data-tray-phase={trayPhase}>
       <div className="team-tray-head">
         <h2>Team assistant</h2>
         <div className="grow" />
@@ -114,12 +132,19 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   const [outside, setOutside] = useState(() => readOutside(project.id))
   const [pinned, setPinned] = useState<string | null>(null)
   const [announce, setAnnounce] = useState('')
-  const [sinceLine, setSinceLine] = useState<string | null>(null)
+  const [sinceText, setSinceText] = useState<string | null>(null)
+  // Just-dismissed cards: a one-row "Dismissed X. Undo" in the card's place for a few seconds.
+  const [recent, setRecent] = useState<Record<string, { name: string; candidateId: string }>>({})
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const [persisted, setPersisted] = useState<DismissedEntry[]>([])
+  const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
     alive.current = true
+    const t = timers.current
     return () => {
       alive.current = false
+      for (const k of Object.keys(t)) clearTimeout(t[k])
     }
   }, [])
 
@@ -129,7 +154,10 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     setPhase('idle')
     setError(null)
     setPinned(null)
-    setSinceLine(null)
+    setSinceText(null)
+    setRecent({})
+    setPersisted([])
+    setShowAll(false)
   }, [project.id])
 
   // Opening the Team tab: show the last review at once, then re-check once per mount (main throttles an unchanged one).
@@ -139,13 +167,17 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     void capabilitiesApi
       .lastReview(project.id)
       .then((r) => {
-        if (alive.current && r) setResult((prev) => prev ?? fromReview(r))
+        if (!alive.current || !r) return
+        setPersisted(readDismissed(r))
+        setResult((prev) => prev ?? fromReview(r))
       })
       .catch(() => {})
     void capabilitiesApi
       .review(project.id, 'opened')
       .then((r) => {
-        if (alive.current) setResult((prev) => (prev && prev.origin === 'recommend' ? prev : fromReview(r)))
+        if (!alive.current) return
+        setPersisted(readDismissed(r))
+        setResult((prev) => (prev && prev.origin === 'recommend' ? prev : fromReview(r)))
       })
       .catch(() => {})
   }, [project.id])
@@ -153,9 +185,9 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   // The "N suggestions since your last run" line is read once, then the count of new items is cleared (the tray was viewed).
   useEffect(() => {
     if (!summary || summary.projectId !== project.id) return
-    if (summary.newCount > 0 && !sinceLine) setSinceLine(suggestionsLine(summary))
+    if (summary.newCount > 0 && !sinceText) setSinceText(sinceLine(summary.pendingCount))
     if (active && summary.newCount > 0) useTeamAssistantStore.getState().clearNew(project.id)
-  }, [summary, active, project.id, sinceLine])
+  }, [summary, active, project.id, sinceText])
 
   useEffect(
     () =>
@@ -192,6 +224,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
             fromReview(await capabilitiesApi.review(project.id, 'manual', id, outside))
       // Always store, even when the pane was left meanwhile: the result is waiting when the user returns.
       update(project.id, () => ({ result: out, cards: {}, gapsHidden: [] }))
+      setShowAll(false)
       if (!alive.current) return
       setPhase('idle')
       const n = out.recommendations.filter((r) => !known.dismissedCandidates.includes(r.candidateId)).length
@@ -288,12 +321,50 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
 
   const dismiss = (recId: string): void => {
     const candidateId = result?.recommendations.find((r) => r.id === recId)?.candidateId
+    const name = clampText((candidateId && result?.items[candidateId]?.name) || 'suggestion', 80)
     void capabilitiesApi.dismiss(project.id, recId, candidateId).catch(() => {})
     update(project.id, (s) => ({ dismissed: [...s.dismissed, recId], dismissedCandidates: candidateId ? [...s.dismissedCandidates, candidateId] : s.dismissedCandidates }))
-    window.requestAnimationFrame(() => {
-      const root = rootRef.current
-      ;(root?.querySelector<HTMLElement>('[data-testid=capability-card] button:not([disabled])') ?? root?.querySelector<HTMLElement>('[data-testid=team-recommend]'))?.focus()
-    })
+    // The row keeps the card's place for 8 s, so the list does not jump and the heading stays in view.
+    setRecent((r) => ({ ...r, [recId]: { name, candidateId: candidateId ?? '' } }))
+    clearTimeout(timers.current[recId])
+    timers.current[recId] = setTimeout(() => {
+      delete timers.current[recId]
+      if (!alive.current) return
+      // The row goes away: if focus was on its Undo, move it to the next card's Apply (else Recommend) instead of the page.
+      const row = rootRef.current?.querySelector<HTMLElement>(`[data-testid=capability-dismissed][data-rec="${recId}"]`)
+      if (row && row.contains(document.activeElement)) {
+        const next = rootRef.current?.querySelector<HTMLElement>('[data-testid=capability-card] [data-testid=capability-apply]')
+        if (next) window.requestAnimationFrame(() => next.focus({ preventScroll: true }))
+        else focusPrimary()
+      }
+      setRecent((r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== recId)))
+    }, 8000)
+    setAnnounce(`Dismissed ${name}.`)
+  }
+
+  /** Bring a dismissed card back (the row's Undo or the Dismissed list's Restore). */
+  const restore = (candidateId: string, name: string): void => {
+    const recs = (result?.recommendations ?? []).filter((r) => r.candidateId === candidateId).map((r) => r.id)
+    for (const id of recs) {
+      clearTimeout(timers.current[id])
+      delete timers.current[id]
+    }
+    setRecent((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !recs.includes(k))))
+    update(project.id, (s) => ({ dismissed: s.dismissed.filter((id) => !recs.includes(id)), dismissedCandidates: s.dismissedCandidates.filter((c) => c !== candidateId) }))
+    setPersisted((p) => p.filter((e) => e.candidateId !== candidateId))
+    // Main forgets the dismissal too once the restore call exists; until then only this session shows the card again.
+    capabilitiesApi
+      .restore(project.id, candidateId)
+      ?.then((r) => {
+        if (!alive.current) return
+        setPersisted(readDismissed(r))
+        setResult((prev) => (!prev || prev.origin === 'review' ? fromReview(r) : prev))
+      })
+      .catch(() => {})
+    setAnnounce(`Restored ${name}.`)
+    if (recs[0]) {
+      window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>(`[data-rec="${recs[0]}"] [data-testid=capability-apply]`)?.focus({ preventScroll: true }))
+    }
   }
 
   const finishSetup = (info: AppliedInfo): void => {
@@ -307,15 +378,37 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     }
   }
 
-  const shown = (result?.recommendations ?? []).filter((r) => {
+  const ordered = result ? (result.origin === 'review' ? skillsFirst(result.recommendations, result.items) : result.recommendations) : []
+  const shown = ordered.filter((r) => {
+    if (recent[r.id]) return true
     if (dismissed.has(r.id) || dismissedCandidates.includes(r.candidateId) || !result?.items[r.candidateId]) return false
     return cards[r.id]?.applied ? true : !roleId || r.roleIds.includes(roleId)
   })
-  const open = shown.filter((r) => !cards[r.id]?.applied)
+  const open = shown.filter((r) => !cards[r.id]?.applied && !recent[r.id])
+  const proactive = result?.origin === 'review'
+  const hiddenCount = proactive && !showAll ? Math.max(0, open.length - PROACTIVE_VISIBLE) : 0
+  const visibleOpen = new Set(open.slice(0, hiddenCount ? PROACTIVE_VISIBLE : open.length).map((r) => r.id))
   const problems = result ? sourceProblems(result.sources) : []
   const working_ = phase === 'working'
   const gaps = (result?.gaps ?? []).filter((g, i) => (!roleId || g.roleId === roleId) && !gapsHidden.has(`${g.roleId}:${i}`))
-  const line = open.length > 0 ? (sinceLine ?? suggestionsLine(summary)) : null
+  const line = open.length > 0 && proactive ? sinceText : null
+  const dismissedEntries = useMemo<DismissedEntry[]>(() => {
+    const seen = new Set<string>(Object.values(recent).map((r) => r.candidateId))
+    const out: DismissedEntry[] = []
+    for (const c of dismissedCandidates) {
+      const it = result?.items[c]
+      if (it && !seen.has(c)) {
+        seen.add(c)
+        out.push({ candidateId: c, name: clampText(it.name, 80), kind: it.kind, dismissedAt: '' })
+      }
+    }
+    for (const e of persisted) {
+      if (seen.has(e.candidateId)) continue
+      seen.add(e.candidateId)
+      out.push(e)
+    }
+    return out
+  }, [dismissedCandidates, persisted, recent, result])
   const empty = !result || (result.origin === 'review' && shown.length === 0 && gaps.length === 0)
 
   return (
@@ -453,15 +546,33 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
         </div>
       )}
 
-      {shown.length > 0 && (
-        <h3 className="team-results-head" ref={resultRef} tabIndex={-1} data-testid="team-results-head">
-          {open.length} to review for {clampText(scopeName, 40)}
-        </h3>
+      {open.length > 0 && (
+        <div className="team-results-row">
+          <h3 className="team-results-head" ref={resultRef} tabIndex={-1} data-testid="team-results-head">
+            {hiddenCount > 0 ? `Top ${PROACTIVE_VISIBLE} to review` : resultsHeadText(open.length, clampText(scopeName, 40), summary?.pendingCount, !!roleId)}
+          </h3>
+          {gaps.length > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              testId="team-gaps-jump"
+              onClick={() => {
+                const h = rootRef.current?.querySelector<HTMLElement>('#capability-gaps-title')
+                h?.scrollIntoView?.({ block: 'start' })
+                h?.focus({ preventScroll: true })
+              }}
+            >
+              {gapsJumpText(gaps.length)}
+            </Button>
+          )}
+        </div>
       )}
       <div className="capability-list" data-testid="capability-list">
         {shown.map((rec) => {
           const item = result!.items[rec.candidateId]
           const st = cards[rec.id] ?? {}
+          const gone = recent[rec.id]
+          if (gone) return <DismissedRow key={rec.id} recId={rec.id} name={gone.name} onUndo={() => restore(gone.candidateId, gone.name)} />
           if (st.applied) {
             return (
               <AppliedRow
@@ -474,6 +585,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
               />
             )
           }
+          if (!visibleOpen.has(rec.id)) return null
           return (
             <CapabilityCard
               key={rec.id}
@@ -489,6 +601,13 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
           )
         })}
       </div>
+      {hiddenCount > 0 && (
+        <div>
+          <Button size="sm" onClick={() => setShowAll(true)} testId="team-show-all">
+            Show all {open.length}
+          </Button>
+        </div>
+      )}
 
       <CapabilityGaps
         gaps={gaps}
@@ -500,6 +619,8 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
           update(project.id, (s) => ({ gapsHidden: [...s.gapsHidden, `${g.roleId}:${idx}`] }))
         }}
       />
+
+      <DismissedList entries={dismissedEntries} onRestore={(id) => restore(id, dismissedEntries.find((e) => e.candidateId === id)?.name ?? 'suggestion')} />
 
       {result && result.sources.length > 0 && (
         <details className="disclosure team-looked" data-testid="team-looked">
