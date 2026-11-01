@@ -14,6 +14,7 @@
     "test": "vitest run",
     "start": "electron-vite preview",
     "icon": "node scripts/make-icon.mjs",
+    "probe:connectors": "node scripts/probe-connectors.mjs",
     "dist": "npm run build && electron-builder --win",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
