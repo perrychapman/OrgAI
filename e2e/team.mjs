@@ -153,8 +153,11 @@ async function sectionAssistant(page, shot) {
   check((await tray.locator('[data-testid=architect-open]').count()) === 1, 'the Design mode switch is in the tray')
   check((await page.locator('.frame-toolbar [data-testid=architect-open]').count()) === 0, 'the toolbar no longer has a Design button')
   check((await tray.locator('[data-testid=team-include-outside]').count()) === 1, 'the outside-sources opt-in is present')
-  check(!(await tray.locator('[data-testid=team-include-outside] input').isChecked()), 'outside sources are off by default')
+  check(!(await tray.locator('[data-testid=team-include-outside]').isChecked()), 'outside sources are off by default')
   check((await tray.locator('[data-testid=team-scope] select').count()) === 1, 'the scope chip is present')
+  // Outside sources (the mock registry) are opt-in; the local candidates come first either way.
+  await tray.locator('[data-testid=team-include-outside]').check()
+  await tray.locator('[data-testid=team-scope] select').selectOption('team')
   await tray.locator('[data-testid=team-recommend]').click()
   const cards = tray.locator('[data-testid=capability-card]')
   await cards.first().waitFor({ timeout: 20_000 })
@@ -164,25 +167,28 @@ async function sectionAssistant(page, shot) {
   check((await tray.locator('[data-testid=capability-needs]', { hasText: 'GITHUB_TOKEN' }).count()) >= 1, 'a card flags "Needs: GITHUB_TOKEN"')
   check(/\bread\b|can load/i.test(await cards.first().locator('[data-testid=capability-access]').innerText()), 'the access sentence defaults to reading')
   await shot('assistant-results')
+  log('cards', JSON.stringify(await cards.evaluateAll((els) => els.map((e) => [e.dataset.kind, e.dataset.origin, e.dataset.name]))))
 
-  // Apply the repo skill to the roles it names; the role block shows it; Undo restores.
-  const skill = tray.locator('[data-testid=capability-card][data-kind=skill][data-origin=repo]').first()
-  if ((await skill.count()) > 0) {
-    const name = await skill.getAttribute('data-name')
-    await skill.locator('[data-testid=capability-apply]').click()
+  // Apply a skill to the roles it names; the role block shows it; Undo restores.
+  // (The mock home's code-review skill is not recommended by the mock, so the local connection stands in.)
+  const card = tray.locator('[data-testid=capability-card][data-origin=local]').first()
+  if ((await card.count()) > 0) {
+    const name = await card.getAttribute('data-name')
+    await card.locator('[data-testid=capability-apply]').click()
     const applied = tray.locator('[data-testid=capability-applied]').first()
     await applied.waitFor({ timeout: 10_000 })
     check(await applied.locator('[data-testid=capability-undo]').evaluate((el) => el === document.activeElement), 'after Apply, focus lands on Undo')
     let p = await findProject(page, NAME)
-    const sk = p.skills.find((s) => s.name === name)
-    check(!!sk && p.roles.some((r) => (r.skills ?? []).includes(sk.id)), 'applying the skill grants it to a role', name)
-    check(p.roles.some((r) => !(r.skills ?? []).includes(sk.id)), 'not every role got it (least privilege)')
+    const spec = p.mcpServers.find((s) => s.name === name)
+    check(!!spec && Array.isArray(spec.roles) && spec.roles.length > 0 && spec.roles.length < p.roles.length, 'applying grants it to the named roles only', JSON.stringify(spec?.roles))
+    check(/stays off/.test(await applied.innerText()), 'a connection that still needs a secret says it stays off')
     await applied.locator('[data-testid=capability-undo]').click()
     await tray.locator('[data-testid=capability-applied]').waitFor({ state: 'detached', timeout: 10_000 })
     p = await findProject(page, NAME)
-    check(!p.skills.some((s) => s.name === name) || p.roles.every((r) => !(r.skills ?? []).includes(sk.id)), 'Undo restores the roles')
+    check(!p.mcpServers.some((s) => s.name === name), 'Undo removes it again')
+    check((await tray.locator(`[data-testid=capability-card][data-name="${name}"]`).count()) === 1, 'the card comes back after Undo')
   } else {
-    check(false, 'the mock offers a repo skill card')
+    check(false, 'the mock offers a local card')
   }
 
   // Dismiss hides a card and it does not come back on a re-check.
