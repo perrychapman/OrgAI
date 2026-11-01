@@ -74,3 +74,61 @@ export function accessSentence(roleName: string, serviceLabel: string, readOnly:
   if (readOnly === false) return `${roleName} can read and change ${serviceLabel}.`
   return `${roleName} can use the tools ${serviceLabel} offers.`
 }
+
+/** "Read, Glob, Grep + 2": the first three tools by catalog order, then how many more. */
+export function toolsSummary(tools: readonly string[], catalog: readonly string[]): string {
+  if (tools.length === 0) return 'No tools'
+  const rank = (t: string): number => {
+    const i = catalog.indexOf(t)
+    return i < 0 ? catalog.length : i
+  }
+  const sorted = [...tools].sort((a, b) => rank(a) - rank(b))
+  const shown = sorted.slice(0, 3).join(', ')
+  return sorted.length > 3 ? `${shown} + ${sorted.length - 3}` : shown
+}
+
+/** The access words for a connection, or null when it is a custom server with no stated access. */
+export function accessLabel(readOnly: boolean | null): string | null {
+  if (readOnly === null) return null
+  return readOnly ? 'Can read' : 'Can read and change'
+}
+
+/** Granted to the role, whether or not the server is switched on. */
+export function grantedServers<T extends { spec: Pick<McpServerSpec, 'id' | 'roles'> }>(servers: readonly T[], role: Pick<Role, 'slug' | 'mcpServers'>): T[] {
+  return servers.filter((s) => serverGranted(s.spec, role))
+}
+
+/** Project servers the role cannot use yet. */
+export function grantableServers<T extends { spec: Pick<McpServerSpec, 'id' | 'roles'> }>(servers: readonly T[], role: Pick<Role, 'slug' | 'mcpServers'>): T[] {
+  return servers.filter((s) => !serverGranted(s.spec, role))
+}
+
+/** The server cannot be used until the user signs in or sets a secret (App settings > Connectors). */
+export function needsSignIn(info: { spec: Pick<McpServerSpec, 'enabled'>; auth: { state: string }; missingSecrets: readonly string[]; libraryMissing?: true }): boolean {
+  if (!info.spec.enabled || info.libraryMissing) return false
+  return info.auth.state === 'notAuthorized' || info.auth.state === 'expired' || info.missingSecrets.length > 0
+}
+
+export interface RevokePlan {
+  /** New McpServerSpec.roles (always an explicit list). */
+  roles: string[]
+  /** New Role.mcpServers, or undefined when the role has no role-level grant to drop. */
+  roleMcpServers?: string[]
+}
+
+/** Everything a revoke changes: the server's role list and the role's own grant. An "every role" server becomes the explicit list minus the role. */
+export function revokePlan(
+  server: Pick<McpServerSpec, 'id' | 'roles'>,
+  projectRoles: readonly Pick<Role, 'slug'>[],
+  role: Pick<Role, 'slug' | 'mcpServers'>
+): RevokePlan {
+  const plan: RevokePlan = { roles: revokeServerRoles(server, projectRoles, role) }
+  if (role.mcpServers?.includes(server.id)) plan.roleMcpServers = withoutRoleServer(role, server.id)
+  return plan
+}
+
+/** Project skills the role holds / does not hold yet (a disabled skill can still be held). */
+export function roleSkillSplit<T extends Pick<SkillSpec, 'id'>>(skills: readonly T[], role: Pick<Role, 'skills'>): { granted: T[]; available: T[] } {
+  const held = new Set(role.skills ?? [])
+  return { granted: skills.filter((s) => held.has(s.id)), available: skills.filter((s) => !held.has(s.id)) }
+}

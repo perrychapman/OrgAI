@@ -3,6 +3,7 @@ import { Trash2 } from 'lucide-react'
 import type { Effort, Project, Role } from '@shared/types'
 import RoleModelPicker from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
+import type { CapabilityKind } from './team/CapabilityBlock'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { Banner } from './ui/Banner'
@@ -23,9 +24,11 @@ interface Props {
   onRemove: () => void
   /** Escape inside the inspector hands focus back to the node. */
   onEscape?: () => void
+  /** Hands a scope to the Team assistant from an empty capability group. */
+  onAskAssistant?: (scope: CapabilityKind) => void
 }
 
-export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape }: Props): ReactElement {
+export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
   const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
@@ -123,12 +126,11 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
           </div>
         </section>
 
-        <RoleCapabilities project={project} role={role} onChange={patch} />
-
-        <section className="stack-2" aria-labelledby={id('model')}>
-          <h3 className="side-section-title" id={id('model')}>
+        <details className="role-fold stack-2" open data-testid="role-model-fold">
+          <summary className="side-section-title" id={id('model')}>
             Model
-          </h3>
+            <span className="role-fold-summary muted">{role.model === 'inherit' ? 'Inherited' : role.model}</span>
+          </summary>
           <RoleModelPicker project={project} role={role} />
           <div className="field">
             <label htmlFor={id('effort')}>Effort</label>
@@ -146,7 +148,9 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
               ))}
             </select>
           </div>
-        </section>
+        </details>
+
+        <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
 
         <section className="stack-2" aria-labelledby={id('delegation')}>
           <h3 className="side-section-title" id={id('delegation')}>

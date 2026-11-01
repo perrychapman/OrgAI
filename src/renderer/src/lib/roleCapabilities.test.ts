@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  accessLabel,
   accessSentence,
+  grantableServers,
+  grantedServers,
+  needsSignIn,
+  revokePlan,
+  roleSkillSplit,
+  toolsSummary,
   capabilityCounts,
   countsSummary,
   grantServerRoles,
@@ -67,5 +74,41 @@ describe('counts and sentences', () => {
     expect(accessSentence('Reviewer', 'GitHub', true)).toBe('Reviewer can read GitHub.')
     expect(accessSentence('Reviewer', 'GitHub', false)).toBe('Reviewer can read and change GitHub.')
     expect(accessSentence('Reviewer', 'my-server', null)).toContain('can use the tools')
+  })
+})
+
+describe('role editor helpers', () => {
+  const catalog = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']
+  it('summarises tools in catalog order', () => {
+    expect(toolsSummary(['Bash', 'Grep', 'Read', 'Glob', 'Edit'], catalog)).toBe('Read, Glob, Grep + 2')
+    expect(toolsSummary(['Read'], catalog)).toBe('Read')
+    expect(toolsSummary([], catalog)).toBe('No tools')
+  })
+  it('words access', () => {
+    expect(accessLabel(true)).toBe('Can read')
+    expect(accessLabel(false)).toBe('Can read and change')
+    expect(accessLabel(null)).toBeNull()
+  })
+  it('splits servers by grant', () => {
+    const a = { spec: { id: 'a', roles: undefined } }
+    const b = { spec: { id: 'b', roles: ['lead'] } }
+    expect(grantedServers([a, b], role)).toEqual([a])
+    expect(grantableServers([a, b], role)).toEqual([b])
+  })
+  it('detects needs sign in', () => {
+    const base = { spec: { enabled: true }, auth: { state: 'notRequired' }, missingSecrets: [] as string[] }
+    expect(needsSignIn(base)).toBe(false)
+    expect(needsSignIn({ ...base, auth: { state: 'expired' } })).toBe(true)
+    expect(needsSignIn({ ...base, missingSecrets: ['TOKEN'] })).toBe(true)
+    expect(needsSignIn({ ...base, auth: { state: 'notAuthorized' }, spec: { enabled: false } })).toBe(false)
+    expect(needsSignIn({ ...base, auth: { state: 'notAuthorized' }, libraryMissing: true })).toBe(false)
+  })
+  it('plans a revoke', () => {
+    const all = [{ slug: 'lead' }, { slug: 'reviewer' }]
+    expect(revokePlan({ id: 'a', roles: undefined }, all, role)).toEqual({ roles: ['lead'] })
+    expect(revokePlan({ id: 'a', roles: ['reviewer'] }, all, { ...role, mcpServers: ['a', 'z'] })).toEqual({ roles: [], roleMcpServers: ['z'] })
+  })
+  it('splits skills', () => {
+    expect(roleSkillSplit([{ id: 's1' }, { id: 's2' }], role)).toEqual({ granted: [{ id: 's1' }], available: [{ id: 's2' }] })
   })
 })
