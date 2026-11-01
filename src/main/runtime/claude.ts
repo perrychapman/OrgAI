@@ -361,6 +361,7 @@ export function buildAgents(
       prompt: buildRolePrompt(role, ctx.roles, ctx.project, {
         isSetup,
         isolation,
+        ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -371,6 +372,48 @@ export function buildAgents(
     agents[role.slug] = def
   }
   return agents
+}
+
+/** True for a setup-like run whose root role was given write tools (allowBuild MCP assistant). */
+function setupRunCanWrite(ctx: RuntimeContext): boolean {
+  if (!isSetupLikeRun(ctx.run.kind)) return false
+  const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
+  return !!root && root.tools.some((t) => t === 'Edit' || t === 'Write' || t === 'Bash' || t === 'NotebookEdit')
+}
+
+/**
+ * Permission mode of a run. Setup-like runs normally never edit and run in acceptEdits (or auto); a setup-like run whose
+ * role holds Edit/Write/Bash (allowBuild MCP assistant) and every quick run keep the project's mode ('default'), so each
+ * call asks. Nothing here upgrades a quick or build run to auto or acceptEdits.
+ */
+export function claudePermissionMode(ctx: RuntimeContext): Options['permissionMode'] {
+  const mode = ctx.project.permissionMode
+  const askOnly = (): Options['permissionMode'] => (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode)
+  if (ctx.run.quick) return askOnly()
+  if (isSetupLikeRun(ctx.run.kind)) return setupRunCanWrite(ctx) ? askOnly() : mode === 'auto' ? 'auto' : 'acceptEdits'
+  return mode
+}
+
+export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
+  return !isSetupLikeRun(ctx.run.kind) && !ctx.run.quick && ctx.project.permissionMode === 'bypassPermissions'
+}
+
+/** A quick run's folder is untrusted: its .claude/settings*.json (rules, hooks) must not load. */
+export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
+  return ctx.run.quick ? [] : ['project']
+}
+
+/** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
+export function claudeSavedRules(ctx: RuntimeContext): string[] {
+  return ctx.run.quick ? [] : listRules(ctx.project.path)
+}
+
+/** A quick run's "project" scope becomes "session": nothing is ever written into the user's folder. */
+export function quickSafeDecision(
+  ctx: RuntimeContext,
+  decision: Extract<PermissionDecision, { behavior: 'allow' }>
+): Extract<PermissionDecision, { behavior: 'allow' }> {
+  return ctx.run.quick && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision
 }
 
 /**
@@ -1128,9 +1171,9 @@ export class ClaudeSession implements RuntimeSession {
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
-      permissionMode: this.isSetup ? (project.permissionMode === 'auto' ? 'auto' : 'acceptEdits') : project.permissionMode,
-      allowDangerouslySkipPermissions: !this.isSetup && project.permissionMode === 'bypassPermissions',
-      settingSources: ['project'],
+      permissionMode: claudePermissionMode(this.ctx),
+      allowDangerouslySkipPermissions: claudeAllowsBypass(this.ctx),
+      settingSources: claudeSettingSources(this.ctx),
       hooks: this.buildHooks(),
       // stream_event messages drive the live "agent.partial" text; transcripts still come from complete messages.
       includePartialMessages: true,
@@ -1182,7 +1225,8 @@ export class ClaudeSession implements RuntimeSession {
     options.settings = { ...(options.settings as object | undefined), disableSkillShellExecution: true }
     if (plugins.length) options.plugins = plugins
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
-    const savedRules = listRules(project.path)
+    // A quick run never reads the user's folder for rules: its grants arrive through allowedRules() (the PreToolUse hook).
+    const savedRules = claudeSavedRules(this.ctx)
     if (savedRules.length) options.allowedTools = savedRules
     if (this.root.model && this.root.model !== 'inherit') {
       if (validModelId(this.root.model)) options.model = this.root.model
@@ -1199,7 +1243,7 @@ export class ClaudeSession implements RuntimeSession {
     suggestions: PermissionSuggestion[],
     input: Record<string, unknown>
   ): PermissionResult {
-    const granted = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+    const granted = applyAllowScope(this.ctx.project.path, quickSafeDecision(this.ctx, decision), suggestions, (level, message) => this.log(level, message))
     if (!granted) return { behavior: 'allow', updatedInput: input }
     return {
       behavior: 'allow',
