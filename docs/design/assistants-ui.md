@@ -91,8 +91,8 @@ Elsewhere:
 
 ### Save as project
 - `RunActions` of a quick run: secondary "Save as project" (`run-save-as-project`); for a scratch run it is disabled
-  with the tooltip "A scratch chat cannot become a project". Disabled while the chain is live? No: the main process
-  refuses a live chain, so the button shows for ended runs only and the dialog surfaces a refusal.
+  with the tooltip "A scratch chat cannot become a project" (native button, `aria-disabled`, stays focusable). It shows
+  for ended runs only; the main process refuses a live chain and the dialog shows any refusal inline.
 - `ConfirmDialog` (`save-as-project-dialog`): an editable name (proposed by `promoteName`: the folder name, else the run
   title, else "Chat"), the folder path read-only, confirm "Save as project". `{ kind: 'created' }` selects the new
   project and opens the moved run on its Live tab; `{ kind: 'existing' }` swaps the body to "This folder is already the
@@ -135,8 +135,45 @@ Elsewhere:
 
 ## Notes for CLAUDE.md / ARCHITECTURE.md
 
-(Filled in at hand-back.)
+- Assistants (renderer): the sidebar "Assistants" group (`nav-assistant[data-id=quick|harness|skills]`, Chat /
+  MCP assistant / Skill assistant, rail icons MessageSquare / Plug / Sparkles, Chat tooltip names Ctrl+Shift+N) sits
+  above Projects; project and assistant rows share one renderer in `Sidebar.tsx`. Each is a virtual project:
+  `useAppStore.virtualProjects` (replaces `harnessProject`; `loadVirtualProject` uses `projects.get(id)` and falls back to
+  `lib/assistants.ts` `displayProject`), `openAssistant(id, { instruction })` (+ `assistantSeed`), the exported
+  `openNewChat()` (Ctrl/Cmd+Shift+N in App.tsx, Projects header `projects-new-chat`, first-launch `empty-chat-now`),
+  `startQuick`, `startSkillAssist`, `startLibraryAssist(instruction, allowBuild)` (shows the run in place, no window),
+  `promoteQuick`, `run.moved` handling, `loadAllHistory` covers the virtual ids, `startRun` is a no-op for them.
+  Topbar for a virtual id: label, Live + History only, no folder chip ("Back to MCP library" removed). Start pages in
+  `components/assistants/` (`ChatStartPage`, `McpAssistantStartPage`, `SkillAssistantStartPage` on the shared
+  `InstructionStartPage`, `AssistantModelLine`), testids `assistant-start-<id>`, `assistant-instruction`,
+  `assistant-start`, `chat-folder`, `chat-folder-browse`, `chat-folder-clear`, `chat-existing-project`,
+  `chat-open-project`, `chat-team`, `chat-allow-edits`, `chat-summary`, `mcp-allow-build`, `assistant-model-line`.
+  An ended virtual run has no "New run" choice (Continue, else `assistant-ended` + `assistant-new-session`); idle mode
+  label "Done. Ask a follow-up or end the session." (`ASSISTANT_IDLE_LABEL`). Needs-you locations use `locationLabel`.
+- Save as project: `components/assistants/SaveAsProjectDialog.tsx` (`save-as-project-dialog`,
+  `save-as-project-confirm`), `run-save-as-project` in RunActions, `history-save-as-project` + `history-folder` in Chat
+  History. Org retrospective only for real projects' work runs (`offersRetro`). RunMeta of a quick run: folder or
+  "Scratch", "edits allowed" / "read-only", never "unattended". Kind chips through `runKindLabel` (`RUN_KIND_LABELS`,
+  quick = "Chat").
+- ProposalCard kind 'skills': `proposal-skill-item[data-skill]`, "Show instructions" through Markdown, helper
+  `skillsApplyNote`. App settings > Defaults > Assistants adds `skill-assist-model-row` / `quick-run-model-row` (select
+  testids `<row>-select`); `lib/assistantModels.ts` keys `skillAssistModel` / `quickRunModel` with
+  `ASSISTANT_MODEL_FALLBACK`.
+- Entry points elsewhere: Connectors > Custom servers "Configure with AI" selects the MCP assistant row
+  (`openAssistant('harness')`; `mcp-library-assist-banner` links to it while a run is live); Team > Catalog > Skills
+  `skill-ask-assistant` starts a project-scope Skill assistant run on that project's Live tab.
+- e2e: `e2e/assistants.mjs` (in e2e:free) at 1024x640 and 1600x1000, dark and light; its run-starting checks skip with
+  "SKIP (runtime not merged)" while `runs:startQuick` has no handler.
 
 ## Open items
 
-(Filled in at hand-back.)
+- The run strip's "+" tab on a virtual project still reads "New run" (`RunTabs.tsx` was outside this change); it should
+  read "New chat" / "New session".
+- Run-starting e2e checks (chat run + idle label, scratch Save as project disabled, `history-folder` "Scratch", skill
+  proposal approve) were skipped on the pre-runtime build; to be run against dev with the runtime merged.
+- Not driven: the native folder picker, the "already a project" note, Save as project 'created' / 'existing' paths,
+  the project-scope `skill-ask-assistant` run, `buildWorkspace` display for the MCP assistant.
+- The Chat History Folder column has no narrow-width rule; at 1024 it may squeeze the prompt column.
+- The skills disclosure max-height is a plain 240px, not a token.
+- The brand lockup's stray "(" beside the MOCK badge (UX walk F7) is not part of this change.
+- The Chat composer sits below the fold at 1024x640 (the page scrolls).

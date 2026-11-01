@@ -16,8 +16,10 @@
 }
 
 /* First launch: the project form and the Chat card are two regions side by side, stacked when narrow. */
-.projects-empty {
+.projects:has(> .projects-empty) {
   container: projects-empty / inline-size;
+}
+.projects-empty {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
