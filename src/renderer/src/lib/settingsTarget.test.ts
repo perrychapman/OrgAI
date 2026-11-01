@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   APP_SETTINGS_PANES,
   APP_SETTINGS_SECTIONS,
+  PROJECT_SETTINGS_PANES,
   appPaneForSection,
   requestAppSettingsSection,
   takeAppSettingsSection
@@ -60,5 +61,11 @@ describe('section request round trip', () => {
     })
     expect(() => requestAppSettingsSection('a')).not.toThrow()
     expect(takeAppSettingsSection()).toBeNull()
+  })
+})
+
+describe('project settings panes', () => {
+  it('keeps the tools pane id (stored choices and links) after its content moved to Team > Catalog', () => {
+    expect(PROJECT_SETTINGS_PANES.tools).toBe('tools')
   })
 })
