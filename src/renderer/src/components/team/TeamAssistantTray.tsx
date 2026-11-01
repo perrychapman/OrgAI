@@ -274,9 +274,6 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
       })
       replaceProject(out.project)
       const names = roleIds.map((id) => project.roles.find((r) => r.id === id)?.name ?? id)
-      // The runtime may return the digest of the saved state; later applies from this result must carry it or they go stale.
-      const next = (out as { digest?: string }).digest
-      if (typeof next === 'string' && next) setResult((r) => (r ? { ...r, digest: next } : r))
       setCards((c) => {
         // Only the newest apply can be undone: earlier Applied rows lose their Undo.
         const all: Record<string, CardState> = {}
@@ -322,7 +319,16 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   const dismiss = (recId: string): void => {
     const candidateId = result?.recommendations.find((r) => r.id === recId)?.candidateId
     const name = clampText((candidateId && result?.items[candidateId]?.name) || 'suggestion', 80)
-    void capabilitiesApi.dismiss(project.id, recId, candidateId).catch(() => {})
+    capabilitiesApi.dismiss(project.id, recId, candidateId).catch(() => {
+      if (!alive.current) return
+      // Main kept the card, so the UI must too.
+      clearTimeout(timers.current[recId])
+      delete timers.current[recId]
+      setRecent((r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== recId)))
+      update(project.id, (s) => ({ dismissed: s.dismissed.filter((id) => id !== recId), dismissedCandidates: candidateId ? s.dismissedCandidates.filter((c) => c !== candidateId) : s.dismissedCandidates }))
+      setAnnounce(`Could not dismiss ${name}.`)
+      window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>(`[data-rec="${CSS.escape(recId)}"] [data-testid=capability-apply]`)?.focus({ preventScroll: true }))
+    })
     update(project.id, (s) => ({ dismissed: [...s.dismissed, recId], dismissedCandidates: candidateId ? [...s.dismissedCandidates, candidateId] : s.dismissedCandidates }))
     // The row keeps the card's place for 8 s, so the list does not jump and the heading stays in view.
     setRecent((r) => ({ ...r, [recId]: { name, candidateId: candidateId ?? '' } }))
@@ -330,10 +336,12 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     timers.current[recId] = setTimeout(() => {
       delete timers.current[recId]
       if (!alive.current) return
-      // The row goes away: if focus was on its Undo, move it to the next card's Apply (else Recommend) instead of the page.
-      const row = rootRef.current?.querySelector<HTMLElement>(`[data-testid=capability-dismissed][data-rec="${recId}"]`)
+      // The row goes away: if focus was inside it, move it to the next card's Apply (else the previous one, else Recommend).
+      const row = rootRef.current?.querySelector<HTMLElement>(`[data-testid=capability-dismissed][data-rec="${CSS.escape(recId)}"]`)
       if (row && row.contains(document.activeElement)) {
-        const next = rootRef.current?.querySelector<HTMLElement>('[data-testid=capability-card] [data-testid=capability-apply]')
+        const applies = Array.from(rootRef.current?.querySelectorAll<HTMLElement>('[data-testid=capability-card] [data-testid=capability-apply]') ?? [])
+        const after = (n: HTMLElement): boolean => !!(row.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING)
+        const next = applies.find(after) ?? [...applies].reverse().find((n) => !after(n))
         if (next) window.requestAnimationFrame(() => next.focus({ preventScroll: true }))
         else focusPrimary()
       }
@@ -345,6 +353,8 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   /** Bring a dismissed card back (the row's Undo or the Dismissed list's Restore). */
   const restore = (candidateId: string, name: string): void => {
     const recs = (result?.recommendations ?? []).filter((r) => r.candidateId === candidateId).map((r) => r.id)
+    const wasPersisted = persisted.filter((e) => e.candidateId === candidateId)
+    const wasRecent = Object.entries(recent).filter(([k]) => recs.includes(k))
     for (const id of recs) {
       clearTimeout(timers.current[id])
       delete timers.current[id]
@@ -352,19 +362,37 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     setRecent((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !recs.includes(k))))
     update(project.id, (s) => ({ dismissed: s.dismissed.filter((id) => !recs.includes(id)), dismissedCandidates: s.dismissedCandidates.filter((c) => c !== candidateId) }))
     setPersisted((p) => p.filter((e) => e.candidateId !== candidateId))
-    // Main forgets the dismissal too once the restore call exists; until then only this session shows the card again.
+    const othersLeft = dismissedEntries.some((e) => e.candidateId !== candidateId)
+    // A restored card beyond the proactive cap would stay hidden, so show them all.
+    if (proactive && !showAll && recs.length > 0 && open.length + 1 > PROACTIVE_VISIBLE) setShowAll(true)
     capabilitiesApi
       .restore(project.id, candidateId)
-      ?.then((r) => {
+      .then((r) => {
         if (!alive.current) return
         setPersisted(readDismissed(r))
         setResult((prev) => (!prev || prev.origin === 'review' ? fromReview(r) : prev))
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!alive.current) return
+        update(project.id, (s) => ({ dismissed: [...s.dismissed, ...recs.filter((id) => !s.dismissed.includes(id))], dismissedCandidates: s.dismissedCandidates.includes(candidateId) ? s.dismissedCandidates : [...s.dismissedCandidates, candidateId] }))
+        setPersisted((p) => [...p, ...wasPersisted.filter((e) => !p.some((x) => x.candidateId === e.candidateId))])
+        setRecent((r) => ({ ...r, ...Object.fromEntries(wasRecent) }))
+        setAnnounce(`Could not restore ${name}.`)
+      })
     setAnnounce(`Restored ${name}.`)
-    if (recs[0]) {
-      window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>(`[data-rec="${recs[0]}"] [data-testid=capability-apply]`)?.focus({ preventScroll: true }))
-    }
+    // Focus the restored card's Apply; when it is not in the list, fall back to the Dismissed toggle, the results head or Recommend.
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        const root = rootRef.current
+        const q = (sel: string): HTMLElement | null | undefined => root?.querySelector<HTMLElement>(sel)
+        const target =
+          (recs[0] && q(`[data-rec="${CSS.escape(recs[0])}"] [data-testid=capability-apply]`)) ||
+          (othersLeft && q('[data-testid=team-dismissed-toggle]')) ||
+          q('[data-testid=team-results-head]') ||
+          q('[data-testid=team-recommend]')
+        target?.focus({ preventScroll: true })
+      })
+    )
   }
 
   const finishSetup = (info: AppliedInfo): void => {

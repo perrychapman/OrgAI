@@ -447,9 +447,18 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         onClick={(e) => {
           e.preventDefault()
           setPanelOpen(true)
-          window.requestAnimationFrame(() =>
-            rootRef.current?.querySelector<HTMLElement>('.team-panel-tabs [role=tab][aria-selected=true]')?.focus()
-          )
+          window.requestAnimationFrame(() => {
+            const tab = rootRef.current?.querySelector<HTMLElement>('.team-panel-tabs [role=tab][aria-selected=true]')
+            // Railed or collapsed (no room at this width): the tabs are hidden, so land on the panel itself.
+            if (tab && tab.getClientRects().length > 0) {
+              tab.focus()
+              return
+            }
+            const panel = rootRef.current?.querySelector<HTMLElement>('aside.side-panel')
+            if (!panel) return
+            panel.tabIndex = -1
+            panel.focus()
+          })
         }}
       >
         Skip to role panel

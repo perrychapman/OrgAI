@@ -94,6 +94,7 @@ export function SkillRoleAccess({
   }
   const btn = useRef<HTMLButtonElement>(null)
   const panel = useId()
+  const summaryId = useId()
   const summary = grantSummary({ grantedTo }, roles)
   useEffect(() => {
     if (!open) return undefined
@@ -109,13 +110,17 @@ export function SkillRoleAccess({
   }, [open])
   return (
     <div className="mcp-role-access">
+      <span id={summaryId} className="sr-only">
+        {summary}
+      </span>
       <button
         ref={btn}
         type="button"
         className="mcp-link"
         data-testid="skill-roles"
         title={summary}
-        aria-label={`${summary}. ${open ? 'Hide' : 'Change'} role access for ${skillName}`}
+        aria-label={`Change roles for ${skillName}`}
+        aria-describedby={summaryId}
         aria-expanded={open}
         aria-controls={open ? panel : undefined}
         disabled={disabled}

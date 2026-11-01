@@ -1,10 +1,11 @@
 import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Sparkles } from 'lucide-react'
-import type { CapabilityDiscovery, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
+import type { CapabilityDiscovery, CapabilityItem, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Banner } from '../ui/Banner'
+import { Badge } from '../ui/Badge'
 import { Tabs, panelDomId, tabDomId } from '../ui/Tabs'
 import { ConnectorLogo } from '../connectors/ConnectorLogo'
 import AddServiceDialog from '../connectors/AddServiceDialog'
@@ -20,7 +21,8 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/sett
 import { useAppStore } from '../../store/useAppStore'
 import { serviceFor } from '../../lib/roleServices'
 import { accessLabel, grantableServers, roleSkillSplit, serverReadOnly } from '../../lib/roleCapabilities'
-import { localSkillCandidates, nextTabId, skillEmptyCopy } from '../../lib/chooser'
+import { chooserDesc, chooserName, localSkillCandidates, nextTabId, skillEmptyCopy } from '../../lib/chooser'
+import { clampText, flagViews, pinLabel, sourceBadge } from '../../lib/capabilities'
 import type { CapabilityKind } from './CapabilityBlock'
 
 const ImportSkillsDialog = lazy(() => import('../skills/ImportSkillsDialog'))
@@ -41,6 +43,8 @@ interface Pick {
   label: string
   description?: string
   lead?: ReactNode
+  /** A skill found on this computer: its flags, source and digest are shown, and any flag asks for a confirm first. */
+  item?: CapabilityItem
   /** May return the id of the row the caller should focus afterwards. */
   run: () => Promise<void | string> | void
 }
@@ -80,12 +84,16 @@ export function CapabilityChooser({
   /** True while the service picker was opened for the user (the Your connections list was empty): closing it closes both. */
   const [autoGallery, setAutoGallery] = useState(false)
   const touchedTab = useRef(false)
+  /** The picker reported a result (onDone ran): its own close right after must not close the chooser a second time. */
+  const resultDone = useRef(false)
   const tabsWrap = useRef<HTMLDivElement>(null)
   const [disc, setDisc] = useState<CapabilityDiscovery | null>(null)
   const [discError, setDiscError] = useState(false)
   const replaceProject = useAppStore((s) => s.replaceProject)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** The local skill row waiting for its one-step confirm. */
+  const [confirmId, setConfirmId] = useState<string | null>(null)
   const setView = useAppStore((s) => s.setView)
   const { connectors, error: connectorsError } = useConnectors()
   const { library } = useMcpLibrary()
@@ -165,8 +173,8 @@ export function CapabilityChooser({
   const projectSkillCount = skillsApi.skills.length
   const projectPicks: Pick[] = available.map((s) => ({
     id: s.id,
-    label: s.name,
-    description: s.description,
+    label: chooserName(s.name),
+    description: chooserDesc(s.description),
     run: () => actions.grantSkill(s.id)
   }))
   const linkedLib = new Set(skillsApi.skills.map((i) => i.spec.libraryId).filter(Boolean))
@@ -174,8 +182,8 @@ export function CapabilityChooser({
     .filter((l) => !linkedLib.has(l.entry.id))
     .map((l) => ({
       id: `lib:${l.entry.id}`,
-      label: l.entry.name,
-      description: l.entry.description,
+      label: chooserName(l.entry.name),
+      description: chooserDesc(l.entry.description),
       run: async () => {
         await skillsApi.linkLibrary(l.entry.id, [role.id])
       }
@@ -183,8 +191,9 @@ export function CapabilityChooser({
 
   const localPicks: Pick[] = localSkillCandidates(disc?.items ?? []).map((it) => ({
     id: it.id,
-    label: it.name,
-    description: it.description || it.location,
+    label: chooserName(it.name),
+    description: chooserDesc(it.description || it.location),
+    item: it,
     run: async () => {
       if (!disc) return undefined
       const out = await window.orgai.capabilities.apply({ projectId: project.id, digest: disc.digest, candidateId: it.id, roleIds: [role.id] })
@@ -218,17 +227,62 @@ export function CapabilityChooser({
       <p className="hint capability-chooser-empty">{empty}</p>
     ) : (
       <ul className="capability-chooser-list" aria-label={isConn ? 'Connections you can add' : 'Skills you can add'}>
-        {picks.map((p) => (
-          <li key={p.id}>
-            <button type="button" className="capability-chooser-item" data-testid="capability-chooser-item" data-name={p.label} disabled={busy} onClick={() => void choose(p)}>
-              {p.lead}
-              <span className="capability-chooser-text">
-                <span className="capability-chooser-name">{p.label}</span>
-                {p.description && <span className="capability-chooser-desc">{p.description}</span>}
-              </span>
-            </button>
-          </li>
-        ))}
+        {picks.map((p) => {
+          const flags = p.item ? flagViews(p.item) : []
+          const asks = flags.length > 0
+          const open = confirmId === p.id
+          const pin = p.item ? pinLabel(p.item) : null
+          return (
+            <li key={p.id} className="capability-chooser-row">
+              <button
+                type="button"
+                className="capability-chooser-item"
+                data-testid="capability-chooser-item"
+                data-name={p.label}
+                aria-expanded={asks ? open : undefined}
+                disabled={busy}
+                onClick={() => (asks ? setConfirmId(open ? null : p.id) : void choose(p))}
+              >
+                {p.lead}
+                <span className="capability-chooser-text">
+                  <span className="capability-chooser-name">{p.label}</span>
+                  {p.description && <span className="capability-chooser-desc">{p.description}</span>}
+                  {p.item && (
+                    <span className="capability-chooser-flags">
+                      <Badge tone="neutral">{sourceBadge(p.item)}</Badge>
+                      {flags.map((f) => (
+                        <Badge key={f.key} tone={f.tone === 'danger' ? 'danger' : f.tone === 'attention' ? 'attention' : 'neutral'}>
+                          {f.label}
+                        </Badge>
+                      ))}
+                    </span>
+                  )}
+                </span>
+              </button>
+              {p.item && open && (
+                <div className="capability-chooser-confirm" data-testid="capability-chooser-confirm" role="group" aria-label={`Review ${p.label}`}>
+                  <div className="capability-chooser-meta">
+                    {p.item.location && (
+                      <span className="mono capability-location-full" title={clampText(p.item.location, 200)}>
+                        {clampText(p.item.location, 200)}
+                      </span>
+                    )}
+                    {pin && <span className="mono">{pin}</span>}
+                  </div>
+                  <p className="hint">Check what it can do, then add it. Only {role.name} gets it.</p>
+                  <div className="row gap-2">
+                    <Button variant="primary" disabled={busy} testId="chooser-confirm-add" onClick={() => void choose(p)}>
+                      Add to {role.name}
+                    </Button>
+                    <Button variant="ghost" disabled={busy} onClick={() => setConfirmId(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </li>
+          )
+        })}
       </ul>
     )
 
@@ -255,7 +309,7 @@ export function CapabilityChooser({
       ) : (
         <div className="stack-2">
           <p className="hint">
-            Pick a service from the gallery. If it is not connected yet you sign in first, then choose who may use it: tick {role.name}.
+            Pick a service from the gallery. If it is not connected yet you sign in first, then {role.name} gets it.
           </p>
           <div>
             <Button variant="primary" testId="chooser-open-gallery" onClick={() => setSub('gallery')}>
@@ -367,10 +421,11 @@ export function CapabilityChooser({
           role={role}
           onClose={() => {
             setSub(null)
-            if (autoGallery) onClose()
+            if (autoGallery && !resultDone.current) onClose()
           }}
           onResult={(r) => {
             actions.applyResult(r)
+            resultDone.current = true
             onDone(null)
           }}
           onOther={(way) => {

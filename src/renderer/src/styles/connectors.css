@@ -619,7 +619,15 @@
 /* Back to Team: in flow at the top of the Connectors pane after a deep link from the Team tab. */
 .connectors-back {
   display: flex;
-  margin-bottom: var(--space-3);
+  position: sticky;
+  /* The settings scroller pads its top by --space-5; stick to its real top edge so tiles never show above the bar. */
+  top: calc(-1 * var(--space-5));
+  z-index: var(--z-sticky);
+  padding-block: var(--space-2);
+  margin-block: calc(-1 * var(--space-2)) calc(-1 * var(--space-1));
+  box-shadow: 0 calc(-1 * var(--space-5)) 0 var(--bg);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-subtle);
 }
 /* Elevated tools named in a Tools summary. */
 .role-tool-elevated-text {
@@ -628,7 +636,7 @@
 /* Role node: marks a role that can run commands or change files. */
 .role-node .caps-elevated {
   display: inline-flex;
-  vertical-align: -2px;
+  vertical-align: -0.15em;
   margin-left: var(--space-1);
   color: var(--warning-text);
 }

@@ -1,4 +1,5 @@
 import type { CapabilityItem } from '@shared/types'
+import { clampText } from './capabilities'
 
 /** The tab to move to for an arrow/Home/End key, wrapping at the ends. Null for any other key. */
 export function nextTabId(ids: readonly string[], current: string, key: string): string | null {
@@ -22,3 +23,10 @@ export function skillEmptyCopy(tab: 'project' | 'library' | 'local', total: numb
   if (tab === 'library') return total === 0 ? 'Your skill library is empty.' : 'All of them are on this role or already in this project.'
   return total === 0 ? 'No skills found on this computer.' : 'All of them are on this role.'
 }
+
+export const CHOOSER_NAME_MAX = 80
+export const CHOOSER_DESC_MAX = 200
+
+/** Untrusted row text clamped for display: the name to 80 characters, the description (or location) to 200. */
+export const chooserName = (s: string | undefined): string => clampText(s, CHOOSER_NAME_MAX)
+export const chooserDesc = (s: string | undefined): string => clampText(s, CHOOSER_DESC_MAX)

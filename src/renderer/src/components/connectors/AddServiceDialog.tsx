@@ -88,7 +88,7 @@ export default function AddServiceDialog({
     // Use the live info so a just-connected connector has its library entry.
     const live = connectors?.find((c) => c.connector.id === step.info.connector.id)
     const info = live?.library ? live : step.info
-    return <UseInProjectDialog project={project} info={info} role={role} onClose={onClose} onResult={onResult} />
+    return <UseInProjectDialog project={project} info={info} role={role} linked={linkedServerFor(info, servers)} onClose={onClose} onResult={onResult} />
   }
 
   const pick = (info: ConnectorInfo): void => {
@@ -98,8 +98,8 @@ export default function AddServiceDialog({
         // Already in the project: let this role use it.
         const roles = grantServerRoles(linked.spec, role)
         if (roles === undefined || linked.spec.roles?.includes(role.slug)) {
+          // Every role (or this one) already has it: nothing to jump to, just finish.
           onClose()
-          jumpToRow(info.connector.id)
           return
         }
         setPickError(null)
