@@ -58,6 +58,7 @@ import {
   parseRecommendAnswer,
   type LocalDetail,
   recommendable,
+  recommendationId,
   registryQueries
 } from './recommend'
 import { collectEvidence, EVIDENCE_MAX_RUNS, hasNewEvidence } from './evidence'
@@ -160,6 +161,18 @@ export function fingerprintOf(item: Pick<CapabilityItem, 'id' | 'digest' | 'vers
     .update(`${candidateId}\0${item?.digest ?? ''}\0${item?.version ?? ''}\0${item?.target ?? ''}`)
     .digest('hex')
     .slice(0, 16)
+}
+
+/** Candidates of `items` whose persisted dismissal (a stub review counts) still matches their fingerprint. */
+export function dismissedIds(review: Pick<TeamReview, 'dismissed'> | null | undefined, items: CapabilityItem[]): Set<string> {
+  const out = new Set<string>()
+  if (!review?.dismissed.length) return out
+  const byId = new Map(items.map((i) => [i.id, i]))
+  for (const d of review.dismissed) {
+    const item = byId.get(d.candidateId)
+    if (item && d.fingerprint === fingerprintOf(item, d.candidateId)) out.add(d.candidateId)
+  }
+  return out
 }
 
 function readable(e: unknown): string {
@@ -405,8 +418,9 @@ export class CapabilityService implements CapabilityServiceApi {
 
   // ---------- recommend ----------
 
-  private async runModel(project: Project, snap: Snapshot, scope: CapabilityScope, signal: AbortSignal, emit: Emit, localDetail: LocalDetail = 'full'): Promise<ModelOutcome> {
-    const items = snap.discovery.items
+  private async runModel(project: Project, snap: Snapshot, scope: CapabilityScope, signal: AbortSignal, emit: Emit, localDetail: LocalDetail = 'full', exclude: ReadonlySet<string> = new Set()): Promise<ModelOutcome> {
+    // Dismissed candidates are never offered to the model nor to the keyword fallback.
+    const items = exclude.size ? snap.discovery.items.filter((i) => !exclude.has(i.id)) : snap.discovery.items
     const salt = `${snap.digest}\0${scope.roleId ?? ''}`
     const fallback = (reason: NonNullable<TeamRecommendations['fallbackReason']>, extra: Partial<ModelOutcome> = {}): ModelOutcome => ({
       mode: 'fallback',
@@ -471,7 +485,7 @@ export class CapabilityService implements CapabilityServiceApi {
     const release = this.supersede(project.id, ac)
     try {
       const snap = reuse ?? (await this.discoverSnap(project, { includeOutside, query: input.query, requestId, signal: ac.signal, emit }))
-      const outcome = await this.runModel(project, snap, scope, ac.signal, emit)
+      const outcome = await this.runModel(project, snap, scope, ac.signal, emit, 'full', dismissedIds(readReview(this.deps.dataDir, project.id), snap.discovery.items))
       for (const r of outcome.recommendations) snap.recs.set(r.id, r)
       const partial = snap.discovery.partial || outcome.fallbackReason === 'cancelled'
       return {
@@ -955,13 +969,10 @@ export class CapabilityService implements CapabilityServiceApi {
     const dismissed = prev?.dismissed ?? []
     const settings = teamReviewOf(project)
     let runsSinceModel = (prev?.runsSinceModel ?? 0) + opts.runsAdded
-    const isDismissed = (r: CapabilityRecommendation): boolean => {
-      const d = dismissed.find((x) => x.candidateId === r.candidateId)
-      return !!d && d.fingerprint === fingerprintOf(byId.get(r.candidateId), r.candidateId)
-    }
+    const excluded = dismissedIds({ dismissed }, items)
     const stillUseful = (r: CapabilityRecommendation): boolean => {
       const item = byId.get(r.candidateId)
-      if (!item || item.blockedReason || isDismissed(r)) return false
+      if (!item || item.blockedReason || excluded.has(r.candidateId)) return false
       const roleIds = r.roleIds.filter((id) => project.roles.some((x) => x.id === id))
       if (!roleIds.length) return false
       return !(item.inProject && roleIds.every((id) => item.inProject!.grantedTo.includes(id)))
@@ -982,7 +993,26 @@ export class CapabilityService implements CapabilityServiceApi {
     }
     const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
 
-    let recommendations = (prev?.recommendations ?? []).filter(stillUseful)
+    // Pending recommendations carried over: the previous review's, and on a manual Re-check also the newest recommend
+    // result still held in memory (what the user is looking at). Each is kept only while its candidate is unchanged
+    // (same fingerprint as when it was recommended), so a Re-check merges by evidence instead of replacing the list.
+    const sameCandidate = (r: CapabilityRecommendation, was: CapabilityItem | undefined): boolean =>
+      !was || fingerprintOf(was, r.candidateId) === fingerprintOf(byId.get(r.candidateId), r.candidateId)
+    const prevById = new Map((prev?.discovery.items ?? []).map((i) => [i.id, i]))
+    const carried: CapabilityRecommendation[] = (prev?.recommendations ?? []).filter((r) => sameCandidate(r, prevById.get(r.candidateId)))
+    if (opts.trigger === 'manual') {
+      const since = prev && !prev.stub ? Date.parse(prev.checkedAt) : -Infinity
+      const held = (this.snapshots.get(projectId) ?? [])
+        .filter((s) => !s.refresh && !s.discovery.partial && s.recs.size > 0 && s.at >= since)
+        .sort((a, b) => b.at - a.at)[0]
+      const have = new Set(carried.map((r) => r.candidateId))
+      for (const r of held?.recs.values() ?? []) {
+        if (have.has(r.candidateId) || !sameCandidate(r, held!.candidates.get(r.candidateId)?.item)) continue
+        have.add(r.candidateId)
+        carried.push(r)
+      }
+    }
+    let recommendations = carried.filter(stillUseful).slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
     let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))
     let mode: TeamReview['mode'] = 'free'
     let tokensUsed = prev?.tokensUsed
@@ -991,15 +1021,29 @@ export class CapabilityService implements CapabilityServiceApi {
       // No model under the mock: deterministic keyword matches stand in, so the first review has something pending.
       const have = new Set(recommendations.map((r) => r.candidateId))
       const salt = `${snap.digest}\0`
-      const extra = fallbackRecommend(items, project.roles, {}, salt).filter((r) => !have.has(r.candidateId) && stillUseful(r))
+      let extra = fallbackRecommend(items, project.roles, {}, salt).filter((r) => !have.has(r.candidateId) && stillUseful(r))
+      if (!recommendations.length && !extra.length) {
+        // No shared words with any role (a default chart): offer the first candidate to the first non-root role anyway.
+        const role = project.roles.find((r) => r.reportsTo !== null) ?? project.roles[0]
+        const item = role ? recommendable(items).find((i) => i.origin !== 'project' && !excluded.has(i.id)) : undefined
+        if (role && item) {
+          const floor: CapabilityRecommendation = { id: recommendationId(item.id, [role.id], salt), candidateId: item.id, kind: item.kind, roleIds: [role.id], reason: 'Suggested for a first look (mock).', access: 'read' }
+          extra = [floor].filter(stillUseful)
+        }
+      }
       recommendations = [...recommendations, ...extra].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
     }
     if (runModel) {
       modelInput = opts.useModel ? 'full' : 'proactive'
-      const outcome = await this.runModel(project, snap, {}, opts.signal, emit, opts.useModel ? 'full' : 'minimal')
+      const outcome = await this.runModel(project, snap, {}, opts.signal, emit, opts.useModel ? 'full' : 'minimal', excluded)
       if (outcome.mode === 'model') {
         mode = 'model'
-        recommendations = outcome.recommendations.filter(stillUseful)
+        const fresh = outcome.recommendations.filter(stillUseful)
+        if (opts.trigger === 'manual') {
+          // A manual Re-check adds to what is pending; only a changed candidate, an apply or a dismissal removes one.
+          const have = new Set(fresh.map((r) => r.candidateId))
+          recommendations = [...fresh, ...recommendations.filter((r) => !have.has(r.candidateId))].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+        } else recommendations = fresh
         gaps = outcome.gaps
         runsSinceModel = 0
       } else {

@@ -922,3 +922,82 @@ describe('stub review (follow-up)', () => {
     expect(opened.recommendations.some((r) => r.candidateId === cand.id)).toBe(false)
   })
 })
+
+describe('Team tab re-walk follow-ups', () => {
+  it('a dismissed candidate never comes back on a later Recommend and is not sent to the model', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const cand = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: cand.id, roleIds: [ENG], reason: 'Fits.' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    expect(rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id }).stub).toBe(true)
+    rig.complete.mockClear()
+    const again = await rig.svc.recommend({ projectId: 'p1' })
+    const { prompt } = rig.complete.mock.calls[0]![1] as { prompt: string }
+    expect(prompt).not.toContain(cand.id)
+    expect(again.recommendations.some((r) => r.candidateId === cand.id)).toBe(false)
+    // The keyword fallback leaves it out too.
+    rig.complete.mockRejectedValueOnce(new Error('down'))
+    const fb = await rig.svc.recommend({ projectId: 'p1' })
+    expect(fb.fallbackReason).toBe('error')
+    expect(fb.recommendations.some((r) => r.candidateId === cand.id)).toBe(false)
+    // A full review (not a stub) holds the dismissal the same way.
+    await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    expect(readReview(rig.data, 'p1')!.stub).toBeUndefined()
+    rig.complete.mockClear()
+    await rig.svc.recommend({ projectId: 'p1' })
+    expect((rig.complete.mock.calls[0]![1] as { prompt: string }).prompt).not.toContain(cand.id)
+  })
+
+  it('a manual Re-check with nothing changed keeps the pending recommendations', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    const b = pick(d, 'skill', 'code-review')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }, { candidateId: b.id, roleIds: [REV], reason: 'b' }]) })
+    expect((await rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })).pendingCount).toBe(2)
+    const free = await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    expect(free.pendingCount).toBe(2)
+    expect(free.mode).toBe('free')
+    // A model Re-check that suggests nothing new adds nothing and removes nothing.
+    rig.complete.mockResolvedValue({ text: answer([]) })
+    const model = await rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })
+    expect(model.pendingCount).toBe(2)
+    expect(readReview(rig.data, 'p1')!.pendingCount).toBe(2)
+    // A changed candidate drops out by evidence.
+    put(join(rig.repo, '.claude', 'skills', 'repo-helper', 'SKILL.md'), SKILL_MD('repo-helper', 'Something different now.'))
+    const changed = await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    expect(changed.recommendations.map((r) => r.candidateId)).toEqual([b.id])
+  })
+
+  it('under the mock the first finished run has something pending even with no shared words', async () => {
+    const roles = orgChart().map((r, i) => ({ ...r, name: `Zq${i}`, slug: `zq${i}`, description: 'Xyzzy plugh.', responsibilities: [] }))
+    const mockRig = setup({}, { roles })
+    try {
+      mockRig.svc.runEnded('p1', 'run-1')
+      await new Promise((r) => setTimeout(r, 40))
+      await mockRig.svc.idle('p1')
+      const review = mockRig.svc.lastReview('p1')!
+      expect(review.modelSkipped).toBe('mockFree')
+      expect(review.pendingCount).toBeGreaterThan(0)
+      const root = roles.find((r) => r.reportsTo === null)!
+      expect(review.recommendations[0]!.roleIds).not.toContain(root.id)
+      expect(mockRig.complete).not.toHaveBeenCalled()
+    } finally {
+      mockRig.svc.dispose()
+      rmSync(mockRig.root, { recursive: true, force: true })
+    }
+  })
+
+  it('Re-check after a Recommend keeps the shown cards (minus the dismissed one) and they still apply', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    const b = pick(d, 'skill', 'code-review')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }, { candidateId: b.id, roleIds: [ENG], reason: 'b' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations.find((r) => r.candidateId === a.id)!.id })
+    const rv = await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    expect(rv.recommendations.map((r) => r.candidateId)).toEqual([b.id])
+    const restarted = rig.make()
+    const out = await restarted.apply({ projectId: 'p1', digest: rv.digest, recommendationId: rv.recommendations[0]!.id, roleIds: [ENG] })
+    expect(out.applied.name).toBe('code-review')
+  })
+})
