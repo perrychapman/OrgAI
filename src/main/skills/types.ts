@@ -20,6 +20,21 @@ import type {
   SkillUpdateInput
 } from '@shared/types'
 import type { RunSkill } from '../runtime/types'
+import type { FileData } from './files'
+
+/** SkillServiceApi.addSnapshot input. */
+export interface SkillSnapshotInput {
+  projectId: string
+  /** The files as read (SKILL.md first or anywhere); folderName is the name fallback for SKILL.md parsing. */
+  files: FileData[]
+  folderName: string
+  source: 'repo' | 'local' | 'github'
+  /** source 'repo': project-relative folder. */
+  repoPath?: string
+  /** source 'local' / 'github': display location (home as ~, or the URL). */
+  sourceRef?: string
+  roleIds: string[]
+}
 
 /**
  * Main-process contracts of the skills feature. SkillService (service.ts) implements SkillServiceApi and
@@ -35,6 +50,12 @@ export interface SkillServiceApi {
   update(input: SkillUpdateInput): SkillMutationResult
   remove(input: { projectId: string; skillId: string }): SkillMutationResult
   linkLibrary(input: SkillLinkLibraryInput): SkillMutationResult
+  /**
+   * Store an already-read skill snapshot (the Team assistant's apply: a repo or local folder, or a fetched SKILL.md)
+   * as a new project skill and grant it to `roleIds`. SKILL.md is re-emitted with name and description only and a
+   * shell-injection body is refused. Main-process only: never reachable with renderer-supplied files.
+   */
+  addSnapshot(input: SkillSnapshotInput): SkillMutationResult
   promote(input: { projectId: string; skillId: string }): SkillMutationResult
   previewImport(input: SkillImportInput): SkillImportPreview
   applyImport(input: SkillImportApplyInput): SkillImportApplyResult

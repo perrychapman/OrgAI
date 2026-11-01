@@ -1,27 +1,65 @@
-import type {
-  CapabilityApplyInput,
-  CapabilityApplyResult,
-  CapabilityDiscoverInput,
-  CapabilityDiscovery,
-  CapabilityGrantInput,
-  CapabilityProgressEvent,
-  CapabilityRecommendInput,
-  CapabilityUndoInput,
-  CapabilityUndoResult,
-  Project,
-  RunRecord,
-  RunSummary,
-  TeamDismissInput,
-  TeamRecommendations,
-  TeamReview,
-  TeamReviewInput,
-  TeamReviewSummary
+import { createHash, randomBytes } from 'node:crypto'
+import {
+  CAPABILITY_MAX_ITEMS,
+  CAPABILITY_RECOMMEND_TIMEOUT_MS,
+  TEAM_REVIEW_MAX_DISMISSED,
+  TEAM_REVIEW_OPEN_THROTTLE_MS,
+  type CapabilityAccess,
+  type CapabilityApplied,
+  type CapabilityApplyInput,
+  type CapabilityApplyResult,
+  type CapabilityDiscoverInput,
+  type CapabilityDiscovery,
+  type CapabilityGap,
+  type CapabilityGrantInput,
+  type CapabilityItem,
+  type CapabilityProgressEvent,
+  type CapabilityRecommendation,
+  type CapabilityRecommendInput,
+  type CapabilityScope,
+  type CapabilitySourceId,
+  type CapabilitySourceStatus,
+  type CapabilityUndoInput,
+  type CapabilityUndoResult,
+  type CapabilityWarning,
+  type ConnectorDef,
+  type McpServerSpec,
+  type Project,
+  type Role,
+  type RunRecord,
+  type RunSummary,
+  type TeamDismissInput,
+  type TeamRecommendations,
+  type TeamReview,
+  type TeamReviewInput,
+  type TeamReviewModelSkip,
+  type TeamReviewSummary,
+  type TeamReviewTrigger
 } from '@shared/types'
+import { newId, teamReviewOf } from '@shared/defaults'
+import { connectorById } from '@shared/connectors'
 import type { McpService } from '../mcp/service'
 import type { ProjectStore } from '../store/projects'
 import type { ProjectCompletionInput } from '../runtime/runManager'
 import type { SkillServiceApi } from '../skills/types'
-import type { CapabilityServiceApi } from './types'
+import { buildScannedSkill } from '../skills/scan'
+import type { CandidatePayload, CapabilityServiceApi, DiscoveredCandidate, LocalContext, SourceResult } from './types'
+import { discoverLocalSkills, discoverRepoSkills, rereadSkillFolder } from './localSkills'
+import { discoverLocalMcp } from './localMcp'
+import { discoverGithubSkills, discoverRegistry } from './outside'
+import { discoverCatalog, discoverLibrary, discoverProject, dropProjectDuplicates } from './sources'
+import {
+  buildRecommendPrompt,
+  canWrite,
+  estimateRecommendTokens,
+  fallbackRecommend,
+  parseRecommendAnswer,
+  recommendable,
+  registryQueries
+} from './recommend'
+import { collectEvidence, EVIDENCE_MAX_RUNS, hasNewEvidence } from './evidence'
+import { readReview, removeReview, reviewSummary, writeReview } from './reviewStore'
+import { clampText } from './sanitize'
 
 /** What index.ts hands the service. */
 export interface CapabilityServiceDeps {
@@ -48,41 +86,878 @@ export interface CapabilityServiceDeps {
   /** ORGAI_MOCK=1: outside fetches are network-free fixtures. */
   mock: boolean
   fetch?: typeof fetch
+  /** Tests: clock and the runEnded debounce. */
+  now?: () => number
+  runEndedDebounceMs?: number
 }
 
-/** Placeholder until the implementation lands (runtime-engineer brief). Every call rejects. */
+/** Snapshots kept per project (newest wins). */
+export const SNAPSHOTS_PER_PROJECT = 4
+/** recommend() reuses a discover() snapshot made with the same request id within this window. */
+export const SNAPSHOT_REUSE_MS = 5 * 60_000
+export const RUN_ENDED_DEBOUNCE_MS = 3_000
+
+const STALE = 'The recommendations are out of date: what OrgAI found has changed since. Run them again.'
+
+interface Snapshot {
+  digest: string
+  discovery: CapabilityDiscovery
+  candidates: Map<string, DiscoveredCandidate>
+  recs: Map<string, CapabilityRecommendation>
+  requestId?: string
+  at: number
+}
+
+interface UndoRecord {
+  undoId: string
+  projectId: string
+  /** Each role's grants before the apply (undefined = the key was absent). */
+  prevRoles: Map<string, { skills: string[] | undefined; mcpServers: string[] | undefined }>
+  /** Each existing server's roles before the apply. */
+  prevServerRoles: Map<string, string[] | undefined>
+  addedSkillId?: string
+  addedServerId?: string
+  /** A connector library entry this apply created (removed on undo when no project links it). */
+  createdLibraryId?: string
+}
+
+interface ModelOutcome {
+  mode: 'model' | 'fallback'
+  recommendations: CapabilityRecommendation[]
+  gaps: CapabilityGap[]
+  fallbackReason?: TeamRecommendations['fallbackReason']
+  model?: string
+  tokens?: number
+}
+
+type Emit = (phase: CapabilitySourceId | 'model', state: CapabilityProgressEvent['state'], count?: number, message?: string) => void
+
+function digestOf(items: CapabilityItem[]): string {
+  const lines = items.map((i) => `${i.id}\0${i.kind}\0${i.digest ?? i.target ?? ''}\0${i.blockedReason ?? ''}`).sort()
+  return createHash('sha256').update(lines.join('\n')).digest('hex')
+}
+
+/** Stable for the same candidate content: a dismissal stays until this changes. */
+export function fingerprintOf(item: Pick<CapabilityItem, 'id' | 'digest' | 'version' | 'target'> | undefined, candidateId: string): string {
+  return createHash('sha256')
+    .update(`${candidateId}\0${item?.digest ?? ''}\0${item?.version ?? ''}\0${item?.target ?? ''}`)
+    .digest('hex')
+    .slice(0, 16)
+}
+
+function readable(e: unknown): string {
+  return clampText(e instanceof Error ? e.message : String(e), 300) || 'Something went wrong.'
+}
+
+const LOCAL_SKILL_IDS: CapabilitySourceId[] = ['claude-skills', 'agents-skills', 'copilot-skills', 'claude-plugins']
+const LOCAL_MCP_IDS: CapabilitySourceId[] = ['claude-code-mcp', 'repo-mcp', 'claude-desktop-mcp', 'cursor-mcp', 'codex-mcp']
+const LABELS: Partial<Record<CapabilitySourceId, string>> = {
+  'repo-skills': 'Repository skills',
+  'claude-skills': 'Claude Code skills',
+  'agents-skills': 'Agent skills folder',
+  'copilot-skills': 'GitHub Copilot skills',
+  'claude-plugins': 'Claude Code plugins',
+  'claude-code-mcp': 'Claude Code MCP servers',
+  'repo-mcp': 'Repository MCP servers',
+  'claude-desktop-mcp': 'Claude Desktop MCP servers',
+  'cursor-mcp': 'Cursor MCP servers',
+  'vscode-mcp': 'VS Code MCP servers',
+  'codex-mcp': 'Codex MCP servers',
+  project: 'This project',
+  library: 'Your library',
+  catalog: 'Curated connectors',
+  registry: 'MCP Registry',
+  github: 'anthropics/skills'
+}
+
+function skippedStatus(source: CapabilitySourceId, message: string): CapabilitySourceStatus {
+  return { source, label: LABELS[source] ?? source, locations: [], state: 'skipped', count: 0, message }
+}
+
+/**
+ * The Team assistant (capabilities:*): token-free discovery, a one-shot recommendation completion, least-privilege
+ * apply from main's own snapshot with one undo per project, per-role grants, and the phase 2 Team review.
+ */
 export class CapabilityService implements CapabilityServiceApi {
-  constructor(private deps: CapabilityServiceDeps) {}
-  private todo(): never {
-    void this.deps
-    throw new Error('The Team assistant is not available yet.')
+  private snapshots = new Map<string, Snapshot[]>()
+  private undos = new Map<string, UndoRecord>()
+  private controllers = new Map<string, AbortController>()
+  private runTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private pendingRuns = new Map<string, number>()
+  private chains = new Map<string, Promise<unknown>>()
+  private disposed = false
+  private now: () => number
+
+  constructor(private deps: CapabilityServiceDeps) {
+    this.now = deps.now ?? Date.now
   }
-  discover(_input: CapabilityDiscoverInput): Promise<CapabilityDiscovery> {
-    return Promise.reject(new Error('The Team assistant is not available yet.'))
+
+  // ---------- helpers ----------
+
+  private project(projectId: string): Project {
+    const p = this.deps.projects.get(projectId)
+    if (!p) throw new Error('Project not found')
+    return p
   }
-  recommend(_input: CapabilityRecommendInput): Promise<TeamRecommendations> {
-    return Promise.reject(new Error('The Team assistant is not available yet.'))
+
+  /** The stored project with linked servers and skills refreshed from the libraries. */
+  private fresh(projectId: string): Project {
+    return this.deps.skills.withLibrary(this.deps.mcp.withLibrary(this.project(projectId)))
   }
-  cancel(_requestId: string): void {}
-  apply(_input: CapabilityApplyInput): Promise<CapabilityApplyResult> {
-    return Promise.reject(new Error('The Team assistant is not available yet.'))
+
+  private emitter(projectId: string, requestId: string): Emit {
+    return (phase, state, count, message) => {
+      try {
+        this.deps.progress({ projectId, requestId, phase, state, ...(count !== undefined ? { count } : {}), ...(message ? { message } : {}) })
+      } catch {
+        /* a window went away */
+      }
+    }
   }
-  undo(_input: CapabilityUndoInput): CapabilityUndoResult {
-    return this.todo()
+
+  private track(requestId: string): AbortController {
+    this.controllers.get(requestId)?.abort()
+    const ac = new AbortController()
+    this.controllers.set(requestId, ac)
+    return ac
   }
-  setGrant(_input: CapabilityGrantInput): Project {
-    return this.todo()
+
+  private untrack(requestId: string, ac: AbortController): void {
+    if (this.controllers.get(requestId) === ac) this.controllers.delete(requestId)
   }
-  forgetProject(_projectId: string): void {}
-  review(_input: TeamReviewInput): Promise<TeamReview> {
-    return Promise.reject(new Error('The Team assistant is not available yet.'))
+
+  private requestIdOf(id: string | undefined): string {
+    return id ?? `req-${randomBytes(6).toString('hex')}`
   }
-  lastReview(_projectId: string): TeamReview | null {
-    return null
+
+  private keep(projectId: string, snap: Snapshot): void {
+    const list = (this.snapshots.get(projectId) ?? []).filter((s) => s.digest !== snap.digest)
+    list.unshift(snap)
+    this.snapshots.set(projectId, list.slice(0, SNAPSHOTS_PER_PROJECT))
   }
-  dismiss(_input: TeamDismissInput): TeamReview {
-    return this.todo()
+
+  private findSnapshot(projectId: string, digest: string): Snapshot | undefined {
+    return this.snapshots.get(projectId)?.find((s) => s.digest === digest)
   }
-  runEnded(_projectId: string, _runId: string): void {}
-  dispose(): void {}
+
+  /** Run one project's reviews one after another (they read and write the same file). */
+  private serial<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(projectId) ?? Promise.resolve()
+    const next = prev.then(fn, fn)
+    const tail = next.catch(() => undefined)
+    this.chains.set(projectId, tail)
+    void tail.then(() => {
+      if (this.chains.get(projectId) === tail) this.chains.delete(projectId)
+    })
+    return next
+  }
+
+  // ---------- discovery ----------
+
+  private async discoverSnap(project: Project, opts: { includeOutside: boolean; query?: string; requestId: string; signal: AbortSignal; emit: Emit }): Promise<Snapshot> {
+    const { signal, emit } = opts
+    const ctx: LocalContext = { projectPath: project.path, homeDir: this.deps.homeDir, env: this.deps.env, platform: this.deps.platform }
+    const candidates: DiscoveredCandidate[] = []
+    const sources: CapabilitySourceStatus[] = []
+    const warnings: CapabilityWarning[] = []
+    let stopped = false
+    const take = (r: SourceResult): void => {
+      candidates.push(...r.candidates)
+      sources.push(...r.sources)
+      warnings.push(...r.warnings)
+      for (const s of r.sources) emit(s.source, s.state === 'found' || s.state === 'empty' || s.state === 'missing' ? 'done' : s.state, s.count, s.message)
+    }
+    const step = async (ids: CapabilitySourceId[], run: () => SourceResult | Promise<SourceResult>): Promise<void> => {
+      if (signal.aborted) stopped = true
+      if (stopped) {
+        for (const id of ids) {
+          sources.push(skippedStatus(id, 'Stopped.'))
+          emit(id, 'skipped', 0, 'Stopped.')
+        }
+        return
+      }
+      for (const id of ids) emit(id, 'running')
+      // Let a cancel arrive between the synchronous file reads.
+      await new Promise<void>((r) => setImmediate(r))
+      try {
+        take(await run())
+      } catch (e) {
+        for (const id of ids) {
+          sources.push({ source: id, label: LABELS[id] ?? id, locations: [], state: 'error', count: 0, message: readable(e) })
+          emit(id, 'error', 0, readable(e))
+        }
+        warnings.push({ source: ids[0]!, message: readable(e) })
+      }
+    }
+    await step(['project'], () => discoverProject(project, this.deps.skills.list(project.id), this.deps.mcp.list(project.id)))
+    await step(['repo-skills'], () => discoverRepoSkills(ctx))
+    await step(LOCAL_SKILL_IDS, () => discoverLocalSkills(ctx))
+    await step(LOCAL_MCP_IDS, () => discoverLocalMcp(ctx))
+    await step(['library'], () => discoverLibrary(project, this.deps.mcp.libraryList(), this.deps.skills.libraryList()))
+    await step(['catalog'], () => discoverCatalog(project, this.deps.mcp.connectorsList()))
+    if (opts.includeOutside) {
+      const outside = { fetch: this.deps.fetch ?? fetch, mock: this.deps.mock, queries: registryQueries(project, opts.query), signal }
+      await step(['registry'], () => discoverRegistry(outside))
+      await step(['github'], () => discoverGithubSkills(outside))
+    } else {
+      for (const id of ['registry', 'github'] as const) {
+        sources.push(skippedStatus(id, 'Outside sources are off.'))
+        emit(id, 'skipped', 0, 'Outside sources are off.')
+      }
+    }
+    if (signal.aborted || sources.some((s) => s.message === 'Stopped.')) stopped = true
+    let merged = dropProjectDuplicates(candidates)
+    let capped = false
+    if (merged.length > CAPABILITY_MAX_ITEMS) {
+      merged = merged.slice(0, CAPABILITY_MAX_ITEMS)
+      capped = true
+      warnings.push({ source: 'project', message: `Only the first ${CAPABILITY_MAX_ITEMS} candidates are listed.` })
+    }
+    const items = merged.map((c) => c.item)
+    const digest = digestOf(items)
+    const discovery: CapabilityDiscovery = {
+      projectId: project.id,
+      items,
+      sources,
+      warnings: warnings.slice(0, 200),
+      includeOutside: opts.includeOutside,
+      digest,
+      ...(stopped || capped ? { partial: true as const } : {}),
+      createdAt: new Date(this.now()).toISOString()
+    }
+    const snap: Snapshot = { digest, discovery, candidates: new Map(merged.map((c) => [c.item.id, c])), recs: new Map(), requestId: opts.requestId, at: this.now() }
+    this.keep(project.id, snap)
+    return snap
+  }
+
+  async discover(input: CapabilityDiscoverInput): Promise<CapabilityDiscovery> {
+    const project = this.project(input.projectId)
+    const requestId = this.requestIdOf(input.requestId)
+    const ac = this.track(requestId)
+    try {
+      const snap = await this.discoverSnap(project, { includeOutside: input.includeOutside === true, query: input.query, requestId, signal: ac.signal, emit: this.emitter(project.id, requestId) })
+      return snap.discovery
+    } finally {
+      this.untrack(requestId, ac)
+    }
+  }
+
+  cancel(requestId: string): void {
+    this.controllers.get(requestId)?.abort()
+  }
+
+  // ---------- recommend ----------
+
+  private async runModel(project: Project, snap: Snapshot, scope: CapabilityScope, signal: AbortSignal, emit: Emit): Promise<ModelOutcome> {
+    const items = snap.discovery.items
+    const salt = `${snap.digest}\0${scope.roleId ?? ''}`
+    const fallback = (reason: NonNullable<TeamRecommendations['fallbackReason']>, extra: Partial<ModelOutcome> = {}): ModelOutcome => ({
+      mode: 'fallback',
+      recommendations: fallbackRecommend(items, project.roles, scope, salt),
+      gaps: [],
+      fallbackReason: reason,
+      ...extra
+    })
+    if (!recommendable(items).length) return { mode: 'fallback', recommendations: [], gaps: [], fallbackReason: 'noCandidates' }
+    if (signal.aborted) return fallback('cancelled')
+    emit('model', 'running')
+    const { system, prompt } = buildRecommendPrompt(project, items, scope)
+    const timeout = new AbortController()
+    const timer = setTimeout(() => timeout.abort(), CAPABILITY_RECOMMEND_TIMEOUT_MS)
+    let tokens: number | undefined
+    let usageModel: string | undefined
+    try {
+      const out = await this.deps.complete(project, {
+        system,
+        prompt,
+        kind: 'recommend',
+        tier: 'everyday',
+        signal: AbortSignal.any([signal, timeout.signal]),
+        onUsage: (u) => {
+          tokens = (tokens ?? 0) + (Number(u?.tokens?.input) || 0) + (Number(u?.tokens?.output) || 0)
+          if (typeof u?.model === 'string') usageModel = u.model
+        }
+      })
+      if (signal.aborted) {
+        emit('model', 'skipped', 0, 'Stopped.')
+        return fallback('cancelled', { ...(tokens !== undefined ? { tokens } : {}) })
+      }
+      const parsed = parseRecommendAnswer(out?.text ?? '', items, project.roles, scope, salt)
+      const model = out?.model ?? usageModel
+      const extra = { ...(model ? { model } : {}), ...(tokens !== undefined ? { tokens } : {}) }
+      if (!parsed.ok) {
+        emit('model', 'error', 0, 'The answer could not be read; showing keyword matches instead.')
+        return fallback('invalidAnswer', extra)
+      }
+      emit('model', 'done', parsed.recommendations.length)
+      return { mode: 'model', recommendations: parsed.recommendations, gaps: parsed.gaps, ...extra }
+    } catch (e) {
+      const reason = signal.aborted ? 'cancelled' : timeout.signal.aborted ? 'timeout' : 'error'
+      emit('model', reason === 'cancelled' ? 'skipped' : 'error', 0, reason === 'cancelled' ? 'Stopped.' : reason === 'timeout' ? 'The model took too long to answer.' : readable(e))
+      return fallback(reason, tokens !== undefined ? { tokens } : {})
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  async recommend(input: CapabilityRecommendInput): Promise<TeamRecommendations> {
+    const project = this.project(input.projectId)
+    const scope: CapabilityScope = input.scope?.roleId ? { roleId: input.scope.roleId } : {}
+    if (scope.roleId && !project.roles.some((r) => r.id === scope.roleId)) throw new Error('Role not found')
+    const requestId = this.requestIdOf(input.requestId)
+    const includeOutside = input.includeOutside === true
+    const emit = this.emitter(project.id, requestId)
+    const reuse = input.requestId
+      ? this.snapshots.get(project.id)?.find((s) => s.requestId === input.requestId && s.discovery.includeOutside === includeOutside && this.now() - s.at < SNAPSHOT_REUSE_MS && !s.discovery.partial)
+      : undefined
+    const ac = this.track(requestId)
+    try {
+      const snap = reuse ?? (await this.discoverSnap(project, { includeOutside, query: input.query, requestId, signal: ac.signal, emit }))
+      const outcome = await this.runModel(project, snap, scope, ac.signal, emit)
+      for (const r of outcome.recommendations) snap.recs.set(r.id, r)
+      const partial = snap.discovery.partial || outcome.fallbackReason === 'cancelled'
+      return {
+        projectId: project.id,
+        scope,
+        discovery: snap.discovery,
+        recommendations: outcome.recommendations,
+        gaps: outcome.gaps,
+        digest: snap.digest,
+        mode: outcome.mode,
+        ...(outcome.fallbackReason ? { fallbackReason: outcome.fallbackReason } : {}),
+        ...(outcome.model ? { model: outcome.model } : {}),
+        ...(partial ? { partial: true as const } : {}),
+        createdAt: new Date(this.now()).toISOString()
+      }
+    } finally {
+      this.untrack(requestId, ac)
+    }
+  }
+
+  // ---------- apply / undo / grants ----------
+
+  /** The snapshot for `digest`, re-discovered when it is gone (after a restart); undefined when the sources changed. */
+  private async snapshotFor(project: Project, digest: string): Promise<Snapshot | undefined> {
+    const known = this.findSnapshot(project.id, digest)
+    if (known) return known
+    const review = readReview(this.deps.dataDir, project.id)
+    const fromReview = review?.digest === digest ? review : null
+    const requestId = this.requestIdOf(undefined)
+    const ac = new AbortController()
+    const snap = await this.discoverSnap(project, { includeOutside: fromReview?.discovery.includeOutside === true, requestId, signal: ac.signal, emit: () => {} })
+    if (snap.digest !== digest) return undefined
+    for (const r of fromReview?.recommendations ?? []) snap.recs.set(r.id, r)
+    return snap
+  }
+
+  private slugsOf(project: Project, roleIds: string[]): string[] {
+    return roleIds.map((id) => project.roles.find((r) => r.id === id)!.slug)
+  }
+
+  /** Read-only or full connector variant for `access`, preferring the default variant. */
+  private variantFor(def: ConnectorDef, access: CapabilityAccess): string {
+    const want = access === 'read'
+    const def0 = def.variants.find((v) => v.id === def.defaultVariant)
+    if (def0 && def0.readOnly === want) return def0.id
+    return (def.variants.find((v) => v.readOnly === want) ?? def0 ?? def.variants[0]!).id
+  }
+
+  async apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult> {
+    const project = this.project(input.projectId)
+    if (typeof input.digest !== 'string' || !input.digest) throw new Error(STALE)
+    const snap = await this.snapshotFor(project, input.digest)
+    if (!snap) throw new Error(STALE)
+    let rec: CapabilityRecommendation | undefined
+    let candidateId = input.candidateId
+    if (input.recommendationId) {
+      rec = snap.recs.get(input.recommendationId)
+      if (!rec && !candidateId) throw new Error('Recommendation not found. Run the recommendations again.')
+      if (rec && candidateId && candidateId !== rec.candidateId) throw new Error('The recommendation and the candidate do not match.')
+      if (rec) candidateId = rec.candidateId
+    }
+    const cand = candidateId ? snap.candidates.get(candidateId) : undefined
+    if (!cand) throw new Error('Candidate not found. Run the recommendations again.')
+    const item = cand.item
+    if (item.blockedReason) throw new Error(`${item.name} cannot be added: ${item.blockedReason}`)
+    const roleIds = [...new Set(Array.isArray(input.roleIds) ? input.roleIds : [])]
+    if (!roleIds.length) throw new Error('Choose at least one role. Nobody gets it until you do.')
+    const roles: Role[] = []
+    for (const id of roleIds) {
+      const r = project.roles.find((x) => x.id === id)
+      if (!r) throw new Error(`Unknown role: ${clampText(id, 60)}`)
+      roles.push(r)
+    }
+    const access: CapabilityAccess = input.access ?? rec?.access ?? 'read'
+    if (access === 'full') {
+      const cannot = roles.filter((r) => !canWrite(r))
+      if (cannot.length) throw new Error(`${cannot.map((r) => r.name).join(', ')} cannot change files or run commands, so only read access can be given.`)
+    }
+
+    const undo: UndoRecord = {
+      undoId: `undo-${randomBytes(8).toString('hex')}`,
+      projectId: project.id,
+      prevRoles: new Map(project.roles.map((r) => [r.id, { skills: r.skills ? [...r.skills] : undefined, mcpServers: r.mcpServers ? [...r.mcpServers] : undefined }])),
+      prevServerRoles: new Map((project.mcpServers ?? []).map((s) => [s.id, s.roles ? [...s.roles] : undefined]))
+    }
+    const notes: string[] = []
+    let needsSetup: CapabilityApplyResult['needsSetup']
+    let applied: CapabilityApplied
+    const payload: CandidatePayload = cand.payload
+    const name = item.name
+
+    switch (payload.type) {
+      case 'projectSkill': {
+        this.grantSkill(project.id, payload.skillId, roleIds)
+        applied = { kind: 'skill', id: payload.skillId, name, action: 'granted', roleIds, access }
+        break
+      }
+      case 'projectMcp': {
+        if (this.grantMcp(project.id, payload.serverId, roleIds) === 'everyRole') notes.push('Every role can already use it.')
+        applied = { kind: 'mcp', id: payload.serverId, name, action: 'granted', roleIds, access }
+        needsSetup = this.serverSetup(project.id, payload.serverId)
+        break
+      }
+      case 'skillFolder': {
+        const again = rereadSkillFolder(payload)
+        if (!again.ok) throw new Error(again.reason)
+        const r = this.deps.skills.addSnapshot({
+          projectId: project.id,
+          files: again.files,
+          folderName: payload.dir.split(/[\\/]/).pop() || name,
+          source: payload.source,
+          ...(payload.source === 'repo' ? { repoPath: payload.sourceRef } : { sourceRef: item.location ?? payload.sourceRef }),
+          roleIds
+        })
+        const added = r.project.skills?.find((s) => !(project.skills ?? []).some((o) => o.id === s.id))
+        if (!added) throw new Error('The skill could not be added.')
+        undo.addedSkillId = added.id
+        applied = { kind: 'skill', id: added.id, name: added.name, action: 'added', roleIds, access }
+        break
+      }
+      case 'skillMd': {
+        const built = buildScannedSkill([{ path: 'SKILL.md', data: Buffer.from(payload.text, 'utf8') }], name, name, null)
+        if (typeof built === 'string') throw new Error(built)
+        if (item.digest && built.digest !== item.digest) throw new Error(STALE)
+        const r = this.deps.skills.addSnapshot({ projectId: project.id, files: built.data, folderName: name, source: 'github', sourceRef: payload.url, roleIds })
+        const added = r.project.skills?.find((s) => !(project.skills ?? []).some((o) => o.id === s.id))
+        if (!added) throw new Error('The skill could not be added.')
+        undo.addedSkillId = added.id
+        applied = { kind: 'skill', id: added.id, name: added.name, action: 'added', roleIds, access }
+        notes.push('Only SKILL.md was fetched; resource files it mentions are not included.')
+        break
+      }
+      case 'mcpSpec': {
+        if ((project.mcpServers ?? []).some((s) => s.name === payload.spec.name)) throw new Error(`This project already has a connection named ${payload.spec.name}.`)
+        const spec: McpServerSpec = {
+          ...structuredClone(payload.spec),
+          id: newId('mcp'),
+          enabled: true,
+          roles: this.slugsOf(project, roleIds),
+          source: item.origin === 'registry' ? 'registry' : 'local',
+          addedAt: new Date(this.now()).toISOString()
+        }
+        delete spec.libraryId
+        delete spec.oauth
+        delete spec.connectorId
+        delete spec.connectorVariant
+        this.deps.mcp.upsert({ projectId: project.id, spec })
+        undo.addedServerId = spec.id
+        applied = { kind: 'mcp', id: spec.id, name: spec.name, action: 'added', roleIds, access }
+        needsSetup = this.serverSetup(project.id, spec.id)
+        break
+      }
+      case 'connector': {
+        const def = connectorById(payload.connectorId)
+        if (!def) throw new Error('Unknown connector.')
+        const before = this.deps.mcp.connectorsList().find((c) => c.connector.id === def.id)
+        const variant = this.variantFor(def, access)
+        const info = this.deps.mcp.connectorsAdd({ connectorId: def.id, variant })
+        const libraryId = info.entry.id
+        if (!before?.library) undo.createdLibraryId = libraryId
+        const kept = info.entry.connectorVariant
+        const keptVariant = def.variants.find((v) => v.id === kept)
+        let actual = access
+        if (before?.library && kept && kept !== variant && keptVariant) {
+          actual = keptVariant.readOnly ? 'read' : access
+          notes.push(`Kept the ${keptVariant.label} version already in your library; change it in App settings > Connectors.`)
+        }
+        const now = this.project(project.id)
+        const link = (now.mcpServers ?? []).find((s) => s.libraryId === libraryId)
+        if (link) {
+          if (this.grantMcp(project.id, link.id, roleIds) === 'everyRole') notes.push('Every role can already use it.')
+          applied = { kind: 'mcp', id: link.id, name: def.name, action: 'granted', roleIds, access: actual }
+        } else {
+          const r = this.deps.mcp.linkLibrary({ projectId: project.id, libraryId, roles: this.slugsOf(project, roleIds) })
+          const added = r.project.mcpServers?.find((s) => s.libraryId === libraryId)
+          if (!added) throw new Error(`${def.name} could not be linked.`)
+          undo.addedServerId = added.id
+          applied = { kind: 'mcp', id: added.id, name: def.name, action: 'linked', roleIds, access: actual }
+        }
+        const state = this.deps.mcp.connectorsList().find((c) => c.connector.id === def.id)?.state
+        const lib = this.deps.mcp.libraryList().find((l) => l.entry.id === libraryId)
+        const secrets = lib?.missingSecrets ?? []
+        const signIn = state !== 'connected'
+        if (signIn || secrets.length) needsSetup = { secrets: [...secrets], signIn, connectorId: def.id, libraryId }
+        break
+      }
+      case 'libraryMcp': {
+        const r = this.deps.mcp.linkLibrary({ projectId: project.id, libraryId: payload.libraryId, roles: this.slugsOf(project, roleIds) })
+        const added = r.project.mcpServers?.find((s) => s.libraryId === payload.libraryId)
+        if (!added) throw new Error(`${name} could not be linked.`)
+        undo.addedServerId = added.id
+        applied = { kind: 'mcp', id: added.id, name, action: 'linked', roleIds, access }
+        needsSetup = this.serverSetup(project.id, added.id, payload.libraryId)
+        break
+      }
+      case 'librarySkill': {
+        const r = this.deps.skills.linkLibrary({ projectId: project.id, libraryId: payload.libraryId, roleIds })
+        const added = r.project.skills?.find((s) => s.libraryId === payload.libraryId)
+        if (!added) throw new Error(`${name} could not be linked.`)
+        undo.addedSkillId = added.id
+        applied = { kind: 'skill', id: added.id, name, action: 'linked', roleIds, access }
+        break
+      }
+    }
+
+    this.undos.set(project.id, undo)
+    this.dropFromReview(project.id, candidateId!, rec?.id)
+    const saved = this.fresh(project.id)
+    this.deps.onProjectChanged(saved)
+    return { project: saved, applied: applied!, undoId: undo.undoId, ...(needsSetup ? { needsSetup } : {}), notes }
+  }
+
+  /** Secrets still missing and whether a sign-in is needed for a project server. */
+  private serverSetup(projectId: string, serverId: string, libraryId?: string): CapabilityApplyResult['needsSetup'] {
+    const info = this.deps.mcp.list(projectId).find((s) => s.spec.id === serverId)
+    if (!info) return undefined
+    const signIn = info.auth.state === 'notAuthorized' || info.auth.state === 'expired' || info.auth.state === 'error'
+    if (!info.missingSecrets.length && !signIn) return undefined
+    return { secrets: [...info.missingSecrets], signIn, ...(libraryId ? { libraryId } : {}) }
+  }
+
+  private grantSkill(projectId: string, skillId: string, roleIds: string[]): void {
+    const project = this.project(projectId)
+    if (!(project.skills ?? []).some((s) => s.id === skillId)) throw new Error('Skill not found')
+    this.deps.projects.save({
+      ...project,
+      roles: project.roles.map((r) => (roleIds.includes(r.id) && !(r.skills ?? []).includes(skillId) ? { ...r, skills: [...(r.skills ?? []), skillId] } : r))
+    })
+  }
+
+  /** Adds the roles' slugs to the server's roles; 'everyRole' when it already reaches every role. */
+  private grantMcp(projectId: string, serverId: string, roleIds: string[]): 'granted' | 'everyRole' {
+    const project = this.project(projectId)
+    const spec = (project.mcpServers ?? []).find((s) => s.id === serverId)
+    if (!spec) throw new Error('Server not found')
+    if (spec.roles === undefined) return 'everyRole'
+    const slugs = this.slugsOf(project, roleIds)
+    const next = [...new Set([...spec.roles, ...slugs])]
+    this.deps.projects.save({ ...project, mcpServers: (project.mcpServers ?? []).map((s) => (s.id === serverId ? { ...s, roles: next } : s)) })
+    return 'granted'
+  }
+
+  undo(input: CapabilityUndoInput): CapabilityUndoResult {
+    this.project(input.projectId)
+    const rec = this.undos.get(input.projectId)
+    if (!rec || rec.undoId !== input.undoId) throw new Error('Nothing to undo: only the last change in this project can be undone.')
+    this.undos.delete(input.projectId)
+    let project = this.project(input.projectId)
+    if (rec.addedSkillId && (project.skills ?? []).some((s) => s.id === rec.addedSkillId)) this.deps.skills.remove({ projectId: project.id, skillId: rec.addedSkillId })
+    project = this.project(input.projectId)
+    if (rec.addedServerId && (project.mcpServers ?? []).some((s) => s.id === rec.addedServerId)) this.deps.mcp.remove({ projectId: project.id, serverId: rec.addedServerId })
+    if (rec.createdLibraryId) {
+      const linked = this.deps.projects.list().some((p) => (p.mcpServers ?? []).some((s) => s.libraryId === rec.createdLibraryId))
+      if (!linked && this.deps.mcp.libraryEntries().some((e) => e.id === rec.createdLibraryId)) {
+        try {
+          this.deps.mcp.libraryRemove({ libraryId: rec.createdLibraryId })
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+    project = this.project(input.projectId)
+    const skillIds = new Set((project.skills ?? []).map((s) => s.id))
+    const serverIds = new Set((project.mcpServers ?? []).map((s) => s.id))
+    const roles = project.roles.map((r) => {
+      const prev = rec.prevRoles.get(r.id)
+      if (!prev) return r
+      const next: Role = { ...r }
+      if (prev.skills === undefined) delete next.skills
+      else next.skills = prev.skills.filter((id) => skillIds.has(id))
+      if (prev.mcpServers === undefined) delete next.mcpServers
+      else next.mcpServers = prev.mcpServers.filter((id) => serverIds.has(id))
+      return next
+    })
+    const mcpServers = project.mcpServers?.map((s) => {
+      if (!rec.prevServerRoles.has(s.id)) return s
+      const prev = rec.prevServerRoles.get(s.id)
+      const next: McpServerSpec = { ...s }
+      if (prev === undefined) delete next.roles
+      else next.roles = [...prev]
+      return next
+    })
+    this.deps.projects.save({ ...project, roles, ...(mcpServers ? { mcpServers } : {}) })
+    const saved = this.fresh(input.projectId)
+    this.deps.onProjectChanged(saved)
+    return { project: saved }
+  }
+
+  setGrant(input: CapabilityGrantInput): Project {
+    const project = this.project(input.projectId)
+    const role = project.roles.find((r) => r.id === input.roleId)
+    if (!role) throw new Error('Role not found')
+    if (input.kind === 'skill') {
+      if (!(project.skills ?? []).some((s) => s.id === input.id)) throw new Error('Skill not found')
+      const has = (role.skills ?? []).includes(input.id)
+      if (has !== input.granted) {
+        const skills = input.granted ? [...(role.skills ?? []), input.id] : (role.skills ?? []).filter((id) => id !== input.id)
+        this.deps.projects.save({ ...project, roles: project.roles.map((r) => (r.id === role.id ? { ...r, skills } : r)) })
+      }
+    } else {
+      const spec = (project.mcpServers ?? []).find((s) => s.id === input.id)
+      if (!spec) throw new Error('Server not found')
+      let roles = project.roles
+      let specRoles = spec.roles
+      if (input.granted) {
+        if (specRoles !== undefined && !specRoles.includes(role.slug)) specRoles = [...specRoles, role.slug]
+      } else {
+        // undefined = every role: a revoke materializes the explicit list without this role.
+        specRoles = (specRoles ?? project.roles.map((r) => r.slug)).filter((s) => s !== role.slug)
+        if ((role.mcpServers ?? []).includes(spec.id)) roles = roles.map((r) => (r.id === role.id ? { ...r, mcpServers: (r.mcpServers ?? []).filter((id) => id !== spec.id) } : r))
+      }
+      const next: McpServerSpec = { ...spec }
+      if (specRoles === undefined) delete next.roles
+      else next.roles = specRoles
+      this.deps.projects.save({ ...project, roles, mcpServers: (project.mcpServers ?? []).map((s) => (s.id === spec.id ? next : s)) })
+    }
+    const saved = this.fresh(project.id)
+    this.deps.onProjectChanged(saved)
+    return saved
+  }
+
+  forgetProject(projectId: string): void {
+    this.snapshots.delete(projectId)
+    this.undos.delete(projectId)
+    clearTimeout(this.runTimers.get(projectId))
+    this.runTimers.delete(projectId)
+    this.pendingRuns.delete(projectId)
+    try {
+      removeReview(this.deps.dataDir, projectId)
+    } catch {
+      /* best effort */
+    }
+  }
+
+  // ---------- phase 2: the Team review ----------
+
+  lastReview(projectId: string): TeamReview | null {
+    return readReview(this.deps.dataDir, projectId)
+  }
+
+  private publish(review: TeamReview): void {
+    writeReview(this.deps.dataDir, review)
+    try {
+      this.deps.reviewUpdated(reviewSummary(review))
+    } catch {
+      /* a window went away */
+    }
+  }
+
+  /** Remove an applied recommendation (by id, or every one for the candidate) from the persisted review. */
+  private dropFromReview(projectId: string, candidateId: string, recId?: string): void {
+    const review = readReview(this.deps.dataDir, projectId)
+    if (!review) return
+    const recommendations = review.recommendations.filter((r) => r.id !== recId && r.candidateId !== candidateId)
+    if (recommendations.length === review.recommendations.length) return
+    this.publish({ ...review, recommendations, pendingCount: recommendations.length })
+  }
+
+  dismiss(input: TeamDismissInput): TeamReview {
+    const review = readReview(this.deps.dataDir, input.projectId)
+    const rec = review?.recommendations.find((r) => r.id === input.recommendationId)
+    if (!review || !rec) throw new Error('Recommendation not found')
+    const item = review.discovery.items.find((i) => i.id === rec.candidateId)
+    const dismissed = [...review.dismissed.filter((d) => d.candidateId !== rec.candidateId), { candidateId: rec.candidateId, fingerprint: fingerprintOf(item, rec.candidateId), at: new Date(this.now()).toISOString() }].slice(-TEAM_REVIEW_MAX_DISMISSED)
+    const recommendations = review.recommendations.filter((r) => r.id !== rec.id)
+    const next: TeamReview = { ...review, recommendations, pendingCount: recommendations.length, dismissed }
+    this.publish(next)
+    return next
+  }
+
+  /** Something changed since the last review: the project was saved or a work run finished after it. */
+  private changedSince(project: Project, review: TeamReview): boolean {
+    const at = Date.parse(review.checkedAt)
+    if (!Number.isFinite(at)) return true
+    if (Date.parse(project.updatedAt) > at) return true
+    try {
+      return this.deps.listRuns(project.id).some((r) => r.kind === 'work' && (r.endedAt ?? 0) > at)
+    } catch {
+      return false
+    }
+  }
+
+  async review(input: TeamReviewInput): Promise<TeamReview> {
+    const project = this.project(input.projectId)
+    const trigger = input.trigger === 'opened' ? 'opened' : 'manual'
+    if (trigger === 'opened') {
+      const prev = readReview(this.deps.dataDir, project.id)
+      if (prev && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return prev
+    }
+    const requestId = this.requestIdOf(input.requestId)
+    const ac = this.track(requestId)
+    try {
+      return await this.serial(project.id, () =>
+        this.runReview(project.id, {
+          trigger,
+          includeOutside: trigger === 'manual' && input.includeOutside === true,
+          useModel: trigger === 'manual' && input.useModel === true,
+          runsAdded: 0,
+          requestId,
+          signal: ac.signal
+        })
+      )
+    } finally {
+      this.untrack(requestId, ac)
+    }
+  }
+
+  private recentRecords(projectId: string): RunRecord[] {
+    try {
+      const summaries = this.deps
+        .listRuns(projectId)
+        .filter((r) => r.kind === 'work' && r.endedAt !== undefined)
+        .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+        .slice(0, EVIDENCE_MAX_RUNS)
+      return summaries.map((s) => this.deps.getRun(s.id)).filter((r): r is RunRecord => !!r)
+    } catch {
+      return []
+    }
+  }
+
+  private async runReview(
+    projectId: string,
+    opts: { trigger: TeamReviewTrigger; includeOutside: boolean; useModel: boolean; runsAdded: number; requestId: string; signal: AbortSignal }
+  ): Promise<TeamReview> {
+    const project = this.project(projectId)
+    const prev = readReview(this.deps.dataDir, projectId)
+    const emit = this.emitter(projectId, opts.requestId)
+    const snap = await this.discoverSnap(project, { includeOutside: opts.includeOutside, requestId: opts.requestId, signal: opts.signal, emit })
+    const items = snap.discovery.items
+    const byId = new Map(items.map((i) => [i.id, i]))
+    const evidence = collectEvidence(project, this.recentRecords(projectId))
+    const prevIds = new Set((prev?.discovery.items ?? []).map((i) => i.id))
+    const newCandidateIds = prev ? items.filter((i) => i.origin !== 'project' && !prevIds.has(i.id)).map((i) => i.id) : []
+    const dismissed = prev?.dismissed ?? []
+    const settings = teamReviewOf(project)
+    let runsSinceModel = (prev?.runsSinceModel ?? 0) + opts.runsAdded
+    const isDismissed = (r: CapabilityRecommendation): boolean => {
+      const d = dismissed.find((x) => x.candidateId === r.candidateId)
+      return !!d && d.fingerprint === fingerprintOf(byId.get(r.candidateId), r.candidateId)
+    }
+    const stillUseful = (r: CapabilityRecommendation): boolean => {
+      const item = byId.get(r.candidateId)
+      if (!item || item.blockedReason || isDismissed(r)) return false
+      const roleIds = r.roleIds.filter((id) => project.roles.some((x) => x.id === id))
+      if (!roleIds.length) return false
+      return !(item.inProject && roleIds.every((id) => item.inProject!.grantedTo.includes(id)))
+    }
+
+    let skip: TeamReviewModelSkip | undefined
+    if (!opts.useModel && opts.trigger === 'runEnded') {
+      if (settings.auto === 'off') skip = 'autoOff'
+      else if (settings.auto === 'free') skip = 'autoFree'
+      else if (this.deps.mock) skip = 'mockFree'
+      else if (runsSinceModel < settings.everyRuns) skip = 'everyRuns'
+      else if (!hasNewEvidence(prev?.evidence, evidence) && newCandidateIds.length === 0 && prev) skip = 'noChange'
+      else {
+        const { system, prompt } = buildRecommendPrompt(project, items, {})
+        if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'
+      }
+    }
+    const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
+
+    let recommendations = (prev?.recommendations ?? []).filter(stillUseful)
+    let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))
+    let mode: TeamReview['mode'] = 'free'
+    let tokensUsed = prev?.tokensUsed
+    if (runModel) {
+      const outcome = await this.runModel(project, snap, {}, opts.signal, emit)
+      if (outcome.mode === 'model') {
+        mode = 'model'
+        recommendations = outcome.recommendations.filter(stillUseful)
+        gaps = outcome.gaps
+        runsSinceModel = 0
+      } else {
+        skip = outcome.fallbackReason === 'timeout' ? 'timeout' : outcome.fallbackReason === 'cancelled' ? 'cancelled' : outcome.fallbackReason === 'noCandidates' ? 'noChange' : 'error'
+      }
+      if (outcome.tokens !== undefined) tokensUsed = outcome.tokens
+    }
+    for (const r of recommendations) snap.recs.set(r.id, r)
+    const review: TeamReview = {
+      projectId,
+      checkedAt: new Date(this.now()).toISOString(),
+      trigger: opts.trigger,
+      mode,
+      ...(skip ? { modelSkipped: skip } : {}),
+      discovery: snap.discovery,
+      digest: snap.digest,
+      newCandidateIds,
+      recommendations,
+      gaps,
+      evidence,
+      dismissed,
+      pendingCount: recommendations.length,
+      runsSinceModel,
+      ...(tokensUsed !== undefined ? { tokensUsed } : {})
+    }
+    this.publish(review)
+    return review
+  }
+
+  runEnded(projectId: string, _runId: string): void {
+    try {
+      if (this.disposed) return
+      const project = this.deps.projects.get(projectId)
+      if (!project || teamReviewOf(project).auto === 'off') return
+      this.pendingRuns.set(projectId, (this.pendingRuns.get(projectId) ?? 0) + 1)
+      clearTimeout(this.runTimers.get(projectId))
+      const timer = setTimeout(() => {
+        this.runTimers.delete(projectId)
+        void this.proactive(projectId)
+      }, this.deps.runEndedDebounceMs ?? RUN_ENDED_DEBOUNCE_MS)
+      ;(timer as { unref?: () => void }).unref?.()
+      this.runTimers.set(projectId, timer)
+    } catch {
+      /* never throws */
+    }
+  }
+
+  /** The debounced proactive review after work runs end. Never throws. */
+  private async proactive(projectId: string): Promise<void> {
+    const runsAdded = this.pendingRuns.get(projectId) ?? 0
+    this.pendingRuns.delete(projectId)
+    if (this.disposed || !this.deps.projects.get(projectId)) return
+    const requestId = this.requestIdOf(undefined)
+    const ac = this.track(requestId)
+    try {
+      await this.serial(projectId, () => this.runReview(projectId, { trigger: 'runEnded', includeOutside: false, useModel: false, runsAdded, requestId, signal: ac.signal }))
+    } catch (e) {
+      console.warn(`[capabilities] Team review after a run failed: ${readable(e)}`)
+    } finally {
+      this.untrack(requestId, ac)
+    }
+  }
+
+  /** Test hook: wait for queued reviews of a project. */
+  async idle(projectId: string): Promise<void> {
+    await this.chains.get(projectId)
+  }
+
+  dispose(): void {
+    this.disposed = true
+    for (const t of this.runTimers.values()) clearTimeout(t)
+    this.runTimers.clear()
+    for (const ac of this.controllers.values()) ac.abort()
+    this.controllers.clear()
+  }
 }
