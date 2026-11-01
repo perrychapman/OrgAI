@@ -30,7 +30,7 @@ try {
   check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'the Team tab is selected after create')
   check((await teamPanelTab(page, 'Role').count()) === 1 && (await teamPanelTab(page, 'Catalog').count()) === 1, 'the side panel has Role and Catalog tabs')
   check((await teamPanelTab(page, 'Catalog').getAttribute('aria-selected')) === 'true', 'Catalog is selected while no role is selected')
-  check((await page.locator('.editor .frame-tray').count()) === 0 || !(await page.locator('.editor .frame-tray').isVisible()), 'the Team assistant tray takes no room while empty')
+  check((await page.locator('.editor .frame-tray [data-testid=team-recommend]').count()) === 1, 'the Team assistant tray opens on Recommend')
   check((await page.locator('.role-node [data-testid=role-node-caps]').count()) === 4, 'every role node shows its capability line')
   await page.locator('.react-flow__node').first().click()
   await sleep(300)
@@ -40,7 +40,7 @@ try {
   await page.locator('[data-testid=team-assistant]').waitFor({ state: 'visible', timeout: 5000 })
   check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Architect in the tray does not replace the role inspector')
   await shot('team-architect')
-  await page.locator('[data-testid=architect-close]').click()
+  await page.locator('[data-testid=team-mode-recommend]').click()
   await page.locator('.react-flow__pane').click({ position: { x: 5, y: 5 } })
   await shot('editor')
 

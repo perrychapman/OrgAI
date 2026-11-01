@@ -146,6 +146,66 @@ async function sectionConnections(page, shot) {
   check(await block.locator('[data-testid=role-add-connection]').evaluate((el) => el === document.activeElement), 'after a revoke, focus returns to "+ Add"')
 }
 
+async function sectionAssistant(page, shot) {
+  const tray = page.locator('[data-testid=team-assistant]')
+  await tray.waitFor({ timeout: 10_000 })
+  check((await tray.locator('[data-testid=team-mode-recommend]').getAttribute('aria-selected')) === 'true', 'the tray opens on Recommend')
+  check((await tray.locator('[data-testid=architect-open]').count()) === 1, 'the Design mode switch is in the tray')
+  check((await page.locator('.frame-toolbar [data-testid=architect-open]').count()) === 0, 'the toolbar no longer has a Design button')
+  check((await tray.locator('[data-testid=team-include-outside]').count()) === 1, 'the outside-sources opt-in is present')
+  check(!(await tray.locator('[data-testid=team-include-outside] input').isChecked()), 'outside sources are off by default')
+  check((await tray.locator('[data-testid=team-scope] select').count()) === 1, 'the scope chip is present')
+  await tray.locator('[data-testid=team-recommend]').click()
+  const cards = tray.locator('[data-testid=capability-card]')
+  await cards.first().waitFor({ timeout: 20_000 })
+  const n = await cards.count()
+  check(n >= 1, 'Recommend shows at least one card', String(n))
+  check((await cards.first().locator('[data-testid=capability-source]').innerText()).trim().length > 0, 'a card has a source badge')
+  check((await tray.locator('[data-testid=capability-needs]', { hasText: 'GITHUB_TOKEN' }).count()) >= 1, 'a card flags "Needs: GITHUB_TOKEN"')
+  check(/\bread\b|can load/i.test(await cards.first().locator('[data-testid=capability-access]').innerText()), 'the access sentence defaults to reading')
+  await shot('assistant-results')
+
+  // Apply the repo skill to the roles it names; the role block shows it; Undo restores.
+  const skill = tray.locator('[data-testid=capability-card][data-kind=skill][data-origin=repo]').first()
+  if ((await skill.count()) > 0) {
+    const name = await skill.getAttribute('data-name')
+    await skill.locator('[data-testid=capability-apply]').click()
+    const applied = tray.locator('[data-testid=capability-applied]').first()
+    await applied.waitFor({ timeout: 10_000 })
+    check(await applied.locator('[data-testid=capability-undo]').evaluate((el) => el === document.activeElement), 'after Apply, focus lands on Undo')
+    let p = await findProject(page, NAME)
+    const sk = p.skills.find((s) => s.name === name)
+    check(!!sk && p.roles.some((r) => (r.skills ?? []).includes(sk.id)), 'applying the skill grants it to a role', name)
+    check(p.roles.some((r) => !(r.skills ?? []).includes(sk.id)), 'not every role got it (least privilege)')
+    await applied.locator('[data-testid=capability-undo]').click()
+    await tray.locator('[data-testid=capability-applied]').waitFor({ state: 'detached', timeout: 10_000 })
+    p = await findProject(page, NAME)
+    check(!p.skills.some((s) => s.name === name) || p.roles.every((r) => !(r.skills ?? []).includes(sk.id)), 'Undo restores the roles')
+  } else {
+    check(false, 'the mock offers a repo skill card')
+  }
+
+  // Dismiss hides a card and it does not come back on a re-check.
+  const before = await cards.count()
+  const dname = await cards.first().getAttribute('data-name')
+  await cards.first().locator('[data-testid=capability-dismiss]').click()
+  await sleep(500)
+  check((await cards.count()) === before - 1, 'Dismiss hides the card')
+  await tray.locator('[data-testid=team-recheck]').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
+  check((await tray.locator(`[data-testid=capability-card][data-name="${dname}"]`).count()) === 0, 'a dismissed card does not return after Re-check setup')
+
+  // Design mode: an Architect session that stays on the Team tab and off the Live strip.
+  await tray.locator('[data-testid=architect-open]').click()
+  const box = tray.locator('textarea').first()
+  await box.fill('Add a database specialist.')
+  await tray.getByRole('button', { name: 'Revise with the Architect' }).click()
+  await tray.locator('[data-testid=architect-session]').waitFor({ timeout: 15_000 })
+  check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'the Architect session does not leave the Team tab')
+  check((await page.locator('.run-tab').count()) === 0, 'the Architect session has no run tab on the Live strip')
+  await tray.locator('[data-testid=team-mode-recommend]').click()
+}
+
 const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
@@ -154,6 +214,7 @@ try {
   await sectionTools(page)
   await sectionSkills(page)
   await sectionConnections(page, shot)
+  await sectionAssistant(page, shot)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
   await page.locator('[data-testid=capability-chooser]').waitFor()
@@ -168,6 +229,8 @@ try {
       const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(m.sw <= m.cw, `no horizontal scroll at ${w}x${h} ${theme}`, JSON.stringify(m))
       await shot(`role-block-${w}x${h}-${theme}`)
+      const g = await page.evaluate(() => ({ stage: document.querySelector('.editor .frame-stage')?.getBoundingClientRect().height ?? 0, stageW: document.querySelector('.editor .frame-stage')?.getBoundingClientRect().width ?? 0 }))
+      check(g.stage >= 140 && g.stageW >= 280, `the stage keeps its room beside the open tray at ${w}x${h}`, JSON.stringify(g))
     }
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
