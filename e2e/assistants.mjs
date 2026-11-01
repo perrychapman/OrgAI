@@ -187,7 +187,7 @@ try {
   if (/No handler registered/.test(probe)) {
     for (const s of [
       'Chat run starts from the start page and shows a run tab',
-      'Chat run reaches Idle with "Done. Ask a follow-up or end the session."',
+      'Chat run reaches Idle with "Your turn. Reply, ask a follow-up, or end the session."',
       'Save as project is disabled for a scratch chat, with a reason',
       'Chat History shows Scratch in history-folder',
       'Skill assistant run shows a proposal with proposal-skill-item and Approve resolves it'
@@ -202,9 +202,46 @@ try {
     await ta.press('Enter')
     await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
     check((await page.locator('.run-tab[aria-selected=true]').count()) === 1, 'Chat run starts and a run tab appears')
-    await page.getByText('Done. Ask a follow-up or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
-    check((await page.getByText('Done. Ask a follow-up or end the session.').count()) > 0, 'Chat run reaches Idle with the follow-up label')
+    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    check((await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').count()) > 0, 'Chat run reaches Idle with the follow-up label')
     await shot('chat-idle-1600x1000')
+
+    // Conversation layout (H1): a one-assistant chat shows its transcript as the stage, the reply and the composer
+    // fit at 1024x640 without page scroll, and the toolbar toggle swaps to the canvas and back.
+    const toggle = page.locator('[data-testid=run-layout-toggle]')
+    check(await visible('[data-testid=run-conversation]'), 'a one-assistant chat opens in the conversation layout')
+    check((await page.locator('.run-body').first().getAttribute('data-layout').catch(() => null)) === 'conversation', 'the layout toggle reports the conversation layout')
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme)
+      await setSize(1024, 640)
+      await sleep(500)
+      const fit = await page.evaluate(() => {
+        const vh = window.innerHeight
+        const doc = document.scrollingElement
+        const reply = [...document.querySelectorAll('[data-testid=run-conversation] *')].filter((el) => el.children.length === 0 && /I can see \d+ OrgAI project/.test(el.textContent ?? '')).pop()
+        const r = reply?.getBoundingClientRect()
+        const c = document.querySelector('.run-body .composer')?.getBoundingClientRect()
+        return {
+          pageScroll: doc ? doc.scrollHeight - doc.clientHeight : 0,
+          reply: r ? r.height > 0 && r.top >= 0 && r.bottom <= vh : false,
+          composer: c ? c.top >= 0 && c.bottom <= vh : false
+        }
+      })
+      check(fit.pageScroll <= 1 && fit.reply && fit.composer, `conversation shows the mock reply and the composer at 1024x640 without page scroll (${theme})`, JSON.stringify(fit))
+      await shot(`chat-conversation-1024x640-${theme}`)
+      await setSize(1600, 1000)
+      await sleep(400)
+      await shot(`chat-conversation-1600x1000-${theme}`)
+    }
+    await setTheme('dark')
+    await toggle.click()
+    await sleep(500)
+    check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas' && (await page.locator('.react-flow').count()) > 0 && !(await visible('[data-testid=run-conversation]')), '"Show agents" switches to the canvas')
+    check((await toggle.getAttribute('aria-label')) === 'Show conversation', 'the toggle then reads "Show conversation"')
+    await toggle.click()
+    await sleep(400)
+    check(await visible('[data-testid=run-conversation]'), '"Show conversation" switches back')
+
     await endSession(page)
     const save = page.locator('[data-testid=run-save-as-project]')
     const saveOff = (await save.getAttribute('aria-disabled').catch(() => null)) === 'true' || (await save.isDisabled().catch(() => false))
@@ -250,7 +287,7 @@ try {
     await setSize(1600, 1000)
     await page.locator('[data-testid=assistant-start-quick] .composer textarea').fill('Say hello in one short sentence.')
     await page.locator('[data-testid=assistant-start-quick] .composer textarea').press('Enter')
-    await page.getByText('Done. Ask a follow-up or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     await endSession(page)
     const promote = page.locator('[data-testid=run-save-as-project]')
     check((await promote.count()) === 1 && !(await promote.isDisabled()), 'Save as project is enabled for a chat in a folder')

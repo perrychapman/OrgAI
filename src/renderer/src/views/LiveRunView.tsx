@@ -697,17 +697,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                 </span>
               )}
               {!conversation && <CanvasTools />}
-              <button
-                type="button"
-                className="icon-btn size-sm"
-                aria-label={conversation ? 'Show agents' : 'Show conversation'}
-                title={conversation ? 'Show agents' : 'Show conversation'}
-                data-testid="run-layout-toggle"
-                data-layout={layout}
+              <IconButton
+                icon={conversation ? Network : MessageSquare}
+                label={conversation ? 'Show agents' : 'Show conversation'}
+                size="sm"
+                testId="run-layout-toggle"
                 onClick={() => setRunLayout(runId, conversation ? 'canvas' : 'conversation')}
-              >
-                <Icon icon={conversation ? Network : MessageSquare} size="sm" />
-              </button>
+              />
             </div>
           </FrameToolbar>
           <FrameStage>
