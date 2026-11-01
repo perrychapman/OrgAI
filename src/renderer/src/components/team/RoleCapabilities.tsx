@@ -10,12 +10,32 @@ import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { grantServerRoles, revokePlan, toolsSummary } from '../../lib/roleCapabilities'
+import { grantServerRoles, revokePlan, toolsSummaryParts } from '../../lib/roleCapabilities'
 import { CapabilityGroup, type CapabilityKind } from './CapabilityBlock'
 import { CapabilityChooser, type ChooserActions } from './CapabilityChooser'
 
 /** Tools that change files or run commands keep a warning style in the editor. */
 const ELEVATED_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash', 'NotebookEdit']
+
+/** "Read, Glob, Grep + Bash, Edit": elevated tools are named and set in the warning colour. */
+function ToolsSummary({ tools }: { tools: readonly string[] }): ReactElement {
+  if (tools.length === 0) return <>No tools</>
+  const { base, elevated, more } = toolsSummaryParts(tools, TOOL_CATALOG)
+  const tail = elevated.length + (more > 0 ? 1 : 0)
+  return (
+    <>
+      {base.join(', ')}
+      {tail > 0 && (base.length > 0 ? ' + ' : '')}
+      {elevated.map((t, i) => (
+        <span key={t} className="role-tool-elevated-text">
+          {i > 0 ? ', ' : ''}
+          {t}
+        </span>
+      ))}
+      {more > 0 && `${elevated.length > 0 ? ', ' : ''}${more} more`}
+    </>
+  )
+}
 
 /**
  * "What it can use": one block with the role's Tools, Connections and Skills, edited in place. Each group has a scoped
@@ -151,7 +171,7 @@ export default function RoleCapabilities({
         id="role-tools"
         testId="role-tools"
         title="Tools"
-        summary={toolsSummary(role.tools, TOOL_CATALOG)}
+        summary={<ToolsSummary tools={role.tools} />}
         helper="What this role may do on your files and shell."
         actions={
           <Button size="sm" icon={editingTools ? Check : Pencil} ariaLabel={editingTools ? 'Done editing tools' : `Edit tools for ${role.name}`} testId="role-edit-tools" onClick={() => setEditingTools((v) => !v)}>
