@@ -3,7 +3,7 @@ import { REGISTRY_URL, parseRegistryResponse } from '../mcp/registry'
 import { isPrivateHost } from '../mcp/oauth'
 import { isExactSemver, nameFromRegistry, specFromRegistry, validateSpec, type RegistryChoice } from '../mcp/validate'
 import { buildScannedSkill } from '../skills/scan'
-import { capabilityId, clampText, isKeyLikeValue, isSecretName, sanitizeArgs, scrubUrl, validKeyName } from './sanitize'
+import { capabilityId, clampText, isKeyLikeValue, isSecretName, reviewTarget, sanitizeArgs, scrubUrl, validKeyName } from './sanitize'
 import type { DiscoveredCandidate, OutsideContext, SourceResult } from './types'
 
 /**
@@ -24,7 +24,10 @@ const REGISTRY_HOST = 'registry.modelcontextprotocol.io'
 const GITHUB_HOST = 'api.github.com'
 const REGISTRY_LABEL = 'MCP Registry'
 const GITHUB_LABEL = 'anthropics/skills'
-const SAFE_DIR = /^[A-Za-z0-9._-]{1,64}$/
+/** A skill folder name from the GitHub listing: starts with a letter or digit (so never "." or ".."), at most 64 chars. */
+export function safeSkillDir(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name) && name !== '.' && name !== '..'
+}
 
 class TooLarge extends Error {}
 
@@ -168,9 +171,27 @@ function buildRegistryCandidate(entry: McpRegistryEntry): DiscoveredCandidate | 
     blockedReason = clampText((e as Error).message, 200)
     spec = { id: '', name: nameFromRegistry(entry.name), transport: 'stdio', enabled: false, source: 'registry', addedAt: '' }
   }
-  if (entry.status === 'deprecated') blockedReason = 'Deprecated in the MCP Registry.'
   const stdio = spec.transport === 'stdio'
-  const target = stdio ? clampText([spec.command ?? '', ...(spec.args ?? [])].join(' '), 200) : clampText(scrubUrl(spec.url) ?? '', 200)
+  if (!stdio && !blockedReason) {
+    // A remote from the registry: https only, never a private-IP literal, and stored without query or login parts.
+    const scrubbed = scrubUrl(spec.url)
+    let host = ''
+    try {
+      host = new URL(spec.url ?? '').hostname
+    } catch {
+      /* blocked below */
+    }
+    if (!scrubbed || !host) blockedReason = 'The server address is not a plain https address.'
+    else if (!scrubbed.startsWith('https://')) blockedReason = 'The server address is not https.'
+    else if (isPrivateHost(host)) blockedReason = 'The server address points to a private network.'
+    if (scrubbed) spec.url = scrubbed
+    else delete spec.url
+  }
+  if (entry.status === 'deprecated') blockedReason = 'Deprecated in the MCP Registry.'
+  // The review text is the whole command (or URL) the apply would save; too long or hidden characters block it.
+  const review = reviewTarget(spec)
+  if (review.blockedReason && !blockedReason) blockedReason = review.blockedReason
+  const target = review.target
   const flags: CapabilityFlag[] = ['unverified', stdio ? 'runsCode' : 'remote']
   const location = scrubUrl(entry.repositoryUrl) ?? `MCP Registry: ${clampText(entry.name, 120)}`
   const item: DiscoveredCandidate['item'] = {
@@ -364,7 +385,7 @@ export async function discoverGithubSkills(ctx: OutsideContext): Promise<SourceR
     const dirs = (Array.isArray(listing) ? listing : [])
       .filter((e): e is { type: string; name: string } => !!e && typeof e === 'object' && (e as { type?: unknown }).type === 'dir' && typeof (e as { name?: unknown }).name === 'string')
       .map((e) => e.name)
-      .filter((n) => SAFE_DIR.test(n))
+      .filter(safeSkillDir)
       .slice(0, GITHUB_MAX_SKILLS)
     for (const dir of dirs) {
       if (ctx.signal?.aborted) {

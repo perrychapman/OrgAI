@@ -63,7 +63,7 @@ import {
 } from './recommend'
 import { collectEvidence, EVIDENCE_MAX_RUNS, hasNewEvidence } from './evidence'
 import { readReview, removeReview, reviewSummary, writeReview } from './reviewStore'
-import { clampText } from './sanitize'
+import { clampText, mcpSpecDigest } from './sanitize'
 
 /** What index.ts hands the service. */
 export interface CapabilityServiceDeps {
@@ -138,8 +138,18 @@ interface ModelOutcome {
 
 type Emit = (phase: CapabilitySourceId | 'model', state: CapabilityProgressEvent['state'], count?: number, message?: string) => void
 
-function digestOf(items: CapabilityItem[]): string {
-  const lines = items.map((i) => `${i.id}\0${i.kind}\0${i.digest ?? i.target ?? ''}\0${i.blockedReason ?? ''}`).sort()
+/**
+ * What binds one candidate into the discovery digest: a local or registry MCP server by mcpSpecDigest of the spec
+ * the apply would save (command, args, URL, env and header names, secret slots), a skill by its file digest,
+ * anything else by its target.
+ */
+function candidateBinding(c: DiscoveredCandidate): string {
+  if (c.payload.type === 'mcpSpec') return `spec:${mcpSpecDigest(c.payload.spec)}`
+  return c.item.digest ?? c.item.target ?? ''
+}
+
+function digestOf(candidates: DiscoveredCandidate[]): string {
+  const lines = candidates.map((c) => `${c.item.id}\0${c.item.kind}\0${candidateBinding(c)}\0${c.item.target ?? ''}\0${c.item.blockedReason ?? ''}`).sort()
   return createHash('sha256').update(lines.join('\n')).digest('hex')
 }
 
@@ -347,7 +357,7 @@ export class CapabilityService implements CapabilityServiceApi {
       warnings.push({ source: 'project', message: `Only the first ${CAPABILITY_MAX_ITEMS} candidates are listed.` })
     }
     const items = merged.map((c) => c.item)
-    const digest = digestOf(items)
+    const digest = digestOf(merged)
     const discovery: CapabilityDiscovery = {
       projectId: project.id,
       items,

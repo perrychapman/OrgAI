@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { relative, isAbsolute, sep } from 'node:path'
-import { CAPABILITY_DESCRIPTION_MAX, type CapabilityKind, type CapabilityOrigin } from '@shared/types'
+import { CAPABILITY_DESCRIPTION_MAX, type CapabilityKind, type CapabilityOrigin, type McpServerSpec } from '@shared/types'
 
 /**
  * Shared rules for untrusted capability text (config files, SKILL.md, registry and GitHub answers). Pure; never
@@ -170,4 +170,49 @@ export function displayPath(abs: string, homeDir: string): string {
 /** `cap-<24 hex>`: stable for the same origin, kind, source key (path, URL, registry name) and name. */
 export function capabilityId(origin: CapabilityOrigin, kind: CapabilityKind, sourceKey: string, name: string): string {
   return `cap-${createHash('sha256').update(`${origin}\0${kind}\0${sourceKey}\0${name}`).digest('hex').slice(0, 24)}`
+}
+
+/** The longest MCP command or address the Team assistant shows for review; anything longer is blocked, never cut. */
+export const MCP_TARGET_MAX = 400
+// C0/C1 controls, zero-width and bidi overrides/isolates (what clampText would silently rewrite).
+const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/
+
+/**
+ * The exact review text of an MCP server: `command arg arg` (an arg that is empty or has whitespace or a quote is
+ * JSON-quoted so the split stays visible) or the URL. Never truncated: over MCP_TARGET_MAX chars, or with control,
+ * zero-width or bidi characters, it comes back with a blockedReason (the item cannot be applied) and a clamped
+ * display string.
+ */
+export function reviewTarget(spec: Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url'>): { target: string; blockedReason?: string } {
+  const quote = (a: string): string => (a === '' || /[\s"']/.test(a) ? JSON.stringify(a) : a)
+  const full = spec.transport === 'stdio' ? [spec.command ?? '', ...(spec.args ?? []).map(quote)].join(' ') : (spec.url ?? '')
+  if (HIDDEN_CHARS.test(full)) return { target: clampText(full, MCP_TARGET_MAX), blockedReason: 'The command contains hidden or control characters.' }
+  if (full.length > MCP_TARGET_MAX) {
+    return { target: clampText(full, MCP_TARGET_MAX), blockedReason: spec.transport === 'stdio' ? 'Command too long to review' : 'Address too long to review' }
+  }
+  return { target: full }
+}
+
+/**
+ * sha256 of everything an applied MCP spec would run or connect to: transport, command, args, URL, env and header
+ * names (with the non-secret values a registry entry carries) and the secret slot names. Any change to the tail of
+ * the command or to a secret slot changes it, so a re-discovery with a different spec no longer matches.
+ */
+export function mcpSpecDigest(spec: McpServerSpec): string {
+  const pairs = (rec: Record<string, string> | undefined): Array<[string, string]> =>
+    Object.entries(rec ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        transport: spec.transport,
+        command: spec.command ?? null,
+        args: spec.args ?? [],
+        url: spec.url ?? null,
+        env: pairs(spec.env),
+        headers: pairs(spec.headers),
+        secretEnv: [...(spec.secretEnv ?? [])].sort(),
+        secretHeaders: [...(spec.secretHeaders ?? [])].sort()
+      })
+    )
+    .digest('hex')
 }

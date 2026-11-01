@@ -3,7 +3,7 @@ import { isValidMcpServerName } from '@shared/defaults'
 import { parseJsonc } from '../setup/import/jsonc'
 import { parseToml } from '../setup/import/toml'
 import { isExactSemver, validateSpec } from '../mcp/validate'
-import { capabilityId, clampText, displayPath, sanitizeArgs, scrubUrl, validKeyName } from './sanitize'
+import { capabilityId, clampText, displayPath, reviewTarget, sanitizeArgs, scrubUrl, validKeyName } from './sanitize'
 import { localPaths, readBoundedText, type LocalLocation } from './paths'
 import type { DiscoveredCandidate, LocalContext, SourceResult } from './types'
 
@@ -104,7 +104,6 @@ function buildServer(
   }
 
   const spec: McpServerSpec = { id: '', name, transport, enabled: true, source: 'local', addedAt: '', description: `From ${sourceLabel}` }
-  let target = ''
   let kept: string[] = []
 
   if (transport === 'stdio') {
@@ -122,7 +121,6 @@ function buildServer(
     kept = clean.kept
     notes.push(...clean.notes)
     spec.args = kept
-    target = [command, ...kept].join(' ')
     const names = new Set<string>()
     if (isObj(raw.env)) {
       for (const k of Object.keys(raw.env)) {
@@ -142,7 +140,6 @@ function buildServer(
     }
     if (/[?#]|\/\/[^/]*@/.test(urlRaw)) notes.push('The URL had a query, fragment or login part; it was left out.')
     spec.url = scrubbed
-    target = scrubbed
     const names = new Set<string>()
     for (const holder of [raw.headers, raw.http_headers, raw.env_http_headers]) {
       if (!isObj(holder)) continue
@@ -169,6 +166,8 @@ function buildServer(
   const needsSecrets = [...(spec.secretEnv ?? []), ...(spec.secretHeaders ?? [])]
   const flags: CapabilityFlag[] = transport === 'stdio' ? ['runsCode'] : ['remote']
   const version = transport === 'stdio' ? pinnedVersion(kept) : undefined
+  // The review text is the whole command (or URL) the apply would save; too long or hidden characters block it.
+  const review = reviewTarget(spec)
   const item: DiscoveredCandidate['item'] = {
     id: capabilityId(origin, 'mcp', `${opts.fileDisplay}#${opts.scopeKey}${name}`, name),
     kind: 'mcp',
@@ -179,13 +178,14 @@ function buildServer(
     name,
     description: clampText(`From ${sourceLabel}`),
     transport,
-    target: clampText(target, 200),
+    target: review.target,
     flags,
     needsSecrets,
     notes: notes.map((n) => clampText(n, 200)).filter((n, i, all) => all.indexOf(n) === i).slice(0, 8)
   }
   if (version) item.version = version
   if (errors.length) item.blockedReason = clampText(errors.join(' '), 300)
+  else if (review.blockedReason) item.blockedReason = review.blockedReason
   return { candidate: { item, payload: { type: 'mcpSpec', spec } } }
 }
 
