@@ -2414,6 +2414,12 @@ export interface RunSummary {
   surface?: RunSurface
   /** Quick runs only (projectId QUICK_PROJECT_ID, kind 'work'): where and how it works. Kept by continuations. */
   quick?: QuickRunInfo
+  /**
+   * MCP assistant runs started with McpAssistInput.allowBuild only: the per-run scratch dir under `<data>/quick/`
+   * the session works in (absolute). Continuations keep it, so the session reopens in the same folder; the boot
+   * sweep keeps a scratch dir any run record points to (quick.folder or buildWorkspace).
+   */
+  buildWorkspace?: string
 }
 
 /**
