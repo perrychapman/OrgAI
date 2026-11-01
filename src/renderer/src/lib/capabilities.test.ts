@@ -65,9 +65,8 @@ describe('capabilities helpers', () => {
     expect(skillsFirst([{ candidateId: 'a' }, { candidateId: 'b' }, { candidateId: 'c' }, { candidateId: 'd' }], items).map((r) => r.candidateId)).toEqual(['b', 'd', 'a', 'c'])
   })
   it('words the results head', () => {
-    expect(resultsHeadText(2, 'the whole team', 2, false)).toBe('2 to review for the whole team')
+    expect(resultsHeadText(2, 'the whole team', 2, false)).toBe('2 to review')
     expect(resultsHeadText(3, 'Reviewer', 14, true)).toBe('3 to review for Reviewer · 11 waiting for the whole team')
-    expect(resultsHeadText(3, 'the whole team', 12, false, { of: 12 })).toBe('Top 3 of 12 to review')
   })
   it('validates the dismissed list', () => {
     const review = { dismissed: [{ candidateId: 'x', name: 'Alpha', kind: 'skill', dismissedAt: 't' }, { candidateId: 'y', at: 'u' }, { nope: 1 }, null], discovery: { items: [{ id: 'y', name: 'Beta', kind: 'connector' as const }] } }

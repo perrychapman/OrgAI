@@ -281,11 +281,10 @@ export function skillsFirst<T extends { candidateId: string }>(recs: readonly T[
 }
 
 /** The results heading: "3 to review for Reviewer", with the rest of the team's count when the list is narrower than the badge. */
-export function resultsHeadText(open: number, scopeName: string, pending: number | undefined, scoped: boolean, capped?: { of: number }): string {
-  if (capped && capped.of > open) return `Top ${open} of ${capped.of} to review`
+export function resultsHeadText(open: number, scopeName: string, pending: number | undefined, scoped: boolean): string {
+  if (!scoped) return `${open} to review`
   const base = `${open} to review for ${scopeName}`
-  if (scoped && pending !== undefined && pending > open) return `${base} · ${pending - open} waiting for the whole team`
-  return base
+  return pending !== undefined && pending > open ? `${base} · ${pending - open} waiting for the whole team` : base
 }
 
 /** "and 1 gap" / "and 3 gaps". */
