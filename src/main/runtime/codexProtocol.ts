@@ -317,10 +317,11 @@ export interface PolicyChoice {
  *   bypassPermissions never + danger-full-access
  * A role without any writing tool (`writes` false) and every setup-like run get read-only, unless the mode is stricter.
  */
-export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLike: boolean; quick?: boolean }): PolicyChoice {
+export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLike: boolean; quick?: boolean; setupWrites?: boolean }): PolicyChoice {
   // Quick runs and setup-like runs whose role can write (allowBuild MCP assistant) ask for every change: auto,
   // acceptEdits and bypass fall back to the asking default (mirrors claude.ts claudePermissionMode).
-  const setupWrites = opts.setupLike && opts.writes
+  // setupWrites: a build session (allowBuild MCP assistant) whose role has write tools; the Architect (Bash only) is not one.
+  const setupWrites = opts.setupLike && opts.writes && !!opts.setupWrites
   if ((opts.quick || setupWrites) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) mode = 'default'
   let choice: PolicyChoice
   switch (mode) {

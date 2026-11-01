@@ -400,7 +400,7 @@ class CodexSession implements RuntimeSession {
   // ---------- start ----------
 
   private policyFor(role: Role): PolicyChoice {
-    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick })
+    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' })
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
