@@ -124,7 +124,8 @@ const api: OrgAIApi = {
     undo: (input) => ipcRenderer.invoke(IPC.capabilitiesUndo, input),
     review: (input) => ipcRenderer.invoke(IPC.capabilitiesReview, input),
     lastReview: (projectId: string) => ipcRenderer.invoke(IPC.capabilitiesLastReview, projectId),
-    dismiss: (input) => ipcRenderer.invoke(IPC.capabilitiesDismiss, input)
+    dismiss: (input) => ipcRenderer.invoke(IPC.capabilitiesDismiss, input),
+    restore: (input) => ipcRenderer.invoke(IPC.capabilitiesRestore, input)
   },
   onTeamReviewUpdated: (cb) => {
     const listener = (_e: IpcRendererEvent, summary: TeamReviewSummary): void => cb(summary)

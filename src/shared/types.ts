@@ -3333,15 +3333,25 @@ export interface TeamDismissal {
   fingerprint: string
   /** ISO timestamp. */
   at: string
+  /**
+   * For the "Dismissed (n)" list: the candidate's display name and kind when it was dismissed (clamped untrusted
+   * text, no targets or paths). Missing on dismissals saved before 2026-11-01 when the review no longer lists the item.
+   */
+  name?: string
+  kind?: CapabilityKind
+  /** The recommendation that was dismissed, when there was one: capabilities:restore puts it back in the pending list. */
+  recommendation?: CapabilityRecommendation
 }
 
 /** Why the review's model step did not run. */
-export type TeamReviewModelSkip = 'autoOff' | 'autoFree' | 'noChange' | 'everyRuns' | 'budget' | 'error' | 'timeout' | 'cancelled' | 'mockFree'
+export type TeamReviewModelSkip = 'autoOff' | 'autoFree' | 'noChange' | 'everyRuns' | 'budget' | 'error' | 'timeout' | 'cancelled' | 'mockFree' | 'pendingFull'
 
 /**
  * The persisted review (<data>/team-reviews/<projectId>.json). recommendations are the pending ones only: applied
  * and dismissed ones are removed. Apply them with capabilities:apply and `digest`; main re-discovers when its
- * in-memory snapshot is gone (after a restart) and refuses when the sources changed.
+ * in-memory snapshot is gone (after a restart) and refuses when the sources changed. A complete (not partial)
+ * capabilities:recommend result is merged in as pending too (newest first, rebinding the review to its discovery), so
+ * it survives a restart; `dismissed` is the list the UI can offer to restore (capabilities:restore).
  */
 export interface TeamReview {
   projectId: string
@@ -3416,6 +3426,21 @@ export interface TeamDismissInput {
   candidateId?: string
 }
 
+/**
+ * capabilities:restore input: forget the dismissal of `candidateId` so it can be offered again. When the dismissal
+ * held a recommendation whose candidate is unchanged and still useful, it returns to the pending list.
+ */
+export interface TeamRestoreInput {
+  projectId: string
+  candidateId: string
+}
+
+/**
+ * Most recommendations an automatic review (runEnded, opened) adds to the pending list: it never drops pending
+ * ones, and adds new ones only while fewer than this are pending (at least one when nothing is). Manual Re-check and
+ * capabilities:recommend results are not capped by it (CAPABILITY_MAX_RECOMMENDATIONS).
+ */
+export const TEAM_REVIEW_PROACTIVE_LIMIT = 5
 export const TEAM_REVIEW_MIN_BUDGET = 1_000
 export const TEAM_REVIEW_MAX_BUDGET = 500_000
 export const TEAM_REVIEW_MAX_EVERY_RUNS = 100
@@ -3654,6 +3679,8 @@ export interface OrgAIApi {
     lastReview(projectId: string): Promise<TeamReview | null>
     /** Drop one pending recommendation and remember it so it never returns while its candidate is unchanged. */
     dismiss(input: TeamDismissInput): Promise<TeamReview>
+    /** Undo a dismissal (TeamReview.dismissed): the candidate may be offered again; its recommendation returns when still useful. */
+    restore(input: TeamRestoreInput): Promise<TeamReview>
   }
   /** A review was saved (manual, proactive or after apply/dismiss). Returns an unsubscribe function. */
   onTeamReviewUpdated(cb: (summary: TeamReviewSummary) => void): () => void
@@ -3931,6 +3958,7 @@ export const IPC = {
   capabilitiesReview: 'capabilities:review',
   capabilitiesLastReview: 'capabilities:lastReview',
   capabilitiesDismiss: 'capabilities:dismiss',
+  capabilitiesRestore: 'capabilities:restore',
   /** main -> renderer push channel carrying TeamReviewSummary. */
   capabilitiesReviewUpdated: 'capabilities:reviewUpdated'
 } as const

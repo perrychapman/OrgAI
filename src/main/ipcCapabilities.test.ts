@@ -94,4 +94,14 @@ describe('capabilityArgs other channels', () => {
     expect(capabilityArgs.dismiss({ projectId: 'p1', candidateId: 'cap-1', x: 1 })).toEqual({ projectId: 'p1', candidateId: 'cap-1' })
     expect(capabilityArgs.dismiss({ projectId: 'p1', recommendationId: 'rec-1', candidateId: 'cap-1' })).toEqual({ projectId: 'p1', recommendationId: 'rec-1', candidateId: 'cap-1' })
   })
+
+  it('restore rebuilds projectId and candidateId only and refuses the harness project', () => {
+    expect(capabilityArgs.restore({ projectId: 'p1', candidateId: 'cap-1', recommendation: { id: 'x' }, path: '/etc' })).toEqual({ projectId: 'p1', candidateId: 'cap-1' })
+    expect(() => capabilityArgs.restore({ projectId: 'p1' })).toThrow('Candidate not found')
+    expect(() => capabilityArgs.restore({ projectId: 'p1', candidateId: '../c' })).toThrow('Candidate not found')
+    expect(() => capabilityArgs.restore({ projectId: 'p1', candidateId: 7 })).toThrow('Candidate not found')
+    expect(() => capabilityArgs.restore({ projectId: 'harness', candidateId: 'cap-1' })).toThrow('Project not found')
+    expect(() => capabilityArgs.restore({ projectId: '../p', candidateId: 'cap-1' })).toThrow('Project not found')
+    expect(() => capabilityArgs.restore(null)).toThrow()
+  })
 })
