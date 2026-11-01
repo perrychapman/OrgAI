@@ -97,6 +97,14 @@ describe('McpService servers', () => {
     expect(svc.resolve(pid, s).env).toEqual({ A: '1' })
   })
 
+  it('upsert with an added role slug keeps the stored secrets', () => {
+    svc.upsert({ projectId: pid, spec: spec() })
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'GITHUB_TOKEN', value: 'tok' })
+    const r = svc.upsert({ projectId: pid, spec: spec({ roles: ['reviewer'] }) })
+    expect(r.servers[0].spec.roles).toEqual(['reviewer'])
+    expect(svc.resolve(pid, projects.get(pid)!.mcpServers![0]).env.GITHUB_TOKEN).toBe('tok')
+  })
+
   it('persistInstall saves the spec as agent-sourced and stores the secrets', () => {
     const p = svc.persistInstall(pid, spec(), { GITHUB_TOKEN: 'tok' })
     expect(p.mcpServers?.[0].source).toBe('agent')
