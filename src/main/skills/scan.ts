@@ -49,7 +49,7 @@ export interface RepoScan {
   digest: string
 }
 
-function build(files: FileData[], folderName: string, repoPath: string, root: SkillRepoRoot | null): ScannedSkill | string {
+export function buildScannedSkill(files: FileData[], folderName: string, repoPath: string, root: SkillRepoRoot | null): ScannedSkill | string {
   const md = files.find((f) => f.path === 'SKILL.md')
   if (!md) return 'There is no SKILL.md in the folder.'
   const parsed = skillFromMd(md.data.toString('utf8'), folderName)
@@ -180,7 +180,7 @@ export function scanRepoSkills(projectPath: string): RepoScan {
           }
           continue
         }
-        const skill = build(read.files, name, repoPath, root)
+        const skill = buildScannedSkill(read.files, name, repoPath, root)
         if (typeof skill === 'string') out.invalid.push({ repoPath, reason: skill })
         else {
           skill.notes.push(...read.notes)
@@ -212,7 +212,7 @@ export function scanSkillFolder(path: string): { skill: ScannedSkill } | { inval
     const read = new FolderReader(real).read(real)
     if (!read.ok) return { invalid: read.reason }
     const folder = basename(real)
-    const skill = build(read.files, folder, folder, null)
+    const skill = buildScannedSkill(read.files, folder, folder, null)
     if (typeof skill === 'string') return { invalid: skill }
     skill.notes.push(...read.notes)
     return { skill }
