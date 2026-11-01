@@ -940,7 +940,8 @@ export class CapabilityService implements CapabilityServiceApi {
       else if (settings.auto === 'free') skip = 'autoFree'
       else if (this.deps.mock) skip = 'mockFree'
       else if (runsSinceModel < settings.everyRuns) skip = 'everyRuns'
-      else if (!hasNewEvidence(prev?.evidence, evidence) && newCandidateIds.length === 0 && prev) skip = 'noChange'
+      // Nothing new since a review whose model step already looked at these candidates (a free-only previous review has not).
+      else if (prev?.modelInput && !hasNewEvidence(prev.evidence, evidence) && newCandidateIds.length === 0) skip = 'noChange'
       else {
         const { system, prompt } = buildRecommendPrompt(project, items, {}, { localDetail: 'minimal' })
         if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'

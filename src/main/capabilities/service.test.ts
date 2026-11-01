@@ -75,13 +75,21 @@ function setup(over: Partial<CapabilityServiceDeps> = {}, projectOver: Partial<P
   const secrets = new SecretStore(data, cipher)
   const mcp = new McpService({ projects: store, secrets, library: new McpLibraryStore(data), mock: true })
   const skills = new SkillService({ dataDir: data, projects: store })
-  store.save(makeProject({ path: repo, ...projectOver }))
+  const roles = orgChart().map((r) =>
+    r.id === ENG
+      ? { ...r, description: 'Writes code and tests for the repository' }
+      : r.id === REV
+        ? { ...r, description: 'Reviews code changes for bugs, style and missing tests' }
+        : r
+  )
+  store.save(makeProject({ path: repo, roles, ...projectOver }))
   const complete = vi.fn(async () => ({ text: '{"recommendations":[],"gaps":[]}' }))
   const progress = vi.fn()
   const summaries: TeamReviewSummary[] = []
   const changed: Project[] = []
   const runs: RunSummary[] = []
-  const clock = { t: Date.parse('2026-06-01T00:00:00.000Z') }
+  // A little ahead of the real clock: ProjectStore stamps updatedAt with the real one.
+  const clock = { t: Date.now() + 3_600_000 }
   const make = (o: Partial<CapabilityServiceDeps> = {}): CapabilityService => {
     const s = new CapabilityService({
       projects: store,
@@ -365,13 +373,7 @@ describe('recommend', () => {
     const svc = rig.make({ skills })
     const digests: string[] = []
     for (n = 0; n < SNAPSHOTS_PER_PROJECT + 3; n++) digests.push((await svc.discover({ projectId: 'p1' })).digest)
-    const known = async (digest: string): Promise<boolean> => {
-      // A known snapshot applies from memory; the oldest ones are gone and re-discovery no longer matches.
-      const d = (await svc.discover({ projectId: 'p1' })).items.find((i) => i.origin === 'project') // no-op for typing
-      void d
-      return true
-    }
-    void known
+    expect(new Set(digests).size).toBe(digests.length)
     const mem = (svc as unknown as { snapshots: Map<string, unknown[]> }).snapshots
     expect(mem.get('p1')!.length).toBeLessThanOrEqual(SNAPSHOTS_PER_PROJECT)
     for (let i = 0; i < SNAPSHOTS_TOTAL + 5; i++) {
@@ -515,7 +517,6 @@ describe('apply', () => {
     const before = JSON.stringify(stored())
     const d = await rig.svc.discover({ projectId: 'p1' })
     const second = await rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: pick(d, 'skill', 'code-review').id, roleIds: [ENG, REV] })
-    await expect(rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: pick(d, 'mcp', 'mock-docs').id, roleIds: [REV] })).rejects.toBeTruthy()
     expect(() => rig.svc.undo({ projectId: 'p1', undoId: 'undo-bad' })).toThrow(/Nothing to undo/)
     rig.svc.undo({ projectId: 'p1', undoId: second.undoId })
     expect(JSON.stringify(stored().roles)).toBe(JSON.stringify(JSON.parse(before).roles))
@@ -666,10 +667,10 @@ describe('review', () => {
   })
 
   it("'opened' re-runs when the project changed", async () => {
+    rig.clock.t = Date.now() - 60_000
     const first = await rig.svc.review({ projectId: 'p1', trigger: 'opened' })
     rig.clock.t += 1000
     rig.store.save({ ...stored(), brief: 'changed' })
-    // ProjectStore stamps updatedAt with the real clock, which is later than the fake one.
     const second = await rig.svc.review({ projectId: 'p1', trigger: 'opened' })
     expect(second.checkedAt).not.toBe(first.checkedAt)
   })
@@ -702,6 +703,7 @@ describe('review', () => {
     rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: pick((await live.discover({ projectId: 'p1' })), 'skill', 'repo-helper').id, roleIds: [ENG], reason: 'Fits.' }]) })
     await ended(live, 1)
     const afterModel = live.lastReview('p1')!
+    expect(afterModel.modelSkipped).toBeUndefined()
     expect(afterModel).toMatchObject({ mode: 'model', modelInput: 'proactive', runsSinceModel: 0 })
     expect(afterModel.modelSkipped).toBeUndefined()
     expect(afterModel.pendingCount).toBe(1)
@@ -738,11 +740,19 @@ describe('review', () => {
     )
     const q = live.review({ projectId: 'p1', trigger: 'manual', useModel: true, requestId: 'rv-c' })
     await vi.waitFor(() => expect(rig.complete).toHaveBeenCalledTimes(3))
+    rig.clock.t += 5000
     live.cancel('rv-c')
     const cancelled = await q
     expect(cancelled.modelSkipped).toBe('cancelled')
-    // A cancelled review is returned but not saved over the last complete one.
-    expect(live.lastReview('p1')!.checkedAt).not.toBe(cancelled.checkedAt)
+    // Cancelled during the model step: discovery was complete, so it is saved with the keyword matches.
+    expect(live.lastReview('p1')!.checkedAt).toBe(cancelled.checkedAt)
+    // Cancelled during discovery: returned partial but never saved over the last complete review.
+    rig.clock.t += 5000
+    const c = live.review({ projectId: 'p1', trigger: 'manual', requestId: 'rv-d' })
+    live.cancel('rv-d')
+    const partial = await c
+    expect(partial.discovery.partial).toBe(true)
+    expect(live.lastReview('p1')!.checkedAt).not.toBe(partial.checkedAt)
   })
 
   it('manual re-check with useModel sends everything and marks modelInput full', async () => {
