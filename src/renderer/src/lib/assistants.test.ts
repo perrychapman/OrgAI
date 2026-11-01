@@ -121,3 +121,18 @@ describe('composerPlaceholder', () => {
     expect(composerPlaceholder('Your reply')).toBe('Your reply. Enter to send, Shift+Enter for a new line.')
   })
 })
+
+describe('assistants edge cases', () => {
+  it('names a missing quick info Scratch', () => {
+    expect(quickFolderLabel(undefined)).toBe('Scratch')
+  })
+  it('a scratch chat never claims edits, and a folder chat without a name falls back to scratch wording', () => {
+    expect(chatSummaryLine({ scratch: true, allowEdits: true, model: 'M' })).toContain('Reads files, asks before editing.')
+    expect(chatSummaryLine({ scratch: false, allowEdits: false, model: 'M' })).toContain('Works in a private scratch area.')
+    expect(chatSummaryLine({ scratch: false, folderName: 'api', allowEdits: false, model: '' })).toContain('Runs on the configured model.')
+  })
+  it('a quick run with a blank title proposes Chat, and no quick info cannot be promoted', () => {
+    expect(promoteName({ quick: quick({ scratch: true }), title: '   ' })).toBe('Chat')
+    expect(canPromote({}).ok).toBe(false)
+  })
+})
