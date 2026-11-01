@@ -43,7 +43,7 @@ const info = (i: number, state: ConnectorInfo['state']): ConnectorInfo => ({ con
 describe('connectors lib', () => {
   it('chips say words', () => {
     expect(stateChip(info(0, 'available')).label).toBe('Not connected')
-    expect(stateChip(info(0, 'needsSetup')).label).toBe('Needs setup')
+    expect(stateChip(info(0, 'needsSetup')).label).toBe('Not signed in')
     expect(stateChip(info(0, 'error')).tone).toBe('danger')
     expect(stateChip(info(0, 'connected')).label).toBe('Connected')
   })

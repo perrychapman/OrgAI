@@ -101,6 +101,9 @@ export function UseInProjectDialog({
   )
 }
 
+/** Connected services listed before the unused ones fold away. */
+const CONNECTED_ROWS_CAP = 8
+
 type Step = { kind: 'use'; info: ConnectorInfo } | { kind: 'setup'; info: ConnectorInfo } | null
 
 /** Team > Catalog > Connections: the services connected in the app, and how this project uses them. */
@@ -120,12 +123,19 @@ export default function ConnectedServices({
   onSelectRole?: (roleId: string) => void
 }): ReactElement | null {
   const [step, setStep] = useState<Step>(null)
+  const [showAll, setShowAll] = useState(false)
   const items = setUpConnectors(connectors)
   if (items.length === 0) return null
+  // Past CONNECTED_ROWS_CAP services, rows this project does not use collapse behind "and N more".
+  const inUse = items.filter((i) => !!linkedServerFor(i, servers) || i.state !== 'connected')
+  const spare = items.filter((i) => !inUse.includes(i))
+  const room = showAll || items.length <= CONNECTED_ROWS_CAP ? spare.length : Math.max(0, CONNECTED_ROWS_CAP - inUse.length)
+  const visible = items.filter((i) => inUse.includes(i) || spare.indexOf(i) < room)
+  const hidden = items.length - visible.length
   return (
     <>
       <ul className="card-block mcp-list" aria-label="Connected services">
-        {items.map((info) => (
+        {visible.map((info) => (
           <ConnectedServiceRow
             key={info.connector.id}
             info={info}
@@ -138,6 +148,14 @@ export default function ConnectedServices({
           />
         ))}
       </ul>
+      {hidden > 0 && (
+        <p className="hint">
+          and {hidden} more connected {hidden === 1 ? 'service' : 'services'} not used here.{' '}
+          <button type="button" className="link-btn" data-testid="connected-more" onClick={() => setShowAll(true)}>
+            Show {hidden === 1 ? 'it' : 'them'}
+          </button>
+        </p>
+      )}
       {step?.kind === 'use' && <UseInProjectDialog project={project} info={step.info} onClose={() => setStep(null)} onResult={onResult} />}
       {step?.kind === 'setup' && (
         <ConnectorDialog

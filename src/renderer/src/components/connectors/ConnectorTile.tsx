@@ -1,55 +1,65 @@
 import type { ReactElement } from 'react'
-import { CircleAlert, CircleCheck, CircleDashed, TriangleAlert } from 'lucide-react'
-import type { ConnectorInfo } from '@shared/types'
+import { CircleAlert, CircleCheck, CircleDashed, KeyRound, LogIn, TriangleAlert, Wrench, Zap } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import type { ConnectorEase, ConnectorInfo } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
-import { CATEGORY_LABELS, clampText, stateChip } from '../../lib/connectors'
+import { EASE_BADGE, clampText, infoEase, stateChip, tileAction } from '../../lib/connectors'
 import { ConnectorLogo } from './ConnectorLogo'
 
 const CHIP_ICON = { success: CircleCheck, warning: TriangleAlert, danger: CircleAlert, neutral: CircleDashed }
+const EASE_ICON: Record<ConnectorEase, LucideIcon> = { signIn: LogIn, none: Zap, token: KeyRound, ownApp: Wrench }
 
-/** The primary action's words for a state. */
-export function actionLabel(state: ConnectorInfo['state']): string {
-  if (state === 'connected') return 'Manage'
-  if (state === 'needsSetup') return 'Finish setup'
-  if (state === 'error') return 'Fix'
-  return 'Connect'
+/** The method badge (icon and words): how much work connecting this service takes. */
+export function EaseBadge({ ease }: { ease: ConnectorEase }): ReactElement {
+  const b = EASE_BADGE[ease]
+  return (
+    <Badge tone={b.tone} icon={EASE_ICON[ease]} testId="connector-ease">
+      {b.label}
+    </Badge>
+  )
 }
 
-/** One service in the gallery. */
+/** One service in the gallery: logo, name, one line, and one badge plus one button. */
 export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: () => void }): ReactElement {
   const def = info.connector
+  const ease = infoEase(info)
+  const action = tileAction(info)
+  const available = info.state === 'available'
   const chip = stateChip(info)
   const rawAccount = info.state === 'connected' ? info.library?.auth.account : undefined
   const account = rawAccount ? clampText(rawAccount, 200) : undefined
-  const label = actionLabel(info.state)
   return (
-    <li className="connector-tile" data-testid="connector-tile" data-connector={def.id} data-state={info.state}>
-      <div className="connector-tile-head">
-        <ConnectorLogo def={def} />
-        <div className="connector-tile-id">
-          <h4 className="connector-name">{def.name}</h4>
-          <span className="connector-cat">{CATEGORY_LABELS[def.category]}</span>
-        </div>
-      </div>
-      <p className="connector-desc">{def.description}</p>
-      <div className="connector-badges">
-        <Badge tone="info">Official</Badge>
-        {def.status === 'preview' && <Badge tone="neutral">Preview</Badge>}
-      </div>
-      <div className="connector-tile-foot">
-        <span className="connector-state" data-testid="connector-state" data-tone={chip.tone}>
-          <Badge tone={chip.tone === 'warning' ? 'attention' : chip.tone} icon={CHIP_ICON[chip.tone]}>
-            {account ? 'Connected' : chip.label}
-          </Badge>
-          {account && (
-            <span className="connector-account" title={account}>
-              {account}
+    <li className="connector-tile" data-testid="connector-tile" data-connector={def.id} data-state={info.state} data-ease={ease}>
+      <ConnectorLogo def={def} />
+      <div className="connector-tile-main">
+        <span className="connector-name">{def.name}</span>
+        <span className="connector-meta">
+          {available ? (
+            <span data-ease={ease} data-testid="connector-ease-wrap">
+              <EaseBadge ease={ease} />
+            </span>
+          ) : (
+            <span className="connector-state" data-testid="connector-state" data-tone={chip.tone}>
+              <Badge tone={chip.tone === 'warning' ? 'attention' : chip.tone} icon={CHIP_ICON[chip.tone]}>
+                {account ? 'Connected' : chip.label}
+              </Badge>
+              {account && (
+                <span className="connector-account" title={account}>
+                  {account}
+                </span>
+              )}
             </span>
           )}
+          {def.status === 'preview' && available && <Badge tone="neutral">Preview</Badge>}
         </span>
-        <Button size="sm" variant={info.state === 'connected' ? 'secondary' : 'primary'} testId="connector-action" ariaLabel={`${label} ${def.name}`} onClick={onOpen}>
-          {label}
+        <span className="connector-desc" title={def.description}>
+          {def.description}
+        </span>
+      </div>
+      <div className="connector-tile-act">
+        <Button size="sm" variant={action.primary ? 'primary' : 'secondary'} testId="connector-action" ariaLabel={action.aria} onClick={onOpen}>
+          {action.label}
         </Button>
       </div>
     </li>
