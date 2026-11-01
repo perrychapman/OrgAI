@@ -20,6 +20,12 @@ vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: 
 
 let dir: string
 let events: RunEvent[]
+/** Broadcast sink bound to the current test's array. A run left live by an earlier test can still fire its trailing
+ *  usage timer (USAGE_THROTTLE_MS) after the next test started; capturing the array keeps that event out of it. */
+const sink = (): ((e: RunEvent) => void) => {
+  const own = events
+  return (e) => void own.push(e)
+}
 
 function waitFor<T extends RunEvent>(pred: (e: RunEvent) => e is T, after = 0, timeoutMs = 3000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -62,7 +68,7 @@ function manager(p: Project, script: MockScript = {}, options: RunManagerOptions
   const setup = fakeSetup(p)
   const store = new RunStore(join(dir, 'data'))
   const adapter = new MockAdapter({ script: { delayMs: 0, ...script } })
-  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, options)
+  const m = new RunManager({ mock: adapter }, sink(), store, setup.service, () => 100, options)
   return { m, store, setup, adapter }
 }
 
@@ -129,7 +135,7 @@ describe('RunManager image attachments', () => {
       }
     }
     const p = makeProject({ path: join(dir, 'repo') })
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
     return { m, p, ctxs, sends }
   }
 
@@ -194,7 +200,7 @@ describe('RunManager usage and pricing', () => {
     }
     const p = makeProject({ path: join(dir, 'repo') })
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100, options)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100, options)
     return { m, p, store, ctxs, sends }
   }
 
@@ -408,7 +414,7 @@ describe('RunManager usage and pricing', () => {
     }
     const p = makeProject({ path: join(dir, 'repo') })
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'go' })
     const a = agentWith()
     setModelTokens(a, 'claude-sonnet-4-5', tok(1))
@@ -1101,7 +1107,7 @@ describe('RunManager adapter selection, connections and MCP', () => {
 
   function setupManager(p: Project, adapters: ConstructorParameters<typeof RunManager>[0], options: RunManagerOptions = {}) {
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager(adapters, (e) => events.push(e), store, fakeSetup(p).service, () => 100, options)
+    const m = new RunManager(adapters, sink(), store, fakeSetup(p).service, () => 100, options)
     return { m, store }
   }
 
@@ -1574,7 +1580,7 @@ describe('RunManager session chains', () => {
     }
     const p = makeProject({ path: join(dir, 'repo') })
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const first = await m.start({ project: p, prompt: 'one' })
     const second = await m.continueRun(p, first.id, 'two')
     expect(ctxs[1].resumeSessionId).toBe('s-1')
@@ -1648,7 +1654,7 @@ function multiManager(script: MockScript = {}, projects?: Map<string, Project>) 
   const setup = fakeSetup(makeProject())
   const store = new RunStore(join(dir, 'data'))
   const adapter = new CapturingAdapter({ script: { delayMs: 0, ...script } })
-  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, projects ? { resolveProject: (id) => projects.get(id) } : {})
+  const m = new RunManager({ mock: adapter }, sink(), store, setup.service, () => 100, projects ? { resolveProject: (id) => projects.get(id) } : {})
   const tool = (runId: string, name: string, args?: unknown): Promise<string> => {
     const t = harnessToolsFor(adapter.ctxs.get(runId)!).find((x) => x.name === name)!
     return t.call(args)
@@ -1695,7 +1701,7 @@ describe('concurrent runs', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const store = new RunStore(join(dir, 'data'))
     const failing = { start: async () => Promise.reject(new Error('no binary')) } as unknown as RuntimeAdapter
-    const m = new RunManager({ mock: failing }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: failing }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'x' })
     expect(m.liveRunCount()).toBe(0)
     expect(m.liveRuns()).toEqual([])
@@ -2133,7 +2139,7 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     const setup = fakeSetup(p)
     const applyLibraryProposal = vi.fn()
     ;(setup.service as unknown as { applyLibraryProposal: typeof applyLibraryProposal }).applyLibraryProposal = applyLibraryProposal
-    const m = new RunManager({ mock: rec.adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), setup.service, () => 100, { mcp })
+    const m = new RunManager({ mock: rec.adapter }, sink(), new RunStore(join(dir, 'data')), setup.service, () => 100, { mcp })
     return { m, ...rec, setup, applyLibraryProposal }
   }
 
@@ -2325,7 +2331,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
     release('Ship the release notes')
@@ -2366,7 +2372,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
     expect(signal?.aborted).toBe(false)
@@ -2390,7 +2396,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
     await m.removeProject('some-other-project')
@@ -2411,7 +2417,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await m.removeProject(p.id)
     release('Ship the release notes')
@@ -2437,7 +2443,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const first = await m.start({ project: p, prompt: 'First task' })
     await vi.waitFor(() => expect(store.get(first.id)?.title).toBe('Title 1'))
     const second = await m.continueRun(p, first.id, 'Second task')
@@ -2479,7 +2485,7 @@ describe('skills in runs', () => {
     const f = fakeAdapter()
     const forRun = vi.fn(() => skills ?? [])
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: f.adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100, { ...(skills ? { skills: { forRun } } : {}), ...options })
+    const m = new RunManager({ mock: f.adapter }, sink(), store, fakeSetup(p).service, () => 100, { ...(skills ? { skills: { forRun } } : {}), ...options })
     return { p, m, forRun, store, ...f }
   }
   const used = (runId: string, over: Partial<Extract<RunEvent, { type: 'skill.used' }>> = {}): RunEvent => ({ type: 'skill.used', runId, agentId: ROOT_AGENT_ID, skillId: 'sk1', name: 'x', at: 5, ...over })

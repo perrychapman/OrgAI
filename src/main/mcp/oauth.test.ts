@@ -219,8 +219,9 @@ describe('PKCE and authorize URL', () => {
 
 describe('discover iss support (RFC 9207)', () => {
   it('records the metadata issuer and the advertised flag', async () => {
-    const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: 'https://iss.example.com', authorization_response_iss_parameter_supported: true } })).fetch)
-    expect(d.issuer).toBe('https://iss.example.com')
+    const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: `${AS}/`, authorization_response_iss_parameter_supported: true } })).fetch)
+    // RFC 8414 section 3.3 allows only a trailing-slash difference; the metadata's own spelling is kept for the exact iss check.
+    expect(d.issuer).toBe(`${AS}/`)
     expect(d.issParameterSupported).toBe(true)
   })
 
