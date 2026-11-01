@@ -11,7 +11,36 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { PICKED_FOLDERS_PER_SENDER, PickedFolders } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs } = await import('./ipc')
+
+describe('connectorArgs', () => {
+  it('rebuilds connectors:add with only the id and variant', () => {
+    expect(connectorArgs.add({ connectorId: 'context7', variant: 'key', url: 'https://evil.example', headers: { a: 'b' } })).toEqual({ connectorId: 'context7', variant: 'key' })
+    expect(connectorArgs.add({ connectorId: 'microsoft-learn' })).toEqual({ connectorId: 'microsoft-learn' })
+  })
+
+  it('refuses a malformed add', () => {
+    for (const bad of [null, undefined, 'gmail', 42, [], {}, { connectorId: 7 }, { connectorId: '' }, { connectorId: 'Gmail' }, { connectorId: '../x' }, { connectorId: '-x' }, { connectorId: 'a'.repeat(65) }]) {
+      expect(() => connectorArgs.add(bad), JSON.stringify(bad)).toThrow('Unknown connector.')
+    }
+    for (const variant of [null, 3, '', 'Key', 'a b', 'x'.repeat(65)]) {
+      expect(() => connectorArgs.add({ connectorId: 'exa', variant }), String(variant)).toThrow('Unknown connector variant.')
+    }
+  })
+
+  it('rebuilds connectors:setToken with a bounded token or null', () => {
+    expect(connectorArgs.setToken({ connectorId: 'zapier', token: 'abc', extra: 1 })).toEqual({ connectorId: 'zapier', token: 'abc' })
+    expect(connectorArgs.setToken({ connectorId: 'zapier', token: null })).toEqual({ connectorId: 'zapier', token: null })
+    expect(connectorArgs.setToken({ connectorId: 'zapier', token: 'x'.repeat(CONNECTOR_TOKEN_MAX_CHARS) }).token).toHaveLength(4000)
+  })
+
+  it('refuses a malformed setToken', () => {
+    expect(() => connectorArgs.setToken({ connectorId: 'zapier', token: 'x'.repeat(CONNECTOR_TOKEN_MAX_CHARS + 1) })).toThrow('too long')
+    for (const token of [undefined, 5, {}, ['a']]) expect(() => connectorArgs.setToken({ connectorId: 'zapier', token })).toThrow('must be text')
+    expect(() => connectorArgs.setToken({ connectorId: 'ZAPIER', token: 'a' })).toThrow('Unknown connector.')
+    expect(() => connectorArgs.setToken(null)).toThrow('Unknown connector.')
+  })
+})
 
 describe('PickedFolders', () => {
   it('accepts a folder once, only from the renderer that picked it', () => {

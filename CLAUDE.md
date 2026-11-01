@@ -383,8 +383,11 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     redirects and refuse private-IP literals (no DNS check). All of this is unit-tested only.
 - Connectors (`src/shared/connectors.ts` catalog, `src/main/mcp/connectors.ts`, `McpService.connectors*`): curated
   presets for official remote MCP servers that become library entries (`McpLibraryEntry.connectorId`, written only by
-  `connectors:add`, which is idempotent and takes only `{ connectorId, variant? }`). IPC `connectors:list`
-  (`ConnectorInfo`), `connectors:add`, `connectors:setToken` (token connectors; prefix added in main); everything else
+  `connectors:add`, which is idempotent and takes only `{ connectorId, variant? }`; because it is idempotent, switching
+  a keyless entry such as Exa or Context7 to its key variant means removing the entry first). IPC `connectors:list`
+  (`ConnectorInfo`), `connectors:add`, `connectors:setToken` (token connectors; prefix added in main); ipc.ts
+  `connectorArgs` rebuilds both inputs (kebab-case ids at most 64 chars, a token string of at most 4,000 chars or null,
+  every other shape refused, extra fields dropped; `ipc.test.ts`); everything else
   reuses mcp:* / mcpLibrary:*. `oauthClient` connectors (Google, Slack) use the user's own client and the fixed
   redirect `http://127.0.0.1:38917/callback` (`CONNECTOR_REDIRECT_URI`, strict listen, no ephemeral fallback).
   ORGAI_MOCK=1 makes connector authorize/test network-free (mock@example.com, fake tools); the stand-in token is
