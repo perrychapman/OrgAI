@@ -2,7 +2,9 @@ import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppWindow, ChevronDown, CircleAlert, EyeOff, Pencil, Plus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
-import type { Project } from '@shared/types'
+import type { Project, VirtualProjectId } from '@shared/types'
+import { isVirtualProjectId } from '@shared/types'
+import { newSessionLabel } from '../lib/assistants'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
 import { needsYou } from '../lib/runChains'
 import { runName, runTag, shortPrompt } from '../lib/runLabels'
@@ -89,6 +91,8 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const closeDraft = useAppStore((s) => s.closeDraft)
   const dismissRun = useAppStore((s) => s.dismissRun)
   const indexes = useRunIndexes()
+  const virtual = isVirtualProjectId(project.id)
+  const newLabel = virtual ? newSessionLabel(project.id as VirtualProjectId) : 'New run'
 
   const viewedRun = !draftPage && viewedId ? runs.find((r) => r.summary.id === viewedId) : undefined
   const selectedId = viewedRun ? viewedRun.summary.id : DRAFT_ID
@@ -103,9 +107,9 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       const only = items.length === 1
       return {
         tag: '',
-        title: 'New run',
-        tooltip: 'New run: a blank page for a new task. The other runs keep going.',
-        label: draftOnPage ? 'New run. Has an unsent draft.' : 'New run',
+        title: newLabel,
+        tooltip: virtual ? `${newLabel}: a blank page to start over. The other sessions keep going.` : 'New run: a blank page for a new task. The other runs keep going.',
+        label: draftOnPage ? `${newLabel}. Has an unsent draft.` : newLabel,
         tone: 'none',
         word: '',
         waiting: false,
@@ -382,7 +386,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 {v.tooltip}
               </span>
               {v.closable && (
-                <button type="button" className="run-tab-close" tabIndex={-1} aria-label={`Hide ${v.tag || 'New run'}`} title="Hide this tab (Ctrl+W)" onClick={() => hide(item)}>
+                <button type="button" className="run-tab-close" tabIndex={-1} aria-label={`Hide ${v.tag || newLabel}`} title="Hide this tab (Ctrl+W)" onClick={() => hide(item)}>
                   <Icon icon={X} size="xs" />
                 </button>
               )}
@@ -443,7 +447,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
             <div
               className="run-tab-menu run-tab-ctx"
               role="menu"
-              aria-label={`${v.tag ? `${v.tag}: ${v.title}` : 'New run'} actions`}
+              aria-label={`${v.tag ? `${v.tag}: ${v.title}` : newLabel} actions`}
               ref={ctxRef}
               style={{ left: ctx.left, top: ctx.top }}
               onKeyDown={(e) => onMenuKey(e, ctxRef.current, closeCtx)}
@@ -479,7 +483,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
             </div>
           )
         })()}
-      <button type="button" ref={newRef} className="run-tab-new" aria-label="New run" title="New run (Ctrl+T)" onClick={openDraft}>
+      <button type="button" ref={newRef} className="run-tab-new" aria-label={newLabel} title={`${newLabel} (Ctrl+T)`} onClick={openDraft}>
         <Icon icon={Plus} size="sm" />
       </button>
       {notice && (

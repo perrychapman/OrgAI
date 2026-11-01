@@ -535,3 +535,64 @@ button.run-meta-item:focus-visible {
   gap: var(--space-1);
   white-space: nowrap;
 }
+
+/* ---------- Conversation stage (single-agent runs): the transcript fills the stage, the composer sits under it ---------- */
+
+.conversation-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-0);
+}
+.conversation-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.conversation-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-3);
+}
+/* One centered reading column, like the transcript's own 90ch cap. */
+.conversation-list > * {
+  width: 100%;
+  max-width: 90ch;
+  margin-inline: auto;
+  flex: none;
+}
+.conversation-jump {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: var(--space-1h) var(--space-3);
+  border-top: 1px solid var(--border-default);
+  background: var(--surface-1);
+}
+/* In conversation mode the composer belongs to the stage column, even when the side panel is wide. */
+.run-body.run-body[data-layout='conversation'] > .canvas-frame {
+  grid-row: 1;
+  grid-column: 1;
+}
+.run-body.run-body[data-layout='conversation'] > .side-panel {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+}
+.run-body.run-body[data-layout='conversation'] > .composer {
+  grid-row: 2;
+  grid-column: 1;
+  border-left: 0;
+}
+.run-body.run-body[data-layout='conversation'] > .composer > .composer-field {
+  max-width: 90ch;
+  margin-inline: auto;
+}
+/* The mode label wins over the keyboard hint: the hint shortens first. */
+.run-body.run-body[data-layout='conversation'] .composer-mode-label {
+  flex: none;
+  max-width: 100%;
+}

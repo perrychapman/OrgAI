@@ -10,6 +10,7 @@ import {
   HelpCircle,
   BookOpen,
   Info,
+  ArrowDown,
   ListChecks,
   MessageSquare,
   MinusCircle,
@@ -34,10 +35,14 @@ import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 import { Badge } from './ui/Badge'
+import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, type ToolKind } from '../lib/transcriptRows'
+
+/** Distance from the end of the conversation under which it still counts as scrolled to the end. */
+const STICK_PX = 48
 
 interface Props {
   /** The run this panel shows. */
@@ -47,6 +52,8 @@ interface Props {
   logs: LogLine[]
   /** When a folded "done" group is selected on the chart, list its reports instead of a transcript. */
   finished?: FinishedGroup
+  /** 'conversation' renders only the entry list as the Live view's stage (no header or tabs, stick to the bottom). */
+  variant?: 'panel' | 'conversation'
 }
 
 const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
@@ -216,7 +223,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
   return { hidden, body }
 }
 
-export default function TranscriptPanel({ runId, agent, entries, logs, finished }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent, entries, logs, finished, variant = 'panel' }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -244,6 +251,112 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   // carries SKILL.md under "Show instructions". Calls without a matching row (refused, resource files) stay visible.
   const skillLoads = useMemo(() => collapseSkillLoads(entries), [entries])
   const visible = (showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')).filter((e) => !skillLoads.hidden.has(e.id))
+
+  const rows = visible.map((e) => {
+    const b = e.block
+    switch (b.kind) {
+      case 'user':
+        return (
+          <div key={e.id} className="entry user">
+            <div className="tag">
+              <span>You</span>
+              <span>{new Date(e.at).toLocaleTimeString()}</span>
+            </div>
+            {b.text.trim() && <Markdown text={b.text} />}
+            {b.images && b.images.length > 0 && <TranscriptImages images={b.images} />}
+          </div>
+        )
+      case 'text':
+        return (
+          <div key={e.id} className="entry text">
+            <Markdown text={b.text} />
+          </div>
+        )
+      case 'thinking':
+        return (
+          <div key={e.id} className="entry thinking">
+            {b.text}
+          </div>
+        )
+      case 'tool_use':
+        return <ToolUseRow key={e.id} name={b.name} input={b.input} />
+      case 'tool_result':
+        return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
+      case 'system': {
+        const peer = parsePeerNote(b.text)
+        if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
+        const harness = e.source === 'harness'
+        const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
+        const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
+        // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
+        return (
+          <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
+            <Icon icon={skillName ? BookOpen : harness ? Info : MessageSquare} size="sm" />
+            <div className="tool-main">
+              {skillName ? <span className="entry-plain">{b.text}</span> : <Markdown text={b.text} />}
+              {(b.detail || skillBody) && (
+                <details className="entry-detail">
+                  <summary>{skillBody ? 'Show instructions' : 'Show instruction'}</summary>
+                  <pre>{skillBody ?? b.detail}</pre>
+                </details>
+              )}
+            </div>
+          </div>
+        )
+      }
+    }
+  })
+
+  // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
+  const listRef = useRef<HTMLDivElement>(null)
+  const stuck = useRef(true)
+  const [away, setAway] = useState(false)
+  useEffect(() => {
+    const el = listRef.current
+    if (variant === 'conversation' && el && stuck.current) el.scrollTop = el.scrollHeight
+  }, [variant, entries.length, partial, showThinking])
+
+  if (variant === 'conversation') {
+    const toEnd = (): void => {
+      const el = listRef.current
+      if (!el) return
+      stuck.current = true
+      setAway(false)
+      el.scrollTop = el.scrollHeight
+    }
+    return (
+      <div className="conversation-body" data-testid="conversation-transcript">
+        <div
+          ref={listRef}
+          className="transcript conversation-list"
+          role="log"
+          aria-label="Conversation"
+          tabIndex={0}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
+            stuck.current = atEnd
+            setAway(!atEnd)
+          }}
+        >
+          {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+          {rows}
+          {partial && (
+            <div className="entry text streaming">
+              <Markdown text={partial} />
+            </div>
+          )}
+        </div>
+        {away && (
+          <div className="conversation-jump">
+            <Button size="sm" variant="secondary" onClick={toEnd} testId="conversation-jump">
+              <Icon icon={ArrowDown} size="sm" /> Jump to latest
+            </Button>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
   const errorCount = logs.filter((l) => l.level === 'error').length
@@ -311,60 +424,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
-          {visible.map((e) => {
-            const b = e.block
-            switch (b.kind) {
-              case 'user':
-                return (
-                  <div key={e.id} className="entry user">
-                    <div className="tag">
-                      <span>You</span>
-                      <span>{new Date(e.at).toLocaleTimeString()}</span>
-                    </div>
-                    {b.text.trim() && <Markdown text={b.text} />}
-                    {b.images && b.images.length > 0 && <TranscriptImages images={b.images} />}
-                  </div>
-                )
-              case 'text':
-                return (
-                  <div key={e.id} className="entry text">
-                    <Markdown text={b.text} />
-                  </div>
-                )
-              case 'thinking':
-                return (
-                  <div key={e.id} className="entry thinking">
-                    {b.text}
-                  </div>
-                )
-              case 'tool_use':
-                return <ToolUseRow key={e.id} name={b.name} input={b.input} />
-              case 'tool_result':
-                return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
-              case 'system': {
-                const peer = parsePeerNote(b.text)
-                if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
-                const harness = e.source === 'harness'
-                const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
-                const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
-                // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
-                return (
-                  <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
-                    <Icon icon={skillName ? BookOpen : harness ? Info : MessageSquare} size="sm" />
-                    <div className="tool-main">
-                      {skillName ? <span className="entry-plain">{b.text}</span> : <Markdown text={b.text} />}
-                      {(b.detail || skillBody) && (
-                        <details className="entry-detail">
-                          <summary>{skillBody ? 'Show instructions' : 'Show instruction'}</summary>
-                          <pre>{skillBody ?? b.detail}</pre>
-                        </details>
-                      )}
-                    </div>
-                  </div>
-                )
-              }
-            }
-          })}
+          {rows}
           {agent && partial && (
             <div className="entry text streaming">
               <Markdown text={partial} />

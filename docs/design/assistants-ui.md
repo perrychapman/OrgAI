@@ -165,15 +165,62 @@ Elsewhere:
 - e2e: `e2e/assistants.mjs` (in e2e:free) at 1024x640 and 1600x1000, dark and light; its run-starting checks skip with
   "SKIP (runtime not merged)" while `runs:startQuick` has no handler.
 
+## Changes after the UX walk (`ux-review-assistants.md`, walked 34f6370)
+
+These supersede the earlier text above where they differ (idle label, "+" tab, Save as project, `openAssistant`).
+
+- H1 conversation layout: `lib/assistants.ts` `isSingleAgentRun` (a Chat with team 'single', 'mcp-assist',
+  'skill-assist') and `runLayoutFor(summary, chosen?)` decide the Live view layout; the user's choice per run is
+  `useAppStore.runLayoutByRun` / `setRunLayout`. In 'conversation' the stage (`run-conversation`) is the root agent's
+  transcript (`TranscriptPanel variant="conversation"`, `conversation-transcript`), newest at the bottom, stuck to the
+  bottom unless the user scrolled up (then `conversation-jump` "Jump to latest", in flow under the list). The column and
+  the composer are centred at 90ch and the composer stays under the stage even with a wide side panel
+  (`.run-body[data-layout=conversation]` overrides `[data-side-wide]`). The decision tray is unchanged. A toolbar
+  `IconButton` `run-layout-toggle` ("Show agents" / "Show conversation") is on every run; zoom, legend and Hide finished
+  are hidden in conversation mode. `.run-body[data-layout]` carries the current layout. The side panel is unchanged.
+- H2: `openAssistant(id, { instruction?, fresh? })`: an instruction or `fresh` (Configure with AI `mcp-library-assist`,
+  `openNewChat`) shows the start page; a plain sidebar click opens the run that needs you, else a live run, else the
+  start page, never an ended run (`lib/assistantNav.ts` `assistantRunToOpen`; `settleWorkspace` follows it for virtual
+  ids). Ended runs stay in the run tabs and History.
+- H3: `run-save-as-project` / `history-save-as-project` show only while `offersSaveAsProject` (the run is still in the
+  Chat project). M2: the scratch case is a real disabled `Button` inside `span.run-act-disabled`, which carries the
+  reason as its title.
+- M1: typed path `chat-folder-input` beside Browse (checkPath, 300 ms debounce, `chat-folder-error`; an invalid path
+  counts as scratch and Start re-checks). L2: the scratch edits switch stays focusable (`aria-disabled`,
+  `aria-describedby` to a separate hint).
+- M3/M4 copy: `assistantModeLabel`: "Waiting for your answer" while a card is open, else idle "Your turn. Reply, ask a
+  follow-up, or end the session." (`ASSISTANT_IDLE_LABEL`), else "Reply to the assistant" (`speaksAsAssistant` covers
+  virtual projects, single-agent chats and project-scope Skill assistant runs). `composerPlaceholder` drops doubled
+  punctuation ("What next? Enter to send..."). RunMeta shows "unattended" only on real projects' work runs, and the MCP
+  assistant's `buildWorkspace` folder (`run-meta-workspace`, full path in the title). The "+" tab and the draft tab of
+  a virtual project read "New chat" / "New session".
+- M6: `.new-run` is a size container; under 560 px of height the hero glyph goes and gaps tighten; Team and the edits
+  switch share a row. M7: the build switch reads "Let it build a server in its workspace, in OrgAI's data folder" with
+  the ask-first hint below. M8: after approving a skills / MCP proposal RunMeta shows a dismissable pointer
+  (`proposalNextByRun`, `lib/proposalNext.ts`): `proposal-next-skills` (Skill library), `proposal-next-connectors`,
+  `proposal-next-project-skills`, `proposal-next-project-mcp`.
+- L5: History kind chips are hidden for the three virtual projects; `.col-folder` ellipsises and narrows under 900 px.
+  `.skill-prop-md` uses the token `--scroll-region-max`.
+- e2e/assistants.mjs adds: the conversation layout shows the mock reply and the composer at 1024x640 without page
+  scroll (both themes), the toggle both ways, the start page after an ended Chat and after Configure with AI, the
+  typed-path promote flow with Save as project gone afterwards, the "+" tab label, no "unattended", the disabled look.
+
+New test ids: `run-conversation`, `conversation-transcript`, `conversation-jump`, `run-layout-toggle`,
+`chat-folder-input`, `chat-folder-error`, `run-meta-workspace`, `proposal-next-skills`, `proposal-next-connectors`,
+`proposal-next-project-skills`, `proposal-next-project-mcp`.
+
 ## Open items
 
-- The run strip's "+" tab on a virtual project still reads "New run" (`RunTabs.tsx` was outside this change); it should
-  read "New chat" / "New session".
-- Run-starting e2e checks (chat run + idle label, scratch Save as project disabled, `history-folder` "Scratch", skill
-  proposal approve) were skipped on the pre-runtime build; to be run against dev with the runtime merged.
-- Not driven: the native folder picker, the "already a project" note, Save as project 'created' / 'existing' paths,
-  the project-scope `skill-ask-assistant` run, `buildWorkspace` display for the MCP assistant.
-- The Chat History Folder column has no narrow-width rule; at 1024 it may squeeze the prompt column.
-- The skills disclosure max-height is a plain 240px, not a token.
-- The brand lockup's stray "(" beside the MOCK badge (UX walk F7) is not part of this change.
-- The Chat composer sits below the fold at 1024x640 (the page scrolls).
+- M5 (runtime): chats still get the plan nudge ("Continuing: asked the orchestrator to write a plan...", "Mock:
+  continuing with the plan."); exempting quick and assistant runs belongs in `continuation.ts` (Runtime Lead).
+- In conversation mode the side panel's Transcript tab duplicates the stage (accepted; the panel is collapsed below
+  1100 px).
+- The MCP start page cannot name the build folder before the run starts (the data-folder wording is shown).
+- `proposalNextByRun` entries are cleared only by Dismiss; the pointer is untested at narrow toolbar widths, and the
+  connectors and project links are not covered by e2e (the mock gives no MCP proposal on that path).
+- The scratch edits switch is a local `button[role=switch]` because `ui/Switch` takes no `aria-disabled`; fold that into
+  `Switch` later.
+- Not driven: the native folder picker, the Save as project 'existing' outcome, a default-team Chat in conversation
+  mode, the project-scope `skill-ask-assistant` run.
+- Not addressed: L3 (Team disclosure wording), L4 ("Stopped" vs "Ended"), L6 (first-launch focus), L7 (brand lockup
+  "("), L8 (MCP wording in the start page title), decision-card focus on arrival.

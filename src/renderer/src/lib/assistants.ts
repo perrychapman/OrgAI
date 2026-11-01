@@ -3,7 +3,7 @@
  * The ids and labels come from the shared contract; this file only turns them into renderer copy.
  */
 import type { Project, QuickRunInfo, RunSummary, VirtualProjectId } from '@shared/types'
-import { RUN_KIND_LABELS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
+import { QUICK_PROJECT_ID, RUN_KIND_LABELS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { folderName } from './paths'
 
@@ -11,7 +11,22 @@ import { folderName } from './paths'
 export const ASSISTANT_ORDER: VirtualProjectId[] = ['quick', 'harness', 'skills']
 
 /** Composer mode label of a virtual project's run while it is idle. */
-export const ASSISTANT_IDLE_LABEL = 'Done. Ask a follow-up or end the session.'
+export const ASSISTANT_IDLE_LABEL = 'Your turn. Reply, ask a follow-up, or end the session.'
+/** Composer mode label while an assistant's question or proposal card is open: the card is the thing to answer. */
+export const ASSISTANT_WAITING_LABEL = 'Waiting for your answer'
+/** Composer mode label and placeholder lead of a single-agent / assistant run that is open for a reply. */
+export const ASSISTANT_REPLY_LABEL = 'Reply to the assistant'
+
+/** The composer's mode label for an open assistant session: the card to answer, else your turn while idle, else the reply label. */
+export function assistantModeLabel(i: { status: RunSummary['status']; openCards: number }): string {
+  if (i.openCards > 0) return ASSISTANT_WAITING_LABEL
+  return i.status === 'idle' ? ASSISTANT_IDLE_LABEL : ASSISTANT_REPLY_LABEL
+}
+
+/** Whether the composer says "assistant": virtual projects, and the single-agent runs (including Skill assist on a real project). */
+export function speaksAsAssistant(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>): boolean {
+  return isVirtualProjectId(summary.projectId) || isSingleAgentRun(summary)
+}
 
 export const assistantLabel = (id: VirtualProjectId): string => VIRTUAL_PROJECT_LABELS[id]
 
@@ -100,3 +115,34 @@ export function promoteNameError(name: string): string | null {
 }
 
 export const PROMOTE_NAME_LIMIT = PROMOTE_NAME_MAX
+
+/** How the Live view shows a run: the transcript as the stage ('conversation') or the agent canvas ('canvas'). */
+export type RunLayout = 'conversation' | 'canvas'
+
+/**
+ * Whether a run is single-agent by design: a Chat with team 'single', an MCP assistant or a Skill assistant run.
+ * A Chat on the default team, work runs and setup runs are team runs.
+ */
+export function isSingleAgentRun(summary: Pick<RunSummary, 'kind' | 'quick'>): boolean {
+  if (summary.quick) return summary.quick.team === 'single'
+  return summary.kind === 'mcp-assist' || summary.kind === 'skill-assist'
+}
+
+/** The layout a run gets: the user's choice for that run, else conversation for single-agent runs, else canvas. */
+export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'>, chosen?: RunLayout): RunLayout {
+  return chosen ?? (isSingleAgentRun(summary) ? 'conversation' : 'canvas')
+}
+
+/**
+ * Whether "Save as project" is offered at all: only while the run still belongs to the Chat project. After run.moved
+ * the run lives in a real project and the action is gone (its quick info stays on the summary).
+ */
+export function offersSaveAsProject(summary: Pick<RunSummary, 'quick' | 'projectId'>): boolean {
+  return !!summary.quick && summary.projectId === QUICK_PROJECT_ID
+}
+
+/** "What next?" + "Enter to send..." without doubled punctuation. */
+export function composerPlaceholder(base: string): string {
+  const t = base.trim().replace(/\.+$/, '')
+  return `${t}${/[?!]$/.test(t) ? '' : '.'} Enter to send, Shift+Enter for a new line.`
+}

@@ -4,8 +4,7 @@ import { FolderPlus, Pause, RotateCcw, Square } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { Button } from './ui/Button'
 import { useAssistantModelName } from '../lib/assistantModels'
-import { canPromote, offersRetro } from '../lib/assistants'
-import { Icon } from './ui/Icon'
+import { canPromote, offersRetro, offersSaveAsProject } from '../lib/assistants'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
 
 /** Wraps one control and points its aria-describedby at a helper text; the primitives take no such prop. */
@@ -41,7 +40,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   if (!summary) return null
   const sessionOpen = summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting'
   const canRetro = !sessionOpen && offersRetro(summary)
-  const canSave = !sessionOpen && !!summary.quick
+  const canSave = !sessionOpen && offersSaveAsProject(summary)
   const promote = canPromote(summary)
   if (!sessionOpen && !canRetro && !canSave) return null
   const interruptHelp = 'Stops the current turn. The session stays open.'
@@ -72,10 +71,11 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
               <span className="run-act-label run-act-collapse">Save as project</span>
             </Button>
           ) : (
-            <button type="button" className="btn sm" aria-disabled="true" aria-label="Save as project" data-testid="run-save-as-project" title={promote.reason}>
-              <Icon icon={FolderPlus} size="sm" />
-              <span className="run-act-label run-act-collapse">Save as project</span>
-            </button>
+            <span className="run-act-disabled" title={promote.reason}>
+              <Button size="sm" icon={FolderPlus} ariaLabel="Save as project" testId="run-save-as-project" disabled>
+                <span className="run-act-label run-act-collapse">Save as project</span>
+              </Button>
+            </span>
           )}
         </Described>
       )}

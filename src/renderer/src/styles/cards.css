@@ -748,7 +748,7 @@
   color: var(--text-secondary);
 }
 .skill-prop-md {
-  max-height: 240px;
+  max-height: var(--scroll-region-max);
   overflow: auto;
   margin-top: var(--space-2);
   padding: var(--space-2);

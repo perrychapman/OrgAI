@@ -84,12 +84,30 @@
 .chat-folder-label {
   color: var(--text-secondary);
 }
-.chat-folder-value {
+.chat-folder .input {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
+  width: 100%;
+}
+.chat-options-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-5);
+}
+.assistant-switch-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.chat-edits-hint {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+/* aria-disabled keeps the control in the tab order; it still has to look off. */
+.switch[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
 }
 .chat-folder-actions {
   display: inline-flex;
