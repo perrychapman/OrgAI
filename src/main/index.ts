@@ -24,6 +24,7 @@ import { McpLibraryStore } from './store/mcpLibrary'
 import { SkillService } from './skills/service'
 import { SkillEvaluationService } from './skills/evaluation'
 import { CapabilityService } from './capabilities/service'
+import { seedMockHome } from './capabilities/mockHome'
 import { applyShellPath } from './shellEnv'
 import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
@@ -340,6 +341,7 @@ app.whenReady().then(() => {
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
   })
+  if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
   capabilities = new CapabilityService({
     projects,
     skills,
@@ -353,7 +355,7 @@ app.whenReady().then(() => {
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project }),
     // ORGAI_MOCK=1 only: local discovery reads seeded fixtures under the data dir, never the real home.
     homeDir: mockAdapter ? join(dataDir, 'mock-home') : homedir(),
-    env: process.env,
+    env: mockAdapter ? {} : process.env,
     platform: process.platform,
     mock: mockAdapter
   })
