@@ -18,8 +18,13 @@ const SUMMARY_MAX = 300
 const DENIED = /\b(permission (?:was |is )?denied|not permitted|not allowed|denied by|requires approval|user (?:denied|rejected))\b/i
 const MISSING_TOOL = /\b(no such tool|unknown tool|tool (?:is )?not (?:available|found|allowed)|not in (?:the )?allowed tools)\b/i
 
+/** Home directories name the user: C:\Users\x, /Users/x and /home/x become ~. */
+function hideHome(text: string): string {
+  return text.replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"')]+/gi, '~').replace(/\/(?:Users|home)\/[^/\s"')]+/g, '~')
+}
+
 function summary(text: string): string {
-  return clampText(redactEvidence(text), SUMMARY_MAX)
+  return clampText(hideHome(redactEvidence(text)), SUMMARY_MAX)
 }
 
 function evidenceId(kind: TeamEvidenceKind, roleId: string | undefined, key: string): string {
