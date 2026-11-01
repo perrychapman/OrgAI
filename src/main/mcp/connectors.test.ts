@@ -113,6 +113,28 @@ describe('connectorState and the mock test', () => {
     expect(ok.ok).toBe(true)
     expect(ok.tools).toContain('search_threads')
   })
+
+  it("auth kind 'none': no OAuth preset, no secret slot, connected once added, mock tools by category", () => {
+    const deepwiki = connectorById('deepwiki')!
+    const dv = connectorVariant(deepwiki)
+    expect(oauthPresetFor({ connectorId: 'deepwiki' })).toBeUndefined()
+    const entry = buildConnectorEntry(deepwiki, dv, 'mcpl_dw', [], NOW)
+    expect(entry.secretHeaders).toBeUndefined()
+    expect(entry.oauth).toBeUndefined()
+    expect(validateLibraryEntry(entry, [])).toEqual([])
+    expect(connectorState(dv, undefined)).toBe('available')
+    expect(connectorState(dv, info({ auth: { state: 'notRequired' } }))).toBe('connected')
+    expect(mockConnectorTest(deepwiki, dv, info({ auth: { state: 'notRequired' } }))).toMatchObject({ ok: true, tools: ['search', 'read_page', 'ask_question'] })
+  })
+
+  it('every catalog entry builds a valid library entry for every variant', () => {
+    for (const def of CONNECTORS) {
+      for (const v of def.variants) {
+        const entry = buildConnectorEntry(def, v, `mcpl_${def.id}`, [], NOW)
+        expect(validateLibraryEntry(entry, []), `${def.id}/${v.id}`).toEqual([])
+      }
+    }
+  })
 })
 
 describe('OAuth presets in oauth.ts', () => {

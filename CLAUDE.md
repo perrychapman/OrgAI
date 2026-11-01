@@ -362,7 +362,11 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     Verified by unit tests.
   - OAuth (`src/main/mcp/oauth.ts`): RFC 9728 discovery from the 401 `WWW-Authenticate`, RFC 8414 / OIDC metadata,
     a user-entered client id first, then DCR, else `needsClientId`; PKCE S256, RFC 8707 `resource`, a one-shot
-    loopback redirect on 127.0.0.1, refresh with rotation. Verified only with fake fetch and the real loopback in
+    loopback redirect on 127.0.0.1, refresh with rotation (a missing refresh_token is tolerated). DCR sends
+    `application_type: 'native'`. RFC 9207: the callback's `iss` is compared exactly with the metadata `issuer` (else
+    the AS URL) before the code exchange; missing `iss` is refused only when the metadata advertises
+    `authorization_response_iss_parameter_supported` (`OAuthDiscovery.issuer` / `issParameterSupported`,
+    `waitForCode` returns `{ code, iss? }`). No CIMD yet. Verified only with fake fetch and the real loopback in
     unit tests; no live authorization server has been used.
   - The host injects `Authorization: Bearer <access token>` into resolved headers. Unverified: that the bundled
     CLI's undocumented `oauth` block in mcpServers passes through from SDK options (not used); that GitHub's hosted
@@ -388,6 +392,23 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   Web application client and ignoring a missing `resource`; Slack accepting an http loopback redirect at all (its docs
   say HTTPS), the `oauth.v2.user.access` response shape and the scopes it needs; DCR plus loopback on Notion, Linear,
   Sentry, Stripe, Figma and Atlassian (admin allowlist); GitHub's `X-MCP-Readonly` header. Unit-tested only.
+  - Contract (2026-10-31): `ConnectorDef.aliases` (lowercase search words; `connectorMatches(def, query)`), 17
+    categories (`CONNECTOR_CATEGORIES`; added crm, data, cloud, knowledge, automation, commerce, meetings), auth kind
+    `{ kind: 'none' }` (no secret slot, no OAuth; connected once added; mcp:authorize answers `notRequired` without a
+    flow, connectors:setToken refuses), `connectorEase(def, variantId?)` -> `ConnectorEase` 'none' | 'signIn' (oauth)
+    | 'token' | 'ownApp' (oauthClient) with `EASE_ORDER` / `easeRank` (none first), every `defaultVariant` is its
+    easiest variant (test), and `McpLibraryEntry.connectedAt` (epoch ms; main-only: set on authorize success, token
+    set, or add of a 'none' preset; cleared by revokeAuth, token null, or losing the connector; stripped from renderer
+    writes and linked specs; malformed values dropped on read) surfaced as `ConnectorInfo.connectedAt` only while the
+    card is 'connected'.
+  - Catalog (29 entries): added Google Docs, Sheets, Slides, Chat (hosts follow the Gmail pattern, unverified;
+    People omitted), Intercom (US/EU), Supabase (read-only `?read_only=true` default), DeepWiki and Exa (keyless
+    'none' default; Exa also an `x-api-key` token variant), Cloudflare (oauth + token), Datadog (US1, EU1, plus
+    US3/US5/AP1 inferred from the pattern, unverified), Vercel (reviewed clients only), Asana, HubSpot, Box
+    (oauthClient), PayPal (live/sandbox, oauth best effort). Stripe's key variant is now an "Agent API key" (Dec 2026
+    rule); Google setup names the Developer Preview Program and the "Use this client for an AI-powered agent" box;
+    Slack notes say no DCR and Marketplace/internal apps only. `status` labels of the new entries are unverified.
+    New ids are in renderer `BRAND_GAPS` until their marks are sourced.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.

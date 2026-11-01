@@ -608,9 +608,8 @@ export class McpService {
       if (connector?.variant.auth.kind === 'token') {
         throw new OAuthError('authorization', `${connector.def.name} uses a ${connector.variant.auth.label.toLowerCase()}, not OAuth. Paste it instead.`)
       }
-      if (connector?.variant.auth.kind === 'none') {
-        throw new OAuthError('authorization', `${connector.def.name} needs no sign-in.`)
-      }
+      // Nothing to sign in to: answer 'notRequired' without any flow or network (the connect dialog treats it as done).
+      if (connector?.variant.auth.kind === 'none') return { state: 'notRequired' }
       if (clientId || enteredSecret) {
         if (enteredSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), enteredSecret)
         const cur = ref.spec.oauth
