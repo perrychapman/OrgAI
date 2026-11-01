@@ -80,14 +80,6 @@ describe('capabilityArgs other channels', () => {
     expect(() => capabilityArgs.recommend({ projectId: 'p1', scope: { roleId: 'r/1' } })).toThrow('Role not found')
   })
 
-  it('setGrant checks kind, ids and granted', () => {
-    expect(capabilityArgs.setGrant({ projectId: 'p1', roleId: 'r1', kind: 'mcp', id: 's1', granted: false, extra: 1 })).toEqual({ projectId: 'p1', roleId: 'r1', kind: 'mcp', id: 's1', granted: false })
-    expect(() => capabilityArgs.setGrant({ projectId: 'p1', roleId: 'r1', kind: 'plugin', id: 's1', granted: true })).toThrow('Unknown kind')
-    expect(() => capabilityArgs.setGrant({ projectId: 'p1', roleId: 'r1', kind: 'skill', id: '../s', granted: true })).toThrow('Skill not found')
-    expect(() => capabilityArgs.setGrant({ projectId: 'p1', roleId: 'r1', kind: 'mcp', id: 's1', granted: 'yes' })).toThrow('granted must be true or false')
-    expect(() => capabilityArgs.setGrant({ projectId: 'harness', roleId: 'r1', kind: 'mcp', id: 's1', granted: true })).toThrow('Project not found')
-  })
-
   it('review never takes outside or model flags on the opened trigger', () => {
     expect(capabilityArgs.review({ projectId: 'p1', trigger: 'opened', includeOutside: true, useModel: true })).toEqual({ projectId: 'p1', trigger: 'opened' })
     expect(capabilityArgs.review({ projectId: 'p1', trigger: 'runEnded', useModel: true })).toEqual({ projectId: 'p1', trigger: 'manual', includeOutside: false, useModel: true })
@@ -97,5 +89,9 @@ describe('capabilityArgs other channels', () => {
     expect(() => capabilityArgs.undo({ projectId: 'p1', undoId: '../u' })).toThrow('Nothing to undo')
     expect(capabilityArgs.undo({ projectId: 'p1', undoId: 'undo-1', x: 1 })).toEqual({ projectId: 'p1', undoId: 'undo-1' })
     expect(() => capabilityArgs.dismiss({ projectId: 'p1', recommendationId: 'a b' })).toThrow('Recommendation not found')
+    expect(() => capabilityArgs.dismiss({ projectId: 'p1', candidateId: '../c' })).toThrow('Candidate not found')
+    expect(() => capabilityArgs.dismiss({ projectId: 'p1' })).toThrow('Recommendation not found')
+    expect(capabilityArgs.dismiss({ projectId: 'p1', candidateId: 'cap-1', x: 1 })).toEqual({ projectId: 'p1', candidateId: 'cap-1' })
+    expect(capabilityArgs.dismiss({ projectId: 'p1', recommendationId: 'rec-1', candidateId: 'cap-1' })).toEqual({ projectId: 'p1', recommendationId: 'rec-1', candidateId: 'cap-1' })
   })
 })

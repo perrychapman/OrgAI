@@ -3,7 +3,6 @@ import type {
   CapabilityApplyResult,
   CapabilityDiscoverInput,
   CapabilityDiscovery,
-  CapabilityGrantInput,
   CapabilityItem,
   CapabilityProgressEvent,
   CapabilityRecommendInput,
@@ -34,7 +33,6 @@ export interface CapabilityServiceApi {
   cancel(requestId: string): void
   apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult>
   undo(input: CapabilityUndoInput): CapabilityUndoResult
-  setGrant(input: CapabilityGrantInput): Project
   /** Drop snapshots, the undo and the persisted review of a removed project. */
   forgetProject(projectId: string): void
   /** capabilities:review (manual or 'opened'). */

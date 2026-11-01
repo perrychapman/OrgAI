@@ -3072,16 +3072,6 @@ export interface CapabilityUndoResult {
   project: Project
 }
 
-/** capabilities:setGrant input: grant or revoke one existing project skill or MCP server for one role. */
-export interface CapabilityGrantInput {
-  projectId: string
-  roleId: string
-  kind: 'skill' | 'mcp'
-  /** SkillSpec.id or McpServerSpec.id of this project. */
-  id: string
-  granted: boolean
-}
-
 /** capabilities:progress push: one discovery phase or the model step changed state. */
 export interface CapabilityProgressEvent {
   projectId: string
@@ -3187,6 +3177,11 @@ export interface TeamReview {
    * kind, name and redacted target, never their descriptions or paths. 'full' = the user's manual Re-check: every item.
    */
   modelInput?: TeamReviewModelInput
+  /**
+   * Written only to hold a dismissal made on a fresh capabilities:recommend result before any review ran: nothing
+   * was checked, so the 'opened' throttle never returns it and the next review runs in full.
+   */
+  stub?: true
 }
 
 /** TeamReview.modelInput: which data classes the review's model step was sent. */
@@ -3214,10 +3209,15 @@ export interface TeamReviewInput {
   useModel?: boolean
 }
 
-/** capabilities:dismiss input. */
+/**
+ * capabilities:dismiss input: a recommendation id (from the persisted review or a fresh capabilities:recommend
+ * result still held in main) and/or a candidate id; at least one. Main fingerprints the candidate it finds there and
+ * persists the dismissal in the project's review (starting one bound to that discovery when none exists yet).
+ */
 export interface TeamDismissInput {
   projectId: string
-  recommendationId: string
+  recommendationId?: string
+  candidateId?: string
 }
 
 export const TEAM_REVIEW_MIN_BUDGET = 1_000
@@ -3443,8 +3443,6 @@ export interface OrgAIApi {
     apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult>
     /** Reverse the project's last apply. Rejects when the undo expired. */
     undo(input: CapabilityUndoInput): Promise<CapabilityUndoResult>
-    /** Grant or revoke one existing project skill or MCP server for one role. Returns the saved project. */
-    setGrant(input: CapabilityGrantInput): Promise<Project>
     /**
      * Re-check the team setup and persist the review. trigger 'manual' (default) always runs; 'opened' is throttled
      * (TEAM_REVIEW_OPEN_THROTTLE_MS when nothing changed) and returns the last review instead. Never goes outside
@@ -3717,7 +3715,6 @@ export const IPC = {
   capabilitiesCancel: 'capabilities:cancel',
   capabilitiesApply: 'capabilities:apply',
   capabilitiesUndo: 'capabilities:undo',
-  capabilitiesSetGrant: 'capabilities:setGrant',
   /** main -> renderer push channel carrying CapabilityProgressEvent. */
   capabilitiesProgress: 'capabilities:progress',
   capabilitiesReview: 'capabilities:review',

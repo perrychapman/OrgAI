@@ -14,7 +14,6 @@ import type {
   CapabilityApplyResult,
   CapabilityDiscoverInput,
   CapabilityDiscovery,
-  CapabilityGrantInput,
   CapabilityRecommendInput,
   CapabilityUndoInput,
   CapabilityUndoResult,
@@ -524,15 +523,6 @@ export const capabilityArgs = {
     if (!isValidId(i.undoId)) throw new Error('Nothing to undo')
     return { projectId, undoId: i.undoId }
   },
-  setGrant(input: unknown): CapabilityGrantInput {
-    const i = obj<Record<string, unknown>>(input)
-    const projectId = projectIdArg(i.projectId)
-    if (!isValidId(i.roleId)) throw new Error('Role not found')
-    if (i.kind !== 'skill' && i.kind !== 'mcp') throw new Error('Unknown kind')
-    if (!isValidId(i.id)) throw new Error(i.kind === 'skill' ? 'Skill not found' : 'Server not found')
-    if (typeof i.granted !== 'boolean') throw new Error('granted must be true or false')
-    return { projectId, roleId: i.roleId, kind: i.kind, id: i.id, granted: i.granted }
-  },
   review(input: unknown): TeamReviewInput {
     const i = obj<Record<string, unknown>>(input)
     const trigger = i.trigger === 'opened' ? 'opened' : 'manual'
@@ -551,8 +541,17 @@ export const capabilityArgs = {
   dismiss(input: unknown): TeamDismissInput {
     const i = obj<Record<string, unknown>>(input)
     const projectId = projectIdArg(i.projectId)
-    if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
-    return { projectId, recommendationId: i.recommendationId }
+    const out: TeamDismissInput = { projectId }
+    if (i.recommendationId !== undefined) {
+      if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
+      out.recommendationId = i.recommendationId
+    }
+    if (i.candidateId !== undefined) {
+      if (!isValidId(i.candidateId)) throw new Error('Candidate not found')
+      out.candidateId = i.candidateId
+    }
+    if (!out.recommendationId && !out.candidateId) throw new Error('Recommendation not found')
+    return out
   }
 }
 
@@ -566,7 +565,6 @@ function registerCapabilityIpc(capabilities: CapabilityServiceApi): void {
   })
   ipcMain.handle(IPC.capabilitiesApply, (_e, input: unknown): Promise<CapabilityApplyResult> => capabilities.apply(capabilityArgs.apply(input)))
   ipcMain.handle(IPC.capabilitiesUndo, (_e, input: unknown): CapabilityUndoResult => capabilities.undo(capabilityArgs.undo(input)))
-  ipcMain.handle(IPC.capabilitiesSetGrant, (_e, input: unknown): Project => capabilities.setGrant(capabilityArgs.setGrant(input)))
   ipcMain.handle(IPC.capabilitiesReview, (_e, input: unknown): Promise<TeamReview> => capabilities.review(capabilityArgs.review(input)))
   ipcMain.handle(IPC.capabilitiesLastReview, (_e, projectId: unknown): TeamReview | null => capabilities.lastReview(projectIdArg(projectId)))
   ipcMain.handle(IPC.capabilitiesDismiss, (_e, input: unknown): TeamReview => capabilities.dismiss(capabilityArgs.dismiss(input)))

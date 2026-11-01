@@ -13,7 +13,6 @@ import {
   type CapabilityDiscoverInput,
   type CapabilityDiscovery,
   type CapabilityGap,
-  type CapabilityGrantInput,
   type CapabilityItem,
   type CapabilityProgressEvent,
   type CapabilityRecommendation,
@@ -63,7 +62,7 @@ import {
 } from './recommend'
 import { collectEvidence, EVIDENCE_MAX_RUNS, hasNewEvidence } from './evidence'
 import { readReview, removeReview, reviewSummary, writeReview } from './reviewStore'
-import { clampText } from './sanitize'
+import { clampText, mcpSpecDigest } from './sanitize'
 
 /** What index.ts hands the service. */
 export interface CapabilityServiceDeps {
@@ -112,6 +111,8 @@ interface Snapshot {
   recs: Map<string, CapabilityRecommendation>
   requestId?: string
   at: number
+  /** Made by refreshReview after an apply: at most one per project, so applies never evict a recommend result. */
+  refresh?: boolean
 }
 
 interface UndoRecord {
@@ -138,8 +139,18 @@ interface ModelOutcome {
 
 type Emit = (phase: CapabilitySourceId | 'model', state: CapabilityProgressEvent['state'], count?: number, message?: string) => void
 
-function digestOf(items: CapabilityItem[]): string {
-  const lines = items.map((i) => `${i.id}\0${i.kind}\0${i.digest ?? i.target ?? ''}\0${i.blockedReason ?? ''}`).sort()
+/**
+ * What binds one candidate into the discovery digest: a local or registry MCP server by mcpSpecDigest of the spec
+ * the apply would save (command, args, URL, env and header names, secret slots), a skill by its file digest,
+ * anything else by its target.
+ */
+function candidateBinding(c: DiscoveredCandidate): string {
+  if (c.payload.type === 'mcpSpec') return `spec:${mcpSpecDigest(c.payload.spec)}`
+  return c.item.digest ?? c.item.target ?? ''
+}
+
+function digestOf(candidates: DiscoveredCandidate[]): string {
+  const lines = candidates.map((c) => `${c.item.id}\0${c.item.kind}\0${candidateBinding(c)}\0${c.item.target ?? ''}\0${c.item.blockedReason ?? ''}`).sort()
   return createHash('sha256').update(lines.join('\n')).digest('hex')
 }
 
@@ -239,7 +250,15 @@ export class CapabilityService implements CapabilityServiceApi {
   }
 
   private keep(projectId: string, snap: Snapshot): void {
-    const list = (this.snapshots.get(projectId) ?? []).filter((s) => s.digest !== snap.digest)
+    // A review refresh replaces the previous refresh instead of taking another slot: applying many recommendations
+    // from one result must never push that result's snapshot out (its digest would then read as stale).
+    // The same digest seen again: carry its recommendations over, and a refresh of a recommend result stays pinned.
+    const same = this.snapshots.get(projectId)?.find((s) => s.digest === snap.digest && s !== snap)
+    if (same) {
+      for (const [id, r] of same.recs) if (!snap.recs.has(id)) snap.recs.set(id, r)
+      if (!same.refresh) delete snap.refresh
+    }
+    const list = (this.snapshots.get(projectId) ?? []).filter((s) => s.digest !== snap.digest && !(snap.refresh && s.refresh))
     list.unshift(snap)
     this.snapshots.set(projectId, list.slice(0, SNAPSHOTS_PER_PROJECT))
     // Total cap: drop the oldest snapshots (never the new one) until the budget fits.
@@ -287,7 +306,10 @@ export class CapabilityService implements CapabilityServiceApi {
 
   // ---------- discovery ----------
 
-  private async discoverSnap(project: Project, opts: { includeOutside: boolean; query?: string; requestId: string; signal: AbortSignal; emit: Emit }): Promise<Snapshot> {
+  private async discoverSnap(
+    project: Project,
+    opts: { includeOutside: boolean; query?: string; requestId: string; signal: AbortSignal; emit: Emit; refresh?: boolean }
+  ): Promise<Snapshot> {
     const { signal, emit } = opts
     const ctx: LocalContext = { projectPath: project.path, homeDir: this.deps.homeDir, env: this.deps.env, platform: this.deps.platform }
     const candidates: DiscoveredCandidate[] = []
@@ -347,7 +369,7 @@ export class CapabilityService implements CapabilityServiceApi {
       warnings.push({ source: 'project', message: `Only the first ${CAPABILITY_MAX_ITEMS} candidates are listed.` })
     }
     const items = merged.map((c) => c.item)
-    const digest = digestOf(items)
+    const digest = digestOf(merged)
     const discovery: CapabilityDiscovery = {
       projectId: project.id,
       items,
@@ -358,7 +380,7 @@ export class CapabilityService implements CapabilityServiceApi {
       ...(stopped || capped ? { partial: true as const } : {}),
       createdAt: new Date(this.now()).toISOString()
     }
-    const snap: Snapshot = { digest, discovery, candidates: new Map(merged.map((c) => [c.item.id, c])), recs: new Map(), requestId: opts.requestId, at: this.now() }
+    const snap: Snapshot = { digest, discovery, candidates: new Map(merged.map((c) => [c.item.id, c])), recs: new Map(), requestId: opts.requestId, at: this.now(), ...(opts.refresh ? { refresh: true } : {}) }
     this.keep(project.id, snap)
     return snap
   }
@@ -751,39 +773,6 @@ export class CapabilityService implements CapabilityServiceApi {
     return { project: saved }
   }
 
-  setGrant(input: CapabilityGrantInput): Project {
-    const project = this.project(input.projectId)
-    const role = project.roles.find((r) => r.id === input.roleId)
-    if (!role) throw new Error('Role not found')
-    if (input.kind === 'skill') {
-      if (!(project.skills ?? []).some((s) => s.id === input.id)) throw new Error('Skill not found')
-      const has = (role.skills ?? []).includes(input.id)
-      if (has !== input.granted) {
-        const skills = input.granted ? [...(role.skills ?? []), input.id] : (role.skills ?? []).filter((id) => id !== input.id)
-        this.deps.projects.save({ ...project, roles: project.roles.map((r) => (r.id === role.id ? { ...r, skills } : r)) })
-      }
-    } else {
-      const spec = (project.mcpServers ?? []).find((s) => s.id === input.id)
-      if (!spec) throw new Error('Server not found')
-      let roles = project.roles
-      let specRoles = spec.roles
-      if (input.granted) {
-        if (specRoles !== undefined && !specRoles.includes(role.slug)) specRoles = [...specRoles, role.slug]
-      } else {
-        // undefined = every role: a revoke materializes the explicit list without this role.
-        specRoles = (specRoles ?? project.roles.map((r) => r.slug)).filter((s) => s !== role.slug)
-        if ((role.mcpServers ?? []).includes(spec.id)) roles = roles.map((r) => (r.id === role.id ? { ...r, mcpServers: (r.mcpServers ?? []).filter((id) => id !== spec.id) } : r))
-      }
-      const next: McpServerSpec = { ...spec }
-      if (specRoles === undefined) delete next.roles
-      else next.roles = specRoles
-      this.deps.projects.save({ ...project, roles, mcpServers: (project.mcpServers ?? []).map((s) => (s.id === spec.id ? next : s)) })
-    }
-    const saved = this.fresh(project.id)
-    this.deps.onProjectChanged(saved)
-    return saved
-  }
-
   forgetProject(projectId: string): void {
     if (projectId === HARNESS_PROJECT_ID) return
     this.snapshots.delete(projectId)
@@ -827,7 +816,7 @@ export class CapabilityService implements CapabilityServiceApi {
     let next: TeamReview = { ...review, recommendations, pendingCount: recommendations.length }
     if (!review.discovery.includeOutside) {
       try {
-        const snap = await this.discoverSnap(this.project(projectId), { includeOutside: false, requestId: this.requestIdOf(undefined), signal: new AbortController().signal, emit: () => {} })
+        const snap = await this.discoverSnap(this.project(projectId), { includeOutside: false, requestId: this.requestIdOf(undefined), signal: new AbortController().signal, emit: () => {}, refresh: true })
         if (!snap.discovery.partial) {
           const ids = new Set(snap.discovery.items.map((i) => i.id))
           const kept = recommendations.filter((r) => ids.has(r.candidateId))
@@ -842,16 +831,60 @@ export class CapabilityService implements CapabilityServiceApi {
   }
 
   dismiss(input: TeamDismissInput): TeamReview {
-    if (input.projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
-    const review = readReview(this.deps.dataDir, input.projectId)
-    const rec = review?.recommendations.find((r) => r.id === input.recommendationId)
-    if (!review || !rec) throw new Error('Recommendation not found')
-    const item = review.discovery.items.find((i) => i.id === rec.candidateId)
-    const dismissed = [...review.dismissed.filter((d) => d.candidateId !== rec.candidateId), { candidateId: rec.candidateId, fingerprint: fingerprintOf(item, rec.candidateId), at: new Date(this.now()).toISOString() }].slice(-TEAM_REVIEW_MAX_DISMISSED)
-    const recommendations = review.recommendations.filter((r) => r.id !== rec.id)
-    const next: TeamReview = { ...review, recommendations, pendingCount: recommendations.length, dismissed }
+    const project = this.project(input.projectId)
+    const review = readReview(this.deps.dataDir, project.id)
+    const snaps = this.snapshots.get(project.id) ?? []
+    // The recommendation from the persisted review, else from a recommend() result still held in memory.
+    let rec = input.recommendationId ? review?.recommendations.find((r) => r.id === input.recommendationId) : undefined
+    let recSnap: Snapshot | undefined
+    if (!rec && input.recommendationId) {
+      for (const s of snaps) {
+        if ((rec = s.recs.get(input.recommendationId))) {
+          recSnap = s
+          break
+        }
+      }
+    }
+    if (rec && input.candidateId && rec.candidateId !== input.candidateId) throw new Error('The recommendation and the candidate do not match.')
+    const candidateId = rec?.candidateId ?? input.candidateId
+    if (!candidateId) throw new Error('Recommendation not found')
+    let item = review?.discovery.items.find((i) => i.id === candidateId)
+    let from: Snapshot | undefined
+    if (!item) {
+      // The snapshot that held the recommendation first: the fingerprint must be of the spec the user saw.
+      from = recSnap?.candidates.has(candidateId) ? recSnap : snaps.find((s) => s.candidates.has(candidateId))
+      item = from?.candidates.get(candidateId)?.item
+    }
+    if (!item) throw new Error(input.recommendationId ? 'Recommendation not found' : 'Candidate not found')
+    const entry = { candidateId, fingerprint: fingerprintOf(item, candidateId), at: new Date(this.now()).toISOString() }
+    // No review yet (a fresh recommend result): start one bound to that discovery so the dismissal persists.
+    if (!review && from!.discovery.partial) throw new Error('That check was cut short. Run the recommendations again.')
+    const base: TeamReview = review ?? this.stubReview(project.id, from!)
+    const dismissed = [...base.dismissed.filter((d) => d.candidateId !== candidateId), entry].slice(-TEAM_REVIEW_MAX_DISMISSED)
+    const recommendations = base.recommendations.filter((r) => r.id !== rec?.id && r.candidateId !== candidateId)
+    const next: TeamReview = { ...base, recommendations, pendingCount: recommendations.length, dismissed }
     this.publish(next)
     return next
+  }
+
+  /** A review with nothing pending, bound to a held discovery: only to persist a dismissal before any review ran. */
+  private stubReview(projectId: string, snap: Snapshot): TeamReview {
+    return {
+      projectId,
+      checkedAt: snap.discovery.createdAt,
+      trigger: 'manual',
+      mode: 'free',
+      discovery: snap.discovery,
+      digest: snap.digest,
+      newCandidateIds: [],
+      recommendations: [],
+      gaps: [],
+      evidence: [],
+      dismissed: [],
+      pendingCount: 0,
+      runsSinceModel: 0,
+      stub: true
+    }
   }
 
   /** Something changed since the last review: the project was saved or a work run finished after it. */
@@ -871,7 +904,7 @@ export class CapabilityService implements CapabilityServiceApi {
     const trigger = input.trigger === 'opened' ? 'opened' : 'manual'
     if (trigger === 'opened') {
       const prev = readReview(this.deps.dataDir, project.id)
-      if (prev && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return prev
+      if (prev && !prev.stub && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return prev
     }
     const requestId = this.requestIdOf(input.requestId)
     const ac = this.track(requestId)

@@ -228,7 +228,6 @@ describe('harness project', () => {
     await expect(rig.svc.apply({ projectId: h, digest: 'x', candidateId: 'y', roleIds: ['a'] })).rejects.toThrow(/not found/i)
     await expect(rig.svc.review({ projectId: h })).rejects.toThrow(/not found/i)
     expect(() => rig.svc.undo({ projectId: h, undoId: 'u' })).toThrow(/not found/i)
-    expect(() => rig.svc.setGrant({ projectId: h, roleId: 'r', kind: 'skill', id: 's', granted: true })).toThrow(/not found/i)
     expect(() => rig.svc.dismiss({ projectId: h, recommendationId: 'r' })).toThrow(/not found/i)
     expect(rig.svc.lastReview(h)).toBeNull()
     expect(() => rig.svc.forgetProject(h)).not.toThrow()
@@ -600,42 +599,6 @@ describe('apply', () => {
   })
 })
 
-describe('setGrant', () => {
-  it('grants and revokes a skill', async () => {
-    const d = await rig.svc.discover({ projectId: 'p1' })
-    const r = await rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: pick(d, 'skill', 'repo-helper').id, roleIds: [ENG] })
-    let p = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'skill', id: r.applied.id, granted: true })
-    expect(p.roles.find((x) => x.id === REV)!.skills).toEqual([r.applied.id])
-    p = rig.svc.setGrant({ projectId: 'p1', roleId: ENG, kind: 'skill', id: r.applied.id, granted: false })
-    expect(p.roles.find((x) => x.id === ENG)!.skills).toEqual([])
-    expect(() => rig.svc.setGrant({ projectId: 'p1', roleId: ENG, kind: 'skill', id: 'nope', granted: true })).toThrow(/Skill not found/)
-    expect(() => rig.svc.setGrant({ projectId: 'p1', roleId: 'ghost', kind: 'skill', id: r.applied.id, granted: true })).toThrow(/Role not found/)
-  })
-
-  it('revoking a role from an every-role server expands to an explicit slug list without it', async () => {
-    const info = rig.mcp.connectorsAdd({ connectorId: 'github', variant: 'readonly' })
-    const link = rig.mcp.linkLibrary({ projectId: 'p1', libraryId: info.entry.id }).project.mcpServers![0]!
-    expect(link.roles).toBeUndefined()
-    const p = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'mcp', id: link.id, granted: false })
-    expect(p.mcpServers![0]!.roles).toEqual(['lead', 'engineer'])
-    const back = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'mcp', id: link.id, granted: true })
-    expect(back.mcpServers![0]!.roles).toEqual(['lead', 'engineer', 'reviewer'])
-    // Granting an every-role server changes nothing.
-    const every = rig.mcp.linkLibrary({ projectId: 'p1', libraryId: rig.mcp.connectorsAdd({ connectorId: 'linear', variant: 'readonly' }).entry.id }).project.mcpServers!.find((s) => s.libraryId !== info.entry.id)!
-    expect(rig.svc.setGrant({ projectId: 'p1', roleId: ENG, kind: 'mcp', id: every.id, granted: true }).mcpServers!.find((s) => s.id === every.id)!.roles).toBeUndefined()
-  })
-
-  it('revoke also drops an explicit Role.mcpServers grant', async () => {
-    const d = await rig.svc.discover({ projectId: 'p1' })
-    const r = await rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: pick(d, 'mcp', 'mock-docs').id, roleIds: [LEAD] })
-    const p = stored()
-    rig.store.save({ ...p, roles: p.roles.map((x) => (x.id === REV ? { ...x, mcpServers: [r.applied.id] } : x)) })
-    const out = rig.svc.setGrant({ projectId: 'p1', roleId: REV, kind: 'mcp', id: r.applied.id, granted: false })
-    expect(out.roles.find((x) => x.id === REV)!.mcpServers).toEqual([])
-    expect(out.mcpServers![0]!.roles).toEqual(['lead'])
-  })
-})
-
 // ---------- the Team review ----------
 
 const work = (id: string, endedAt: number): RunSummary => runSummary({ id, projectId: 'p1', kind: 'work', status: 'finished', startedAt: endedAt - 10, endedAt })
@@ -865,5 +828,97 @@ describe('review', () => {
     const restarted = rig.make()
     const r = await restarted.apply({ projectId: 'p1', digest: saved.digest, recommendationId: recB.id, roleIds: [ENG] })
     expect(r.applied.name).toBe('code-review')
+  })
+})
+
+// ---------- final security review fixes ----------
+
+describe('review fixes', () => {
+  it('shows the full MCP command and applies exactly that spec', async () => {
+    const tail = `--opt=${'a'.repeat(294)}`
+    const write = (last: string, env: Record<string, string> = {}): void =>
+      put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', `${tail.slice(0, -1)}${last}`], env } } }))
+    write('a')
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const item = pick(d, 'mcp', 'tailed')
+    expect(item.target).toBe(`npx -y pkg@1.0.0 ${tail}`)
+    // Same sources after a restart: the applied spec is exactly the reviewed one.
+    const ok = await rig.make().apply({ projectId: 'p1', digest: d.digest, candidateId: item.id, roleIds: [ENG] })
+    expect(stored().mcpServers!.find((s) => s.id === ok.applied.id)!.args).toEqual(['-y', 'pkg@1.0.0', tail])
+  })
+
+  it('refuses an apply after the command tail changed', async () => {
+    const tail = `--opt=${'a'.repeat(294)}`
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', tail] } } }))
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const id = pick(d, 'mcp', 'tailed').id
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', `${tail.slice(0, -1)}b`] } } }))
+    await expect(rig.make().apply({ projectId: 'p1', digest: d.digest, candidateId: id, roleIds: [ENG] })).rejects.toThrow(/out of date/)
+    expect(stored().mcpServers ?? []).toHaveLength(0)
+    // A secret slot change alone (same command) changes the digest too.
+    const d1 = await rig.svc.discover({ projectId: 'p1' })
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { tailed: { command: 'npx', args: ['-y', 'pkg@1.0.0', `${tail.slice(0, -1)}b`], env: { NEW_TOKEN: '' } } } }))
+    const d2 = await rig.svc.discover({ projectId: 'p1' })
+    expect(pick(d2, 'mcp', 'tailed').target).toBe(pick(d1, 'mcp', 'tailed').target)
+    expect(d2.digest).not.toBe(d1.digest)
+  })
+
+  it('blocks a command over 400 chars so it can never be applied', async () => {
+    put(join(rig.repo, '.mcp.json'), JSON.stringify({ mcpServers: { huge: { command: 'npx', args: ['-y', 'pkg@1.0.0', `--opt=${'z'.repeat(494)}`] } } }))
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const item = pick(d, 'mcp', 'huge')
+    expect(item.blockedReason).toBe('Command too long to review')
+    await expect(rig.svc.apply({ projectId: 'p1', digest: d.digest, candidateId: item.id, roleIds: [ENG] })).rejects.toThrow(/Command too long to review/)
+  })
+
+  it('applies six recommendations from one recommend result without going stale', async () => {
+    const names = ['alpha-tool', 'beta-tool', 'gamma-tool', 'delta-tool', 'epsilon-tool', 'zeta-tool']
+    for (const n of names) put(join(rig.repo, '.claude', 'skills', n, 'SKILL.md'), SKILL_MD(n, `Helps with ${n} chores.`))
+    // A persisted review makes every apply re-bind it (refreshReview), which used to evict the result's snapshot.
+    await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    rig.complete.mockResolvedValue({ text: answer(names.map((n) => ({ candidateId: pick(d, 'skill', n).id, roleIds: [ENG], reason: 'Fits.' }))) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    expect(res.recommendations).toHaveLength(6)
+    for (const rec of res.recommendations) {
+      const r = await rig.svc.apply({ projectId: 'p1', digest: res.digest, recommendationId: rec.id, roleIds: [ENG] })
+      expect(r.applied.action).toBe('added')
+    }
+    expect(roleOf(ENG).skills).toHaveLength(6)
+  })
+
+  it('dismisses a card from a fresh recommend result (no review yet) and remembers it', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const cand = pick(d, 'skill', 'repo-helper')
+    const other = pick(d, 'skill', 'code-review')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: cand.id, roleIds: [ENG], reason: 'Fits.' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    expect(readReview(rig.data, 'p1')).toBeNull()
+    expect(() => rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id, candidateId: other.id })).toThrow(/do not match/)
+    const out = rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id })
+    expect(out.dismissed).toEqual([expect.objectContaining({ candidateId: cand.id, fingerprint: fingerprintOf(cand, cand.id) })])
+    expect(out.pendingCount).toBe(0)
+    expect(readReview(rig.data, 'p1')!.dismissed).toHaveLength(1)
+    // By candidate id too, and an unknown one is refused.
+    expect(rig.svc.dismiss({ projectId: 'p1', candidateId: other.id }).dismissed.map((x) => x.candidateId)).toEqual([cand.id, other.id])
+    expect(() => rig.svc.dismiss({ projectId: 'p1', candidateId: 'cap-none' })).toThrow(/Candidate not found/)
+    expect(() => rig.svc.dismiss({ projectId: 'p1' })).toThrow(/not found/)
+    // The next model check does not offer the dismissed candidate again.
+    expect((await rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })).pendingCount).toBe(0)
+  })
+})
+
+describe('stub review (follow-up)', () => {
+  it('a dismissal stub never satisfies the opened throttle', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const cand = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: cand.id, roleIds: [ENG], reason: 'Fits.' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    const stub = rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id })
+    expect(stub.stub).toBe(true)
+    const opened = await rig.svc.review({ projectId: 'p1', trigger: 'opened' })
+    expect(opened.stub).toBeUndefined()
+    expect(opened.dismissed.map((x) => x.candidateId)).toEqual([cand.id])
+    expect(opened.recommendations.some((r) => r.candidateId === cand.id)).toBe(false)
   })
 })

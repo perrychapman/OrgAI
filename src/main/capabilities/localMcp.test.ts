@@ -228,3 +228,28 @@ describe('credential args', () => {
     expect(c.item.notes.join(' ')).toMatch(/left out.*--header.*-H/)
   })
 })
+
+describe('discoverLocalMcp review target', () => {
+  it('shows a 300-char tail in full and blocks a command over 400 chars instead of cutting it', () => {
+    const tail = `--opt=${'a'.repeat(294)}`
+    const long = `--opt=${'b'.repeat(494)}`
+    put(join(proj, '.mcp.json'), JSON.stringify({ mcpServers: { short: { command: 'npx', args: ['-y', 'pkg@1.0.0', tail] }, long: { command: 'npx', args: ['-y', 'pkg@1.0.0', long] } } }))
+    const r = discoverLocalMcp(ctx())
+    const short = r.candidates.find((c) => c.item.name === 'short')!
+    expect(tail.length).toBe(300)
+    expect(short.item.target).toBe(`npx -y pkg@1.0.0 ${tail}`)
+    expect(short.item.blockedReason).toBeUndefined()
+    const blocked = r.candidates.find((c) => c.item.name === 'long')!
+    expect(blocked.item.blockedReason).toBe('Command too long to review')
+    expect(blocked.item.target!.length).toBeLessThanOrEqual(400)
+    // The payload still holds the real spec; the block keeps it from ever being applied.
+    expect((blocked.payload as { spec: { args: string[] } }).spec.args).toContain(long)
+  })
+
+  it('quotes args with spaces and blocks hidden characters', () => {
+    put(join(proj, '.mcp.json'), JSON.stringify({ mcpServers: { spaced: { command: 'node', args: ['server.js', 'two words'] }, hidden: { command: 'node', args: ['a‮b'] } } }))
+    const r = discoverLocalMcp(ctx())
+    expect(r.candidates.find((c) => c.item.name === 'spaced')!.item.target).toBe('node server.js "two words"')
+    expect(r.candidates.find((c) => c.item.name === 'hidden')!.item.blockedReason).toMatch(/hidden or control characters/)
+  })
+})

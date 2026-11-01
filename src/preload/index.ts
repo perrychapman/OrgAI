@@ -121,7 +121,6 @@ const api: OrgAIApi = {
     cancel: (input) => ipcRenderer.invoke(IPC.capabilitiesCancel, { requestId: input?.requestId }),
     apply: (input) => ipcRenderer.invoke(IPC.capabilitiesApply, input),
     undo: (input) => ipcRenderer.invoke(IPC.capabilitiesUndo, input),
-    setGrant: (input) => ipcRenderer.invoke(IPC.capabilitiesSetGrant, input),
     review: (input) => ipcRenderer.invoke(IPC.capabilitiesReview, input),
     lastReview: (projectId: string) => ipcRenderer.invoke(IPC.capabilitiesLastReview, projectId),
     dismiss: (input) => ipcRenderer.invoke(IPC.capabilitiesDismiss, input)
