@@ -1,4 +1,4 @@
-import type { PlanStep, RunKind, RunPlan } from '@shared/types'
+import type { PlanStep, RunKind, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 
 /**
@@ -101,6 +101,16 @@ export function continueSummary(plan: RunPlan): string {
 
 export function limitReachedText(max: number): string {
   return `Automatic continues paused: this run reached its limit of ${max}. Reply to keep going, or raise "Max automatic continues per run" in project settings.`
+}
+
+/**
+ * Whether the plan-nudge path applies to a run at all: work runs only, and never a Chat with the single assistant
+ * (a quick run with team 'single' is a conversation, not a planned task). A Chat with the default team keeps nudges.
+ * RunManager folds this into RuntimeContext.autoContinue, so every adapter's ContinuationDriver stays off for such a
+ * run; interrupt holds, idle handling and auto-resume do not depend on it. Pure.
+ */
+export function planNudgesApply(run: Pick<RunSummary, 'kind' | 'quick'>): boolean {
+  return run.kind === 'work' && run.quick?.team !== 'single'
 }
 
 export interface NudgeInput {
