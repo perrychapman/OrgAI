@@ -3,7 +3,7 @@
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, openAppSettings, openProject, projectTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, openAppSettings, openProject, openTeam, projectTab, teamPanelTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -123,18 +123,21 @@ try {
 
       // Project settings
       await openProject(page, NAME)
-      await projectTab(page, 'Team').click()
-      await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
-      await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
+      await openTeam(page)
+      await teamPanelTab(page, 'Catalog').click()
+      await page.waitForSelector('[data-testid=catalog-connections]', { timeout: 10_000 })
       await sleep(600)
-      check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
-      check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
-      check((await page.locator('[data-testid=mcp-add-service]').count()) === 1 && (await page.locator('[data-testid=mcp-add-other]').count()) === 1, 'Add a service and Other ways to add buttons present')
+      check((await page.locator('[data-testid=catalog-connections]').count()) === 1, `Connections section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=catalog-plugins]').count()) === 1, `Plugins section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=catalog-skills]').count()) === 1, `Skills section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=mcp-add-service]').count()) === 1 && (await page.locator('[data-testid=mcp-add-other]').count()) === 0, 'exactly one Add a connection button, no second add menu')
       const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
-      check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on project tools at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
-      await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
-      await shot(`project-mcp-${w}x${h}-${theme}`)
+      check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on the Catalog at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
+      await page.locator('[data-testid=catalog-connections]').scrollIntoViewIfNeeded()
+      await shot(`catalog-connections-${w}x${h}-${theme}`)
+      await page.locator('[data-testid=catalog-skills]').scrollIntoViewIfNeeded()
+      await shot(`catalog-skills-${w}x${h}-${theme}`)
+      await projectTab(page, 'Settings').click()
       await page.getByRole('tab', { name: 'Connection', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
@@ -190,19 +193,18 @@ try {
     check(/Secrets: \d+ of 1 set/.test((await row.textContent()) ?? ''), 'library row shows the secrets summary')
     await shot('mcp-library-row')
     await openProject(page, NAME)
-    await projectTab(page, 'Team').click()
-    await projectTab(page, 'Settings').click()
-    await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
-    await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
-    await page.locator('[data-testid=mcp-add-other]').click()
-    await page.locator('[data-testid=mcp-add-library]').click()
+    await openTeam(page)
+    await teamPanelTab(page, 'Catalog').click()
+    await page.locator('[data-testid=catalog-connections]').scrollIntoViewIfNeeded()
+    await page.locator('[data-testid=mcp-add-service]').click()
+    await page.locator('[data-testid=add-service-link]').click()
     const dlg = page.locator('[data-testid=mcp-link-dialog]')
     await dlg.getByText('e2e-lib-server').first().click()
     const roleBoxes = dlg.getByRole('checkbox')
     if (await roleBoxes.count()) await roleBoxes.first().check()
     await dlg.locator('[data-testid=mcp-link-confirm]').click()
     await dlg.waitFor({ state: 'detached', timeout: 10_000 })
-    const linked = page.locator('#settings-section-mcp [data-testid=mcp-row-library-badge]')
+    const linked = page.locator('[data-testid=catalog-connections] [data-testid=mcp-row-library-badge]')
     await linked.first().waitFor({ timeout: 10_000 })
     check((await linked.count()) >= 1, 'linked library server shows the library badge in project settings')
     await shot('mcp-linked-row')

@@ -95,6 +95,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     if (selectedRoleId && !hadSelection.current) setPanelTab('role')
     hadSelection.current = !!selectedRoleId
   }, [selectedRoleId])
+  // A deep link to a connection (openProjectMcp) opens the Catalog tab; the connections section then scrolls to and focuses its row.
+  const mcpFocus = useAppStore((s) => s.mcpFocus)
+  useEffect(() => {
+    if (mcpFocus?.kind !== 'server' || mcpFocus.projectId !== project.id) return
+    setPanelTab('catalog')
+    setPanelOpen(true)
+  }, [mcpFocus, project.id])
   const [importDialog, setImportDialog] = useState<{ fresh: boolean } | null>(null)
   const [scan, setScan] = useState<AgentImportScan | null>(null)
   const [memory, setMemory] = useState<BannerMemory | null>(() => readBannerMemory(window.localStorage, project.id))

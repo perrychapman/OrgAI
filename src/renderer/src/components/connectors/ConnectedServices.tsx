@@ -9,6 +9,7 @@ import { ConfirmDialog, Dialog } from '../ui/Dialog'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
 import { RoleAccess, RoleChecklist } from '../mcp/RoleAccess'
+import { UsedBy } from '../team/CatalogUsedBy'
 import { errMessage } from '../mcp/mcpHelpers'
 import { linkedServerFor, setUpConnectors, useInProjectBlocker } from '../mcp/mcpLibraryHelpers'
 import { accessWords, stateChip } from '../../lib/connectors'
@@ -102,19 +103,21 @@ export function UseInProjectDialog({
 
 type Step = { kind: 'use'; info: ConnectorInfo } | { kind: 'setup'; info: ConnectorInfo } | null
 
-/** Project settings > Tools: the services connected in the app, and how this project uses them. */
+/** Team > Catalog > Connections: the services connected in the app, and how this project uses them. */
 export default function ConnectedServices({
   project,
   connectors,
   servers,
   onResult,
-  onChanged
+  onChanged,
+  onSelectRole
 }: {
   project: Project
   connectors: ConnectorInfo[] | null
   servers: McpServerInfo[]
   onResult: (r: McpMutationResult) => void
   onChanged: () => void
+  onSelectRole?: (roleId: string) => void
 }): ReactElement | null {
   const [step, setStep] = useState<Step>(null)
   const items = setUpConnectors(connectors)
@@ -131,6 +134,7 @@ export default function ConnectedServices({
             onResult={onResult}
             onUse={() => setStep({ kind: 'use', info })}
             onSetup={() => setStep({ kind: 'setup', info })}
+            onSelectRole={onSelectRole}
           />
         ))}
       </ul>
@@ -155,7 +159,8 @@ function ConnectedServiceRow({
   project,
   onResult,
   onUse,
-  onSetup
+  onSetup,
+  onSelectRole
 }: {
   info: ConnectorInfo
   server: McpServerInfo | undefined
@@ -163,6 +168,7 @@ function ConnectedServiceRow({
   onResult: (r: McpMutationResult) => void
   onUse: () => void
   onSetup: () => void
+  onSelectRole?: (roleId: string) => void
 }): ReactElement {
   const { connector } = info
   const chip = stateChip(info)
@@ -188,6 +194,7 @@ function ConnectedServiceRow({
       className={`mcp-row cs-row${spec && !spec.enabled ? ' off' : ''}${needsSetup ? ' warn' : ''}`}
       data-testid="connected-service-row"
       data-connector={connector.id}
+      data-id={spec?.id}
       onKeyDown={(e) => {
         if (e.key === 'Escape' && menu) {
           setMenu(false)
@@ -230,6 +237,7 @@ function ConnectedServiceRow({
               <span>Available to agents</span>
             </span>
             <span className="muted cs-avail-hint">{spec.enabled ? 'Off pauses it in this project only.' : 'Paused in this project. Still connected.'}</span>
+            <UsedBy all={spec.roles === undefined} roles={loseRoles} onSelectRole={onSelectRole} />
             <RoleAccess
               serverName={connector.name}
               roles={project.roles}

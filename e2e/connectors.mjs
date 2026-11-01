@@ -1,11 +1,11 @@
 // Token- and network-free (ORGAI_MOCK=1: connector sign-in, token save and "Check connection" are answered in-process).
 // Walks the Connectors feature: App settings > Connectors gallery and dialog (oauth, oauthClient, token kinds), linking a
-// connected service to a project from Settings > Plugins and suggestions, granting a role, the role inspector's Connections block,
+// connected service to a project from Team > Catalog, granting a role, the role inspector's Connections block,
 // Disconnect and Remove confirmations that name the project, plus layout checks and screenshots at 1024x640 and
 // 1600x1000 in both themes.
 import * as path from 'node:path'
 import * as fs from 'node:fs'
-import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, openAppSettings, openProject, projectTab, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, removeFixture, teamPanelTab, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E connectors (orgai test)'
@@ -113,20 +113,19 @@ try {
 
   // ---- link to a project, grant a role ----
   await openProject(page, NAME)
-  await projectTab(page, 'Team').click()
-  await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
-  await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
+  await openTeam(page)
+  await teamPanelTab(page, 'Catalog').click()
+  await page.waitForSelector('[data-testid=catalog-connections]', { timeout: 10_000 })
   const row = page.locator('[data-testid=connected-service-row][data-connector=notion]')
   await row.waitFor({ timeout: 10_000 })
-  check((await page.locator('[data-testid=connected-service-row][data-connector=slack]').count()) === 1, 'Tools lists the connected Slack service')
+  check((await page.locator('[data-testid=connected-service-row][data-connector=slack]').count()) === 1, 'Catalog lists the connected Slack service')
   const nameBox = await row.locator('.mcp-name').boundingBox()
   check(!!nameBox && nameBox.width > 40, 'tool row server name is wider than 40px at 1280', JSON.stringify(nameBox))
   const logoBox = await row.locator('.connector-logo').first().boundingBox()
   check(!!logoBox && !!nameBox && logoBox.x + logoBox.width <= nameBox.x && Math.abs(logoBox.y - nameBox.y) < 40, 'connected service logo sits left of its name (CSS nesting regression)', JSON.stringify({ logoBox, nameBox }))
   const nameH = await row.locator('.mcp-name').evaluate((el) => ({ h: el.getBoundingClientRect().height, lh: parseFloat(getComputedStyle(el).lineHeight) }))
   check(nameH.h <= nameH.lh * 1.5, 'tool row server name stays on one line at 1280', JSON.stringify(nameH))
-  await noHScroll('project Tools at 1280')
+  await noHScroll('Catalog at 1280')
   await row.locator('[data-testid=connector-use]').click()
   const use = page.locator('[data-testid=connector-use-dialog]')
   await use.waitFor({ timeout: 10_000 })
@@ -138,7 +137,7 @@ try {
   await use.locator('[data-testid=connector-use-confirm]').click()
   await use.waitFor({ state: 'detached', timeout: 10_000 })
   await row.locator('.mcp-role-access button').first().waitFor({ timeout: 10_000 })
-  check(new RegExp(`Can use: ${role}`).test((await row.textContent()) ?? ''), `Tools row shows "Can use: ${role}"`, ((await row.textContent()) ?? '').slice(0, 200))
+  check(new RegExp(`Can use: ${role}`).test((await row.textContent()) ?? ''), `Catalog row shows "Can use: ${role}"`, ((await row.textContent()) ?? '').slice(0, 200))
   check((await row.locator('[data-testid=connector-use]').count()) === 0, 'the Use button is gone once linked')
 
   // ---- role inspector ----
@@ -169,14 +168,13 @@ try {
       await shot(`dialog-connected-${tag}`)
       await closeDialog()
       await openProject(page, NAME)
-      await projectTab(page, 'Team').click()
-      await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
+      await openTeam(page)
+      await teamPanelTab(page, 'Catalog').click()
       await page.waitForSelector('[data-testid=connected-service-row][data-connector=notion]', { timeout: 10_000 })
-      await noHScroll(`Tools ${tag}`)
+      await noHScroll(`Catalog ${tag}`)
       const nb = await page.locator('[data-testid=connected-service-row][data-connector=notion] .mcp-name').boundingBox()
       check(!!nb && nb.width > 40, `server name is not squeezed at ${tag}`, JSON.stringify(nb))
-      await shot(`tools-${tag}`)
+      await shot(`catalog-${tag}`)
     }
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
@@ -206,11 +204,10 @@ try {
   }
   check(true, 'Slack and GitHub removed')
   await openProject(page, NAME)
-  await projectTab(page, 'Team').click()
-  await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
-  await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
-  check((await page.locator('[data-testid=connected-service-row]').count()) === 0, 'Tools no longer lists the removed services')
+  await openTeam(page)
+  await teamPanelTab(page, 'Catalog').click()
+  await page.waitForSelector('[data-testid=catalog-connections]', { timeout: 10_000 })
+  check((await page.locator('[data-testid=connected-service-row]').count()) === 0, 'Catalog no longer lists the removed services')
 } catch (e) {
   check(false, 'connectors flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})

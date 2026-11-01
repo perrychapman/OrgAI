@@ -1,18 +1,19 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, Ellipsis, ExternalLink, Library, Minus, Package, Pencil, Plug, Plus, Sparkles, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
+import { Check, Copy, Ellipsis, ExternalLink, Library, Minus, Pencil, Plug, Plus, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
 import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTestResult, Project } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { focusPaneHeading } from '../../lib/settingsTarget'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { ConfirmDialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
-import { Popover } from '../ui/Popover'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
-import { SettingsGroup, SettingsSection } from '../settings/SettingsSection'
+import { SettingsGroup } from '../settings/SettingsSection'
+import { CatalogGroup } from '../team/CatalogGroup'
+import { UsedBy } from '../team/CatalogUsedBy'
 import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpAssistDialog from './McpAssistDialog'
 import McpLinkDialog from './McpLinkDialog'
@@ -36,18 +37,35 @@ type Modal =
   | { kind: 'assist' }
   | null
 
-/** Moves the viewer to a server row and onto its first control (the Authorize button when it has one). */
+const reducedMotion = (): boolean =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true || document.documentElement.getAttribute('data-reduce-motion') === 'on'
+
+/**
+ * Moves the viewer to a connection row (a custom server row or a connected-service row), highlights it and puts focus on
+ * its primary action (Authorize / Finish setup when it has one, else its first button).
+ */
 function focusRow(root: HTMLElement | null, match: { id?: string; name?: string }): boolean {
   if (!root) return false
-  const row = [...root.querySelectorAll<HTMLElement>('[data-testid="mcp-row"]')].find((r) => (match.id ? r.dataset.id === match.id : r.dataset.server === match.name))
+  const row = [...root.querySelectorAll<HTMLElement>('[data-testid="mcp-row"], [data-testid="connected-service-row"]')].find((r) =>
+    match.id ? r.dataset.id === match.id : r.dataset.server === match.name
+  )
   if (!row) return false
   row.scrollIntoView({ block: 'center' })
-  const control = row.querySelector<HTMLElement>('[data-testid="mcp-library-authorize"]') ?? row.querySelector<HTMLElement>('button')
+  const control =
+    row.querySelector<HTMLElement>('[data-testid="mcp-library-authorize"], [data-testid="connector-finish-setup"]') ?? row.querySelector<HTMLElement>('button')
   control?.focus()
+  if (!reducedMotion()) {
+    row.classList.add('is-flash')
+    window.setTimeout(() => row.classList.remove('is-flash'), 1800)
+  }
   return true
 }
 
-export default function McpSection({ project }: { project: Project }): ReactElement {
+/**
+ * Team > Catalog > Connections: the services (connectors) and custom servers this project uses, with who may use them.
+ * One "Add a connection" button opens the picker that also holds the other ways to add. Sign-in lives in App settings.
+ */
+export default function McpSection({ project, onSelectRole }: { project: Project; onSelectRole?: (roleId: string) => void }): ReactElement {
   const [servers, setServers] = useState<McpServerInfo[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [modal, setModal] = useState<Modal>(null)
@@ -97,7 +115,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   // Deep link (a run's "not authorized" notice): scroll to the section or the named server once the rows exist.
   useEffect(() => {
     if (focus?.kind !== 'server' || focus.projectId !== project.id || servers === null) return
-    if (!(focus.serverId && focusRow(root.current, { id: focus.serverId }))) focusPaneHeading()
+    if (!(focus.serverId && focusRow(root.current, { id: focus.serverId }))) root.current?.scrollIntoView({ block: 'start' })
     clearMcpFocus()
   }, [focus, servers, project.id, clearMcpFocus])
 
@@ -119,48 +137,16 @@ export default function McpSection({ project }: { project: Project }): ReactElem
   const warnings = authWarning(all.filter((s) => !s.spec.connectorId))
   const libraryCount = library?.length ?? 0
 
-  const choose = (close: () => void, next: Modal): (() => void) => () => {
-    close()
-    setModal(next)
-  }
-  const actions = (
-    <>
-      <Button variant="primary" icon={Plus} testId="mcp-add-service" onClick={() => setModal({ kind: 'service' })}>
-        Add a service
-      </Button>
-      <Popover
-        trigger={
-          <>
-            Other ways to add
-            <Icon icon={ChevronDown} size="sm" />
-          </>
-        }
-        triggerClassName="btn"
-        triggerTestId="mcp-add-other"
-        label="Other ways to add"
-        role="group"
-        placement="bottom-end"
-        className="mcp-other-menu"
-      >
-        {({ close }) => (
-          <div className="mcp-other-list">
-            <Button variant="ghost" icon={Sparkles} testId="mcp-add-assist" onClick={choose(close, { kind: 'assist' })}>
-              Describe it to an assistant
-            </Button>
-            <Button variant="ghost" icon={Library} testId="mcp-add-library" onClick={choose(close, { kind: 'link' })}>
-              Add from your custom servers
-            </Button>
-            <Button variant="ghost" icon={Package} testId="mcp-add-registry" onClick={choose(close, { kind: 'registry' })}>
-              Browse community servers (unverified)
-            </Button>
-            <Button variant="ghost" icon={Plus} testId="mcp-add-manual" onClick={choose(close, { kind: 'form' })}>
-              Set up a custom server
-            </Button>
-          </div>
-        )}
-      </Popover>
-    </>
+  const empty = servers !== null && servers.length === 0 && !hasConnectedServices
+  const addButton = (
+    <Button variant="primary" icon={Plus} testId="mcp-add-service" onClick={() => setModal({ kind: 'service' })}>
+      Add a connection
+    </Button>
   )
+  const openConnectors = (): void => {
+    requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
+    setView('appSettings')
+  }
 
   const rowProps = (info: McpServerInfo): Parameters<typeof McpRow>[0] => ({
     info,
@@ -171,19 +157,21 @@ export default function McpSection({ project }: { project: Project }): ReactElem
       refreshLibrary()
     },
     onEdit: () => setModal({ kind: 'form', editing: info }),
-    onDuplicate: () => setModal({ kind: 'form', seed: info.spec })
+    onDuplicate: () => setModal({ kind: 'form', seed: info.spec }),
+    onSelectRole
   })
 
   return (
-    <SettingsSection
-      id="settings-section-mcp"
-      title="Services and tools"
+    <CatalogGroup
+      id="catalog-section-connections"
+      title="Connections"
+      count={servers === null ? undefined : all.length}
       description="Services your agents can reach, like Slack or Gmail, plus custom servers."
-      actions={actions}
-      testId="mcp-section"
+      actions={servers === null || empty ? undefined : addButton}
+      testId="catalog-connections"
       sectionRef={root}
     >
-      <div className="mcp-body">
+      <div className="mcp-body" data-testid="mcp-section">
         {assistRun && (
           <Banner
             tone="neutral"
@@ -213,7 +201,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
         {loadError ? (
           <Banner
             tone="danger"
-            title="Could not load services and tools"
+            title="Could not load connections"
             actions={
               <Button size="sm" onClick={refresh}>
                 Retry
@@ -223,7 +211,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
             {loadError}
           </Banner>
         ) : servers === null ? (
-          <div className="card-block mcp-list" aria-busy="true" aria-label="Loading services and tools">
+          <div className="card-block mcp-list" aria-busy="true" aria-label="Loading connections">
             {[0, 1, 2].map((i) => (
               <div key={i} className="card-sec">
                 <div className="skeleton mcp-sk" />
@@ -237,16 +225,13 @@ export default function McpSection({ project }: { project: Project }): ReactElem
               <>
                 <strong>Use a connected service</strong>
                 <p className="muted">Pick one of your connected services and choose which roles may use it.</p>
+                {addButton}
               </>
             ) : (
               <>
-                <strong>No services connected yet</strong>
-                <p className="muted">
-                  You connect services like Slack or Gmail once, in App settings &gt; Connectors. Then you choose here which roles in this project may use them.
-                </p>
-                <Button variant="primary" icon={Plus} onClick={() => setModal({ kind: 'service' })}>
-                  Add a service
-                </Button>
+                <strong>No connections yet</strong>
+                <p className="muted">Connect a service like Slack or Gmail, or set up a custom server. You then choose which roles in this project may use it.</p>
+                {addButton}
               </>
             )}
           </div>
@@ -255,7 +240,7 @@ export default function McpSection({ project }: { project: Project }): ReactElem
             {hasConnectedServices && (
               <div data-testid="mcp-group-connectors">
                 <SettingsGroup title="Connected services">
-                  <ConnectedServices project={project} connectors={connectors} servers={all} onResult={applyResult} onChanged={refreshConnectors} />
+                  <ConnectedServices project={project} connectors={connectors} servers={all} onResult={applyResult} onChanged={refreshConnectors} onSelectRole={onSelectRole} />
                 </SettingsGroup>
               </div>
             )}
@@ -328,8 +313,16 @@ export default function McpSection({ project }: { project: Project }): ReactElem
           description="An assistant run proposes servers, using your connected services and custom servers first. You approve each one in the live run."
           placeholder="Search the web, read GitHub issues..."
         />
+        {!empty && servers !== null && (
+          <p className="hint catalog-note">
+            Sign in, tokens and permissions are managed in App settings.{' '}
+            <button type="button" className="link-btn" data-testid="catalog-open-connectors" onClick={openConnectors}>
+              Open Connectors
+            </button>
+          </p>
+        )}
       </div>
-    </SettingsSection>
+    </CatalogGroup>
   )
 }
 
@@ -339,7 +332,8 @@ function McpRow({
   onResult,
   onRefresh,
   onEdit,
-  onDuplicate
+  onDuplicate,
+  onSelectRole
 }: {
   info: McpServerInfo
   project: Project
@@ -347,6 +341,7 @@ function McpRow({
   onRefresh: () => void
   onEdit: () => void
   onDuplicate: () => void
+  onSelectRole?: (roleId: string) => void
 }): ReactElement {
   const { spec } = info
   const linked = !!spec.libraryId
@@ -445,6 +440,7 @@ function McpRow({
           {showAuth && <AuthChip auth={info.auth} />}
         </div>
         <div className="mcp-row-roles">
+          <UsedBy all={spec.roles === undefined} roles={loseRoles} onSelectRole={onSelectRole} />
           <RoleAccess serverName={spec.name} roles={project.roles} value={spec.roles} onChange={(roles) => void upsert({ ...spec, roles })} />
         </div>
         <div className="mcp-row-actions">

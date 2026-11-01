@@ -17,7 +17,7 @@ export type OtherWay = 'assist' | 'link' | 'registry' | 'form'
 type Step = { kind: 'list' } | { kind: 'connect'; info: ConnectorInfo } | { kind: 'use'; info: ConnectorInfo }
 
 /**
- * "Add a service": the connectors, connected or not. A connected one goes straight to the roles step; an unconnected
+ * "Add a connection": the connectors, connected or not. A connected one goes straight to the roles step; an unconnected
  * one opens the connect dialog first and continues to roles once it is connected. "Not listed?" holds the other routes.
  */
 export default function AddServiceDialog({
@@ -70,8 +70,8 @@ export default function AddServiceDialog({
     <Dialog
       open
       onClose={onClose}
-      title="Add a service"
-      description="Connect a service once, then choose which roles in this project may use it."
+      title="Add a connection"
+      description="Pick a service. If it is not connected yet you sign in first, then choose which roles in this project may use it."
       size="lg"
       testId="add-service-dialog"
       footer={<Button onClick={onClose}>Close</Button>}
