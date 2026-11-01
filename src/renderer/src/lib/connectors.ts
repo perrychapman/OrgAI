@@ -95,8 +95,8 @@ export function missingSentence(missing: string[]): string {
 
 /** The quiet status line in the dialog for a preview / untested connector, or undefined when both are fine. */
 export function honestyNote(def: Pick<ConnectorDef, 'status' | 'verified'>): string | undefined {
-  if (def.status === 'preview' && !def.verified) return 'Preview · not yet tested with OrgAI'
-  if (def.status === 'preview') return 'Preview · the service calls this a beta'
+  if (def.status === 'preview' && !def.verified) return 'Not yet tested with OrgAI'
+  if (def.status === 'preview') return 'The service calls this a beta'
   if (!def.verified) return 'Not yet tested with OrgAI'
   return undefined
 }
@@ -400,6 +400,8 @@ export function noteForUser(notes: readonly string[] | undefined, serviceName: s
     const n = raw.trim()
     if (!n) continue
     if (/^unverified/i.test(n)) continue
+    // The dialog says "preview" (badge) and "not yet tested" (one quiet line) once; setup steps carry the program detail.
+    if (/developer preview|not yet tested/i.test(n)) continue
     if (/redirect|admin(?:'s)? approval/i.test(n)) {
       const line = `${serviceName} may refuse OrgAI's sign-in address or need an admin's approval.`
       if (!caveat.includes(line)) caveat.push(line)
