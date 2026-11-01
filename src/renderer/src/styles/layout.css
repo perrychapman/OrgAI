@@ -591,3 +591,8 @@ button.run-meta-item:focus-visible {
   max-width: 90ch;
   margin-inline: auto;
 }
+/* The mode label wins over the keyboard hint: the hint shortens first. */
+.run-body.run-body[data-layout='conversation'] .composer-mode-label {
+  flex: none;
+  max-width: 100%;
+}
