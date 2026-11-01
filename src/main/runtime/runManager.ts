@@ -62,7 +62,7 @@ import { cancelPending, emptyPending, listPending, type PendingCardMaps } from '
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
-import { assistContext } from '../mcp/assist'
+import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
 import { generateRunTitle } from '../ai/runTitle'
 
@@ -271,6 +271,12 @@ function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
   if (agentProducedNothing(agent)) priced.producedNothing = true
   else delete priced.producedNothing
   return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
+}
+
+/** An allowBuild MCP assistant session (isBuildWorkspaceProject) also gets Edit, Write and Bash; every call asks. */
+function withBuildTools(role: Role, project: Project): Role {
+  const extra = buildToolsFor(project)
+  return extra.length ? { ...role, tools: [...new Set([...role.tools, ...extra])] } : role
 }
 
 const USAGE_KINDS: readonly RunKind[] = ['work', 'setup', 'mcp-assist', 'skill-assist']
@@ -917,7 +923,7 @@ export class RunManager {
         project,
         roles:
           kind === 'setup' ? [architectRole(builtinModel)]
-          : kind === 'mcp-assist' ? [mcpAssistantRole(builtinModel)]
+          : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), project)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
           : project.roles,
         prompt,

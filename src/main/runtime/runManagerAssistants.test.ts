@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSettings, Project, ProjectPeek, Proposal, QuickRunInfo, RunEvent, SkillsProposalPayload } from '@shared/types'
-import { defaultConnections } from '@shared/defaults'
+import { DEFAULT_APP_SETTINGS, defaultConnections } from '@shared/defaults'
+import { harnessProject } from '../mcp/assist'
 import { RunManager, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import { addRules, listRules } from './permissionRules'
@@ -307,6 +308,21 @@ describe('MCP assistant build workspace', () => {
     expect(next.buildWorkspace).toBe(ws)
     const plain = await m.start({ project: harness, prompt: 'x', kind: 'mcp-assist' })
     expect(plain.buildWorkspace).toBeUndefined()
+  })
+
+  it('gives the MCP assistant Edit, Write and Bash only in an allowBuild harness project', async () => {
+    const { m, ctxs } = rig()
+    const settings = { ...DEFAULT_APP_SETTINGS, connections: defaultConnections() } as AppSettings
+    const ws = join(dir, 'data', 'quick', 'quick_build1')
+    mkdirSync(ws, { recursive: true })
+    const build = harnessProject(settings, join(dir, 'data'), { mock: true, allowBuild: true, workspace: ws })
+    expect(build.permissionMode).toBe('default')
+    await m.start({ project: build, prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    expect(ctxs[0].roles[0].tools).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash']))
+    const plain = harnessProject(settings, join(dir, 'data'), { mock: true })
+    await m.start({ project: plain, prompt: 'x', kind: 'mcp-assist' })
+    expect(ctxs[1].roles[0].tools).not.toContain('Bash')
+    expect(ctxs[1].roles[0].tools).not.toContain('Edit')
   })
 })
 
