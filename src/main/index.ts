@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
+import type { AppSettings, CapabilityProgressEvent, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
 import { HARNESS_PROJECT_ID, IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
@@ -22,6 +23,7 @@ import { harnessProject } from './mcp/assist'
 import { McpLibraryStore } from './store/mcpLibrary'
 import { SkillService } from './skills/service'
 import { SkillEvaluationService } from './skills/evaluation'
+import { CapabilityService } from './capabilities/service'
 import { applyShellPath } from './shellEnv'
 import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
@@ -86,6 +88,12 @@ function broadcast(event: RunEvent): void {
 function broadcastMcpLibrary(entries: McpLibraryInfo[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.mcpLibraryChanged, entries)
+  }
+}
+
+function broadcastCapabilityProgress(event: CapabilityProgressEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesProgress, event)
   }
 }
 
@@ -338,7 +346,20 @@ app.whenReady().then(() => {
       onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
     }),
     skills,
-    skillEvaluation
+    skillEvaluation,
+    capabilities: new CapabilityService({
+      projects,
+      skills,
+      mcp,
+      complete: (project, input) => rm.completeForProject(project, input),
+      progress: broadcastCapabilityProgress,
+      onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project }),
+      // ORGAI_MOCK=1: local discovery reads seeded fixtures under the data dir, never the real home.
+      homeDir: mockAdapter ? join(dataDir, 'mock-home') : homedir(),
+      env: process.env,
+      platform: process.platform,
+      mock: mockAdapter
+    })
   })
   connections.init()
   connections.startDiscovery()

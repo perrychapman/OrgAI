@@ -331,9 +331,11 @@ export interface CompletionInput {
    * What the completion is for. 'draft' (default): the org chart drafter, answered with JSON. 'title': a run title
    * (src/main/ai/runTitle.ts), answered with one short line. Adapters only use it where they must (the mock answers
    * deterministically per kind). 'skills': the skill evaluation's suggestion drafter (src/main/skills/), answered
-   * with JSON `{ "suggestions": [{ name, description, body, rationale, findingIds }] }`.
+   * with JSON `{ "suggestions": [{ name, description, body, rationale, findingIds }] }`. 'recommend': the Team
+   * assistant (src/main/capabilities/recommend.ts), answered with JSON `{ "recommendations": [{ candidateId, roleIds,
+   * reason, access }], "gaps": [{ roleId, need }] }`; the prompt lists `candidate <id> | ...` and `role <id> | ...` lines.
    */
-  kind?: 'draft' | 'title' | 'skills'
+  kind?: 'draft' | 'title' | 'skills' | 'recommend'
   /**
    * How to reach the models, as RunManager resolved it for a run (env, API key, base URL, Codex home). Claude merges
    * `connection.env` over the process environment (and drops ANTHROPIC_API_KEY on a non-anthropic connection, like

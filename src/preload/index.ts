@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
   AppSettingsInfo,
+  CapabilityProgressEvent,
   ConnectionEvent,
   ContinueRunInput,
   DraftRequest,
@@ -112,6 +113,19 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, entries: SkillLibraryInfo[]): void => cb(entries)
     ipcRenderer.on(IPC.skillLibraryChanged, listener)
     return () => ipcRenderer.removeListener(IPC.skillLibraryChanged, listener)
+  },
+  capabilities: {
+    discover: (input) => ipcRenderer.invoke(IPC.capabilitiesDiscover, input),
+    recommend: (input) => ipcRenderer.invoke(IPC.capabilitiesRecommend, input),
+    cancel: (input) => ipcRenderer.invoke(IPC.capabilitiesCancel, { requestId: input?.requestId }),
+    apply: (input) => ipcRenderer.invoke(IPC.capabilitiesApply, input),
+    undo: (input) => ipcRenderer.invoke(IPC.capabilitiesUndo, input),
+    setGrant: (input) => ipcRenderer.invoke(IPC.capabilitiesSetGrant, input)
+  },
+  onCapabilityProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: CapabilityProgressEvent): void => cb(event)
+    ipcRenderer.on(IPC.capabilitiesProgress, listener)
+    return () => ipcRenderer.removeListener(IPC.capabilitiesProgress, listener)
   },
   plugins: {
     upsert: (input) => ipcRenderer.invoke(IPC.pluginsUpsert, input),

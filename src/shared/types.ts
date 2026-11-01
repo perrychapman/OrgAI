@@ -502,8 +502,10 @@ export type McpTransport = 'stdio' | 'http' | 'sse'
 /**
  * Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. 'library' = a
  * project server linked to an app-wide library entry (McpServerSpec.libraryId); the entry keeps its own source.
+ * 'local' = copied by the Team assistant (capabilities:apply) from another tool's config on this computer or the
+ * repo's .mcp.json-style files: definition only, every env and header value left for the user to enter.
  */
-export type McpServerSource = 'user' | 'registry' | 'agent' | 'library'
+export type McpServerSource = 'user' | 'registry' | 'agent' | 'library' | 'local'
 
 /**
  * Non-secret OAuth state of a remote (http / sse) MCP server, written only by the main process (mcp:authorize);
@@ -899,9 +901,11 @@ export const SKILL_MAX_PER_PROJECT = 100
 /**
  * Where a project skill (or library entry) came from. 'user': written in OrgAI (skills:create) or added from a folder;
  * 'repo': imported from the project's repository (SkillSpec.repoPath); 'suggestion': created from a skill evaluation
- * suggestion (skills:applySuggestion); 'library': a link to a library entry (SkillSpec.libraryId).
+ * suggestion (skills:applySuggestion); 'library': a link to a library entry (SkillSpec.libraryId). 'local': a
+ * snapshot copy the Team assistant made from a skill folder on this computer (SkillSpec.sourceRef); 'github': a
+ * snapshot of a SKILL.md from CAPABILITY_GITHUB_SKILLS_REPO (sourceRef is its URL).
  */
-export type SkillSource = 'user' | 'repo' | 'suggestion' | 'library'
+export type SkillSource = 'user' | 'repo' | 'suggestion' | 'library' | 'local' | 'github'
 
 /** One file inside a skill folder. */
 export interface SkillFileInfo {
@@ -929,6 +933,8 @@ export interface SkillSpec {
   source: SkillSource
   /** source 'repo': the folder it was imported from, project-relative and '/'-separated, e.g. ".claude/skills/pdf". */
   repoPath?: string
+  /** source 'local' / 'github': where the snapshot came from, for display only (home as ~, or the URL). Untrusted. */
+  sourceRef?: string
   /** sha256 (hex) over the stored files (paths and contents); changes whenever the content changes. */
   digest: string
   /** The stored files, SKILL.md first. */
@@ -2712,6 +2718,295 @@ export interface PendingCards {
   mcpInstalls: McpInstallRequest[]
 }
 
+// ---------- Capabilities: the Team assistant (src/main/capabilities/) ----------
+//
+// Token-free discovery of skills and MCP servers from local and outside sources, a one-shot recommendation
+// completion (never a run: nothing appears in Live or History), and least-privilege apply with one undo per
+// project. Every string that came from a file, a registry or GitHub is untrusted data: render it as plain text.
+
+/** What a candidate becomes when applied: a project skill, a project MCP server, or a connector (library entry + link). */
+export type CapabilityKind = 'skill' | 'mcp' | 'connector'
+
+/**
+ * Where a candidate was found. 'repo' = this project's folder (SKILL_REPO_ROOTS, .mcp.json, .cursor/mcp.json,
+ * .vscode/mcp.json); 'local' = another tool's config or skill folder on this computer (outside the repo); 'library' =
+ * the app-wide MCP or skill library; 'project' = already in this project; 'registry' = the official MCP Registry;
+ * 'github' = the allowlisted GitHub skills repo (CAPABILITY_GITHUB_SKILLS_REPO); 'catalog' = the curated connectors.
+ * 'registry' and 'github' are outside sources: fetched only with includeOutside, unverified.
+ */
+export type CapabilityOrigin = 'repo' | 'local' | 'library' | 'project' | 'registry' | 'github' | 'catalog'
+export const CAPABILITY_OUTSIDE_ORIGINS: readonly CapabilityOrigin[] = ['registry', 'github']
+
+/**
+ * Risk flags shown on a candidate. 'runsCode' = a stdio MCP server (runs code on this machine); 'scripts' = a skill
+ * that ships script-looking files; 'remote' = an MCP server reached over the network; 'canChange' = a connector
+ * variant or server with write tools; 'unverified' = outside origin or a connector preset not yet verified;
+ * 'partial' = a GitHub skill whose resource files were not fetched (SKILL.md only).
+ */
+export type CapabilityFlag = 'runsCode' | 'scripts' | 'remote' | 'canChange' | 'unverified' | 'partial'
+
+/** The access a recommendation grants. Connectors: picks the read-only or the full variant. Others: advisory only. */
+export type CapabilityAccess = 'read' | 'full'
+
+/**
+ * Stable source ids for progress and "What I looked at". Local ones are read-only file reads; 'registry' and
+ * 'github' are network fetches (outside only).
+ */
+export type CapabilitySourceId =
+  | 'repo-skills'
+  | 'repo-mcp'
+  | 'claude-skills'
+  | 'agents-skills'
+  | 'copilot-skills'
+  | 'claude-plugins'
+  | 'claude-code-mcp'
+  | 'claude-desktop-mcp'
+  | 'cursor-mcp'
+  | 'vscode-mcp'
+  | 'codex-mcp'
+  | 'library'
+  | 'project'
+  | 'catalog'
+  | 'registry'
+  | 'github'
+
+/** found = read with results; empty = read, nothing usable; missing = not present; skipped = not asked (outside off); error / rateLimited = failed. */
+export type CapabilitySourceState = 'found' | 'empty' | 'missing' | 'skipped' | 'error' | 'rateLimited'
+
+/** One row of "What I looked at". */
+export interface CapabilitySourceStatus {
+  source: CapabilitySourceId
+  /** Plain label, e.g. "Claude Code skills". */
+  label: string
+  /** Display locations (home shortened to ~, URLs without query), at most 10. */
+  locations: string[]
+  state: CapabilitySourceState
+  /** Candidates this source contributed. */
+  count: number
+  /** One readable line for error / rateLimited / skipped (e.g. "GitHub rate limit reached. Try again in about 60 s."). */
+  message?: string
+  /** rateLimited: seconds until a retry is worth it, when known. */
+  retryAfterSec?: number
+}
+
+/** A file that could not be used (bad JSON, too large, a symlink). Never an exception. */
+export interface CapabilityWarning {
+  source: CapabilitySourceId
+  /** Display path or URL. */
+  location?: string
+  message: string
+}
+
+/** The candidate is already in this project: which project skill or server, and the roles granted it. */
+export interface CapabilityInProject {
+  kind: 'skill' | 'mcp'
+  /** SkillSpec.id or McpServerSpec.id. */
+  id: string
+  /** Role ids that can use it now (MCP: spec.roles undefined counts as every role). */
+  grantedTo: string[]
+  enabled: boolean
+}
+
+/**
+ * One candidate. Secret-free and structured-clone safe: env and header VALUES are never read into it, only key names.
+ * name, description, target and notes are untrusted text (clamped, control characters removed).
+ */
+export interface CapabilityItem {
+  /** Stable across discoveries of the same thing: `cap-<24 hex>` (sha256 of origin, kind, source key and name). */
+  id: string
+  kind: CapabilityKind
+  origin: CapabilityOrigin
+  source: CapabilitySourceId
+  /** Plain label for the source badge, e.g. "Claude Code", "This repository", "MCP Registry", "anthropics/skills". */
+  sourceLabel: string
+  /** Display path (home as ~) or URL (origin and path only), e.g. "~/.claude/skills/code-review". */
+  location?: string
+  name: string
+  /** At most CAPABILITY_DESCRIPTION_MAX chars. */
+  description: string
+  /** Pinned version (registry, a pinned package in args; connectors: undefined). */
+  version?: string
+  /** Skills: sha256 of the files OrgAI would store. */
+  digest?: string
+  /** MCP: transport and a display target ("npx -y pkg@1.2.3" with key-like args removed, or the URL origin + path). */
+  transport?: McpTransport
+  target?: string
+  flags: CapabilityFlag[]
+  /** Env var and header names whose values the user must enter after applying (never values). */
+  needsSecrets: string[]
+  /** Connectors: the catalog id, its state, and whether a read-only variant exists. */
+  connectorId?: string
+  connectorState?: ConnectorState
+  readOnlyAvailable?: boolean
+  /** Set when it is already in this project. */
+  inProject?: CapabilityInProject
+  /** Set when it cannot be applied as found (unpinned package, invalid skill, deprecated). Never recommended. */
+  blockedReason?: string
+  /** Short notes: dropped keys, removed key-like args, "SKILL.md only". */
+  notes: string[]
+}
+
+/** capabilities:discover input. */
+export interface CapabilityDiscoverInput {
+  projectId: string
+  /** Also fetch outside sources (registry, GitHub). Default false: local sources only, no network. */
+  includeOutside?: boolean
+  /** Extra registry search words (at most 100 chars). Default: words derived from the roles and the repo. */
+  query?: string
+  /** Renderer-chosen id (SAFE_ID) for capabilities:progress events and capabilities:cancel. */
+  requestId?: string
+}
+
+/** capabilities:discover output. Never rejects for a missing or bad file; a bad file is a warning. */
+export interface CapabilityDiscovery {
+  projectId: string
+  items: CapabilityItem[]
+  sources: CapabilitySourceStatus[]
+  warnings: CapabilityWarning[]
+  includeOutside: boolean
+  /** sha256 binding every item (id, kind, digest/target, blockedReason). capabilities:apply requires it. */
+  digest: string
+  /** True when it was cut short (cancel, a cap reached). */
+  partial?: true
+  /** ISO timestamp. */
+  createdAt: string
+}
+
+/** Who a recommendation is for: one role, or the whole team when roleId is missing. */
+export interface CapabilityScope {
+  roleId?: string
+}
+
+/** capabilities:recommend input. */
+export interface CapabilityRecommendInput extends CapabilityDiscoverInput {
+  scope?: CapabilityScope
+}
+
+/** One recommended candidate for some roles. */
+export interface CapabilityRecommendation {
+  /** `rec-<12 hex>`, unique within its TeamRecommendations. */
+  id: string
+  /** A CapabilityItem.id of the discovery. */
+  candidateId: string
+  kind: CapabilityKind
+  /** Role ids (existing roles only; the scoped role only when scope.roleId is set). Never "every role". */
+  roleIds: string[]
+  /** One plain sentence: why (untrusted model text, at most 300 chars). */
+  reason: string
+  /** Default 'read'; 'full' only when every role in roleIds has a write tool (CAPABILITY_WRITE_TOOLS). */
+  access: CapabilityAccess
+}
+
+/** A need no candidate fits ("Implementer can run Bash but has no test skill"). No apply of its own. */
+export interface CapabilityGap {
+  roleId: string
+  /** One plain sentence, at most 300 chars. */
+  need: string
+}
+
+/** capabilities:recommend output. A one-shot completion, never a run. */
+export interface TeamRecommendations {
+  projectId: string
+  scope: CapabilityScope
+  discovery: CapabilityDiscovery
+  recommendations: CapabilityRecommendation[]
+  gaps: CapabilityGap[]
+  /** Equal to discovery.digest; pass it to capabilities:apply. */
+  digest: string
+  /** 'model' = the completion answered; 'fallback' = deterministic keyword matching (fallbackReason says why). */
+  mode: 'model' | 'fallback'
+  fallbackReason?: 'error' | 'timeout' | 'cancelled' | 'noCandidates' | 'invalidAnswer'
+  /** The model id that answered, when known. */
+  model?: string
+  /** True when cancelled: recommendations cover what was found so far. */
+  partial?: true
+  createdAt: string
+}
+
+/**
+ * capabilities:apply input. Name a recommendation (its roleIds and access are the defaults) or a candidate directly.
+ * `roleIds` and `access` are the user's edits; main re-reads the candidate from its own snapshot for `digest` (the
+ * renderer never sends paths, specs or file content) and refuses a stale or missing digest.
+ */
+export interface CapabilityApplyInput {
+  projectId: string
+  digest: string
+  recommendationId?: string
+  candidateId?: string
+  /** Roles to grant (Role ids, at least one). Only these roles get access. */
+  roleIds: string[]
+  /** Default 'read'. 'full' is refused when a chosen role has no write tool. */
+  access?: CapabilityAccess
+}
+
+/** What one apply did. */
+export interface CapabilityApplied {
+  kind: 'skill' | 'mcp'
+  /** The project SkillSpec.id or McpServerSpec.id that now holds it. */
+  id: string
+  name: string
+  /** 'added' = new in the project; 'linked' = linked from the library (connectors too); 'granted' = already there, grants only. */
+  action: 'added' | 'linked' | 'granted'
+  roleIds: string[]
+  access: CapabilityAccess
+}
+
+/** capabilities:apply output. */
+export interface CapabilityApplyResult {
+  project: Project
+  applied: CapabilityApplied
+  /** Pass to capabilities:undo. Valid until the next apply in this project or the app quits. */
+  undoId: string
+  /**
+   * The server needs the user before runs get it: secret names without a value and/or a sign-in. Until then it is
+   * saved with its grants but left out of runs (McpServerInfo.missingSecrets / auth say the same). Route to sign-in.
+   */
+  needsSetup?: { secrets: string[]; signIn: boolean; connectorId?: string; libraryId?: string }
+  notes: string[]
+}
+
+/** capabilities:undo input. */
+export interface CapabilityUndoInput {
+  projectId: string
+  undoId: string
+}
+
+/** capabilities:undo output: the project with the apply reversed (added items removed, previous grants restored). */
+export interface CapabilityUndoResult {
+  project: Project
+}
+
+/** capabilities:setGrant input: grant or revoke one existing project skill or MCP server for one role. */
+export interface CapabilityGrantInput {
+  projectId: string
+  roleId: string
+  kind: 'skill' | 'mcp'
+  /** SkillSpec.id or McpServerSpec.id of this project. */
+  id: string
+  granted: boolean
+}
+
+/** capabilities:progress push: one discovery phase or the model step changed state. */
+export interface CapabilityProgressEvent {
+  projectId: string
+  requestId: string
+  /** A source, or 'model' for the recommendation completion. */
+  phase: CapabilitySourceId | 'model'
+  state: 'running' | 'done' | CapabilitySourceState
+  count?: number
+  message?: string
+}
+
+/** The one allowlisted GitHub skills repo (unauthenticated contents API, SKILL.md only). */
+export const CAPABILITY_GITHUB_SKILLS_REPO = 'anthropics/skills'
+/** Tools that make a role able to change things; 'full' access needs one of them on every granted role. */
+export const CAPABILITY_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'NotebookEdit', 'Bash']
+export const CAPABILITY_DESCRIPTION_MAX = 300
+export const CAPABILITY_MAX_ITEMS = 500
+export const CAPABILITY_MAX_RECOMMENDATIONS = 12
+export const CAPABILITY_MAX_GAPS = 8
+export const CAPABILITY_RECOMMEND_TIMEOUT_MS = 60_000
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
@@ -2912,6 +3207,26 @@ export interface OrgAIApi {
   }
   /** The skill library changed. Returns an unsubscribe function. */
   onSkillLibraryChanged(cb: (entries: SkillLibraryInfo[]) => void): () => void
+  /**
+   * The Team assistant (src/main/capabilities/). discover and recommend never write; recommend is a one-shot completion
+   * (everyday tier, 60 s) and never a run. Mutations broadcast a project.updated RunEvent so every Role tab updates.
+   */
+  capabilities: {
+    /** Read-only discovery over local sources (and outside ones with includeOutside). Never rejects for a bad file. */
+    discover(input: CapabilityDiscoverInput): Promise<CapabilityDiscovery>
+    /** Discovery plus per-role recommendations and gaps. Falls back to keyword matching (mode 'fallback') on error. */
+    recommend(input: CapabilityRecommendInput): Promise<TeamRecommendations>
+    /** Stop a running discover/recommend by requestId: it resolves with what it has (partial). */
+    cancel(input: { requestId: string }): Promise<void>
+    /** Apply one recommendation or candidate to the chosen roles only. Refuses a stale or missing digest. */
+    apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult>
+    /** Reverse the project's last apply. Rejects when the undo expired. */
+    undo(input: CapabilityUndoInput): Promise<CapabilityUndoResult>
+    /** Grant or revoke one existing project skill or MCP server for one role. Returns the saved project. */
+    setGrant(input: CapabilityGrantInput): Promise<Project>
+  }
+  /** Progress of a discover/recommend started with a requestId. Returns an unsubscribe function. */
+  onCapabilityProgress(cb: (event: CapabilityProgressEvent) => void): () => void
   plugins: {
     /** Add or replace one plugin. Returns the saved project. */
     upsert(input: PluginUpsertInput): Promise<Project>
@@ -3163,5 +3478,13 @@ export const IPC = {
   skillLibraryUpdate: 'skillLibrary:update',
   skillLibraryRemove: 'skillLibrary:remove',
   /** main -> renderer push channel carrying SkillLibraryInfo[] after every library change. */
-  skillLibraryChanged: 'skillLibrary:changed'
+  skillLibraryChanged: 'skillLibrary:changed',
+  capabilitiesDiscover: 'capabilities:discover',
+  capabilitiesRecommend: 'capabilities:recommend',
+  capabilitiesCancel: 'capabilities:cancel',
+  capabilitiesApply: 'capabilities:apply',
+  capabilitiesUndo: 'capabilities:undo',
+  capabilitiesSetGrant: 'capabilities:setGrant',
+  /** main -> renderer push channel carrying CapabilityProgressEvent. */
+  capabilitiesProgress: 'capabilities:progress'
 } as const
