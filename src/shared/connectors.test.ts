@@ -223,7 +223,7 @@ describe('connector catalog', () => {
     // domain check takes the last two labels, so an issuer host must not sit under a multi-label public suffix.
     for (const id of ['asana', 'hubspot', 'box', 'zoom']) {
       const c = connectorById(id)!
-      expect(c.notes.some((n) => n.includes('enforced')), id).toBe(true)
+      expect((c.notes ?? []).some((n) => n.includes('enforced')), id).toBe(true)
       expect(new URL(issuer(id)!).hostname, id).not.toMatch(/\.(co|com|org|net|gov|ac)\.[a-z]{2}$/)
     }
     for (const c of CONNECTORS.filter((d) => d.vendor === 'Google')) expect(JSON.stringify(c.notes), c.id).not.toContain('follows the pattern')

@@ -82,7 +82,10 @@ export interface OAuthTokens {
  * library entry's connectorId; generic servers pass none and keep the plain MCP authorization behaviour.
  */
 export interface OAuthPreset {
-  /** Recorded as authorizationServer; default the authorization endpoint's origin. */
+  /**
+   * Recorded as authorizationServer; default the authorization endpoint's origin. Enforced against discovery
+   * (`presetIssuerFailure`): without endpoints a mismatch refuses the sign-in, with endpoints it falls back to them.
+   */
   issuer?: string
   authorizationEndpoint?: string
   tokenEndpoint?: string
