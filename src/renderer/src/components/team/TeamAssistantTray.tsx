@@ -1,7 +1,7 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, RefreshCw, Sparkles, X } from 'lucide-react'
-import type { Project } from '@shared/types'
+import type { Project, TeamReview } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_SESSION, useTeamAssistantStore, useTeamReviewSummary, type CardState, type TeamSession } from '../../store/teamAssistant'
 import {
@@ -18,6 +18,8 @@ import {
   sinceLine,
   skillsFirst,
   sourceProblems,
+  teamSeenKey,
+  unseenSuggestions,
   type AssistantResult,
   type DismissedEntry,
   type ProgressRow
@@ -51,6 +53,21 @@ function readOutside(projectId: string): boolean {
     return window.localStorage.getItem(outsideKey(projectId)) === '1'
   } catch {
     return false
+  }
+}
+
+function readSeenAt(projectId: string): string | null {
+  try {
+    return window.localStorage.getItem(teamSeenKey(projectId))
+  } catch {
+    return null
+  }
+}
+function writeSeenAt(projectId: string): void {
+  try {
+    window.localStorage.setItem(teamSeenKey(projectId), new Date().toISOString())
+  } catch {
+    /* the visit just is not remembered */
   }
 }
 
@@ -138,6 +155,8 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const [persisted, setPersisted] = useState<DismissedEntry[]>([])
   const [showAll, setShowAll] = useState(false)
+  // The persisted review as read on mount, before an 'opened' re-check replaces it (feeds the since line).
+  const [mountReview, setMountReview] = useState<{ trigger: TeamReview['trigger']; checkedAt: string; pendingCount: number } | null>(null)
 
   useEffect(() => {
     alive.current = true
@@ -158,6 +177,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     setRecent({})
     setPersisted([])
     setShowAll(false)
+    setMountReview(null)
   }, [project.id])
 
   // Opening the Team tab: show the last review at once, then re-check once per mount (main throttles an unchanged one).
@@ -169,7 +189,9 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
       .then((r) => {
         if (!alive.current || !r) return
         setPersisted(readDismissed(r))
-        setResult((prev) => prev ?? fromReview(r))
+        setMountReview({ trigger: r.trigger, checkedAt: r.checkedAt, pendingCount: r.pendingCount })
+        // A held review older than the persisted one (a run ended meanwhile) is replaced; a Recommend result is kept.
+        setResult((prev) => (prev && (prev.origin === 'recommend' || (prev.checkedAt ?? '') >= r.checkedAt) ? prev : fromReview(r)))
       })
       .catch(() => {})
     void capabilitiesApi
@@ -182,12 +204,25 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
       .catch(() => {})
   }, [project.id])
 
-  // The "N suggestions since your last run" line is read once, then the count of new items is cleared (the tray was viewed).
+  // The "N suggestions since your last run" line is decided once per mount, the first time the pane is seen: a review
+  // written after a run ended that is newer than the last visit (or main's newCount) shows it. Main's own newCount stays
+  // 0 for a first review and for re-found items, and an 'opened' review replaces the summary, so the persisted review
+  // read on mount and the summary at first sight are both looked at. Seeing the pane stamps the visit.
+  const sinceDecided = useRef<string | null>(null)
   useEffect(() => {
-    if (!summary || summary.projectId !== project.id) return
-    if (summary.newCount > 0 && !sinceText) setSinceText(sinceLine(summary.pendingCount))
-    if (active && summary.newCount > 0) useTeamAssistantStore.getState().clearNew(project.id)
-  }, [summary, active, project.id, sinceText])
+    if (!active || sinceDecided.current === project.id) return
+    const candidates = [summary && summary.projectId === project.id ? summary : undefined, mountReview ?? undefined]
+    if (!candidates.some(Boolean)) return
+    sinceDecided.current = project.id
+    const seenAt = readSeenAt(project.id)
+    const n = Math.max(...candidates.map((c) => unseenSuggestions(c, seenAt)))
+    setSinceText(sinceLine(n))
+    writeSeenAt(project.id)
+  }, [summary, mountReview, active, project.id])
+  // While the pane is seen, new items count as seen.
+  useEffect(() => {
+    if (active && summary && summary.projectId === project.id && summary.newCount > 0 && sinceDecided.current === project.id) useTeamAssistantStore.getState().clearNew(project.id)
+  }, [summary, active, project.id])
 
   useEffect(
     () =>
@@ -202,6 +237,8 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   const scopeRole = roleId ? project.roles.find((r) => r.id === roleId) : undefined
   const scopeValue = scopeRole ? scopeRole.id : 'team'
   const scopeName = scopeRole ? scopeRole.name : 'the whole team'
+  // Another scope starts on its top few again.
+  useEffect(() => setShowAll(false), [roleId])
 
   const focusPrimary = useCallback((): void => {
     window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus())
@@ -332,6 +369,11 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     update(project.id, (s) => ({ dismissed: [...s.dismissed, recId], dismissedCandidates: candidateId ? [...s.dismissedCandidates, candidateId] : s.dismissedCandidates }))
     // The row keeps the card's place for 8 s, so the list does not jump and the heading stays in view.
     setRecent((r) => ({ ...r, [recId]: { name, candidateId: candidateId ?? '' } }))
+    // A tall card became a short row: in a short tray the row (and its focused Undo) can end up above the visible part.
+    // Bring just that row into view; the rest of the list keeps its place.
+    window.requestAnimationFrame(() =>
+      rootRef.current?.querySelector<HTMLElement>(`[data-testid=capability-dismissed][data-rec="${CSS.escape(recId)}"]`)?.scrollIntoView?.({ block: 'nearest' })
+    )
     clearTimeout(timers.current[recId])
     timers.current[recId] = setTimeout(() => {
       delete timers.current[recId]
@@ -364,7 +406,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     setPersisted((p) => p.filter((e) => e.candidateId !== candidateId))
     const othersLeft = dismissedEntries.some((e) => e.candidateId !== candidateId)
     // A restored card beyond the proactive cap would stay hidden, so show them all.
-    if (proactive && !showAll && recs.length > 0 && open.length + 1 > PROACTIVE_VISIBLE) setShowAll(true)
+    if (capped && !showAll && recs.length > 0 && open.length + 1 > PROACTIVE_VISIBLE) setShowAll(true)
     capabilitiesApi
       .restore(project.id, candidateId)
       .then((r) => {
@@ -414,7 +456,9 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   })
   const open = shown.filter((r) => !cards[r.id]?.applied && !recent[r.id])
   const proactive = result?.origin === 'review'
-  const hiddenCount = proactive && !showAll ? Math.max(0, open.length - PROACTIVE_VISIBLE) : 0
+  // The proactive list and a list scoped to one role show the top few first.
+  const capped = proactive || !!roleId
+  const hiddenCount = capped && !showAll ? Math.max(0, open.length - PROACTIVE_VISIBLE) : 0
   const visibleOpen = new Set(open.slice(0, hiddenCount ? PROACTIVE_VISIBLE : open.length).map((r) => r.id))
   const problems = result ? sourceProblems(result.sources) : []
   const working_ = phase === 'working'
@@ -577,7 +621,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
       {open.length > 0 && (
         <div className="team-results-row">
           <h3 className="team-results-head" ref={resultRef} tabIndex={-1} data-testid="team-results-head">
-            {hiddenCount > 0 ? `Top ${PROACTIVE_VISIBLE} to review` : resultsHeadText(open.length, clampText(scopeName, 40), summary?.pendingCount, !!roleId)}
+            {hiddenCount > 0 ? `Top ${PROACTIVE_VISIBLE} to review${roleId ? ` for ${clampText(scopeName, 40)}` : ''}` : resultsHeadText(open.length, clampText(scopeName, 40), summary?.pendingCount, !!roleId)}
           </h3>
           {gaps.length > 0 && (
             <Button

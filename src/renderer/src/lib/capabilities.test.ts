@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SAFE_ID } from '@shared/defaults'
-import { accessChoiceOffered, accessSentence, clampText, flagViews, foldProgress, fullAllowed, newRequestId, pinLabel, sourceBadge, stripControl, suggestionsLine, sinceLine, skillsFirst, resultsHeadText, gapsJumpText, readDismissed } from './capabilities'
+import { accessChoiceOffered, accessSentence, clampText, flagViews, foldProgress, fullAllowed, newRequestId, pinLabel, sourceBadge, stripControl, suggestionsLine, sinceLine, skillsFirst, resultsHeadText, gapsJumpText, readDismissed, unseenSuggestions, firstFilledTab } from './capabilities'
 
 describe('capabilities helpers', () => {
   it('makes safe request ids', () => {
@@ -52,6 +52,22 @@ describe('capabilities helpers', () => {
     expect(suggestionsLine(undefined)).toBeNull()
     expect(suggestionsLine({ pendingCount: 3, newCount: 3 })).toBe('3 suggestions since your last run')
     expect(suggestionsLine({ pendingCount: 1, newCount: 0 })).toBe('1 suggestion waiting')
+  })
+  it('counts suggestions the user has not seen since a run', () => {
+    const r = { trigger: 'runEnded' as const, checkedAt: '2026-11-01T10:00:00.000Z', pendingCount: 5 }
+    expect(unseenSuggestions(undefined, null)).toBe(0)
+    expect(unseenSuggestions(r, null)).toBe(5)
+    expect(unseenSuggestions(r, '2026-11-01T09:00:00.000Z')).toBe(5)
+    expect(unseenSuggestions(r, '2026-11-01T11:00:00.000Z')).toBe(0)
+    expect(unseenSuggestions({ ...r, pendingCount: 0 }, null)).toBe(0)
+    expect(unseenSuggestions({ ...r, trigger: 'opened' }, null)).toBe(0)
+    expect(unseenSuggestions({ ...r, trigger: 'opened', newCount: 2 }, '2026-11-01T11:00:00.000Z')).toBe(5)
+  })
+  it('picks the first tab with items', () => {
+    const order = ['project', 'library', 'local', 'repo'] as const
+    expect(firstFilledTab(order, { project: 0, library: 0, local: 1 }, 'new' as string)).toBe('local')
+    expect(firstFilledTab(order, { project: 2, local: 1 }, 'new' as string)).toBe('project')
+    expect(firstFilledTab(order, {}, 'new' as string)).toBe('new')
   })
   it('words the since line and gaps jump', () => {
     expect(sinceLine(1)).toBe('1 suggestion since your last run')
