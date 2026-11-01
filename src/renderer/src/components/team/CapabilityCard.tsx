@@ -146,9 +146,19 @@ export function CapabilityCard({
                 </Badge>
               )}
             </div>
-            <code className="capability-target" tabIndex={0} aria-label="Full command">
-              {stripControl(item.target)}
-            </code>
+            {item.target.length > 100 ? (
+              // Longer than about two lines: collapsed so the card stays short. The Runs-code badge above stays visible.
+              <details className="disclosure capability-command-fold">
+                <summary>Show command</summary>
+                <code className="capability-target" tabIndex={0} aria-label="Full command">
+                  {stripControl(item.target)}
+                </code>
+              </details>
+            ) : (
+              <code className="capability-target" tabIndex={0} aria-label="Full command">
+                {stripControl(item.target)}
+              </code>
+            )}
           </div>
         )}
         {needsPin && <p className="capability-warn">Not pinned. Can&apos;t be added.</p>}

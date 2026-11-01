@@ -547,3 +547,42 @@
     align-items: stretch;
   }
 }
+
+/* Tray share: while results or the Architect's decisions are open the tray may take up to half of the frame. */
+.frame-grid:has(> .frame-tray .team-results-head),
+.frame-grid:has(> .frame-tray .architect-decisions) {
+  --stage-min: 50cqh;
+}
+/* One-line header: heading and mode tabs never wrap. */
+.team-assistant > .team-tray-head {
+  flex-wrap: nowrap;
+}
+.team-tray-head h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-results-head {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  scroll-margin-top: var(--space-2);
+}
+.team-results-head:focus-visible {
+  outline: 2px solid var(--focus-ring, currentColor);
+  outline-offset: 2px;
+}
+/* Denser card: tighter body, the command folds away when long. */
+.capability-card .decision-body {
+  gap: var(--space-1);
+}
+.capability-command-fold > summary {
+  cursor: pointer;
+  font-size: var(--text-caption);
+}
+.architect-decisions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
