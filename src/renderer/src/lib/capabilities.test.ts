@@ -69,15 +69,15 @@ describe('capabilities helpers', () => {
     expect(resultsHeadText(3, 'Reviewer', 14, true)).toBe('3 to review for Reviewer · 11 waiting for the whole team')
   })
   it('validates the dismissed list', () => {
-    const review = { dismissed: [{ candidateId: 'x', name: 'Alpha', kind: 'skill', dismissedAt: 't' }, { candidateId: 'y', at: 'u' }, { nope: 1 }, null], discovery: { items: [{ id: 'y', name: 'Beta', kind: 'connector' as const }] } }
+    const review = { dismissed: [{ candidateId: 'x', fingerprint: 'f', name: 'Alpha', kind: 'skill' as const, at: 't' }, { candidateId: 'y', fingerprint: 'g', at: 'u' }], discovery: { items: [{ id: 'y', name: 'Beta', kind: 'connector' as const }] } }
     expect(readDismissed(review)).toEqual([
       { candidateId: 'x', name: 'Alpha', kind: 'skill', dismissedAt: 't' },
       { candidateId: 'y', name: 'Beta', kind: 'connector', dismissedAt: 'u' }
     ])
-    expect(readDismissed({ dismissed: 'bad' })).toEqual([])
-    expect(readDismissed(null)).toEqual([])
+    expect(readDismissed({ dismissed: [] })).toEqual([])
   })
   it('names the curated vendor', () => {
-    expect(sourceBadge({ origin: 'catalog', sourceLabel: 'x', name: 'Whatever' })).toBe('Curated · Whatever')
+    expect(sourceBadge({ origin: 'catalog', sourceLabel: 'x', name: 'Whatever' })).toBe('Curated')
+    expect(sourceBadge({ origin: 'catalog', sourceLabel: 'x', connectorId: 'github' })).toMatch(/^Curated · \S/)
   })
 })

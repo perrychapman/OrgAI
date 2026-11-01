@@ -311,7 +311,7 @@ export function DismissedRow({ name, recId, onUndo }: { name: string; recId?: st
     rootRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
   }, [])
   return (
-    <div className="capability-applied capability-dismissed" ref={rootRef} data-testid="capability-dismissed" data-rec={recId} role="group" aria-label={`Dismissed ${name}`}>
+    <div className="capability-applied capability-dismissed" ref={rootRef} data-testid="capability-dismissed" data-rec={recId}>
       <span className="capability-applied-text">
         <span>
           Dismissed <strong>{clampText(name, 60)}</strong>.
