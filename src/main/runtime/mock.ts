@@ -914,7 +914,11 @@ function mockRecommend(prompt: string): string {
     if (c && !picks.some((p) => p.id === c.id)) picks.push({ id: c.id, reason })
   }
   add(candidates.find((c) => c.f.kind === 'skill' && c.f.origin === 'repo'), 'Mock: this repo skill fits the role.')
-  add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'local'), 'Mock: this local MCP server fits the role.')
+  add(
+    candidates.find((c) => c.f.kind === 'skill' && c.f.origin === 'local' && /code[- ]review/i.test(c.f.name ?? '')),
+    'Mock: this code-review skill fits the role.'
+  )
+  add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'local'),'Mock: this local MCP server fits the role.')
   add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'registry'), 'Mock: this registry MCP server fits the role.')
   add(
     candidates.find((c) => c.f.kind === 'connector' && (c.f.name ?? '').toLowerCase().includes('github')) ?? candidates.find((c) => c.f.kind === 'connector'),
