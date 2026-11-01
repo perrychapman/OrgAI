@@ -2854,7 +2854,6 @@ export type CapabilitySourceId =
   | 'claude-code-mcp'
   | 'claude-desktop-mcp'
   | 'cursor-mcp'
-  | 'vscode-mcp'
   | 'codex-mcp'
   | 'library'
   | 'project'
@@ -3019,6 +3018,11 @@ export interface TeamRecommendations {
  * capabilities:apply input. Name a recommendation (its roleIds and access are the defaults) or a candidate directly.
  * `roleIds` and `access` are the user's edits; main re-reads the candidate from its own snapshot for `digest` (the
  * renderer never sends paths, specs or file content) and refuses a stale or missing digest.
+ * The renderer should send `candidateId` together with `recommendationId`: recommendations from capabilities:recommend
+ * live only in main's in-memory snapshot (a persisted TeamReview's survive a restart), so after a restart or a
+ * re-discovery main falls back to the candidate. When both are sent they must name the same candidate.
+ * `access` omitted = the recommendation's own access (else 'read'); 'full' is still refused unless every chosen role
+ * has a write tool (CAPABILITY_WRITE_TOOLS).
  */
 export interface CapabilityApplyInput {
   projectId: string
@@ -3116,7 +3120,7 @@ export interface TeamReviewSettings {
 }
 
 /** What started a review. 'opened' = the Team tab opened (throttled); 'runEnded' = a work run reached an outcome. */
-export type TeamReviewTrigger = 'manual' | 'runEnded' | 'opened' | 'sourcesChanged'
+export type TeamReviewTrigger = 'manual' | 'runEnded' | 'opened'
 
 /**
  * Token-free signals from finished work runs (permission denials, rule requests, tools or connections a role asked
@@ -3177,7 +3181,16 @@ export interface TeamReview {
   runsSinceModel: number
   /** Tokens the last model step spent, when known. */
   tokensUsed?: number
+  /**
+   * What the model step of this review was sent (missing = no model step ran). 'proactive' = an automatic review
+   * (runEnded): repo, project, library and catalog items in full, but local-machine items (origin 'local') only as
+   * kind, name and redacted target, never their descriptions or paths. 'full' = the user's manual Re-check: every item.
+   */
+  modelInput?: TeamReviewModelInput
 }
+
+/** TeamReview.modelInput: which data classes the review's model step was sent. */
+export type TeamReviewModelInput = 'proactive' | 'full'
 
 /** capabilities:reviewUpdated push and the badge source. */
 export interface TeamReviewSummary {

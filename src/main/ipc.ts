@@ -499,13 +499,14 @@ export const capabilityArgs = {
     if (typeof i.digest !== 'string' || !/^[a-f0-9]{64}$/.test(i.digest)) throw new Error('Run the recommendations again first: the result is missing or out of date.')
     if (!Array.isArray(i.roleIds) || i.roleIds.length === 0) throw new Error('Choose at least one role.')
     if (i.roleIds.length > CAPABILITY_MAX_ROLE_IDS || !i.roleIds.every((r) => isValidId(r))) throw new Error('Unknown role in the choice.')
+    if (i.access !== undefined && i.access !== 'read' && i.access !== 'full') throw new Error('Access must be read or full.')
     const out: CapabilityApplyInput = {
       projectId: projectIdArg(i.projectId),
       digest: i.digest,
-      roleIds: [...new Set(i.roleIds as string[])],
-      access: i.access === 'full' ? 'full' : 'read'
+      roleIds: [...new Set(i.roleIds as string[])]
     }
-    if (i.access !== undefined && i.access !== 'read' && i.access !== 'full') throw new Error('Access must be read or full.')
+    // Omitted access means the recommendation's own access (else 'read'); the service still enforces the write-tools rule.
+    if (i.access === 'read' || i.access === 'full') out.access = i.access
     if (i.recommendationId !== undefined) {
       if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
       out.recommendationId = i.recommendationId
