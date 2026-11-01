@@ -12,6 +12,7 @@ import { RoleAccess, RoleChecklist } from '../mcp/RoleAccess'
 import { UsedBy } from '../team/CatalogUsedBy'
 import { errMessage } from '../mcp/mcpHelpers'
 import { linkedServerFor, setUpConnectors, useInProjectBlocker } from '../mcp/mcpLibraryHelpers'
+import { grantServerRoles } from '../../lib/roleCapabilities'
 import { accessWords, stateChip } from '../../lib/connectors'
 import { useAppStore } from '../../store/useAppStore'
 import ConnectorDialog from './ConnectorDialog'
@@ -33,13 +34,16 @@ export function UseInProjectDialog({
   info,
   onClose,
   onResult,
-  role
+  role,
+  linked
 }: {
   project: Project
   info: ConnectorInfo
   onClose: () => void
   onResult: (r: McpMutationResult) => void
   role?: Role
+  /** The project's server for this connector when it is already linked (a re-sign-in): the role is granted on it. */
+  linked?: McpServerInfo
 }): ReactElement {
   const [roles, setRoles] = useState<string[]>(() => (role ? [role.slug] : []))
   const [busy, setBusy] = useState(false)
@@ -47,13 +51,26 @@ export function UseInProjectDialog({
   const noRoles = project.roles.length === 0
   const blocker = useInProjectBlocker(project.roles.length, roles)
   const entry = info.library?.entry
+  const canRun = !!entry || !!(linked && role)
   const autoStarted = useRef(false)
 
   const confirm = async (): Promise<void> => {
-    if (!entry) return
+    if (!canRun) return
     setBusy(true)
     setError(null)
     try {
+      if (linked && role) {
+        // Already linked (it only needed a new sign-in): linkLibrary would refuse, so grant the role on the project server.
+        const roles = grantServerRoles(linked.spec, role)
+        const result = await window.orgai.mcp.upsert({ projectId: project.id, spec: { ...linked.spec, ...(roles ? { roles } : {}) } })
+        onResult(result)
+        onClose()
+        return
+      }
+      if (!entry) {
+        setBusy(false)
+        return
+      }
       const result = await window.orgai.mcp.linkLibrary({
         projectId: project.id,
         libraryId: entry.id,
@@ -68,7 +85,7 @@ export function UseInProjectDialog({
     }
   }
   useEffect(() => {
-    if (!role || !entry || autoStarted.current) return
+    if (!role || !canRun || autoStarted.current) return
     autoStarted.current = true
     void confirm()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -87,7 +104,7 @@ export function UseInProjectDialog({
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={!entry || blocker !== null} testId="connector-use-confirm" onClick={() => void confirm()}>
+          <Button variant="primary" loading={busy} disabled={!canRun || blocker !== null} testId="connector-use-confirm" onClick={() => void confirm()}>
             {role ? `Add for ${role.name}` : 'Use in this project'}
           </Button>
         </>

@@ -305,6 +305,38 @@ async function sectionFirstConnection(page, shot) {
   check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'Back to Team lands on the Team tab')
   check(/Reviewer/.test(await page.locator('.react-flow__node.selected').first().innerText().catch(() => '')), 'Back to Team keeps Reviewer selected')
 
+  // M1: GitHub is still in the project and needs sign in again; Reviewer lost it. + Add -> sign in -> Reviewer is granted
+  // through mcp.upsert (linkLibrary would refuse "already linked").
+  await page.evaluate(([pid, spec]) => window.orgai.mcp.upsert({ projectId: pid, spec: { ...spec, roles: [] } }), [project.id, gh.spec ?? gh])
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await openProject(page, NAME)
+  await openTeam(page)
+  await selectReviewer(page)
+  await block.locator('[data-testid=role-add-connection]').click()
+  const chooser = page.locator('[data-testid=capability-chooser]:visible')
+  if ((await chooser.count()) > 0) {
+    await chooser.getByRole('tab', { name: 'Browse' }).click()
+    await chooser.locator('[data-testid=chooser-open-gallery]').click()
+  }
+  const add2 = page.locator('[data-testid=add-service-dialog]')
+  await add2.waitFor({ timeout: 10_000 })
+  await add2.locator('[data-testid=add-service-option][data-connector=github]').click()
+  const dlg2 = page.locator('[data-testid=connector-dialog]')
+  await dlg2.waitFor({ timeout: 10_000 })
+  await dlg2.getByLabel('Personal access token', { exact: true }).fill('ghp_e2e_fake_token_2')
+  await dlg2.locator('[data-testid=connector-connect]').click()
+  await page.waitForFunction(
+    () => !document.querySelector('[data-testid=connector-dialog], [data-testid=add-service-dialog], [data-testid=connector-use-dialog]'),
+    null,
+    { timeout: 15_000 }
+  )
+  await sleep(800)
+  const again = await reviewer(page)
+  const gh2 = again.project.mcpServers.find((s) => s.id === gh.id)
+  check(!!gh2 && gh2.roles?.includes(again.role.slug), 'a linked service that needed sign in again is granted to Reviewer', JSON.stringify(gh2?.roles))
+  check(again.project.mcpServers.filter((s) => s.id === gh.id).length === 1, 'still one GitHub server in the project')
+
   // Leave the later sections a project without GitHub.
   if (gh) await page.evaluate(([pid, id]) => window.orgai.mcp.remove({ projectId: pid, serverId: id }).catch(() => {}), [project.id, gh.id])
 }
