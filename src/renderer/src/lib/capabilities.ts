@@ -258,7 +258,9 @@ export const capabilitiesApi = {
     window.orgai.capabilities.review({ projectId, trigger, requestId, includeOutside }),
   lastReview: (projectId: string) => window.orgai.capabilities.lastReview(projectId),
   cancel: (requestId: string) => window.orgai.capabilities.cancel({ requestId }),
-  dismiss: (projectId: string, recommendationId: string) => window.orgai.capabilities.dismiss({ projectId, recommendationId }),
+  // candidateId lets main dismiss a card from a fresh recommend() result too (its type lands with the contract update).
+  dismiss: (projectId: string, recommendationId: string, candidateId?: string) =>
+    window.orgai.capabilities.dismiss({ projectId, recommendationId, candidateId } as Parameters<typeof window.orgai.capabilities.dismiss>[0]),
   apply: (input: Parameters<typeof window.orgai.capabilities.apply>[0]) => window.orgai.capabilities.apply(input),
   undo: (projectId: string, undoId: string) => window.orgai.capabilities.undo({ projectId, undoId }),
   onProgress: (cb: (e: CapabilityProgressEvent) => void) => window.orgai.onCapabilityProgress(cb)

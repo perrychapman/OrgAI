@@ -274,7 +274,8 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   }
 
   const dismiss = (recId: string): void => {
-    void capabilitiesApi.dismiss(project.id, recId).catch(() => {})
+    const candidateId = result?.recommendations.find((r) => r.id === recId)?.candidateId
+    void capabilitiesApi.dismiss(project.id, recId, candidateId).catch(() => {})
     setDismissed((d) => new Set(d).add(recId))
     window.requestAnimationFrame(() => {
       const root = rootRef.current
