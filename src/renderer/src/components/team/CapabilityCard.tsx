@@ -15,6 +15,7 @@ import {
   fullAllowed,
   isOutside,
   pinLabel,
+  stripControl,
   sourceBadge
 } from '../../lib/capabilities'
 
@@ -24,6 +25,12 @@ export interface AppliedInfo {
   roleNames: string[]
   access: CapabilityAccess
   undoId: string
+  /** The project server id that now holds it, for the Finish setup link. */
+  appliedId?: string
+  connectorId?: string
+  libraryId?: string
+  /** A later apply replaced the undo token, so this row can no longer be undone. */
+  superseded?: boolean
   needsSetup?: { secrets: string[]; signIn: boolean }
   notes: string[]
 }
@@ -59,7 +66,10 @@ export function CapabilityCard({
   const canFull = fullAllowed(chosenRoles)
   const access: CapabilityAccess = canFull ? wanted : 'read'
   const offerAccess = accessChoiceOffered(item)
-  const flags = flagViews(item)
+  const runsCode = item.flags.includes('runsCode')
+  const allFlags = flagViews(item)
+  const runsCodeLabel = allFlags.find((f) => f.key === 'runsCode')?.label ?? 'Runs code on this machine'
+  const flags = item.kind !== 'skill' && item.target ? allFlags.filter((f) => f.key !== 'runsCode') : allFlags
   const pin = pinLabel(item)
   const outside = isOutside(item)
   const blocked = item.blockedReason ? clampText(item.blockedReason, 160) : null
@@ -120,15 +130,25 @@ export function CapabilityCard({
           </p>
         )}
         {item.description && <p className="capability-desc hint">{clampText(item.description, 200)}</p>}
-        {(pin || item.target) && (
+        {pin && (
           <p className="capability-pin">
-            {pin && <span className="mono">{pin}</span>}
-            {item.target && (
-              <code className="capability-target" title={clampText(item.target, 300)}>
-                {clampText(item.target, 120)}
-              </code>
-            )}
+            <span className="mono">{pin}</span>
           </p>
+        )}
+        {item.kind !== 'skill' && item.target && (
+          <div className="capability-command" data-testid="capability-command">
+            <div className="capability-command-head">
+              <span className="hint">{runsCode ? 'This exact command is what gets added' : 'This is what gets added'}</span>
+              {runsCode && (
+                <Badge tone="danger" testId="capability-runs-code">
+                  {runsCodeLabel}
+                </Badge>
+              )}
+            </div>
+            <code className="capability-target" tabIndex={0} aria-label="Full command">
+              {stripControl(item.target)}
+            </code>
+          </div>
         )}
         {needsPin && <p className="capability-warn">Not pinned. Can&apos;t be added.</p>}
         {blocked && <p className="capability-warn">{blocked}</p>}
@@ -243,9 +263,15 @@ export function AppliedRow({
             Finish setup
           </Button>
         )}
-        <Button size="sm" variant="ghost" icon={Undo2} loading={busy} ariaLabel={`Undo ${info.name}`} testId="capability-undo" onClick={onUndo}>
-          Undo
-        </Button>
+        {info.superseded ? (
+          <span className="hint" data-testid="capability-undo-gone">
+            Can&apos;t undo after a later change
+          </span>
+        ) : (
+          <Button size="sm" variant="ghost" icon={Undo2} loading={busy} ariaLabel={`Undo ${info.name}`} testId="capability-undo" onClick={onUndo}>
+            Undo
+          </Button>
+        )}
       </span>
       {error && (
         <p className="capability-warn" role="alert">

@@ -108,7 +108,8 @@ export function roleCanWrite(role: Pick<Role, 'tools'>): boolean {
 
 /** Whether the access choice is worth showing: a connector with a read-only variant, or anything that can change data. */
 export function accessChoiceOffered(item: Pick<CapabilityItem, 'kind' | 'readOnlyAvailable' | 'flags'>): boolean {
-  return item.kind === 'connector' ? item.readOnlyAvailable === true : item.flags.includes('canChange')
+  // Nothing enforces read-only on a plain MCP server, so only a connector with a read-only variant offers the choice.
+  return item.kind === 'connector' && item.readOnlyAvailable === true
 }
 
 /** "full" needs a write tool on every chosen role. */
@@ -122,6 +123,7 @@ export function accessSentence(roleNames: readonly string[], itemName: string, a
   const who = roleNames.length <= 2 ? roleNames.map((n) => clampText(n, 30)).join(' and ') : `${roleNames.length} roles`
   const what = clampText(itemName, 50)
   if (kind === 'skill') return `${who} can load ${what}.`
+  if (kind !== 'connector') return `${who} can use ${what}.`
   return access === 'full' ? `${who} can read and change things through ${what}.` : `${who} can read through ${what}.`
 }
 
@@ -260,4 +262,10 @@ export const capabilitiesApi = {
   apply: (input: Parameters<typeof window.orgai.capabilities.apply>[0]) => window.orgai.capabilities.apply(input),
   undo: (projectId: string, undoId: string) => window.orgai.capabilities.undo({ projectId, undoId }),
   onProgress: (cb: (e: CapabilityProgressEvent) => void) => window.orgai.onCapabilityProgress(cb)
+}
+
+/** Strip control characters from untrusted text but keep every other character (the full command is shown unclamped). */
+export function stripControl(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ')
 }

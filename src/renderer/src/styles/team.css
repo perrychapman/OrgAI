@@ -460,11 +460,28 @@
   align-items: center;
   gap: var(--space-2);
 }
+.capability-command {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.capability-command-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
 .capability-target {
+  display: block;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-height: 7.5rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
   font-size: var(--text-caption);
 }
 .capability-flags {
