@@ -465,6 +465,15 @@ try {
     await sleep(400)
     const tg = await page.evaluate(() => ({ tray: document.querySelector('.editor .frame-tray')?.getBoundingClientRect().height ?? 0, frame: document.querySelector('.editor .frame-grid')?.getBoundingClientRect().height ?? 1 }))
     check(tg.tray >= Math.min(260, tg.frame * 0.4), `the tray has room for the results at ${w}x${h}`, JSON.stringify(tg))
+    // Walk 3: the skip link lands on the visible panel tabs, or on the railed panel itself when there is no room.
+    await page.locator('[data-testid=skip-to-role-panel]').focus()
+    await page.keyboard.press('Enter')
+    await sleep(300)
+    const skip = await page.evaluate(() => {
+      const a = document.activeElement
+      return { inTabs: !!a?.closest('[data-testid=team-panel-tabs]'), inPanel: !!a?.closest('aside.side-panel') || a?.matches('aside.side-panel') === true }
+    })
+    check(skip.inTabs || skip.inPanel, `Skip to role panel lands in the panel (tabs or rail) at ${w}x${h}`, JSON.stringify(skip))
     for (const theme of THEMES) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await sleep(300)
