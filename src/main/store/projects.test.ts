@@ -66,6 +66,14 @@ describe('ProjectStore.saveFromRenderer', () => {
   })
 })
 
+describe('ProjectStore.save virtual ids (L4)', () => {
+  it('refuses the harness, Chat and Skill assistant ids', () => {
+    const store = new ProjectStore(dataDir())
+    for (const id of ['harness', 'quick', 'skills']) expect(() => store.save(project({ id }))).toThrow(/cannot be stored/)
+    expect(store.list().map((p) => p.id)).not.toContain('quick')
+  })
+})
+
 describe('ProjectStore.saveFromRenderer skills', () => {
   const spec = (id: string): SkillSpec => ({ id, name: id, description: 'd', enabled: true, source: 'user', digest: 'x', files: [], addedAt: 't', updatedAt: 't' })
   const withGrants = (skills: string[] | undefined) => orgRoles(skills)
