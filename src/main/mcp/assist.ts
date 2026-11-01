@@ -16,9 +16,21 @@ export function promptDatum(s: unknown, max = 240, multiline = false): string {
  * harness-workspace folder in the data dir, the app's default connection, no roles, no servers. Never stored in projects.json and never listed by
  * projects:list. With the mock adapter registered (ORGAI_MOCK=1) it runs on mock so harness runs stay token-free.
  */
-export function harnessProject(settings: AppSettings, dataDir: string, opts: { mock?: boolean } = {}): Project {
+export interface HarnessProjectOptions {
+  mock?: boolean
+  /**
+   * McpAssistInput.allowBuild: the session may build a local stdio server. permissionMode becomes 'default' (every
+   * edit and command asks) and the project path is `workspace` (a per-run scratch dir under `<data>/quick/`, made by
+   * the caller) instead of the shared harness-workspace. PHASE 2: the MCP assistant engineer completes this.
+   */
+  allowBuild?: boolean
+  /** The per-run scratch dir for an allowBuild session (absolute, already created). */
+  workspace?: string
+}
+
+export function harnessProject(settings: AppSettings, dataDir: string, opts: HarnessProjectOptions = {}): Project {
   // A dedicated empty folder: the data dir holds secrets.json, projects.json and settings.json.
-  const workspace = join(dataDir, 'harness-workspace')
+  const workspace = opts.allowBuild && opts.workspace ? opts.workspace : join(dataDir, 'harness-workspace')
   mkdirSync(workspace, { recursive: true })
   const base = newProject({ name: 'OrgAI', path: workspace, brief: 'Harness-level session: the app-wide MCP library, shared by every project.' }, settings)
   const connection = settings.defaultConnection
@@ -73,7 +85,13 @@ export function describeLibrary(library: readonly McpLibraryEntry[]): string {
     : 'MCP library: empty.'
 }
 
-export function assistContext(project: Project, library: readonly McpLibraryEntry[] = []): string {
+/** assistContext options: an allowBuild session is told its workspace and how to propose a built server. */
+export interface AssistContextOptions {
+  allowBuild?: boolean
+}
+
+export function assistContext(project: Project, library: readonly McpLibraryEntry[] = [], opts: AssistContextOptions = {}): string {
+  void opts
   if (project.id === HARNESS_PROJECT_ID) {
     return ['Session scope: the app-wide MCP library. You manage library entries that every project can link; there is no project, brief or org chart here.', describeLibrary(library)].join('\n\n')
   }

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Project, Proposal, ProjectSetup, RunRecord } from '@shared/types'
+import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Project, Proposal, ProjectSetup, RunRecord, SkillsProposalPayload } from '@shared/types'
 import { describeServer, promptDatum } from '../mcp/assist'
 import { validateSpec } from '../mcp/validate'
 import { setupKindLabel } from '@shared/setup'
@@ -73,8 +73,24 @@ export class SetupService {
         applyProposal(projectId: string, payload: McpServersProposalPayload): Project
         applyLibraryProposal(payload: McpServersProposalPayload): void
       }
+      /**
+       * The skill service (SkillService.applyProposal in index.ts). With it, approved Skill assistant proposals are
+       * applied; without it they are refused. projectId null = library scope (the virtual SKILLS_PROJECT_ID).
+       * Returns the saved project for a project session, null for the library.
+       */
+      skills?: {
+        applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null
+      }
     } = {}
   ) {}
+
+  /** Apply an approved library-scope skills proposal (SKILLS_PROJECT_ID: nothing project-shaped is saved). */
+  applySkillsLibraryProposal(proposal: Proposal | SkillsProposalPayload): void {
+    const payload = 'kind' in proposal ? (proposal.kind === 'skills' ? proposal.payload : undefined) : proposal
+    if (!payload) throw new Error('Only skill proposals can change the skill library.')
+    if (!this.hooks.skills) throw new Error('The skill library is not available.')
+    this.hooks.skills.applyProposal(null, payload)
+  }
 
   /** Apply an approved library-scope MCP proposal (the harness project: nothing project-shaped is saved). */
   applyLibraryProposal(proposal: Proposal | McpServersProposalPayload): void {
@@ -210,8 +226,8 @@ export class SetupService {
         if (proposal.payload.scope === 'library') throw new Error('A library proposal cannot be applied to a project.')
         return this.hooks.mcp ? this.hooks.mcp.applyProposal(project.id, proposal.payload) : this.applyMcpServers(project, proposal.payload)
       case 'skills':
-        // Placeholder from the Assistants contract (phase 1): skill proposals are applied by the skill service in phase 2.
-        throw new Error('Skill proposals are not applied here yet.')
+        if (!this.hooks.skills) throw new Error('The skill library is not available.')
+        return this.hooks.skills.applyProposal(project.id, proposal.payload) ?? project
     }
   }
 

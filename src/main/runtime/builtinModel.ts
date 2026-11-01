@@ -26,6 +26,11 @@ export interface BuiltinModelContext {
   tierModels: Partial<Record<ModelTier, ModelRef>>
   /** The project's root role, the last-resort fallback. */
   root?: Pick<Role, 'model' | 'tier'>
+  /**
+   * The tier used when the setting is missing or unusable. Default 'deep' (Architect, MCP and Skill assistants);
+   * 'everyday' for the Chat's single assistant (AppSettings.quickRunModel). The fallback tier itself never warns.
+   */
+  fallbackTier?: ModelTier
 }
 
 export interface ResolvedBuiltinModel extends BuiltinRoleModel {
@@ -36,10 +41,13 @@ export interface ResolvedBuiltinModel extends BuiltinRoleModel {
 /** Setting names used in fallback warnings; the App settings selects use the same labels. */
 export const SETUP_MODEL_LABEL = 'Setup model'
 export const MCP_ASSIST_MODEL_LABEL = 'MCP assistant model'
+export const SKILL_ASSIST_MODEL_LABEL = 'Skill assistant model'
+export const QUICK_RUN_MODEL_LABEL = 'Chat model'
 const CONNECTION_LABEL: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
 export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel: string, ctx: BuiltinModelContext): ResolvedBuiltinModel {
-  const value = setting?.trim() || 'deep'
+  const fallbackTier: ModelTier = ctx.fallbackTier ?? 'deep'
+  const value = setting?.trim() || fallbackTier
   if (ctx.adapter === 'mock') {
     const tier = settingTier(value) ?? tierForModel(value)
     return { model: value, ...(tier ? { tier } : {}) }
@@ -70,7 +78,7 @@ export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel:
   const hit = direct()
   if (hit) return hit
 
-  const deepHit = forTier('deep')
+  const deepHit = forTier(fallbackTier)
   const deep = deepHit?.model
   const root = ctx.root && ctx.root.model !== 'inherit' && runsHere(ctx.root.model) ? ctx.root : undefined
   const fallback: BuiltinRoleModel = deepHit
@@ -78,8 +86,8 @@ export function resolveBuiltinModel(setting: ModelRef | undefined, settingLabel:
     : root
       ? { model: root.model, ...(root.tier ? { tier: root.tier } : {}) }
       : { model: 'inherit' }
-  if (value.toLowerCase() === 'deep') return fallback
-  const used = deep ? `the deep tier (${deep})` : root ? `the orchestrator's model (${root.model})` : "the connection's default model"
+  if (value.toLowerCase() === fallbackTier) return fallback
+  const used = deep ? `the ${fallbackTier} tier (${deep})` : root ? `the orchestrator's model (${root.model})` : "the connection's default model"
   const adapter = ctx.adapter === 'claude' ? 'Claude' : 'Codex'
   return {
     ...fallback,

@@ -20,6 +20,7 @@ import {
   type SkillLinkLibraryInput,
   type SkillMutationResult,
   type SkillSpec,
+  type SkillsProposalPayload,
   type SkillUpdateInput
 } from '@shared/types'
 import { isSafeId, newId } from '@shared/defaults'
@@ -627,6 +628,17 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     } catch {
       /* best effort */
     }
+  }
+
+  /**
+   * Apply an approved Skill assistant proposal (SetupService hooks.skills). projectId null = library scope. Every
+   * item is validated before anything is written. Returns the saved project (project session) or null (library).
+   * PHASE 2 STUB: implemented by the Skill assistant engineer.
+   */
+  applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null {
+    void projectId
+    void payload
+    throw new Error('Skill proposals are not applied yet.')
   }
 
   forRun(project: Project, roles: Role[]): RunSkill[] {

@@ -1,4 +1,4 @@
-import type { Project, Role } from '@shared/types'
+import type { Project, QuickRunInfo, Role } from '@shared/types'
 import { RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL } from './harnessTools'
 import type { PeerMessage } from './types'
@@ -31,6 +31,12 @@ export interface PromptFlags {
    * tool on Codex and mock). Default 'load_skill'.
    */
   skillTool?: 'Skill' | 'load_skill'
+  /**
+   * Quick run (RunSummary.quick, the Chat): the root gets the general-assistant paragraph (outside any project,
+   * where it works, list_projects, reading other folders only with the user's permission) instead of the project
+   * paragraphs (architecture, org changes, cross-run messaging, brief). Adapters pass ctx.run.quick.
+   */
+  quick?: QuickRunInfo
 }
 
 /** The roles this role may delegate to. */
