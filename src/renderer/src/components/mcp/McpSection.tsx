@@ -320,7 +320,7 @@ export default function McpSection({ project, onSelectRole }: { project: Project
           open={modal?.kind === 'assist'}
           onClose={() => setModal(null)}
           onStart={(text) => useAppStore.getState().startMcpAssist(text)}
-          title="Describe it to an assistant"
+          title="Ask the Team assistant"
           description="An assistant run proposes servers, using your connected services and custom servers first. You approve each one in the live run."
           placeholder="Search the web, read GitHub issues..."
         />
@@ -452,7 +452,7 @@ function McpRow({
         </div>
         <div className="mcp-row-roles">
           <UsedBy all={spec.roles === undefined} roles={loseRoles} onSelectRole={onSelectRole} />
-          <RoleAccess serverName={spec.name} roles={project.roles} value={spec.roles} onChange={(roles) => void upsert({ ...spec, roles })} />
+          <RoleAccess quiet serverName={spec.name} roles={project.roles} value={spec.roles} onChange={(roles) => void upsert({ ...spec, roles })} />
         </div>
         <div className="mcp-row-actions">
           {remote && !info.libraryMissing && (

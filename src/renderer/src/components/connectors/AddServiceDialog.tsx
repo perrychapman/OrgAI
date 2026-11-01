@@ -1,7 +1,7 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useId, useMemo, useRef, useState } from 'react'
 import { ChevronUp, Library, Package, Plus, Search, Sparkles } from 'lucide-react'
-import type { ConnectorInfo, McpMutationResult, McpServerInfo, Project } from '@shared/types'
+import type { ConnectorInfo, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -10,6 +10,8 @@ import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
 import { Popover } from '../ui/Popover'
 import { linkedServerFor } from '../mcp/mcpLibraryHelpers'
+import { errMessage } from '../mcp/mcpHelpers'
+import { grantServerRoles } from '../../lib/roleCapabilities'
 import { CATEGORY_LABELS, EASE_BADGE, filterConnectors, infoEase, serviceCount, sortForGallery, stateChip } from '../../lib/connectors'
 import { UseInProjectDialog, connectorAccess } from './ConnectedServices'
 import { ConnectorLogo } from './ConnectorLogo'
@@ -45,7 +47,8 @@ export default function AddServiceDialog({
   servers,
   onClose,
   onResult,
-  onOther
+  onOther,
+  role
 }: {
   project: Project
   connectors: ConnectorInfo[] | null
@@ -54,10 +57,13 @@ export default function AddServiceDialog({
   onClose: () => void
   onResult: (r: McpMutationResult) => void
   onOther: (way: OtherWay) => void
+  /** Started from one role's "+ Add": that role is granted and no roles step is shown. */
+  role?: Role
 }): ReactElement {
   const [step, setStep] = useState<Step>({ kind: 'list' })
   const [query, setQuery] = useState('')
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [pickError, setPickError] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const roving = useRovingFocus(listRef, '[role=option]')
   const ids = useId()
@@ -82,12 +88,31 @@ export default function AddServiceDialog({
     // Use the live info so a just-connected connector has its library entry.
     const live = connectors?.find((c) => c.connector.id === step.info.connector.id)
     const info = live?.library ? live : step.info
-    return <UseInProjectDialog project={project} info={info} onClose={onClose} onResult={onResult} />
+    return <UseInProjectDialog project={project} info={info} role={role} onClose={onClose} onResult={onResult} />
   }
 
   const pick = (info: ConnectorInfo): void => {
     if (info.state === 'connected') {
-      if (linkedServerFor(info, servers)) {
+      const linked = linkedServerFor(info, servers)
+      if (linked && role) {
+        // Already in the project: let this role use it.
+        const roles = grantServerRoles(linked.spec, role)
+        if (roles === undefined || linked.spec.roles?.includes(role.slug)) {
+          onClose()
+          jumpToRow(info.connector.id)
+          return
+        }
+        setPickError(null)
+        window.orgai.mcp
+          .upsert({ projectId: project.id, spec: { ...linked.spec, roles } })
+          .then((r) => {
+            onResult(r)
+            onClose()
+          })
+          .catch((e) => setPickError(errMessage(e)))
+        return
+      }
+      if (linked) {
         onClose()
         jumpToRow(info.connector.id)
         return
@@ -163,7 +188,7 @@ export default function AddServiceDialog({
       footer={
         <div className="addsvc-foot" data-testid="add-service-other">
           <Button size="sm" icon={Sparkles} onClick={() => other('assist')} testId="add-service-assist">
-            Describe it to an assistant
+            Ask the Team assistant
           </Button>
           <Popover
             label="More ways to add a service"
@@ -203,6 +228,11 @@ export default function AddServiceDialog({
       {error && (
         <Banner tone="danger" title="Could not load services">
           {error}
+        </Banner>
+      )}
+      {pickError && (
+        <Banner tone="danger" title="Could not add the service">
+          {pickError}
         </Banner>
       )}
       {connectors === null && !error ? (

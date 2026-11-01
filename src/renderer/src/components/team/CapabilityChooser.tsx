@@ -1,7 +1,7 @@
-import type { ReactElement, ReactNode } from 'react'
-import { lazy, Suspense, useState } from 'react'
+import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Sparkles } from 'lucide-react'
-import type { McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
+import type { CapabilityDiscovery, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Banner } from '../ui/Banner'
@@ -20,7 +20,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/sett
 import { useAppStore } from '../../store/useAppStore'
 import { serviceFor } from '../../lib/roleServices'
 import { accessLabel, grantableServers, roleSkillSplit, serverReadOnly } from '../../lib/roleCapabilities'
-import { projectProvenance } from '../../lib/skills'
+import { localSkillCandidates, nextTabId, skillEmptyCopy } from '../../lib/chooser'
 import type { CapabilityKind } from './CapabilityBlock'
 
 const ImportSkillsDialog = lazy(() => import('../skills/ImportSkillsDialog'))
@@ -41,11 +41,12 @@ interface Pick {
   label: string
   description?: string
   lead?: ReactNode
-  run: () => Promise<void> | void
+  /** May return the id of the row the caller should focus afterwards. */
+  run: () => Promise<void | string> | void
 }
 
 type ConnTab = 'yours' | 'browse'
-type SkillTab = 'project' | 'library' | 'repo' | 'new'
+type SkillTab = 'project' | 'library' | 'local' | 'repo' | 'new'
 type Sub = 'gallery' | 'import' | 'new' | null
 
 /**
@@ -76,6 +77,13 @@ export function CapabilityChooser({
   const [connTab, setConnTab] = useState<ConnTab>('yours')
   const [skillTab, setSkillTab] = useState<SkillTab>('project')
   const [sub, setSub] = useState<Sub>(null)
+  /** True while the service picker was opened for the user (the Your connections list was empty): closing it closes both. */
+  const [autoGallery, setAutoGallery] = useState(false)
+  const touchedTab = useRef(false)
+  const tabsWrap = useRef<HTMLDivElement>(null)
+  const [disc, setDisc] = useState<CapabilityDiscovery | null>(null)
+  const [discError, setDiscError] = useState(false)
+  const replaceProject = useAppStore((s) => s.replaceProject)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const setView = useAppStore((s) => s.setView)
@@ -84,12 +92,31 @@ export function CapabilityChooser({
   const skillsApi = useProjectSkills(project.id)
   const skillLib = useSkillLibrary()
 
+  // Skills on this computer: token-free, local sources only.
+  useEffect(() => {
+    if (isConn) return undefined
+    let live = true
+    window.orgai.capabilities
+      .discover({ projectId: project.id })
+      .then((d) => live && setDisc(d))
+      .catch(() => live && setDiscError(true))
+    return () => {
+      live = false
+    }
+  }, [isConn, project.id])
+
+  // Initial focus: the selected tab, not the dialog's Close control.
+  useEffect(() => {
+    if (sub === 'gallery') return
+    tabsWrap.current?.querySelector<HTMLElement>('[role=tab][aria-selected=true]')?.focus()
+  }, [sub])
+
   const choose = async (p: Pick): Promise<void> => {
     setBusy(true)
     setError(null)
     try {
-      await p.run()
-      onDone(p.id)
+      const made = await p.run()
+      onDone(typeof made === 'string' ? made : p.id)
     } catch (e) {
       setError(cleanIpcError(e))
       setBusy(false)
@@ -135,6 +162,7 @@ export function CapabilityChooser({
 
   // ---- skills ----
   const { available } = roleSkillSplit(skillsApi.skills.map((i) => i.spec), role)
+  const projectSkillCount = skillsApi.skills.length
   const projectPicks: Pick[] = available.map((s) => ({
     id: s.id,
     label: s.name,
@@ -152,6 +180,28 @@ export function CapabilityChooser({
         await skillsApi.linkLibrary(l.entry.id, [role.id])
       }
     }))
+
+  const localPicks: Pick[] = localSkillCandidates(disc?.items ?? []).map((it) => ({
+    id: it.id,
+    label: it.name,
+    description: it.description || it.location,
+    run: async () => {
+      if (!disc) return undefined
+      const out = await window.orgai.capabilities.apply({ projectId: project.id, digest: disc.digest, candidateId: it.id, roleIds: [role.id] })
+      replaceProject(out.project)
+      return out.applied.id
+    }
+  }))
+
+  // With nothing to pick from "Your connections", go straight to the service picker (one dialog fewer).
+  const connReady = isConn && connectors !== null && library !== null
+  useEffect(() => {
+    if (connReady && connPicks.length === 0 && !touchedTab.current && sub === null) {
+      setAutoGallery(true)
+      setSub('gallery')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connReady])
 
   const openAppSettingsConnectors = (): void => {
     requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
@@ -190,6 +240,7 @@ export function CapabilityChooser({
     : [
         { id: 'project', label: 'This project', testId: 'chooser-tab-project' },
         { id: 'library', label: 'Your library', testId: 'chooser-tab-library' },
+        { id: 'local', label: 'On this computer', testId: 'chooser-tab-local' },
         { id: 'repo', label: 'Found in this repo', testId: 'chooser-tab-repo' },
         { id: 'new', label: 'New skill', testId: 'chooser-tab-new' }
       ]
@@ -214,9 +265,12 @@ export function CapabilityChooser({
         </div>
       )
   } else if (skillTab === 'project') {
-    body = list(projectPicks, 'Every skill in this project is already on this role. Try Your library or New skill.', skillsApi.loading)
+    body = list(projectPicks, skillEmptyCopy('project', projectSkillCount), skillsApi.loading)
   } else if (skillTab === 'library') {
-    body = list(libraryPicks, 'Nothing new in your skill library.', skillLib.library === null && !skillLib.error)
+    body = list(libraryPicks, skillEmptyCopy('library', skillLib.library?.length ?? 0), skillLib.library === null && !skillLib.error)
+  } else if (skillTab === 'local') {
+    const found = (disc?.items ?? []).filter((i) => i.kind === 'skill' && i.origin === 'local').length
+    body = list(localPicks, discError ? 'Could not look on this computer.' : skillEmptyCopy('local', found), disc === null && !discError)
   } else if (skillTab === 'repo') {
     body = (
       <div className="stack-2">
@@ -241,8 +295,26 @@ export function CapabilityChooser({
     )
   }
 
+  const tabIds = tabs.map((t) => t.id)
+  const selectTab = (id: string): void => {
+    touchedTab.current = true
+    if (isConn) setConnTab(id as ConnTab)
+    else setSkillTab(id as SkillTab)
+  }
+  // Tabs handles Left/Right/Home/End; Up/Down do the same here.
+  const onTabsKey = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    if (!(e.target as HTMLElement).closest('[role=tab]')) return
+    const next = nextTabId(tabIds, current, e.key)
+    if (!next) return
+    e.preventDefault()
+    selectTab(next)
+    document.getElementById(tabDomId(idPrefix, next))?.focus()
+  }
+
   return (
     <>
+      {sub !== 'gallery' && (
       <Dialog
         open
         onClose={busy ? () => undefined : onClose}
@@ -265,14 +337,16 @@ export function CapabilityChooser({
         }
       >
         <div className="stack-3">
-          <Tabs
-            tabs={tabs}
-            value={current}
-            onChange={(id) => (isConn ? setConnTab(id as ConnTab) : setSkillTab(id as SkillTab))}
-            label={isConn ? 'Where to find connections' : 'Where to find skills'}
-            idPrefix={idPrefix}
-            compact
-          />
+          <div ref={tabsWrap} onKeyDown={onTabsKey}>
+            <Tabs
+              tabs={tabs}
+              value={current}
+              onChange={selectTab}
+              label={isConn ? 'Where to find connections' : 'Where to find skills'}
+              idPrefix={idPrefix}
+              compact
+            />
+          </div>
           <div role="tabpanel" id={panelDomId(idPrefix, current)} aria-labelledby={tabDomId(idPrefix, current)} className="stack-2">
             {error && (
               <Banner tone="danger" title="Could not add it">
@@ -283,13 +357,18 @@ export function CapabilityChooser({
           </div>
         </div>
       </Dialog>
+      )}
       {sub === 'gallery' && (
         <AddServiceDialog
           project={project}
           connectors={connectors}
           error={connectorsError}
           servers={servers}
-          onClose={() => setSub(null)}
+          role={role}
+          onClose={() => {
+            setSub(null)
+            if (autoGallery) onClose()
+          }}
           onResult={(r) => {
             actions.applyResult(r)
             onDone(null)
