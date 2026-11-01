@@ -3,7 +3,7 @@ import { isValidMcpServerName } from '@shared/defaults'
 import { parseJsonc } from '../setup/import/jsonc'
 import { parseToml } from '../setup/import/toml'
 import { isExactSemver, validateSpec } from '../mcp/validate'
-import { capabilityId, clampText, displayPath, isKeyLikeArg, isSecretFlag, scrubUrl, validKeyName } from './sanitize'
+import { capabilityId, clampText, displayPath, sanitizeArgs, scrubUrl, validKeyName } from './sanitize'
 import { localPaths, readBoundedText, type LocalLocation } from './paths'
 import type { DiscoveredCandidate, LocalContext, SourceResult } from './types'
 
@@ -118,29 +118,9 @@ function buildServer(
       opts.warn(`Skipped ${name}: more than ${MAX_ARGS} arguments.`)
       return null
     }
-    let dropped = 0
-    let skipNext = false
-    for (const a of rawArgs) {
-      if (typeof a !== 'string' || a.includes('\0') || a.length > 2000) {
-        dropped++
-        skipNext = false
-        continue
-      }
-      if (skipNext) {
-        skipNext = false
-        if (!a.startsWith('-')) {
-          dropped++
-          continue
-        }
-      }
-      if (isKeyLikeArg(a) || (/^https?:\/\//i.test(a) && (a.includes('?') || a.includes('#') || /^https?:\/\/[^/]*@/i.test(a)))) {
-        dropped++
-        continue
-      }
-      kept.push(a)
-      if (isSecretFlag(a)) skipNext = true
-    }
-    if (dropped) notes.push(`${dropped} argument${dropped === 1 ? '' : 's'} looked like a key and ${dropped === 1 ? 'was' : 'were'} left out; add ${dropped === 1 ? 'it' : 'them'} as a secret after adding.`)
+    const clean = sanitizeArgs(rawArgs)
+    kept = clean.kept
+    notes.push(...clean.notes)
     spec.args = kept
     target = [command, ...kept].join(' ')
     const names = new Set<string>()

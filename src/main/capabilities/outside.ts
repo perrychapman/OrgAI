@@ -3,7 +3,7 @@ import { REGISTRY_URL, parseRegistryResponse } from '../mcp/registry'
 import { isPrivateHost } from '../mcp/oauth'
 import { isExactSemver, nameFromRegistry, specFromRegistry, validateSpec, type RegistryChoice } from '../mcp/validate'
 import { buildScannedSkill } from '../skills/scan'
-import { capabilityId, clampText, isKeyLikeValue, isSecretName, scrubUrl, validKeyName } from './sanitize'
+import { capabilityId, clampText, isKeyLikeValue, isSecretName, sanitizeArgs, scrubUrl, validKeyName } from './sanitize'
 import type { DiscoveredCandidate, OutsideContext, SourceResult } from './types'
 
 /**
@@ -148,6 +148,7 @@ function sanitizeSpec(spec: McpServerSpec, entry: McpRegistryEntry): void {
   else delete spec.headers
   if (spec.secretEnv) spec.secretEnv = spec.secretEnv.filter(validKeyName)
   if (spec.secretHeaders) spec.secretHeaders = spec.secretHeaders.filter(validKeyName)
+  if (spec.args) spec.args = sanitizeArgs(spec.args).kept
   const description = clampText(entry.title || entry.description, 200)
   if (description) spec.description = description
   else delete spec.description

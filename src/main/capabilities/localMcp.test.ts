@@ -203,4 +203,28 @@ describe('discoverLocalMcp', () => {
     const r = discoverLocalMcp({ projectPath: 'relative', homeDir: '', env: {}, platform: 'linux' })
     expect(r.candidates).toEqual([])
   })
+
+})
+
+describe('credential args', () => {
+  it('drops userinfo URLs, bearer text, authorization and secret flags with their values', () => {
+    put(
+      join(home, '.cursor', 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          s: {
+            command: 'npx',
+            args: ['-y', 'pkg@1.0.0', 'postgres://u:SECRETPW@host/db', '--db=postgres://u:SECRETPW2@h', 'Bearer SECRETBEARER1', 'Authorization: abc', '--header', 'X-Key: SECRETHDR', '-H', 'SECRETH2', '--auth=SECRETAUTH', '--bearer', 'SECRETB3', '--port', '3000']
+          }
+        }
+      })
+    )
+    const c = discoverLocalMcp(ctx()).candidates.find((x) => x.item.name === 's')!
+    const args = (c.payload as { spec: { args: string[] } }).spec.args
+    expect(args).toEqual(['-y', 'pkg@1.0.0', '--port', '3000'])
+    expect(c.item.target).toBe('npx -y pkg@1.0.0 --port 3000')
+    const text = JSON.stringify(c)
+    expect(text).not.toContain('SECRET')
+    expect(c.item.notes.join(' ')).toMatch(/left out.*--header.*-H/)
+  })
 })

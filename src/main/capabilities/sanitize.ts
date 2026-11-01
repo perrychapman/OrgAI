@@ -18,7 +18,7 @@ export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string 
 
 /**
  * Origin and path only: no userinfo, query or fragment. Only http(s); anything else (or a parse failure) is null.
- * Path segments that look like keys are replaced with "[redacted]".
+ * Path segments that look like keys, or are 20+ chars mixing letters and digits, are replaced with "[redacted]".
  */
 export function scrubUrl(raw: unknown): string | null {
   if (typeof raw !== 'string' || raw.length > 2048) return null
@@ -31,7 +31,11 @@ export function scrubUrl(raw: unknown): string | null {
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
   const path = u.pathname
     .split('/')
-    .map((seg) => (isKeyLikeValue(decodeSafe(seg)) ? '[redacted]' : seg))
+    .map((seg) => {
+      const d = decodeSafe(seg)
+      // Long segments that mix letters and digits are usually ids or tokens; short ones stay readable.
+      return isKeyLikeValue(d) || (d.length >= 20 && /[A-Za-z]/.test(d) && /\d/.test(d)) ? '[redacted]' : seg
+    })
     .join('/')
   return `${u.protocol}//${u.host}${path}`
 }
@@ -67,6 +71,74 @@ export function isKeyLikeArg(arg: string): boolean {
   const eq = /^-{0,2}([\w.-]{1,60})=(.+)$/.exec(arg)
   if (eq && (isSecretName(eq[1]!) || isKeyLikeValue(eq[2]!))) return true
   return false
+}
+
+const USERINFO_URL = /[a-z][a-z0-9+.-]*:\/\/[^/\s]*@/i
+const CREDENTIAL_WORDS = /(?:bearer|basic|token)\s+\S{6,}/i
+const AUTH_HEADER = /authorization\s*[:=]/i
+
+/** An arg that embeds a credential: a URL with userinfo (any scheme), "Bearer xyz", or an Authorization header. */
+export function isCredentialArg(arg: string): boolean {
+  if (typeof arg !== 'string') return true
+  return USERINFO_URL.test(arg) || CREDENTIAL_WORDS.test(arg) || AUTH_HEADER.test(arg)
+}
+
+/** `--header`, `-H`, `--auth`, `--bearer` and their `=value` forms (value inline). */
+function secretFlagForm(arg: string): { name: string; inline: boolean } | null {
+  const m = /^(-H|--header|--headers|--auth|--bearer)(=.*)?$/.exec(arg)
+  if (!m) return null
+  return { name: m[1]!, inline: m[2] !== undefined }
+}
+
+/**
+ * Copies stdio args minus anything that carries a credential. A secret flag (--header, -H, --auth, --bearer and the
+ * token-named flags) is dropped together with its following value. `notes` name the flags removed, never a value.
+ */
+export function sanitizeArgs(rawArgs: unknown[]): { kept: string[]; dropped: number; notes: string[] } {
+  const kept: string[] = []
+  const flags: string[] = []
+  let dropped = 0
+  let skipNext = false
+  for (const a of rawArgs) {
+    if (typeof a !== 'string' || a.includes('\0') || a.length > 2000) {
+      dropped++
+      skipNext = false
+      continue
+    }
+    if (skipNext) {
+      skipNext = false
+      if (!a.startsWith('-')) {
+        dropped++
+        continue
+      }
+    }
+    const sf = secretFlagForm(a)
+    if (sf) {
+      dropped++
+      flags.push(sf.name)
+      skipNext = !sf.inline
+      continue
+    }
+    if (isKeyLikeArg(a) || isCredentialArg(a) || (/^https?:\/\//i.test(a) && (a.includes('?') || a.includes('#')))) {
+      dropped++
+      const eq = /^(-{1,2}[\w.-]{1,60})=/.exec(a)
+      if (eq) flags.push(eq[1]!)
+      continue
+    }
+    kept.push(a)
+    if (isSecretFlag(a)) {
+      flags.push(a)
+      skipNext = true
+    }
+  }
+  const notes: string[] = []
+  if (dropped) {
+    const names = [...new Set(flags)].slice(0, 5)
+    notes.push(
+      `${dropped} argument${dropped === 1 ? '' : 's'} looked like a key or login and ${dropped === 1 ? 'was' : 'were'} left out${names.length ? ` (${names.join(', ')})` : ''}; add ${dropped === 1 ? 'it' : 'them'} as a secret after adding.`
+    )
+  }
+  return { kept, dropped, notes }
 }
 
 /** A flag that takes a secret as its next arg (`--token`, `--api-key`, `-p` is not one). */
