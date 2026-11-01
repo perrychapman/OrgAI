@@ -1,5 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { discoverLocalMcp } from '../capabilities/localMcp'
+import { discoverLocalSkills } from '../capabilities/localSkills'
+import { seedMockHome } from '../capabilities/mockHome'
+import { buildRecommendPrompt, parseRecommendAnswer } from '../capabilities/recommend'
 import { MockAdapter } from './mock'
+import { orgChart, project } from './testHelpers'
 
 interface Answer {
   recommendations: { candidateId: string; roleIds: string[]; reason: string; access: string }[]
@@ -56,5 +64,40 @@ describe('mock recommend completion', () => {
     const onUsage = vi.fn()
     await ask(ROLES, { onUsage })
     expect(onUsage).toHaveBeenCalledTimes(1)
+  })
+
+  it('also picks the local code-review skill for the scoped role', async () => {
+    const cands = [CANDS, 'candidate c-cr | kind=skill | origin=local | name=code-review'].join('\n')
+    const a = await ask(`scope qa\n${ROLES}\n${cands}`)
+    const cr = a.recommendations.find((r) => r.candidateId === 'c-cr')
+    expect(cr?.roleIds).toEqual(['qa'])
+    // A different local skill is not picked.
+    const b = await ask(`${ROLES}\n${CANDS}\ncandidate c-x | kind=skill | origin=local | name=other`)
+    expect(b.recommendations.map((r) => r.candidateId)).not.toContain('c-x')
+  })
+
+  it('answers a mock-home prompt with GitHub access and the code-review skill, and the answer parses', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orgai-mockrec-'))
+    try {
+      const home = join(root, 'home')
+      seedMockHome(home)
+      const ctx = { projectPath: join(root, 'repo'), homeDir: home, env: {}, platform: process.platform }
+      const local = [...discoverLocalSkills(ctx).candidates, ...discoverLocalMcp(ctx).candidates].map((c) => c.item)
+      const gh = { ...local[0]!, id: 'gh-conn', kind: 'connector', origin: 'catalog', name: 'GitHub', description: 'Repos' } as (typeof local)[number]
+      const all = [...local, gh]
+      const proj = project({ roles: orgChart() })
+      const { prompt } = buildRecommendPrompt(proj, all, {})
+      const out = await new MockAdapter().complete({ system: 's', prompt, kind: 'recommend' } as never)
+      const parsed = parseRecommendAnswer(out, all, proj.roles, {}, 'salt')
+      expect(parsed.ok).toBe(true)
+      if (!parsed.ok) return
+      const names = parsed.recommendations.map((r) => all.find((i) => i.id === r.candidateId)?.name)
+      expect(names).toContain('code-review')
+      expect(names).toContain('GitHub')
+      expect(parsed.recommendations.length).toBeGreaterThanOrEqual(1)
+      expect(parsed.recommendations.every((r) => r.roleIds[0] === 'r-eng')).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
