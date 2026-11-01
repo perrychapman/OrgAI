@@ -9,6 +9,7 @@ import { Button } from './ui/Button'
 import { IconButton } from './ui/IconButton'
 import { Banner } from './ui/Banner'
 import { Icon } from './ui/Icon'
+import { composerPlaceholder } from '../lib/assistants'
 
 const HINT = 'Enter to send · Shift+Enter for a new line · paste or drop images'
 
@@ -175,7 +176,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
                 void submit()
               }
             }}
-            placeholder={`${placeholder}. Enter to send, Shift+Enter for a new line.`}
+            placeholder={composerPlaceholder(placeholder)}
             rows={2}
           />
           <span ref={sendRef}>

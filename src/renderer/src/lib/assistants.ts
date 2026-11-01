@@ -11,7 +11,22 @@ import { folderName } from './paths'
 export const ASSISTANT_ORDER: VirtualProjectId[] = ['quick', 'harness', 'skills']
 
 /** Composer mode label of a virtual project's run while it is idle. */
-export const ASSISTANT_IDLE_LABEL = 'Done. Ask a follow-up or end the session.'
+export const ASSISTANT_IDLE_LABEL = 'Your turn. Reply, ask a follow-up, or end the session.'
+/** Composer mode label while an assistant's question or proposal card is open: the card is the thing to answer. */
+export const ASSISTANT_WAITING_LABEL = 'Waiting for your answer'
+/** Composer mode label and placeholder lead of a single-agent / assistant run that is open for a reply. */
+export const ASSISTANT_REPLY_LABEL = 'Reply to the assistant'
+
+/** The composer's mode label for an open assistant session: the card to answer, else your turn while idle, else the reply label. */
+export function assistantModeLabel(i: { status: RunSummary['status']; openCards: number }): string {
+  if (i.openCards > 0) return ASSISTANT_WAITING_LABEL
+  return i.status === 'idle' ? ASSISTANT_IDLE_LABEL : ASSISTANT_REPLY_LABEL
+}
+
+/** Whether the composer says "assistant": virtual projects, and the single-agent runs (including Skill assist on a real project). */
+export function speaksAsAssistant(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>): boolean {
+  return isVirtualProjectId(summary.projectId) || isSingleAgentRun(summary)
+}
 
 export const assistantLabel = (id: VirtualProjectId): string => VIRTUAL_PROJECT_LABELS[id]
 
@@ -124,4 +139,10 @@ export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'>, chosen
  */
 export function offersSaveAsProject(summary: Pick<RunSummary, 'quick' | 'projectId'>): boolean {
   return !!summary.quick && summary.projectId === QUICK_PROJECT_ID
+}
+
+/** "What next?" + "Enter to send..." without doubled punctuation. */
+export function composerPlaceholder(base: string): string {
+  const t = base.trim().replace(/\.+$/, '')
+  return `${t}${/[?!]$/.test(t) ? '' : '.'} Enter to send, Shift+Enter for a new line.`
 }
