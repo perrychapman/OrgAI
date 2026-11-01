@@ -274,6 +274,27 @@ export function sinceLine(n: number): string | null {
   return n > 0 ? `${n} ${n === 1 ? 'suggestion' : 'suggestions'} since your last run` : null
 }
 
+/** localStorage key: when the user last saw this project's Recommend pane (ISO time). */
+export const teamSeenKey = (projectId: string): string => `orgai.teamSeenAt.${projectId}`
+
+/**
+ * How many suggestions the "since your last run" line counts: a review written after a work run ended
+ * ('runEnded') that is newer than the last time the user saw the pane gives its pending count, else main's newCount.
+ */
+export function unseenSuggestions(
+  review: Pick<TeamReviewSummary, 'trigger' | 'checkedAt' | 'pendingCount'> & { newCount?: number } | undefined,
+  seenAt: string | null
+): number {
+  if (!review || review.pendingCount <= 0) return 0
+  if (review.trigger === 'runEnded' && (!seenAt || review.checkedAt > seenAt)) return review.pendingCount
+  return (review.newCount ?? 0) > 0 ? review.pendingCount : 0
+}
+
+/** The first tab in `order` whose count is above zero, else `fallback`. */
+export function firstFilledTab<T extends string>(order: readonly T[], counts: Partial<Record<T, number>>, fallback: T): T {
+  return order.find((t) => (counts[t] ?? 0) > 0) ?? fallback
+}
+
 /** Skill matches first, otherwise the given order (stable). */
 export function skillsFirst<T extends { candidateId: string }>(recs: readonly T[], items: Record<string, Pick<CapabilityItem, 'kind'> | undefined>): T[] {
   const rank = (r: T): number => (items[r.candidateId]?.kind === 'skill' ? 0 : 1)

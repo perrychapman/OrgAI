@@ -22,7 +22,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { serviceFor } from '../../lib/roleServices'
 import { accessLabel, grantableServers, roleSkillSplit, serverReadOnly } from '../../lib/roleCapabilities'
 import { chooserDesc, chooserName, localSkillCandidates, nextTabId, skillEmptyCopy } from '../../lib/chooser'
-import { clampText, flagViews, pinLabel, sourceBadge } from '../../lib/capabilities'
+import { clampText, firstFilledTab, flagViews, pinLabel, sourceBadge } from '../../lib/capabilities'
 import type { CapabilityKind } from './CapabilityBlock'
 
 const ImportSkillsDialog = lazy(() => import('../skills/ImportSkillsDialog'))
@@ -201,6 +201,28 @@ export function CapabilityChooser({
       return out.applied.id
     }
   }))
+
+  // Skills: open on the first tab that has something to add (This project, Your library, On this computer, Found in
+  // this repo), else New skill. Decided once every source has answered, and never after the user picked a tab.
+  const repoSkillCount = (disc?.items ?? []).filter((i) => i.kind === 'skill' && i.origin === 'repo' && !i.inProject && !i.blockedReason).length
+  const skillsReady = !isConn && !skillsApi.loading && (skillLib.library !== null || !!skillLib.error) && (disc !== null || discError)
+  const autoTab = useRef(false)
+  useEffect(() => {
+    if (!skillsReady || autoTab.current) return
+    autoTab.current = true
+    if (touchedTab.current) return
+    const next = firstFilledTab<SkillTab>(
+      ['project', 'library', 'local', 'repo'],
+      { project: projectPicks.length, library: libraryPicks.length, local: localPicks.length, repo: repoSkillCount },
+      'new'
+    )
+    if (next === skillTab) return
+    // Focus was on the first tab (initial focus): keep it on the selected one.
+    const hadFocus = !!tabsWrap.current?.contains(document.activeElement)
+    setSkillTab(next)
+    if (hadFocus) window.requestAnimationFrame(() => document.getElementById(tabDomId(`chooser-${kind}`, next))?.focus())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skillsReady])
 
   // With nothing to pick from "Your connections", go straight to the service picker (one dialog fewer).
   const connReady = isConn && connectors !== null && library !== null
@@ -391,7 +413,7 @@ export function CapabilityChooser({
         }
       >
         <div className="stack-3">
-          <div ref={tabsWrap} onKeyDown={onTabsKey}>
+          <div ref={tabsWrap} onKeyDown={onTabsKey} data-tab-ready={isConn || skillsReady ? 'true' : 'false'}>
             <Tabs
               tabs={tabs}
               value={current}

@@ -262,6 +262,8 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 form={formId}
                 className="btn primary"
                 data-testid="connector-connect"
+                // Initial focus: the first field when there is one (it comes first in the dialog), else this button.
+                data-autofocus
                 disabled={missing.length > 0 || busy}
                 aria-describedby={sentence ? missingId : undefined}
                 aria-busy={phase === 'working' || undefined}
@@ -343,7 +345,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                 </details>
                 <div className="field">
                   <label htmlFor={`${ids}-cid`}>Client ID</label>
-                  <Input id={`${ids}-cid`} mono value={clientId} autoComplete="off" spellCheck={false} disabled={busy} onChange={setClientId} />
+                  <Input id={`${ids}-cid`} data-autofocus mono value={clientId} autoComplete="off" spellCheck={false} disabled={busy} onChange={setClientId} />
                 </div>
                 <div className="field">
                   <label htmlFor={`${ids}-sec`}>Client secret{secretOptional ? ' (optional)' : ''}</label>
@@ -355,7 +357,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
             {auth.kind === 'token' && (
               <div className="field">
                 <label htmlFor={`${ids}-tok`}>{auth.label}</label>
-                <Input id={`${ids}-tok`} mono type="password" value={token} autoComplete="off" spellCheck={false} disabled={busy} onChange={setToken} />
+                <Input id={`${ids}-tok`} data-autofocus mono type="password" value={token} autoComplete="off" spellCheck={false} disabled={busy} onChange={setToken} />
                 <span className="hint">{auth.help}</span>
                 {auth.link && <ExtLink href={auth.link}>Create one</ExtLink>}
                 <span className="hint">Stored encrypted on this computer and never shown again.</span>
