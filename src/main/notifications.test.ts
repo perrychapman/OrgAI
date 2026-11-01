@@ -71,4 +71,32 @@ describe('Notifier', () => {
       { title: 'OrgAI', body: 'MCP assistant session finished' }
     ])
   })
+
+  it('labels Skill assistant sessions and skills proposals', () => {
+    const notifier = new Notifier({
+      projectOfRun: () => ({ projectId: 'skills', kind: 'skill-assist' }),
+      projectName: (id) => (id === 'skills' ? 'Skill assistant' : undefined),
+      enabled: () => true
+    })
+    notifier.handle({
+      type: 'proposal.request',
+      runId: 'run-1',
+      proposal: { id: 'pr', runId: 'run-1', agentId: 'root', kind: 'skills', title: 'Add release-notes', payload: {}, createdAt: 0 } as never
+    })
+    notifier.handle({ type: 'run.status', runId: 'run-1', status: 'error', error: 'boom' })
+    expect(shown).toEqual([
+      { title: 'Skill assistant', body: 'Skill proposal: Skills - Add release-notes' },
+      { title: 'Skill assistant', body: 'Skill assistant session failed: boom' }
+    ])
+  })
+
+  it('names a Chat run "Chat" where the location is named', () => {
+    const notifier = new Notifier({
+      projectOfRun: () => ({ projectId: 'quick', kind: 'work' }),
+      projectName: (id) => (id === 'quick' ? 'Chat' : undefined),
+      enabled: () => true
+    })
+    notifier.handle({ type: 'run.status', runId: 'run-1', status: 'finished' })
+    expect(shown).toEqual([{ title: 'Chat', body: 'Chat finished' }])
+  })
 })

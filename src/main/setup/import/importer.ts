@@ -1,5 +1,5 @@
 import { isAbsolute } from 'node:path'
-import { HARNESS_PROJECT_ID, isAgentImportSource } from '@shared/types'
+import { isAgentImportSource, isVirtualProjectId } from '@shared/types'
 import type {
   AgentImportApplyInput,
   AgentImportApplyResult,
@@ -72,7 +72,7 @@ export class AgentImportService {
       const root = cleanProjectPath(path)
       if (!root || !isAbsolutePath(root) || !check.isDirectory) return out
       const key = pathKey(root)
-      const same = this.deps.projects.list().find((p) => p.id !== HARNESS_PROJECT_ID && !!p.path && pathKey(p.path) === key)
+      const same = this.deps.projects.list().find((p) => !isVirtualProjectId(p.id) && !!p.path && pathKey(p.path) === key)
       if (same) {
         out.existingProjectId = same.id
         out.existingProjectName = same.name
@@ -87,7 +87,7 @@ export class AgentImportService {
   }
 
   private stored(projectId: unknown): Project {
-    if (!isSafeId(projectId) || projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
+    if (!isSafeId(projectId) || isVirtualProjectId(projectId)) throw new Error('Project not found')
     const project = this.deps.projects.get(projectId)
     if (!project) throw new Error('Project not found')
     // A relative or empty path would resolve against the app's cwd.
