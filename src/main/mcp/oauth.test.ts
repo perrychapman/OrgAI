@@ -8,6 +8,7 @@ import {
   canonicalResource,
   createPkce,
   discover,
+  discoverWithPreset,
   exchangeCode,
   onRegistrableDomain,
   parseWwwAuthenticate,
@@ -464,6 +465,76 @@ describe('preset domain checks and reserved parameters', () => {
     )
     for (const p of RESERVED_AUTH_PARAMS) expect(url.searchParams.get(p.toUpperCase()), p).toBeNull()
     expect(url.searchParams.get('client_id')).toBe('cid')
+  })
+})
+
+describe('preset issuer enforcement (issuer-only oauthClient presets)', () => {
+  it('passes when the discovered issuer matches the preset issuer', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes())
+    const d = await discoverWithPreset(MCP, fetch, { issuer: AS })
+    expect(d).toMatchObject({ authorizationServer: AS, tokenEndpoint: `${AS}/token`, registrationEndpoint: `${AS}/register` })
+  })
+
+  it('tolerates trailing slashes on either side', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: `${AS}/` } }))
+    await expect(discoverWithPreset(MCP, fetch, { issuer: AS })).resolves.toMatchObject({ tokenEndpoint: `${AS}/token` })
+    const plain = fakeFetch(discoveryRoutes())
+    await expect(discoverWithPreset(MCP, plain.fetch, { issuer: `${AS}//` })).resolves.toMatchObject({ tokenEndpoint: `${AS}/token` })
+  })
+
+  it('refuses a different issuer and names both, before any token request', async () => {
+    const { fetch, calls } = fakeFetch(discoveryRoutes())
+    const err = await discoverWithPreset(MCP, fetch, { issuer: 'https://login.example.com' }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(err.step).toBe('discovery')
+    expect(err.message).toContain(AS)
+    expect(err.message).toContain('https://login.example.com')
+    expect(calls.some((c) => c.method === 'POST')).toBe(false)
+  })
+
+  it('refuses a sibling host as issuer even on the same domain (exact match)', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes())
+    await expect(discoverWithPreset(MCP, fetch, { issuer: 'https://example.com' })).rejects.toThrow(/expects https:\/\/example\.com/)
+  })
+
+  it.each([
+    ['token endpoint', { token_endpoint: 'https://evil.test/token' }],
+    ['authorization endpoint', { authorization_endpoint: 'https://example.com.evil.test/authorize' }],
+    ['registration endpoint', { registration_endpoint: 'https://evilexample.com/register' }]
+  ])('refuses a %s on another domain', async (label, over) => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, ...over } }))
+    const err = await discoverWithPreset(MCP, fetch, { issuer: AS }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(err.message).toContain(label)
+  })
+
+  it('accepts endpoints on a subdomain of the issuer domain', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, token_endpoint: 'https://api.example.com/oauth/token' } }))
+    await expect(discoverWithPreset(MCP, fetch, { issuer: AS })).resolves.toMatchObject({ tokenEndpoint: 'https://api.example.com/oauth/token' })
+  })
+
+  it('runAuthorization refuses before the client secret is sent anywhere', async () => {
+    const { fetch, calls } = fakeFetch({
+      ...discoveryRoutes({ asMeta: { ...ASMETA, token_endpoint: 'https://evil.test/token' } }),
+      'POST https://evil.test/token': () => json({ access_token: 'x' })
+    })
+    const open = vi.fn(async () => {})
+    const err = await runAuthorization({ url: MCP, fetch, openExternal: open, clientId: 'cid', clientSecret: 'S3CRET', preset: { issuer: AS } }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(open).not.toHaveBeenCalled()
+    expect(calls.some((c) => c.url.startsWith('https://evil.test'))).toBe(false)
+  })
+
+  it('a preset with endpoints falls back to them when the discovered issuer is off its domain', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes())
+    const d = await discoverWithPreset(MCP, fetch, {
+      issuer: 'https://vendor.test',
+      authorizationEndpoint: 'https://vendor.test/authorize',
+      tokenEndpoint: 'https://vendor.test/token',
+      endpointsMode: 'fallback'
+    })
+    expect(d).toMatchObject({ authorizationServer: 'https://vendor.test', tokenEndpoint: 'https://vendor.test/token' })
+    expect(d.registrationEndpoint).toBeUndefined()
   })
 })
 

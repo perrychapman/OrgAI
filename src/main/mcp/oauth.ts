@@ -436,6 +436,20 @@ export async function discoverWithPreset(resourceUrl: string, fetchImpl: FetchLi
     if (hasEndpoints && e instanceof OAuthError) return scoped(fromPreset())
     throw e
   }
+  if (preset?.issuer) {
+    const issuerFailure = presetIssuerFailure(found, preset.issuer, hasEndpoints)
+    if (issuerFailure) {
+      // With endpoints of its own the preset falls back to them (curated, never a discovered host); without them
+      // there is nothing safe to fall back to, so the sign-in is refused before any request carries a secret.
+      if (hasEndpoints) return scoped(fromPreset())
+      throw new OAuthError('discovery', issuerFailure)
+    }
+    // A discovered registration endpoint off the issuer's domain is never used.
+    if (found.registrationEndpoint && !onRegistrableDomain(found.registrationEndpoint, preset.issuer)) {
+      found = { ...found }
+      delete found.registrationEndpoint
+    }
+  }
   // 'fallback': the client secret goes to the token endpoint, so discovered endpoints must stay on the preset's
   // registrable domain (the same host or a subdomain); otherwise the preset's endpoints are used.
   if (
@@ -445,6 +459,44 @@ export async function discoverWithPreset(resourceUrl: string, fetchImpl: FetchLi
     return scoped(fromPreset())
   }
   return scoped(found)
+}
+
+const trimSlash = (u: string): string => u.replace(/\/+$/, '')
+
+/**
+ * Why a discovery does not fit a preset's issuer, or undefined when it does.
+ * - A preset without endpoints (the oauthClient presets that name only the issuer) needs the discovered issuer to
+ *   equal it exactly, trailing slashes aside, and every discovered endpoint (authorization, token, registration) on
+ *   the issuer's registrable domain, so the user's client secret can only reach the vendor's own token endpoint.
+ * - A preset with endpoints ('fallback') needs the discovered issuer only on the preset issuer's registrable domain,
+ *   since a server's AS can be a sibling host (Slack's metadata names https://mcp.slack.com for the slack.com
+ *   preset); its endpoints are checked against the preset's endpoints separately.
+ * The registrable domain is approximated as the last two DNS labels (`registrableHost`), so a preset must name a
+ * simple vendor host (app.asana.com, zoom.us), never one under a multi-label public suffix (vendor.co.uk would
+ * accept any *.co.uk host).
+ */
+export function presetIssuerFailure(found: OAuthDiscovery, presetIssuer: string, hasEndpoints: boolean): string | undefined {
+  const discovered = found.issuer ?? found.authorizationServer
+  if (hasEndpoints) {
+    return onRegistrableDomain(discovered, presetIssuer) && onRegistrableDomain(found.authorizationServer, presetIssuer)
+      ? undefined
+      : `Discovery failed: the server's authorization server (${excerpt(discovered)}) is not on the connector's issuer domain (${excerpt(presetIssuer)}).`
+  }
+  const want = trimSlash(presetIssuer)
+  if (trimSlash(discovered) !== want || trimSlash(found.authorizationServer) !== want) {
+    return `Sign-in refused: the server names the authorization server ${excerpt(discovered)}, but this connector expects ${excerpt(presetIssuer)}. Your client secret was not sent.`
+  }
+  const endpoints: Array<[string, string | undefined]> = [
+    ['authorization endpoint', found.authorizationEndpoint],
+    ['token endpoint', found.tokenEndpoint],
+    ['registration endpoint', found.registrationEndpoint]
+  ]
+  for (const [label, url] of endpoints) {
+    if (url !== undefined && !onRegistrableDomain(url, presetIssuer)) {
+      return `Sign-in refused: the ${label} (${excerpt(url)}) is not on the domain of the connector's issuer ${excerpt(presetIssuer)}. Your client secret was not sent.`
+    }
+  }
+  return undefined
 }
 
 /**
