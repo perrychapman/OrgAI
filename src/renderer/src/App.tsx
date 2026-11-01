@@ -7,6 +7,7 @@ import { activeRun, selectedProject, useAppStore, useRunIndexes } from './store/
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import TeamView from './views/TeamView'
+import { initTeamAssistant, seedTeamReview, useTeamReviewSummary } from './store/teamAssistant'
 import { SaveIndicator } from './components/layout/SaveIndicator'
 import './styles/run-tabs.css'
 import LiveRunView from './views/LiveRunView'
@@ -39,6 +40,7 @@ export default function App(): ReactElement {
   const runsById = useAppStore((s) => s.runs)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const isHarness = selectedId === HARNESS_PROJECT_ID
+  const teamSummary = useTeamReviewSummary(selectedId)
   // Project-wide: every decision any run of this project waits on.
   const waitingHere = useMemo(() => {
     if (!selectedId) return { count: 0, first: undefined as string | undefined }
@@ -63,8 +65,13 @@ export default function App(): ReactElement {
 
   useEffect(() => {
     void init()
+    initTeamAssistant()
     void useAppStore.getState().loadAppInfo()
   }, [init])
+
+  useEffect(() => {
+    if (selectedId && selectedId !== HARNESS_PROJECT_ID) seedTeamReview(selectedId)
+  }, [selectedId])
 
   // Ctrl/Cmd+B toggles the sidebar rail.
   useEffect(() => {
@@ -90,13 +97,14 @@ export default function App(): ReactElement {
     else document.title = `${where} · OrgAI`
   }, [run, runIndex, view, project, isHarness])
 
+  const teamPending = teamSummary?.pendingCount ?? 0
   const sections: TabItem[] = [
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
     ...(isHarness
       ? []
       : [
-          { id: 'team', label: 'Team', testId: 'tab-team' },
+          { id: 'team', label: 'Team', testId: 'tab-team', count: teamPending, countLabel: `${teamPending} ${teamPending === 1 ? 'suggestion' : 'suggestions'}`, countTestId: 'team-tab-badge' },
           { id: 'settings', label: 'Settings', testId: 'tab-settings' }
         ])
   ]

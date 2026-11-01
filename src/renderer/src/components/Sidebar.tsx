@@ -9,6 +9,7 @@ import { decisionCount, waitingItems } from '../lib/needsYou'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
 import { promptLine, runName, runTag } from '../lib/runLabels'
+import { isTeamSurfaceRun } from '../lib/runSurface'
 import { isStoppedRun, runStatus, statusOfRun } from '../lib/runStatus'
 import { projectStatus } from '../lib/projectStatus'
 import { initials } from '../lib/layout'
@@ -31,7 +32,7 @@ const MOCK_TIP = 'ORGAI_MOCK is on: runs use scripted data, no tokens are spent'
 /** Open runs of a project, the ones that need the user first, then the newest. */
 function openRunsOf(runs: RunState[]): RunState[] {
   return runs
-    .filter(isRunLive)
+    .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary))
     .sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)) || b.summary.startedAt - a.summary.startedAt)
 }
 
@@ -224,9 +225,10 @@ export default function Sidebar({
         {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
         {projects.map((p) => {
           const projectRuns = allRuns.filter((r) => r.summary.projectId === p.id)
-          const open = openRunsOf(projectRuns)
+          const visibleRuns = projectRuns.filter((r) => !isTeamSurfaceRun(r.summary))
+          const open = openRunsOf(visibleRuns)
           const expanded = !rail && open.length > 0 && !collapsed[p.id]
-          const newest = [...(history[p.id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
+          const newest = [...(history[p.id] ?? []), ...visibleRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
           const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
           // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
           const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })

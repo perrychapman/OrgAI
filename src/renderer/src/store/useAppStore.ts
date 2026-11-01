@@ -1,4 +1,5 @@
 import { normalizeView } from '../lib/teamView'
+import { isTeamSurfaceRun } from '../lib/runSurface'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
@@ -332,7 +333,7 @@ export const isRunLive = (run: RunState): boolean => LIVE_RUN_STATUSES.has(run.s
 /** Every run of a project known to the renderer: live runs first, then newest first. */
 export const runsOfProject = (s: AppState, projectId: string): RunState[] =>
   Object.values(s.runs)
-    .filter((r) => r.summary.projectId === projectId)
+    .filter((r) => r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary))
     .sort((a, b) => Number(isRunLive(b)) - Number(isRunLive(a)) || b.summary.startedAt - a.summary.startedAt)
 
 /** Runs of the selected project. Returns a fresh array: use with `useShallow`. */
@@ -348,7 +349,7 @@ export function useProjectSummaries(): RunSummary[] {
   const projectId = useAppStore((s) => s.selectedProjectId)
   return useMemo(() => {
     const byId = new Map<string, RunSummary>(history.map((h) => [h.id, h]))
-    for (const r of Object.values(runs)) if (r.summary.projectId === projectId) byId.set(r.summary.id, r.summary)
+    for (const r of Object.values(runs)) if (r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary)) byId.set(r.summary.id, r.summary)
     return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt)
   }, [history, runs, projectId])
 }
@@ -803,13 +804,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ history: [] })
       return
     }
-    const history = await window.orgai.runs.list(project.id)
+    const history = (await window.orgai.runs.list(project.id)).filter((h) => !isTeamSurfaceRun(h))
     // The selection may have moved while the list was loading.
     set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history }, ...(s.selectedProjectId === project.id ? { history } : {}) }))
   },
 
   async loadAllHistory() {
-    const entries = await Promise.all(get().projects.map(async (p) => [p.id, await window.orgai.runs.list(p.id).catch(() => [] as RunSummary[])] as const))
+    const entries = await Promise.all(get().projects.map(async (p) => [p.id, (await window.orgai.runs.list(p.id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
     set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) } }))
   },
 
@@ -1066,6 +1067,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           run.summary = {
             ...run.summary,
             status: e.status,
+            surface: e.surface ?? run.summary.surface,
             sessionId: e.sessionId ?? run.summary.sessionId,
             error: e.error ?? run.summary.error,
             endedAt: e.status === 'finished' || e.status === 'error' || e.status === 'paused' ? Date.now() : run.summary.endedAt,
@@ -1228,6 +1230,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } else if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    if (!get().runs[runId]) {
+      const record = await window.orgai.runs.get(runId).catch(() => null)
+      if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
+    }
+    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
+      // A Team-tab Architect session lives in the Team tray, not on the Live strip: land on the Team tab.
+      set({ view: 'team' })
+      await seedPendingCards(runId)
+      return
+    }
     await get().openRun(runId)
     await seedPendingCards(runId)
   },
@@ -1241,10 +1253,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => {
         const run = s.runs[runId]
         if (!run) return {}
-        const { projectId, kind, prompt, startedAt, resumedFrom } = record.summary
+        const { projectId, kind, prompt, startedAt, resumedFrom, surface } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
         const title = run.summary.title ?? record.summary.title
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(title ? { title } : {}) }
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]
@@ -1294,7 +1306,7 @@ export function useRunIndexes(): Map<string, number> {
   const key = useAppStore((s) => {
     const seen = new Map<string, string>()
     for (const [projectId, list] of Object.entries(s.historyByProject)) for (const h of list) seen.set(h.id, `${projectId}/${h.id}@${h.startedAt}`)
-    for (const r of Object.values(s.runs)) if (r.summary.projectId) seen.set(r.summary.id, `${r.summary.projectId}/${r.summary.id}@${r.summary.startedAt}`)
+    for (const r of Object.values(s.runs)) if (r.summary.projectId && !isTeamSurfaceRun(r.summary)) seen.set(r.summary.id, `${r.summary.projectId}/${r.summary.id}@${r.summary.startedAt}`)
     return [...seen.values()].sort().join('|')
   })
   return useMemo(() => {
