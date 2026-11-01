@@ -255,6 +255,8 @@ export class RunStore {
       const run = this.runs.find((r) => r.id === id)
       if (!run) continue
       run.projectId = projectId
+      // Out of the Chat: from now on it is a project run (continuing it uses the project's own roles).
+      if (projectId !== 'quick') delete run.quick
       moved.push({ ...run })
     }
     if (moved.length) this.persist()

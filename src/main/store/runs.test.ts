@@ -284,5 +284,6 @@ describe('RunStore usage', () => {
     expect(s.getRecord('a')!.summary.projectId).toBe('p9')
     expect(new RunStore(dataDir).get('a')!.projectId).toBe('p9')
     expect(s.all().length).toBe(2)
+    expect(s.get('a')!.quick).toBeUndefined() // a promoted run is a project run
   })
 })
