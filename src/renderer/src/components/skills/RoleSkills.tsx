@@ -33,7 +33,7 @@ export default function RoleSkills({ project, role, onChange }: { project: Proje
       {open &&
         (skills.length === 0 ? (
           <p id={panel} className="hint">
-            No skills in this project yet. Add them in Project settings &gt; Tools.
+            No skills in this project yet. Add them in Project settings &gt; Plugins and suggestions.
           </p>
         ) : (
           <ul id={panel} className="role-skills-list" aria-label={`Skills for ${role.name}`}>

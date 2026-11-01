@@ -6,7 +6,7 @@ import { HARNESS_PROJECT_ID } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
-import OrgChartView from './views/OrgChartView'
+import TeamView from './views/TeamView'
 import { SaveIndicator } from './components/layout/SaveIndicator'
 import './styles/run-tabs.css'
 import LiveRunView from './views/LiveRunView'
@@ -26,8 +26,8 @@ import { folderName } from './lib/paths'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
-type SectionView = 'run' | 'history' | 'org' | 'settings'
-const SECTION_VIEWS: readonly string[] = ['run', 'history', 'org', 'settings']
+type SectionView = 'run' | 'history' | 'team' | 'settings'
+const SECTION_VIEWS: readonly string[] = ['run', 'history', 'team', 'settings']
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -96,7 +96,7 @@ export default function App(): ReactElement {
     ...(isHarness
       ? []
       : [
-          { id: 'org', label: 'Org chart', testId: 'tab-org' },
+          { id: 'team', label: 'Team', testId: 'tab-team' },
           { id: 'settings', label: 'Settings', testId: 'tab-settings' }
         ])
   ]
@@ -175,8 +175,8 @@ export default function App(): ReactElement {
               </div>
               {view === 'settings' ? (
                 <SettingsView project={project} />
-              ) : view === 'org' ? (
-                <OrgChartView project={project} />
+              ) : view === 'team' ? (
+                <TeamView project={project} />
               ) : view === 'history' ? (
                 <RunHistory />
               ) : (

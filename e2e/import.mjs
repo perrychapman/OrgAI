@@ -1,5 +1,5 @@
 // Token-free (mock adapter). A fixture repo holds two Claude Code agent files and AGENTS.md. Drives the New project
-// form (found line, setup choice, "Create project and review import"), the review dialog, the apply banner with Undo, the Org chart
+// form (found line, setup choice, "Create project and review import"), the review dialog, the apply banner with Undo, the Team tab
 // "Import agents" and "Export to repo" actions, and checks the repository stays untouched except for the export.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -67,7 +67,7 @@ try {
   project = await findProject(page, NAME)
   check(!project?.roles.some((r) => r.slug === 'backend-dev'), 'undo restores the previous chart')
 
-  // Org chart entry points.
+  // Team tab entry points.
   await page.locator('[data-testid=import-agents]').click()
   const again = page.locator('[data-testid=import-dialog]')
   await again.waitFor({ state: 'visible', timeout: 20_000 })

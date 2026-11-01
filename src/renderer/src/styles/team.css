@@ -1,0 +1,84 @@
+/* ---------- Team tab: side panel (Role | Catalog), assistant tray, catalog stub ---------- */
+
+.team-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.team-panel-tabs {
+  flex: none;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-1);
+}
+.team-panel-tabs .tabs-list {
+  border-bottom: 0;
+}
+/* The pane scrolls as one column; the tab bar above it stays put. */
+.team-panel-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.team-panel-pane > .empty-state {
+  margin: auto;
+  padding: var(--space-4);
+}
+
+.role-capabilities {
+  padding-top: var(--space-1);
+}
+.role-capabilities > .role-capabilities-title {
+  margin-top: 0;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+.role-capabilities .side-section-title {
+  margin-top: 0;
+}
+
+.team-catalog-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.team-catalog-list li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The Architect in the tray: a header row, then the form. The tray scrolls; nothing floats over the chart. */
+.team-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.team-tray-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.team-tray-head h2 {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  min-width: 0;
+}
+.team-tray-head .grow {
+  flex: 1;
+}
+.team-tray-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}

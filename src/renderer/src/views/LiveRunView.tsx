@@ -635,8 +635,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           title={`Setup complete: ${[project.setup?.architecturePath ? 'architecture' : '', `${project.roles.length} role${project.roles.length === 1 ? '' : 's'}`, approvedKinds.includes('settings') ? 'settings applied' : ''].filter(Boolean).join(', ')}`}
           actions={
             <>
-              <Button size="sm" variant="primary" onClick={() => setView('org')}>
-                View org chart
+              <Button size="sm" variant="primary" onClick={() => setView('team')}>
+                Open Team
               </Button>
               {sessionOpen && (
                 <Button size="sm" onClick={() => void stopRun()} title="Ends the setup session.">
@@ -646,7 +646,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </>
           }
         >
-          The Architect is done. Review or adjust what it set up on the Org chart tab.
+          The Architect is done. Review or adjust what it set up on the Team tab.
         </Banner>
       )}
       <div className="run-body" ref={bodyRef}>

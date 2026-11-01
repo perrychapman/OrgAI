@@ -123,9 +123,9 @@ try {
 
       // Project settings
       await openProject(page, NAME)
-      await projectTab(page, 'Org chart').click()
+      await projectTab(page, 'Team').click()
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+      await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
       await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
       await sleep(600)
       check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
@@ -160,7 +160,7 @@ try {
       await shot(`project-connection-${w}x${h}-${theme}`)
 
       // Role inspector model picker
-      await projectTab(page, 'Org chart').click()
+      await projectTab(page, 'Team').click()
       await page.locator('.react-flow__node').first().click()
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
@@ -190,9 +190,9 @@ try {
     check(/Secrets: \d+ of 1 set/.test((await row.textContent()) ?? ''), 'library row shows the secrets summary')
     await shot('mcp-library-row')
     await openProject(page, NAME)
-    await projectTab(page, 'Org chart').click()
+    await projectTab(page, 'Team').click()
     await projectTab(page, 'Settings').click()
-    await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+    await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
     await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
     await page.locator('[data-testid=mcp-add-other]').click()
     await page.locator('[data-testid=mcp-add-library]').click()

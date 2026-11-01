@@ -22,6 +22,7 @@
 @import './history-trends.css';
 @import './model-prices.css';
 @import './skill-library.css';
+@import './team.css';
 
 * {
   box-sizing: border-box;

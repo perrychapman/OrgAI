@@ -1,14 +1,21 @@
 import type { ReactElement } from 'react'
+import { X } from 'lucide-react'
 import { useState } from 'react'
 import type { Project } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { Button } from './ui/Button'
+import { IconButton } from './ui/IconButton'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
 import { useConfirm } from './ui/ConfirmDialog'
 
-export default function DraftPanel({ project }: { project: Project }): ReactElement {
+/**
+ * The Architect and quick draft. `variant="tray"` is the Team tab's tray form (a header row with a close button and no
+ * sticky side header); `panel` is the old side-panel form.
+ */
+export default function DraftPanel({ project, variant = 'panel', onClose }: { project: Project; variant?: 'panel' | 'tray'; onClose?: () => void }): ReactElement {
+  const tray = variant === 'tray'
   const drafting = useAppStore((s) => s.drafting)
   const draftResult = useAppStore((s) => s.draftResult)
   const draftError = useAppStore((s) => s.draftError)
@@ -49,10 +56,18 @@ export default function DraftPanel({ project }: { project: Project }): ReactElem
 
   return (
     <>
-      <div className="side-header">
-        <h2>Design the org chart with AI</h2>
-      </div>
-      <div className="side-body stack-3">
+      {tray ? (
+        <div className="team-tray-head">
+          <h2>Design the org chart with the Architect</h2>
+          <div className="grow" />
+          {onClose && <IconButton icon={X} label="Close the Architect" size="sm" onClick={onClose} testId="architect-close" />}
+        </div>
+      ) : (
+        <div className="side-header">
+          <h2>Design the org chart with AI</h2>
+        </div>
+      )}
+      <div className={tray ? 'team-tray-body stack-3' : 'side-body stack-3'}>
         <section className="draft-box stack-2" aria-labelledby="draft-architect">
           <h3 className="side-section-title" id="draft-architect">
             Revise with the Architect

@@ -119,7 +119,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         ...(mockAvailable && useMock ? { mock: true } : {})
       }
       const created = await createProject(input as Parameters<typeof createProject>[0])
-      // Import never writes blind: the project starts with the default chart and the review opens on the Org chart tab.
+      // Import never writes blind: the project starts with the default chart and the review opens on the Team tab.
       if (choice === 'import') useAppStore.getState().requestImport({ projectId: created.id, fresh: true })
       if (choice === 'architect') await startSetup()
       // The form is gone: land focus on the new project's heading instead of letting it fall to the page.

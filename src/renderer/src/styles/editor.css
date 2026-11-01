@@ -132,6 +132,18 @@
   flex-wrap: wrap;
 }
 
+.role-node .caps {
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.role-node .caps-sep {
+  color: var(--text-tertiary);
+}
+
 /* ---------- Draft box ---------- */
 
 .draft-box {
