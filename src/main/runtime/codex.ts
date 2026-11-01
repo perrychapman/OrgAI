@@ -414,7 +414,7 @@ class CodexSession implements RuntimeSession {
     const isSetup = this.setupLike
     const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
     const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
