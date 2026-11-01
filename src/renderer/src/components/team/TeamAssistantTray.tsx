@@ -228,9 +228,29 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
       })
       replaceProject(out.project)
       const names = roleIds.map((id) => project.roles.find((r) => r.id === id)?.name ?? id)
-      patch(recId, {
-        busy: false,
-        applied: { name: out.applied.name || name, roleNames: names, access: out.applied.access, undoId: out.undoId, needsSetup: out.needsSetup, notes: out.notes }
+      // The runtime may return the digest of the saved state; later applies from this result must carry it or they go stale.
+      const next = (out as { digest?: string }).digest
+      if (typeof next === 'string' && next) setResult((r) => (r ? { ...r, digest: next } : r))
+      setCards((c) => {
+        // Only the newest apply can be undone: earlier Applied rows lose their Undo.
+        const all: Record<string, CardState> = {}
+        for (const [k, v] of Object.entries(c)) all[k] = v.applied ? { ...v, applied: { ...v.applied, superseded: true } } : v
+        all[recId] = {
+          ...all[recId],
+          busy: false,
+          applied: {
+            name: out.applied.name || name,
+            roleNames: names,
+            access: out.applied.access,
+            undoId: out.undoId,
+            appliedId: out.applied.kind === 'mcp' ? out.applied.id : undefined,
+            connectorId: out.needsSetup?.connectorId,
+            libraryId: out.needsSetup?.libraryId,
+            needsSetup: out.needsSetup,
+            notes: out.notes
+          }
+        }
+        return all
       })
       setAnnounce(`Applied ${clampText(out.applied.name || name, 60)} to ${names.join(', ')}.`)
     } catch (e) {
@@ -262,9 +282,16 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     })
   }
 
-  const finishSetup = (): void => {
-    requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
-    useAppStore.getState().setView('appSettings')
+  const finishSetup = (info: AppliedInfo): void => {
+    const st = useAppStore.getState()
+    if (info.connectorId || info.libraryId) {
+      // A connector or library entry keeps its sign-in and secrets in App settings > Connectors.
+      requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
+      st.openMcpLibrary(info.libraryId)
+    } else {
+      // A project-level server: Team > Catalog, on that server's row.
+      st.openProjectMcp(project.id, info.appliedId)
+    }
   }
 
   const shown = (result?.recommendations ?? []).filter((r) => {
@@ -313,7 +340,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
             </>
           ) : (
             <>
-              <Button variant="primary" size="sm" icon={Sparkles} onClick={() => void run('recommend')} testId="team-recommend">
+              <Button variant={open.length > 0 ? 'secondary' : 'primary'} size="sm" icon={Sparkles} onClick={() => void run('recommend')} testId="team-recommend">
                 Recommend tools and skills
               </Button>
               <Button size="sm" icon={RefreshCw} onClick={() => void run('recheck')} testId="team-recheck">
@@ -425,7 +452,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
                 busy={st.busy}
                 error={st.error}
                 onUndo={() => void undo(rec.id)}
-                onSetup={st.applied.needsSetup ? finishSetup : undefined}
+                onSetup={st.applied.needsSetup ? () => finishSetup(st.applied!) : undefined}
               />
             )
           }
