@@ -253,4 +253,36 @@ describe('RunStore usage', () => {
     expect(again.get('new')!.usage?.updatedAt).toBe(1) // existing usage is kept
     expect(again.get('ghost')).toBeNull()
   })
+
+  it('reports removed runs to onRunsRemoved on prune and removeProject, and survives a throwing hook', () => {
+    const s = new RunStore(dataDir)
+    const seen: string[][] = []
+    s.onRunsRemoved = (removed) => seen.push(removed.map((r) => r.id))
+    s.upsert(run('a', { projectId: 'quick', startedAt: 1 }))
+    s.upsert(run('b', { projectId: 'quick', startedAt: 2 }))
+    s.upsert(run('c', { projectId: 'p2' }))
+    expect(s.prune(() => 1)).toBe(1)
+    expect(seen).toEqual([['a']])
+    s.removeProject('p2')
+    expect(seen).toEqual([['a'], ['c']])
+    s.onRunsRemoved = () => {
+      throw new Error('boom')
+    }
+    expect(s.removeProject('quick')).toBe(1)
+  })
+
+  it('moves runs to another project and keeps virtual-project runs across a restart', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('a', { projectId: 'quick', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } }))
+    s.upsert(run('b', { projectId: 'quick' }))
+    s.saveRecord(record(run('a', { projectId: 'quick' })))
+    expect(new RunStore(dataDir).list('quick').map((r) => r.id).sort()).toEqual(['a', 'b'])
+    const moved = s.moveToProject(['a', 'ghost'], 'p9')
+    expect(moved.map((r) => r.id)).toEqual(['a'])
+    expect(s.list('p9').map((r) => r.id)).toEqual(['a'])
+    expect(s.list('quick').map((r) => r.id)).toEqual(['b'])
+    expect(s.getRecord('a')!.summary.projectId).toBe('p9')
+    expect(new RunStore(dataDir).get('a')!.projectId).toBe('p9')
+    expect(s.all().length).toBe(2)
+  })
 })
