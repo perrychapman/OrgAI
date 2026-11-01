@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
@@ -61,6 +61,8 @@ export interface MockScript {
   setup?: MockStep[]
   /** Steps for MCP assistant runs ('mcp-assist'). */
   mcpAssist?: MockStep[]
+  /** Steps for Skill assistant runs ('skill-assist'). The default is built per run (propose 'mock-skill'). */
+  skillAssist?: MockStep[]
   /** Reply to follow-up messages; "{text}" is replaced with the user's message. */
   reply?: string
   /**
@@ -175,11 +177,22 @@ const DEFAULT_MCP_ASSIST: MockStep[] = [
   { type: 'text', text: 'The MCP servers are set up.' }
 ]
 
+/** The skill the default skill-assist script proposes. */
+export const MOCK_SKILL_DRAFT = {
+  name: 'mock-skill',
+  description: 'Use when the user asks for a quick checklist review of a change. Gives a short, repeatable checklist.',
+  body: '# Mock skill\n\n1. Read the change.\n2. Check it against the project conventions.\n3. Report what you found in three bullet points.\n'
+}
+
+/** Marker: the default skill-assist script is built per run from the project (see defaultSkillAssistSteps). */
+const DEFAULT_SKILL_ASSIST: MockStep[] = []
+
 export const DEFAULT_MOCK_SCRIPT: Required<MockScript> = {
   delayMs: 400,
   work: DEFAULT_WORK,
   setup: DEFAULT_SETUP,
   mcpAssist: DEFAULT_MCP_ASSIST,
+  skillAssist: DEFAULT_SKILL_ASSIST,
   reply: 'Mock reply to: {text}',
   continue: []
 }
@@ -544,6 +557,17 @@ export class MockSession implements RuntimeSession {
         return { ...st, args: { ...st.args, upsert } }
       })
     }
+    if (this.ctx.run.kind === 'skill-assist') {
+      if (this.script.skillAssist !== DEFAULT_SKILL_ASSIST) return this.script.skillAssist
+      return this.defaultSkillAssistSteps()
+    }
+    if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
+      const n = this.ctx.listProjects?.().length ?? 0
+      return [
+        { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
+        { type: 'text', text: `I can see ${n} OrgAI project${n === 1 ? '' : 's'}. Tell me what you would like to do.` }
+      ]
+    }
     if (this.isSetup && this.script.setup === DEFAULT_SETUP && library[0]) {
       const at = DEFAULT_SETUP.findIndex((st) => st.type === 'harness' && st.name === 'complete_setup')
       const item: Record<string, unknown> = { libraryId: library[0].id, ...(this.root ? { roles: [this.root.slug] } : {}) }
@@ -556,6 +580,26 @@ export class MockSession implements RuntimeSession {
       return at < 0 ? [...DEFAULT_SETUP, step] : [...DEFAULT_SETUP.slice(0, at), step, ...DEFAULT_SETUP.slice(at)]
     }
     return this.isSetup ? this.script.setup : this.script.work
+  }
+
+  /**
+   * Skill assistant default: list the library, then propose one 'mock-skill' (library scope on the skills project;
+   * project scope granted to the project's first role, or library scope when the project has no roles).
+   */
+  private defaultSkillAssistSteps(): MockStep[] {
+    const roleSlug = this.ctx.project.id === SKILLS_PROJECT_ID ? undefined : this.ctx.project.roles[0]?.slug
+    const item = {
+      action: 'create',
+      scope: roleSlug ? 'project' : 'library',
+      draft: { name: MOCK_SKILL_DRAFT.name, description: MOCK_SKILL_DRAFT.description, body: MOCK_SKILL_DRAFT.body },
+      ...(roleSlug ? { roles: [roleSlug] } : {})
+    }
+    return [
+      { type: 'text', text: 'I will look at the skill library first, then propose a skill.' },
+      { type: 'harness', name: SKILL_ASSIST_HARNESS_TOOLS.list, args: {} },
+      { type: 'harness', name: SKILL_ASSIST_HARNESS_TOOLS.propose, args: { title: 'Mock skill', rationale: 'A short checklist skill exercises the proposal flow without spending tokens.', items: [item] } },
+      { type: 'text', text: 'The skill is set up.' }
+    ]
   }
 
   private async turn(steps: MockStep[]): Promise<void> {
@@ -690,7 +734,8 @@ export class MockSession implements RuntimeSession {
     if (step.ask) {
       const suggestions = chooseSuggestions(step.name, input, undefined)
       const rules = allowRuleStrings(suggestions)
-      const saved = new Set([...listRules(this.ctx.project.path), ...this.sessionRules])
+      // A quick run never reads saved rules from the user's folder (same as the Claude adapter).
+      const saved = new Set([...(this.ctx.run.quick ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       const live = this.ctx.allowedRules?.() ?? []
       const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
@@ -713,7 +758,7 @@ export class MockSession implements RuntimeSession {
           this.setState(agentId, 'thinking', 'Thinking…')
           return
         }
-        const granted = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+        const granted = applyAllowScope(this.ctx.project.path, this.ctx.run.quick && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision, suggestions, (level, message) => this.log(level, message))
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
       }
     }

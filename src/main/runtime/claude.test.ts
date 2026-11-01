@@ -1,7 +1,8 @@
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -335,5 +336,69 @@ describe('buildCompletionOptions', () => {
     const o = buildCompletionOptions({ cwd: process.cwd(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])
     expect(o.strictMcpConfig).toBe(true)
     expect(o.mcpServers).toEqual({})
+  })
+})
+
+describe('quick runs and build sessions (assistants)', () => {
+  const quick = { folder: '/some/user/folder', team: 'single' as const, allowEdits: false, gitRepo: false }
+  const quickCtx = (permissionMode: 'default' | 'auto' | 'acceptEdits' | 'bypassPermissions' = 'default') =>
+    fakeCtx({
+      run: runSummary({ projectId: 'quick', quick }),
+      project: project({ permissionMode, roles: [role({ id: 'q', slug: 'assistant', canSpawn: false })] })
+    })
+
+  it('loads no setting sources for a quick run and the project source otherwise', () => {
+    expect(claudeSettingSources(quickCtx())).toEqual([])
+    expect(claudeSettingSources(fakeCtx())).toEqual(['project'])
+  })
+
+  it('never reads saved rules from the folder for a quick run', () => {
+    expect(claudeSavedRules(quickCtx())).toEqual([])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: join(tmpdir(), 'orgai-no-such-dir') }) }))).toEqual([])
+  })
+
+  it('turns a project-scope allow into a session grant for a quick run only', () => {
+    const d = { behavior: 'allow' as const, scope: 'project' as const }
+    expect(quickSafeDecision(quickCtx(), d).scope).toBe('session')
+    expect(quickSafeDecision(fakeCtx(), d).scope).toBe('project')
+    expect(quickSafeDecision(quickCtx(), { behavior: 'allow', scope: 'once' }).scope).toBe('once')
+  })
+
+  it('keeps every call asking: no auto, acceptEdits or bypass for quick runs', () => {
+    for (const m of ['default', 'auto', 'acceptEdits', 'bypassPermissions'] as const) {
+      expect(claudePermissionMode(quickCtx(m))).toBe('default')
+      expect(claudeAllowsBypass(quickCtx(m))).toBe(false)
+    }
+    expect(claudePermissionMode(fakeCtx())).toBe('default')
+  })
+
+  it('keeps setup runs on acceptEdits, but an allowBuild assistant with write tools asks', () => {
+    const setup = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), project: project({ roles: [role({ id: 'a', slug: 'a', tools: ['Read'] })] }) })
+    expect(claudePermissionMode(setup)).toBe('acceptEdits')
+    const build = fakeCtx({
+      run: runSummary({ kind: 'mcp-assist' }),
+      project: project({ roles: [role({ id: 'a', slug: 'a', tools: ['Read', 'Edit', 'Write', 'Bash'] })] })
+    })
+    expect(claudePermissionMode(build)).toBe('default')
+    expect(claudeAllowsBypass(build)).toBe(false)
+  })
+
+  it('passes the quick flag into the root prompt', () => {
+    const agents = buildAgents(quickCtx(), [], false)
+    expect(agents.assistant.prompt).toContain('/some/user/folder')
+    const plain = buildAgents(fakeCtx({ project: project({ roles: [role({ id: 'q', slug: 'assistant' })] }) }), [], false)
+    expect(plain.assistant.prompt).not.toContain('/some/user/folder')
+  })
+
+  it('exposes the quick, chat and skill-assist harness tools to the root', () => {
+    const q = buildAgents(quickCtx(), [{ name: 'list_projects', audience: 'root' }, { name: 'set_plan', audience: 'root' }], false)
+    expect(q.assistant.tools).toEqual(expect.arrayContaining(['mcp__orgai__list_projects', 'mcp__orgai__set_plan']))
+    const s = buildAgents(
+      fakeCtx({ run: runSummary({ kind: 'skill-assist' }), project: project({ roles: [role({ id: 'a', slug: 'a' })] }) }),
+      [{ name: 'list_skill_library', audience: 'root' }, { name: 'propose_skills', audience: 'root' }],
+      false
+    )
+    expect(s.a.tools).toEqual(expect.arrayContaining(['mcp__orgai__list_skill_library', 'mcp__orgai__propose_skills']))
+    expect(s.a.tools).not.toContain('SendMessage')
   })
 })
