@@ -63,6 +63,20 @@ try {
   await search.fill('')
   check((await tile('github').count()) === 1, 'clearing the search brings every service back')
 
+  // deep link (requestConnector): the app has no window bridge for it, so set the same key and send the same event
+  await search.fill('notion')
+  await page.evaluate(() => {
+    sessionStorage.setItem('orgai.pendingSettingsSection', 'mcp-library')
+    sessionStorage.setItem('orgai.pendingConnector', 'github')
+    window.dispatchEvent(new Event('orgai:settings-section'))
+  })
+  await tile('github').waitFor({ timeout: 5_000 })
+  await sleep(300)
+  check((await tile('github').getAttribute('data-highlight')) !== null, 'a connector deep link highlights the tile')
+  check(await tile('github').locator('[data-testid=connector-action]').evaluate((el) => el === document.activeElement), 'a connector deep link focuses the tile')
+  check((await search.inputValue()) === '', 'a connector deep link clears the search that hid the tile')
+  check(/Showing GitHub/.test((await page.locator('[data-testid=connector-announce]').textContent()) ?? ''), 'a connector deep link announces "Showing GitHub"')
+
   // method badge, ordering, filters, ranked search, live count, roving focus
   const easeText = async (id) => ((await tile(id).locator('[data-testid=connector-ease]').textContent()) ?? '').trim()
   check((await easeText('notion')) === 'Sign in', 'Notion shows the "Sign in" method badge')

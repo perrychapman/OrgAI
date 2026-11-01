@@ -89,6 +89,38 @@ export function takeAppSettingsSection(): string | null {
   }
 }
 
+const CONNECTOR_KEY = 'orgai.pendingConnector'
+
+/** A connector id is lowercase kebab-case (letters, digits, single hyphens), at most 64 characters. */
+export function isConnectorId(id: unknown): id is string {
+  return typeof id === 'string' && id.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)
+}
+
+/**
+ * Open App settings > Connectors with one service's tile scrolled to, focused and briefly highlighted. A bad id is dropped.
+ * The caller still switches the view and, when App settings is already open, dispatches `orgai:settings-section`.
+ */
+export function requestConnector(connectorId: string): void {
+  if (!isConnectorId(connectorId)) return
+  requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
+  try {
+    sessionStorage.setItem(CONNECTOR_KEY, connectorId)
+  } catch {
+    /* storage unavailable: the pane just opens without the highlight */
+  }
+}
+
+/** Read and clear the requested connector id (null when none or invalid). */
+export function takeConnectorTarget(): string | null {
+  try {
+    const id = sessionStorage.getItem(CONNECTOR_KEY)
+    if (id !== null) sessionStorage.removeItem(CONNECTOR_KEY)
+    return isConnectorId(id) ? id : null
+  } catch {
+    return null
+  }
+}
+
 const PRICE_KEY = 'orgai.pendingModelPrice'
 
 /**

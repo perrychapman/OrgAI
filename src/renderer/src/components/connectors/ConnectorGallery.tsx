@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -8,6 +8,7 @@ import { Input } from '../ui/Input'
 import { SettingsSection } from '../settings/SettingsSection'
 import { CATEGORY_GROUP_THRESHOLD, CATEGORY_LABELS, categoriesPresent, gallerySections, matchesFilter, serviceCount } from '../../lib/connectors'
 import type { GalleryFilter } from '../../lib/connectors'
+import { takeConnectorTarget } from '../../lib/settingsTarget'
 import { ConnectorTile } from './ConnectorTile'
 import ConnectorDialog from './ConnectorDialog'
 import { useConnectors } from './useConnectors'
@@ -43,6 +44,55 @@ export function ConnectorGallery(): ReactElement {
     ...categories.map((c) => ({ id: c.category as GalleryFilter, label: CATEGORY_LABELS[c.category], count: c.count }))
   ]
 
+  const [pending, setPending] = useState<string | null>(() => takeConnectorTarget())
+  const [announce, setAnnounce] = useState('')
+  const highlightTimer = useRef<number | undefined>(undefined)
+
+  // A deep link (requestConnector) may arrive before mount (key read above) or while mounted (event).
+  useEffect(() => {
+    const onEvent = (): void => {
+      const id = takeConnectorTarget()
+      if (id) setPending(id)
+    }
+    window.addEventListener('orgai:settings-section', onEvent)
+    return () => {
+      window.removeEventListener('orgai:settings-section', onEvent)
+      window.clearTimeout(highlightTimer.current)
+    }
+  }, [])
+
+  const reveal = useCallback((id: string): boolean => {
+    const el = sectionsRef.current?.querySelector<HTMLElement>(`[data-testid=connector-tile][data-connector="${id}"]`)
+    if (!el) return false
+    const reduce = document.documentElement.getAttribute('data-reduce-motion') === 'on' || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' })
+    el.querySelector<HTMLElement>('[data-testid=connector-action]')?.focus({ preventScroll: true })
+    el.setAttribute('data-highlight', '')
+    window.clearTimeout(highlightTimer.current)
+    highlightTimer.current = window.setTimeout(() => el.removeAttribute('data-highlight'), 2000)
+    return true
+  }, [])
+
+  useEffect(() => {
+    if (!pending || !connectors) return
+    const known = connectors.find((c) => c.connector.id === pending)
+    if (!known) {
+      setPending(null)
+      return
+    }
+    // Clear anything that would hide the tile; the effect runs again once the grid has re-rendered.
+    if (query || filter !== 'all' || easy) {
+      setQuery('')
+      setFilter('all')
+      setEasy(false)
+      return
+    }
+    if (reveal(pending)) {
+      setAnnounce(`Showing ${known.connector.name}`)
+      setPending(null)
+    }
+  }, [pending, connectors, query, filter, easy, reveal])
+
   return (
     <SettingsSection
       id="appsettings-section-connectors"
@@ -51,6 +101,9 @@ export function ConnectorGallery(): ReactElement {
       testId="connectors-section"
     >
       <div className="connectors-body">
+        <p className="sr-only" role="status" aria-live="polite" data-testid="connector-announce">
+          {announce}
+        </p>
         {error && !connectors ? (
           <Banner
             tone="danger"
