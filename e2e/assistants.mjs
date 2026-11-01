@@ -2,7 +2,7 @@
 // Ctrl+Shift+N, the Projects view entry points, App settings > Defaults rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
 import path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
@@ -272,6 +272,12 @@ try {
     await folderInput.fill(path.join(TMP, 'orgai-e2e-no-such-folder-xyz'))
     await sleep(900)
     check(await visible('[data-testid=chat-folder-error]'), 'a typed folder that does not exist shows an error')
+    // A folder that is already a project gets a note with an Open button (the fixture repo of the project above).
+    await folderInput.fill(repo)
+    await sleep(900)
+    const existingNote = page.locator('[data-testid=chat-existing-project]')
+    check((await existingNote.count()) === 1 && (await existingNote.innerText()).includes(NAME), 'a folder that is already a project shows the "already a project" note naming it', await existingNote.innerText().catch(() => ''))
+    check(await visible('[data-testid=chat-open-project]'), 'the "already a project" note offers Open')
     await folderInput.fill(chatRepo)
     await sleep(900)
     check(!(await visible('[data-testid=chat-folder-error]')), 'a valid typed folder clears the error')
@@ -303,6 +309,37 @@ try {
     await deleteProject(page, chatProject).catch(() => {})
     removeFixture(chatRepo)
 
+    // Default-team chat: more than one agent, so it opens on the canvas and the toolbar toggle shows the conversation.
+    await openAssistant('quick')
+    await page.locator('[data-testid=chat-team] summary').click()
+    await page.getByRole('radio', { name: 'Use the app’s default team' }).check()
+    const dta = page.locator('[data-testid=assistant-start-quick] .composer textarea')
+    await dta.fill('Say hello in one short sentence.')
+    await dta.press('Enter')
+    await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    await page.locator('.run-body').first().waitFor({ timeout: 10_000 }).catch(() => {})
+    await sleep(800)
+    check((await page.locator('.run-body').first().getAttribute('data-layout').catch(() => null)) === 'canvas', 'a default-team chat opens in the canvas layout')
+    check((await page.locator('.react-flow').count()) > 0 && !(await visible('[data-testid=run-conversation]')), 'a default-team chat shows the canvas, not the conversation')
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await sleep(500)
+    check(await visible('[data-testid=run-conversation]'), 'the layout toggle shows the conversation for a default-team chat')
+    await endSession(page)
+
+    // Project-scope Skill assistant from Team > Catalog > Skills: opens in that project's Live tab with a role listed.
+    await openProject(page, NAME)
+    await openTeam(page)
+    await teamPanelTab(page, 'Catalog').click()
+    await page.locator('[data-testid=skill-ask-assistant]').click()
+    const pitem = page.locator('[data-testid=proposal-skill-item]').first()
+    await pitem.waitFor({ timeout: 60_000 }).catch(() => {})
+    check((await page.locator('main .topbar h1').first().innerText().catch(() => '')).trim() === NAME, 'the project Skill assistant opens in the project it was asked from')
+    check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the project Skill assistant opens on the Live tab')
+    check((await pitem.count()) > 0, 'the project Skill assistant raises a proposal')
+    const roleText = await pitem.locator('.skill-prop-roles').innerText().catch(() => '')
+    check(/Roles:\s*\S/.test(roleText), 'the project skill proposal lists a role', roleText)
+    await endSession(page)
+
     // Skill assistant
     await openAssistant('skills')
     await page.locator('textarea[data-testid=assistant-instruction]').fill('Make my agents better at writing release notes.')
@@ -329,10 +366,20 @@ try {
     await page.locator('textarea[data-testid=assistant-instruction]').fill('Connect a docs search server.')
     await page.locator('[data-testid=assistant-start]').click()
     await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    check((await page.locator('[data-testid=run-meta-workspace]').count()) === 0, 'an MCP assistant run without the build switch shows no workspace chip')
     check((await page.locator('.run-tab[aria-selected=true]').count()) === 1, 'MCP assistant run opens a tab in the main window')
     check(app.windows().length === 1, 'the MCP assistant opens no new window', String(app.windows().length))
     check((await page.locator('.run-tab-new').getAttribute('aria-label')) === 'New session', 'the "+" tab reads "New session" on the MCP assistant')
     check(!/unattended/i.test(await page.locator('[data-testid=run-meta]').innerText().catch(() => '')), 'MCP assistant run metadata has no "unattended"')
+    await endSession(page)
+    // Build switch on: the run strip names the workspace.
+    await openAssistant('harness')
+    await page.locator('[data-testid=mcp-allow-build]').click()
+    check((await switchState('[data-testid=mcp-allow-build]'))?.checked === true, 'the MCP build switch turns on')
+    await page.locator('textarea[data-testid=assistant-instruction]').fill('Build a tiny docs server.')
+    await page.locator('[data-testid=assistant-start]').click()
+    await page.locator('[data-testid=run-meta-workspace]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+    check(await visible('[data-testid=run-meta-workspace]'), 'an MCP assistant run with the build switch on shows run-meta-workspace')
     await endSession(page)
     // An ended MCP run: the sidebar row and Configure with AI both land on the start page.
     await row('harness').click()
