@@ -1,4 +1,5 @@
-import type { ConnectionId, UsageSpend, UsageStatus } from '@shared/types'
+import { connectionInUse } from '@shared/defaults'
+import type { AppSettings, ConnectionId, ConnectionInfo, Project, UsageSpend, UsageStatus } from '@shared/types'
 
 export const CONNECTION_LABEL: Record<ConnectionId, string> = { anthropic: 'Claude', openai: 'Codex', litellm: 'LiteLLM' }
 
@@ -11,10 +12,30 @@ export function currentConnection(projectConnection: ConnectionId | null | undef
   return projectConnection ?? defaultConnection ?? 'anthropic'
 }
 
-/** Connections in popover order: the current one first, then the others that reported something. */
-export function connectionOrder(current: ConnectionId, byConnection: Partial<Record<ConnectionId, UsageStatus>>): ConnectionId[] {
-  const all: ConnectionId[] = ['anthropic', 'openai', 'litellm']
-  return [current, ...all.filter((c) => c !== current && byConnection[c]?.available)]
+const ALL_CONNECTIONS: ConnectionId[] = ['anthropic', 'openai', 'litellm']
+
+/**
+ * Connections in popover order: the current one always first, then each other connection that has an
+ * available report AND is in use (enabled and the app default or some project's connection). A stale
+ * report of a connection nobody uses never adds a section.
+ */
+export function connectionOrder(current: ConnectionId, byConnection: Partial<Record<ConnectionId, UsageStatus>>, inUse: (id: ConnectionId) => boolean): ConnectionId[] {
+  return [current, ...ALL_CONNECTIONS.filter((c) => c !== current && byConnection[c]?.available && inUse(c))]
+}
+
+/**
+ * The connections in use, by `connectionInUse` from the store's connection list, default connection and
+ * projects. Before the list loads only Anthropic can count (the others are not known to be enabled).
+ */
+export function connectionsInUse(
+  connections: readonly Pick<ConnectionInfo, 'connection'>[] | null | undefined,
+  defaultConnection: ConnectionId | null | undefined,
+  projects: readonly Pick<Project, 'provider'>[]
+): Set<ConnectionId> {
+  const records: Partial<AppSettings['connections']> = {}
+  for (const c of connections ?? []) (records as Record<string, unknown>)[c.connection.id] = c.connection
+  const settings = { defaultConnection: defaultConnection ?? 'anthropic', connections: records as AppSettings['connections'] }
+  return new Set(ALL_CONNECTIONS.filter((id) => connectionInUse(id, settings, projects)))
 }
 
 export function spendPct(spend: UsageSpend): number | null {

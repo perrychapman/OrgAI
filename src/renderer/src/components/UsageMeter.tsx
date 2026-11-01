@@ -1,22 +1,24 @@
 import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ConnectionId, RateLimitWindow, UsageSpend, UsageStatus } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 
 import { formatUntil } from '../lib/layout'
-import { CONNECTION_LABEL, connectionOrder, spendAria, spendLevel, spendPct, spendText } from '../lib/usage'
+import { CONNECTION_LABEL, connectionOrder, connectionsInUse, spendAria, spendLevel, spendPct, spendText } from '../lib/usage'
 
 /** Renderer-side auto-refresh: at most one read per minute, never overlapping, failures included. */
 const REFRESH_EVERY_MS = 60_000
 let lastAttempt = 0
 let inFlight = false
 
-function refreshIfStale(): Promise<void> | null {
+function refreshIfStale(current: ConnectionId): Promise<void> | null {
   if (inFlight) return null
   const state = useAppStore.getState()
   const t = Date.now()
   if (t - lastAttempt < REFRESH_EVERY_MS) return null
-  const reports = Object.values(state.usageByConnection)
+  // Only the current connection and connections in use count: a stale report nobody shows never forces a read.
+  const inUse = connectionsInUse(state.connections, state.defaultConnection, state.projects)
+  const reports = (Object.entries(state.usageByConnection) as [ConnectionId, UsageStatus][]).filter(([id]) => id === current || inUse.has(id)).map(([, u]) => u)
   if (reports.length > 0 && reports.every((u) => u.available && t - u.updatedAt < REFRESH_EVERY_MS)) return null
   lastAttempt = t
   inFlight = true
@@ -177,11 +179,16 @@ function PlanSection({ usage, now, reading }: { usage: UsageStatus | undefined; 
 }
 
 /**
- * Inside the account popover: one quiet section per connection that reported something, the current
- * connection first. A LiteLLM connection that is enabled but has no report says "Spend unavailable".
+ * Inside the account popover: the current connection first, then one quiet section per other connection
+ * that is in use (`connectionInUse`) and has a report. A LiteLLM connection in use but without a report
+ * still gets its section and says "Spend unavailable".
  */
-export default function UsageMeter({ current, litellmEnabled }: { current: ConnectionId; litellmEnabled: boolean }): ReactElement {
+export default function UsageMeter({ current }: { current: ConnectionId }): ReactElement {
   const byConnection = useAppStore((s) => s.usageByConnection)
+  const connections = useAppStore((s) => s.connections)
+  const defaultConnection = useAppStore((s) => s.defaultConnection)
+  const projects = useAppStore((s) => s.projects)
+  const inUse = useMemo(() => connectionsInUse(connections, defaultConnection, projects), [connections, defaultConnection, projects])
   const [now, setNow] = useState(() => Date.now())
   const [reading, setReading] = useState(inFlight)
 
@@ -194,7 +201,7 @@ export default function UsageMeter({ current, litellmEnabled }: { current: Conne
   useEffect(() => {
     let alive = true
     const run = (): void => {
-      const p = refreshIfStale()
+      const p = refreshIfStale(current)
       if (!p) return
       setReading(true)
       void p.finally(() => {
@@ -207,10 +214,10 @@ export default function UsageMeter({ current, litellmEnabled }: { current: Conne
       alive = false
       clearInterval(t)
     }
-  }, [])
+  }, [current])
 
-  const order = connectionOrder(current, byConnection).filter((id) => id !== 'litellm' || litellmEnabled || current === 'litellm')
-  if (litellmEnabled && !order.includes('litellm')) order.push('litellm')
+  const order = connectionOrder(current, byConnection, (id) => inUse.has(id))
+  if (inUse.has('litellm') && !order.includes('litellm')) order.push('litellm')
   const headed = order.length > 1
   return (
     <div className="usage-meter">

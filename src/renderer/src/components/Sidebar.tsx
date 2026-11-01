@@ -102,7 +102,6 @@ export default function Sidebar({
   const litellmOn = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
   const currentUsage = current === 'litellm' && !litellmOn ? undefined : usageByConnection[current]
   const currentStatus = connections?.find((c) => c.connection.id === current)?.status
-  const litellmEnabled = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
   const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage)
   const appVersion = useAppStore((s) => s.appInfo?.version)
   const devBuild = isDevBuild(appVersion)
@@ -340,7 +339,7 @@ export default function Sidebar({
             <div className="account-pop">
               <div className="account-pop-title">{account.label}</div>
               {account.title && <p className="account-pop-note">{account.title}</p>}
-              {mockAdapter ? <p className="account-pop-note">Runs use scripted data. No plan limits apply. No spend is tracked.</p> : <UsageMeter current={current} litellmEnabled={litellmEnabled} />}
+              {mockAdapter ? <p className="account-pop-note">Runs use scripted data. No plan limits apply. No spend is tracked.</p> : <UsageMeter current={current} />}
               <Button
                 size="sm"
                 variant="ghost"
