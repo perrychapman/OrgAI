@@ -82,7 +82,7 @@ interface AuthRef {
   saveOAuth(config: McpOAuthConfig | undefined): void
 }
 
-const SOURCES: McpServerSource[] = ['user', 'registry', 'agent']
+const SOURCES: McpServerSource[] = ['user', 'registry', 'agent', 'local']
 const normalSource = (s: McpServerSource | undefined): McpServerSource => (s && SOURCES.includes(s) ? s : 'user')
 
 function withOAuth<T extends { oauth?: McpOAuthConfig }>(x: T, config: McpOAuthConfig | undefined): T {

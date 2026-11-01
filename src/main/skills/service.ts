@@ -26,10 +26,10 @@ import { isSafeId, newId } from '@shared/defaults'
 import type { ProjectStore } from '../store/projects'
 import { SkillLibraryStore } from '../store/skillLibrary'
 import type { RunSkill } from '../runtime/types'
-import type { SkillRunSource, SkillServiceApi } from './types'
+import type { SkillRunSource, SkillServiceApi, SkillSnapshotInput } from './types'
 import { childPath, digestFiles, fileInfos, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
 import { composeSkillMd, parseSkillMd, skillFromMd, validDraft } from './skillMd'
-import { planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
+import { buildScannedSkill, planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
 
 /** What SkillService needs. The constructor signature is the contract index.ts wires; keep it. */
 export interface SkillServiceDeps {
@@ -325,6 +325,42 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     const saved = this.deps.projects.save({ ...project, roles: granted.roles, skills: [...(project.skills ?? []), link] })
     this.expireUndo(project.id)
     return this.result(saved)
+  }
+
+  addSnapshot(input: SkillSnapshotInput): SkillMutationResult {
+    const project = this.project(input?.projectId)
+    const built = buildScannedSkill(input.files, input.folderName, input.repoPath ?? input.folderName, null)
+    if (typeof built === 'string') throw new Error(built)
+    const existing = this.refreshed(project).project.skills ?? []
+    if (existing.length >= SKILL_MAX_PER_PROJECT) throw new Error(`A project has at most ${SKILL_MAX_PER_PROJECT} skills.`)
+    this.assertNameFree(existing.map((s) => s.name), built.name, 'This project')
+    if (built.totalBytes > SKILL_MAX_TOTAL_BYTES) throw new Error(`The skill is larger than ${SKILL_MAX_TOTAL_BYTES / 1024 / 1024} MB.`)
+    const roleIds = this.checkRoleIds(project, input.roleIds)
+    const now = this.now()
+    const spec: SkillSpec = {
+      id: newId('skill'),
+      name: built.name,
+      description: built.description,
+      enabled: true,
+      source: input.source,
+      ...(input.source === 'repo' && input.repoPath ? { repoPath: input.repoPath } : {}),
+      ...(input.source !== 'repo' && input.sourceRef ? { sourceRef: input.sourceRef.slice(0, 500) } : {}),
+      digest: built.digest,
+      files: built.files,
+      addedAt: now,
+      updatedAt: now
+    }
+    const dir = this.ownDir(project.id, spec.id)
+    writeFolder(dir, built.data)
+    try {
+      const granted = this.setGrants(project.roles, spec.id, roleIds)
+      const saved = this.deps.projects.save({ ...project, roles: granted.roles, skills: [...(project.skills ?? []), spec] })
+      this.expireUndo(project.id)
+      return this.result(saved)
+    } catch (e) {
+      removeFolder(dir)
+      throw e
+    }
   }
 
   /** Copy a project-only skill into the library and relink the project's skill to it (same id, grants kept). */
