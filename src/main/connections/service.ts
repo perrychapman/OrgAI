@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForFamily, adapterForProject, builtinModels, connectionProviderLabel, creationConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
+import { adapterForFamily, adapterForProject, builtinModels, connectionInUse, connectionProviderLabel, creationConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS, MODEL_TIERS } from '@shared/types'
 import type {
   ModelPriceInfo,
@@ -848,10 +848,15 @@ export class ConnectionService {
 
   // ---------- usage, boot, shutdown ----------
 
-  /** Codex (ChatGPT) plan limits, or null when OpenAI is off, not on a ChatGPT login or not signed in. */
+  /**
+   * Codex (ChatGPT) plan limits, or null when OpenAI is off, not on a ChatGPT login, not in use (neither the default
+   * connection nor any project's, `connectionInUse`; checked before the app-server is spawned) or not signed in.
+   */
   async probeCodexUsage(): Promise<UsageStatus | null> {
-    const conn = this.deps.settings.get().connections.openai
+    const settings = this.deps.settings.get()
+    const conn = settings.connections.openai
     if (!conn.enabled || conn.auth.kind !== 'chatgpt') return null
+    if (!connectionInUse('openai', settings, this.deps.projects.list())) return null
     try {
       const raw = await this.withCodex(async (rpc) => ((await readAccount(rpc)).account ? readRateLimits(rpc) : null))
       return raw ? mapCodexRateLimits(raw, this.now()) : null
@@ -862,11 +867,14 @@ export class ConnectionService {
 
   /**
    * The LiteLLM virtual key's spend and budget (GET /key/info), or null when LiteLLM is off, has no base URL or key,
-   * or the proxy did not answer with a spend (no DB, refused, timeout, junk). Never throws; the key is never logged.
+   * is not in use (neither the default connection nor any project's, `connectionInUse`) or the proxy did not answer
+   * with a spend (no DB, refused, timeout, junk). Never throws; the key is never logged.
    */
   async probeLiteLLMUsage(): Promise<UsageStatus | null> {
-    const conn = this.deps.settings.get().connections.litellm
+    const settings = this.deps.settings.get()
+    const conn = settings.connections.litellm
     if (!conn.enabled || !conn.baseUrl) return null
+    if (!connectionInUse('litellm', settings, this.deps.projects.list())) return null
     const key = this.deps.secrets.get(LITELLM_KEY)
     if (!key) return null
     try {
