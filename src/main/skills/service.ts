@@ -20,6 +20,7 @@ import {
   type SkillLinkLibraryInput,
   type SkillMutationResult,
   type SkillSpec,
+  type SkillProposalItem,
   type SkillsProposalPayload,
   type SkillUpdateInput
 } from '@shared/types'
@@ -30,6 +31,7 @@ import type { RunSkill } from '../runtime/types'
 import type { SkillRunSource, SkillServiceApi, SkillSnapshotInput } from './types'
 import { childPath, digestFiles, fileInfos, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
 import { composeSkillMd, parseSkillMd, skillFromMd, validDraft } from './skillMd'
+import { skillProposalProblem } from './assist'
 import { buildScannedSkill, planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
 
 /** What SkillService needs. The constructor signature is the contract index.ts wires; keep it. */
@@ -633,12 +635,57 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
   /**
    * Apply an approved Skill assistant proposal (SetupService hooks.skills). projectId null = library scope. Every
    * item is validated before anything is written. Returns the saved project (project session) or null (library).
-   * PHASE 2 STUB: implemented by the Skill assistant engineer.
+   * Items are applied in order through the same paths as the UI (create, update, libraryCreate, libraryUpdate); the
+   * checks (skillProposalProblem plus capacity and rename clashes with linked projects) run first, so a refused item
+   * leaves everything untouched. A write that still fails midway throws and keeps what was already written.
    */
   applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null {
-    void projectId
-    void payload
-    throw new Error('Skill proposals are not applied yet.')
+    const items = payload?.items
+    const project = projectId === null ? null : this.project(projectId)
+    const lib = this.library.list()
+    const view = project ? this.refreshed(project).project : null
+    const problem = skillProposalProblem(items, {
+      projectSession: project !== null,
+      roleSlugs: project ? project.roles.map((r) => r.slug) : [],
+      library: lib.map((e) => ({ id: e.id, name: e.name })),
+      projectSkills: (view?.skills ?? []).map((s) => ({ id: s.id, name: s.name, ...(s.libraryId ? { libraryId: s.libraryId } : {}) }))
+    })
+    if (problem) throw new Error(problem)
+    const libCreates = items.filter((i) => i.scope === 'library' && i.action === 'create').length
+    if (lib.length + libCreates > SKILL_MAX_PER_PROJECT) throw new Error(`The skill library holds at most ${SKILL_MAX_PER_PROJECT} skills.`)
+    const projCreates = items.filter((i) => i.scope === 'project' && i.action === 'create').length
+    if ((view?.skills?.length ?? 0) + projCreates > SKILL_MAX_PER_PROJECT) throw new Error(`A project has at most ${SKILL_MAX_PER_PROJECT} skills.`)
+    for (const it of items) {
+      if (it.scope !== 'library' || it.action !== 'update') continue
+      const name = it.draft.name.trim()
+      for (const p of this.deps.projects.list()) {
+        const clash = p.skills?.find((s) => s.libraryId !== it.libraryId && s.name === name && p.skills?.some((l) => l.libraryId === it.libraryId))
+        if (clash) throw new Error(`The project ${p.name} already has a skill named "${name}".`)
+      }
+    }
+    const roleIdOf = (slug: string): string => {
+      const role = project?.roles.find((r) => r.slug === slug)
+      if (!role) throw new Error(`There is no role "${slug}" in this project.`)
+      return role.id
+    }
+    const roleIds = (item: SkillProposalItem): string[] | undefined => (item.roles === undefined ? undefined : [...new Set(item.roles.map(roleIdOf))])
+    for (const it of items) {
+      if (it.scope === 'library') {
+        if (it.action === 'create') this.libraryCreate(it.draft)
+        else this.libraryUpdate({ libraryId: it.libraryId as string, draft: it.draft })
+        continue
+      }
+      const ids = roleIds(it)
+      if (it.action === 'create') {
+        this.create({ projectId: project!.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) }, 'user')
+      } else {
+        const name = it.draft.name.trim()
+        const skill = (this.refreshed(this.project(project!.id)).project.skills ?? []).find((s) => s.name === name)
+        if (!skill) throw new Error(`This project has no skill named "${name}".`)
+        this.update({ projectId: project!.id, skillId: skill.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) })
+      }
+    }
+    return project ? this.project(project.id) : null
   }
 
   forRun(project: Project, roles: Role[]): RunSkill[] {
