@@ -59,7 +59,7 @@ describe('discoverLocalMcp', () => {
     expect(g.item.origin).toBe('local')
     expect(g.item.needsSecrets).toEqual(['API_TOKEN'])
     expect(g.payload).toMatchObject({ type: 'mcpSpec', spec: { id: '', source: 'local', secretEnv: ['API_TOKEN'] } })
-    const spec = (g.payload as { spec: Record<string, unknown> }).spec
+    const spec = (g.payload as unknown as { spec: Record<string, unknown> }).spec
     expect(spec.env).toBeUndefined()
     expect(spec.headers).toBeUndefined()
     const src = r.sources.find((s) => s.source === 'claude-code-mcp')!
