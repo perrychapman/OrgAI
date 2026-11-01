@@ -118,11 +118,25 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   computer, libraries, curated connectors; MCP Registry and `anthropics/skills` only with includeOutside), a one-shot
   `complete({ kind: 'recommend' })` on the everyday tier with a deterministic keyword fallback, digest-bound apply from
   main's own snapshot (renderer sends ids only; send `candidateId` with `recommendationId`, omit `access` to keep the
-  recommendation's), one undo per project, `setGrant`, and the persisted Team review (`<data>/team-reviews/`, auto
+  recommendation's), one undo per project, and the persisted Team review (`<data>/team-reviews/`, auto
   'ai' by default: model step bounded by everyRuns, tokenBudget and new evidence). Automatic reviews send the model
-  local-machine items as kind + name + redacted target only (`TeamReview.modelInput: 'proactive'`); the manual
-  Re-check sends everything ('full'). Local config files are untrusted: never spawned, secret names only, credential
-  args dropped, outside candidates pinned only. A local MCP server with a missing secret is saved enabled: false.
+  local-machine items as kind + name + redacted target only, and library/project MCP servers with a redacted target
+  (`TeamReview.modelInput: 'proactive'`); the manual Re-check sends everything ('full'). Local config files are
+  untrusted: never spawned, secret names only, credential args dropped, outside candidates pinned only. A local MCP
+  server with a missing secret is saved enabled: false.
+  - Review fixes (2026-10-31): an MCP item's `target` is the whole command (`command arg ...`, args with whitespace or
+    quotes JSON-quoted) or URL, never cut: over 400 chars (`MCP_TARGET_MAX`) or with control/zero-width/bidi characters
+    it gets a `blockedReason` ('Command too long to review') and cannot be applied (`sanitize.ts` `reviewTarget`). The
+    discovery digest binds a local or registry server by `mcpSpecDigest` (transport, command, args, url, env and header
+    names with registry non-secret values, secretEnv, secretHeaders), so any change to the tail or a secret slot makes
+    an apply after re-discovery stale. Registry remotes must be https and not a private-IP literal; `spec.url` is
+    stored scrubbed. GitHub skill folder names must start with a letter or digit ("." / ".." refused). After an apply
+    the review refresh takes one snapshot slot only (`Snapshot.refresh`), so many applies from one recommend result
+    never go stale. `capabilities:dismiss` takes `recommendationId` and/or `candidateId` and also works on a fresh
+    recommend result (a stub review bound to that discovery holds the dismissal). `capabilities:setGrant` was removed
+    (no renderer caller). Team reviews at rest (`<data>/team-reviews/<pid>.json`, plain JSON) hold the discovery items
+    (secret-free: names, display paths, scrubbed URLs, full MCP targets with credential args dropped) and redacted
+    evidence strings (text only, no keys or tokens), never secret values. Verified by unit tests only.
   ORGAI_MOCK=1 uses `<data>/mock-home` and outside fixtures; the first finished mock work run fills the review from the
   keyword fallback without tokens. Verified by unit tests and the mock adapter (claude.ts / codex.ts `complete()`
   accept 'recommend' with no tools and an honoured signal, read and fake-tested). Unverified: real config files on a
