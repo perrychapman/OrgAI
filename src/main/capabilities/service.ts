@@ -161,7 +161,6 @@ const LABELS: Partial<Record<CapabilitySourceId, string>> = {
   'repo-mcp': 'Repository MCP servers',
   'claude-desktop-mcp': 'Claude Desktop MCP servers',
   'cursor-mcp': 'Cursor MCP servers',
-  'vscode-mcp': 'VS Code MCP servers',
   'codex-mcp': 'Codex MCP servers',
   project: 'This project',
   library: 'Your library',

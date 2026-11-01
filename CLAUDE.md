@@ -113,6 +113,22 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
     readable by any agent with Read or Bash. Verified by unit tests and the mock adapter only.
 
+- Team assistant (`src/main/capabilities/`, `CapabilityService`, capabilities:* IPC; see ARCHITECTURE.md "Capabilities
+  (Team assistant)"): token-free discover (this project, repo, other tools' skill folders and MCP configs on this
+  computer, libraries, curated connectors; MCP Registry and `anthropics/skills` only with includeOutside), a one-shot
+  `complete({ kind: 'recommend' })` on the everyday tier with a deterministic keyword fallback, digest-bound apply from
+  main's own snapshot (renderer sends ids only; send `candidateId` with `recommendationId`, omit `access` to keep the
+  recommendation's), one undo per project, `setGrant`, and the persisted Team review (`<data>/team-reviews/`, auto
+  'ai' by default: model step bounded by everyRuns, tokenBudget and new evidence). Automatic reviews send the model
+  local-machine items as kind + name + redacted target only (`TeamReview.modelInput: 'proactive'`); the manual
+  Re-check sends everything ('full'). Local config files are untrusted: never spawned, secret names only, credential
+  args dropped, outside candidates pinned only. A local MCP server with a missing secret is saved enabled: false.
+  ORGAI_MOCK=1 uses `<data>/mock-home` and outside fixtures; the first finished mock work run fills the review from the
+  keyword fallback without tokens. Verified by unit tests and the mock adapter (claude.ts / codex.ts `complete()`
+  accept 'recommend' with no tools and an honoured signal, read and fake-tested). Unverified: real config files on a
+  user's machine, the live GitHub contents API (unauthenticated, rate limit 60/h), the live registry shape, the live
+  recommend call on Claude and Codex.
+
 ## Renderer
 
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
