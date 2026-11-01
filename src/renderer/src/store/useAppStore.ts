@@ -1,5 +1,6 @@
 import { normalizeView } from '../lib/teamView'
 import { isTeamSurfaceRun } from '../lib/runSurface'
+import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
@@ -132,7 +133,7 @@ function emptyRun(summary: RunSummary): RunState {
 }
 
 /** Where an MCP deep link should land after the view switches (cleared by the receiving section). */
-export type McpFocus = { kind: 'library'; libraryId?: string } | { kind: 'server'; projectId: string; serverId?: string }
+export type McpFocus = { kind: 'library'; libraryId?: string } | { kind: 'server'; projectId: string; serverId?: string; /** Open the server's edit form with its first missing secret focused. */ edit?: boolean }
 
 interface AppState {
   projects: Project[]
@@ -145,7 +146,7 @@ interface AppState {
   /** Show the app settings MCP library, optionally on one entry. */
   openMcpLibrary(libraryId?: string): void
   /** Show a project's settings on its MCP servers section, optionally on one server. */
-  openProjectMcp(projectId: string, serverId?: string): void
+  openProjectMcp(projectId: string, serverId?: string, opts?: { edit?: boolean }): void
   clearMcpFocus(): void
   /** Start the library-level MCP assistant (a harness run); resolves with its summary. */
   startLibraryAssist(instruction?: string): Promise<RunSummary>
@@ -673,6 +674,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
+    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
+      // A Team-tab Architect session: the Team tray switches to Design and focuses that card.
+      useTeamAssistantStore.getState().requestDesign(projectId, runId, requestId ?? null)
+      return
+    }
     set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
   },
 
@@ -874,10 +880,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ view: 'appSettings', mcpFocus: { kind: 'library', libraryId } })
   },
 
-  openProjectMcp(projectId, serverId) {
+  openProjectMcp(projectId, serverId, opts) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     // Connections live in Team > Catalog; TeamView opens that tab and the connections section focuses the row.
-    set({ view: 'team', mcpFocus: { kind: 'server', projectId, serverId } })
+    set({ view: 'team', mcpFocus: { kind: 'server', projectId, serverId, ...(opts?.edit ? { edit: true } : {}) } })
   },
 
   setProjectSettingsPane(projectId, pane) {

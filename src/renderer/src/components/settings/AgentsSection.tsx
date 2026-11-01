@@ -10,7 +10,7 @@ import { Switch } from '../ui/Switch'
 import { SETTINGS_COPY } from '../../lib/settingsCopy'
 import { ClampedNumber } from './ClampedNumber'
 import { SettingsCard } from './SettingsCard'
-import { SettingsSection } from './SettingsSection'
+import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** Short names for the select; the full wording from PERMISSION_MODE_OPTIONS is the one line shown for the selected mode. */
 const SHORT: Record<PermissionMode, string> = {
@@ -107,6 +107,10 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
             more="Orchestrators of this project's runs can read each other's prompts and exchange short notes. On by default; messages between projects need it on in both."
             control={<Switch checked={runMessagingOn(project)} label="Let runs message each other" describedBy={settingDescId(row('msg-row'))} onChange={(next) => patch({ runMessaging: next })} />}
           />
+        </SettingsCard>
+        <SettingsGroup title="Team review">
+          <p className="hint">Looks now and then for tools and skills your team is missing, and suggests them on the Team tab.</p>
+          <SettingsCard>
           <SettingRow
             id={row('team-review-row')}
             title="Team review"
@@ -155,7 +159,8 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
               />
             }
           />
-        </SettingsCard>
+          </SettingsCard>
+        </SettingsGroup>
       </SettingsSection>
     </>
   )

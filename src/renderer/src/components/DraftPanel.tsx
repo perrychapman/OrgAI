@@ -4,52 +4,33 @@ import type { Project } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { Button } from './ui/Button'
-import ProposalCard from './ProposalCard'
-import QuestionCard from './QuestionCard'
+import ArchitectDecisions from './team/ArchitectDecisions'
+import { useTeamAssistantStore } from '../store/teamAssistant'
+import { isTeamSurfaceRun } from '../lib/runSurface'
 import { cleanIpcError } from '../lib/ipcError'
 import { Checkbox } from './ui/Checkbox'
 import { Textarea } from './ui/Textarea'
 import { useConfirm } from './ui/ConfirmDialog'
 
-/** The open questions and proposals of a Team-tab Architect session, answered in place (the run is not on the Live strip). */
+/** Status line and every open decision of a Team-tab Architect session, answered in place (the run is not on the Live strip). */
 function ArchitectRunCards({ runId, project }: { runId: string; project: Project }): ReactElement | null {
   const run = useAppStore((s) => s.runs[runId])
-  const [error, setError] = useState<string | null>(null)
   if (!run) return null
-  const guard = async (p: Promise<void>): Promise<void> => {
-    setError(null)
-    try {
-      await p
-    } catch (e) {
-      setError(cleanIpcError(e))
-    }
-  }
-  const questions = run.questions ?? []
-  const proposals = run.proposals ?? []
+  const open = (run.questions?.length ?? 0) + run.proposals.length + run.permissions.length + (run.ruleRequests?.length ?? 0) + (run.mergeReviews?.length ?? 0) + (run.mcpInstalls?.length ?? 0)
   const status = run.summary.status
   const live = status === 'starting' || status === 'running'
   return (
     <section className="draft-box stack-2" aria-label="Architect session" data-testid="architect-session" data-status={status}>
       <p className="hint" role="status">
-        {questions.length + proposals.length > 0
-          ? 'The Architect needs your answer.'
+        {open > 0
+          ? `The Architect needs ${open === 1 ? 'your decision' : `your ${open} decisions`}.`
           : live
-            ? 'The Architect is working. Its questions and proposals appear here.'
+            ? 'The Architect is working. Its questions, permission requests and proposals appear here.'
             : status === 'finished' || status === 'idle'
               ? 'The Architect session ended.'
               : 'The Architect session stopped.'}
       </p>
-      {error && (
-        <p className="capability-warn" role="alert">
-          {error}
-        </p>
-      )}
-      {questions.map((q) => (
-        <QuestionCard key={q.id} runId={runId} question={q} who="The Architect" onAnswer={(a) => guard(window.orgai.setup.answer({ runId, questionId: q.id, answer: a }))} />
-      ))}
-      {proposals.map((p) => (
-        <ProposalCard key={p.id} runId={runId} who="The Architect" proposal={p} currentRoles={project.roles} onDecide={(d) => guard(window.orgai.setup.decide({ runId, proposalId: p.id, decision: d }))} />
-      ))}
+      <ArchitectDecisions runId={runId} project={project} />
     </section>
   )
 }
@@ -60,7 +41,19 @@ function ArchitectRunCards({ runId, project }: { runId: string; project: Project
  */
 export default function DraftPanel({ project, variant = 'panel', onClose }: { project: Project; variant?: 'panel' | 'tray'; onClose?: () => void }): ReactElement {
   void onClose
-  const [teamRunId, setTeamRunId] = useState<string | null>(null)
+  const storedRun = useTeamAssistantStore((s) => s.designRun[project.id])
+  const setDesignRun = useTeamAssistantStore((s) => s.setDesignRun)
+  // The newest live Team-surface session of this project when none was started here (a reload, another window).
+  const liveTeamRun = useAppStore((s) => {
+    let best: { id: string; at: number } | null = null
+    for (const r of Object.values(s.runs)) {
+      const sm = r.summary
+      if (sm.projectId !== project.id || !isTeamSurfaceRun(sm) || (sm.status !== 'starting' && sm.status !== 'running' && sm.status !== 'idle')) continue
+      if (!best || sm.startedAt > best.at) best = { id: sm.id, at: sm.startedAt }
+    }
+    return best?.id ?? null
+  })
+  const teamRunId = storedRun ?? liveTeamRun
   const [startError, setStartError] = useState<string | null>(null)
   const tray = variant === 'tray'
   const drafting = useAppStore((s) => s.drafting)
@@ -97,7 +90,7 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
       if (tray) {
         // A Team-tab session stays on the Team tab: no navigation to Live, no run tab.
         const summary = await window.orgai.setup.start({ projectId: project.id, instruction, surface: 'team' })
-        setTeamRunId(summary.id)
+        setDesignRun(project.id, summary.id)
       } else {
         await startSetup(instruction)
       }

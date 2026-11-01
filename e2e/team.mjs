@@ -228,6 +228,24 @@ async function sectionAssistant(page, shot) {
   await tray.locator('[data-testid=team-mode-recommend]').click()
 }
 
+/** Design mode hosts the Architect's permission card; the Needs-you pill brings the user back to it. */
+async function sectionDesignDecisions(page, shot) {
+  const tray = page.locator('[data-testid=team-assistant]')
+  await tray.locator('[data-testid=architect-open]').click()
+  const card = tray.locator('[data-testid=architect-decisions] .decision-card').first()
+  await card.waitFor({ timeout: 20_000 })
+  check(true, 'the Architect permission card shows in the Design tray')
+  check(!/R\?/.test(await tray.locator('[data-testid=architect-decisions]').innerText()), 'the Architect card is not labelled R?')
+  await shot('design-permission')
+  await tray.locator('[data-testid=team-mode-recommend]').click()
+  await page.locator('[data-testid=topbar-needs-you]').click()
+  await tray.locator('[data-testid=architect-decisions] .decision-card').first().waitFor({ timeout: 5_000 })
+  check((await tray.getAttribute('data-mode')) === 'design', 'the Needs-you pill switches the tray to Design')
+  await sleep(300)
+  check(await page.evaluate(() => !!document.activeElement?.closest('[data-testid=architect-decisions]')), 'the Needs-you pill focuses the Architect card')
+  await tray.locator('[data-testid=team-mode-recommend]').click()
+}
+
 const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
@@ -237,6 +255,7 @@ try {
   await sectionSkills(page)
   await sectionConnections(page, shot)
   await sectionAssistant(page, shot)
+  await sectionDesignDecisions(page, shot)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
   await page.locator('[data-testid=capability-chooser]').waitFor()
@@ -245,12 +264,18 @@ try {
   for (const [w, h] of SIZES) {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
     await sleep(500)
+    await page.locator('[data-testid=team-recommend]').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
+    await sleep(400)
+    const tg = await page.evaluate(() => ({ tray: document.querySelector('.editor .frame-tray')?.getBoundingClientRect().height ?? 0, frame: document.querySelector('.editor .frame-grid')?.getBoundingClientRect().height ?? 1 }))
+    check(tg.tray >= Math.min(260, tg.frame * 0.4), `the tray has room for the results at ${w}x${h}`, JSON.stringify(tg))
     for (const theme of THEMES) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await sleep(300)
       const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(m.sw <= m.cw, `no horizontal scroll at ${w}x${h} ${theme}`, JSON.stringify(m))
       await shot(`role-block-${w}x${h}-${theme}`)
+      await shot(`tray-results-${w}x${h}-${theme}`)
       const g = await page.evaluate(() => ({ stage: document.querySelector('.editor .frame-stage')?.getBoundingClientRect().height ?? 0, stageW: document.querySelector('.editor .frame-stage')?.getBoundingClientRect().width ?? 0 }))
       check(g.stage >= 140 && g.stageW >= 280, `the stage keeps its room beside the open tray at ${w}x${h}`, JSON.stringify(g))
     }
