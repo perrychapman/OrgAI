@@ -113,7 +113,7 @@ describe('quick runs', () => {
     expect(run.quick).toEqual(info)
     expect(store.get(run.id)?.quick).toEqual(info)
     const ctx = ctxs[0]
-    expect(ctx.mcpServers()).toEqual([])
+    expect(ctx.mcpServers?.()).toEqual([])
     expect(ctx.plugins?.()).toEqual([])
     expect(ctx.skills?.()).toEqual([])
     expect(skills.forRun).not.toHaveBeenCalled()
@@ -235,7 +235,7 @@ describe('skill assistant runs', () => {
     expect(ctx.skillCatalog?.()).toBe(catalog)
     ctx.readSkill?.({ libraryId: 'lib1' })
     expect(read).toHaveBeenCalledWith(null, { libraryId: 'lib1' })
-    expect(ctx.mcpServers()).toEqual([])
+    expect(ctx.mcpServers?.()).toEqual([])
     expect(ctx.requestMcpInstall).toBeUndefined()
   })
 

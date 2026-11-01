@@ -503,7 +503,7 @@ export class RunManager {
    * the adapter's default. Never for the harness project.
    */
   async completeForProject(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
-    if (isVirtualProjectId(project.id)) throw new Error('The built-in assistant projects have no model connection for completions.')
+    if (isVirtualProjectId(project.id)) throw new Error('The harness and the built-in assistant projects have no model connection for completions.')
     const { adapter, choice } = this.choose(project, 'setup')
     const connection = this.options.resolveConnection?.(project, choice)
     let model: string | undefined
