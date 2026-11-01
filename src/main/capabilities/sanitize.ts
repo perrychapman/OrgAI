@@ -8,11 +8,18 @@ import { CAPABILITY_DESCRIPTION_MAX, type CapabilityKind, type CapabilityOrigin,
  * stdio arg through isKeyLikeArg.
  */
 
+// C0/C1 controls, soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator, zero-width,
+// bidi overrides/isolates, word joiner and invisible operators, BOM, Hangul fillers and tag characters.
+const HIDDEN_CLASS = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]'
+const HIDDEN_RUN = new RegExp(`${HIDDEN_CLASS}+`, 'gu')
+/** True when the text holds a control, zero-width, bidi or other invisible character. */
+export const HIDDEN_CHARS = new RegExp(HIDDEN_CLASS, 'u')
+
 /** One line, control and bidi characters removed, at most `max` chars. Non-strings become ''. */
 export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string {
   if (typeof s !== 'string') return ''
   // C0/C1 controls, zero-width and bidi overrides/isolates.
-  const cleaned = s.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const cleaned = s.replace(HIDDEN_RUN, ' ').replace(/\s+/g, ' ').trim()
   return cleaned.length > max ? `${cleaned.slice(0, Math.max(0, max - 1)).trimEnd()}…` : cleaned
 }
 
@@ -174,22 +181,29 @@ export function capabilityId(origin: CapabilityOrigin, kind: CapabilityKind, sou
 
 /** The longest MCP command or address the Team assistant shows for review; anything longer is blocked, never cut. */
 export const MCP_TARGET_MAX = 400
-// C0/C1 controls, zero-width and bidi overrides/isolates (what clampText would silently rewrite).
-const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/
 
 /**
- * The exact review text of an MCP server: `command arg arg` (an arg that is empty or has whitespace or a quote is
- * JSON-quoted so the split stays visible) or the URL. Never truncated: over MCP_TARGET_MAX chars, or with control,
- * zero-width or bidi characters, it comes back with a blockedReason (the item cannot be applied) and a clamped
- * display string.
+ * The exact review text of an MCP server: `NAME=value command arg arg` (the command and any arg or value that is
+ * empty or has whitespace or a quote is JSON-quoted so the split stays visible) or `url -H "Name: value"`. Never
+ * truncated: over MCP_TARGET_MAX chars, or with control, zero-width, bidi or other invisible characters, it comes back
+ * with a blockedReason (the item cannot be applied) and a clamped display string.
  */
-export function reviewTarget(spec: Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url'>): { target: string; blockedReason?: string } {
+export function reviewTarget(spec: Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url' | 'env' | 'headers'>): { target: string; blockedReason?: string } {
   const quote = (a: string): string => (a === '' || /[\s"']/.test(a) ? JSON.stringify(a) : a)
-  const raw = spec.transport === 'stdio' ? [spec.command ?? '', ...(spec.args ?? [])] : [spec.url ?? '']
-  const full = spec.transport === 'stdio' ? [spec.command ?? '', ...(spec.args ?? []).map(quote)].join(' ') : (spec.url ?? '')
+  const env = Object.entries(spec.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  const headers = Object.entries(spec.headers ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  const stdio = spec.transport === 'stdio'
+  // Values that reach the server (registry env defaults, fixed headers) are shown too: NAME=value before the command,
+  // -H "Name: value" after the URL. Local configs never carry values (names only), so their text is just the command.
+  const raw = stdio
+    ? [...env.flat(), spec.command ?? '', ...(spec.args ?? [])]
+    : [spec.url ?? '', ...headers.flat()]
+  const full = stdio
+    ? [...env.map(([k, v]) => `${k}=${quote(v)}`), quote(spec.command ?? ''), ...(spec.args ?? []).map(quote)].join(' ')
+    : [spec.url ?? '', ...headers.map(([k, v]) => `-H ${JSON.stringify(`${k}: ${v}`)}`)].join(' ')
   if (raw.some((part) => HIDDEN_CHARS.test(part))) return { target: clampText(full, MCP_TARGET_MAX), blockedReason: 'The command contains hidden or control characters.' }
   if (full.length > MCP_TARGET_MAX) {
-    return { target: clampText(full, MCP_TARGET_MAX), blockedReason: spec.transport === 'stdio' ? 'Command too long to review' : 'Address too long to review' }
+    return { target: clampText(full, MCP_TARGET_MAX), blockedReason: stdio ? 'Command too long to review' : 'Address too long to review' }
   }
   return { target: full }
 }

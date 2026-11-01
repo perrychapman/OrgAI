@@ -836,19 +836,29 @@ export class CapabilityService implements CapabilityServiceApi {
     const snaps = this.snapshots.get(project.id) ?? []
     // The recommendation from the persisted review, else from a recommend() result still held in memory.
     let rec = input.recommendationId ? review?.recommendations.find((r) => r.id === input.recommendationId) : undefined
-    if (!rec && input.recommendationId) for (const s of snaps) if ((rec = s.recs.get(input.recommendationId))) break
+    let recSnap: Snapshot | undefined
+    if (!rec && input.recommendationId) {
+      for (const s of snaps) {
+        if ((rec = s.recs.get(input.recommendationId))) {
+          recSnap = s
+          break
+        }
+      }
+    }
     if (rec && input.candidateId && rec.candidateId !== input.candidateId) throw new Error('The recommendation and the candidate do not match.')
     const candidateId = rec?.candidateId ?? input.candidateId
     if (!candidateId) throw new Error('Recommendation not found')
     let item = review?.discovery.items.find((i) => i.id === candidateId)
     let from: Snapshot | undefined
     if (!item) {
-      from = snaps.find((s) => s.candidates.has(candidateId))
+      // The snapshot that held the recommendation first: the fingerprint must be of the spec the user saw.
+      from = recSnap?.candidates.has(candidateId) ? recSnap : snaps.find((s) => s.candidates.has(candidateId))
       item = from?.candidates.get(candidateId)?.item
     }
     if (!item) throw new Error(input.recommendationId ? 'Recommendation not found' : 'Candidate not found')
     const entry = { candidateId, fingerprint: fingerprintOf(item, candidateId), at: new Date(this.now()).toISOString() }
     // No review yet (a fresh recommend result): start one bound to that discovery so the dismissal persists.
+    if (!review && from!.discovery.partial) throw new Error('That check was cut short. Run the recommendations again.')
     const base: TeamReview = review ?? this.stubReview(project.id, from!)
     const dismissed = [...base.dismissed.filter((d) => d.candidateId !== candidateId), entry].slice(-TEAM_REVIEW_MAX_DISMISSED)
     const recommendations = base.recommendations.filter((r) => r.id !== rec?.id && r.candidateId !== candidateId)
@@ -872,7 +882,8 @@ export class CapabilityService implements CapabilityServiceApi {
       evidence: [],
       dismissed: [],
       pendingCount: 0,
-      runsSinceModel: 0
+      runsSinceModel: 0,
+      stub: true
     }
   }
 
@@ -893,7 +904,7 @@ export class CapabilityService implements CapabilityServiceApi {
     const trigger = input.trigger === 'opened' ? 'opened' : 'manual'
     if (trigger === 'opened') {
       const prev = readReview(this.deps.dataDir, project.id)
-      if (prev && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return prev
+      if (prev && !prev.stub && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return prev
     }
     const requestId = this.requestIdOf(input.requestId)
     const ac = this.track(requestId)

@@ -118,3 +118,22 @@ describe('reviewTarget and mcpSpecDigest', () => {
     expect(mcpSpecDigest({ ...base, secretEnv: ['A', 'B'] })).toBe(mcpSpecDigest({ ...base, secretEnv: ['B', 'A'] }))
   })
 })
+
+describe('reviewTarget follow-up', () => {
+  it('quotes a command with spaces so it cannot pass for command plus args', () => {
+    expect(reviewTarget({ transport: 'stdio', command: 'node --require x', args: [] }).target).toBe('"node --require x"')
+    expect(reviewTarget({ transport: 'stdio', command: 'C:/Program Files/x.exe', args: ['--a'] }).target).toBe('"C:/Program Files/x.exe" --a')
+  })
+
+  it('blocks every invisible character range, and clampText strips them', () => {
+    for (const ch of ['\u00ad', '\u034f', '\u061c', '\u115f', '\u180e', '\u2060', '\u2064', '\u3164', '\ufeff', '\u{e0001}', '\u{e007f}']) {
+      expect(reviewTarget({ transport: 'stdio', command: 'npx', args: [`a${ch}b`] }).blockedReason).toMatch(/hidden or control/)
+      expect(clampText(`a${ch}b`)).toBe('a b')
+    }
+  })
+
+  it('shows headers of a remote and env of a command', () => {
+    expect(reviewTarget({ transport: 'http', url: 'https://h.example/mcp', headers: { 'X-Mode': 'ro' } }).target).toBe('https://h.example/mcp -H "X-Mode: ro"')
+    expect(reviewTarget({ transport: 'stdio', command: 'npx', args: ['p'], env: { B: '2', A: '1' } }).target).toBe('A=1 B=2 npx p')
+  })
+})

@@ -3177,6 +3177,11 @@ export interface TeamReview {
    * kind, name and redacted target, never their descriptions or paths. 'full' = the user's manual Re-check: every item.
    */
   modelInput?: TeamReviewModelInput
+  /**
+   * Written only to hold a dismissal made on a fresh capabilities:recommend result before any review ran: nothing
+   * was checked, so the 'opened' throttle never returns it and the next review runs in full.
+   */
+  stub?: true
 }
 
 /** TeamReview.modelInput: which data classes the review's model step was sent. */

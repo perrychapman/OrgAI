@@ -133,18 +133,30 @@ function pickChoice(entry: McpRegistryEntry): RegistryChoice | null {
   return null
 }
 
-function sanitizeSpec(spec: McpServerSpec, entry: McpRegistryEntry): void {
-  const keep = (rec: Record<string, string> | undefined): Record<string, string> | undefined => {
+/**
+ * Env names a registry entry may not preset: loader, interpreter-option, package-index, proxy and path variables
+ * change what actually runs (a hostile package index, an injected --require), so they are dropped with a note.
+ */
+const RISKY_ENV = /^(?:PATH|PATHEXT|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|COMSPEC|SHELL|TMPDIR|TEMP|TMP|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|LD_\w*|DYLD_\w*|PYTHON\w*|NPM_CONFIG_\w*|YARN_\w*|PNPM_\w*|UV_\w*|PIP_\w*|DOCKER_\w*|BUN_\w*|DENO_\w*|RUBYOPT|RUBYLIB|GEM_\w*|PERL5\w*|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GIT_\w*|SSL_CERT_\w*|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|\w*_PROXY)$/i
+/** Headers a registry entry may not preset (they change routing or identity). */
+const RISKY_HEADER = /^(?:host|cookie|forwarded|x-forwarded-\w+|proxy-\w+)$/i
+
+function sanitizeSpec(spec: McpServerSpec, entry: McpRegistryEntry, notes: string[]): void {
+  const keep = (rec: Record<string, string> | undefined, risky: RegExp): Record<string, string> | undefined => {
     if (!rec) return undefined
     const out: Record<string, string> = {}
     for (const [k, v] of Object.entries(rec)) {
+      if (risky.test(k)) {
+        notes.push(`Left out the preset ${clampText(k, 60)}: it changes what runs.`)
+        continue
+      }
       if (!validKeyName(k) || isSecretName(k) || isKeyLikeValue(v)) continue
       out[k] = clampText(v, 200)
     }
     return Object.keys(out).length ? out : undefined
   }
-  const env = keep(spec.env)
-  const headers = keep(spec.headers)
+  const env = keep(spec.env, RISKY_ENV)
+  const headers = keep(spec.headers, RISKY_HEADER)
   if (env) spec.env = env
   else delete spec.env
   if (headers) spec.headers = headers
@@ -162,11 +174,15 @@ function buildRegistryCandidate(entry: McpRegistryEntry): DiscoveredCandidate | 
   if (!choice) return null
   let spec: McpServerSpec
   let blockedReason: string | undefined
+  const notes: string[] = []
   try {
     spec = specFromRegistry(entry, choice)
-    sanitizeSpec(spec, entry)
+    sanitizeSpec(spec, entry, notes)
+    // A package identifier is interpolated into the args: one that looks like a flag would become an option.
+    const pkg = choice.type === 'package' ? entry.packages[choice.index] : undefined
+    if (pkg && !/^[A-Za-z0-9@][^\s]*$/.test(pkg.identifier)) blockedReason = 'The package name is not a plain package name.'
     const errors = validateSpec(spec)
-    if (errors.length) blockedReason = clampText(errors[0], 200)
+    if (errors.length && !blockedReason) blockedReason = clampText(errors[0], 200)
   } catch (e) {
     blockedReason = clampText((e as Error).message, 200)
     spec = { id: '', name: nameFromRegistry(entry.name), transport: 'stdio', enabled: false, source: 'registry', addedAt: '' }
@@ -184,8 +200,10 @@ function buildRegistryCandidate(entry: McpRegistryEntry): DiscoveredCandidate | 
     if (!scrubbed || !host) blockedReason = 'The server address is not a plain https address.'
     else if (!scrubbed.startsWith('https://')) blockedReason = 'The server address is not https.'
     else if (isPrivateHost(host)) blockedReason = 'The server address points to a private network.'
-    if (scrubbed) spec.url = scrubbed
-    else delete spec.url
+    if (scrubbed) {
+      spec.url = scrubbed
+      if (spec.registry) spec.registry = { ...spec.registry, identifier: scrubbed }
+    } else delete spec.url
   }
   if (entry.status === 'deprecated') blockedReason = 'Deprecated in the MCP Registry.'
   // The review text is the whole command (or URL) the apply would save; too long or hidden characters block it.
@@ -209,7 +227,7 @@ function buildRegistryCandidate(entry: McpRegistryEntry): DiscoveredCandidate | 
     flags,
     needsSecrets: [...(spec.secretEnv ?? []), ...(spec.secretHeaders ?? [])],
     ...(blockedReason ? { blockedReason } : {}),
-    notes: ['From the MCP Registry. Unverified: check it before use.']
+    notes: ['From the MCP Registry. Unverified: check it before use.', ...notes.map((n) => clampText(n, 200))].filter((n, i, all) => all.indexOf(n) === i).slice(0, 8)
   }
   return { item, payload: { type: 'mcpSpec', spec } }
 }

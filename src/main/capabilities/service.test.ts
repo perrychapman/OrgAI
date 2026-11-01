@@ -907,3 +907,18 @@ describe('review fixes', () => {
     expect((await rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })).pendingCount).toBe(0)
   })
 })
+
+describe('stub review (follow-up)', () => {
+  it('a dismissal stub never satisfies the opened throttle', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const cand = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValue({ text: answer([{ candidateId: cand.id, roleIds: [ENG], reason: 'Fits.' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    const stub = rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id })
+    expect(stub.stub).toBe(true)
+    const opened = await rig.svc.review({ projectId: 'p1', trigger: 'opened' })
+    expect(opened.stub).toBeUndefined()
+    expect(opened.dismissed.map((x) => x.candidateId)).toEqual([cand.id])
+    expect(opened.recommendations.some((r) => r.candidateId === cand.id)).toBe(false)
+  })
+})

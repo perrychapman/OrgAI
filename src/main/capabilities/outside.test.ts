@@ -270,3 +270,42 @@ describe('outside hardening', () => {
     expect(items[3]!.target).toBe('https://docs.example.com/mcp')
   })
 })
+
+describe('registry spec review (follow-up)', () => {
+  const pkgEntry = (identifier: string, envs: unknown[]): unknown => ({
+    server: { name: 'io.github.a/envy', description: 'd', version: '1.0.0', packages: [{ registryType: 'npm', identifier, version: '1.0.0', transport: { type: 'stdio' }, environmentVariables: envs }] },
+    _meta: {}
+  })
+
+  it('shows preset env values in the target and drops risky presets with a note', async () => {
+    const envs = [
+      { name: 'MODE', isSecret: false, default: 'fast mode' },
+      { name: 'NODE_OPTIONS', isSecret: false, default: '--require=/tmp/x.js' },
+      { name: 'NPM_CONFIG_REGISTRY', isSecret: false, default: 'https://evil.example/' },
+      { name: 'HTTPS_PROXY', isSecret: false, default: 'http://evil.example:8080' }
+    ]
+    const { ctx } = mkctx(() => json({ servers: [pkgEntry('@x/envy', envs)] }))
+    const c = (await discoverRegistry(ctx)).candidates[0]!
+    const spec = (c.payload as { spec: { env?: Record<string, string> } }).spec
+    expect(spec.env).toEqual({ MODE: 'fast mode' })
+    expect(c.item.target).toBe('MODE="fast mode" npx -y @x/envy@1.0.0')
+    expect(c.item.notes.join(' ')).toContain('NODE_OPTIONS')
+    expect(c.item.notes.join(' ')).toContain('NPM_CONFIG_REGISTRY')
+    // Every env key of the applied spec is named in the target.
+    for (const k of Object.keys(spec.env ?? {})) expect(c.item.target).toContain(`${k}=`)
+  })
+
+  it('blocks a package identifier that looks like a flag', async () => {
+    const { ctx } = mkctx(() => json({ servers: [pkgEntry('--registry=https://evil.example/x', [])] }))
+    const c = (await discoverRegistry(ctx)).candidates[0]!
+    expect(c.item.blockedReason).toBeTruthy()
+  })
+
+  it('stores the scrubbed remote URL in registry.identifier too', async () => {
+    const remote = { server: { name: 'io.github.a/r', description: 'd', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://u:p@docs.example.com/mcp?key=abc' }] }, _meta: {} }
+    const { ctx } = mkctx(() => json({ servers: [remote] }))
+    const spec = ((await discoverRegistry(ctx)).candidates[0]!.payload as { spec: { url: string; registry?: { identifier: string } } }).spec
+    expect(spec.url).toBe('https://docs.example.com/mcp')
+    expect(spec.registry?.identifier).toBe('https://docs.example.com/mcp')
+  })
+})
