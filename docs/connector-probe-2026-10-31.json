@@ -1,0 +1,1672 @@
+{
+  "probedAt": "2026-11-01T01:22:23.769Z",
+  "tool": "scripts/probe-connectors.mjs",
+  "note": "Token-free, no credentials sent. Advertised metadata only; no sign-in was attempted.",
+  "results": [
+    {
+      "connector": "gmail",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://gmailmcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://gmailmcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.drafts",
+        "https://www.googleapis.com/auth/gmail.drafts.create",
+        "https://www.googleapis.com/auth/gmail.drafts.readonly",
+        "https://www.googleapis.com/auth/gmail.labels",
+        "https://www.googleapis.com/auth/gmail.metadata",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.settings.basic"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "google-calendar",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://calendarmcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://calendarmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://calendarmcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.acls",
+        "https://www.googleapis.com/auth/calendar.calendarlist",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.calendars",
+        "https://www.googleapis.com/auth/calendar.calendars.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.settings.readonly"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "google-drive",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://drivemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://drivemcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "google-docs",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://docsmcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://docsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://docsmcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/documents"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "google-sheets",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://sheetsmcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/spreadsheets"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "google-slides",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://slidesmcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://slidesmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://slidesmcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/presentations"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "google-chat",
+      "variant": "readonly",
+      "auth": "oauthClient",
+      "url": "https://chatmcp.googleapis.com/mcp/v1",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://chatmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1",
+      "resource": "https://chatmcp.googleapis.com/mcp/v1",
+      "resourceScopes": [
+        "https://www.googleapis.com/auth/chat.spaces",
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.memberships",
+        "https://www.googleapis.com/auth/chat.memberships.readonly",
+        "https://www.googleapis.com/auth/chat.messages",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.messages.create",
+        "https://www.googleapis.com/auth/chat.users.readstate",
+        "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+        "https://www.googleapis.com/auth/chat.users.spacesettings"
+      ],
+      "authorizationServer": "https://accounts.google.com/",
+      "asMetadataUrl": "https://accounts.google.com/.well-known/oauth-authorization-server",
+      "issuer": "https://accounts.google.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": true
+    },
+    {
+      "connector": "slack",
+      "variant": "full",
+      "auth": "oauthClient",
+      "url": "https://mcp.slack.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.slack.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.slack.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.slack.com",
+      "resourceScopes": [
+        "canvases:read",
+        "canvases:write",
+        "channels:history",
+        "channels:read",
+        "channels:write",
+        "chat:write",
+        "emoji:read",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "groups:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "lists:read",
+        "lists:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "reactions:read",
+        "reactions:write",
+        "search:read.files",
+        "search:read.im",
+        "search:read.mpim",
+        "search:read.private",
+        "search:read.public",
+        "search:read.users",
+        "users:read",
+        "users:read.email"
+      ],
+      "authorizationServer": "https://mcp.slack.com",
+      "asMetadataUrl": "https://mcp.slack.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.slack.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "canvases:read",
+        "canvases:write",
+        "channels:history",
+        "channels:read",
+        "channels:write",
+        "chat:write",
+        "emoji:read",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "groups:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "lists:read",
+        "lists:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "reactions:read",
+        "reactions:write",
+        "search:read.files",
+        "search:read.im",
+        "search:read.mpim",
+        "search:read.private",
+        "search:read.public",
+        "search:read.users",
+        "users:read",
+        "users:read.email"
+      ]
+    },
+    {
+      "connector": "notion",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.notion.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", scope=\"default\"",
+      "resourceMetadataUrl": "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.notion.com/mcp",
+      "resourceScopes": [
+        "default"
+      ],
+      "authorizationServer": "https://mcp.notion.com",
+      "asMetadataUrl": "https://mcp.notion.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.notion.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.notion.com/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "default",
+        "ema_issuer:manage"
+      ]
+    },
+    {
+      "connector": "linear",
+      "variant": "readonly",
+      "auth": "oauth",
+      "url": "https://mcp.linear.app/mcp/readonly",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.linear.app/.well-known/oauth-protected-resource/mcp/readonly\", scope=\"read write\"",
+      "resourceMetadataUrl": "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp/readonly",
+      "resource": "https://mcp.linear.app/mcp/readonly",
+      "resourceScopes": [
+        "read"
+      ],
+      "authorizationServer": "https://mcp.linear.app",
+      "asMetadataUrl": "https://mcp.linear.app/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.linear.app",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.linear.app/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "read",
+        "write",
+        "openid",
+        "email"
+      ]
+    },
+    {
+      "connector": "linear",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.linear.app/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.linear.app/.well-known/oauth-protected-resource/mcp\", scope=\"read write\"",
+      "resourceMetadataUrl": "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.linear.app/mcp",
+      "resourceScopes": [
+        "read",
+        "write"
+      ],
+      "authorizationServer": "https://mcp.linear.app",
+      "asMetadataUrl": "https://mcp.linear.app/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.linear.app",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.linear.app/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "read",
+        "write",
+        "openid",
+        "email"
+      ]
+    },
+    {
+      "connector": "github",
+      "variant": "readonly",
+      "auth": "token",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_request\", error_description=\"No access token was provided in this request\", resource_metadata=\"https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/\"",
+      "resourceMetadataUrl": "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/",
+      "resource": "https://api.githubcopilot.com/mcp/",
+      "resourceScopes": [
+        "repo",
+        "read:org",
+        "read:user",
+        "user:email",
+        "read:packages",
+        "write:packages",
+        "read:project",
+        "project",
+        "gist",
+        "notifications"
+      ],
+      "authorizationServer": "https://github.com/login/oauth",
+      "asMetadataUrl": "https://github.com/.well-known/oauth-authorization-server/login/oauth",
+      "issuer": "https://github.com/login/oauth",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "offline_access"
+      ]
+    },
+    {
+      "connector": "github",
+      "variant": "full",
+      "auth": "token",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_request\", error_description=\"No access token was provided in this request\", resource_metadata=\"https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/\"",
+      "resourceMetadataUrl": "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/",
+      "resource": "https://api.githubcopilot.com/mcp/",
+      "resourceScopes": [
+        "repo",
+        "read:org",
+        "read:user",
+        "user:email",
+        "read:packages",
+        "write:packages",
+        "read:project",
+        "project",
+        "gist",
+        "notifications"
+      ],
+      "authorizationServer": "https://github.com/login/oauth",
+      "asMetadataUrl": "https://github.com/.well-known/oauth-authorization-server/login/oauth",
+      "issuer": "https://github.com/login/oauth",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "offline_access"
+      ]
+    },
+    {
+      "connector": "sentry",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.sentry.dev/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp\"",
+      "resourceMetadataUrl": "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.sentry.dev/mcp",
+      "resourceScopes": [
+        "org:read",
+        "project:write",
+        "team:write",
+        "event:write",
+        "alerts:write"
+      ],
+      "authorizationServer": "https://mcp.sentry.dev",
+      "asMetadataUrl": "https://mcp.sentry.dev/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.sentry.dev",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.sentry.dev/oauth/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "org:read",
+        "project:write",
+        "team:write",
+        "event:write",
+        "alerts:write"
+      ]
+    },
+    {
+      "connector": "stripe",
+      "variant": "oauth",
+      "auth": "oauth",
+      "url": "https://mcp.stripe.com",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.stripe.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.stripe.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.stripe.com",
+      "resourceScopes": [
+        "mcp"
+      ],
+      "authorizationServer": "https://access.stripe.com/mcp",
+      "asMetadataUrl": "https://access.stripe.com/.well-known/oauth-authorization-server/mcp",
+      "issuer": "https://access.stripe.com/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://access.stripe.com/mcp/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp"
+      ]
+    },
+    {
+      "connector": "stripe",
+      "variant": "key",
+      "auth": "token",
+      "url": "https://mcp.stripe.com",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.stripe.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.stripe.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.stripe.com",
+      "resourceScopes": [
+        "mcp"
+      ],
+      "authorizationServer": "https://access.stripe.com/mcp",
+      "asMetadataUrl": "https://access.stripe.com/.well-known/oauth-authorization-server/mcp",
+      "issuer": "https://access.stripe.com/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://access.stripe.com/mcp/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp"
+      ]
+    },
+    {
+      "connector": "figma",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.figma.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"",
+      "resourceMetadataUrl": "https://mcp.figma.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.figma.com/mcp",
+      "resourceScopes": [
+        "mcp:connect"
+      ],
+      "authorizationServer": "https://api.figma.com",
+      "asMetadataUrl": "https://api.figma.com/.well-known/oauth-authorization-server",
+      "issuer": "https://api.figma.com",
+      "dcr": true,
+      "registrationEndpoint": "https://api.figma.com/v1/oauth/mcp/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "mcp:connect"
+      ]
+    },
+    {
+      "connector": "atlassian",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.atlassian.com/v2/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp\"",
+      "resourceMetadataUrl": "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp",
+      "resource": "https://mcp.atlassian.com/v2/mcp",
+      "resourceScopes": [
+        "read:me",
+        "read:account",
+        "offline_access",
+        "email",
+        "read:jira:agent-interface",
+        "write:jira:agent-interface",
+        "search:jira:agent-interface",
+        "delete:jira:agent-interface",
+        "manage:jira:agent-interface",
+        "read:confluence:agent-interface",
+        "write:confluence:agent-interface",
+        "search:confluence:agent-interface",
+        "search:rovo:agent-interface",
+        "search:code:agent-interface",
+        "read:jsm:agent-interface",
+        "write:jsm:agent-interface",
+        "read:all:twg",
+        "write:all:twg",
+        "read:goals:agent-interface",
+        "write:goals:agent-interface",
+        "read:projects:agent-interface",
+        "write:projects:agent-interface",
+        "read:bitbucket:agent-interface",
+        "write:bitbucket:agent-interface",
+        "read:loom:agent-interface",
+        "write:loom:agent-interface",
+        "read:talent:agent-interface",
+        "write:talent:agent-interface",
+        "read:jira-align:agent-interface",
+        "write:jira-align:agent-interface"
+      ],
+      "authorizationServer": "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+      "asMetadataUrl": "https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+      "issuer": "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+      "dcr": true,
+      "registrationEndpoint": "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/dcr/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "intercom",
+      "variant": "us",
+      "auth": "oauth",
+      "url": "https://mcp.intercom.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", error=\"invalid_token\", error_description=\"Missing or invalid access token\", resource_metadata=\"https://mcp.intercom.com/.well-known/oauth-protected-resource/mcp\", scope=\"mcp oper...",
+      "resourceMetadataUrl": "https://mcp.intercom.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.intercom.com/mcp",
+      "resourceScopes": [
+        "mcp",
+        "operator"
+      ],
+      "authorizationServer": "https://mcp.intercom.com",
+      "asMetadataUrl": "https://mcp.intercom.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.intercom.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.intercom.com/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp",
+        "operator"
+      ]
+    },
+    {
+      "connector": "intercom",
+      "variant": "eu",
+      "auth": "oauth",
+      "url": "https://mcp.eu.intercom.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", error=\"invalid_token\", error_description=\"Missing or invalid access token\", resource_metadata=\"https://mcp.eu.intercom.com/.well-known/oauth-protected-resource/mcp\", scope=\"mcp o...",
+      "resourceMetadataUrl": "https://mcp.eu.intercom.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.eu.intercom.com/mcp",
+      "resourceScopes": [
+        "mcp",
+        "operator"
+      ],
+      "authorizationServer": "https://mcp.eu.intercom.com",
+      "asMetadataUrl": "https://mcp.eu.intercom.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.eu.intercom.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.eu.intercom.com/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp",
+        "operator"
+      ]
+    },
+    {
+      "connector": "supabase",
+      "variant": "readonly",
+      "auth": "oauth",
+      "url": "https://mcp.supabase.com/mcp?read_only=true",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp?read_only=true\"",
+      "resourceMetadataUrl": "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp?read_only=true",
+      "resource": "https://mcp.supabase.com/mcp?read_only=true",
+      "resourceScopes": [
+        "organizations:read",
+        "projects:read",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "environment:read",
+        "storage:read"
+      ],
+      "authorizationServer": "https://api.supabase.com",
+      "asMetadataUrl": "https://api.supabase.com/.well-known/oauth-authorization-server",
+      "issuer": "https://api.supabase.com",
+      "dcr": true,
+      "registrationEndpoint": "https://api.supabase.com/platform/oauth/apps/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256",
+        "plain"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:write",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    {
+      "connector": "supabase",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.supabase.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp\"",
+      "resourceMetadataUrl": "https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.supabase.com/mcp",
+      "resourceScopes": [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:write",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+        "storage:read",
+        "storage:write"
+      ],
+      "authorizationServer": "https://api.supabase.com",
+      "asMetadataUrl": "https://api.supabase.com/.well-known/oauth-authorization-server",
+      "issuer": "https://api.supabase.com",
+      "dcr": true,
+      "registrationEndpoint": "https://api.supabase.com/platform/oauth/apps/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256",
+        "plain"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:write",
+        "database:read",
+        "analytics:read",
+        "secrets:read",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    {
+      "connector": "deepwiki",
+      "variant": "public",
+      "auth": "none",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "reachable": true,
+      "status": 200,
+      "initializeOk": true
+    },
+    {
+      "connector": "exa",
+      "variant": "free",
+      "auth": "none",
+      "url": "https://mcp.exa.ai/mcp",
+      "reachable": true,
+      "status": 200,
+      "initializeOk": true
+    },
+    {
+      "connector": "exa",
+      "variant": "key",
+      "auth": "token",
+      "url": "https://mcp.exa.ai/mcp",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://mcp.exa.ai/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.exa.ai/mcp",
+      "resourceScopes": [
+        "mcp:tools"
+      ],
+      "authorizationServer": "https://auth.exa.ai",
+      "asMetadataUrl": "https://auth.exa.ai/.well-known/oauth-authorization-server",
+      "issuer": "https://auth.exa.ai",
+      "dcr": true,
+      "registrationEndpoint": "https://auth.exa.ai/api/oauth/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp:tools",
+        "mimic:detect"
+      ]
+    },
+    {
+      "connector": "cloudflare",
+      "variant": "oauth",
+      "auth": "oauth",
+      "url": "https://mcp.cloudflare.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"",
+      "resourceMetadataUrl": "https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.cloudflare.com/mcp",
+      "resourceScopes": [
+        "user:read",
+        "account:read"
+      ],
+      "authorizationServer": "https://mcp.cloudflare.com",
+      "asMetadataUrl": "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.cloudflare.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.cloudflare.com/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "offline_access",
+        "user:read",
+        "account:read",
+        "access-acct.read",
+        "access-acct.revoke",
+        "access-acct.write",
+        "access-app.read",
+        "access-app.revoke",
+        "access-app.write",
+        "access-audit-log.read",
+        "access-certificate.read",
+        "access-certificate.write",
+        "access-custom-page.read",
+        "access-custom-page.write",
+        "access-device-posture.read",
+        "access-device-posture.write",
+        "access-group.read",
+        "access-group.write",
+        "access-idp.read",
+        "access-idp.write",
+        "access-key.read",
+        "access-key.write",
+        "access-org.read",
+        "access-org.revoke",
+        "access-org.write",
+        "access-policy-test.read",
+        "access-policy-test.write",
+        "access-policy.read",
+        "access-policy.write",
+        "access-population.read"
+      ]
+    },
+    {
+      "connector": "cloudflare",
+      "variant": "token",
+      "auth": "token",
+      "url": "https://mcp.cloudflare.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"",
+      "resourceMetadataUrl": "https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.cloudflare.com/mcp",
+      "resourceScopes": [
+        "user:read",
+        "account:read"
+      ],
+      "authorizationServer": "https://mcp.cloudflare.com",
+      "asMetadataUrl": "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.cloudflare.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.cloudflare.com/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "offline_access",
+        "user:read",
+        "account:read",
+        "access-acct.read",
+        "access-acct.revoke",
+        "access-acct.write",
+        "access-app.read",
+        "access-app.revoke",
+        "access-app.write",
+        "access-audit-log.read",
+        "access-certificate.read",
+        "access-certificate.write",
+        "access-custom-page.read",
+        "access-custom-page.write",
+        "access-device-posture.read",
+        "access-device-posture.write",
+        "access-group.read",
+        "access-group.write",
+        "access-idp.read",
+        "access-idp.write",
+        "access-key.read",
+        "access-key.write",
+        "access-org.read",
+        "access-org.revoke",
+        "access-org.write",
+        "access-policy-test.read",
+        "access-policy-test.write",
+        "access-policy.read",
+        "access-policy.write",
+        "access-population.read"
+      ]
+    },
+    {
+      "connector": "datadog",
+      "variant": "us1",
+      "auth": "oauth",
+      "url": "https://mcp.datadoghq.com/v1/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp\"",
+      "resourceMetadataUrl": "https://mcp.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp",
+      "resource": "https://mcp.datadoghq.com/v1/mcp",
+      "authorizationServer": "https://mcp.datadoghq.com/v1/mcp",
+      "asMetadataUrl": "https://mcp.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+      "issuer": "https://mcp.datadoghq.com/v1/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://app.datadoghq.com/api/v2/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp_all"
+      ]
+    },
+    {
+      "connector": "datadog",
+      "variant": "eu1",
+      "auth": "oauth",
+      "url": "https://mcp.datadoghq.eu/v1/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.datadoghq.eu/.well-known/oauth-protected-resource/v1/mcp\"",
+      "resourceMetadataUrl": "https://mcp.datadoghq.eu/.well-known/oauth-protected-resource/v1/mcp",
+      "resource": "https://mcp.datadoghq.eu/v1/mcp",
+      "authorizationServer": "https://mcp.datadoghq.eu/v1/mcp",
+      "asMetadataUrl": "https://mcp.datadoghq.eu/.well-known/oauth-authorization-server/v1/mcp",
+      "issuer": "https://mcp.datadoghq.eu/v1/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://app.datadoghq.eu/api/v2/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp_all"
+      ]
+    },
+    {
+      "connector": "datadog",
+      "variant": "us3",
+      "auth": "oauth",
+      "url": "https://mcp.us3.datadoghq.com/v1/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.us3.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp\"",
+      "resourceMetadataUrl": "https://mcp.us3.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp",
+      "resource": "https://mcp.us3.datadoghq.com/v1/mcp",
+      "authorizationServer": "https://mcp.us3.datadoghq.com/v1/mcp",
+      "asMetadataUrl": "https://mcp.us3.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+      "issuer": "https://mcp.us3.datadoghq.com/v1/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://us3.datadoghq.com/api/v2/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp_all"
+      ]
+    },
+    {
+      "connector": "datadog",
+      "variant": "us5",
+      "auth": "oauth",
+      "url": "https://mcp.us5.datadoghq.com/v1/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.us5.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp\"",
+      "resourceMetadataUrl": "https://mcp.us5.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp",
+      "resource": "https://mcp.us5.datadoghq.com/v1/mcp",
+      "authorizationServer": "https://mcp.us5.datadoghq.com/v1/mcp",
+      "asMetadataUrl": "https://mcp.us5.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+      "issuer": "https://mcp.us5.datadoghq.com/v1/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://us5.datadoghq.com/api/v2/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp_all"
+      ]
+    },
+    {
+      "connector": "datadog",
+      "variant": "ap1",
+      "auth": "oauth",
+      "url": "https://mcp.ap1.datadoghq.com/v1/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.ap1.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp\"",
+      "resourceMetadataUrl": "https://mcp.ap1.datadoghq.com/.well-known/oauth-protected-resource/v1/mcp",
+      "resource": "https://mcp.ap1.datadoghq.com/v1/mcp",
+      "authorizationServer": "https://mcp.ap1.datadoghq.com/v1/mcp",
+      "asMetadataUrl": "https://mcp.ap1.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+      "issuer": "https://mcp.ap1.datadoghq.com/v1/mcp",
+      "dcr": true,
+      "registrationEndpoint": "https://ap1.datadoghq.com/api/v2/oauth2/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "mcp_all"
+      ]
+    },
+    {
+      "connector": "vercel",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.vercel.com",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"No authorization provided\", resource_metadata=\"https://mcp.vercel.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.vercel.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.vercel.com/",
+      "resourceScopes": [
+        "openid"
+      ],
+      "authorizationServer": "https://vercel.com",
+      "asMetadataUrl": "https://vercel.com/.well-known/oauth-authorization-server",
+      "issuer": "https://vercel.com",
+      "dcr": true,
+      "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "openid",
+        "email",
+        "profile",
+        "offline_access",
+        "ema_issuer:manage"
+      ]
+    },
+    {
+      "connector": "asana",
+      "variant": "full",
+      "auth": "oauthClient",
+      "url": "https://mcp.asana.com/v2/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"Asana MCP\", resource_metadata=\"https://mcp.asana.com/.well-known/oauth-protected-resource/v2\", error=\"invalid_request\", error_description=\"Authorization header is required for MCP V2 acc...",
+      "resourceMetadataUrl": "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+      "resource": "https://mcp.asana.com/v2/mcp",
+      "resourceScopes": [
+        "default"
+      ],
+      "authorizationServer": "https://app.asana.com",
+      "asMetadataUrl": "https://app.asana.com/.well-known/oauth-authorization-server",
+      "issuer": "https://app.asana.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "hubspot",
+      "variant": "full",
+      "auth": "oauthClient",
+      "url": "https://mcp.hubspot.com",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.hubspot.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.hubspot.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.hubspot.com",
+      "resourceScopes": [],
+      "authorizationServer": "https://mcp.hubspot.com",
+      "asMetadataUrl": "https://mcp.hubspot.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.hubspot.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": []
+    },
+    {
+      "connector": "box",
+      "variant": "full",
+      "auth": "oauthClient",
+      "url": "https://mcp.box.com",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"Service\", error=\"invalid_request\", error_description=\"The access token was not found.\", resource_metadata=\"https://mcp.box.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.box.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.box.com/",
+      "authorizationServer": "https://api.box.com/",
+      "asMetadataUrl": "https://api.box.com/.well-known/oauth-authorization-server",
+      "issuer": "https://api.box.com",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "paypal",
+      "variant": "live",
+      "auth": "oauth",
+      "url": "https://mcp.paypal.com/http",
+      "reachable": true,
+      "status": 404,
+      "resourceMetadataUrl": "https://mcp.paypal.com/.well-known/oauth-protected-resource/http",
+      "resource": "https://mcp.paypal.com/http",
+      "authorizationServer": "https://mcp.paypal.com",
+      "asMetadataUrl": "https://mcp.paypal.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.paypal.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.paypal.com/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "paypal",
+      "variant": "sandbox",
+      "auth": "oauth",
+      "url": "https://mcp.sandbox.paypal.com/http",
+      "reachable": true,
+      "status": 404,
+      "resourceMetadataUrl": "https://mcp.sandbox.paypal.com/.well-known/oauth-protected-resource/http",
+      "resource": "https://mcp.sandbox.paypal.com/http",
+      "authorizationServer": "https://mcp.sandbox.paypal.com",
+      "asMetadataUrl": "https://mcp.sandbox.paypal.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.sandbox.paypal.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.sandbox.paypal.com/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "microsoft-learn",
+      "variant": "public",
+      "auth": "none",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "reachable": true,
+      "status": 200,
+      "initializeOk": true
+    },
+    {
+      "connector": "aws-knowledge",
+      "variant": "public",
+      "auth": "none",
+      "url": "https://knowledge-mcp.global.api.aws",
+      "reachable": true,
+      "status": 200,
+      "initializeOk": true
+    },
+    {
+      "connector": "context7",
+      "variant": "free",
+      "auth": "none",
+      "url": "https://mcp.context7.com/mcp",
+      "reachable": true,
+      "status": 200,
+      "initializeOk": true
+    },
+    {
+      "connector": "context7",
+      "variant": "key",
+      "auth": "token",
+      "url": "https://mcp.context7.com/mcp",
+      "reachable": true,
+      "status": 200,
+      "resourceMetadataUrl": "https://mcp.context7.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.context7.com/mcp",
+      "resourceScopes": [
+        "profile",
+        "email"
+      ],
+      "authorizationServer": "https://clerk.context7.com",
+      "asMetadataUrl": "https://clerk.context7.com/.well-known/oauth-authorization-server",
+      "issuer": "https://clerk.context7.com",
+      "dcr": true,
+      "registrationEndpoint": "https://clerk.context7.com/oauth/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "openid",
+        "profile",
+        "email",
+        "public_metadata",
+        "private_metadata",
+        "offline_access"
+      ]
+    },
+    {
+      "connector": "granola",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.granola.ai/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"Authorization needed\", resource_metadata=\"https://mcp.granola.ai/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.granola.ai/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.granola.ai/mcp",
+      "resourceScopes": [
+        "mcp"
+      ],
+      "authorizationServer": "https://mcp-auth.granola.ai",
+      "asMetadataUrl": "https://mcp-auth.granola.ai/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp-auth.granola.ai",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp-auth.granola.ai/oauth2/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "email",
+        "offline_access",
+        "openid",
+        "profile"
+      ]
+    },
+    {
+      "connector": "neon",
+      "variant": "readonly",
+      "auth": "oauth",
+      "url": "https://mcp.neon.tech/mcp?readonly=true",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"No authorization provided\", resource_metadata=\"https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp?readonly=true\"",
+      "resourceMetadataUrl": "https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp?readonly=true",
+      "resource": "https://mcp.neon.tech/mcp?readonly=true",
+      "authorizationServer": "https://mcp.neon.tech",
+      "asMetadataUrl": "https://mcp.neon.tech/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.neon.tech",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.neon.tech/api/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "connector": "neon",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.neon.tech/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"No authorization provided\", resource_metadata=\"https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp\"",
+      "resourceMetadataUrl": "https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.neon.tech/mcp",
+      "authorizationServer": "https://mcp.neon.tech",
+      "asMetadataUrl": "https://mcp.neon.tech/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.neon.tech",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.neon.tech/api/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "connector": "neon",
+      "variant": "key",
+      "auth": "token",
+      "url": "https://mcp.neon.tech/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer error=\"invalid_token\", error_description=\"No authorization provided\", resource_metadata=\"https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp\"",
+      "resourceMetadataUrl": "https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.neon.tech/mcp",
+      "authorizationServer": "https://mcp.neon.tech",
+      "asMetadataUrl": "https://mcp.neon.tech/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.neon.tech",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.neon.tech/api/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": true,
+      "scopes": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "connector": "amplitude",
+      "variant": "us",
+      "auth": "oauth",
+      "url": "https://mcp.amplitude.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.amplitude.com/.well-known/oauth-protected-resource\", error=\"invalid_request\", error_description=\"Missing authorization header\"",
+      "resourceMetadataUrl": "https://mcp.amplitude.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.amplitude.com",
+      "resourceScopes": [
+        "all:read",
+        "all:write"
+      ],
+      "authorizationServer": "https://mcp.amplitude.com",
+      "asMetadataUrl": "https://mcp.amplitude.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.amplitude.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.amplitude.com/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "all:read",
+        "all:write",
+        "offline_access"
+      ]
+    },
+    {
+      "connector": "amplitude",
+      "variant": "eu",
+      "auth": "oauth",
+      "url": "https://mcp.eu.amplitude.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.eu.amplitude.com/.well-known/oauth-protected-resource\", error=\"invalid_request\", error_description=\"Missing authorization header\"",
+      "resourceMetadataUrl": "https://mcp.eu.amplitude.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.eu.amplitude.com",
+      "resourceScopes": [
+        "all:read",
+        "all:write"
+      ],
+      "authorizationServer": "https://mcp.eu.amplitude.com",
+      "asMetadataUrl": "https://mcp.eu.amplitude.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.eu.amplitude.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.eu.amplitude.com/register",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "all:read",
+        "all:write",
+        "offline_access"
+      ]
+    },
+    {
+      "connector": "posthog",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.posthog.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp\"",
+      "resourceMetadataUrl": "https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.posthog.com/mcp",
+      "resourceScopes": [
+        "openid",
+        "profile",
+        "email",
+        "introspection",
+        "action:read",
+        "action:write",
+        "access_control:read",
+        "access_control:write",
+        "account:read",
+        "account:write",
+        "activity_log:read",
+        "alert:read",
+        "alert:write",
+        "annotation:read",
+        "annotation:write",
+        "approvals:read",
+        "approvals:write",
+        "autoresearch:read",
+        "autoresearch:write",
+        "batch_export:read",
+        "batch_export:write",
+        "billing:read",
+        "business_knowledge:read",
+        "business_knowledge:write",
+        "canvas:read",
+        "canvas:write",
+        "cohort:read",
+        "cohort:write",
+        "comment:read",
+        "comment:write"
+      ],
+      "authorizationServer": "https://oauth.posthog.com",
+      "asMetadataUrl": "https://oauth.posthog.com/.well-known/oauth-authorization-server",
+      "issuer": "https://oauth.posthog.com",
+      "dcr": true,
+      "registrationEndpoint": "https://oauth.posthog.com/oauth/register/",
+      "cimd": true,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "openid",
+        "profile",
+        "email",
+        "introspection",
+        "action:read",
+        "action:write",
+        "access_control:read",
+        "access_control:write",
+        "account:read",
+        "account:write",
+        "activity_log:read",
+        "activity_log:write",
+        "alert:read",
+        "alert:write",
+        "annotation:read",
+        "annotation:write",
+        "approvals:read",
+        "approvals:write",
+        "autoresearch:read",
+        "autoresearch:write",
+        "batch_export:read",
+        "batch_export:write",
+        "batch_import:read",
+        "batch_import:write",
+        "billing:read",
+        "billing:write",
+        "business_knowledge:read",
+        "business_knowledge:write",
+        "canvas:read",
+        "canvas:write"
+      ]
+    },
+    {
+      "connector": "webflow",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.webflow.com/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.webflow.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"",
+      "resourceMetadataUrl": "https://mcp.webflow.com/.well-known/oauth-protected-resource/mcp",
+      "resource": "https://mcp.webflow.com/mcp",
+      "authorizationServer": "https://mcp.webflow.com",
+      "asMetadataUrl": "https://mcp.webflow.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.webflow.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.webflow.com/oauth/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "miro",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://mcp.miro.com/",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.miro.com/.well-known/oauth-protected-resource\"",
+      "resourceMetadataUrl": "https://mcp.miro.com/.well-known/oauth-protected-resource",
+      "resource": "https://mcp.miro.com/",
+      "resourceScopes": [
+        "boards:read",
+        "boards:write",
+        "openid",
+        "email"
+      ],
+      "authorizationServer": "https://mcp.miro.com/",
+      "asMetadataUrl": "https://mcp.miro.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.miro.com/",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.miro.com/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "boards:read",
+        "boards:write",
+        "openid",
+        "email"
+      ]
+    },
+    {
+      "connector": "zoom",
+      "variant": "full",
+      "auth": "oauthClient",
+      "url": "https://zoom.us/mcp/meeting/streamable",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://zoom.us/.well-known/oauth-protected-resource/mcp/meeting/streamable\"",
+      "resourceMetadataUrl": "https://zoom.us/.well-known/oauth-protected-resource/mcp/meeting/streamable",
+      "resource": "https://mcp.zoom.us/mcp/meeting/streamable",
+      "resourceScopes": [
+        "meeting:write:meeting",
+        "meeting:read:search",
+        "meeting:delete:meeting",
+        "meeting:update:in_meeting_controls",
+        "meeting:update:meeting",
+        "meeting:read:assets",
+        "cloud_recording:read:list_user_recordings",
+        "cloud_recording:read:content"
+      ],
+      "authorizationServer": "https://zoom.us",
+      "asMetadataUrl": "https://zoom.us/.well-known/oauth-authorization-server",
+      "issuer": "https://zoom.us",
+      "dcr": false,
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false
+    },
+    {
+      "connector": "zapier",
+      "variant": "token",
+      "auth": "token",
+      "url": "https://mcp.zapier.com/api/v1/connect",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer resource_metadata=\"https://mcp.zapier.com/.well-known/oauth-protected-resource/api/v1/connect\"",
+      "resourceMetadataUrl": "https://mcp.zapier.com/.well-known/oauth-protected-resource/api/v1/connect",
+      "resource": "https://mcp.zapier.com/api/v1/connect",
+      "resourceScopes": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "authorizationServer": "https://mcp.zapier.com",
+      "asMetadataUrl": "https://mcp.zapier.com/.well-known/oauth-authorization-server",
+      "issuer": "https://mcp.zapier.com",
+      "dcr": true,
+      "registrationEndpoint": "https://mcp.zapier.com/api/v1/oauth/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "openid",
+        "profile",
+        "email"
+      ]
+    },
+    {
+      "connector": "gitlab",
+      "variant": "full",
+      "auth": "oauth",
+      "url": "https://gitlab.com/api/v4/mcp",
+      "reachable": true,
+      "status": 401,
+      "wwwAuthenticate": "Bearer realm=\"GitLab\", scope=\"mcp\", resource_metadata=\"https://gitlab.com/.well-known/oauth-protected-resource/api/v4/mcp\"",
+      "resourceMetadataUrl": "https://gitlab.com/.well-known/oauth-protected-resource/api/v4/mcp",
+      "resource": "https://gitlab.com/api/v4/mcp",
+      "resourceScopes": [
+        "mcp"
+      ],
+      "authorizationServer": "https://gitlab.com",
+      "asMetadataUrl": "https://gitlab.com/.well-known/oauth-authorization-server",
+      "issuer": "https://gitlab.com",
+      "dcr": true,
+      "registrationEndpoint": "https://gitlab.com/oauth/register",
+      "cimd": false,
+      "codeChallengeMethods": [
+        "plain",
+        "S256"
+      ],
+      "issParameter": false,
+      "scopes": [
+        "api",
+        "read_api",
+        "read_user",
+        "create_runner",
+        "manage_runner",
+        "k8s_proxy",
+        "self_rotate",
+        "mcp",
+        "mcp_orbit",
+        "read_repository",
+        "write_repository",
+        "read_registry",
+        "write_registry",
+        "read_virtual_registry",
+        "write_virtual_registry",
+        "read_observability",
+        "write_observability",
+        "ai_features",
+        "sudo",
+        "admin_mode",
+        "read_service_ping",
+        "openid",
+        "profile",
+        "email",
+        "ai_workflows",
+        "user:*"
+      ]
+    }
+  ]
+}
