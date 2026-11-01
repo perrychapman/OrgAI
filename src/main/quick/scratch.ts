@@ -126,6 +126,42 @@ export function sweepScratchDirs(dataDir: string, runs: readonly RunSummary[]): 
   return removed
 }
 
+// ---------- trust helpers (shared by RunManager and every adapter) ----------
+
+/**
+ * True for runs that work in a folder OrgAI does not trust as configuration: a Chat (quick) run, or an MCP assistant
+ * build session (buildWorkspace, an agent-writable scratch dir). Such runs get the run's own grants only (never
+ * saved rules read from the folder), no project-scope grants (downgraded to session), and on Claude settingSources [].
+ */
+export function isTrustRestrictedRun(run: Pick<RunSummary, 'quick' | 'buildWorkspace'> | undefined | null): boolean {
+  return !!run && (!!run.quick || typeof run.buildWorkspace === 'string')
+}
+
+/**
+ * True when `target` (absolute, or relative to `workspace`) is `<workspace>/.claude` or anything under it, compared
+ * lexically and through the real path of the nearest existing ancestor (so a link inside the workspace pointing at its
+ * .claude dir is caught too). Build sessions must never write there: a planted settings file could pre-approve tools
+ * or register hooks. Non-string or empty input counts as protected (fail closed).
+ */
+export function isWorkspaceConfigPath(workspace: string, target: unknown): boolean {
+  if (typeof target !== 'string' || !target) return true
+  const abs = isAbsolute(target) ? target : join(workspace, target)
+  const roots = [join(workspace, '.claude'), join(canonical(workspace), '.claude')]
+  if (roots.some((r) => isInside(r, abs))) return true
+  // Resolve the nearest existing ancestor through links, then re-append the rest.
+  let probe = resolve(abs)
+  const rest: string[] = []
+  for (let i = 0; i < 256; i++) {
+    if (existsSync(probe)) break
+    const parent = resolve(probe, '..')
+    if (parent === probe) break
+    rest.unshift(basename(probe))
+    probe = parent
+  }
+  const real = join(canonical(probe), ...rest)
+  return roots.some((r) => isInside(r, real))
+}
+
 // ---------- folder validation ----------
 
 /** What validateQuickFolder found. `folder` is the canonical path (what the run works in and the run record stores). */
