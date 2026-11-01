@@ -1,16 +1,20 @@
 import type { ReactElement } from 'react'
 import type { Project } from '@shared/types'
-import { START_PAGE_COPY } from '../../lib/assistants'
-import { EmptyState } from '../ui/EmptyState'
+import { useAppStore } from '../../store/useAppStore'
+import InstructionStartPage from './InstructionStartPage'
 
-/** The Skill assistant start page (stub; the instruction form lands next). */
+/** The Skill assistant start page (library scope). Project-scope runs start from a project's Skills section. */
 export default function SkillAssistantStartPage({ project: _project }: { project: Project }): ReactElement {
-  const copy = START_PAGE_COPY.skills
   return (
-    <div className="new-run" data-testid="assistant-start-skills">
-      <div className="new-run-inner">
-        <EmptyState title={copy.title} description={copy.description} />
-      </div>
-    </div>
+    <InstructionStartPage
+      id="skills"
+      testId="assistant-start-skills"
+      label="What should your agents get better at?"
+      placeholder="Review our skills and write one for the release checklist..."
+      modelKey="skillAssistModel"
+      onStart={async (instruction) => {
+        await useAppStore.getState().startSkillAssist({ scope: 'library', instruction })
+      }}
+    />
   )
 }

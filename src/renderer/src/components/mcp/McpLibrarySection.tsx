@@ -15,7 +15,6 @@ import { IconButton } from '../ui/IconButton'
 import { SecretField } from '../ui/SecretField'
 import { SettingsSection } from '../settings/SettingsSection'
 import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
-import McpAssistDialog from './McpAssistDialog'
 import McpServerForm from './McpServerForm'
 import RegistryDialog from './RegistryDialog'
 import TestResultPanel from './TestResultPanel'
@@ -24,13 +23,12 @@ import { infoFromLibrary, transportWords } from './mcpLibraryHelpers'
 import { libraryWriter } from './mcpWriter'
 import { useMcpLibrary } from './useMcpLibrary'
 
-type Modal = { kind: 'registry' } | { kind: 'form'; editing?: McpLibraryInfo } | { kind: 'assist' } | null
+type Modal = { kind: 'registry' } | { kind: 'form'; editing?: McpLibraryInfo } | null
 
 /** App settings: the MCP library. Servers are defined here once and linked by projects. */
 export default function McpLibrarySection(): ReactElement {
   const { library, error, refresh, setLibrary } = useMcpLibrary()
   const [modal, setModal] = useState<Modal>(null)
-  const [openError, setOpenError] = useState<string | null>(null)
   const focus = useAppStore((s) => s.mcpFocus)
   const clearMcpFocus = useAppStore((s) => s.clearMcpFocus)
   const section = useRef<HTMLElement>(null)
@@ -56,18 +54,6 @@ export default function McpLibrarySection(): ReactElement {
     clearMcpFocus()
   }, [focus, library, clearMcpFocus])
 
-  const openRun = async (runId: string): Promise<void> => {
-    setOpenError(null)
-    try {
-      await window.orgai.window.openRun({ projectId: HARNESS_PROJECT_ID, runId })
-    } catch (e) {
-      setOpenError(errMessage(e))
-    }
-  }
-  const startAssist = async (instruction: string): Promise<void> => {
-    const summary = await useAppStore.getState().startLibraryAssist(instruction)
-    await openRun(summary.id)
-  }
 
   // Services from the Connectors gallery live there; this list is for servers added by hand, from the registry or by an agent.
   const infos = (library ?? []).filter((i) => !i.entry.connectorId)
@@ -83,7 +69,7 @@ export default function McpLibrarySection(): ReactElement {
           <Button icon={Plus} testId="mcp-library-add-manual" onClick={() => setModal({ kind: 'form' })}>
             Add manually
           </Button>
-          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses your assistant model (${assistModel}); counts toward your usage`} onClick={() => setModal({ kind: 'assist' })}>
+          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses your assistant model (${assistModel}); counts toward your usage`} onClick={() => void useAppStore.getState().openAssistant('harness')}>
             Configure with AI
           </Button>
           <Button variant="ghost" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>
@@ -97,22 +83,12 @@ export default function McpLibrarySection(): ReactElement {
           Configure with AI uses your assistant model ({assistModel}) and counts toward your usage.
         </p>
         {assistRun && (
-          <Banner
-            tone="neutral"
-            testId="mcp-library-assist-banner"
-            actions={
-              <Button size="sm" onClick={() => void openRun(assistRun.summary.id)}>
-                Open run
-              </Button>
-            }
-          >
-            An assistant run is configuring your library.
-          </Banner>
-        )}
-        {openError && (
-          <Banner tone="danger" title="Could not open the run">
-            {openError}
-          </Banner>
+          <p className="muted" data-testid="mcp-library-assist-banner">
+            An assistant run is configuring your library.{' '}
+            <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openAssistant('harness')}>
+              Open the MCP assistant
+            </button>
+          </p>
         )}
         {error ? (
           <Banner
@@ -160,14 +136,6 @@ export default function McpLibrarySection(): ReactElement {
             onClose={() => setModal(null)}
           />
         )}
-        <McpAssistDialog
-          open={modal?.kind === 'assist'}
-          onClose={() => setModal(null)}
-          onStart={startAssist}
-          title="Configure the MCP library with AI"
-          description="An assistant run proposes library servers in its own window. You approve each one there."
-          placeholder="Connect GitHub and a Postgres database..."
-        />
       </div>
     </SettingsSection>
   )
