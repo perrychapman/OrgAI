@@ -304,14 +304,14 @@ export function AppliedRow({
 }
 
 /** What replaces a dismissed card for a few seconds, in its list position. */
-export function DismissedRow({ name, onUndo }: { name: string; onUndo: () => void }): ReactElement {
+export function DismissedRow({ name, recId, onUndo }: { name: string; recId?: string; onUndo: () => void }): ReactElement {
   const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     // Focus follows the card that was replaced, on its Undo; the row keeps the card's place so the list does not jump.
     rootRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
   }, [])
   return (
-    <div className="capability-applied capability-dismissed" ref={rootRef} data-testid="capability-dismissed" role="group" aria-label={`Dismissed ${name}`}>
+    <div className="capability-applied capability-dismissed" ref={rootRef} data-testid="capability-dismissed" data-rec={recId} role="group" aria-label={`Dismissed ${name}`}>
       <span className="capability-applied-text">
         <span>
           Dismissed <strong>{clampText(name, 60)}</strong>.

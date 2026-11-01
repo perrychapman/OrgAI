@@ -329,7 +329,15 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     clearTimeout(timers.current[recId])
     timers.current[recId] = setTimeout(() => {
       delete timers.current[recId]
-      if (alive.current) setRecent((r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== recId)))
+      if (!alive.current) return
+      // The row goes away: if focus was on its Undo, move it to the next card's Apply (else Recommend) instead of the page.
+      const row = rootRef.current?.querySelector<HTMLElement>(`[data-testid=capability-dismissed][data-rec="${recId}"]`)
+      if (row && row.contains(document.activeElement)) {
+        const next = rootRef.current?.querySelector<HTMLElement>('[data-testid=capability-card] [data-testid=capability-apply]')
+        if (next) window.requestAnimationFrame(() => next.focus({ preventScroll: true }))
+        else focusPrimary()
+      }
+      setRecent((r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== recId)))
     }, 8000)
     setAnnounce(`Dismissed ${name}.`)
   }
@@ -564,7 +572,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
           const item = result!.items[rec.candidateId]
           const st = cards[rec.id] ?? {}
           const gone = recent[rec.id]
-          if (gone) return <DismissedRow key={rec.id} name={gone.name} onUndo={() => restore(gone.candidateId, gone.name)} />
+          if (gone) return <DismissedRow key={rec.id} recId={rec.id} name={gone.name} onUndo={() => restore(gone.candidateId, gone.name)} />
           if (st.applied) {
             return (
               <AppliedRow
