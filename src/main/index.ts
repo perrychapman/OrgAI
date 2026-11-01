@@ -282,7 +282,7 @@ app.whenReady().then(() => {
     mcp: {
       libraryEntries: () => mcp.libraryEntries(),
       applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
-      applyLibraryProposal: (payload) => mcp.applyLibraryProposal(payload)
+      applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
     },
     skills: { applyProposal: (projectId, payload) => skills.applyProposal(projectId, payload) }
   })

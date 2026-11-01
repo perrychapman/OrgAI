@@ -68,6 +68,15 @@ function withConnectedAt(entry: McpLibraryEntry, at: number | undefined): McpLib
 }
 
 /** The OAuth functions McpService calls; tests inject fakes. */
+/**
+ * Options for McpService.applyLibraryProposal. buildWorkspace: the proposing run was an allowBuild MCP assistant
+ * session (RunSummary.buildWorkspace); a stdio server whose command or args point into it is copied to
+ * `<data>/mcp-builds/<entryId>/` on approval and its entry gets buildDigest (review M5).
+ */
+export interface LibraryProposalOptions {
+  buildWorkspace?: string
+}
+
 export interface McpOAuthFns {
   runAuthorization: typeof runAuthorization
   refreshTokens: typeof refreshTokens
@@ -1062,7 +1071,8 @@ export class McpService {
    * Apply an approved library-scope proposal (the harness-level assistant): upsert entries (matched by id, else by
    * name) and remove entries by id. Everything is validated first; nothing is saved on any problem.
    */
-  applyLibraryProposal(p: McpServersProposalPayload): void {
+  applyLibraryProposal(p: McpServersProposalPayload, opts: LibraryProposalOptions = {}): void {
+    void opts // M5: copies a build workspace into <data>/mcp-builds (Runtime Engineer)
     const lib = this.lib()
     const removeIds = new Set((Array.isArray(p.remove) ? p.remove : []).filter((id): id is string => typeof id === 'string'))
     let planned = lib.list().filter((e) => !removeIds.has(e.id))

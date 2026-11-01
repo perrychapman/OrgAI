@@ -11,6 +11,7 @@ import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
 import { scanAgentSources } from './import/scan'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
+import type { LibraryProposalOptions } from '../mcp/service'
 
 /** Caps of the Architect's "Detected agent definitions" block. */
 const DETECTED_PROMPT_EXCERPT = 600
@@ -71,7 +72,7 @@ export class SetupService {
       mcp?: {
         libraryEntries(): McpLibraryEntry[]
         applyProposal(projectId: string, payload: McpServersProposalPayload): Project
-        applyLibraryProposal(payload: McpServersProposalPayload): void
+        applyLibraryProposal(payload: McpServersProposalPayload, opts?: LibraryProposalOptions): void
       }
       /**
        * The skill service (SkillService.applyProposal in index.ts). With it, approved Skill assistant proposals are
@@ -93,11 +94,11 @@ export class SetupService {
   }
 
   /** Apply an approved library-scope MCP proposal (the harness project: nothing project-shaped is saved). */
-  applyLibraryProposal(proposal: Proposal | McpServersProposalPayload): void {
+  applyLibraryProposal(proposal: Proposal | McpServersProposalPayload, opts: LibraryProposalOptions = {}): void {
     const payload = 'kind' in proposal ? (proposal.kind === 'mcpServers' ? proposal.payload : undefined) : proposal
     if (!payload) throw new Error('Only MCP proposals can change the MCP library.')
     if (!this.hooks.mcp) throw new Error('The MCP library is not available.')
-    this.hooks.mcp.applyLibraryProposal({ ...payload, scope: 'library' })
+    this.hooks.mcp.applyLibraryProposal({ ...payload, scope: 'library' }, opts)
   }
 
   /** Profile the working directory and record it on the project. */

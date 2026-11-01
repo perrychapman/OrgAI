@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
-import type { AppSettings, McpLibraryEntry, McpServerSpec, Project, ToolName } from '@shared/types'
+import { join } from 'node:path'
+import type { AppSettings, McpLibraryEntry, McpServerSpec, Project, RunKind, ToolName } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { mcpSecretNames, newProject } from '@shared/defaults'
 
@@ -21,7 +21,7 @@ export interface HarnessProjectOptions {
   /**
    * McpAssistInput.allowBuild: the session may build a local stdio server. permissionMode becomes 'default' (every
    * edit and command asks) and the project path is `workspace` (a per-run scratch dir under `<data>/quick/`, made by
-   * the caller) instead of the shared harness-workspace. PHASE 2: the MCP assistant engineer completes this.
+   * the caller) instead of the shared harness-workspace.
    */
   allowBuild?: boolean
   /** The per-run scratch dir for an allowBuild session (absolute, already created). */
@@ -56,16 +56,12 @@ export function harnessProject(settings: AppSettings, dataDir: string, opts: Har
 export const BUILD_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash']
 
 /**
- * True for the harness project of an allowBuild session: the harness id, permission mode 'default' and a path that is
- * a per-run scratch dir directly under a `quick` folder (`<data>/quick/<id>`), never the shared harness-workspace.
+ * ['Edit', 'Write', 'Bash'] for an allowBuild session, else []. Keyed off the run itself (StartInput.buildWorkspace /
+ * RunSummary.buildWorkspace on an 'mcp-assist' run), never guessed from the project path (review L1). RunManager
+ * appends them to the MCP assistant role's tools.
  */
-export function isBuildWorkspaceProject(project: Pick<Project, 'id' | 'path' | 'permissionMode'>): boolean {
-  return project.id === HARNESS_PROJECT_ID && project.permissionMode === 'default' && basename(dirname(project.path)) === 'quick'
-}
-
-/** ['Edit', 'Write', 'Bash'] for an allowBuild harness project, else []. RunManager appends them to the MCP assistant role's tools. */
-export function buildToolsFor(project: Pick<Project, 'id' | 'path' | 'permissionMode'>): ToolName[] {
-  return isBuildWorkspaceProject(project) ? [...BUILD_TOOLS] : []
+export function buildToolsFor(run: { kind: RunKind; buildWorkspace?: string }): ToolName[] {
+  return run.kind === 'mcp-assist' && typeof run.buildWorkspace === 'string' && run.buildWorkspace !== '' ? [...BUILD_TOOLS] : []
 }
 
 /**

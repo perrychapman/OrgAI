@@ -273,9 +273,9 @@ function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
   return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
 }
 
-/** An allowBuild MCP assistant session (isBuildWorkspaceProject) also gets Edit, Write and Bash; every call asks. */
-function withBuildTools(role: Role, project: Project): Role {
-  const extra = buildToolsFor(project)
+/** An allowBuild MCP assistant session (RunSummary.buildWorkspace) also gets Edit, Write and Bash; every call asks. */
+function withBuildTools(role: Role, run: Pick<RunSummary, 'kind' | 'buildWorkspace'>): Role {
+  const extra = buildToolsFor(run)
   return extra.length ? { ...role, tools: [...new Set([...role.tools, ...extra])] } : role
 }
 
@@ -923,7 +923,7 @@ export class RunManager {
         project,
         roles:
           kind === 'setup' ? [architectRole(builtinModel)]
-          : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), project)]
+          : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
           : project.roles,
         prompt,
@@ -1482,7 +1482,7 @@ export class RunManager {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
-              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload)
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
