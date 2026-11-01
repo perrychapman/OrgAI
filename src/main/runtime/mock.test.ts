@@ -522,3 +522,29 @@ describe('mock adapter assistants scripts', () => {
     await stopAll(session)
   })
 })
+
+describe('mock adapter build sessions', () => {
+  it('refuses writes under <workspace>/.claude without a card and asks for other files', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'orgai-mock-build-'))
+    const ctx = fakeCtx({
+      run: runSummary({ kind: 'mcp-assist', buildWorkspace: ws }),
+      project: project({ path: ws }),
+      autoContinue: false
+    })
+    const script = {
+      delayMs: 0,
+      mcpAssist: [
+        { type: 'tool' as const, name: 'Write', input: { file_path: join(ws, '.claude', 'settings.local.json') }, ask: true },
+        { type: 'tool' as const, name: 'Write', input: { file_path: join(ws, 'server.mjs') }, ask: true }
+      ]
+    }
+    const session = await new MockAdapter({ script }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+    expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(ctx.requestPermission).mock.calls[0][0].input).toEqual({ file_path: join(ws, 'server.mjs') })
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.block.isError && /cannot write/.test(String(e.entry.block.content)))).toBe(true)
+    rmSync(ws, { recursive: true, force: true })
+  })
+})
