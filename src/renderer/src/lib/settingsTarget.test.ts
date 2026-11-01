@@ -4,7 +4,10 @@ import {
   APP_SETTINGS_SECTIONS,
   PROJECT_SETTINGS_PANES,
   appPaneForSection,
+  isConnectorId,
   requestAppSettingsSection,
+  requestConnector,
+  takeConnectorTarget,
   takeAppSettingsSection
 } from './settingsTarget'
 
@@ -61,6 +64,33 @@ describe('section request round trip', () => {
     })
     expect(() => requestAppSettingsSection('a')).not.toThrow()
     expect(takeAppSettingsSection()).toBeNull()
+  })
+})
+
+describe('requestConnector', () => {
+  beforeEach(() => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k)
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+  it('validates kebab-case ids', () => {
+    expect(isConnectorId('github')).toBe(true)
+    expect(isConnectorId('google-drive')).toBe(true)
+    for (const bad of ['', 'GitHub', 'a b', 'a--b', '-a', 'a-', '../x', 'a'.repeat(65), 5, null]) expect(isConnectorId(bad)).toBe(false)
+  })
+  it('stores a valid id once and opens the Connectors pane', () => {
+    requestConnector('github')
+    expect(takeAppSettingsSection()).toBe('mcp-library')
+    expect(takeConnectorTarget()).toBe('github')
+    expect(takeConnectorTarget()).toBeNull()
+  })
+  it('drops a bad id', () => {
+    requestConnector('Bad Id')
+    expect(takeConnectorTarget()).toBeNull()
   })
 })
 
