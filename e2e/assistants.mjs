@@ -146,8 +146,8 @@ try {
       await openAppSettings(page)
       await page.getByRole('tab', { name: 'Defaults', exact: true }).click().catch(() => {})
       await sleep(500)
-      check(await visible('[data-testid=skill-assist-model-row]'), `Defaults has the Skill assistant model row ${tag}`)
-      check(await visible('[data-testid=quick-run-model-row]'), `Defaults has the Chat model row ${tag}`)
+      check(await visible('[data-testid=skill-assist-model-row-select]'), `Defaults has the Skill assistant model row ${tag}`)
+      check(await visible('[data-testid=quick-run-model-row-select]'), `Defaults has the Chat model row ${tag}`)
       await shot(`defaults-${w}x${h}-${theme}`)
     }
   }
@@ -169,8 +169,7 @@ try {
       'Chat run reaches Idle with "Done. Ask a follow-up or end the session."',
       'Save as project is disabled for a scratch chat, with a reason',
       'Chat History shows Scratch in history-folder',
-      'Skill assistant run shows a proposal with proposal-skill-item and Approve resolves it',
-      'MCP assistant run opens a tab in the main window without a new window'
+      'Skill assistant run shows a proposal with proposal-skill-item and Approve resolves it'
     ])
       log(`SKIP (runtime not merged): ${s}`)
   } else {
@@ -187,7 +186,8 @@ try {
     await shot('chat-idle-1600x1000')
     await endSession(page)
     const save = page.locator('[data-testid=run-save-as-project]')
-    check((await save.count()) === 1 && (await save.isDisabled().catch(() => false)), 'Save as project is disabled for a scratch chat')
+    const saveOff = (await save.getAttribute('aria-disabled').catch(() => null)) === 'true' || (await save.isDisabled().catch(() => false))
+    check((await save.count()) === 1 && saveOff, 'Save as project is disabled for a scratch chat')
     check(/scratch/i.test((await save.getAttribute('title').catch(() => '')) ?? ''), 'the disabled Save as project explains why')
     await page.locator('[data-testid=tab-history]').click()
     await sleep(800)
@@ -209,8 +209,10 @@ try {
       check((await page.locator('[data-testid=proposal-skill-item]').count()) === 0, 'approving the skills proposal resolves the card')
     }
     await endSession(page)
+  }
 
-    // MCP library assistant
+  // MCP library assistant (mcp.startAssist library scope exists on the current runtime).
+  {
     await openAssistant('harness')
     await page.locator('textarea[data-testid=assistant-instruction]').fill('Connect a docs search server.')
     await page.locator('[data-testid=assistant-start]').click()
