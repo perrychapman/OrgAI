@@ -1,4 +1,5 @@
 import type { FocusRunTarget } from '@shared/types'
+import { isVirtualProjectId } from '@shared/types'
 
 /**
  * Multi-window helpers, pure so they are unit-testable without Electron. A window is either the main (unscoped)
@@ -23,7 +24,8 @@ export function checkRunTarget(
   const projectId = typeof t.projectId === 'string' ? t.projectId : ''
   const runId = typeof t.runId === 'string' ? t.runId : ''
   if (!ID_PATTERN.test(projectId) || !ID_PATTERN.test(runId)) throw new Error('Invalid run target')
-  if (!lookup.project(projectId)) throw new Error('Project not found')
+  // The virtual projects (harness, quick, skills) have no stored project; their runs are checked below.
+  if (!isVirtualProjectId(projectId) && !lookup.project(projectId)) throw new Error('Project not found')
   const owner = lookup.runProject(runId)
   if (!owner) throw new Error('Run not found')
   if (owner !== projectId) throw new Error('Run belongs to another project')

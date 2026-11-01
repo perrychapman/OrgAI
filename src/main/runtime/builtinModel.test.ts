@@ -97,4 +97,31 @@ describe('resolveBuiltinModel', () => {
   it('passes the setting through on the mock adapter', () => {
     expect(resolveBuiltinModel('sonnet', 'Setup model', { ...anthropic, adapter: 'mock' })).toEqual({ model: 'sonnet', tier: 'everyday' })
   })
+
+  describe('fallbackTier (the Chat assistant)', () => {
+    const chat = { ...anthropic, fallbackTier: 'everyday' as const }
+
+    it('defaults to deep when unset, and to the fallback tier when the setting is missing', () => {
+      expect(resolveBuiltinModel(undefined, 'Chat model', anthropic)).toEqual({ model: 'opus', tier: 'deep' })
+      expect(resolveBuiltinModel(undefined, 'Chat model', chat)).toEqual({ model: 'sonnet', tier: 'everyday' })
+      expect(resolveBuiltinModel('', 'Chat model', chat)).toEqual({ model: 'sonnet', tier: 'everyday' })
+    })
+
+    it('keeps the fallback tier silent and honours a valid choice', () => {
+      expect(resolveBuiltinModel('everyday', 'Chat model', chat).warning).toBeUndefined()
+      expect(resolveBuiltinModel('deep', 'Chat model', chat)).toEqual({ model: 'opus', tier: 'deep' })
+    })
+
+    it('falls back to the everyday tier, with one warning naming the setting, for an unusable choice', () => {
+      const r = resolveBuiltinModel('gpt-5', 'Chat model', chat)
+      expect(r).toMatchObject({ model: 'sonnet', tier: 'everyday' })
+      expect(r.warning).toContain('"Chat model" is gpt-5')
+      expect(r.warning).toContain('the everyday tier (sonnet)')
+    })
+
+    it('uses the orchestrator model when the connection maps no everyday tier', () => {
+      const noTier: BuiltinModelContext = { connection: 'litellm', adapter: 'claude', catalog: [], tierModels: {}, fallbackTier: 'everyday', root: { model: 'claude-x', tier: 'deep' } }
+      expect(resolveBuiltinModel('gpt-5', 'Chat model', noTier)).toMatchObject({ model: 'claude-x', warning: expect.stringContaining("orchestrator's model") })
+    })
+  })
 })

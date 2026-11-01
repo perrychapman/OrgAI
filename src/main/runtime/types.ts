@@ -29,7 +29,12 @@ import type {
   RunPeer,
   RunPlan,
   RunSummary,
+  ProjectPeek,
+  SkillContent,
+  SkillEvaluationReport,
   SkillFileInfo,
+  SkillInfo,
+  SkillLibraryInfo,
   TokenUsage,
   UsageStatus,
   UserQuestion
@@ -300,6 +305,31 @@ export interface RuntimeContext {
    * Missing = the tool answers NOT LIVE.
    */
   messageRun?(runId: string, text: string): Promise<RunMessageOutcome>
+  /**
+   * list_projects (quick runs only, RunSummary.quick set): every stored project as ProjectPeek data, never a virtual
+   * project, never secrets. RunManager provides it only for quick runs. Missing = the tool says it is unavailable.
+   */
+  listProjects?(): ProjectPeek[]
+  /**
+   * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with
+   * the role ids that load them (SkillInfo.grantedTo; resolve to slugs through ctx.project.roles). `project` is empty
+   * on the virtual SKILLS_PROJECT_ID. Missing = the skill tools say the library is unavailable.
+   */
+  skillCatalog?(): SkillAssistCatalog
+  /**
+   * Skill assistant runs: one skill's stored text. `libraryId` names a library entry, `skillId` a skill of the
+   * session's project (a linked skill reads its entry). null = unknown id. Never reads outside OrgAI's own copies.
+   */
+  readSkill?(ref: { libraryId?: string; skillId?: string }): SkillContent | null
+}
+
+/** RuntimeContext.skillCatalog: what list_skill_library reports. */
+export interface SkillAssistCatalog {
+  library: SkillLibraryInfo[]
+  /** Project skills (project session only). */
+  project: SkillInfo[]
+  /** The project's newest skills:evaluate report, when one exists (project session only). */
+  evaluation?: SkillEvaluationReport | null
 }
 
 export interface RuntimeSession {

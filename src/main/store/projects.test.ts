@@ -61,6 +61,8 @@ describe('ProjectStore.saveFromRenderer', () => {
     expect(store.get('new')).toBeFalsy()
     expect(() => store.saveFromRenderer(project({ id: '../x' }))).toThrow('Invalid project id')
     expect(() => store.saveFromRenderer(project({ id: 'harness' }))).toThrow(/harness/)
+    expect(() => store.saveFromRenderer(project({ id: 'quick' }))).toThrow(/cannot be saved/)
+    expect(() => store.saveFromRenderer(project({ id: 'skills' }))).toThrow(/cannot be saved/)
   })
 })
 

@@ -90,7 +90,14 @@ import type {
   TeamReview,
   TeamReviewInput
 } from '@shared/types'
-import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC } from '@shared/types'
+import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
+import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
+import { isSafeId } from '@shared/defaults'
+import { sanitizeImages } from './runtime/attachments'
+import { skillAssistPrompt, skillsProject } from './skills/assist'
+import { harnessProject as buildHarnessProject } from './mcp/assist'
+import { createScratchDir } from './quick/scratch'
+import type { QuickRunService } from './quick/quickRuns'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
 import type { SetupService } from './setup/service'
@@ -137,11 +144,89 @@ export interface IpcServices {
   skillEvaluation: SkillEvaluationApi
   /** The Team assistant: discovery, recommendations, apply and grants (src/main/capabilities/service.ts). */
   capabilities: CapabilityServiceApi
+  /** Chat (quick runs): start, promote, the project of a continued run and the display project (src/main/quick/quickRuns.ts). */
+  quick: QuickRunService
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities }: IpcServices): void {
-  /** A stored project, or the virtual harness project that owns harness-level runs. Never listed by projects:list. */
-  const projectOrHarness = (id: string): Project | null => (id === HARNESS_PROJECT_ID ? harnessProject() : projects.get(id))
+/** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
+export const ASSIST_INSTRUCTION_MAX_CHARS = 8000
+/** Longest folder path accepted for a quick run; QuickRunService validates the folder itself. */
+const QUICK_FOLDER_MAX_CHARS = 4096
+
+/**
+ * Renderer input for runs:startQuick / runs:promoteQuick rebuilt field by field: a prompt that is text, trimmed and at
+ * most QUICK_RUN_MAX_PROMPT_CHARS (longer is refused, never cut), a folder as text (checked by QuickRunService), the
+ * team only 'single' | 'default' (anything else is 'single'), allowEdits only when the literal true, images through
+ * the run image sanitizer; any other field is dropped. Exported for tests.
+ */
+export const quickArgs = {
+  start(input: unknown): QuickRunInput {
+    const i = obj<Record<string, unknown>>(input)
+    if (typeof i.prompt !== 'string') throw new Error('Type what you want done.')
+    const prompt = i.prompt.trim()
+    if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) throw new Error(`That message is too long (at most ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString('en-US')} characters).`)
+    const images = sanitizeImages(i.images)
+    if (!prompt && !images.length) throw new Error('Type what you want done.')
+    const out: QuickRunInput = { prompt, team: i.team === 'default' ? 'default' : 'single', allowEdits: i.allowEdits === true }
+    if (typeof i.folder === 'string' && i.folder.trim()) {
+      if (i.folder.length > QUICK_FOLDER_MAX_CHARS) throw new Error('That folder path is too long.')
+      out.folder = i.folder
+    }
+    if (images.length) out.images = images
+    return out
+  },
+  promote(input: unknown): QuickRunPromoteInput {
+    const i = obj<Record<string, unknown>>(input)
+    if (!isSafeId(i.runId)) throw new Error('Quick run not found.')
+    const name = typeof i.name === 'string' ? i.name.trim() : ''
+    if (!name || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error('Give the project a name of 1 to 80 characters.')
+    return { runId: i.runId, name }
+  }
+}
+
+/** The Skill assistant / MCP assistant instruction: text only, trimmed, cut at ASSIST_INSTRUCTION_MAX_CHARS. */
+function instructionArg(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.trim().slice(0, ASSIST_INSTRUCTION_MAX_CHARS) : undefined
+}
+
+/**
+ * skills:startAssist input. Scope 'library' (explicit, or no projectId) runs on the virtual SKILLS_PROJECT_ID. Scope
+ * 'project' needs a projectId that is a safe id, not virtual and a stored project (`isStored`). Exported for tests.
+ */
+export function skillAssistArgs(input: unknown, isStored: (projectId: string) => boolean): { library: true; instruction?: string } | { library: false; projectId: string; instruction?: string } {
+  const i = obj<Record<string, unknown>>(input)
+  const instruction = instructionArg(i.instruction)
+  const base = instruction ? { instruction } : {}
+  if (i.scope === 'library' || i.projectId === undefined || i.projectId === null || i.projectId === '') return { library: true, ...base }
+  if (!isSafeId(i.projectId) || isVirtualProjectId(i.projectId) || !isStored(i.projectId)) throw new Error('Project not found')
+  return { library: false, projectId: i.projectId, ...base }
+}
+
+/**
+ * mcp:startAssist input. allowBuild is only ever the literal true, and only for library scope (the app-wide
+ * assistant): a project-scope request with allowBuild is refused rather than silently ignored, because the user
+ * would expect a build workspace. Exported for tests.
+ */
+export function mcpAssistArgs(input: unknown): { library: boolean; projectId: string; instruction?: string; allowBuild: boolean } {
+  const i = obj<Record<string, unknown>>(input)
+  const library = i.scope === 'library'
+  const allowBuild = i.allowBuild === true
+  if (allowBuild && !library) throw new Error('Building a server is available in the app-wide MCP assistant only.')
+  const instruction = instructionArg(i.instruction)
+  return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
+}
+
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick }: IpcServices): void {
+  const mock = adapterIds.includes('mock')
+  /**
+   * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
+   * projects:list. The Chat's display project has no roles and creates no directory.
+   */
+  const projectOrHarness = (id: string): Project | null =>
+    id === HARNESS_PROJECT_ID ? harnessProject()
+    : id === QUICK_PROJECT_ID ? quick.displayProject()
+    : id === SKILLS_PROJECT_ID ? skillsProject(settings.get(), settings.dataDir, { mock })
+    : projects.get(id)
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
@@ -166,11 +251,11 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   ipcMain.handle(IPC.projectsSave, (_e, project: Project) => {
-    if (project?.id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be saved.')
+    if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     return projects.saveFromRenderer(project)
   })
   ipcMain.handle(IPC.projectsRemove, async (_e, id: string) => {
-    if (id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be removed.')
+    if (typeof id === 'string' && isVirtualProjectId(id)) throw new Error('This assistant project cannot be removed.')
     await runs.removeProject(id)
     mcp.removeProjectSecrets(id)
     skills.removeProjectFiles(id)
@@ -199,6 +284,16 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images })
   })
   ipcMain.handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
+  // Chat: every field is rebuilt (quickArgs); the folder is validated in main (QuickRunService), never trusted here.
+  ipcMain.handle(IPC.runsStartQuick, (_e, input: unknown): Promise<RunSummary> => quick.start(quickArgs.start(input)))
+  ipcMain.handle(IPC.runsPromoteQuick, (_e, input: unknown): QuickRunPromoteResult => quick.promote(quickArgs.promote(input)))
+  // Skill assistant: library scope on the virtual skills project, project scope on a stored project.
+  ipcMain.handle(IPC.skillsStartAssist, async (_e, input: unknown): Promise<RunSummary> => {
+    const target = skillAssistArgs(input, (id) => !!projects.get(id))
+    const project = target.library ? skillsProject(settings.get(), settings.dataDir, { mock }) : projects.get(target.projectId)
+    if (!project) throw new Error('Project not found')
+    return runs.start({ project, kind: 'skill-assist', prompt: skillAssistPrompt(project, target.instruction) })
+  })
 
   ipcMain.handle(IPC.setupStart, async (_e, input: SetupStartInput) => {
     const existing = projects.get(input.projectId)
@@ -234,7 +329,8 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.runsContinue, async (_e, input: ContinueRunInput) => {
     const from = runs.summary(input.runId)
     if (!from) throw new Error('Run not found')
-    const existing = projectOrHarness(from.projectId)
+    // A quick run continues as the project rebuilt from its own summary (folder, team, edits), never a stored one.
+    const existing = from.quick ? quick.projectFor(from) : projectOrHarness(from.projectId)
     if (!existing) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
@@ -345,7 +441,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   )
 
   registerConnectionIpc(projects, connections)
-  registerMcpIpc(runs, mcp, projectOrHarness)
+  registerMcpIpc(runs, mcp, projectOrHarness, { quick, settings, mock })
   registerSkillIpc(skills, skillEvaluation)
   registerCapabilityIpc(capabilities)
 }
@@ -399,7 +495,7 @@ function obj<T>(input: unknown): T {
 
 /** A project id that may name a stored project (the harness project has no skills). */
 function projectIdArg(id: unknown): string {
-  if (!isValidId(id) || id === HARNESS_PROJECT_ID) throw new Error('Project not found')
+  if (!isValidId(id) || isVirtualProjectId(id)) throw new Error('Project not found')
   return id
 }
 
@@ -608,7 +704,12 @@ function registerConnectionIpc(projects: ProjectStore, connections: ConnectionSe
 }
 
 /** MCP servers, plugins, registry search and install approvals: McpService 1:1, installs and the assistant via RunManager. */
-function registerMcpIpc(runs: RunManager, mcp: McpService, projectOrHarness: (id: string) => Project | null): void {
+function registerMcpIpc(
+  runs: RunManager,
+  mcp: McpService,
+  projectOrHarness: (id: string) => Project | null,
+  assist: { quick: QuickRunService; settings: SettingsStore; mock: boolean }
+): void {
   ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
   ipcMain.handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
   ipcMain.handle(IPC.mcpRemove, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.remove(input))
@@ -618,13 +719,23 @@ function registerMcpIpc(runs: RunManager, mcp: McpService, projectOrHarness: (id
   ipcMain.handle(IPC.mcpAnswerInstall, (_e, input: McpAnswerInstallInput): void => runs.answerMcpInstall(input.runId, input.requestId, input.decision))
   // scope 'library' runs the assistant on the virtual harness project; RunManager and the harness tools treat a run
   // whose projectId is HARNESS_PROJECT_ID as library scope.
+  // allowBuild (library scope only, literal true): the session works in its own scratch dir under <data>/quick, with
+  // permission mode 'default' (harnessProject), and the run records it as buildWorkspace.
   ipcMain.handle(IPC.mcpStartAssist, async (_e, input: McpAssistInput): Promise<RunSummary> => {
-    const library = input?.scope === 'library'
-    const projectId = library ? HARNESS_PROJECT_ID : typeof input?.projectId === 'string' ? input.projectId : ''
-    if (!library && projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
+    const { library, projectId, instruction, allowBuild } = mcpAssistArgs(input)
+    if (!library && isVirtualProjectId(projectId)) throw new Error('Project not found')
+    if (allowBuild) {
+      const workspace = createScratchDir(assist.settings.dataDir)
+      try {
+        const project = buildHarnessProject(assist.settings.get(), assist.settings.dataDir, { mock: assist.mock, allowBuild: true, workspace })
+        return await runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction), buildWorkspace: workspace })
+      } catch (e) {
+        assist.quick.removeScratch(workspace)
+        throw e
+      }
+    }
     const project = projectOrHarness(projectId)
     if (!project) throw new Error('Project not found')
-    const instruction = typeof input?.instruction === 'string' ? input.instruction : undefined
     return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction) })
   })
   ipcMain.handle(IPC.mcpLinkLibrary, (_e, input: McpLinkLibraryInput): McpMutationResult => mcp.linkLibrary(input))

@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Project, SkillLibraryInfo } from '@shared/types'
+import type { Project, SkillLibraryInfo, SkillProposalItem, SkillsProposalPayload } from '@shared/types'
 import { project } from '../runtime/testHelpers'
 import { ProjectStore } from '../store/projects'
 import { SkillService } from './service'
@@ -416,5 +416,67 @@ describe('repo import', () => {
     put('.claude/skills/a/SKILL.md', skillMd('a'))
     const p = svc.previewImport({ projectId: 'p1', path: '/etc' } as never)
     expect(p.items).toHaveLength(1)
+  })
+})
+
+describe('applyProposal', () => {
+  const item = (over: Partial<SkillProposalItem> = {}): SkillProposalItem => ({ action: 'create', scope: 'library', draft: draft('lib-skill'), ...over })
+  const payload = (...items: SkillProposalItem[]): SkillsProposalPayload => ({ rationale: 'r', items })
+
+  it('library session: creates and updates library entries, returns null', () => {
+    expect(svc.applyProposal(null, payload(item()))).toBeNull()
+    const entry = svc.libraryList()[0].entry
+    expect(entry.name).toBe('lib-skill')
+    expect(libEvents.length).toBeGreaterThan(0)
+    expect(svc.applyProposal(null, payload(item({ action: 'update', libraryId: entry.id, draft: draft('lib-skill', 'Better.') })))).toBeNull()
+    expect(svc.libraryRead({ libraryId: entry.id }).body).toBe('Better.')
+  })
+
+  it('library session refuses project items and writes nothing when any item fails', () => {
+    expect(() => svc.applyProposal(null, payload(item(), item({ scope: 'project', draft: draft('p-skill') })))).toThrow(/only scope "library"/)
+    expect(svc.libraryList()).toEqual([])
+    expect(() => svc.applyProposal(null, payload(item({ draft: draft('good') }), item({ draft: draft('Bad Name') })))).toThrow(/lowercase/)
+    expect(svc.libraryList()).toEqual([])
+    expect(() => svc.applyProposal(null, payload(item({ draft: draft('x', 'run !`ls` now') })))).toThrow(/shell/i)
+    expect(() => svc.applyProposal(null, { rationale: 'r', items: [] })).toThrow(/no items/)
+  })
+
+  it('project session: creates with role slugs, updates by name, mixes library items, returns the project', () => {
+    const saved = svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('review-code'), roles: ['engineer'] }), item({ draft: draft('shared') })))
+    expect(saved?.id).toBe('p1')
+    expect(saved?.skills?.map((s) => s.name)).toEqual(['review-code'])
+    const id = saved!.skills![0].id
+    expect(saved?.roles.find((r) => r.slug === 'engineer')?.skills).toEqual([id])
+    expect(svc.libraryList().map((l) => l.entry.name)).toEqual(['shared'])
+    const upd = svc.applyProposal('p1', payload(item({ action: 'update', scope: 'project', draft: draft('review-code', 'v2'), roles: ['reviewer'] })))
+    expect(svc.read({ projectId: 'p1', skillId: id }).body).toBe('v2')
+    expect(upd?.roles.find((r) => r.slug === 'reviewer')?.skills).toEqual([id])
+    expect(upd?.roles.find((r) => r.slug === 'engineer')?.skills ?? []).toEqual([])
+    // roles omitted: grants stay
+    const kept = svc.applyProposal('p1', payload(item({ action: 'update', scope: 'project', draft: draft('review-code', 'v3') })))
+    expect(kept?.roles.find((r) => r.slug === 'reviewer')?.skills).toEqual([id])
+  })
+
+  it('refuses unknown role slugs, duplicates, linked updates and unknown libraryIds without writing', () => {
+    expect(() => svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('a-skill'), roles: ['ghost'] })))).toThrow(/no role "ghost"/)
+    expect(store.get('p1')?.skills ?? []).toEqual([])
+    svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('dup') })))
+    expect(() => svc.applyProposal('p1', payload(item({ draft: draft('fresh') }), item({ scope: 'project', draft: draft('dup') })))).toThrow(/already has/)
+    expect(svc.libraryList()).toEqual([])
+    expect(() => svc.applyProposal('p1', payload(item({ action: 'update', libraryId: 'nope', draft: draft('x') })))).toThrow(/not a library skill/)
+    svc.libraryCreate(draft('linked'))
+    const entry = svc.libraryList()[0].entry
+    svc.linkLibrary({ projectId: 'p1', libraryId: entry.id })
+    expect(() => svc.applyProposal('p1', payload(item({ action: 'update', scope: 'project', draft: draft('linked', 'x') })))).toThrow(/linked to the skill library/)
+    expect(() => svc.applyProposal('ghost', payload(item()))).toThrow(/Project not found/)
+  })
+
+  it('a library update that renames onto a name used by a linking project is refused before any write', () => {
+    svc.libraryCreate(draft('shared'))
+    const entry = svc.libraryList()[0].entry
+    svc.linkLibrary({ projectId: 'p1', libraryId: entry.id })
+    svc.create({ projectId: 'p1', draft: draft('taken') })
+    expect(() => svc.applyProposal('p1', payload(item({ draft: draft('fresh-one') }), item({ action: 'update', libraryId: entry.id, draft: draft('taken') })))).toThrow(/already has a skill named "taken"/)
+    expect(svc.libraryList().map((l) => l.entry.name)).toEqual(['shared'])
   })
 })

@@ -4,7 +4,7 @@ import {
   CAPABILITY_MAX_ITEMS,
   CAPABILITY_MAX_RECOMMENDATIONS,
   CAPABILITY_RECOMMEND_TIMEOUT_MS,
-  HARNESS_PROJECT_ID,
+  isVirtualProjectId,
   TEAM_REVIEW_MAX_DISMISSED,
   TEAM_REVIEW_OPEN_THROTTLE_MS,
   TEAM_REVIEW_PROACTIVE_LIMIT,
@@ -254,7 +254,7 @@ export class CapabilityService implements CapabilityServiceApi {
 
   private project(projectId: string): Project {
     // The harness project is virtual (library assistants); it has no org chart to equip.
-    if (projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
+    if (isVirtualProjectId(projectId)) throw new Error('Project not found')
     const p = this.deps.projects.get(projectId)
     if (!p) throw new Error('Project not found')
     return p
@@ -879,7 +879,7 @@ export class CapabilityService implements CapabilityServiceApi {
   }
 
   forgetProject(projectId: string): void {
-    if (projectId === HARNESS_PROJECT_ID) return
+    if (isVirtualProjectId(projectId)) return
     this.snapshots.delete(projectId)
     this.undos.delete(projectId)
     clearTimeout(this.runTimers.get(projectId))
@@ -895,7 +895,7 @@ export class CapabilityService implements CapabilityServiceApi {
   // ---------- phase 2: the Team review ----------
 
   lastReview(projectId: string): TeamReview | null {
-    if (projectId === HARNESS_PROJECT_ID) return null
+    if (isVirtualProjectId(projectId)) return null
     return readReview(this.deps.dataDir, projectId)
   }
 
@@ -1222,7 +1222,7 @@ export class CapabilityService implements CapabilityServiceApi {
     try {
       if (this.disposed) return
       const project = this.deps.projects.get(projectId)
-      if (projectId === HARNESS_PROJECT_ID || !project || teamReviewOf(project).auto === 'off') return
+      if (isVirtualProjectId(projectId) || !project || teamReviewOf(project).auto === 'off') return
       // Setup-like and other non-work runs never trigger a review.
       const ended = (() => { try { return this.deps.listRuns(projectId).find((r) => r.id === _runId) } catch { return undefined } })()
       if (ended && ended.kind !== 'work') return

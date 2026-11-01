@@ -147,6 +147,21 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   user's machine, the live GitHub contents API (unauthenticated, rate limit 60/h), the live registry shape, the live
   recommend call on Claude and Codex.
 
+- Assistants (main; see ARCHITECTURE.md "Assistants (ad-hoc sessions)"): three virtual project ids (`isVirtualProjectId`):
+  'quick' (Chat: `src/main/quick/`, runs:startQuick / runs:promoteQuick; RunKind 'work' with `RunSummary.quick`),
+  'harness' (MCP assistant; `McpAssistInput.allowBuild === true`, library scope only, adds a per-run scratch dir
+  `RunSummary.buildWorkspace`, Edit/Write/Bash and permission mode 'default') and 'skills' (Skill assistant,
+  RunKind 'skill-assist', setup-like, skills:startAssist; propose_skills -> `SkillService.applyProposal`). Quick runs:
+  permission mode always 'default', read-only unless allowEdits, no project MCP/plugins/skills/installs/messaging,
+  grants never written to the folder, Claude `settingSources: []` with no saved-rules allowedTools, tools from
+  `QUICK_TOOL_DEFS` incl. `list_projects` (secret-free ProjectPeek data block). Scratch dirs only under
+  `<data>/quick` (0o700, boot sweep keeps referenced ones). Promote moves the session chain and drops `quick`.
+  Mock scripts: a quick run calls `list_projects` once, says "I can see N OrgAI project(s). Tell me what you would
+  like to do." and goes idle; follow-ups get "Mock reply to: <text>". A skill-assist run says "I will look at the
+  skill library first, then propose a skill.", calls `list_skill_library`, then `propose_skills` (title "Mock skill",
+  one create of `mock-skill`, scope 'library' on 'skills', 'project' with the first role's slug on a project), and
+  after APPROVED says "The skill is set up." and goes idle. Verified by unit tests and the mock only; no live run.
+
 ## Renderer
 
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.

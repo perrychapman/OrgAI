@@ -24,6 +24,11 @@ export class RunStore {
   private runs: RunSummary[] = []
   /** Images already written, by object identity, so periodic flushes of a live record skip hashing. */
   private storedImages = new WeakMap<ImageAttachment, string>()
+  /**
+   * Called with the summaries a prune or removeProject just deleted (after the index write), so a quick run's
+   * scratch dir can be removed once no record points to it. Errors are swallowed: deletion never fails on a hook.
+   */
+  onRunsRemoved?: (removed: RunSummary[]) => void
 
   constructor(dataDir: string) {
     this.file = join(dataDir, 'runs.json')
@@ -209,6 +214,7 @@ export class RunStore {
     this.runs = this.runs.filter((r) => r.projectId !== projectId)
     this.persist()
     for (const r of gone) this.removeRecord(r.id)
+    this.notifyRemoved(gone)
     return gone.length
   }
 
@@ -223,10 +229,43 @@ export class RunStore {
       for (const r of sorted.slice(keep)) if (r.status === 'finished' || r.status === 'error') drop.add(r.id)
     }
     if (!drop.size) return 0
+    const removed = this.runs.filter((r) => drop.has(r.id))
     this.runs = this.runs.filter((r) => !drop.has(r.id))
     this.persist()
     for (const id of drop) this.removeRecord(id)
+    this.notifyRemoved(removed)
     return drop.size
+  }
+
+  private notifyRemoved(removed: RunSummary[]): void {
+    try {
+      this.onRunsRemoved?.(removed.map((r) => ({ ...r })))
+    } catch (e) {
+      console.warn('onRunsRemoved failed:', e)
+    }
+  }
+
+  /**
+   * Move runs to another project (a promoted quick run). Only the index entry changes (getRecord reads its summary
+   * from the index). Unknown ids are skipped. Returns the moved summaries (new projectId) in the order given.
+   */
+  moveToProject(runIds: readonly string[], projectId: string): RunSummary[] {
+    const moved: RunSummary[] = []
+    for (const id of runIds) {
+      const run = this.runs.find((r) => r.id === id)
+      if (!run) continue
+      run.projectId = projectId
+      // Out of the Chat: from now on it is a project run (continuing it uses the project's own roles).
+      if (projectId !== 'quick') delete run.quick
+      moved.push({ ...run })
+    }
+    if (moved.length) this.persist()
+    return moved
+  }
+
+  /** Every stored summary (copies), for the scratch-dir sweep. */
+  all(): RunSummary[] {
+    return this.runs.map((r) => ({ ...r }))
   }
 
   /** Delete record files and run directories (image stores) whose run is no longer in the index. */

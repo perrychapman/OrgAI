@@ -441,3 +441,84 @@ describe('mock adapter skills', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+describe('mock adapter assistants scripts', () => {
+  const quick = { folder: '/some/folder', team: 'single' as const, allowEdits: false, gitRepo: false }
+  async function runToIdle(ctx: ReturnType<typeof fakeCtx>, follow?: string): Promise<MockSession> {
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    const idle = () => ctx.events.filter((e) => e.type === 'run.status' && e.status === 'idle').length
+    for (let i = 0; i < 300 && idle() < 1; i++) await new Promise((r) => setTimeout(r, 10))
+    if (follow) {
+      await session.send(follow)
+      for (let i = 0; i < 300 && idle() < 2; i++) await new Promise((r) => setTimeout(r, 10))
+    }
+    return session
+  }
+  const toolNames = (ctx: ReturnType<typeof fakeCtx>) =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_use' ? [e.entry.block.name] : []))
+  const texts = (ctx: ReturnType<typeof fakeCtx>) =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
+  const peek = (id: string) => ({ id, name: id, path: `/${id}`, brief: '', roles: [], connection: 'anthropic' as const })
+  const stopAll = async (s: MockSession): Promise<void> => {
+    await s.stop()
+    await s.finished
+  }
+
+  it('quick run: list_projects once, one answer naming the count, then idle; a follow-up gets a short reply', async () => {
+    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), listProjects: () => [peek('a'), peek('b')] })
+    const session = await runToIdle(ctx, 'thanks')
+    expect(toolNames(ctx)).toEqual(['list_projects'])
+    expect(texts(ctx)).toEqual(['I can see 2 OrgAI projects. Tell me what you would like to do.', 'Mock reply to: thanks'])
+    await stopAll(session)
+  })
+
+  it('quick run: singular wording for one project', async () => {
+    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), listProjects: () => [peek('a')] })
+    const session = await runToIdle(ctx)
+    expect(texts(ctx)[0]).toBe('I can see 1 OrgAI project. Tell me what you would like to do.')
+    await stopAll(session)
+  })
+
+  it('skill-assist on a project: list, propose mock-skill for the first role, final text', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'skill-assist' }), skillCatalog: () => ({ library: [], project: [] }) })
+    const session = await runToIdle(ctx)
+    expect(toolNames(ctx)).toEqual(['list_skill_library', 'propose_skills'])
+    const [p] = (ctx.requestProposal as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as { kind: string; payload: any })
+    expect(p.kind).toBe('skills')
+    expect(p.payload.items).toHaveLength(1)
+    expect(p.payload.items[0]).toMatchObject({ action: 'create', scope: 'project', roles: ['lead'], draft: { name: 'mock-skill' } })
+    expect(p.payload.items[0].draft.description.length).toBeGreaterThan(10)
+    expect(texts(ctx).at(-1)).toBe('The skill is set up.')
+    await stopAll(session)
+  })
+
+  it('skill-assist on the skills project proposes a library skill and retries on REVISE', async () => {
+    const decide = vi.fn().mockResolvedValueOnce({ behavior: 'revise', feedback: 'shorter' }).mockResolvedValue({ behavior: 'approve' })
+    const ctx = fakeCtx({
+      run: runSummary({ kind: 'skill-assist', projectId: 'skills' }),
+      project: project({ id: 'skills' }),
+      skillCatalog: () => ({ library: [], project: [] }),
+      requestProposal: decide
+    })
+    const session = await runToIdle(ctx)
+    const calls = decide.mock.calls.map((c) => c[0] as { payload: any })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]!.payload.items[0]).toMatchObject({ scope: 'library', draft: { name: 'mock-skill' } })
+    expect(calls[0]!.payload.items[0].roles).toBeUndefined()
+    expect(toolNames(ctx)).toEqual(['list_skill_library', 'propose_skills', 'propose_skills'])
+    await stopAll(session)
+  })
+
+  it('mcp-assist with allowBuild tools on the harness project still finishes its script', async () => {
+    const roles = [{ ...project().roles[0]!, tools: ['Read', 'Edit', 'Write', 'Bash'] as ('Read' | 'Edit' | 'Write' | 'Bash')[] }]
+    const ctx = fakeCtx({
+      run: runSummary({ kind: 'mcp-assist', projectId: 'harness' }),
+      project: project({ id: 'harness', path: join(tmpdir(), 'quick', 'build'), roles }),
+      roles,
+      mcpLibrary: () => []
+    })
+    const session = await runToIdle(ctx)
+    expect(texts(ctx).at(-1)).toBe('The MCP servers are set up.')
+    await stopAll(session)
+  })
+})
