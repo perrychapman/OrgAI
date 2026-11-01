@@ -579,6 +579,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
                 onRemove={() => void requestRemove(selectedRole.id)}
                 onEscape={() => returnToNode(selectedRole.id)}
+                onAskAssistant={() => openArchitect()}
               />
             ) : (
               <EmptyState compact icon={MousePointerClick} title="No role selected" description="Select a role on the chart to edit what it can use." testId="team-no-role" />

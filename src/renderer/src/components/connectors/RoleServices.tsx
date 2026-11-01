@@ -1,62 +1,116 @@
 import type { ReactElement } from 'react'
-import { Settings2 } from 'lucide-react'
-import type { Project, Role } from '@shared/types'
+import { LogIn, X } from 'lucide-react'
+import type { McpServerInfo, Role } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { PROJECT_SETTINGS_PANES } from '../../lib/settingsTarget'
-import { servicesForRole } from '../../lib/roleServices'
-import { capList } from '../../lib/connectors'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { serviceFor } from '../../lib/roleServices'
+import { accessLabel, grantedServers, needsSignIn, serverReadOnly } from '../../lib/roleCapabilities'
+import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
+import { IconButton } from '../ui/IconButton'
+import { AddButton, CapabilityGroup } from '../team/CapabilityBlock'
 import { ConnectorLogo } from './ConnectorLogo'
 
-/** Services listed in the inspector before "and N more". */
-const ROLE_SERVICES_CAP = 5
-
-/** Read-only list of the connected services a role can use, with a way into project Settings > Tools. */
-export default function RoleServices({ project, role }: { project: Project; role: Role }): ReactElement {
-  const setPane = useAppStore((s) => s.setProjectSettingsPane)
+/**
+ * The Connections group of "What it can use": a row per project connection this role may use, with its access in words,
+ * a "Needs sign in" badge when it cannot work yet, and a remove control that revokes it for this role only. Access
+ * belongs to the connection (set when it was connected), so it is shown, not edited, here.
+ */
+export default function RoleServices({
+  role,
+  servers,
+  error,
+  onRevoke,
+  onAdd,
+  onAsk
+}: {
+  role: Role
+  /** null while the list loads. */
+  servers: McpServerInfo[] | null
+  error?: string | null
+  onRevoke: (info: McpServerInfo) => void
+  onAdd: () => void
+  onAsk?: () => void
+}): ReactElement {
   const setView = useAppStore((s) => s.setView)
-  const services = servicesForRole(project, role)
-  const { shown, more } = capList(services, ROLE_SERVICES_CAP)
-  const manage = (): void => {
-    setPane(project.id, PROJECT_SETTINGS_PANES.tools)
-    setView('settings')
+  const granted = grantedServers(servers ?? [], role)
+  const signIn = (): void => {
+    requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
+    setView('appSettings')
   }
+  const waiting = granted.filter(needsSignIn).length
+  const summary =
+    granted.length === 0
+      ? undefined
+      : `${granted.length} ${granted.length === 1 ? 'connection' : 'connections'}${waiting > 0 ? `, ${waiting} need${waiting === 1 ? 's' : ''} sign in` : ''}`
   return (
-    <section className="stack-2 role-services" aria-labelledby="role-services-title" data-testid="role-services">
-      <h3 className="side-section-title" id="role-services-title">
-        Connections
-      </h3>
-      {services.length === 0 ? (
-        <p className="hint">No connections yet. Add and grant them in project Settings &gt; Plugins and suggestions.</p>
+    <CapabilityGroup
+      id="role-connections"
+      testId="role-services"
+      title="Connections"
+      summary={summary}
+      actions={<AddButton label={`Add a connection to ${role.name}`} testId="role-add-connection" onClick={onAdd} />}
+      empty={
+        servers !== null && granted.length === 0
+          ? {
+              text: 'No connections yet. A connection lets this role reach a service such as GitHub or Slack.',
+              primaryLabel: 'Add a connection',
+              primaryTestId: 'role-add-connection',
+              onPrimary: onAdd,
+              onAsk
+            }
+          : undefined
+      }
+    >
+      {error && (
+        <p className="invalid-text" role="alert">
+          {error}
+        </p>
+      )}
+      {servers === null ? (
+        <p className="hint" role="status">
+          Loading connections...
+        </p>
       ) : (
-        <ul className="role-services-list">
-          {shown.map((s) => (
-            <li key={s.id} className="role-service" data-testid="role-service" data-name={s.label}>
-              {s.connectorId ? (
-                <ConnectorLogo def={{ id: s.connectorId, name: s.label }} size="sm" />
-              ) : (
-                <span className="role-service-tile" style={{ ['--hue' as string]: s.hue }} aria-hidden="true">
-                  {s.initial}
+        <ul className="role-cap-list" aria-label={`Connections for ${role.name}`}>
+          {granted.map((info) => {
+            const s = serviceFor(info.spec)
+            const access = accessLabel(serverReadOnly(info.spec))
+            const needs = needsSignIn(info)
+            return (
+              <li key={info.spec.id} className="role-cap-row role-cap-service" tabIndex={-1} data-testid="role-service" data-name={s.label} data-cap-id={info.spec.id} data-library-id={info.spec.libraryId}>
+                {s.connectorId ? (
+                  <ConnectorLogo def={{ id: s.connectorId, name: s.label }} size="sm" />
+                ) : (
+                  <span className="role-service-tile" style={{ ['--hue' as string]: s.hue }} aria-hidden="true">
+                    {s.initial}
+                  </span>
+                )}
+                <span className="role-cap-text">
+                  <span className="role-service-name">{s.label}</span>
+                  <span className="role-cap-sub">
+                    {access ?? 'Custom connection'}
+                    {info.spec.enabled ? '' : ' (paused in this project)'}
+                  </span>
                 </span>
-              )}
-              <span className="role-service-name">{s.label}</span>
-              {s.custom && <span className="role-service-custom">custom</span>}
-            </li>
-          ))}
-          {more > 0 && (
-            <li className="role-service role-service-more" data-testid="role-service-more">
-              <button type="button" className="link-btn" onClick={manage}>
-                and {more} more
-              </button>
-            </li>
-          )}
+                <span className="role-cap-tags">
+                  {needs && (
+                    <>
+                      <Badge tone="attention" testId="role-needs-signin">
+                        Needs sign in
+                      </Badge>
+                      <Button size="sm" icon={LogIn} ariaLabel={`Sign in to ${s.label} in App settings`} testId="role-signin" onClick={signIn}>
+                        Sign in
+                      </Button>
+                    </>
+                  )}
+                </span>
+                <IconButton icon={X} size="sm" label={`Remove ${s.label} from ${role.name}`} testId="role-connection-remove" onClick={() => onRevoke(info)} />
+              </li>
+            )
+          })}
         </ul>
       )}
-      <div>
-        <Button size="sm" icon={Settings2} onClick={manage} testId="role-services-manage">
-          Manage connections
-        </Button>
-      </div>
-    </section>
+    </CapabilityGroup>
   )
 }

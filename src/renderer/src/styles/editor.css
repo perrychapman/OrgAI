@@ -143,6 +143,24 @@
 .role-node .caps-sep {
   color: var(--text-tertiary);
 }
+/* Icon plus number under 200 px of node width, words above. The icons only show in the compact form. */
+.role-node {
+  container-type: inline-size;
+  container-name: role-node;
+}
+.role-node .caps-part > svg {
+  display: none;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+@container role-node (max-width: 199px) {
+  .role-node .caps-part > svg {
+    display: inline;
+  }
+  .role-node .caps-word {
+    display: none;
+  }
+}
 
 /* ---------- Draft box ---------- */
 

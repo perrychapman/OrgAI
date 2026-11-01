@@ -30,6 +30,159 @@
 
 .role-capabilities {
   padding-top: var(--space-1);
+  container-type: inline-size;
+  container-name: role-cap;
+}
+.role-cap-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.role-cap-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.role-cap-head .side-section-title {
+  margin: 0;
+}
+.role-cap-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.role-cap-summary {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.role-cap-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.role-cap-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.role-cap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.role-cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.role-cap-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.role-cap-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  flex: 1 1 var(--space-16);
+  min-width: 0;
+}
+.role-cap-sub {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.role-cap-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.role-cap-group > p,
+.role-cap-empty > p {
+  margin: 0;
+}
+.role-cap-text > .role-cap-tags {
+  margin-top: var(--space-1);
+}
+.role-tool-elevated {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--warning-text);
+}
+.role-fold > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+@container role-cap (min-width: 480px) {
+  .role-cap-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Scoped chooser (a dialog): a list of what the role does not have yet. */
+.capability-chooser-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.capability-chooser-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.capability-chooser-item:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.capability-chooser-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.capability-chooser-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.capability-chooser-name {
+  font-weight: var(--weight-semibold);
+}
+.capability-chooser-desc {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 .role-capabilities > .role-capabilities-title {
   margin-top: 0;
