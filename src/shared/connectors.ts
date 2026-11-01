@@ -349,6 +349,30 @@ export const CONNECTORS: readonly ConnectorDef[] = [
   }
 ]
 
+// SIMULATION ONLY (UX scale walk) -- never commit
+const SIM_NAMES: [string, ConnectorDef['category'], 'oauth' | 'token' | 'oauthClient'][] = [
+  ['Asana','project','oauth'],['Airtable','docs','oauth'],['Box','files','oauth'],['Dropbox','files','oauth'],['HubSpot','project','oauth'],
+  ['Intercom','chat','oauth'],['Jira Service','project','oauth'],['Zendesk','chat','token'],['Datadog','monitoring','token'],['PagerDuty','monitoring','oauth'],
+  ['Cloudflare','dev','oauth'],['Vercel','dev','oauth'],['Netlify','dev','oauth'],['GitLab','dev','token'],['Bitbucket','dev','token'],
+  ['Square','payments','oauth'],['PayPal','payments','oauth'],['Shopify','payments','oauth'],['Canva','design','oauth'],['Miro','design','oauth'],
+  ['Discord','chat','token'],['Microsoft Teams','chat','oauthClient'],['Outlook','email','oauthClient'],['OneDrive','files','oauthClient'],['SharePoint','files','oauthClient'],
+  ['Google Drive','files','oauthClient'],['Google Docs','docs','oauthClient'],['Google Sheets','docs','oauthClient'],['Confluence','docs','oauth'],['Coda','docs','oauth'],
+  ['Monday','project','oauth'],['ClickUp','project','oauth'],['Trello','project','token'],['Basecamp','project','oauth'],['Todoist','project','oauth'],
+  ['Mailchimp','email','token'],['SendGrid','email','token'],['Calendly','calendar','oauth'],['Cal.com','calendar','oauth'],['Zoom','calendar','oauthClient'],
+  ['Grafana','monitoring','token'],['New Relic','monitoring','token'],['Honeycomb','monitoring','oauth'],['Supabase','dev','oauth'],['Neon','dev','oauth'],
+  ['Postman','dev','token'],['Webflow','design','oauth'],['Framer','design','oauth']
+]
+SIM_NAMES.forEach(([name, category, kind], i) => {
+  const auth: any = kind === 'oauth' ? { kind: 'oauth' } : kind === 'token' ? { kind: 'token', label: 'Access token', help: 'Create a token in the service settings.', prefix: '' } : { kind: 'oauthClient', scopes: ['read'], consoleUrl: 'https://example.com', clientSecret: 'required' }
+  ;(CONNECTORS as ConnectorDef[]).push({
+    id: 'sim-' + i, name, vendor: name, publisher: 'official', category,
+    description: `Search and read ${name} content for your agents. A longer sentence to show wrapping behaviour.`,
+    status: i % 7 === 0 ? 'preview' : 'stable', docsUrl: 'https://example.com',
+    variants: [{ id: 'full', label: 'Full access', transport: 'http', url: 'https://example.com/mcp', readOnly: false, auth }],
+    defaultVariant: 'full', setup: kind === 'oauthClient' ? ['Create an OAuth client.', 'Paste id.'] : [], notes: [], verified: false
+  } as ConnectorDef)
+})
+
 export function connectorById(id: string): ConnectorDef | undefined {
   return typeof id === 'string' ? CONNECTORS.find((c) => c.id === id) : undefined
 }
