@@ -286,6 +286,22 @@
   flex-direction: column;
   gap: var(--space-5);
 }
+/* A short page (a 1024 x 640 window) drops the hero glyph and tightens the gaps, so the start button stays in view. */
+.new-run {
+  container: newrun / size;
+}
+@container newrun (max-height: 560px) {
+  .new-run-inner {
+    gap: var(--space-3);
+  }
+  .new-run-inner > .empty-state {
+    padding: 0;
+    gap: var(--space-1);
+  }
+  .new-run-inner > .empty-state .empty-state-glyph {
+    display: none;
+  }
+}
 .new-run-intro {
   text-align: center;
   color: var(--text-secondary);

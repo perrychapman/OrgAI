@@ -5,6 +5,7 @@ import type { Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
+import { proposalNextFor } from '../lib/proposalNext'
 import { CopyButton } from './ui/CopyButton'
 import { clampLabel } from '../lib/clampLabel'
 import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
@@ -63,7 +64,12 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
   }
 
   const approve = (): void => {
-    void submit(() => onDecide({ behavior: 'approve' }))
+    void submit(async () => {
+      await onDecide({ behavior: 'approve' })
+      // The card disappears once resolved; the run's metadata line keeps the pointer to where the result went.
+      const home = useAppStore.getState().runs[runId]?.summary.projectId
+      useAppStore.getState().noteProposalNext(runId, home ? proposalNextFor(proposal, home) : null)
+    })
   }
   const revise = (): void => {
     if (!feedback.trim()) return

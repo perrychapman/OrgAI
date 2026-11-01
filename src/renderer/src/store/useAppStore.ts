@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
+import type { ProposalNext } from '../lib/proposalNext'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
@@ -189,6 +190,8 @@ interface AppState {
   sideTabByRun: Record<string, SideTab>
   /** Live view layout the user picked per run (conversation or canvas); absent means `runLayoutFor`'s default. */
   runLayoutByRun: Record<string, RunLayout>
+  /** After the user approves a skills or MCP proposal: the pointer shown in the run's metadata line. */
+  noteProposalNext(runId: string, next: ProposalNext | null): void
   setRunLayout(runId: string, layout: RunLayout): void
   /** Select the side tab of the viewed run. */
   setSideTab(tab: SideTab): void
@@ -251,6 +254,7 @@ interface AppState {
   /** Agent import: a pending request to open the review dialog on the Team tab, and the notice after an apply. */
   importRequest: { projectId: string; fresh: boolean } | null
   importNotices: Record<string, ImportNotice>
+  proposalNextByRun: Record<string, ProposalNext>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
   recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
   undoImport(projectId: string): Promise<void>
@@ -513,6 +517,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   remapNotices: [],
   importRequest: null,
   importNotices: {},
+  proposalNextByRun: {},
 
   defaultConnection: null,
   async loadDefaultConnection() {
@@ -659,6 +664,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   replaceProject(project) {
     set((s) => ({ projects: s.projects.map((p) => (p.id === project.id ? project : p)) }))
+  },
+
+  noteProposalNext(runId, next) {
+    set((s) => {
+      if (!next) {
+        if (!(runId in s.proposalNextByRun)) return {}
+        const { [runId]: _gone, ...rest } = s.proposalNextByRun
+        return { proposalNextByRun: rest }
+      }
+      return { proposalNextByRun: { ...s.proposalNextByRun, [runId]: next } }
+    })
   },
 
   setRunLayout(runId, layout) {

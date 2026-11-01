@@ -4,6 +4,8 @@ import { Bot, ClipboardList, Clock, Folder, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { folderName } from '../lib/paths'
+import { PROPOSAL_NEXT_COPY } from '../lib/proposalNext'
+import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
 import { agentCostInput, formatDuration, runCostInput, sumCosts, costView } from '../lib/cost'
@@ -47,8 +49,37 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     maxAutoContinues: project.maxAutoContinues,
     kind: summary.kind
   })
+  const next = useAppStore((s) => s.proposalNextByRun[summary.id])
+  const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
+  const goNext = (): void => {
+    if (!next) return
+    const st = useAppStore.getState()
+    if (next.kind === 'skillsLibrary') {
+      requestSkillLibrary()
+      st.setView('appSettings')
+    } else if (next.kind === 'connectors') {
+      requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
+      st.setView('appSettings')
+    } else if (next.kind === 'mcpProject') {
+      st.openProjectMcp(next.projectId)
+    } else {
+      if (st.selectedProjectId !== next.projectId) st.selectProject(next.projectId)
+      st.setView('team')
+    }
+  }
   return (
     <div className="run-meta" data-testid="run-meta">
+      {next && nextCopy && (
+        <span className="run-meta-item run-meta-next" role="status">
+          {nextCopy.lead}{' '}
+          <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
+            {nextCopy.action}
+          </button>
+          <button type="button" className="link-btn" onClick={() => useAppStore.getState().noteProposalNext(summary.id, null)} aria-label="Dismiss this note">
+            Dismiss
+          </button>
+        </span>
+      )}
       {summary.resumedFrom && (
         <span className="run-meta-item run-meta-chain">
           Continues{' '}

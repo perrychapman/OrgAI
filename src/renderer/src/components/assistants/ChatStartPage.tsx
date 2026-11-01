@@ -1,15 +1,16 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { Project, ProjectPathCheck, QuickRunTeam } from '@shared/types'
 import { QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
 import { chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
 import { useAssistantModelName } from '../../lib/assistantModels'
 import { folderName } from '../../lib/paths'
+import { pathStatus } from '../../lib/projectsForm'
 import { CONNECTION_LABEL } from '../../lib/usage'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
-import { Switch } from '../ui/Switch'
+import { Input } from '../ui/Input'
 import Composer from '../Composer'
 
 const TEAMS: { value: QuickRunTeam; label: string }[] = [
@@ -18,7 +19,8 @@ const TEAMS: { value: QuickRunTeam; label: string }[] = [
 ]
 
 /**
- * The Chat start page: a folder (or a scratch area), a team, whether edits are allowed, then the composer. Starting
+ * The Chat start page: a folder (typed, pasted or browsed; or a scratch area), a team, whether edits are allowed,
+ * then the composer. The typed path is checked like the New project form's (checkPath, 300 ms debounce). Starting
  * calls startQuick; a rejection shows in the composer and keeps the draft.
  */
 export default function ChatStartPage({ project }: { project: Project }): ReactElement {
@@ -29,39 +31,54 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const model = useAssistantModelName('quickRunModel')
-  const [folder, setFolder] = useState<string | null>(null)
-  const [existing, setExisting] = useState<{ id: string; name: string } | null>(null)
+  const [text, setText] = useState('')
+  const [checked, setChecked] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
   const [pickError, setPickError] = useState<string | null>(null)
   const [team, setTeam] = useState<QuickRunTeam>('single')
   const [allowEdits, setAllowEdits] = useState(false)
-  const check = useRef(0)
   const teamName = useId()
+  const folderId = useId()
+  const statusId = useId()
+  const editsLabel = useId()
   const editsHint = useId()
-  const scratch = folder === null
+  const typed = text.trim()
 
   useEffect(() => {
-    const n = ++check.current
-    setExisting(null)
-    if (!folder) return
-    void window.orgai.projects.checkPath(folder).then(
-      (r: ProjectPathCheck) => {
-        if (n === check.current && r.existingProjectId) setExisting({ id: r.existingProjectId, name: r.existingProjectName ?? folderName(folder) })
-      },
-      () => undefined
-    )
-  }, [folder])
+    if (!typed) return
+    let live = true
+    const t = setTimeout(() => {
+      window.orgai.projects.checkPath(typed).then(
+        (result) => {
+          if (live) setChecked({ path: typed, result })
+        },
+        () => undefined
+      )
+    }, 300)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [typed])
+
+  const current = checked && checked.path === typed ? checked.result : null
+  const status = typed ? pathStatus('existing', typed, current) : null
+  const blocked = status?.blocking ? status.text : null
+  // The folder the chat will use: a typed path counts until the check says it cannot.
+  const folder = typed && !blocked ? typed : null
+  const scratch = folder === null
+  const existing = current?.existingProjectId ? { id: current.existingProjectId, name: current.existingProjectName ?? folderName(typed) } : null
 
   const browse = async (): Promise<void> => {
     setPickError(null)
     try {
       const picked = await window.orgai.projects.pickDirectory()
-      if (picked) setFolder(picked)
+      if (picked) setText(picked)
     } catch (e) {
       setPickError(e instanceof Error ? e.message : 'Could not open the folder chooser.')
     }
   }
   const clear = (): void => {
-    setFolder(null)
+    setText('')
     setAllowEdits(false)
   }
 
@@ -81,23 +98,38 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
 
         <div className="chat-options">
           <div className="chat-folder" data-testid="chat-folder">
-            <span className="chat-folder-label" id="chat-folder-label">
+            <label className="chat-folder-label" htmlFor={folderId}>
               Work in a folder
-            </span>
-            <span className="chat-folder-value" title={folder ?? undefined} aria-labelledby="chat-folder-label">
-              {folder ? folderName(folder) : 'No folder (a scratch area)'}
-            </span>
+            </label>
+            <Input
+              id={folderId}
+              mono
+              data-testid="chat-folder-input"
+              value={text}
+              placeholder="No folder (a scratch area)"
+              title={typed || undefined}
+              invalid={!!blocked}
+              aria-describedby={blocked ? statusId : undefined}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={setText}
+            />
             <span className="chat-folder-actions">
               <Button size="sm" testId="chat-folder-browse" onClick={() => void browse()}>
                 Browse
               </Button>
-              {folder && (
+              {text && (
                 <Button size="sm" variant="ghost" testId="chat-folder-clear" onClick={clear}>
                   Clear
                 </Button>
               )}
             </span>
           </div>
+          {blocked && (
+            <p className="chat-note is-error" id={statusId} role="status" data-testid="chat-folder-error">
+              {blocked}
+            </p>
+          )}
           {pickError && (
             <p className="chat-note is-error" role="alert">
               {pickError}
@@ -118,37 +150,46 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
             </p>
           )}
 
-          <details className="chat-team" data-testid="chat-team">
-            <summary>Team</summary>
-            <fieldset className="chat-team-options">
-              <legend className="sr-only">Team</legend>
-              {TEAMS.map((t) => (
-                <label key={t.value} className="chat-radio">
-                  <input type="radio" name={teamName} value={t.value} checked={team === t.value} onChange={() => setTeam(t.value)} />
-                  {t.label}
-                </label>
-              ))}
-            </fieldset>
-          </details>
+          <div className="chat-options-row">
+            <details className="chat-team" data-testid="chat-team">
+              <summary>Team</summary>
+              <fieldset className="chat-team-options">
+                <legend className="sr-only">Team</legend>
+                {TEAMS.map((t) => (
+                  <label key={t.value} className="chat-radio">
+                    <input type="radio" name={teamName} value={t.value} checked={team === t.value} onChange={() => setTeam(t.value)} />
+                    {t.label}
+                  </label>
+                ))}
+              </fieldset>
+            </details>
 
-          <div className="assistant-switch-row">
-            <span>
-              Allow edits in this folder
-              {scratch && (
-                <span className="muted chat-edits-hint" id={editsHint}>
-                  {' '}
-                  Choose a folder to allow edits.
-                </span>
-              )}
-            </span>
-            <Switch
-              testId="chat-allow-edits"
-              label="Allow edits in this folder"
-              describedBy={scratch ? editsHint : undefined}
-              checked={allowEdits && !scratch}
-              disabled={scratch}
-              onChange={setAllowEdits}
-            />
+            <div className="assistant-switch-row">
+              <div className="assistant-switch-text">
+                <span id={editsLabel}>Allow edits in this folder</span>
+                {scratch && (
+                  <span className="muted chat-edits-hint" id={editsHint}>
+                    Choose a folder to allow edits.
+                  </span>
+                )}
+              </div>
+              {/* aria-disabled, not disabled: the switch stays in the tab order and its hint is read. */}
+              <button
+                type="button"
+                role="switch"
+                className="switch"
+                data-testid="chat-allow-edits"
+                aria-checked={allowEdits && !scratch}
+                aria-labelledby={editsLabel}
+                aria-describedby={scratch ? editsHint : undefined}
+                aria-disabled={scratch || undefined}
+                onClick={() => {
+                  if (!scratch) setAllowEdits(!allowEdits)
+                }}
+              >
+                <span className="switch-thumb" />
+              </button>
+            </div>
           </div>
 
           <p className="muted chat-summary" data-testid="chat-summary">
@@ -162,11 +203,17 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
           primaryLabel="Start"
           placeholder="Describe the task"
           autoFocus
-          onSubmit={async (text, images) => {
-            if (text.length > QUICK_RUN_MAX_PROMPT_CHARS) {
+          onSubmit={async (prompt, images) => {
+            if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) {
               throw new Error(`That message is too long (the limit is ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString()} characters). Shorten it and try again.`)
             }
-            await startQuick({ prompt: text, ...(folder ? { folder } : {}), team, allowEdits: allowEdits && !scratch, ...(images ? { images } : {}) })
+            // Check the folder again at Start: the debounced check may not have answered yet.
+            if (typed) {
+              const fresh = await window.orgai.projects.checkPath(typed).catch(() => null)
+              const problem = pathStatus('existing', typed, fresh)
+              if (problem?.blocking) throw new Error(`Cannot start in that folder. ${problem.text} Clear the folder to chat in a scratch area.`)
+            }
+            await startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits: allowEdits && !scratch, ...(images ? { images } : {}) })
           }}
         />
       </div>
