@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Ellipsis, ExternalLink, Unlink } from 'lucide-react'
-import type { ConnectorInfo, McpMutationResult, McpServerInfo, Project } from '@shared/types'
+import type { ConnectorInfo, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -25,25 +25,29 @@ export function connectorAccess(info: ConnectorInfo): string {
 
 /**
  * "Use in this project": choose who may use a connected service, then link its library entry. Least privilege: no role
- * is selected until the user picks some (or All roles).
+ * is selected until the user picks some (or All roles). With `role` (started from one role's "+ Add") that role is the only
+ * one granted and the dialog confirms by itself: nothing left to decide, so it just reports the result or the error.
  */
 export function UseInProjectDialog({
   project,
   info,
   onClose,
-  onResult
+  onResult,
+  role
 }: {
   project: Project
   info: ConnectorInfo
   onClose: () => void
   onResult: (r: McpMutationResult) => void
+  role?: Role
 }): ReactElement {
-  const [roles, setRoles] = useState<string[]>([])
+  const [roles, setRoles] = useState<string[]>(() => (role ? [role.slug] : []))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const noRoles = project.roles.length === 0
   const blocker = useInProjectBlocker(project.roles.length, roles)
   const entry = info.library?.entry
+  const autoStarted = useRef(false)
 
   const confirm = async (): Promise<void> => {
     if (!entry) return
@@ -63,13 +67,19 @@ export function UseInProjectDialog({
       setBusy(false)
     }
   }
+  useEffect(() => {
+    if (!role || !entry || autoStarted.current) return
+    autoStarted.current = true
+    void confirm()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry?.id])
 
   return (
     <Dialog
       open
       onClose={busy ? () => undefined : onClose}
-      title={`Use ${info.connector.name} in this project`}
-      description={`${connectorAccess(info)}. Pick which roles may use it. You can change this later.`}
+      title={role ? `Add ${info.connector.name} for ${role.name}` : `Use ${info.connector.name} in this project`}
+      description={role ? `${connectorAccess(info)}. Only ${role.name} gets it. You can change this later.` : `${connectorAccess(info)}. Pick which roles may use it. You can change this later.`}
       size="md"
       testId="connector-use-dialog"
       footer={
@@ -78,7 +88,7 @@ export function UseInProjectDialog({
             Cancel
           </Button>
           <Button variant="primary" loading={busy} disabled={!entry || blocker !== null} testId="connector-use-confirm" onClick={() => void confirm()}>
-            Use in this project
+            {role ? `Add for ${role.name}` : 'Use in this project'}
           </Button>
         </>
       }
@@ -88,6 +98,11 @@ export function UseInProjectDialog({
           {error}
         </Banner>
       )}
+      {role ? (
+        <p className="hint" role="status">
+          {busy ? `Adding ${info.connector.name} for ${role.name}...` : `${role.name} will be able to use ${info.connector.name}.`}
+        </p>
+      ) : (
       <fieldset className="mcp-vars">
         <legend>Who can use it?</legend>
         <RoleChecklist roles={project.roles} value={roles} onChange={setRoles} label={`Role access for ${info.connector.name}`} />
@@ -97,6 +112,7 @@ export function UseInProjectDialog({
           </span>
         )}
       </fieldset>
+      )}
     </Dialog>
   )
 }
@@ -257,6 +273,7 @@ function ConnectedServiceRow({
             <span className="muted cs-avail-hint">{spec.enabled ? 'Off pauses it in this project only.' : 'Paused in this project. Still connected.'}</span>
             <UsedBy all={spec.roles === undefined} roles={loseRoles} onSelectRole={onSelectRole} />
             <RoleAccess
+              quiet
               serverName={connector.name}
               roles={project.roles}
               value={spec.roles}
