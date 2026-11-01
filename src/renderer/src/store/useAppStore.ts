@@ -1,3 +1,4 @@
+import { normalizeView } from '../lib/teamView'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
@@ -44,7 +45,7 @@ import type {
 } from '@shared/types'
 import { HARNESS_PROJECT_ID, parseRunWindowHash } from '@shared/types'
 
-/** Project tabs: run (Live), history, org (Org chart), settings. projects and appSettings are app-level. */
+/** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
 export interface ImportNotice {
   count: number
@@ -56,7 +57,7 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'usage' | 'logs'
 
@@ -225,7 +226,7 @@ interface AppState {
   /** Show a notice for results. `before` holds the pre-change copies of the projects, for Undo. */
   pushRemapNotice(cause: string, results: RemapResult[], before: Project[]): void
   dismissRemapNotice(id: string): void
-  /** Agent import: a pending request to open the review dialog on the Org chart tab, and the notice after an apply. */
+  /** Agent import: a pending request to open the review dialog on the Team tab, and the notice after an apply. */
   importRequest: { projectId: string; fresh: boolean } | null
   importNotices: Record<string, ImportNotice>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
@@ -723,7 +724,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (id) void settleWorkspace(id)
   },
 
-  setView(view) {
+  setView(requested) {
+    // A remembered or stale 'org' (the tab's old id) opens Team.
+    const view = normalizeView<View>(requested)
     set((s) => {
       const id = view === 'run' ? activeRun(s)?.summary.id : undefined
       if (!id || !s.unreadByRun[id]) return { view }
@@ -759,7 +762,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async createProject(input) {
     const project = await window.orgai.projects.create(input)
-    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'org' }))
+    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'team' }))
     return project
   },
 

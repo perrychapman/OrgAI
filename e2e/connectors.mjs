@@ -1,6 +1,6 @@
 // Token- and network-free (ORGAI_MOCK=1: connector sign-in, token save and "Check connection" are answered in-process).
 // Walks the Connectors feature: App settings > Connectors gallery and dialog (oauth, oauthClient, token kinds), linking a
-// connected service to a project from Settings > Tools, granting a role, the role inspector's Services block,
+// connected service to a project from Settings > Plugins and suggestions, granting a role, the role inspector's Connections block,
 // Disconnect and Remove confirmations that name the project, plus layout checks and screenshots at 1024x640 and
 // 1600x1000 in both themes.
 import * as path from 'node:path'
@@ -113,9 +113,9 @@ try {
 
   // ---- link to a project, grant a role ----
   await openProject(page, NAME)
-  await projectTab(page, 'Org chart').click()
+  await projectTab(page, 'Team').click()
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+  await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
   await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
   const row = page.locator('[data-testid=connected-service-row][data-connector=notion]')
   await row.waitFor({ timeout: 10_000 })
@@ -142,7 +142,7 @@ try {
   check((await row.locator('[data-testid=connector-use]').count()) === 0, 'the Use button is gone once linked')
 
   // ---- role inspector ----
-  await projectTab(page, 'Org chart').click()
+  await projectTab(page, 'Team').click()
   await page.locator('.react-flow__node', { hasText: role }).first().click()
   const svc = page.locator('[data-testid=role-services]')
   await svc.waitFor({ timeout: 10_000 })
@@ -169,9 +169,9 @@ try {
       await shot(`dialog-connected-${tag}`)
       await closeDialog()
       await openProject(page, NAME)
-      await projectTab(page, 'Org chart').click()
+      await projectTab(page, 'Team').click()
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+      await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
       await page.waitForSelector('[data-testid=connected-service-row][data-connector=notion]', { timeout: 10_000 })
       await noHScroll(`Tools ${tag}`)
       const nb = await page.locator('[data-testid=connected-service-row][data-connector=notion] .mcp-name').boundingBox()
@@ -206,9 +206,9 @@ try {
   }
   check(true, 'Slack and GitHub removed')
   await openProject(page, NAME)
-  await projectTab(page, 'Org chart').click()
+  await projectTab(page, 'Team').click()
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+  await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
   await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
   check((await page.locator('[data-testid=connected-service-row]').count()) === 0, 'Tools no longer lists the removed services')
 } catch (e) {

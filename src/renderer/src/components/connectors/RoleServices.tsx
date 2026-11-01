@@ -18,10 +18,10 @@ export default function RoleServices({ project, role }: { project: Project; role
   return (
     <section className="stack-2 role-services" aria-labelledby="role-services-title" data-testid="role-services">
       <h3 className="side-section-title" id="role-services-title">
-        Services
+        Connections
       </h3>
       {services.length === 0 ? (
-        <p className="hint">No services yet. Connect and grant them in project Settings &gt; Tools.</p>
+        <p className="hint">No connections yet. Add and grant them in project Settings &gt; Plugins and suggestions.</p>
       ) : (
         <ul className="role-services-list">
           {services.map((s) => (
@@ -37,7 +37,7 @@ export default function RoleServices({ project, role }: { project: Project; role
       )}
       <div>
         <Button size="sm" icon={Settings2} onClick={manage} testId="role-services-manage">
-          Manage in Tools
+          Manage connections
         </Button>
       </div>
     </section>

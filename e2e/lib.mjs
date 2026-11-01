@@ -404,9 +404,20 @@ export function runRecordsDir() {
   return path.join(DATA_DIR, 'data', 'runs')
 }
 
-/** A tab of the project topbar (Live, History, Org chart, Settings). */
+/** A tab of the project topbar (Live, History, Team, Settings). */
 export function projectTab(page, name) {
   return page.getByRole('tablist', { name: 'Project sections' }).getByRole('tab', { name, exact: true })
+}
+
+/** Open the project's Team tab (`tab-team`). */
+export async function openTeam(page) {
+  await page.locator('[data-testid=tab-team]').click()
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
+}
+
+/** The Role | Catalog tab of the Team side panel. */
+export function teamPanelTab(page, name) {
+  return page.getByRole('tablist', { name: 'Team panel' }).getByRole('tab', { name, exact: true })
 }
 
 /** Open App settings through the sidebar gear. */

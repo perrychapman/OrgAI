@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, openAppSettings, projectTab, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -26,7 +26,22 @@ try {
   check(!!project, 'existing-repo project created')
   check(project?.setup === undefined, 'skip AI setup leaves no setup record')
   check(project?.roles?.length === 4, 'default org chart has 4 roles', String(project?.roles?.length))
-  check((await page.locator('.editor').count()) > 0, 'lands on the org chart editor after create')
+  check((await page.locator('.editor').count()) > 0, 'lands on the Team tab after create')
+  check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'the Team tab is selected after create')
+  check((await teamPanelTab(page, 'Role').count()) === 1 && (await teamPanelTab(page, 'Catalog').count()) === 1, 'the side panel has Role and Catalog tabs')
+  check((await teamPanelTab(page, 'Catalog').getAttribute('aria-selected')) === 'true', 'Catalog is selected while no role is selected')
+  check((await page.locator('.editor .frame-tray').count()) === 0 || !(await page.locator('.editor .frame-tray').isVisible()), 'the Team assistant tray takes no room while empty')
+  check((await page.locator('.role-node [data-testid=role-node-caps]').count()) === 4, 'every role node shows its capability line')
+  await page.locator('.react-flow__node').first().click()
+  await sleep(300)
+  check((await teamPanelTab(page, 'Role').getAttribute('aria-selected')) === 'true', 'selecting a role switches the panel to Role')
+  check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Role pane has the What it can use block')
+  await page.locator('[data-testid=architect-open]').click()
+  await page.locator('[data-testid=team-assistant]').waitFor({ state: 'visible', timeout: 5000 })
+  check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Architect in the tray does not replace the role inspector')
+  await shot('team-architect')
+  await page.locator('[data-testid=architect-close]').click()
+  await page.locator('.react-flow__pane').click({ position: { x: 5, y: 5 } })
   await shot('editor')
 
   await projectTab(page, 'Live').click()
@@ -308,7 +323,7 @@ try {
   // The side panel handle (when the live view shows the run panel).
   const spHandle = page.locator('[data-testid=side-panel-resize]').first()
   await openProject(page, NAME)
-  await projectTab(page, 'Org chart').click()
+  await projectTab(page, 'Team').click()
   await sleep(600)
   log('side panel handles:', await spHandle.count())
   if (await spHandle.count()) {

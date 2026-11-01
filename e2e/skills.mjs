@@ -1,4 +1,4 @@
-// Token-free (mock adapter). Project Settings > Tools > Skills: create a skill, grant it to a role, import from a
+// Token-free (mock adapter). Project Settings > Plugins and suggestions (pane id tools) > Skills: create a skill, grant it to a role, import from a
 // fixture repo's .claude/skills (preview, apply, Undo), run Evaluate with evaluation disabled; App settings > Skill library.
 import { check, cleanup, createProject, finish, findProject, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
 
@@ -19,7 +19,7 @@ try {
   await createProject(page, { path: repo, name: NAME })
   await openProject(page, NAME)
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Tools', exact: true }).click()
+  await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
   const section = page.locator('[data-testid=skills-section]')
   await section.waitFor({ timeout: 10_000 })
   await shot('tools')
