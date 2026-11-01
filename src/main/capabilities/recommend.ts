@@ -11,7 +11,7 @@ import {
   type Project,
   type Role
 } from '@shared/types'
-import { clampText } from './sanitize'
+import { clampText, isKeyLikeArg, isKeyLikeValue, scrubUrl } from './sanitize'
 
 /**
  * The recommend step: the prompt (line format the mock adapter parses: `scope <roleId>`, `role <id> | k=v ...`,
@@ -32,7 +32,37 @@ export function canWrite(role: Pick<Role, 'tools'>): boolean {
 
 /** One data field value: one line, no field separator, no angle brackets (they delimit the data blocks). */
 function field(s: unknown, max: number): string {
-  return clampText(s, max).replace(/\|/g, '/').replace(/[<>]/g, ' ').replace(/=/g, ':').trim()
+  const words = clampText(s, max)
+    .split(' ')
+    .map((w) => (isKeyLikeValue(w) || isKeyLikeArg(w) ? '[redacted]' : w))
+    .join(' ')
+  return words.replace(/\|/g, '/').replace(/[<>]/g, ' ').replace(/=/g, ':').trim()
+}
+
+/** What a prompt may say about candidates found on this computer (origin 'local'). */
+export type LocalDetail = 'full' | 'minimal'
+
+const PACKAGE_ARG = /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9_][A-Za-z0-9._-]*(?:@[A-Za-z0-9._^~-]+)?$/
+const FILE_LIKE = /\.(?:[cm]?[jt]sx?|py|rb|sh|json|ya?ml|exe|cmd|bat|ps1|toml)$/i
+
+/**
+ * A target safe to show a model for a local-machine server: the URL's origin and path, or the command and only
+ * the args that look like package names or short flags. Absolute or relative paths, key-like args and anything
+ * else are left out. '' when nothing safe remains.
+ */
+export function redactedTarget(item: Pick<CapabilityItem, 'transport' | 'target'>): string {
+  const t = item.target ?? ''
+  if (!t) return ''
+  if (item.transport === 'stdio') {
+    const [cmd = '', ...args] = t.split(' ')
+    const base = (cmd.split(/[\\/]/).pop() ?? '').replace(/\.(?:exe|cmd|bat)$/i, '')
+    if (!PACKAGE_ARG.test(base) || FILE_LIKE.test(base)) return ''
+    const kept = args.filter(
+      (a) => a === '-y' || a === '--yes' || (PACKAGE_ARG.test(a) && !FILE_LIKE.test(a) && !/^\d+$/.test(a) && !isKeyLikeArg(a) && !isKeyLikeValue(a))
+    )
+    return clampText([base, ...kept].join(' '), 120)
+  }
+  return clampText(scrubUrl(t) ?? '', 160)
 }
 
 /** Candidates the model may pick: not blocked, and not already granted to every role in scope. */
@@ -50,7 +80,17 @@ export const RECOMMEND_SYSTEM = [
   'A gap is a need of a role that no candidate covers. When a scope line names a role, recommend for that role only.'
 ].join('\n')
 
-export function buildRecommendPrompt(project: Project, items: CapabilityItem[], scope: CapabilityScope): { system: string; prompt: string; included: number } {
+/**
+ * `localDetail` 'minimal' (automatic reviews) sends local-machine items (origin 'local') as kind, name and a redacted
+ * target only: no description, no location, no notes. 'full' (the user's own Re-check or recommend) sends everything.
+ */
+export function buildRecommendPrompt(
+  project: Project,
+  items: CapabilityItem[],
+  scope: CapabilityScope,
+  opts: { localDetail?: LocalDetail } = {}
+): { system: string; prompt: string; included: number } {
+  const minimal = opts.localDetail === 'minimal'
   const lines: string[] = []
   lines.push(`Project: ${field(project.name, 80)}`)
   if (project.brief) lines.push(`Brief: ${field(project.brief, 300)}`)
@@ -72,7 +112,13 @@ export function buildRecommendPrompt(project: Project, items: CapabilityItem[], 
   lines.push('<candidates>')
   const picks = recommendable(items).slice(0, RECOMMEND_PROMPT_MAX_CANDIDATES)
   for (const c of picks) {
-    const parts = [`candidate ${c.id}`, `kind=${c.kind}`, `origin=${c.origin}`, `name=${field(c.name, 64)}`, `description=${field(c.description, 200)}`]
+    const local = minimal && c.origin === 'local'
+    const parts = [`candidate ${c.id}`, `kind=${c.kind}`, `origin=${c.origin}`, `name=${field(c.name, 64)}`]
+    if (!local) parts.push(`description=${field(c.description, 200)}`)
+    if (c.kind === 'mcp' && c.target) {
+      const target = local ? redactedTarget(c) : field(c.target, 160)
+      if (target) parts.push(`target=${field(target, 160)}`)
+    }
     if (c.inProject) parts.push(`grantedTo=${c.inProject.grantedTo.join(',') || 'none'}`)
     if (c.flags.length) parts.push(`flags=${c.flags.join(',')}`)
     if (c.readOnlyAvailable !== undefined) parts.push(`readOnlyVariant=${c.readOnlyAvailable ? 'yes' : 'no'}`)
