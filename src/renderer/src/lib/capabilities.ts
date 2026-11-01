@@ -242,30 +242,6 @@ export function fromReview(r: TeamReview): AssistantResult {
   }
 }
 
-/**
- * Re-check setup result merged with what the tray already shows: the review's pending recommendations plus the
- * earlier Recommend results that are still valid (not dismissed, candidate still known). Never drops to an empty
- * list while either side has something.
- */
-export function mergeRecheck(prev: AssistantResult | null, review: AssistantResult, dismissedCandidates: readonly string[] = []): AssistantResult {
-  const gone = new Set(dismissedCandidates)
-  const recs = review.recommendations.filter((r) => !gone.has(r.candidateId))
-  if (!prev || prev.origin !== 'recommend') return { ...review, recommendations: recs }
-  const have = new Set(recs.map((r) => r.candidateId))
-  const items = { ...review.items }
-  const carried = prev.recommendations.filter((r) => !gone.has(r.candidateId) && !have.has(r.candidateId) && prev.items[r.candidateId])
-  for (const r of carried) items[r.candidateId] = prev.items[r.candidateId]
-  const gapKeys = new Set(review.gaps.map((g) => `${g.roleId}:${JSON.stringify(g)}`))
-  return {
-    ...review,
-    // The newest state wins; a carried recommendation keeps the digest it was made against only when the review has none.
-    digest: recs.length ? review.digest : carried.length ? prev.digest : review.digest,
-    items,
-    recommendations: [...recs, ...carried],
-    gaps: [...review.gaps, ...prev.gaps.filter((g) => !gapKeys.has(`${g.roleId}:${JSON.stringify(g)}`))]
-  }
-}
-
 /** "3 suggestions since your last run" / "1 suggestion waiting" / null. */
 export function suggestionsLine(summary: Pick<TeamReviewSummary, 'pendingCount' | 'newCount'> | undefined): string | null {
   if (!summary || summary.pendingCount <= 0) return null

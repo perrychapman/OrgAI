@@ -48,6 +48,7 @@ tmux capture-pane -p -t orgai | tail -20
 
 ## Gotchas
 
+- Never junction or symlink node_modules from a worktree to the main checkout; run `npm ci` inside the worktree instead. A worktree removal follows the link and empties the main checkout's node_modules.
 - The "Skip AI setup" checkbox input is visually hidden; `click Skip AI setup` (its label text) works, clicking
   `input[type=checkbox]` times out.
 - Chips render uppercase via CSS, so `text` returns `1 UNCOMMITTED`; match case-insensitively.

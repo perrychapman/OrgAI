@@ -10,7 +10,6 @@ import {
   foldProgress,
   fromRecommendations,
   fromReview,
-  mergeRecheck,
   newRequestId,
   sourceProblems,
   suggestionsLine,
@@ -189,8 +188,8 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
       const out =
         kind === 'recommend'
           ? fromRecommendations(await capabilitiesApi.recommend(project.id, id, outside, roleId))
-          : // Re-check keeps what Recommend found that is still valid; it never empties the list.
-            mergeRecheck(known.result, fromReview(await capabilitiesApi.review(project.id, 'manual', id, outside)), known.dismissedCandidates)
+          : // Main keeps what Recommend found that is still valid; the shown list also drops what was dismissed here.
+            fromReview(await capabilitiesApi.review(project.id, 'manual', id, outside))
       // Always store, even when the pane was left meanwhile: the result is waiting when the user returns.
       update(project.id, () => ({ result: out, cards: {}, gapsHidden: [] }))
       if (!alive.current) return
