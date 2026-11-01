@@ -85,6 +85,7 @@ import type {
   SkillUpdateInput,
   StartRunInput,
   TeamDismissInput,
+  TeamRestoreInput,
   TeamRecommendations,
   TeamReview,
   TeamReviewInput
@@ -552,6 +553,12 @@ export const capabilityArgs = {
     }
     if (!out.recommendationId && !out.candidateId) throw new Error('Recommendation not found')
     return out
+  },
+  restore(input: unknown): TeamRestoreInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = projectIdArg(i.projectId)
+    if (!isValidId(i.candidateId)) throw new Error('Candidate not found')
+    return { projectId, candidateId: i.candidateId }
   }
 }
 
@@ -568,6 +575,7 @@ function registerCapabilityIpc(capabilities: CapabilityServiceApi): void {
   ipcMain.handle(IPC.capabilitiesReview, (_e, input: unknown): Promise<TeamReview> => capabilities.review(capabilityArgs.review(input)))
   ipcMain.handle(IPC.capabilitiesLastReview, (_e, projectId: unknown): TeamReview | null => capabilities.lastReview(projectIdArg(projectId)))
   ipcMain.handle(IPC.capabilitiesDismiss, (_e, input: unknown): TeamReview => capabilities.dismiss(capabilityArgs.dismiss(input)))
+  ipcMain.handle(IPC.capabilitiesRestore, (_e, input: unknown): TeamReview => capabilities.restore(capabilityArgs.restore(input)))
 }
 
 /** Connections, model catalog and remaps: ConnectionService 1:1. */

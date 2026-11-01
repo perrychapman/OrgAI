@@ -65,9 +65,22 @@ export function redactedTarget(item: Pick<CapabilityItem, 'transport' | 'target'
   return clampText(scrubUrl(t) ?? '', 160)
 }
 
-/** Candidates the model may pick: not blocked, and not already granted to every role in scope. */
-export function recommendable(items: CapabilityItem[]): CapabilityItem[] {
-  return items.filter((i) => !i.blockedReason)
+/** The role already reaches the candidate in this project (a granted skill, a server or linked connector it can use). */
+export function heldBy(item: Pick<CapabilityItem, 'inProject'>, roleId: string): boolean {
+  return !!item.inProject?.grantedTo.includes(roleId)
+}
+
+/** Role ids a recommendation may name: the scoped role, else every role. */
+export function scopeRoleIds(roles: Pick<Role, 'id'>[], scope: CapabilityScope): string[] {
+  return scope.roleId ? roles.filter((r) => r.id === scope.roleId).map((r) => r.id) : roles.map((r) => r.id)
+}
+
+/**
+ * Candidates the model may pick: not blocked, and (with `roleIds`) not already held by every one of those roles.
+ * A connector linked to the project counts through its project server's grants (CapabilityItem.inProject).
+ */
+export function recommendable(items: CapabilityItem[], roleIds?: string[]): CapabilityItem[] {
+  return items.filter((i) => !i.blockedReason && !(roleIds?.length && roleIds.every((id) => heldBy(i, id))))
 }
 
 export const RECOMMEND_SYSTEM = [
@@ -111,7 +124,7 @@ export function buildRecommendPrompt(
   }
   lines.push('</roles>')
   lines.push('<candidates>')
-  const picks = recommendable(items).slice(0, RECOMMEND_PROMPT_MAX_CANDIDATES)
+  const picks = recommendable(items, scopeRoleIds(project.roles, scope)).slice(0, RECOMMEND_PROMPT_MAX_CANDIDATES)
   for (const c of picks) {
     const local = minimal && c.origin === 'local'
     const parts = [`candidate ${c.id}`, `kind=${c.kind}`, `origin=${c.origin}`, `name=${field(c.name, 64)}`]
@@ -186,9 +199,9 @@ function extractJson(text: string): unknown {
 }
 
 /**
- * Strict parse of the model's answer. Unknown or blocked candidates, unknown roles, out-of-scope roles and anything
- * past the caps are dropped; reasons are clamped. An answer that is not the expected object, or whose every
- * recommendation was dropped, is invalid.
+ * Strict parse of the model's answer. Unknown or blocked candidates, unknown roles, out-of-scope roles, roles that
+ * already hold the candidate and anything past the caps are dropped; reasons are clamped. An answer that is not the
+ * expected object, or whose every recommendation was dropped for another reason than "already held", is invalid.
  */
 export function parseRecommendAnswer(text: string, items: CapabilityItem[], roles: Role[], scope: CapabilityScope, salt: string): ParsedAnswer {
   const v = extractJson(text) as { recommendations?: unknown; gaps?: unknown } | undefined
@@ -200,19 +213,22 @@ export function parseRecommendAnswer(text: string, items: CapabilityItem[], role
   const byId = new Map(items.map((i) => [i.id, i]))
   const recs: CapabilityRecommendation[] = []
   const usedCandidates = new Set<string>()
+  let held = 0
   for (const r of rawRecs.slice(0, 100)) {
     if (recs.length >= CAPABILITY_MAX_RECOMMENDATIONS) break
     if (!r || typeof r !== 'object') continue
     const o = r as Record<string, unknown>
     const item = typeof o.candidateId === 'string' ? byId.get(o.candidateId) : undefined
     if (!item || item.blockedReason || usedCandidates.has(item.id)) continue
-    const roleIds = keepRoles(o.roleIds, roles, scope)
+    const asked = keepRoles(o.roleIds, roles, scope)
+    const roleIds = asked.filter((id) => !heldBy(item, id))
+    if (asked.length && !roleIds.length) held++
     if (!roleIds.length) continue
     const reason = cleanSentence(o.reason) || `Fits ${roles.find((x) => x.id === roleIds[0])?.name ?? 'the role'}.`
     usedCandidates.add(item.id)
     recs.push({ id: recommendationId(item.id, roleIds, salt), candidateId: item.id, kind: item.kind, roleIds, reason, access: gateAccess(o.access, roleIds, roles) })
   }
-  if (rawRecs.length > 0 && recs.length === 0) return { ok: false }
+  if (rawRecs.length > 0 && recs.length === 0 && held === 0) return { ok: false }
   const gaps: CapabilityGap[] = []
   const known = new Set(roles.map((r) => r.id))
   for (const g of rawGaps.slice(0, 100)) {
@@ -244,22 +260,26 @@ function roleWords(r: Role): Set<string> {
   return new Set(words(`${r.name} ${r.slug} ${r.description} ${(r.responsibilities ?? []).join(' ')}`))
 }
 
+/** Fallback order by kind: skills first (they cost nothing to run), then project-style servers, then connectors. */
+const KIND_RANK: Record<string, number> = { skill: 0, mcp: 1, connector: 2 }
+
 /**
  * Deterministic keyword matching: each candidate goes to the roles whose name, description and responsibilities
- * share words with it (only the scoped role when scoped), best overlaps first. Access is always 'read'.
+ * share words with it (only the scoped role when scoped) and that do not hold it yet. Ranked skills first, then by
+ * match strength (shared words), then by origin (this project and repo before outside). Access is always 'read'.
  */
 export function fallbackRecommend(items: CapabilityItem[], roles: Role[], scope: CapabilityScope, salt: string): CapabilityRecommendation[] {
   const pool = scope.roleId ? roles.filter((r) => r.id === scope.roleId) : roles
   if (!pool.length) return []
   const rw = pool.map((r) => ({ role: r, words: roleWords(r) }))
   const scored: { item: CapabilityItem; score: number; roleIds: string[]; shared: string[] }[] = []
-  for (const item of recommendable(items)) {
+  for (const item of recommendable(items, pool.map((r) => r.id))) {
     const iw = new Set(words(`${item.name} ${item.description}`))
     if (!iw.size) continue
     let best = 0
     const hits: { id: string; score: number; shared: string[] }[] = []
     for (const { role, words: w } of rw) {
-      if (item.inProject?.grantedTo.includes(role.id)) continue
+      if (heldBy(item, role.id)) continue
       const shared = [...iw].filter((x) => w.has(x))
       if (!shared.length) continue
       hits.push({ id: role.id, score: shared.length, shared })
@@ -270,7 +290,7 @@ export function fallbackRecommend(items: CapabilityItem[], roles: Role[], scope:
     scored.push({ item, score: best, roleIds: top.map((h) => h.id).slice(0, 3), shared: top[0]!.shared.slice(0, 3) })
   }
   const originRank: Record<string, number> = { project: 0, repo: 1, library: 2, local: 3, catalog: 4, registry: 5, github: 6 }
-  scored.sort((a, b) => b.score - a.score || (originRank[a.item.origin] ?? 9) - (originRank[b.item.origin] ?? 9) || (a.item.id < b.item.id ? -1 : 1))
+  scored.sort((a, b) => (KIND_RANK[a.item.kind] ?? 9) - (KIND_RANK[b.item.kind] ?? 9) || b.score - a.score || (originRank[a.item.origin] ?? 9) - (originRank[b.item.origin] ?? 9) || (a.item.id < b.item.id ? -1 : 1))
   return scored.slice(0, CAPABILITY_MAX_RECOMMENDATIONS).map((s) => {
     const names = s.roleIds.map((id) => roles.find((r) => r.id === id)?.name ?? id).join(', ')
     return {

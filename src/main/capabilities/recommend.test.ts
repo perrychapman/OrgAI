@@ -9,6 +9,7 @@ import {
   estimateRecommendTokens,
   fallbackRecommend,
   gateAccess,
+  heldBy,
   parseRecommendAnswer,
   recommendable,
   redactedTarget,
@@ -300,5 +301,61 @@ describe('words and registryQueries', () => {
     expect(q.length).toBeLessThanOrEqual(5)
     expect(registryQueries(project)).toEqual(registryQueries(project))
     expect(registryQueries(project, 'x'.repeat(300))[0]).toHaveLength(100)
+  })
+})
+
+describe('already-held candidates (N5)', () => {
+  const linked = item({
+    id: 'cap-ghc',
+    kind: 'connector',
+    origin: 'catalog',
+    source: 'catalog',
+    name: 'GitHub',
+    description: 'Pull requests, issues and code review',
+    connectorId: 'github',
+    inProject: { kind: 'mcp', id: 'mcp-1', grantedTo: ['r-rev'], enabled: true }
+  })
+
+  it('heldBy and recommendable skip a candidate every role in scope holds', () => {
+    expect(heldBy(linked, 'r-rev')).toBe(true)
+    expect(heldBy(linked, 'r-eng')).toBe(false)
+    expect(recommendable([linked], ['r-rev'])).toEqual([])
+    expect(recommendable([linked], ['r-rev', 'r-eng'])).toEqual([linked])
+    expect(recommendable([linked])).toEqual([linked])
+  })
+
+  it('the scoped prompt leaves it out; the team prompt keeps it with its grants', () => {
+    expect(buildRecommendPrompt(project, [linked, code], { roleId: 'r-rev' }).prompt).not.toContain('candidate cap-ghc')
+    expect(buildRecommendPrompt(project, [linked, code], {}).prompt).toMatch(/^candidate cap-ghc .*grantedTo=r-rev/m)
+  })
+
+  it('the parser drops roles that already hold it, and the whole recommendation when none is left', () => {
+    const scoped = parseRecommendAnswer(JSON.stringify({ recommendations: [{ candidateId: 'cap-ghc', roleIds: ['r-rev'], reason: 'x' }] }), [linked], project.roles, { roleId: 'r-rev' }, 's')
+    // Only already-held picks: a valid, empty answer (not an invalid one that would trigger the fallback).
+    expect(scoped).toEqual({ ok: true, recommendations: [], gaps: [] })
+    const team = parseRecommendAnswer(JSON.stringify({ recommendations: [{ candidateId: 'cap-ghc', roleIds: ['r-rev', 'r-eng'], reason: 'x' }] }), [linked], project.roles, {}, 's')
+    expect(team.ok && team.recommendations.map((r) => r.roleIds)).toEqual([['r-eng']])
+  })
+
+  it('the fallback never offers it to a role that holds it', () => {
+    expect(fallbackRecommend([linked], project.roles, { roleId: 'r-rev' }, 's')).toEqual([])
+    for (const r of fallbackRecommend([linked], project.roles, {}, 's')) expect(r.roleIds).not.toContain('r-rev')
+  })
+
+  it('the mock answer through the parser does not re-offer it to the scoped role', async () => {
+    const { prompt, system } = buildRecommendPrompt(project, [linked, code], { roleId: 'r-rev' })
+    const out = (await new MockAdapter().complete({ system, prompt, kind: 'recommend' } as never)) as unknown as string
+    const parsed = parseRecommendAnswer(out, [linked, code], project.roles, { roleId: 'r-rev' }, 's')
+    expect(parsed.ok && parsed.recommendations.some((r) => r.candidateId === 'cap-ghc')).toBe(false)
+  })
+})
+
+describe('fallback ranking (N6)', () => {
+  it('puts skill matches first, then stronger matches', () => {
+    const strongConnector = item({ id: 'cap-c', kind: 'connector', origin: 'catalog', source: 'catalog', name: 'Reviews', description: 'Reviews pull requests quality' })
+    const weakSkill = item({ id: 'cap-s', name: 'lint', description: 'quality' })
+    const strongSkill = item({ id: 'cap-s2', name: 'pr-check', description: 'pull requests quality' })
+    const recs = fallbackRecommend([strongConnector, weakSkill, strongSkill], project.roles, {}, 's')
+    expect(recs.map((r) => r.candidateId)).toEqual(['cap-s2', 'cap-s', 'cap-c'])
   })
 })

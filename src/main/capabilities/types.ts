@@ -14,6 +14,7 @@ import type {
   Project,
   TeamDismissInput,
   TeamRecommendations,
+  TeamRestoreInput,
   TeamReview,
   TeamReviewInput
 } from '@shared/types'
@@ -39,6 +40,8 @@ export interface CapabilityServiceApi {
   review(input: TeamReviewInput): Promise<TeamReview>
   lastReview(projectId: string): TeamReview | null
   dismiss(input: TeamDismissInput): TeamReview
+  /** capabilities:restore: forget one dismissal; its recommendation returns to pending when still useful. */
+  restore(input: TeamRestoreInput): TeamReview
   /**
    * A work run of the project reached an outcome (index.ts calls it from the run-event broadcast for kind 'work'
    * only, never setup-like or harness runs). Debounced, never awaited, never throws.

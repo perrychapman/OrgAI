@@ -1,11 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto'
 import {
+  CAPABILITY_MAX_GAPS,
   CAPABILITY_MAX_ITEMS,
   CAPABILITY_MAX_RECOMMENDATIONS,
   CAPABILITY_RECOMMEND_TIMEOUT_MS,
   HARNESS_PROJECT_ID,
   TEAM_REVIEW_MAX_DISMISSED,
   TEAM_REVIEW_OPEN_THROTTLE_MS,
+  TEAM_REVIEW_PROACTIVE_LIMIT,
   type CapabilityAccess,
   type CapabilityApplied,
   type CapabilityApplyInput,
@@ -30,7 +32,9 @@ import {
   type RunRecord,
   type RunSummary,
   type TeamDismissInput,
+  type TeamDismissal,
   type TeamRecommendations,
+  type TeamRestoreInput,
   type TeamReview,
   type TeamReviewInput,
   type TeamReviewModelInput,
@@ -55,11 +59,13 @@ import {
   canWrite,
   estimateRecommendTokens,
   fallbackRecommend,
+  heldBy,
   parseRecommendAnswer,
   type LocalDetail,
   recommendable,
   recommendationId,
-  registryQueries
+  registryQueries,
+  scopeRoleIds
 } from './recommend'
 import { collectEvidence, EVIDENCE_MAX_RUNS, hasNewEvidence } from './evidence'
 import { readReview, removeReview, reviewSummary, writeReview } from './reviewStore'
@@ -173,6 +179,28 @@ export function dismissedIds(review: Pick<TeamReview, 'dismissed'> | null | unde
     if (item && d.fingerprint === fingerprintOf(item, d.candidateId)) out.add(d.candidateId)
   }
   return out
+}
+
+/** The candidate is the same as when `r` was recommended (no earlier item known counts as the same). */
+function sameCandidate(r: CapabilityRecommendation, was: CapabilityItem | undefined, now: CapabilityItem | undefined): boolean {
+  return !was || fingerprintOf(was, r.candidateId) === fingerprintOf(now, r.candidateId)
+}
+
+/**
+ * A pending recommendation as it should stay: its candidate is in `byId`, not blocked or dismissed, and its roles
+ * are those that still exist and do not hold the candidate yet (the id is kept). null when no role is left.
+ */
+export function refineRecommendation(
+  r: CapabilityRecommendation,
+  roles: Pick<Role, 'id'>[],
+  byId: ReadonlyMap<string, CapabilityItem>,
+  excluded: ReadonlySet<string>
+): CapabilityRecommendation | null {
+  const item = byId.get(r.candidateId)
+  if (!item || item.blockedReason || excluded.has(r.candidateId)) return null
+  const roleIds = r.roleIds.filter((id) => roles.some((x) => x.id === id) && !heldBy(item, id))
+  if (!roleIds.length) return null
+  return roleIds.length === r.roleIds.length ? r : { ...r, roleIds }
 }
 
 function readable(e: unknown): string {
@@ -429,7 +457,7 @@ export class CapabilityService implements CapabilityServiceApi {
       fallbackReason: reason,
       ...extra
     })
-    if (!recommendable(items).length) return { mode: 'fallback', recommendations: [], gaps: [], fallbackReason: 'noCandidates' }
+    if (!recommendable(items, scopeRoleIds(project.roles, scope)).length) return { mode: 'fallback', recommendations: [], gaps: [], fallbackReason: 'noCandidates' }
     if (signal.aborted) return fallback('cancelled')
     emit('model', 'running')
     const { system, prompt } = buildRecommendPrompt(project, items, scope, { localDetail })
@@ -488,6 +516,8 @@ export class CapabilityService implements CapabilityServiceApi {
       const outcome = await this.runModel(project, snap, scope, ac.signal, emit, 'full', dismissedIds(readReview(this.deps.dataDir, project.id), snap.discovery.items))
       for (const r of outcome.recommendations) snap.recs.set(r.id, r)
       const partial = snap.discovery.partial || outcome.fallbackReason === 'cancelled'
+      // A complete result also becomes the review's pending list, so it survives a reload or a restart.
+      if (!partial) this.persistRecommend(project.id, snap, scope, outcome)
       return {
         projectId: project.id,
         scope,
@@ -505,6 +535,46 @@ export class CapabilityService implements CapabilityServiceApi {
       release()
       this.untrack(requestId, ac)
     }
+  }
+
+  /**
+   * Merge a complete recommend result into the persisted review (after any review in flight): its recommendations
+   * first, then the earlier pending ones whose candidate is unchanged in this discovery, dismissed and already-held
+   * ones dropped, capped at CAPABILITY_MAX_RECOMMENDATIONS. The review is rebound to this discovery (its digest), so
+   * every kept recommendation stays appliable after a restart; with no review yet a stub holds them. A model answer's
+   * gaps replace the earlier ones for the roles in scope. Never awaited by recommend(); never throws.
+   */
+  private persistRecommend(projectId: string, snap: Snapshot, scope: CapabilityScope, outcome: ModelOutcome): void {
+    void this.serial(projectId, async () => {
+      const project = this.project(projectId)
+      const prev = readReview(this.deps.dataDir, projectId)
+      const items = snap.discovery.items
+      const byId = new Map(items.map((i) => [i.id, i]))
+      const dismissed = prev?.dismissed ?? []
+      const excluded = dismissedIds({ dismissed }, items)
+      const refine = (r: CapabilityRecommendation): CapabilityRecommendation | null => refineRecommendation(r, project.roles, byId, excluded)
+      const fresh = outcome.recommendations.map(refine).filter((r): r is CapabilityRecommendation => !!r)
+      const have = new Set(fresh.map((r) => r.candidateId))
+      const prevById = new Map((prev?.discovery.items ?? []).map((i) => [i.id, i]))
+      const carried: CapabilityRecommendation[] = []
+      for (const r of prev?.recommendations ?? []) {
+        if (have.has(r.candidateId) || !sameCandidate(r, prevById.get(r.candidateId), byId.get(r.candidateId))) continue
+        const kept = refine(r)
+        if (!kept) continue
+        have.add(kept.candidateId)
+        carried.push(kept)
+      }
+      const recommendations = [...fresh, ...carried].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+      const known = (g: CapabilityGap): boolean => project.roles.some((r) => r.id === g.roleId)
+      let gaps = (prev?.gaps ?? []).filter(known)
+      if (outcome.mode === 'model') {
+        const inScope = (g: CapabilityGap): boolean => !scope.roleId || g.roleId === scope.roleId
+        gaps = [...outcome.gaps.filter(known), ...gaps.filter((g) => !inScope(g))].slice(0, CAPABILITY_MAX_GAPS)
+      }
+      for (const r of recommendations) snap.recs.set(r.id, r)
+      const base: TeamReview = prev ?? this.stubReview(projectId, snap)
+      this.publish({ ...base, discovery: snap.discovery, digest: snap.digest, recommendations, gaps, pendingCount: recommendations.length, dismissed })
+    }).catch((e) => console.warn(`[capabilities] Saving the recommendations failed: ${readable(e)}`))
   }
 
   // ---------- apply / undo / grants ----------
@@ -870,13 +940,41 @@ export class CapabilityService implements CapabilityServiceApi {
       item = from?.candidates.get(candidateId)?.item
     }
     if (!item) throw new Error(input.recommendationId ? 'Recommendation not found' : 'Candidate not found')
-    const entry = { candidateId, fingerprint: fingerprintOf(item, candidateId), at: new Date(this.now()).toISOString() }
+    const entry: TeamDismissal = {
+      candidateId,
+      fingerprint: fingerprintOf(item, candidateId),
+      at: new Date(this.now()).toISOString(),
+      name: clampText(item.name, 64),
+      kind: item.kind,
+      ...(rec ? { recommendation: rec } : {})
+    }
     // No review yet (a fresh recommend result): start one bound to that discovery so the dismissal persists.
     if (!review && from!.discovery.partial) throw new Error('That check was cut short. Run the recommendations again.')
     const base: TeamReview = review ?? this.stubReview(project.id, from!)
     const dismissed = [...base.dismissed.filter((d) => d.candidateId !== candidateId), entry].slice(-TEAM_REVIEW_MAX_DISMISSED)
     const recommendations = base.recommendations.filter((r) => r.id !== rec?.id && r.candidateId !== candidateId)
     const next: TeamReview = { ...base, recommendations, pendingCount: recommendations.length, dismissed }
+    this.publish(next)
+    return next
+  }
+
+  restore(input: TeamRestoreInput): TeamReview {
+    const project = this.project(input.projectId)
+    const review = readReview(this.deps.dataDir, project.id)
+    const entry = review?.dismissed.find((d) => d.candidateId === input.candidateId)
+    if (!review || !entry) throw new Error('Nothing to restore: that item is not dismissed.')
+    const dismissed = review.dismissed.filter((d) => d.candidateId !== input.candidateId)
+    let recommendations = review.recommendations
+    const item = review.discovery.items.find((i) => i.id === entry.candidateId)
+    // The dismissed card comes back only while its candidate is the one the user dismissed and some role still lacks it.
+    if (entry.recommendation && item && fingerprintOf(item, entry.candidateId) === entry.fingerprint && !recommendations.some((r) => r.candidateId === entry.candidateId)) {
+      const back = refineRecommendation(entry.recommendation, project.roles, new Map([[item.id, item]]), new Set())
+      if (back) {
+        recommendations = [back, ...recommendations].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+        this.findSnapshot(project.id, review.digest)?.recs.set(back.id, back)
+      }
+    }
+    const next: TeamReview = { ...review, recommendations, pendingCount: recommendations.length, dismissed }
     this.publish(next)
     return next
   }
@@ -970,13 +1068,7 @@ export class CapabilityService implements CapabilityServiceApi {
     const settings = teamReviewOf(project)
     let runsSinceModel = (prev?.runsSinceModel ?? 0) + opts.runsAdded
     const excluded = dismissedIds({ dismissed }, items)
-    const stillUseful = (r: CapabilityRecommendation): boolean => {
-      const item = byId.get(r.candidateId)
-      if (!item || item.blockedReason || excluded.has(r.candidateId)) return false
-      const roleIds = r.roleIds.filter((id) => project.roles.some((x) => x.id === id))
-      if (!roleIds.length) return false
-      return !(item.inProject && roleIds.every((id) => item.inProject!.grantedTo.includes(id)))
-    }
+    const stillUseful = (r: CapabilityRecommendation): boolean => refineRecommendation(r, project.roles, byId, excluded) !== null
 
     let skip: TeamReviewModelSkip | undefined
     if (!opts.useModel && opts.trigger === 'runEnded') {
@@ -991,15 +1083,13 @@ export class CapabilityService implements CapabilityServiceApi {
         if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'
       }
     }
-    const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
 
     // Pending recommendations carried over: the previous review's, and on a manual Re-check also the newest recommend
     // result still held in memory (what the user is looking at). Each is kept only while its candidate is unchanged
     // (same fingerprint as when it was recommended), so a Re-check merges by evidence instead of replacing the list.
-    const sameCandidate = (r: CapabilityRecommendation, was: CapabilityItem | undefined): boolean =>
-      !was || fingerprintOf(was, r.candidateId) === fingerprintOf(byId.get(r.candidateId), r.candidateId)
+    const unchanged = (r: CapabilityRecommendation, was: CapabilityItem | undefined): boolean => sameCandidate(r, was, byId.get(r.candidateId))
     const prevById = new Map((prev?.discovery.items ?? []).map((i) => [i.id, i]))
-    const carried: CapabilityRecommendation[] = (prev?.recommendations ?? []).filter((r) => sameCandidate(r, prevById.get(r.candidateId)))
+    const carried: CapabilityRecommendation[] = (prev?.recommendations ?? []).filter((r) => unchanged(r, prevById.get(r.candidateId)))
     if (opts.trigger === 'manual') {
       const since = prev && !prev.stub ? Date.parse(prev.checkedAt) : -Infinity
       const held = (this.snapshots.get(projectId) ?? [])
@@ -1007,12 +1097,18 @@ export class CapabilityService implements CapabilityServiceApi {
         .sort((a, b) => b.at - a.at)[0]
       const have = new Set(carried.map((r) => r.candidateId))
       for (const r of held?.recs.values() ?? []) {
-        if (have.has(r.candidateId) || !sameCandidate(r, held!.candidates.get(r.candidateId)?.item)) continue
+        if (have.has(r.candidateId) || !unchanged(r, held!.candidates.get(r.candidateId)?.item)) continue
         have.add(r.candidateId)
         carried.push(r)
       }
     }
-    let recommendations = carried.filter(stillUseful).slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+    let recommendations = carried.map((r) => refineRecommendation(r, project.roles, byId, excluded)).filter((r): r is CapabilityRecommendation => !!r).slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+    // An automatic review never drops what is pending and adds new ones only up to TEAM_REVIEW_PROACTIVE_LIMIT.
+    const automatic = opts.trigger !== 'manual'
+    const room = automatic ? Math.max(0, TEAM_REVIEW_PROACTIVE_LIMIT - recommendations.length) : CAPABILITY_MAX_RECOMMENDATIONS
+    // No room for an automatic model step's picks: do not spend tokens on it.
+    if (!opts.useModel && opts.trigger === 'runEnded' && skip === undefined && room === 0) skip = 'pendingFull'
+    const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
     let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))
     let mode: TeamReview['mode'] = 'free'
     let tokensUsed = prev?.tokensUsed
@@ -1031,7 +1127,7 @@ export class CapabilityService implements CapabilityServiceApi {
           extra = [floor].filter(stillUseful)
         }
       }
-      recommendations = [...recommendations, ...extra].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+      recommendations = [...recommendations, ...extra.slice(0, room)].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
     }
     if (runModel) {
       modelInput = opts.useModel ? 'full' : 'proactive'
@@ -1043,7 +1139,10 @@ export class CapabilityService implements CapabilityServiceApi {
           // A manual Re-check adds to what is pending; only a changed candidate, an apply or a dismissal removes one.
           const have = new Set(fresh.map((r) => r.candidateId))
           recommendations = [...fresh, ...recommendations.filter((r) => !have.has(r.candidateId))].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
-        } else recommendations = fresh
+        } else {
+          const have = new Set(recommendations.map((r) => r.candidateId))
+          recommendations = [...recommendations, ...fresh.filter((r) => !have.has(r.candidateId)).slice(0, room)]
+        }
         gaps = outcome.gaps
         runsSinceModel = 0
       } else {
