@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
 import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickAccessLabel, quickFolderLabel, runKindLabel } from './assistants'
-import { isSingleAgentRun, offersSaveAsProject, runLayoutFor } from './assistants'
+import { assistantModeLabel, composerPlaceholder, isSingleAgentRun, offersSaveAsProject, runLayoutFor, speaksAsAssistant } from './assistants'
 
 describe('run layout', () => {
   it('single-agent runs default to the conversation', () => {
@@ -88,5 +88,36 @@ describe('assistants', () => {
     expect(promoteNameError('  ')).toBeTruthy()
     expect(promoteNameError('api')).toBeNull()
     expect(promoteNameError('x'.repeat(81))).toBeTruthy()
+  })
+})
+
+describe('assistantModeLabel', () => {
+  it('points at the card while one is open, whatever the status', () => {
+    expect(assistantModeLabel({ status: 'idle', openCards: 1 })).toBe('Waiting for your answer')
+    expect(assistantModeLabel({ status: 'running', openCards: 2 })).toBe('Waiting for your answer')
+  })
+  it('says it is the user turn when idle with nothing open, never "Done."', () => {
+    expect(assistantModeLabel({ status: 'idle', openCards: 0 })).toBe('Your turn. Reply, ask a follow-up, or end the session.')
+  })
+  it('reads Reply to the assistant while running', () => {
+    expect(assistantModeLabel({ status: 'running', openCards: 0 })).toBe('Reply to the assistant')
+  })
+})
+
+describe('speaksAsAssistant', () => {
+  it('covers virtual projects and skill-assist runs on a real project', () => {
+    expect(speaksAsAssistant({ kind: 'work', quick: undefined, projectId: 'quick' })).toBe(true)
+    expect(speaksAsAssistant({ kind: 'skill-assist', quick: undefined, projectId: 'p1' })).toBe(true)
+    expect(speaksAsAssistant({ kind: 'work', quick: undefined, projectId: 'p1' })).toBe(false)
+  })
+})
+
+describe('composerPlaceholder', () => {
+  it('does not double punctuation after ? or !', () => {
+    expect(composerPlaceholder('What next?')).toBe('What next? Enter to send, Shift+Enter for a new line.')
+    expect(composerPlaceholder('Go!')).toBe('Go! Enter to send, Shift+Enter for a new line.')
+  })
+  it('adds a period otherwise', () => {
+    expect(composerPlaceholder('Your reply')).toBe('Your reply. Enter to send, Shift+Enter for a new line.')
   })
 })
