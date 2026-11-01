@@ -70,7 +70,7 @@ describe('connectors lib', () => {
     expect(missingSentence([])).toBe('')
   })
   it('honesty note', () => {
-    expect(honestyNote({ status: 'preview', verified: false })).toMatch(/not yet tested/)
+    expect(honestyNote({ status: 'preview', verified: false })).toMatch(/not yet tested/i)
     expect(honestyNote({ status: 'stable', verified: true })).toBeUndefined()
   })
   it('plain tool names', () => {
@@ -113,6 +113,9 @@ describe('clampText', () => {
 describe('noteForUser', () => {
   it('hides developer caveats and implementation details', () => {
     expect(noteForUser(['Unverified: dynamic client registration.', 'The token is stored with Electron safeStorage and sent as Authorization: Bearer.'], 'X')).toEqual([])
+  })
+  it('drops the preview and untested caveats the dialog already says once', () => {
+    expect(noteForUser(['Google lists its Workspace MCP servers as a Developer Preview: join the program.', 'Not yet tested with OrgAI.', 'Keep it.'], 'X')).toEqual(['Keep it.'])
   })
   it('puts the redirect caveat first in plain words and keeps useful notes', () => {
     const out = noteForUser(['The server includes write tools.', 'Slack documents that redirect URLs must use HTTPS. Unverified.', 'Unverified: the token response shape.'], 'Slack')

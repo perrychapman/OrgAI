@@ -90,6 +90,24 @@ describe('ease, order and search at scale', () => {
     expect(gallerySections(list, { query: '', filter: 'easy' })[0].items.map((i) => i.connector.id)).not.toContain('tok')
     expect(gallerySections(list, { query: 'nothing-here', filter: 'all' })).toEqual([])
   })
+  it('puts no-sign-in services before sign-in ones, then by name', () => {
+    const l = [make('a', 'Aaa', 'oauth'), make('b', 'Bbb', 'none'), make('c', 'Ccc', 'oauth'), make('d', 'Ddd', 'none')]
+    expect(sortForGallery(l).map((i) => i.connector.id)).toEqual(['b', 'd', 'a', 'c'])
+  })
+  it('search knows the ease labels', () => {
+    const l = [make('a', 'Aaa', 'oauth'), make('b', 'Bbb', 'none'), make('t', 'Ttt', 'token'), make('o', 'Ooo', 'oauthClient')]
+    const ids = (q: string): string[] => filterConnectors(l, q).map((i) => i.connector.id)
+    expect(ids('sign in')).toEqual(expect.arrayContaining(['a', 'b']))
+    expect(ids('sign in')[0]).toBe('a')
+    expect(ids('no sign-in')).toEqual(['b'])
+    expect(ids('token')).toEqual(['t'])
+    expect(ids('own app')).toEqual(['o'])
+  })
+  it('Easy sign-in combines with a category', () => {
+    const l = [make('a', 'Aaa', 'oauth', { category: 'chat' }), make('b', 'Bbb', 'oauth', { category: 'email' }), make('t', 'Ttt', 'token', { category: 'chat' })]
+    const ids = gallerySections(l, { query: '', filter: 'chat', easy: true })[0].items.map((i) => i.connector.id)
+    expect(ids).toEqual(['a'])
+  })
   it('caps lists and titles the dialog by method', () => {
     expect(capList([1, 2, 3, 4, 5, 6, 7], 5)).toEqual({ shown: [1, 2, 3, 4, 5], more: 2 })
     expect(capList([1], 5)).toEqual({ shown: [1], more: 0 })

@@ -1,15 +1,20 @@
 import type { ReactElement } from 'react'
+import { useState } from 'react'
 import { LogIn, X } from 'lucide-react'
 import type { McpServerInfo, Role } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { serviceFor } from '../../lib/roleServices'
+import { capList } from '../../lib/connectors'
 import { accessLabel, grantedServers, needsSignIn, serverReadOnly } from '../../lib/roleCapabilities'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 import { AddButton, CapabilityGroup } from '../team/CapabilityBlock'
 import { ConnectorLogo } from './ConnectorLogo'
+
+/** Rows shown before "and N more". */
+export const ROLE_SERVICES_CAP = 5
 
 /**
  * The Connections group of "What it can use": a row per project connection this role may use, with its access in words,
@@ -34,6 +39,8 @@ export default function RoleServices({
 }): ReactElement {
   const setView = useAppStore((s) => s.setView)
   const granted = grantedServers(servers ?? [], role)
+  const [showAll, setShowAll] = useState(false)
+  const { shown, more } = capList(granted, showAll ? granted.length : ROLE_SERVICES_CAP)
   const signIn = (): void => {
     requestAppSettingsSection(APP_SETTINGS_SECTIONS.mcpLibrary)
     setView('appSettings')
@@ -73,7 +80,7 @@ export default function RoleServices({
         </p>
       ) : (
         <ul className="role-cap-list" aria-label={`Connections for ${role.name}`}>
-          {granted.map((info) => {
+          {shown.map((info) => {
             const s = serviceFor(info.spec)
             const access = accessLabel(serverReadOnly(info.spec))
             const needs = needsSignIn(info)
@@ -109,6 +116,13 @@ export default function RoleServices({
               </li>
             )
           })}
+          {more > 0 && (
+            <li className="role-cap-more">
+              <Button size="sm" variant="ghost" testId="role-services-more" onClick={() => setShowAll(true)}>
+                {`and ${more} more. Show all`}
+              </Button>
+            </li>
+          )}
         </ul>
       )}
     </CapabilityGroup>

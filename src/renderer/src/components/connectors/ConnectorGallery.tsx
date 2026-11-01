@@ -25,10 +25,13 @@ export function ConnectorGallery(): ReactElement {
   const { connectors, error, refresh } = useConnectors()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<GalleryFilter>('all')
+  const [easy, setEasy] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
   const sectionsRef = useRef<HTMLDivElement>(null)
+  const chipsRef = useRef<HTMLDivElement>(null)
   const roving = useRovingFocus(sectionsRef, '[data-testid=connector-action]')
-  const sections = useMemo(() => (connectors ? gallerySections(connectors, { query, filter }) : []), [connectors, query, filter])
+  const chipRoving = useRovingFocus(chipsRef, '[data-testid=connector-filter]')
+  const sections = useMemo(() => (connectors ? gallerySections(connectors, { query, filter, easy }) : []), [connectors, query, filter, easy])
   const total = sections.reduce((n, s) => n + s.items.length, 0)
   const open = connectors?.find((c) => c.connector.id === openId)
   const categories = useMemo(() => (connectors && connectors.length > CATEGORY_GROUP_THRESHOLD ? categoriesPresent(connectors) : []), [connectors])
@@ -81,10 +84,16 @@ export function ConnectorGallery(): ReactElement {
                 placeholder="Search by name or what it does"
                 aria-label="Search services"
                 data-testid="connector-search"
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown' && total > 0) {
+                    e.preventDefault()
+                    roving.focusCurrent()
+                  }
+                }}
               />
             </div>
             <div className="connector-filterbar">
-              <div className="connector-chips" role="group" aria-label="Filter services">
+              <div ref={chipsRef} className="connector-chips" role="group" aria-label="Filter services" onKeyDown={chipRoving.onKeyDown} onFocus={chipRoving.onFocus}>
                 {chips.map((c) => (
                   <button
                     key={c.id}
@@ -92,8 +101,15 @@ export function ConnectorGallery(): ReactElement {
                     className="connector-chip"
                     data-testid="connector-filter"
                     data-filter={c.id}
-                    aria-pressed={filter === c.id}
-                    onClick={() => setFilter(c.id)}
+                    aria-pressed={c.id === 'easy' ? easy : c.id === 'all' ? filter === 'all' && !easy : filter === c.id}
+                    onClick={() => {
+                      // Easy sign-in is a toggle that combines with a category; All resets both.
+                      if (c.id === 'easy') setEasy((v) => !v)
+                      else {
+                        setFilter(c.id)
+                        if (c.id === 'all') setEasy(false)
+                      }
+                    }}
                   >
                     {c.label}
                     {c.count !== undefined && <span className="connector-chip-n"> {c.count}</span>}
@@ -114,6 +130,7 @@ export function ConnectorGallery(): ReactElement {
                     onClick={() => {
                       setQuery('')
                       setFilter('all')
+                      setEasy(false)
                     }}
                   >
                     Clear search

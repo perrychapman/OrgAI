@@ -297,6 +297,19 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
             {dialogLead(ease)}
           </p>
         )}
+        {form && auth.kind === 'oauthClient' && !haveClient && (
+          <button
+            type="button"
+            className="link-btn connector-have"
+            data-testid="connector-have-client"
+            onClick={() => {
+              setHaveClient(true)
+              document.getElementById(`${ids}-cid`)?.focus()
+            }}
+          >
+            I already have a client ID
+          </button>
+        )}
         {!tokenFirst && extras}
 
         {form && (
@@ -328,19 +341,6 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
                     <ExtLink href={auth.consoleUrl}>Open the developer console</ExtLink>
                   </div>
                 </details>
-                {!haveClient && (
-                  <button
-                    type="button"
-                    className="link-btn connector-have"
-                    data-testid="connector-have-client"
-                    onClick={() => {
-                      setHaveClient(true)
-                      document.getElementById(`${ids}-cid`)?.focus()
-                    }}
-                  >
-                    I already have a client ID
-                  </button>
-                )}
                 <div className="field">
                   <label htmlFor={`${ids}-cid`}>Client ID</label>
                   <Input id={`${ids}-cid`} mono value={clientId} autoComplete="off" spellCheck={false} disabled={busy} onChange={setClientId} />

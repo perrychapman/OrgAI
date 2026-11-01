@@ -1,5 +1,5 @@
 import type { ConnectorAuth, ConnectorCategory, ConnectorDef, ConnectorEase, ConnectorInfo, ConnectorVariant, McpServerSpec, Role } from '@shared/types'
-import { connectorEase, connectorVariant } from '@shared/connectors'
+import { connectorEase, connectorVariant, easeRank } from '@shared/connectors'
 
 /** Plain-word helpers for the Connectors gallery, connect dialog and project side. No protocol vocabulary. */
 
@@ -95,8 +95,8 @@ export function missingSentence(missing: string[]): string {
 
 /** The quiet status line in the dialog for a preview / untested connector, or undefined when both are fine. */
 export function honestyNote(def: Pick<ConnectorDef, 'status' | 'verified'>): string | undefined {
-  if (def.status === 'preview' && !def.verified) return 'Preview · not yet tested with OrgAI'
-  if (def.status === 'preview') return 'Preview · the service calls this a beta'
+  if (def.status === 'preview' && !def.verified) return 'Not yet tested with OrgAI'
+  if (def.status === 'preview') return 'The service calls this a beta'
   if (!def.verified) return 'Not yet tested with OrgAI'
   return undefined
 }
@@ -185,7 +185,7 @@ export function sortForGallery(infos: ConnectorInfo[]): ConnectorInfo[] {
     const rb = rank(b)
     if (ra !== rb) return ra - rb
     if (ra === 0) return (b.connectedAt ?? 0) - (a.connectedAt ?? 0) || byName(a, b)
-    if (ra === 2) return easeGroup(infoEase(a)) - easeGroup(infoEase(b)) || byName(a, b)
+    if (ra === 2) return easeRank(infoEase(a)) - easeRank(infoEase(b)) || byName(a, b)
     return byName(a, b)
   })
 }
@@ -210,6 +210,23 @@ function wordRank(def: ConnectorDef, w: string): number | null {
   return null
 }
 
+/** What a person may type for a connection method: the badge words, so searching what they just read works. */
+const EASE_KEYWORDS: Record<ConnectorEase, string[]> = {
+  signIn: ['sign in', 'easy', 'one click'],
+  none: ['no sign in', 'no sign in needed', 'easy', 'open'],
+  token: ['token', 'paste a token', 'paste', 'api key'],
+  ownApp: ['own app', 'needs your own app', 'client id', 'client']
+}
+
+function easeMatch(def: ConnectorDef, q: string): number | null {
+  const n = q.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (n.length < 3) return null
+  const keys = EASE_KEYWORDS[connectorEase(def)]
+  if (keys.some((k) => k.startsWith(n))) return 8
+  if (keys.some((k) => k.includes(n))) return 9
+  return null
+}
+
 /** Match rank for a whole query (0 best), or null when some word matches nothing. */
 export function matchRank(def: ConnectorDef, query: string): number | null {
   const q = query.trim().toLowerCase()
@@ -217,9 +234,17 @@ export function matchRank(def: ConnectorDef, query: string): number | null {
   const words = q.split(/\s+/)
   let worst = 0
   for (const w of words) {
-    const r = wordRank(def, w)
-    if (r === null) return null
+    let r = wordRank(def, w)
+    if (words.length === 1) {
+      const e = easeMatch(def, q)
+      if (e !== null) r = r === null ? e : Math.min(r, e)
+    }
+    if (r === null) return easeMatch(def, q)
     worst = Math.max(worst, r)
+  }
+  if (words.length > 1) {
+    const e = easeMatch(def, q)
+    if (e !== null) worst = Math.min(worst, e)
   }
   // The whole phrase inside the name beats a scatter of word matches ("google docs").
   const name = def.name.toLowerCase()
@@ -273,11 +298,11 @@ export interface GallerySection {
  * What the gallery shows. With a query or a filter: one flat list (ranked for a query, else in gallery order). Otherwise a
  * Connected section first, then the rest, grouped by effort (easy sign-in, token, own app) once the catalog passes the threshold; categories are filter chips.
  */
-export function gallerySections(infos: ConnectorInfo[], opts: { query: string; filter: GalleryFilter }): GallerySection[] {
+export function gallerySections(infos: ConnectorInfo[], opts: { query: string; filter: GalleryFilter; easy?: boolean }): GallerySection[] {
   const sorted = sortForGallery(infos)
   const query = opts.query.trim()
-  if (query || opts.filter !== 'all') {
-    const base = sorted.filter((i) => matchesFilter(i, opts.filter))
+  if (query || opts.filter !== 'all' || opts.easy) {
+    const base = sorted.filter((i) => matchesFilter(i, opts.filter) && (!opts.easy || matchesFilter(i, 'easy')))
     const items = query ? filterConnectors(base, query) : base
     return items.length ? [{ key: 'flat', title: null, items }] : []
   }
@@ -375,6 +400,8 @@ export function noteForUser(notes: readonly string[] | undefined, serviceName: s
     const n = raw.trim()
     if (!n) continue
     if (/^unverified/i.test(n)) continue
+    // The dialog says "preview" (badge) and "not yet tested" (one quiet line) once; setup steps carry the program detail.
+    if (/developer preview|not yet tested/i.test(n)) continue
     if (/redirect|admin(?:'s)? approval/i.test(n)) {
       const line = `${serviceName} may refuse OrgAI's sign-in address or need an admin's approval.`
       if (!caveat.includes(line)) caveat.push(line)

@@ -51,7 +51,6 @@ export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: (
               )}
             </span>
           )}
-          {def.status === 'preview' && available && <Badge tone="neutral">Preview</Badge>}
         </span>
         <span className="connector-desc" title={def.description}>
           {def.description}
