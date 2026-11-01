@@ -186,8 +186,8 @@ async function sectionAssistant(page, shot) {
   log('cards', JSON.stringify(await cards.evaluateAll((els) => els.map((e) => [e.dataset.kind, e.dataset.origin, e.dataset.name]))))
 
   // Apply a skill to the roles it names; the role block shows it; Undo restores.
-  // (The mock home's code-review skill is not recommended by the mock, so the local connection stands in.)
-  const card = tray.locator('[data-testid=capability-card][data-origin=local]').first()
+  // (The mock now also recommends the local code-review skill, so target the local connection by kind.)
+  const card = tray.locator("[data-testid=capability-card][data-kind=mcp][data-origin=local]").first()
   if ((await card.count()) > 0) {
     const name = await card.getAttribute('data-name')
     await card.locator('[data-testid=capability-apply]').click()
