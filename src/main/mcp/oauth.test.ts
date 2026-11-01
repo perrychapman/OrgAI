@@ -225,6 +225,17 @@ describe('discover iss support (RFC 9207)', () => {
     expect(d.issParameterSupported).toBe(true)
   })
 
+  it('records an exactly matching metadata issuer', async () => {
+    const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: AS, authorization_response_iss_parameter_supported: true } })).fetch)
+    expect(d.issuer).toBe(AS)
+    expect(d.issParameterSupported).toBe(true)
+  })
+
+  it('refuses metadata that names a different issuer (RFC 8414 section 3.3)', async () => {
+    const fetch = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: 'https://evil.example.com' } })).fetch
+    await expect(discover(MCP, fetch)).rejects.toSatisfy((e: unknown) => e instanceof OAuthError && e.step === 'discovery')
+  })
+
   it('falls back to the authorization server URL and leaves the flag unset', async () => {
     const { issuer: _i, ...noIssuer } = ASMETA
     const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...noIssuer, authorization_response_iss_parameter_supported: 'true' } })).fetch)
