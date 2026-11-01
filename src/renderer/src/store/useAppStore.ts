@@ -45,7 +45,9 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
-import { HARNESS_PROJECT_ID, parseRunWindowHash } from '@shared/types'
+import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
+import type { QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
+import { displayProject } from '../lib/assistants'
 
 /** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
@@ -137,8 +139,21 @@ export type McpFocus = { kind: 'library'; libraryId?: string } | { kind: 'server
 
 interface AppState {
   projects: Project[]
-  /** The virtual project that hosts library assistant runs. It is never in `projects`. */
-  harnessProject: Project | null
+  /** The virtual projects behind the Assistants rows (Chat, MCP assistant, Skill assistant), loaded on first use. Never in `projects`. */
+  virtualProjects: Partial<Record<VirtualProjectId, Project>>
+  /** Load a virtual project (projects.get; a null or failed answer becomes a display project). */
+  loadVirtualProject(id: VirtualProjectId): Promise<Project>
+  /** An instruction a start page should prefill (e.g. "Configure with AI"), per assistant. */
+  assistantSeed: Partial<Record<VirtualProjectId, string>>
+  clearAssistantSeed(id: VirtualProjectId): void
+  /** Select an assistant: the run that needs you, else the last viewed, else the start page. `instruction` seeds the start page. */
+  openAssistant(id: VirtualProjectId, opts?: { instruction?: string }): Promise<void>
+  /** Start a Chat (quick run) and show it. */
+  startQuick(input: QuickRunInput): Promise<RunSummary>
+  /** Start the Skill assistant: library scope shows it on the Skill assistant row, project scope on that project's Live tab. */
+  startSkillAssist(input: SkillAssistInput): Promise<RunSummary>
+  /** Save a quick run's chain as a project. On 'created' the project is selected and the run opened. */
+  promoteQuick(runId: string, name: string): Promise<QuickRunPromoteResult>
   mcpFocus: McpFocus | null
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
@@ -148,8 +163,8 @@ interface AppState {
   /** Show a project's settings on its MCP servers section, optionally on one server. */
   openProjectMcp(projectId: string, serverId?: string, opts?: { edit?: boolean }): void
   clearMcpFocus(): void
-  /** Start the library-level MCP assistant (a harness run); resolves with its summary. */
-  startLibraryAssist(instruction?: string): Promise<RunSummary>
+  /** Start the library-level MCP assistant (a harness run), select the MCP assistant row and show the run; resolves with its summary. */
+  startLibraryAssist(instruction?: string, allowBuild?: boolean): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
   saveStatus: SaveStatus
@@ -317,8 +332,14 @@ function debouncedSave(project: Project): void {
   )
 }
 
-export const selectedProject = (s: AppState): Project | undefined =>
-  s.selectedProjectId === HARNESS_PROJECT_ID && s.harnessProject ? s.harnessProject : s.projects.find((p) => p.id === s.selectedProjectId)
+/** Open the Chat assistant on its start page (a new chat), whatever it showed before. */
+export async function openNewChat(): Promise<void> {
+  await useAppStore.getState().openAssistant('quick')
+  useAppStore.getState().openDraft()
+}
+
+export const selectedProject =(s: AppState): Project | undefined =>
+  s.selectedProjectId && isVirtualProjectId(s.selectedProjectId) ? s.virtualProjects[s.selectedProjectId] : s.projects.find((p) => p.id === s.selectedProjectId)
 
 /** The run the workspace shows. Undefined on the New run page. */
 export const activeRun = (s: AppState): RunState | undefined => {
@@ -422,6 +443,22 @@ function showContinuation(summary: RunSummary): void {
   void getState().loadHistory()
 }
 
+/**
+ * A run started from an assistant start page: take its summary (events may have landed first), select the project
+ * it lives in (a virtual one is loaded first) and show it on the Live tab.
+ */
+async function showStartedAssistant(summary: RunSummary, home: string): Promise<void> {
+  const { getState, setState } = useAppStore
+  if (isVirtualProjectId(home)) await getState().loadVirtualProject(home)
+  getState().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
+  setState((s) => ({
+    runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, quick: summary.quick } } }
+  }))
+  if (getState().selectedProjectId !== home) getState().selectProject(home)
+  setState((s) => showRunPatch(s, summary.projectId || home, summary.id))
+  void getState().loadHistory()
+}
+
 /** Store a usage report under its connection, so one provider's probe never replaces another's. */
 function putUsage(st: { usageByConnection: Partial<Record<ConnectionId, UsageStatus>>; usage: UsageStatus | null }, u: UsageStatus): { usageByConnection: Partial<Record<ConnectionId, UsageStatus>>; usage: UsageStatus | null } {
   const key: ConnectionId = u.connection ?? 'anthropic'
@@ -432,7 +469,8 @@ let defaultConnectionWatch: (() => void) | null = null
 
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
-  harnessProject: null,
+  virtualProjects: {},
+  assistantSeed: {},
   mcpFocus: null,
   projectSettingsPane: {},
   selectedProjectId: null,
@@ -663,6 +701,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (id) await settleWorkspace(id)
   },
 
+  async loadVirtualProject(id) {
+    const known = get().virtualProjects[id]
+    if (known) return known
+    const loaded = await window.orgai.projects.get(id).catch(() => null)
+    // An older main process answers null: render a display project (label, no folder, no roles).
+    const project: Project = loaded ?? displayProject(id)
+    set((s) => ({ virtualProjects: { ...s.virtualProjects, [id]: s.virtualProjects[id] ?? project } }))
+    return get().virtualProjects[id] ?? project
+  },
+
+  clearAssistantSeed(id) {
+    set((s) => {
+      if (!(id in s.assistantSeed)) return {}
+      const { [id]: _seed, ...assistantSeed } = s.assistantSeed
+      return { assistantSeed }
+    })
+  },
+
+  async openAssistant(id, opts) {
+    await get().loadVirtualProject(id)
+    const instruction = opts?.instruction
+    if (instruction) set((s) => ({ assistantSeed: { ...s.assistantSeed, [id]: instruction } }))
+    if (get().selectedProjectId !== id) get().selectProject(id)
+    set({ view: 'run' })
+    await get().loadHistory()
+    // A seeded instruction belongs on the start page, not behind an open run.
+    if (instruction) {
+      get().openDraft()
+      return
+    }
+    const s = get()
+    const target = defaultRunToOpen(runsOfProject(s, id), s.historyByProject[id] ?? [], s.activeRunByProject[id])
+    if (target) await get().openRun(target)
+    else get().openDraft()
+  },
+
   async openProject(projectId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     await get().loadHistory()
@@ -816,7 +890,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async loadAllHistory() {
-    const entries = await Promise.all(get().projects.map(async (p) => [p.id, (await window.orgai.runs.list(p.id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
+    const ids = [...get().projects.map((p) => p.id), ...VIRTUAL_PROJECT_IDS]
+    const entries = await Promise.all(ids.map(async (id) => [id, (await window.orgai.runs.list(id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
     set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) } }))
   },
 
@@ -855,7 +930,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async startRun(prompt, opts) {
     const project = selectedProject(get())
-    if (!project) return
+    // Assistants never start work runs through here (Chat has startQuick, the others their own start calls).
+    if (!project || isVirtualProjectId(project.id)) return
     const summary = await window.orgai.runs.start({ projectId: project.id, prompt, scaffold: opts?.scaffold, images: opts?.images })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
@@ -894,12 +970,41 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ mcpFocus: null })
   },
 
-  async startLibraryAssist(instruction) {
-    const summary = await window.orgai.mcp.startAssist({ scope: 'library', instruction })
-    set((s) => ({
-      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } }
-    }))
+  async startLibraryAssist(instruction, allowBuild) {
+    const summary = await window.orgai.mcp.startAssist({ scope: 'library', instruction, ...(allowBuild ? { allowBuild: true } : {}) })
+    await showStartedAssistant(summary, HARNESS_PROJECT_ID)
     return summary
+  },
+
+  async startQuick(input) {
+    const summary = await window.orgai.runs.startQuick(input)
+    await showStartedAssistant(summary, QUICK_PROJECT_ID)
+    return summary
+  },
+
+  async startSkillAssist(input) {
+    const summary = await window.orgai.skills.startAssist(input)
+    // Library scope runs on the Skill assistant row; project scope belongs to the project it was started on.
+    const home = input.scope === 'library' || !input.projectId ? SKILLS_PROJECT_ID : summary.projectId || input.projectId
+    await showStartedAssistant(summary, home)
+    return summary
+  },
+
+  async promoteQuick(runId, name) {
+    const result = await window.orgai.runs.promoteQuick({ runId, name })
+    if (result.kind === 'existing') return result
+    const { project, run } = result
+    set((s) => ({
+      projects: s.projects.some((p) => p.id === project.id) ? s.projects.map((p) => (p.id === project.id ? project : p)) : [...s.projects, project],
+      // The run.moved events may not have landed yet: take the new home from the result.
+      ...(s.runs[run.id] ? { runs: { ...s.runs, [run.id]: { ...s.runs[run.id], summary: { ...s.runs[run.id].summary, ...run } } } } : {})
+    }))
+    const history = await window.orgai.runs.list(project.id).catch(() => [run])
+    set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history.filter((h) => !isTeamSurfaceRun(h)) } }))
+    get().selectProject(project.id)
+    set({ view: 'run' })
+    await get().openRun(run.id)
+    return result
   },
 
   async startMcpAssist(instruction) {
@@ -1051,6 +1156,29 @@ export const useAppStore = create<AppState>((set, get) => ({
           return looking || !known || !isRunLive(known) ? {} : { unreadByRun: { ...s.unreadByRun, [e.runId]: (s.unreadByRun[e.runId] ?? 0) + 1 } }
         })
       }
+      return
+    }
+    // A promoted quick run: the run (and its history row) now belongs to the new project.
+    if (e.type === 'run.moved') {
+      set((s) => {
+        const move = (list: RunSummary[] | undefined): RunSummary[] | undefined => list?.map((h) => (h.id === e.runId ? { ...h, projectId: e.projectId } : h))
+        const row = (s.historyByProject[e.fromProjectId] ?? []).find((h) => h.id === e.runId) ?? s.runs[e.runId]?.summary
+        const historyByProject = { ...s.historyByProject }
+        if (historyByProject[e.fromProjectId]) historyByProject[e.fromProjectId] = historyByProject[e.fromProjectId].filter((h) => h.id !== e.runId)
+        if (row) {
+          const target = move(historyByProject[e.projectId]) ?? []
+          historyByProject[e.projectId] = target.some((h) => h.id === e.runId) ? target : [{ ...row, projectId: e.projectId }, ...target].sort((a, b) => b.startedAt - a.startedAt)
+        }
+        const run = s.runs[e.runId]
+        const activeRunByProject = { ...s.activeRunByProject }
+        if (activeRunByProject[e.fromProjectId] === e.runId) delete activeRunByProject[e.fromProjectId]
+        return {
+          historyByProject,
+          activeRunByProject,
+          ...(run ? { runs: { ...s.runs, [e.runId]: { ...run, summary: { ...run.summary, projectId: e.projectId } } } } : {}),
+          ...(s.selectedProjectId ? { history: historyByProject[s.selectedProjectId] ?? s.history } : {})
+        }
+      })
       return
     }
     set((s) => {
@@ -1227,13 +1355,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async focusRun(projectId, runId) {
-    if (projectId === HARNESS_PROJECT_ID) {
-      // The harness project is virtual: it is not in projects:list, so load it on demand.
-      if (!get().harnessProject) {
-        const harness = await window.orgai.projects.get(HARNESS_PROJECT_ID).catch(() => null)
-        if (!harness) return
-        set({ harnessProject: harness })
-      }
+    if (isVirtualProjectId(projectId)) {
+      // A virtual project is not in projects:list, so load it on demand.
+      await get().loadVirtualProject(projectId)
     } else if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     if (!get().runs[runId]) {

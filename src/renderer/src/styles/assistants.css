@@ -1,0 +1,64 @@
+/* Assistants (Chat, MCP assistant, Skill assistant): sidebar group, first-launch Chat card, ended-session line. */
+
+/* Sidebar: the group sits under the nav and above the (scrolling) project list. */
+.sidebar-assistants {
+  flex: none;
+}
+.sidebar[data-collapsed='true'] .sidebar-assistants {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+}
+.sidebar[data-collapsed='true'] .sidebar-projects {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+}
+
+/* First launch: the project form and the Chat card are two regions side by side, stacked when narrow. */
+.projects-empty {
+  container: projects-empty / inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+.projects-empty-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.chat-now {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  max-width: 640px;
+}
+.chat-now .form-title {
+  margin: 0;
+}
+.chat-now p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+@container projects-empty (min-width: 720px) {
+  .projects-empty {
+    grid-template-columns: minmax(0, 640px) minmax(240px, 320px);
+  }
+}
+
+/* An ended assistant session: a line and one button replace the composer. */
+.composer-ended {
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+}
+.composer-ended-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}

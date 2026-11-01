@@ -1,8 +1,9 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import type { AuthStatusResult, ConnectionId, ConnectionStatus, UsageStatus } from '@shared/types'
+import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
-import { BellRing, ChevronDown, ChevronRight, LayoutGrid, PanelLeftClose, Settings } from 'lucide-react'
+import { BellRing, ChevronDown, ChevronRight, LayoutGrid, MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { decisionCount, waitingItems } from '../lib/needsYou'
@@ -28,6 +29,25 @@ import { IconButton } from './ui/IconButton'
 import { Popover } from './ui/Popover'
 
 const MOCK_TIP = 'ORGAI_MOCK is on: runs use scripted data, no tokens are spent'
+
+const ASSISTANT_ICONS: Record<VirtualProjectId, LucideIcon> = { quick: MessageSquare, harness: Plug, skills: Sparkles }
+
+/** One sidebar row: a project or an assistant. */
+interface NavEntry {
+  id: string
+  name: string
+  /** The project record (a display project for an assistant), for run status. */
+  project: Project
+  testId: string
+  dataAttr: Record<string, string>
+  /** Tooltip lines before the status subtitle. */
+  titleLines: string[]
+  /** The mark in the 56 px rail: initials or an icon. */
+  railMark: ReactNode
+  /** Rail accessible name; default is "<name>, N need you". */
+  accessibleName?: (decisions: number, needsLabel: string) => string
+  onOpen(): void
+}
 
 /** Open runs of a project, the ones that need the user first, then the newest. */
 function openRunsOf(runs: RunState[]): RunState[] {
@@ -82,6 +102,8 @@ export default function Sidebar({
   const view = useAppStore((s) => s.view)
   const setView = useAppStore((s) => s.setView)
   const openProject = useAppStore((s) => s.openProject)
+  const openAssistant = useAppStore((s) => s.openAssistant)
+  const virtualProjects = useAppStore((s) => s.virtualProjects)
   const openRun = useAppStore((s) => s.openRun)
   const selectProject = useAppStore((s) => s.selectProject)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
@@ -118,7 +140,7 @@ export default function Sidebar({
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
   const items = waiting.flatMap((r) => waitingItems(r))
-  const projectName = (id: string): string => projects.find((p) => p.id === id)?.name ?? 'Project'
+  const projectName = (id: string): string => locationLabel(id, projects)
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
   const names = projects.map((p) => p.name)
 
@@ -126,6 +148,125 @@ export default function Sidebar({
   const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
   const needsLabel = `Needs you · ${items.length}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
+
+  const newChatKey = isMacPlatform(currentPlatform()) ? '⌘⇧N' : 'Ctrl+Shift+N'
+
+  /** Project rows and Assistants rows share one renderer so their DOM, status and open-run lists stay identical. */
+  const renderEntry = (entry: NavEntry): ReactElement => {
+    const { id, name, project: p } = entry
+    const projectRuns = allRuns.filter((r) => r.summary.projectId === id)
+    const visibleRuns = projectRuns.filter((r) => !isTeamSurfaceRun(r.summary))
+    const open = openRunsOf(visibleRuns)
+    const expanded = !rail && open.length > 0 && !collapsed[id]
+    const newest = [...(history[id] ?? []), ...visibleRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
+    const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
+    // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
+    const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
+    const active = selectedId === id && inProject(view)
+    const viewedId = draftPage[id] ? undefined : viewedByProject[id]
+    const accessibleName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
+    return (
+      <div key={id} className="nav-project">
+        <div className="nav-row">
+          {rail ? null : open.length > 0 ? (
+            <button
+              type="button"
+              className="nav-chevron"
+              aria-expanded={expanded}
+              aria-label={`${expanded ? 'Hide' : 'Show'} open runs of ${name}`}
+              onClick={() => setCollapsedRuns((c) => ({ ...c, [id]: expanded }))}
+            >
+              <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
+            </button>
+          ) : (
+            <span className="nav-chevron-spacer" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            className={`nav-item nav-project-btn ${active ? 'active' : ''}`}
+            aria-current={active ? 'page' : undefined}
+            aria-label={rail ? accessibleName : undefined}
+            data-testid={entry.testId}
+            {...entry.dataAttr}
+            title={[rail ? accessibleName : '', ...entry.titleLines, st.subtitle].filter(Boolean).join('\n')}
+            onClick={entry.onOpen}
+          >
+            {rail ? (
+              <span className="nav-initials">
+                {entry.railMark}
+                <span className={`dot ${st.dot}`} aria-hidden="true" />
+              </span>
+            ) : (
+              <>
+                <span className={`dot ${st.dot}`} aria-hidden="true" />
+                <span className="nav-text">
+                  <span className="nav-name">{name}</span>
+                  {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
+                </span>
+                {st.decisions > 0 && (
+                  <Badge tone="attention" title={st.needsLabel}>
+                    {st.decisions}
+                  </Badge>
+                )}
+              </>
+            )}
+          </button>
+        </div>
+        {expanded && (
+          <ul className="nav-runs" aria-label={`Open runs of ${name}`}>
+            {open.map((r) => {
+              const rs = statusOfRun(r, p, needsYou(r))
+              const here = active && viewedId === r.summary.id
+              return (
+                <li key={r.summary.id}>
+                  <button
+                    type="button"
+                    className={`nav-run ${here ? 'active' : ''}`}
+                    aria-current={here ? 'true' : undefined}
+                    title={`${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}\n${rs.word}`}
+                    onClick={() => {
+                      if (selectedId !== id) selectProject(id)
+                      void openRun(r.summary.id)
+                    }}
+                  >
+                    <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
+                    <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>
+                    <span className="nav-run-title">{runName(r.summary)}</span>
+                    <span className="sr-only">{rs.word}</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+    )
+  }
+
+  const projectEntries: NavEntry[] = projects.map((p) => ({
+    id: p.id,
+    name: p.name,
+    project: p,
+    testId: 'nav-project',
+    dataAttr: { 'data-name': p.name },
+    titleLines: [p.path],
+    railMark: initials(p.name, names),
+    onOpen: () => {
+      void openProject(p.id)
+      if (!inProject(view)) setView('run')
+    }
+  }))
+  const assistantEntries: NavEntry[] = ASSISTANT_ORDER.map((id) => ({
+    id,
+    name: assistantLabel(id),
+    project: virtualProjects[id] ?? displayProject(id),
+    testId: 'nav-assistant',
+    dataAttr: { 'data-id': id },
+    titleLines: id === 'quick' ? [`New chat (${newChatKey})`] : [],
+    railMark: <Icon icon={ASSISTANT_ICONS[id]} size="sm" />,
+    accessibleName: (decisions) => (decisions > 0 ? `${assistantLabel(id)}, ${decisions} ${decisions === 1 ? 'decision' : 'decisions'}` : assistantLabel(id)),
+    onOpen: () => void openAssistant(id)
+  }))
 
   return (
     <aside className="sidebar" id="sidebar" tabIndex={-1} aria-label="Sidebar" data-collapsed={rail ? 'true' : 'false'}>
@@ -219,101 +360,15 @@ export default function Sidebar({
         )}
       </div>
 
+      {!rail && <div className="sidebar-label">Assistants</div>}
+      <div className="sidebar-section sidebar-assistants" role="group" aria-label="Assistants">
+        {assistantEntries.map(renderEntry)}
+      </div>
+
       {!rail && <div className="sidebar-label">Projects</div>}
       <div className="sidebar-section sidebar-projects">
         {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
-        {projects.map((p) => {
-          const projectRuns = allRuns.filter((r) => r.summary.projectId === p.id)
-          const visibleRuns = projectRuns.filter((r) => !isTeamSurfaceRun(r.summary))
-          const open = openRunsOf(visibleRuns)
-          const expanded = !rail && open.length > 0 && !collapsed[p.id]
-          const newest = [...(history[p.id] ?? []), ...visibleRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
-          const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
-          // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
-          const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
-          const active = selectedId === p.id && inProject(view)
-          const viewedId = draftPage[p.id] ? undefined : viewedByProject[p.id]
-          const accessibleName = st.needsLabel ? `${p.name}, ${st.needsLabel}` : p.name
-          return (
-            <div key={p.id} className="nav-project">
-              <div className="nav-row">
-                {rail ? null : open.length > 0 ? (
-                  <button
-                    type="button"
-                    className="nav-chevron"
-                    aria-expanded={expanded}
-                    aria-label={`${expanded ? 'Hide' : 'Show'} open runs of ${p.name}`}
-                    onClick={() => setCollapsedRuns((c) => ({ ...c, [p.id]: expanded }))}
-                  >
-                    <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
-                  </button>
-                ) : (
-                  <span className="nav-chevron-spacer" aria-hidden="true" />
-                )}
-                <button
-                  type="button"
-                  className={`nav-item nav-project-btn ${active ? 'active' : ''}`}
-                  aria-current={active ? 'page' : undefined}
-                  aria-label={rail ? accessibleName : undefined}
-                  data-testid="nav-project"
-                  data-name={p.name}
-                  title={[rail ? accessibleName : '', p.path, st.subtitle].filter(Boolean).join('\n')}
-                  onClick={() => {
-                    void openProject(p.id)
-                    if (!inProject(view)) setView('run')
-                  }}
-                >
-                  {rail ? (
-                    <span className="nav-initials">
-                      {initials(p.name, names)}
-                      <span className={`dot ${st.dot}`} aria-hidden="true" />
-                    </span>
-                  ) : (
-                    <>
-                      <span className={`dot ${st.dot}`} aria-hidden="true" />
-                      <span className="nav-text">
-                        <span className="nav-name">{p.name}</span>
-                        {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
-                      </span>
-                      {st.decisions > 0 && (
-                        <Badge tone="attention" title={st.needsLabel}>
-                          {st.decisions}
-                        </Badge>
-                      )}
-                    </>
-                  )}
-                </button>
-              </div>
-              {expanded && (
-                <ul className="nav-runs" aria-label={`Open runs of ${p.name}`}>
-                  {open.map((r) => {
-                    const rs = statusOfRun(r, p, needsYou(r))
-                    const here = active && viewedId === r.summary.id
-                    return (
-                      <li key={r.summary.id}>
-                        <button
-                          type="button"
-                          className={`nav-run ${here ? 'active' : ''}`}
-                          aria-current={here ? 'true' : undefined}
-                          title={`${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}\n${rs.word}`}
-                          onClick={() => {
-                            if (selectedId !== p.id) selectProject(p.id)
-                            void openRun(r.summary.id)
-                          }}
-                        >
-                          <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
-                          <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>
-                          <span className="nav-run-title">{runName(r.summary)}</span>
-                          <span className="sr-only">{rs.word}</span>
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-          )
-        })}
+        {projectEntries.map(renderEntry)}
       </div>
 
       <div className="sidebar-footer">
