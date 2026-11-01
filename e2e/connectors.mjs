@@ -89,6 +89,21 @@ try {
   const easyEases = await page.locator('[data-testid=connector-tile]').evaluateAll((els) => els.map((e) => e.getAttribute('data-ease')))
   check(easyEases.length > 0 && easyEases.every((e) => e === 'signIn' || e === 'none'), 'the Easy sign-in filter shows only sign-in and no-sign-in services')
   await page.locator('[data-testid=connector-filter][data-filter=all]').click()
+  // Easy sign-in combines with a category chip.
+  const catChips = page.locator('[data-testid=connector-filter]:not([data-filter=all]):not([data-filter=easy]):not([data-filter=connected])')
+  if ((await catChips.count()) > 0) {
+    await catChips.first().click()
+    const catOnly = await page.locator('[data-testid=connector-tile]').count()
+    await easyChip.click()
+    const bothEases = await page.locator('[data-testid=connector-tile]').evaluateAll((els) => els.map((e) => e.getAttribute('data-ease')))
+    check((await easyChip.getAttribute('aria-pressed')) === 'true' && (await catChips.first().getAttribute('aria-pressed')) === 'true', 'Easy sign-in and a category chip are pressed together')
+    check(bothEases.length <= catOnly && bothEases.every((e) => e === 'signIn' || e === 'none'), 'Easy sign-in plus a category shows only easy services inside that category', `${bothEases.length}/${catOnly}`)
+    await page.locator('[data-testid=connector-filter][data-filter=all]').click()
+    check((await easyChip.getAttribute('aria-pressed')) === 'false', 'All resets Easy sign-in and the category')
+  }
+  await search.fill('postgres')
+  check((await tile('neon').count()) === 1, 'search "postgres" finds Neon through its aliases')
+  await search.fill('')
   await search.fill('mail')
   check((await tile('gmail').count()) === 1, 'search "mail" finds Gmail through its aliases')
   check((await page.locator('[data-testid=connector-tile]').first().getAttribute('data-connector')) === 'gmail', 'the name match ranks first')
