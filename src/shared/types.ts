@@ -630,7 +630,52 @@ export interface McpServerSpec {
 
 // ---------- Connectors (curated MCP presets, src/shared/connectors.ts) ----------
 
-export type ConnectorCategory = 'email' | 'calendar' | 'files' | 'chat' | 'docs' | 'project' | 'dev' | 'monitoring' | 'payments' | 'design'
+export type ConnectorCategory =
+  | 'email'
+  | 'calendar'
+  | 'files'
+  | 'chat'
+  | 'docs'
+  | 'project'
+  | 'dev'
+  | 'monitoring'
+  | 'payments'
+  | 'design'
+  | 'crm'
+  | 'data'
+  | 'cloud'
+  | 'knowledge'
+  | 'automation'
+  | 'commerce'
+  | 'meetings'
+
+/** Every ConnectorCategory, in gallery order (src/shared/connectors.ts tests that each def uses one). */
+export const CONNECTOR_CATEGORIES: readonly ConnectorCategory[] = [
+  'email',
+  'calendar',
+  'files',
+  'chat',
+  'docs',
+  'project',
+  'dev',
+  'monitoring',
+  'payments',
+  'design',
+  'crm',
+  'data',
+  'cloud',
+  'knowledge',
+  'automation',
+  'commerce',
+  'meetings'
+]
+
+/**
+ * How much work connecting takes, derived from the variant's auth kind by connectorEase (src/shared/connectors.ts):
+ * 'signIn' = OAuth with dynamic client registration (one click), 'none' = no sign-in at all, 'token' = paste a key,
+ * 'ownApp' = create an OAuth app in the vendor's console first (oauthClient).
+ */
+export type ConnectorEase = 'signIn' | 'none' | 'token' | 'ownApp'
 
 /**
  * OAuth details a preset supplies instead of (or as a fallback for) discovery. Every URL is https on a public
@@ -656,6 +701,11 @@ export interface ConnectorOAuthOverrides {
 
 /** How a connector authenticates. */
 export type ConnectorAuth =
+  /**
+   * No authentication: the server is public (e.g. DeepWiki, keyless Exa). The entry has no secret slots and no
+   * OAuth config; it counts as connected once added, and mcp:authorize / connectors:setToken refuse it.
+   */
+  | { kind: 'none' }
   /** OAuth with dynamic client registration: the user only clicks Authorize. */
   | { kind: 'oauth'; scopes?: string[]; overrides?: ConnectorOAuthOverrides }
   /**
@@ -727,6 +777,11 @@ export interface ConnectorDef {
   setup: string[]
   /** Caveats: admin approval, write tools, unverified behaviour. */
   notes?: string[]
+  /**
+   * Extra search words for the gallery filter, lowercase and non-empty (e.g. Gmail: ['email', 'google mail']).
+   * Name, vendor, description and category still match on their own.
+   */
+  aliases?: string[]
   /** False until someone authorized and listed tools against the live server. */
   verified: boolean
 }
@@ -744,8 +799,11 @@ export interface ConnectorInfo {
   /**
    * 'available' = not added; 'needsSetup' = added but not authorized or its token is missing; 'connected' =
    * authorized or token stored (not a liveness check: run mcpLibrary:test); 'error' = the last authorization failed.
+   * An auth kind 'none' connector is 'connected' as soon as it is added.
    */
   state: ConnectorState
+  /** Epoch ms of the entry's last successful connect (McpLibraryEntry.connectedAt), for pinning recent ones. */
+  connectedAt?: number
 }
 
 /** connectors:add input. The renderer names a preset; main builds the URL, headers and auth from the catalog. */
@@ -767,7 +825,15 @@ export interface ConnectorTokenInput {
  * credentials and OAuth authorization live with it, and projects link it (McpServerSpec.libraryId). The name
  * is unique within the library.
  */
-export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'>
+export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'> & {
+  /**
+   * Connector entries only, written by the main process: epoch ms when its auth last succeeded (OAuth authorize,
+   * connectors:setToken with a token, or connectors:add for an auth kind 'none' preset). Cleared by mcp:revokeAuth,
+   * clearing the token, or an edit that stops it being a connector. Never copied into linked project specs; a
+   * renderer-sent value is ignored. Older records simply lack it.
+   */
+  connectedAt?: number
+}
 
 /** Which secret slot a value fills: an entry of McpServerSpec.secretEnv or of .secretHeaders. */
 export type McpSecretKind = 'env' | 'header'

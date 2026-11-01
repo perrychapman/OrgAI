@@ -301,7 +301,7 @@ export type McpLinkFields = Pick<McpServerSpec, 'id' | 'enabled' | 'roles' | 'ad
  * and libraryId = entry.id. McpService calls it on every read so a library edit reaches every project.
  */
 export function linkedSpec(entry: McpLibraryEntry, own: McpLinkFields): McpServerSpec {
-  const { id: _entryId, source: _source, ...rest } = entry
+  const { id: _entryId, source: _source, connectedAt: _connectedAt, ...rest } = entry
   return {
     ...rest,
     id: own.id,

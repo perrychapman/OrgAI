@@ -208,7 +208,7 @@ describe('OAuth presets in oauth.ts', () => {
     let authUrl: URL | undefined
     const listen = async (opts: { port?: number; strict?: boolean }): Promise<LoopbackServer> => {
       listenOpts.push(opts)
-      return { redirectUri: `http://127.0.0.1:${opts.port}/callback`, close: () => {}, waitForCode: async () => 'CODE' }
+      return { redirectUri: `http://127.0.0.1:${opts.port}/callback`, close: () => {}, waitForCode: async () => ({ code: 'CODE' }) }
     }
     const r = await runAuthorization({
       url: MCP,
@@ -242,7 +242,7 @@ describe('OAuth presets in oauth.ts', () => {
       clientSecret: 's',
       fetch,
       openExternal: async () => {},
-      listen: async (o) => ({ redirectUri: `http://127.0.0.1:${o.port}/callback`, close: () => {}, waitForCode: async () => 'C' }),
+      listen: async (o) => ({ redirectUri: `http://127.0.0.1:${o.port}/callback`, close: () => {}, waitForCode: async () => ({ code: 'C' }) }),
       preset: oauthPresetFor({ connectorId: 'slack' })
     })
     expect(r.tokens).toMatchObject({ accessToken: 'xoxp-1', refreshToken: 'xoxe-1' })
