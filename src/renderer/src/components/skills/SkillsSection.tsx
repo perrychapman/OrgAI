@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import type { Project, SkillInfo } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
+import { cleanIpcError } from '../../lib/ipcError'
 import { requestSkillLibrary } from '../../lib/settingsTarget'
 import {
   loadableByNoRole,
@@ -82,6 +83,8 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
   const skillsApi = useProjectSkills(project.id)
   const evaluation = useSkillEvaluation(project.id)
   const setView = useAppStore((s) => s.setView)
+  const [askBusy, setAskBusy] = useState(false)
+  const [askError, setAskError] = useState<string | null>(null)
   const [modal, setModal] = useState<Modal>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [notice, setNotice] = useState<SkillNotice | null>(null)
@@ -193,6 +196,22 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
       )}
     </Popover>
   )
+  const askAssistant = async (): Promise<void> => {
+    setAskBusy(true)
+    setAskError(null)
+    try {
+      await useAppStore.getState().startSkillAssist({ scope: 'project', projectId: project.id })
+    } catch (e) {
+      setAskError(cleanIpcError(e, 'Could not start the Skill assistant.'))
+    } finally {
+      setAskBusy(false)
+    }
+  }
+  const askButton = (
+    <Button icon={Sparkles} testId="skill-ask-assistant" loading={askBusy} onClick={() => void askAssistant()}>
+      Ask the Skill assistant
+    </Button>
+  )
   const evaluateButton = (
     <span aria-busy={evaluation.evaluating}>
       <Button
@@ -214,10 +233,24 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
       title="Skills"
       count={loading ? undefined : skills.length}
       description="Instructions an agent loads on demand when a task matches. You choose which roles may load each one."
-      actions={loading || skills.length === 0 ? undefined : addMenu}
+      actions={
+        loading ? undefined : (
+          <>
+            {askButton}
+            {skills.length === 0 ? undefined : addMenu}
+          </>
+        )
+      }
       testId="catalog-skills"
     >
       <div className="mcp-body" data-testid="skills-section">
+        {askError && (
+          <div role="alert">
+            <Banner tone="danger" title="Could not start the Skill assistant" onDismiss={() => setAskError(null)}>
+              {askError}
+            </Banner>
+          </div>
+        )}
         {notice && (
           <Banner
             tone={notice.tone}
