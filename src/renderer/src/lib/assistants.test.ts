@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
 import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickAccessLabel, quickFolderLabel, runKindLabel } from './assistants'
+import { isSingleAgentRun, offersSaveAsProject, runLayoutFor } from './assistants'
+
+describe('run layout', () => {
+  it('single-agent runs default to the conversation', () => {
+    expect(isSingleAgentRun({ kind: 'work', quick: quick() })).toBe(true)
+    expect(isSingleAgentRun({ kind: 'mcp-assist' })).toBe(true)
+    expect(isSingleAgentRun({ kind: 'skill-assist' })).toBe(true)
+    expect(runLayoutFor({ kind: 'work', quick: quick() })).toBe('conversation')
+  })
+  it('team runs default to the canvas', () => {
+    expect(runLayoutFor({ kind: 'work', quick: quick({ team: 'default' }) })).toBe('canvas')
+    expect(runLayoutFor({ kind: 'work' })).toBe('canvas')
+    expect(runLayoutFor({ kind: 'setup' })).toBe('canvas')
+  })
+  it('the user choice wins', () => {
+    expect(runLayoutFor({ kind: 'mcp-assist' }, 'canvas')).toBe('canvas')
+    expect(runLayoutFor({ kind: 'work' }, 'conversation')).toBe('conversation')
+  })
+})
+
+describe('offersSaveAsProject', () => {
+  it('only while the run is in the Chat project', () => {
+    expect(offersSaveAsProject({ quick: quick(), projectId: 'quick' })).toBe(true)
+    expect(offersSaveAsProject({ quick: quick(), projectId: 'p-123' })).toBe(false)
+    expect(offersSaveAsProject({ projectId: 'quick' })).toBe(false)
+  })
+})
 
 const quick = (over: Partial<QuickRunInfo> = {}): QuickRunInfo => ({ folder: 'C:\\work\\notes-api', team: 'single', allowEdits: false, gitRepo: false, ...over })
 

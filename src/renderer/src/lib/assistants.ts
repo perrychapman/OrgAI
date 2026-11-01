@@ -3,7 +3,7 @@
  * The ids and labels come from the shared contract; this file only turns them into renderer copy.
  */
 import type { Project, QuickRunInfo, RunSummary, VirtualProjectId } from '@shared/types'
-import { RUN_KIND_LABELS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
+import { QUICK_PROJECT_ID, RUN_KIND_LABELS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { folderName } from './paths'
 
@@ -100,3 +100,28 @@ export function promoteNameError(name: string): string | null {
 }
 
 export const PROMOTE_NAME_LIMIT = PROMOTE_NAME_MAX
+
+/** How the Live view shows a run: the transcript as the stage ('conversation') or the agent canvas ('canvas'). */
+export type RunLayout = 'conversation' | 'canvas'
+
+/**
+ * Whether a run is single-agent by design: a Chat with team 'single', an MCP assistant or a Skill assistant run.
+ * A Chat on the default team, work runs and setup runs are team runs.
+ */
+export function isSingleAgentRun(summary: Pick<RunSummary, 'kind' | 'quick'>): boolean {
+  if (summary.quick) return summary.quick.team === 'single'
+  return summary.kind === 'mcp-assist' || summary.kind === 'skill-assist'
+}
+
+/** The layout a run gets: the user's choice for that run, else conversation for single-agent runs, else canvas. */
+export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'>, chosen?: RunLayout): RunLayout {
+  return chosen ?? (isSingleAgentRun(summary) ? 'conversation' : 'canvas')
+}
+
+/**
+ * Whether "Save as project" is offered at all: only while the run still belongs to the Chat project. After run.moved
+ * the run lives in a real project and the action is gone (its quick info stays on the summary).
+ */
+export function offersSaveAsProject(summary: Pick<RunSummary, 'quick' | 'projectId'>): boolean {
+  return !!summary.quick && summary.projectId === QUICK_PROJECT_ID
+}

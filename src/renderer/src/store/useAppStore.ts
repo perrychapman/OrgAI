@@ -47,7 +47,7 @@ import type {
 } from '@shared/types'
 import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
-import { displayProject } from '../lib/assistants'
+import { displayProject, type RunLayout } from '../lib/assistants'
 
 /** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
@@ -185,6 +185,9 @@ interface AppState {
   setComposerDraft(key: string, draft: ComposerDraft): void
   /** Side panel tab per run. */
   sideTabByRun: Record<string, SideTab>
+  /** Live view layout the user picked per run (conversation or canvas); absent means `runLayoutFor`'s default. */
+  runLayoutByRun: Record<string, RunLayout>
+  setRunLayout(runId: string, layout: RunLayout): void
   /** Select the side tab of the viewed run. */
   setSideTab(tab: SideTab): void
   /** Short inline message next to the run tabs (e.g. after hiding a tab). */
@@ -488,6 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftPage: {},
   composerDrafts: {},
   sideTabByRun: {},
+  runLayoutByRun: {},
   tabNotice: null,
   unreadByRun: {},
   pendingDecisionFocus: null,
@@ -651,6 +655,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   replaceProject(project) {
     set((s) => ({ projects: s.projects.map((p) => (p.id === project.id ? project : p)) }))
+  },
+
+  setRunLayout(runId, layout) {
+    set((s) => ({ runLayoutByRun: { ...s.runLayoutByRun, [runId]: layout } }))
   },
 
   setSideTab(tab) {
