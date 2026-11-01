@@ -952,10 +952,32 @@ export class McpService {
 
   // ---------- for RunManager ----------
 
-  /** Enabled servers whose library entry (if linked) still exists, with linked snapshots refreshed. */
+  /**
+   * Enabled servers whose library entry (if linked) still exists and whose secret slots all hold a value, with
+   * linked snapshots refreshed. A server saved with empty slots (filled in later by the user) never starts
+   * without its credentials; `skippedServers` names it for the run warning.
+   */
   enabledServers(project: Project): McpServerSpec[] {
     const r = this.refreshed(project)
-    return (r.project.mcpServers ?? []).filter((s) => s.enabled && !r.missing.has(s.id))
+    return (r.project.mcpServers ?? []).filter((s) => s.enabled && !r.missing.has(s.id) && !this.unsetSecretSlots(project.id, s).length)
+  }
+
+  /** Enabled, still-linked servers left out of runs because a secret slot has no value, with the unset slot names. */
+  skippedServers(project: Project): { name: string; missing: string[] }[] {
+    const r = this.refreshed(project)
+    return (r.project.mcpServers ?? [])
+      .filter((s) => s.enabled && !r.missing.has(s.id))
+      .map((s) => ({ name: s.name, missing: this.unsetSecretSlots(project.id, s) }))
+      .filter((s) => s.missing.length > 0)
+  }
+
+  /** Secret slot names (env, then headers) with no stored value; an empty stored value counts as unset. */
+  private unsetSecretSlots(projectId: string, spec: McpServerSpec): string[] {
+    const owner = this.ownerOf(projectId, spec)
+    return [
+      ...(spec.secretEnv ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'env', n))),
+      ...(spec.secretHeaders ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'header', n)))
+    ]
   }
 
   private resolveSpec(owner: McpSecretOwner, spec: McpServerSpec, extra: Record<string, string> = {}): ResolvedMcpServer {

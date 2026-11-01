@@ -354,6 +354,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests.
   - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
     and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
+  - A server with any unset `secretEnv` / `secretHeaders` slot never starts: `McpService.enabledServers` skips it and
+    `skippedServers` feeds one run warning per server naming the empty slots (RunManager `prepareServers`). Unit-tested.
 - MCP library and OAuth:
   - The app-wide library lives in `<data>/mcp-library.json` (`McpLibraryStore`). A project server with `libraryId` is a
     link: McpService refreshes its snapshot from the entry on every read (`withLibrary`, `list`, `enabledServers`,
