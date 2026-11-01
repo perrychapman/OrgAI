@@ -12,6 +12,7 @@ import { Popover } from '../ui/Popover'
 import { linkedServerFor } from '../mcp/mcpLibraryHelpers'
 import { errMessage } from '../mcp/mcpHelpers'
 import { grantServerRoles } from '../../lib/roleCapabilities'
+import { clampText } from '../../lib/capabilities'
 import { CATEGORY_LABELS, EASE_BADGE, filterConnectors, infoEase, serviceCount, sortForGallery, stateChip } from '../../lib/connectors'
 import { UseInProjectDialog, connectorAccess } from './ConnectedServices'
 import { ConnectorLogo } from './ConnectorLogo'
@@ -181,8 +182,12 @@ export default function AddServiceDialog({
     <Dialog
       open
       onClose={onClose}
-      title="Add a service"
-      description="Search for a service. One that is ready to use goes straight to choosing roles; the others sign in first."
+      title={role ? `Add a service for ${clampText(role.name, 40)}` : 'Add a service'}
+      description={
+        role
+          ? `Search for a service. Only ${clampText(role.name, 40)} gets it; the ones that are not ready sign in first.`
+          : 'Search for a service. One that is ready to use goes straight to choosing roles; the others sign in first.'
+      }
       size="lg"
       testId="add-service-dialog"
       footer={
