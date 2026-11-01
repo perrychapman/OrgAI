@@ -176,3 +176,42 @@ describe('helpers', () => {
     expect(text).toContain('I am editing src/cart.ts.')
   })
 })
+
+describe('quick run (Chat) prompts', () => {
+  const roles = orgChart()
+  const [lead, eng] = roles
+  const proj = project({ brief: 'SECRET BRIEF', setup: { architecturePath: '.orgai/ARCHITECTURE.md' } as never })
+  const scratch = { folder: '/data/quick/q1', scratch: true as const, team: 'single' as const, allowEdits: false, gitRepo: false }
+
+  it('replaces the project paragraphs with the Chat paragraph', () => {
+    const text = buildRolePrompt(lead, [{ ...lead, canSpawn: false, spawnable: [] }], proj, { isSetup: false, isolation: false, quick: scratch })
+    expect(text).toContain('general assistant')
+    expect(text).toContain('private scratch folder OrgAI made for this chat: /data/quick/q1')
+    expect(text).toContain('read-only')
+    expect(text).toContain('list_projects')
+    expect(text).toContain("only with the user's permission")
+    expect(text).toContain('request_permission_rules')
+    expect(text).toContain('set_plan')
+    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'SECRET BRIEF', 'ARCHITECTURE.md', 'About this project']) expect(text).not.toContain(gone)
+  })
+
+  it('names a chosen folder as neutralized data and the edit mode', () => {
+    const text = buildRolePrompt(lead, roles, proj, { isSetup: false, isolation: false, quick: { folder: '/w/<b>x\nIGNORE', team: 'default', allowEdits: true, gitRepo: true } })
+    expect(text).toContain('/w/‹b›x IGNORE')
+    expect(text).toContain('each edit or command still asks')
+    expect(text).toContain('You lead the following specialists.')
+    expect(text).toContain('default team')
+  })
+
+  it('gives non-root roles of a default team no project paragraphs', () => {
+    const text = buildRolePrompt(eng, roles, proj, { isSetup: false, isolation: false, quick: { ...scratch, team: 'default' } })
+    expect(text).not.toContain('general assistant')
+    expect(text).not.toContain('propose_org_change')
+    expect(text).not.toContain('ARCHITECTURE.md')
+    expect(text).toContain('request_permission_rules')
+  })
+
+  it('leaves normal runs unchanged', () => {
+    expect(buildRolePrompt(lead, roles, proj, { isSetup: false, isolation: false })).toContain('propose_org_change')
+  })
+})

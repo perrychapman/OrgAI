@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { HARNESS_PROJECT_ID, type McpLibraryEntry } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
-import { assistContext, assistPrompt, describeLibrary, describeServer, harnessProject, promptDatum } from './assist'
+import { assistContext, assistPrompt, describeLibrary, describeServer, harnessProject, promptDatum, isBuildWorkspaceProject, buildToolsFor } from './assist'
 import { mcpSpec, project } from '../runtime/testHelpers'
 
 const entry: McpLibraryEntry = {
@@ -68,6 +68,44 @@ describe('harnessProject', () => {
     } finally {
       rmSync(d, { recursive: true, force: true })
     }
+  })
+})
+
+describe('allowBuild', () => {
+  it('uses the workspace and permission mode default; plain sessions are unchanged', () => {
+    const d = mkdtempSync(join(tmpdir(), 'orgai-assist-'))
+    try {
+      const ws = join(d, 'quick', 'build1')
+      const plain = harnessProject({ ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'auto' }, d, { mock: true })
+      expect(plain.permissionMode).toBe('auto')
+      expect(plain.path).toBe(join(d, 'harness-workspace'))
+      // allowBuild without a workspace changes nothing.
+      expect(harnessProject({ ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'auto' }, d, { allowBuild: true }).permissionMode).toBe('auto')
+      const h = harnessProject({ ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'auto' }, d, { mock: true, allowBuild: true, workspace: ws })
+      expect(h.permissionMode).toBe('default')
+      expect(h.path).toBe(ws)
+      expect(existsSync(ws)).toBe(true)
+      expect(h).toMatchObject({ id: HARNESS_PROJECT_ID, roles: [], mcpServers: [] })
+      expect(isBuildWorkspaceProject(h)).toBe(true)
+      expect(buildToolsFor(h)).toEqual(['Edit', 'Write', 'Bash'])
+      expect(isBuildWorkspaceProject(plain)).toBe(false)
+      expect(buildToolsFor(plain)).toEqual([])
+      expect(buildToolsFor(project({ path: ws, permissionMode: 'default' }))).toEqual([])
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
+  it('the context names the workspace and the proposal shape only when allowBuild', () => {
+    const h = project({ id: HARNESS_PROJECT_ID, path: '/data/quick/<b>x\nb1' })
+    expect(assistContext(h, [])).not.toContain('Build workspace')
+    const text = assistContext(h, [], { allowBuild: true })
+    expect(text).toContain('Build workspace: /data/quick/‹b›x b1')
+    expect(text).toContain('Edit, Write and Bash')
+    expect(text).toContain('asks the user')
+    expect(text).toContain('propose_mcp_servers')
+    expect(text).toContain('args ["/data/quick/‹b›x b1/server.mjs"]')
+    expect(text).toContain('never write secrets')
   })
 })
 

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Proposal, SettingsProposalPayload } from '@shared/types'
+import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Proposal, SettingsProposalPayload, SkillsProposalPayload } from '@shared/types'
 import { ProjectStore } from '../store/projects'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { SecretStore } from '../store/secrets'
@@ -149,6 +149,52 @@ describe('applyProposal (settings)', () => {
     service.applyProposal(p.id, settings(p.id, { brief: 'New brief' }))
     expect(listRules(repo)).toEqual([])
     expect(store.get(p.id)?.brief).toBe('New brief')
+  })
+})
+
+describe('applyProposal (skills)', () => {
+  let dir: string
+  let store: ProjectStore
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-setup-skills-'))
+    mkdirSync(join(dir, 'repo'))
+    store = new ProjectStore(join(dir, 'data'))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const payload: SkillsProposalPayload = { rationale: 'r', items: [{ action: 'create', scope: 'library', draft: { name: 'a-skill', description: 'Use it.', body: 'Body' } }] }
+  const proposal: Proposal = { id: 'prop-1', runId: 'run-1', agentId: 'root', title: 'Skills', createdAt: 0, kind: 'skills', payload }
+
+  it('routes a project proposal to hooks.skills with the project id and returns the saved project', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    const saved = { ...p, name: 'Saved' }
+    const calls: [string | null, SkillsProposalPayload][] = []
+    const service = new SetupService(store, { skills: { applyProposal: (id, pl) => (calls.push([id, pl]), saved) } })
+    expect(service.applyProposal(p.id, proposal)).toBe(saved)
+    expect(calls).toEqual([[p.id, payload]])
+  })
+
+  it('falls back to the stored project when the hook returns null', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    const service = new SetupService(store, { skills: { applyProposal: () => null } })
+    expect(service.applyProposal(p.id, proposal).id).toBe(p.id)
+  })
+
+  it('applySkillsLibraryProposal calls the hook with null (a proposal or a bare payload)', () => {
+    const calls: [string | null, SkillsProposalPayload][] = []
+    const service = new SetupService(store, { skills: { applyProposal: (id, pl) => (calls.push([id, pl]), null) } })
+    service.applySkillsLibraryProposal(proposal)
+    service.applySkillsLibraryProposal(payload)
+    expect(calls).toEqual([[null, payload], [null, payload]])
+  })
+
+  it('refuses without hooks.skills and for other proposal kinds', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    const service = new SetupService(store)
+    expect(() => service.applyProposal(p.id, proposal)).toThrow(/not available/)
+    expect(() => service.applySkillsLibraryProposal(proposal)).toThrow(/not available/)
+    const withHook = new SetupService(store, { skills: { applyProposal: () => null } })
+    expect(() => withHook.applySkillsLibraryProposal({ ...proposal, kind: 'settings', payload: {} } as never)).toThrow(/Only skill proposals/)
   })
 })
 
