@@ -228,6 +228,24 @@ async function sectionAssistant(page, shot) {
   await tray.locator('[data-testid=team-mode-recommend]').click()
 }
 
+/** Design mode hosts the Architect's permission card; the Needs-you pill brings the user back to it. */
+async function sectionDesignDecisions(page, shot) {
+  const tray = page.locator('[data-testid=team-assistant]')
+  await tray.locator('[data-testid=architect-open]').click()
+  const card = tray.locator('[data-testid=architect-decisions] .decision-card').first()
+  await card.waitFor({ timeout: 20_000 })
+  check(true, 'the Architect permission card shows in the Design tray')
+  check(!/R\?/.test(await tray.locator('[data-testid=architect-decisions]').innerText()), 'the Architect card is not labelled R?')
+  await shot('design-permission')
+  await tray.locator('[data-testid=team-mode-recommend]').click()
+  await page.locator('[data-testid=topbar-needs-you]').click()
+  await tray.locator('[data-testid=architect-decisions] .decision-card').first().waitFor({ timeout: 5_000 })
+  check((await tray.getAttribute('data-mode')) === 'design', 'the Needs-you pill switches the tray to Design')
+  await sleep(300)
+  check(await page.evaluate(() => !!document.activeElement?.closest('[data-testid=architect-decisions]')), 'the Needs-you pill focuses the Architect card')
+  await tray.locator('[data-testid=team-mode-recommend]').click()
+}
+
 const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
@@ -237,6 +255,7 @@ try {
   await sectionSkills(page)
   await sectionConnections(page, shot)
   await sectionAssistant(page, shot)
+  await sectionDesignDecisions(page, shot)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
   await page.locator('[data-testid=capability-chooser]').waitFor()
