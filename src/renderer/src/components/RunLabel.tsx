@@ -1,6 +1,7 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useAppStore, useRunIndexes } from '../store/useAppStore'
 import { promptLine, runName, runTag } from '../lib/runLabels'
+import { isTeamSurfaceRun } from '../lib/runSurface'
 
 /** "Run R2: Add caching". Names the run a decision belongs to; the index matches the run's tab and header. */
 export function RunLabel({ runId, prefix = true }: { runId: string; prefix?: boolean }): ReactElement {
@@ -8,6 +9,15 @@ export function RunLabel({ runId, prefix = true }: { runId: string; prefix?: boo
   const prompt = useAppStore((s) => s.runs[runId]?.summary.prompt)
   const title = useAppStore((s) => s.runs[runId]?.summary.title)
   const full = promptLine(prompt)
+  const team = useAppStore((s) => isTeamSurfaceRun(s.runs[runId]?.summary))
+  // A Team-tab Architect session has no run tab, so it has no R-index: name it for what it is.
+  if (team) {
+    return (
+      <span className="run-label" title={full}>
+        <span className="run-label-prompt">Architect session{title ? `: ${runName({ title, prompt: prompt ?? '' })}` : ''}</span>
+      </span>
+    )
+  }
   return (
     <span className="run-label" title={`${runTag(index)}: ${full}`}>
       {prefix && <span className="run-label-word">Run </span>}

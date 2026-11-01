@@ -1,5 +1,6 @@
 import { normalizeView } from '../lib/teamView'
 import { isTeamSurfaceRun } from '../lib/runSurface'
+import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
@@ -673,6 +674,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
+    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
+      // A Team-tab Architect session: the Team tray switches to Design and focuses that card.
+      useTeamAssistantStore.getState().requestDesign(projectId, runId, requestId ?? null)
+      return
+    }
     set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
   },
 

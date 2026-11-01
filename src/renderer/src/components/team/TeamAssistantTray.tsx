@@ -1,15 +1,16 @@
 import type { KeyboardEvent, ReactElement } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, RefreshCw, Sparkles, X } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { useTeamAssistantStore, useTeamReviewSummary } from '../../store/teamAssistant'
+import { EMPTY_SESSION, useTeamAssistantStore, useTeamReviewSummary, type CardState, type TeamSession } from '../../store/teamAssistant'
 import {
   capabilitiesApi,
   clampText,
   foldProgress,
   fromRecommendations,
   fromReview,
+  mergeRecheck,
   newRequestId,
   sourceProblems,
   suggestionsLine,
@@ -48,12 +49,6 @@ function readOutside(projectId: string): boolean {
   }
 }
 
-interface CardState {
-  busy?: boolean
-  error?: string | null
-  applied?: AppliedInfo
-}
-
 /**
  * Body of the canvas frame's tray on the Team tab: the Team assistant. Both modes stay mounted (the inactive one is
  * hidden) so a search keeps running while the user designs, and the other way round. Nothing here is a Live run.
@@ -69,6 +64,13 @@ export default function TeamAssistantTray({
   mode: TeamAssistantMode
   onModeChange: (mode: TeamAssistantMode) => void
 }): ReactElement {
+  // A Needs-you jump to this project's Architect session shows Design.
+  const jump = useTeamAssistantStore((s) => s.designJump)
+  const jumpFor = jump && jump.projectId === project.id ? jump.n : 0
+  useEffect(() => {
+    if (jumpFor) onModeChange('design')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpFor])
   return (
     <div className="team-assistant" data-testid="team-assistant" data-mode={mode}>
       <div className="team-tray-head">
@@ -93,16 +95,25 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   const alive = useRef(true)
   const openedFor = useRef<string | null>(null)
   const reqRef = useRef<string | null>(null)
-  const [result, setResult] = useState<AssistantResult | null>(null)
+  // The latest result, the card states and the dismissals live in the store: they survive a tab switch and a remount.
+  const session = useTeamAssistantStore((s) => s.sessions[project.id]) ?? EMPTY_SESSION
+  const update = useTeamAssistantStore((s) => s.updateSession)
+  const result = session.result
+  const cards = session.cards
+  const dismissed = useMemo(() => new Set(session.dismissed), [session.dismissed])
+  const dismissedCandidates = session.dismissedCandidates
+  const gapsHidden = useMemo(() => new Set(session.gapsHidden), [session.gapsHidden])
+  const pid = project.id
+  const setResult = (v: AssistantResult | null | ((p: AssistantResult | null) => AssistantResult | null)): void =>
+    update(pid, (s: TeamSession) => ({ result: typeof v === 'function' ? v(s.result) : v }))
+  const setCards = (v: (c: Record<string, CardState>) => Record<string, CardState>): void => update(pid, (s) => ({ cards: v(s.cards) }))
+  const resultRef = useRef<HTMLHeadingElement>(null)
   const [phase, setPhase] = useState<'idle' | 'working' | 'error'>('idle')
   const [working, setWorking] = useState<'recommend' | 'recheck'>('recommend')
   const [progress, setProgress] = useState<ProgressRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [outside, setOutside] = useState(() => readOutside(project.id))
   const [pinned, setPinned] = useState<string | null>(null)
-  const [cards, setCards] = useState<Record<string, CardState>>({})
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set())
-  const [gapsHidden, setGapsHidden] = useState<Set<string>>(new Set())
   const [announce, setAnnounce] = useState('')
   const [sinceLine, setSinceLine] = useState<string | null>(null)
 
@@ -116,10 +127,6 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   // Another project: start clean.
   useEffect(() => {
     setOutside(readOutside(project.id))
-    setResult(null)
-    setCards({})
-    setDismissed(new Set())
-    setGapsHidden(new Set())
     setPhase('idle')
     setError(null)
     setPinned(null)
@@ -178,18 +185,25 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
     setError(null)
     setAnnounce(kind === 'recommend' ? 'Looking at this repo and your tools.' : 'Re-checking the setup.')
     try {
+      const known = useTeamAssistantStore.getState().sessions[project.id] ?? EMPTY_SESSION
       const out =
         kind === 'recommend'
           ? fromRecommendations(await capabilitiesApi.recommend(project.id, id, outside, roleId))
-          : fromReview(await capabilitiesApi.review(project.id, 'manual', id, outside))
+          : // Re-check keeps what Recommend found that is still valid; it never empties the list.
+            mergeRecheck(known.result, fromReview(await capabilitiesApi.review(project.id, 'manual', id, outside)), known.dismissedCandidates)
+      // Always store, even when the pane was left meanwhile: the result is waiting when the user returns.
+      update(project.id, () => ({ result: out, cards: {}, gapsHidden: [] }))
       if (!alive.current) return
-      setResult(out)
-      setCards({})
-      setDismissed(new Set())
-      setGapsHidden(new Set())
       setPhase('idle')
-      const n = out.recommendations.length
+      const n = out.recommendations.filter((r) => !known.dismissedCandidates.includes(r.candidateId)).length
       setAnnounce(`${out.partial ? 'Partial results: ' : ''}Found ${n} recommendation${n === 1 ? '' : 's'} and ${out.gaps.length} gap${out.gaps.length === 1 ? '' : 's'}.`)
+      // The results are below the controls in a short tray: bring them into view and move focus to their heading.
+      window.requestAnimationFrame(() => {
+        const head = resultRef.current
+        if (!head) return
+        head.scrollIntoView?.({ block: 'start' })
+        head.focus({ preventScroll: true })
+      })
     } catch (e) {
       if (!alive.current) return
       setError(cleanIpcError(e))
@@ -276,7 +290,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   const dismiss = (recId: string): void => {
     const candidateId = result?.recommendations.find((r) => r.id === recId)?.candidateId
     void capabilitiesApi.dismiss(project.id, recId, candidateId).catch(() => {})
-    setDismissed((d) => new Set(d).add(recId))
+    update(project.id, (s) => ({ dismissed: [...s.dismissed, recId], dismissedCandidates: candidateId ? [...s.dismissedCandidates, candidateId] : s.dismissedCandidates }))
     window.requestAnimationFrame(() => {
       const root = rootRef.current
       ;(root?.querySelector<HTMLElement>('[data-testid=capability-card] button:not([disabled])') ?? root?.querySelector<HTMLElement>('[data-testid=team-recommend]'))?.focus()
@@ -296,7 +310,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
   }
 
   const shown = (result?.recommendations ?? []).filter((r) => {
-    if (dismissed.has(r.id) || !result?.items[r.candidateId]) return false
+    if (dismissed.has(r.id) || dismissedCandidates.includes(r.candidateId) || !result?.items[r.candidateId]) return false
     return cards[r.id]?.applied ? true : !roleId || r.roleIds.includes(roleId)
   })
   const open = shown.filter((r) => !cards[r.id]?.applied)
@@ -325,7 +339,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
           />
           {pinned !== null && (
             <Button size="sm" variant="ghost" onClick={() => setPinned(null)} title="Follow the role selected on the chart again">
-              Pinned
+              Follow chart
             </Button>
           )}
         </div>
@@ -441,6 +455,11 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
         </div>
       )}
 
+      {shown.length > 0 && (
+        <h3 className="team-results-head" ref={resultRef} tabIndex={-1} data-testid="team-results-head">
+          {open.length} to review for {clampText(scopeName, 40)}
+        </h3>
+      )}
       <div className="capability-list" data-testid="capability-list">
         {shown.map((rec) => {
           const item = result!.items[rec.candidateId]
@@ -480,7 +499,7 @@ function RecommendPane({ project, scope, active, onDesign }: { project: Project;
         onDismiss={(i) => {
           const g = gaps[i]
           const idx = (result?.gaps ?? []).indexOf(g)
-          setGapsHidden((h) => new Set(h).add(`${g.roleId}:${idx}`))
+          update(project.id, (s) => ({ gapsHidden: [...s.gapsHidden, `${g.roleId}:${idx}`] }))
         }}
       />
 
