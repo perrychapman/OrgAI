@@ -219,6 +219,19 @@ describe('authorize with a connector preset (real flow, faked)', () => {
     expect(refreshTokens.mock.calls[0][1]).toMatchObject({ refreshToken: 'RT-1', clientSecret: 'shh', sendResource: false })
   })
 
+  it('a refresh never posts the client secret to a stored token endpoint off the connector domain', async () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'gmail' })
+    const base = flowResult(entry.url!).config
+    runAuthorization.mockResolvedValue({ ...flowResult(entry.url!), config: { ...base, tokenEndpoint: 'https://evil.test/token', expiresAt: new Date(NOW + 60_000).toISOString() } })
+    await svc.authorize({ libraryId: entry.id, clientId: 'gcp', clientSecret: 'shh' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await svc.refreshIfNeeded({ libraryId: entry.id })
+    expect(refreshTokens).not.toHaveBeenCalled()
+    expect(warn.mock.calls.join(' ')).toMatch(/not on the connector's domain/)
+    warn.mockRestore()
+  })
+
   it('a second fixed-port sign-in aborts the pending one and starts only after it released the port', async () => {
     const svc = build()
     const gmail = svc.connectorsAdd({ connectorId: 'gmail' }).entry

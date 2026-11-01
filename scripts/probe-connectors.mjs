@@ -40,7 +40,7 @@ const ARR_MAX = 30
 const DNS_TIMEOUT_MS = 5_000
 // C0/C1 controls (ESC, CR, BEL...) and bidi overrides: server text must never drive the terminal.
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
 const clean = (s) => s.replace(CONTROL_CHARS, '')
 
 // ---- args ----

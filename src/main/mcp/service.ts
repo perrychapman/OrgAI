@@ -39,7 +39,7 @@ import {
 import type { ResolvedMcpServer } from '../runtime/types'
 import { searchRegistry } from './registry'
 import { testServer } from './probe'
-import { OAuthError, authStatusFrom, canonicalResource, redactOAuth, refreshTokens, runAuthorization } from './oauth'
+import { OAuthError, authStatusFrom, canonicalResource, onRegistrableDomain, redactOAuth, refreshTokens, runAuthorization } from './oauth'
 import { LIBRARY_ID, assertValidLibraryEntry, assertValidSpec, sameDefinition, validateLibraryEntry, validateSpec } from './validate'
 import { CONNECTORS, connectorById, connectorVariant } from '@shared/connectors'
 import {
@@ -743,6 +743,15 @@ export class McpService {
     const clientSecret = this.secrets.get(mcpOwnerOAuthKey(owner, 'clientSecret'))
     try {
       const preset = oauthPresetFor(ref.spec)
+      // Defence in depth: a connector's stored token endpoint must still be on its issuer's (or its preset token
+      // endpoint's) domain before the client secret is posted there; sign-in checked it, a tampered config would not.
+      if (
+        preset?.issuer &&
+        !onRegistrableDomain(cfg.tokenEndpoint ?? '', preset.issuer) &&
+        !(preset.tokenEndpoint && onRegistrableDomain(cfg.tokenEndpoint ?? '', preset.tokenEndpoint))
+      ) {
+        throw new Error("the stored token endpoint is not on the connector's domain; sign in again")
+      }
       const tokens = await this.oauth.refreshTokens(
         cfg,
         {
