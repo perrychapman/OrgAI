@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
 import {
   CAPABILITY_MAX_ITEMS,
+  CAPABILITY_MAX_RECOMMENDATIONS,
   CAPABILITY_RECOMMEND_TIMEOUT_MS,
+  HARNESS_PROJECT_ID,
   TEAM_REVIEW_MAX_DISMISSED,
   TEAM_REVIEW_OPEN_THROTTLE_MS,
   type CapabilityAccess,
@@ -32,6 +34,7 @@ import {
   type TeamRecommendations,
   type TeamReview,
   type TeamReviewInput,
+  type TeamReviewModelInput,
   type TeamReviewModelSkip,
   type TeamReviewSummary,
   type TeamReviewTrigger
@@ -54,6 +57,7 @@ import {
   estimateRecommendTokens,
   fallbackRecommend,
   parseRecommendAnswer,
+  type LocalDetail,
   recommendable,
   registryQueries
 } from './recommend'
@@ -93,6 +97,8 @@ export interface CapabilityServiceDeps {
 
 /** Snapshots kept per project (newest wins). */
 export const SNAPSHOTS_PER_PROJECT = 4
+/** Snapshots kept across all projects (the oldest by creation time go first). */
+export const SNAPSHOTS_TOTAL = 16
 /** recommend() reuses a discover() snapshot made with the same request id within this window. */
 export const SNAPSHOT_REUSE_MS = 5 * 60_000
 export const RUN_ENDED_DEBOUNCE_MS = 3_000
@@ -181,6 +187,7 @@ export class CapabilityService implements CapabilityServiceApi {
   private snapshots = new Map<string, Snapshot[]>()
   private undos = new Map<string, UndoRecord>()
   private controllers = new Map<string, AbortController>()
+  private interactive = new Map<string, AbortController>()
   private runTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private pendingRuns = new Map<string, number>()
   private chains = new Map<string, Promise<unknown>>()
@@ -194,6 +201,8 @@ export class CapabilityService implements CapabilityServiceApi {
   // ---------- helpers ----------
 
   private project(projectId: string): Project {
+    // The harness project is virtual (library assistants); it has no org chart to equip.
+    if (projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
     const p = this.deps.projects.get(projectId)
     if (!p) throw new Error('Project not found')
     return p
@@ -233,6 +242,31 @@ export class CapabilityService implements CapabilityServiceApi {
     const list = (this.snapshots.get(projectId) ?? []).filter((s) => s.digest !== snap.digest)
     list.unshift(snap)
     this.snapshots.set(projectId, list.slice(0, SNAPSHOTS_PER_PROJECT))
+    // Total cap: drop the oldest snapshots (never the new one) until the budget fits.
+    let total = 0
+    for (const l of this.snapshots.values()) total += l.length
+    while (total > SNAPSHOTS_TOTAL) {
+      let oldest: { pid: string; snap: Snapshot } | undefined
+      for (const [pid, l] of this.snapshots) for (const sn of l) if (sn !== snap && (!oldest || sn.at < oldest.snap.at)) oldest = { pid, snap: sn }
+      if (!oldest) break
+      const rest = (this.snapshots.get(oldest.pid) ?? []).filter((x) => x !== oldest!.snap)
+      if (rest.length) this.snapshots.set(oldest.pid, rest)
+      else this.snapshots.delete(oldest.pid)
+      total--
+    }
+  }
+
+  /**
+   * One interactive discovery per project at a time: starting a discover, a recommend or a manual review aborts the
+   * older one for that project (its result comes back partial, and a partial review is not saved). Automatic reviews
+   * (runEnded, and 'opened', which the tab fires beside its own discover) neither abort nor are aborted by this.
+   */
+  private supersede(projectId: string, ac: AbortController): () => void {
+    this.interactive.get(projectId)?.abort()
+    this.interactive.set(projectId, ac)
+    return () => {
+      if (this.interactive.get(projectId) === ac) this.interactive.delete(projectId)
+    }
   }
 
   private findSnapshot(projectId: string, digest: string): Snapshot | undefined {
@@ -333,10 +367,12 @@ export class CapabilityService implements CapabilityServiceApi {
     const project = this.project(input.projectId)
     const requestId = this.requestIdOf(input.requestId)
     const ac = this.track(requestId)
+    const release = this.supersede(project.id, ac)
     try {
       const snap = await this.discoverSnap(project, { includeOutside: input.includeOutside === true, query: input.query, requestId, signal: ac.signal, emit: this.emitter(project.id, requestId) })
       return snap.discovery
     } finally {
+      release()
       this.untrack(requestId, ac)
     }
   }
@@ -347,7 +383,7 @@ export class CapabilityService implements CapabilityServiceApi {
 
   // ---------- recommend ----------
 
-  private async runModel(project: Project, snap: Snapshot, scope: CapabilityScope, signal: AbortSignal, emit: Emit): Promise<ModelOutcome> {
+  private async runModel(project: Project, snap: Snapshot, scope: CapabilityScope, signal: AbortSignal, emit: Emit, localDetail: LocalDetail = 'full'): Promise<ModelOutcome> {
     const items = snap.discovery.items
     const salt = `${snap.digest}\0${scope.roleId ?? ''}`
     const fallback = (reason: NonNullable<TeamRecommendations['fallbackReason']>, extra: Partial<ModelOutcome> = {}): ModelOutcome => ({
@@ -360,7 +396,7 @@ export class CapabilityService implements CapabilityServiceApi {
     if (!recommendable(items).length) return { mode: 'fallback', recommendations: [], gaps: [], fallbackReason: 'noCandidates' }
     if (signal.aborted) return fallback('cancelled')
     emit('model', 'running')
-    const { system, prompt } = buildRecommendPrompt(project, items, scope)
+    const { system, prompt } = buildRecommendPrompt(project, items, scope, { localDetail })
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), CAPABILITY_RECOMMEND_TIMEOUT_MS)
     let tokens: number | undefined
@@ -410,6 +446,7 @@ export class CapabilityService implements CapabilityServiceApi {
       ? this.snapshots.get(project.id)?.find((s) => s.requestId === input.requestId && s.discovery.includeOutside === includeOutside && this.now() - s.at < SNAPSHOT_REUSE_MS && !s.discovery.partial)
       : undefined
     const ac = this.track(requestId)
+    const release = this.supersede(project.id, ac)
     try {
       const snap = reuse ?? (await this.discoverSnap(project, { includeOutside, query: input.query, requestId, signal: ac.signal, emit }))
       const outcome = await this.runModel(project, snap, scope, ac.signal, emit)
@@ -429,6 +466,7 @@ export class CapabilityService implements CapabilityServiceApi {
         createdAt: new Date(this.now()).toISOString()
       }
     } finally {
+      release()
       this.untrack(requestId, ac)
     }
   }
@@ -462,10 +500,14 @@ export class CapabilityService implements CapabilityServiceApi {
   }
 
   async apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult> {
-    const project = this.project(input.projectId)
-    if (typeof input.digest !== 'string' || !input.digest) throw new Error(STALE)
-    const snap = await this.snapshotFor(project, input.digest)
+    if (typeof input.digest !== 'string' || !input.digest) {
+      this.project(input.projectId)
+      throw new Error(STALE)
+    }
+    const snap = await this.snapshotFor(this.project(input.projectId), input.digest)
     if (!snap) throw new Error(STALE)
+    // Read the project again: it may have changed while the snapshot was re-discovered.
+    const project = this.project(input.projectId)
     let rec: CapabilityRecommendation | undefined
     let candidateId = input.candidateId
     if (input.recommendationId) {
@@ -519,6 +561,8 @@ export class CapabilityService implements CapabilityServiceApi {
       case 'skillFolder': {
         const again = rereadSkillFolder(payload)
         if (!again.ok) throw new Error(again.reason)
+        const skipped = (again as { skipped?: string[] }).skipped
+        if (skipped?.length) notes.push(`Left out ${skipped.length} private-looking file${skipped.length === 1 ? '' : 's'}: ${clampText(skipped.slice(0, 5).join(', '), 200)}${skipped.length > 5 ? ', ...' : ''}`)
         const r = this.deps.skills.addSnapshot({
           projectId: project.id,
           files: again.files,
@@ -547,10 +591,16 @@ export class CapabilityService implements CapabilityServiceApi {
       }
       case 'mcpSpec': {
         if ((project.mcpServers ?? []).some((s) => s.name === payload.spec.name)) throw new Error(`This project already has a connection named ${payload.spec.name}.`)
+        // Secret slots have no value yet: save it turned off so runs never get a half-configured server.
+        const slots = [...new Set([...(payload.spec.secretEnv ?? []), ...(payload.spec.secretHeaders ?? [])])]
+        const off = slots.length > 0
+        const offNote = `Turned off until you enter ${slots.join(', ')}; turn it on in Project settings > Tools.`
+        if (off) notes.push(offNote)
         const spec: McpServerSpec = {
           ...structuredClone(payload.spec),
           id: newId('mcp'),
-          enabled: true,
+          enabled: !off,
+          ...(off ? { description: clampText(`${payload.spec.description ?? ''} ${offNote}`, 300) } : {}),
           roles: this.slugsOf(project, roleIds),
           source: item.origin === 'registry' ? 'registry' : 'local',
           addedAt: new Date(this.now()).toISOString()
@@ -619,7 +669,7 @@ export class CapabilityService implements CapabilityServiceApi {
     }
 
     this.undos.set(project.id, undo)
-    this.dropFromReview(project.id, candidateId!, rec?.id)
+    await this.refreshReview(project.id, candidateId!, rec?.id)
     const saved = this.fresh(project.id)
     this.deps.onProjectChanged(saved)
     return { project: saved, applied: applied!, undoId: undo.undoId, ...(needsSetup ? { needsSetup } : {}), notes }
@@ -735,6 +785,7 @@ export class CapabilityService implements CapabilityServiceApi {
   }
 
   forgetProject(projectId: string): void {
+    if (projectId === HARNESS_PROJECT_ID) return
     this.snapshots.delete(projectId)
     this.undos.delete(projectId)
     clearTimeout(this.runTimers.get(projectId))
@@ -750,6 +801,7 @@ export class CapabilityService implements CapabilityServiceApi {
   // ---------- phase 2: the Team review ----------
 
   lastReview(projectId: string): TeamReview | null {
+    if (projectId === HARNESS_PROJECT_ID) return null
     return readReview(this.deps.dataDir, projectId)
   }
 
@@ -762,16 +814,35 @@ export class CapabilityService implements CapabilityServiceApi {
     }
   }
 
-  /** Remove an applied recommendation (by id, or every one for the candidate) from the persisted review. */
-  private dropFromReview(projectId: string, candidateId: string, recId?: string): void {
+  /**
+   * After an apply: remove the applied recommendation (by id, or every one for the candidate) from the persisted
+   * review and, for a local review, re-bind it to the project's new state. An apply changes what discovery finds
+   * (the repo item becomes a project item), so without this the review's digest would be stale after a restart and
+   * its other recommendations could not be applied. Best effort; an outside review keeps its old digest.
+   */
+  private async refreshReview(projectId: string, candidateId: string, recId?: string): Promise<void> {
     const review = readReview(this.deps.dataDir, projectId)
     if (!review) return
     const recommendations = review.recommendations.filter((r) => r.id !== recId && r.candidateId !== candidateId)
-    if (recommendations.length === review.recommendations.length) return
-    this.publish({ ...review, recommendations, pendingCount: recommendations.length })
+    let next: TeamReview = { ...review, recommendations, pendingCount: recommendations.length }
+    if (!review.discovery.includeOutside) {
+      try {
+        const snap = await this.discoverSnap(this.project(projectId), { includeOutside: false, requestId: this.requestIdOf(undefined), signal: new AbortController().signal, emit: () => {} })
+        if (!snap.discovery.partial) {
+          const ids = new Set(snap.discovery.items.map((i) => i.id))
+          const kept = recommendations.filter((r) => ids.has(r.candidateId))
+          for (const r of kept) snap.recs.set(r.id, r)
+          next = { ...next, discovery: snap.discovery, digest: snap.digest, recommendations: kept, pendingCount: kept.length }
+        }
+      } catch {
+        /* keep the old binding */
+      }
+    }
+    this.publish(next)
   }
 
   dismiss(input: TeamDismissInput): TeamReview {
+    if (input.projectId === HARNESS_PROJECT_ID) throw new Error('Project not found')
     const review = readReview(this.deps.dataDir, input.projectId)
     const rec = review?.recommendations.find((r) => r.id === input.recommendationId)
     if (!review || !rec) throw new Error('Recommendation not found')
@@ -804,6 +875,7 @@ export class CapabilityService implements CapabilityServiceApi {
     }
     const requestId = this.requestIdOf(input.requestId)
     const ac = this.track(requestId)
+    const release = trigger === 'manual' ? this.supersede(project.id, ac) : () => {}
     try {
       return await this.serial(project.id, () =>
         this.runReview(project.id, {
@@ -816,6 +888,7 @@ export class CapabilityService implements CapabilityServiceApi {
         })
       )
     } finally {
+      release()
       this.untrack(requestId, ac)
     }
   }
@@ -869,7 +942,7 @@ export class CapabilityService implements CapabilityServiceApi {
       else if (runsSinceModel < settings.everyRuns) skip = 'everyRuns'
       else if (!hasNewEvidence(prev?.evidence, evidence) && newCandidateIds.length === 0 && prev) skip = 'noChange'
       else {
-        const { system, prompt } = buildRecommendPrompt(project, items, {})
+        const { system, prompt } = buildRecommendPrompt(project, items, {}, { localDetail: 'minimal' })
         if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'
       }
     }
@@ -879,8 +952,17 @@ export class CapabilityService implements CapabilityServiceApi {
     let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))
     let mode: TeamReview['mode'] = 'free'
     let tokensUsed = prev?.tokensUsed
+    let modelInput: TeamReviewModelInput | undefined
+    if (skip === 'mockFree') {
+      // No model under the mock: deterministic keyword matches stand in, so the first review has something pending.
+      const have = new Set(recommendations.map((r) => r.candidateId))
+      const salt = `${snap.digest}\0`
+      const extra = fallbackRecommend(items, project.roles, {}, salt).filter((r) => !have.has(r.candidateId) && stillUseful(r))
+      recommendations = [...recommendations, ...extra].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
+    }
     if (runModel) {
-      const outcome = await this.runModel(project, snap, {}, opts.signal, emit)
+      modelInput = opts.useModel ? 'full' : 'proactive'
+      const outcome = await this.runModel(project, snap, {}, opts.signal, emit, opts.useModel ? 'full' : 'minimal')
       if (outcome.mode === 'model') {
         mode = 'model'
         recommendations = outcome.recommendations.filter(stillUseful)
@@ -907,9 +989,11 @@ export class CapabilityService implements CapabilityServiceApi {
       dismissed,
       pendingCount: recommendations.length,
       runsSinceModel,
-      ...(tokensUsed !== undefined ? { tokensUsed } : {})
+      ...(tokensUsed !== undefined ? { tokensUsed } : {}),
+      ...(modelInput ? { modelInput } : {})
     }
-    this.publish(review)
+    // A review cut short (cancelled or superseded) is returned but never saved over the last complete one.
+    if (!snap.discovery.partial) this.publish(review)
     return review
   }
 
@@ -917,7 +1001,10 @@ export class CapabilityService implements CapabilityServiceApi {
     try {
       if (this.disposed) return
       const project = this.deps.projects.get(projectId)
-      if (!project || teamReviewOf(project).auto === 'off') return
+      if (projectId === HARNESS_PROJECT_ID || !project || teamReviewOf(project).auto === 'off') return
+      // Setup-like and other non-work runs never trigger a review.
+      const ended = (() => { try { return this.deps.listRuns(projectId).find((r) => r.id === _runId) } catch { return undefined } })()
+      if (ended && ended.kind !== 'work') return
       this.pendingRuns.set(projectId, (this.pendingRuns.get(projectId) ?? 0) + 1)
       clearTimeout(this.runTimers.get(projectId))
       const timer = setTimeout(() => {
