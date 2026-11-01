@@ -177,6 +177,19 @@ describe('RunManager image attachments', () => {
     await m.continueRun(p, run.id, 'again')
     expect(ctxs[2].images).toBeUndefined()
   })
+
+  it('keeps the Team surface on setup runs only, announces it on starting and carries it into continuations', async () => {
+    const { m, p } = fake()
+    const work = await m.start({ project: p, prompt: 'go', surface: 'team' })
+    expect(work.surface).toBeUndefined()
+    const run = await m.start({ project: p, prompt: 'Set it up', kind: 'setup', surface: 'team' })
+    expect(run.surface).toBe('team')
+    expect(events.some((e) => e.type === 'run.status' && e.runId === run.id && e.status === 'starting' && e.surface === 'team')).toBe(true)
+    expect(events.some((e) => e.type === 'run.status' && e.runId === work.id && 'surface' in e)).toBe(false)
+    const next = await m.continueRun(p, run.id, 'again')
+    expect(next.surface).toBe('team')
+    expect(m.summary(next.id)?.surface).toBe('team')
+  })
 })
 
 describe('RunManager usage and pricing', () => {
@@ -1846,17 +1859,18 @@ describe('cross-run messaging', () => {
     await m.stopAll()
   })
 
-  it('needs only the shared flag within one project, and defaults to off', async () => {
+  it('needs only the shared flag within one project, defaults to on, and an explicit false turns it off', async () => {
     const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    delete pa.runMessaging
     const projects = new Map<string, Project>([[pa.id, pa]])
     const { m, tool } = multiManager(idleScript, projects)
     const a1 = await m.start({ project: pa, prompt: 'one' })
     const a2 = await m.start({ project: pa, prompt: 'two' })
     await idle(a1.id)
     await idle(a2.id)
-    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
-    projects.set(pa.id, { ...pa, runMessaging: true })
     expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^DELIVERED/)
+    projects.set(pa.id, { ...pa, runMessaging: false })
+    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
     await m.stopAll()
   })
 

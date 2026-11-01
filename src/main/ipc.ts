@@ -67,6 +67,7 @@ import type {
   RemapResult,
   PendingCards,
   RunSummary,
+  SetupStartInput,
   SendRunInput,
   SkillApplySuggestionInput,
   SkillContent,
@@ -199,7 +200,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   })
   ipcMain.handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
 
-  ipcMain.handle(IPC.setupStart, async (_e, input: { projectId: string; instruction?: string }) => {
+  ipcMain.handle(IPC.setupStart, async (_e, input: SetupStartInput) => {
     const existing = projects.get(input.projectId)
     if (!existing) throw new Error('Project not found')
     const project = await setup.prepare(existing)
@@ -207,7 +208,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
       project,
       kind: 'setup',
       prompt: setup.displayPrompt(project, input.instruction),
-      hiddenContext: setup.hiddenContext(project)
+      hiddenContext: setup.hiddenContext(project),
+      // Only the literal 'team' is accepted: the Team tab's tray hosts the session (RunSummary.surface).
+      ...(input?.surface === 'team' ? { surface: 'team' as const } : {})
     })
   })
   ipcMain.handle(IPC.setupRetro, async (_e, input: { projectId: string; runId: string }) => {

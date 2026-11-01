@@ -28,10 +28,10 @@ import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCR
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
-/** Project.runMessaging when unset: cross-run messaging is opt-in per project. */
-export const DEFAULT_RUN_MESSAGING = false
+/** Cross-run messaging is on by default; an explicit Project.runMessaging false turns it off. */
+export const DEFAULT_RUN_MESSAGING = true
 
-/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default off). */
+/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default on; an explicit false turns it off). */
 export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
   return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
 }

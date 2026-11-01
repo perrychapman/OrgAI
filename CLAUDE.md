@@ -198,8 +198,8 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     therefore follows resumedFrom links and sessionId both (`runManager.sessionChain`). Verified by unit tests only.
 - Concurrent runs and cross-run messaging: any number of runs may be live at once (verified by RunManager unit tests on the
   mock adapter). Work-run roots get `list_runs` / `message_run`; RunManager delivers through `RuntimeSession.receive()`,
-  framed by `prompts.ts` `peerMessageText` as peer information, never a user instruction. Opt-in per project
-  (`Project.runMessaging`, both ends), capped per run pair, never for setup-like runs. Unverified: that the Claude
+  framed by `prompts.ts` `peerMessageText` as peer information, never a user instruction. On by default per
+  project (`Project.runMessaging`, both ends; an explicit false turns it off), capped per run pair, never for setup-like runs. Unverified: that the Claude
   adapter's notifyOrchestrator delivers a peer message mid-turn (no smoke script). `window:openRun` opens a run-scoped
   window at `#/run/<projectId>/<runId>`; `runs:listLive` lists live runs across projects.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the

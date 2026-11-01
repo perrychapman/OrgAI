@@ -36,6 +36,7 @@ import type {
   RunPlan,
   RunRecord,
   RunSummary,
+  RunSurface,
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
@@ -412,6 +413,8 @@ export interface StartInput {
   title?: string
   /** Continuations: the continued run's title (or prompt excerpt), given to the title model as context. */
   titleContext?: string
+  /** Setup runs only: the UI surface hosting the run (RunSummary.surface); ignored for other kinds. */
+  surface?: RunSurface
 }
 
 export class RunManager {
@@ -549,7 +552,8 @@ export class RunManager {
     images: rawImages,
     notice,
     title: carriedTitle,
-    titleContext
+    titleContext,
+    surface
   }: StartInput): Promise<RunSummary> {
     // The virtual harness project exists only for the library MCP assistant.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
@@ -574,6 +578,7 @@ export class RunManager {
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
     if (carriedTitle && kind === 'work') summary.title = carriedTitle
+    if (surface === 'team' && kind === 'setup') summary.surface = surface
     const active: ActiveRun = {
       summary,
       pending: new Map(),
@@ -685,7 +690,7 @@ export class RunManager {
     }
 
     active.emit = emit
-    emit({ type: 'run.status', runId: summary.id, status: 'starting' })
+    emit({ type: 'run.status', runId: summary.id, status: 'starting', ...(summary.surface ? { surface: summary.surface } : {}) })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
     // Advisory title from the fast model; never awaited, never fails the run.
@@ -1645,6 +1650,8 @@ export class RunManager {
         ? { title: target.title }
         : { titleContext: target.title ?? excerpt(target.prompt, 200) }),
       hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
+      // A Team-tray Architect session stays in the Team tray when it is continued or auto-resumed.
+      ...(target.surface ? { surface: target.surface } : {}),
       resumeSessionId: sessionId,
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.

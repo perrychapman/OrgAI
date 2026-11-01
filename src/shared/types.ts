@@ -467,9 +467,9 @@ export interface Project {
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
   /**
-   * Cross-run messaging opt-in ("Let runs message each other" in Project settings). message_run is refused unless
-   * the sender's and the target's projects both have it on. Missing = DEFAULT_RUN_MESSAGING (off); read it with
-   * runMessagingOn() from defaults.ts. Saved through projects:save like other settings.
+   * Cross-run messaging ("Let runs message each other" in Project settings). On by default: missing =
+   * DEFAULT_RUN_MESSAGING (on) and an explicit false turns it off. message_run is refused unless the sender's and the
+   * target's projects both have it on; read it with runMessagingOn() from defaults.ts. Saved through projects:save.
    */
   runMessaging?: boolean
   roles: Role[]
@@ -2159,6 +2159,20 @@ export type RunKind = 'work' | 'setup' | 'mcp-assist'
  */
 export const HARNESS_PROJECT_ID = 'harness'
 
+/**
+ * Where a run is hosted in the UI when it is not a Live-view run. 'team' = an Architect (setup) session started from
+ * the Team tab's assistant tray (setup.start with surface 'team'): the renderer keeps such runs off the Live run
+ * strip and History and shows them in the Team tray. Missing = the default surfaces.
+ */
+export type RunSurface = 'team'
+
+/** setup.start input. `surface` is accepted only as the literal 'team' (anything else is dropped). */
+export interface SetupStartInput {
+  projectId: string
+  instruction?: string
+  surface?: RunSurface
+}
+
 export interface RunSummary {
   id: string
   projectId: string
@@ -2204,6 +2218,11 @@ export interface RunSummary {
    * Missing on runs recorded before it existed.
    */
   connection?: ConnectionId
+  /**
+   * Setup runs only: the UI surface that hosts the run (RunSurface). Set at start from setup.start and kept by
+   * continuations (runs:continue) and auto-resume. Missing = shown in the Live run strip and History as usual.
+   */
+  surface?: RunSurface
 }
 
 /**
@@ -2413,6 +2432,8 @@ export type RunEvent =
       runId: string
       status: RunStatus
       sessionId?: string
+      /** Only on the 'starting' status of a run with RunSummary.surface: lets the renderer route it before runs:list. */
+      surface?: RunSurface
       error?: string
       /** status 'paused' (and later updates to a paused run). */
       pausedUntil?: number
@@ -3437,7 +3458,7 @@ export interface OrgAIApi {
   }
   setup: {
     /** Profile the working directory and start an Architect session. */
-    start(input: { projectId: string; instruction?: string }): Promise<RunSummary>
+    start(input: SetupStartInput): Promise<RunSummary>
     /** Architect session that reviews a finished run and revises the org chart where roles struggled. */
     retro(input: { projectId: string; runId: string }): Promise<RunSummary>
     decide(input: { runId: string; proposalId: string; decision: ProposalDecision }): Promise<void>
