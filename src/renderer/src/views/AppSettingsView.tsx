@@ -27,7 +27,7 @@ import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/
 import { modelSettingDescription, modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
 import { connectionUsable } from '../lib/projectsForm'
-import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
+import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
@@ -104,6 +104,8 @@ export default function AppSettingsView(): ReactElement {
   const appInfo = useAppStore((s) => s.appInfo)
   const mcpFocus = useAppStore((st) => st.mcpFocus)
   const [pane, setPane] = useState<string>(() => (useAppStore.getState().mcpFocus?.kind === 'library' ? APP_SETTINGS_PANES.mcpLibrary : APP_SETTINGS_PANES.general))
+  // Leaving App settings for good drops the "Back to Team" way back.
+  useEffect(() => () => clearTeamOrigin(), [])
   // A jump from elsewhere ("App settings > Connections") opens the pane that holds its section.
   useEffect(() => {
     const take = (): void => {

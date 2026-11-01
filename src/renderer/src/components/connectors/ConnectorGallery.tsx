@@ -49,15 +49,26 @@ export function ConnectorGallery(): ReactElement {
   const [announce, setAnnounce] = useState('')
   // "Back to Team" shows when the deep link started on the Team tab (openConnectorSetup remembers the project and role).
   const [origin, setOrigin] = useState<TeamOrigin | null>(() => peekTeamOrigin())
+  const originOk = useAppStore((st) => !!origin && st.projects.some((p) => p.id === origin.projectId && (!origin.roleId || p.roles.some((r) => r.id === origin.roleId))))
   const backToTeam = (): void => {
     const o = peekTeamOrigin() ?? origin
     clearTeamOrigin()
     setOrigin(null)
     if (!o) return
     const st = useAppStore.getState()
+    const project = st.projects.find((p) => p.id === o.projectId)
+    if (!project) return
+    const role = o.roleId ? project.roles.find((r) => r.id === o.roleId) : undefined
     if (st.selectedProjectId !== o.projectId) st.selectProject(o.projectId)
     st.setView('team')
-    if (o.roleId) useAppStore.getState().selectRole(o.roleId)
+    if (role) useAppStore.getState().selectRole(role.id)
+    // Land on the row that sent the user away, else on the panel's selected tab.
+    window.setTimeout(() => {
+      const target =
+        document.querySelector<HTMLElement>('[data-testid=role-signin]') ??
+        document.querySelector<HTMLElement>('.team-panel-tabs [role=tab][aria-selected=true]')
+      target?.focus()
+    }, 120)
   }
   const highlightTimer = useRef<number | undefined>(undefined)
 
@@ -70,8 +81,6 @@ export function ConnectorGallery(): ReactElement {
     }
     window.addEventListener('orgai:settings-section', onEvent)
     return () => {
-      // Leaving App settings for good (not just switching panes) drops the way back.
-      if (useAppStore.getState().view !== 'appSettings') clearTeamOrigin()
       window.removeEventListener('orgai:settings-section', onEvent)
       window.clearTimeout(highlightTimer.current)
     }
@@ -117,7 +126,7 @@ export function ConnectorGallery(): ReactElement {
       testId="connectors-section"
     >
       <div className="connectors-body">
-        {origin && (
+        {origin && originOk && (
           <div className="connectors-back">
             <Button variant="ghost" size="sm" icon={ArrowLeft} testId="back-to-team" onClick={backToTeam}>
               Back to Team
