@@ -327,6 +327,7 @@ app.whenReady().then(() => {
       persistInstall: (projectId, spec, values, scope) => mcp.persistInstall(projectId, spec, values, scope),
       withLibrary: (project) => mcp.withLibrary(project),
       prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
+      skippedServers: (project) => mcp.skippedServers(project),
       libraryEntries: () => mcp.libraryEntries(),
       searchRegistry: (input) => mcp.registrySearch(input)
     },

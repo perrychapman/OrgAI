@@ -39,7 +39,7 @@ import {
 import type { ResolvedMcpServer } from '../runtime/types'
 import { searchRegistry } from './registry'
 import { testServer } from './probe'
-import { OAuthError, authStatusFrom, canonicalResource, redactOAuth, refreshTokens, runAuthorization } from './oauth'
+import { OAuthError, authStatusFrom, canonicalResource, onRegistrableDomain, redactOAuth, refreshTokens, runAuthorization } from './oauth'
 import { LIBRARY_ID, assertValidLibraryEntry, assertValidSpec, sameDefinition, validateLibraryEntry, validateSpec } from './validate'
 import { CONNECTORS, connectorById, connectorVariant } from '@shared/connectors'
 import {
@@ -743,6 +743,15 @@ export class McpService {
     const clientSecret = this.secrets.get(mcpOwnerOAuthKey(owner, 'clientSecret'))
     try {
       const preset = oauthPresetFor(ref.spec)
+      // Defence in depth: a connector's stored token endpoint must still be on its issuer's (or its preset token
+      // endpoint's) domain before the client secret is posted there; sign-in checked it, a tampered config would not.
+      if (
+        preset?.issuer &&
+        !onRegistrableDomain(cfg.tokenEndpoint ?? '', preset.issuer) &&
+        !(preset.tokenEndpoint && onRegistrableDomain(cfg.tokenEndpoint ?? '', preset.tokenEndpoint))
+      ) {
+        throw new Error("the stored token endpoint is not on the connector's domain; sign in again")
+      }
       const tokens = await this.oauth.refreshTokens(
         cfg,
         {
@@ -952,10 +961,32 @@ export class McpService {
 
   // ---------- for RunManager ----------
 
-  /** Enabled servers whose library entry (if linked) still exists, with linked snapshots refreshed. */
+  /**
+   * Enabled servers whose library entry (if linked) still exists and whose secret slots all hold a value, with
+   * linked snapshots refreshed. A server saved with empty slots (filled in later by the user) never starts
+   * without its credentials; `skippedServers` names it for the run warning.
+   */
   enabledServers(project: Project): McpServerSpec[] {
     const r = this.refreshed(project)
-    return (r.project.mcpServers ?? []).filter((s) => s.enabled && !r.missing.has(s.id))
+    return (r.project.mcpServers ?? []).filter((s) => s.enabled && !r.missing.has(s.id) && !this.unsetSecretSlots(project.id, s).length)
+  }
+
+  /** Enabled, still-linked servers left out of runs because a secret slot has no value, with the unset slot names. */
+  skippedServers(project: Project): { name: string; missing: string[] }[] {
+    const r = this.refreshed(project)
+    return (r.project.mcpServers ?? [])
+      .filter((s) => s.enabled && !r.missing.has(s.id))
+      .map((s) => ({ name: s.name, missing: this.unsetSecretSlots(project.id, s) }))
+      .filter((s) => s.missing.length > 0)
+  }
+
+  /** Secret slot names (env, then headers) with no stored value; an empty stored value counts as unset. */
+  private unsetSecretSlots(projectId: string, spec: McpServerSpec): string[] {
+    const owner = this.ownerOf(projectId, spec)
+    return [
+      ...(spec.secretEnv ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'env', n))),
+      ...(spec.secretHeaders ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'header', n)))
+    ]
   }
 
   private resolveSpec(owner: McpSecretOwner, spec: McpServerSpec, extra: Record<string, string> = {}): ResolvedMcpServer {

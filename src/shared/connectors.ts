@@ -651,7 +651,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     notes: [
       'The server includes write tools (creating and updating tasks).',
       'Unverified: that Asana accepts an http loopback redirect URL.',
-      'The issuer https://app.asana.com is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.'
+      'The issuer https://app.asana.com is taken from the server\'s authorization metadata (probed 2026-10-31) and enforced: sign-in is refused when the server names another issuer or sign-in endpoints outside its domain. Unverified in a live sign-in.'
     ],
     aliases: ['tasks', 'projects', 'project management', 'to-do'],
     verified: false
@@ -677,7 +677,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     ],
     defaultVariant: 'full',
     setup: ownAppSetup('HubSpot', ['Following HubSpot\'s MCP guide, create a user-level developer app for the MCP server in your HubSpot account.']),
-    notes: ['Unverified: that HubSpot accepts an http loopback redirect URL, and which scopes the app needs.', 'The issuer https://mcp.hubspot.com is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.'],
+    notes: ['Unverified: that HubSpot accepts an http loopback redirect URL, and which scopes the app needs.', 'The issuer https://mcp.hubspot.com is taken from the server\'s authorization metadata (probed 2026-10-31) and enforced: sign-in is refused when the server names another issuer or sign-in endpoints outside its domain. Unverified in a live sign-in.'],
     aliases: ['crm', 'contacts', 'deals', 'sales', 'marketing'],
     verified: false
   },
@@ -705,7 +705,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       'Ask a Box admin to enable the Box MCP server for your enterprise.',
       'In the Box developer console, create the MCP integration and copy its Integration Credentials (client id and secret).'
     ]),
-    notes: ['A Box admin must enable the MCP server first.', 'Unverified: that Box accepts an http loopback redirect URL.', 'The issuer https://api.box.com is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.'],
+    notes: ['A Box admin must enable the MCP server first.', 'Unverified: that Box accepts an http loopback redirect URL.', 'The issuer https://api.box.com is taken from the server\'s authorization metadata (probed 2026-10-31) and enforced: sign-in is refused when the server names another issuer or sign-in endpoints outside its domain. Unverified in a live sign-in.'],
     aliases: ['files', 'documents', 'storage', 'cloud storage'],
     verified: false
   },
@@ -956,7 +956,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
     notes: [
       'Zoom offers neither dynamic client registration nor client id metadata documents, so it needs an app you register.',
       'The server\'s resource metadata names https://mcp.zoom.us/mcp/meeting/streamable, not the documented address (probed 2026-10-31); sign-in may fail on that mismatch.',
-      'The issuer https://zoom.us is taken from the server\'s authorization metadata (probed 2026-10-31); unverified in a live sign-in.',
+      'The issuer https://zoom.us is taken from the server\'s authorization metadata (probed 2026-10-31) and enforced: sign-in is refused when the server names another issuer or sign-in endpoints outside its domain. Unverified in a live sign-in.',
       'Unverified: that Zoom accepts an http loopback redirect URL, and which scopes the server needs.'
     ],
     aliases: ['video calls', 'meetings', 'recordings', 'video conferencing'],

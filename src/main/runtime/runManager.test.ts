@@ -2182,6 +2182,21 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     await m.stopAll()
   })
 
+  it('warns once per run for a server skipped because a secret slot is empty, even with nothing else to start', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('jira')] })
+    const skippedServers = vi.fn(() => [{ name: 'jira', missing: ['JIRA_TOKEN'] }])
+    const { m, ctxs } = setupMgr(p, baseMcp({ enabledServers: () => [], skippedServers, prepareForRun: vi.fn(async () => []) }))
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    expect(await ctx.resolvedMcpServers!()).toEqual([])
+    await ctx.resolvedMcpServers!()
+    const warns = events.filter(isType('log', (e) => e.level === 'warn' && e.runId === run.id))
+    expect(warns.map((w) => w.message)).toEqual([
+      'MCP server "jira" has no value for JIRA_TOKEN: open Settings > MCP servers and fill it in. It does not start in this run.'
+    ])
+    await m.stopAll()
+  })
+
   it('hands the adapter the library-refreshed project', async () => {
     const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('docs')] })
     const withLibrary = vi.fn((proj: Project): Project => ({ ...proj, mcpServers: (proj.mcpServers ?? []).map((s) => ({ ...s, url: 'https://moved.test/mcp' })) }))

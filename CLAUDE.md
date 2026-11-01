@@ -354,6 +354,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests.
   - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
     and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
+  - A server with any unset `secretEnv` / `secretHeaders` slot never starts: `McpService.enabledServers` skips it and
+    `skippedServers` feeds one run warning per server naming the empty slots (RunManager `prepareServers`). Unit-tested.
 - MCP library and OAuth:
   - The app-wide library lives in `<data>/mcp-library.json` (`McpLibraryStore`). A project server with `libraryId` is a
     link: McpService refreshes its snapshot from the entry on every read (`withLibrary`, `list`, `enabledServers`,
@@ -380,7 +382,13 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - Hardening: install-card edits are allowlisted onto the agent's spec and cannot reuse an existing id; a run-scoped
     server never reads stored secrets. OAuth bearers are injected only when `oauth.resource` matches the server URL.
     The loopback callback ignores (400) any request whose state does not match exactly. OAuth fetches never follow
-    redirects and refuse private-IP literals (no DNS check). All of this is unit-tested only.
+    redirects and refuse private-IP literals (no DNS check). A connector preset's issuer is enforced
+    (`oauth.ts` `presetIssuerFailure`): an issuer-only preset (Asana, HubSpot, Box, Zoom) refuses a sign-in whose
+    discovered issuer differs (trailing slash aside) or whose authorization, token or registration endpoint is off the
+    issuer's domain, before any secret is sent; a preset with endpoints (Slack 'fallback') falls back to its own
+    endpoints when the discovered issuer is off its domain; 'replace' (Google) skips discovery. "Domain" is the last
+    two DNS labels (`registrableHost`, no public-suffix list), so preset issuers must be simple vendor hosts, never
+    under a multi-label suffix such as co.uk. All of this is unit-tested only; no live sign-in has checked it.
 - Connectors (`src/shared/connectors.ts` catalog, `src/main/mcp/connectors.ts`, `McpService.connectors*`): curated
   presets for official remote MCP servers that become library entries (`McpLibraryEntry.connectorId`, written only by
   `connectors:add`, which is idempotent and takes only `{ connectorId, variant? }`; because it is idempotent, switching

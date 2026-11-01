@@ -106,6 +106,30 @@ describe('McpService servers', () => {
     expect(svc.enabledServers({ ...p, mcpServers: [{ ...p.mcpServers![0], enabled: false }] })).toHaveLength(0)
   })
 
+  it('enabledServers skips a server with an unset secret slot and skippedServers names it', () => {
+    svc.upsert({ projectId: pid, spec: spec({ secretEnv: ['GITHUB_TOKEN', 'GITHUB_ORG'] }) })
+    svc.upsert({
+      projectId: pid,
+      spec: spec({ id: 'mcp-2', name: 'docs', transport: 'http', command: undefined, args: undefined, url: 'https://mcp.example.com/mcp', secretEnv: undefined, secretHeaders: ['X-Key'] })
+    })
+    const p = () => projects.get(pid)!
+    expect(svc.enabledServers(p())).toEqual([])
+    expect(svc.skippedServers(p())).toEqual([
+      { name: 'github', missing: ['GITHUB_TOKEN', 'GITHUB_ORG'] },
+      { name: 'docs', missing: ['X-Key'] }
+    ])
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'GITHUB_TOKEN', value: 'tok' })
+    svc.setSecret({ projectId: pid, serverId: 'mcp-2', kind: 'header', name: 'X-Key', value: 'k' })
+    expect(svc.enabledServers(p()).map((s) => s.name)).toEqual(['docs'])
+    expect(svc.skippedServers(p())).toEqual([{ name: 'github', missing: ['GITHUB_ORG'] }])
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'GITHUB_ORG', value: 'acme' })
+    expect(svc.enabledServers(p())).toHaveLength(2)
+    expect(svc.skippedServers(p())).toEqual([])
+    // A disabled server is neither started nor reported.
+    svc.setSecret({ projectId: pid, serverId: 'mcp-2', kind: 'header', name: 'X-Key', value: null })
+    expect(svc.skippedServers({ ...p(), mcpServers: p().mcpServers!.map((s) => ({ ...s, enabled: false })) })).toEqual([])
+  })
+
   it('tests a saved stdio server through the probe', async () => {
     const script = join(__dirname, 'fixtures', 'stdio-server.cjs')
     svc.upsert({ projectId: pid, spec: spec({ command: process.execPath, args: [script], secretEnv: [] }) })
