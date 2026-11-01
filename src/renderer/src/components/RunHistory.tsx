@@ -1,7 +1,9 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
+import { FolderPlus } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
+import { QUICK_PROJECT_ID, RUN_KIND_LABELS } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
 import { runCostInput } from '../lib/cost'
@@ -13,6 +15,8 @@ import { Button } from './ui/Button'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
+import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
+import { canPromote, offersRetro, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
 
 type Filter = 'all' | 'work' | 'setup'
 type HistoryView = 'runs' | 'trends'
@@ -43,6 +47,8 @@ export default function RunHistory(): ReactElement {
   const [filter, setFilter] = useState<Filter>('all')
   const [view, setView] = useState<HistoryView>('runs')
   const project = useAppStore(selectedProject)
+  const isChat = project?.id === QUICK_PROJECT_ID
+  const [saving, setSaving] = useState<RunSummary | null>(null)
 
   const shown = summaries.filter((r) => filter === 'all' || (filter === 'work' ? r.kind === 'work' : r.kind === 'setup'))
 
@@ -66,8 +72,8 @@ export default function RunHistory(): ReactElement {
               value={filter}
               options={[
                 { value: 'all', label: 'All' },
-                { value: 'work', label: 'Work' },
-                { value: 'setup', label: 'Setup' }
+                { value: 'work', label: RUN_KIND_LABELS.work },
+                { value: 'setup', label: RUN_KIND_LABELS.setup }
               ]}
               onChange={setFilter}
             />
@@ -85,7 +91,7 @@ export default function RunHistory(): ReactElement {
         </div>
       ) : shown.length === 0 ? (
         <div className="history-empty">
-          <p>No {filter} runs in this project.</p>
+          <p>No {filter === 'work' ? RUN_KIND_LABELS.work.toLowerCase() : filter} runs in this project.</p>
         </div>
       ) : (
         <div className="history-scroll">
@@ -105,6 +111,11 @@ export default function RunHistory(): ReactElement {
                 <th scope="col" className="col-kind">
                   Kind
                 </th>
+                {isChat && (
+                  <th scope="col" className="col-folder">
+                    Folder
+                  </th>
+                )}
                 <th scope="col">
                   <span className="sr-only">Actions</span>
                 </th>
@@ -123,12 +134,15 @@ export default function RunHistory(): ReactElement {
                   onOpen={() => void openRun(r.id)}
                   onContinue={() => void continueFromHistory(r.id)}
                   onRetro={() => void startRetro(r.id)}
+                  chat={isChat}
+                  onSave={() => setSaving(r)}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+      {saving && <SaveAsProjectDialog summary={saving} onClose={() => setSaving(null)} />}
     </div>
   )
 }
@@ -142,7 +156,9 @@ function HistoryRow({
   indexes,
   onOpen,
   onContinue,
-  onRetro
+  onRetro,
+  chat,
+  onSave
 }: {
   r: RunSummary
   index: number | undefined
@@ -153,6 +169,8 @@ function HistoryRow({
   onOpen: () => void
   onContinue: () => void
   onRetro: () => void
+  chat: boolean
+  onSave: () => void
 }): ReactElement {
   const live = useAppStore((s) => s.runs[r.id])
   const proj = useAppStore(selectedProject)
@@ -218,8 +236,13 @@ function HistoryRow({
         {relativeTime(r.startedAt)}
       </td>
       <td className="col-kind">
-        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{r.kind}</Badge>
+        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(r)}</Badge>
       </td>
+      {chat && (
+        <td className="col-folder" data-testid="history-folder" title={r.quick?.scratch ? 'A private scratch folder' : r.quick?.folder}>
+          {quickFolderLabel(r.quick)}
+        </td>
+      )}
       <td>
         <div className="run-row-actions">
           <Button size="sm" className="run-open" onClick={onOpen} title={open ? 'Open this live run' : 'Open this run'}>
@@ -235,7 +258,19 @@ function HistoryRow({
               Continue
             </Button>
           )}
-          {r.kind === 'work' && (r.status === 'finished' || r.status === 'error') && (
+          {chat && r.quick && !open && (
+            canPromote(r).ok ? (
+              <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" title="Save this chat as a project in its folder" onClick={onSave}>
+                Save as project
+              </Button>
+            ) : (
+              <button type="button" className="btn sm run-save" aria-disabled="true" data-testid="history-save-as-project" title={SCRATCH_PROMOTE_REASON}>
+                <Icon icon={FolderPlus} size="sm" />
+                Save as project
+              </button>
+            )
+          )}
+          {offersRetro(r) && (
             <Button size="sm" className="run-retro" title="Have the Architect review this run and revise the org chart where roles struggled" onClick={onRetro}>
               Retrospective
             </Button>

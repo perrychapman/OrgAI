@@ -85,3 +85,18 @@ export const START_PAGE_COPY: Record<VirtualProjectId, { title: string; descript
 
 /** Button label of the ended-run replacement: "New chat" for Chat, else "New session". */
 export const newSessionLabel = (id: VirtualProjectId): string => (id === 'quick' ? 'New chat' : 'New session')
+
+/** Whether a run offers the Org retrospective: a finished work run of a real project, never a Chat or assistant run. */
+export function offersRetro(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId' | 'status'>): boolean {
+  return summary.kind === 'work' && !summary.quick && !isVirtualProjectId(summary.projectId) && (summary.status === 'finished' || summary.status === 'error')
+}
+
+/** Trimmed project name for Save as project, or an error message when it is empty or too long. */
+export function promoteNameError(name: string): string | null {
+  const t = name.trim()
+  if (!t) return 'Enter a name.'
+  if (t.length > PROMOTE_NAME_MAX) return `Use at most ${PROMOTE_NAME_MAX} characters.`
+  return null
+}
+
+export const PROMOTE_NAME_LIMIT = PROMOTE_NAME_MAX
