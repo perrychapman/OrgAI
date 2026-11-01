@@ -1,8 +1,9 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -400,5 +401,37 @@ describe('quick runs and build sessions (assistants)', () => {
     )
     expect(s.a.tools).toEqual(expect.arrayContaining(['mcp__orgai__list_skill_library', 'mcp__orgai__propose_skills']))
     expect(s.a.tools).not.toContain('SendMessage')
+  })
+})
+
+describe('build sessions (M1/M2 trust restriction)', () => {
+  const ws = mkdtempSync(join(tmpdir(), 'orgai-build-'))
+  mkdirSync(join(ws, '.claude'), { recursive: true })
+  writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }))
+  const buildCtx = () => fakeCtx({ run: runSummary({ kind: 'mcp-assist', buildWorkspace: ws }), project: project({ path: ws, permissionMode: 'auto' }) })
+
+  it('loads no setting sources and no saved rules', () => {
+    expect(claudeSettingSources(buildCtx())).toEqual([])
+    expect(claudeSavedRules(buildCtx())).toEqual([])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: ws }) }))).toContain('Bash')
+  })
+
+  it('downgrades project scope to session and never auto-approves', () => {
+    expect(quickSafeDecision(buildCtx(), { behavior: 'allow', scope: 'project' }).scope).toBe('session')
+    expect(claudePermissionMode(buildCtx())).toBe('default')
+    expect(claudeAllowsBypass(buildCtx())).toBe(false)
+  })
+
+  it('denies writes under <workspace>/.claude and leaves other paths to the normal card', () => {
+    const run = buildCtx().run
+    for (const tool of ['Edit', 'Write', 'MultiEdit']) {
+      expect(buildConfigWriteDenial(run, tool, { file_path: join(ws, '.claude', 'settings.local.json') })).toMatch(/cannot write/)
+      expect(buildConfigWriteDenial(run, tool, { file_path: '.claude/hooks.json' })).toMatch(/cannot write/)
+      expect(buildConfigWriteDenial(run, tool, {})).toMatch(/cannot write/)
+      expect(buildConfigWriteDenial(run, tool, { file_path: join(ws, 'server.mjs') })).toBeUndefined()
+    }
+    expect(buildConfigWriteDenial(run, 'NotebookEdit', { notebook_path: join(ws, '.claude', 'n.ipynb') })).toMatch(/cannot write/)
+    expect(buildConfigWriteDenial(run, 'Read', { file_path: join(ws, '.claude', 'x') })).toBeUndefined()
+    expect(buildConfigWriteDenial(runSummary(), 'Write', { file_path: join(ws, '.claude', 'x') })).toBeUndefined()
   })
 })
