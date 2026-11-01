@@ -90,7 +90,10 @@ export function modelSettingHint(value: string): string | undefined {
   return MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.hint
 }
 
-type AssistantKey = 'setupModel' | 'mcpAssistModel'
+type AssistantKey = 'setupModel' | 'mcpAssistModel' | 'skillAssistModel' | 'quickRunModel'
+
+/** Shown when the saved settings lack the key (an older main process). */
+export const ASSISTANT_MODEL_FALLBACK: Record<AssistantKey, string> = { setupModel: 'deep', mcpAssistModel: 'deep', skillAssistModel: 'deep', quickRunModel: 'everyday' }
 
 /** The saved model setting of a built-in assistant ('' until settings load), kept current across saves. */
 export function useAssistantModel(key: AssistantKey): string {
@@ -98,10 +101,10 @@ export function useAssistantModel(key: AssistantKey): string {
   useEffect(() => {
     let live = true
     void window.orgai.settings.get().then((s) => {
-      if (live && s[key]) setValue(s[key])
+      if (live) setValue(s[key] || ASSISTANT_MODEL_FALLBACK[key])
     }, () => undefined)
     const off = window.orgai.onSettingsChanged((s) => {
-      if (s[key]) setValue(s[key])
+      setValue(s[key] || ASSISTANT_MODEL_FALLBACK[key])
     })
     return () => {
       live = false

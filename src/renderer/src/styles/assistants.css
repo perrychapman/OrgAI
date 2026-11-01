@@ -1,0 +1,159 @@
+/* Assistants (Chat, MCP assistant, Skill assistant): sidebar group, first-launch Chat card, ended-session line. */
+
+/* Sidebar: the group sits under the nav and above the (scrolling) project list. */
+.sidebar-assistants {
+  flex: none;
+}
+.sidebar[data-collapsed='true'] .sidebar-assistants {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+}
+.sidebar[data-collapsed='true'] .sidebar-projects {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+}
+
+/* First launch: the project form and the Chat card are two regions side by side, stacked when narrow. */
+.projects:has(> .projects-empty) {
+  container: projects-empty / inline-size;
+}
+.projects-empty {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+.projects-empty-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.chat-now {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  max-width: 640px;
+}
+.chat-now .form-title {
+  margin: 0;
+}
+.chat-now p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+@container projects-empty (min-width: 720px) {
+  .projects-empty {
+    grid-template-columns: minmax(0, 640px) minmax(240px, 320px);
+  }
+}
+
+/* An ended assistant session: a line and one button replace the composer. */
+.composer-ended {
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+}
+.composer-ended-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+
+/* Start pages: Chat options and the instruction form share the New run page's width (.new-run-inner). */
+.chat-options,
+.assistant-form {
+  container: assistant-form / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.chat-folder {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+}
+.chat-folder-label {
+  color: var(--text-secondary);
+}
+.chat-folder-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.chat-folder-actions {
+  display: inline-flex;
+  gap: var(--space-1h);
+}
+@container assistant-form (max-width: 420px) {
+  .chat-folder {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .chat-folder-label {
+    grid-column: 1 / -1;
+  }
+}
+.chat-note {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.chat-note.is-error {
+  color: var(--danger-text);
+}
+.chat-team {
+  font-size: var(--text-small);
+}
+.chat-team > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+}
+.chat-team > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.chat-team-options {
+  border: 0;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.chat-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+}
+.assistant-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.chat-summary,
+.assistant-model-line {
+  margin: 0;
+  font-size: var(--text-caption);
+}
+.assistant-form .field {
+  margin-bottom: 0;
+}
+.assistant-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}

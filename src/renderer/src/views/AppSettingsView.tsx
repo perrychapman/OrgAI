@@ -530,9 +530,23 @@ export default function AppSettingsView(): ReactElement {
                 <SettingRow
                   id="mcp-assist-model-row"
                   title="MCP assistant model"
-                  description={describe('Used by Configure with AI under Custom servers.', info.mcpAssistModel)}
+                  description={describe('Used by the MCP assistant.', info.mcpAssistModel)}
                   width="select"
                   control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
+                />
+                <SettingRow
+                  id="skill-assist-model-row"
+                  title="Skill assistant model"
+                  description={describe('Used by the Skill assistant to write and revise skills.', info.skillAssistModel ?? 'deep')}
+                  width="select"
+                  control={modelSelect('Skill assistant model', 'skill-assist-model-row', info.skillAssistModel ?? 'deep', false, (skillAssistModel) => patch({ skillAssistModel }))}
+                />
+                <SettingRow
+                  id="quick-run-model-row"
+                  title="Chat model"
+                  description={describe("Used by Chat's single assistant.", info.quickRunModel ?? 'everyday')}
+                  width="select"
+                  control={modelSelect('Chat model', 'quick-run-model-row', info.quickRunModel ?? 'everyday', false, (quickRunModel) => patch({ quickRunModel }))}
                 />
               </SettingsCard>
               <p className="muted">A tier resolves through each project's connection. A specific model applies only where that connection offers it. If a project's connection can't run it, the run uses the deep tier and says so in its log.</p>

@@ -13,7 +13,12 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
-import { HARNESS_PROJECT_ID } from '@shared/types'
+import { isVirtualProjectId } from '@shared/types'
+import type { VirtualProjectId } from '@shared/types'
+import { ASSISTANT_IDLE_LABEL, newSessionLabel } from '../lib/assistants'
+import ChatStartPage from '../components/assistants/ChatStartPage'
+import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
+import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
 import McpInstallCard from '../components/McpInstallCard'
 import { Bell, CircleCheck, CircleHelp, Maximize, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
 import { Banner } from '../components/ui/Banner'
@@ -141,21 +146,21 @@ export default function LiveRunView({ project }: { project: Project }): ReactEle
           <ReactFlowProvider key={`${project.id}:${runId}`}>
             <RunView project={project} runId={runId} />
           </ReactFlowProvider>
-        ) : project.id === HARNESS_PROJECT_ID ? (
-          <div className="new-run">
-            <div className="new-run-inner">
-              <section className="new-run-intro">
-                <h2>No assistant run yet</h2>
-                <p>Start one from Configure with AI in the MCP library settings.</p>
-              </section>
-            </div>
-          </div>
+        ) : isVirtualProjectId(project.id) ? (
+          <AssistantStart key={`assistant:${project.id}`} id={project.id} project={project} />
         ) : (
           <NewRunPage key={`new:${project.id}`} project={project} />
         )}
       </div>
     </div>
   )
+}
+
+/** The start page of an assistant (virtual project): Chat, MCP assistant or Skill assistant. */
+function AssistantStart({ id, project }: { id: VirtualProjectId; project: Project }): ReactElement {
+  if (id === 'quick') return <ChatStartPage project={project} />
+  if (id === 'harness') return <McpAssistantStartPage project={project} />
+  return <SkillAssistantStartPage project={project} />
 }
 
 function RunView({ project, runId }: { project: Project; runId: string }): ReactElement {
@@ -422,10 +427,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const canContinue = chainCanContinue(summaries, runId)
   const successor = !sessionOpen ? continuedBy(summaries, runId) : undefined
   // What Send does. On a finished run the default is a NEW run; Continue is the explicit second choice.
-  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && finishedChoice === 'continue' ? 'continue' : 'new'
+  // An assistant (virtual project) has no "New run" choice: it continues, or it is over and a new session starts from the start page.
+  const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
+  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && (virtualId || finishedChoice === 'continue') ? 'continue' : 'new'
   const modeLabel =
     sendMode === 'reply'
-      ? isSetupRun
+      ? virtualId && status === 'idle'
+        ? ASSISTANT_IDLE_LABEL
+        : isSetupRun
         ? 'Answering the Architect'
         : `Replying to ${rootName}`
       : sendMode === 'continue'
@@ -718,6 +727,21 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </FrameTray>
         </CanvasFrame>
 
+        {virtualId && sendMode === 'new' ? (
+          <div className="composer composer-ended" data-testid="assistant-ended">
+            <p className="composer-ended-text">{virtualId === 'quick' ? 'This chat has ended.' : 'This session has ended.'}</p>
+            <Button
+              variant="secondary"
+              size="sm"
+              testId="assistant-new-session"
+              onClick={() => {
+                useAppStore.getState().openDraft()
+              }}
+            >
+              {newSessionLabel(virtualId)}
+            </Button>
+          </div>
+        ) : (
         <Composer
           draftKey={runId}
           modeLabel={modeLabel}
@@ -725,7 +749,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           placeholder={placeholder}
           focusToken={composerFocusToken}
           modeSwitch={
-            !sessionOpen && canContinue ? (
+            !sessionOpen && canContinue && !virtualId ? (
               <SegmentedControl
                 label="What Send does"
                 value={sendMode === 'continue' ? 'continue' : 'new'}
@@ -761,7 +785,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             setSessionBlock(null)
             if (sendMode === 'reply') await sendMessage(text, images)
             else if (sendMode === 'continue') await continueRun(runId, text, images)
-            else await startRun(text, images ? { images } : undefined)
+            else if (!virtualId) await startRun(text, images ? { images } : undefined)
           }}
           onFail={(err) => {
             const message = err instanceof Error ? err.message : ''
@@ -771,6 +795,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             return true
           }}
         />
+        )}
 
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId}>
           <div className="live-panel">
