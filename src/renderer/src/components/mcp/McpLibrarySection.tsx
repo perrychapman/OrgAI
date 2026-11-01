@@ -69,7 +69,7 @@ export default function McpLibrarySection(): ReactElement {
           <Button icon={Plus} testId="mcp-library-add-manual" onClick={() => setModal({ kind: 'form' })}>
             Add manually
           </Button>
-          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses your assistant model (${assistModel}); counts toward your usage`} onClick={() => void useAppStore.getState().openAssistant('harness')}>
+          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses your assistant model (${assistModel}); counts toward your usage`} onClick={() => void useAppStore.getState().openAssistant('harness', { fresh: true })}>
             Configure with AI
           </Button>
           <Button variant="ghost" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>

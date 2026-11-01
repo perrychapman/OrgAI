@@ -4,6 +4,7 @@ import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
+import { assistantRunToOpen } from '../lib/assistantNav'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
@@ -147,7 +148,8 @@ interface AppState {
   assistantSeed: Partial<Record<VirtualProjectId, string>>
   clearAssistantSeed(id: VirtualProjectId): void
   /** Select an assistant: the run that needs you, else the last viewed, else the start page. `instruction` seeds the start page. */
-  openAssistant(id: VirtualProjectId, opts?: { instruction?: string }): Promise<void>
+  /** `fresh` (or an instruction) shows the start page; a plain open shows a live run, else the start page. */
+  openAssistant(id: VirtualProjectId, opts?: { instruction?: string; fresh?: boolean }): Promise<void>
   /** Start a Chat (quick run) and show it. */
   startQuick(input: QuickRunInput): Promise<RunSummary>
   /** Start the Skill assistant: library scope shows it on the Skill assistant row, project scope on that project's Live tab. */
@@ -337,8 +339,7 @@ function debouncedSave(project: Project): void {
 
 /** Open the Chat assistant on its start page (a new chat), whatever it showed before. */
 export async function openNewChat(): Promise<void> {
-  await useAppStore.getState().openAssistant('quick')
-  useAppStore.getState().openDraft()
+  await useAppStore.getState().openAssistant('quick', { fresh: true })
 }
 
 export const selectedProject =(s: AppState): Project | undefined =>
@@ -429,9 +430,12 @@ async function settleWorkspace(projectId: string): Promise<void> {
     if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
     return
   }
-  const target = defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed)
+  // An assistant opens a live run or its start page, never an ended run.
+  const target = isVirtualProjectId(projectId)
+    ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
+    : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed)
   if (target) await getState().openRun(target)
-  else setState((cur) => ({ draftPage: { ...cur.draftPage, [projectId]: true as const } }))
+  else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
 }
 
 /** Show a run that continues an earlier one (Continue, Resume now). */
@@ -731,16 +735,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().loadVirtualProject(id)
     const instruction = opts?.instruction
     if (instruction) set((s) => ({ assistantSeed: { ...s.assistantSeed, [id]: instruction } }))
+    // A seeded instruction or a fresh entry belongs on the start page, not behind a run. Set it before selecting, so
+    // the workspace settling that selectProject starts cannot open a run over it.
+    const fresh = Boolean(instruction || opts?.fresh)
+    if (fresh) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
     if (get().selectedProjectId !== id) get().selectProject(id)
     set({ view: 'run' })
     await get().loadHistory()
-    // A seeded instruction belongs on the start page, not behind an open run.
-    if (instruction) {
-      get().openDraft()
+    if (fresh) {
+      if (!get().draftPage[id]) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
       return
     }
     const s = get()
-    const target = defaultRunToOpen(runsOfProject(s, id), s.historyByProject[id] ?? [], s.activeRunByProject[id])
+    const target = assistantRunToOpen(runsOfProject(s, id), s.activeRunByProject[id])
     if (target) await get().openRun(target)
     else get().openDraft()
   },

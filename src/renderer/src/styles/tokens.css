@@ -241,6 +241,9 @@
   --space-12: 48px;
   --space-16: 64px;
 
+  /* Height cap of an inline scroll region (a proposal's SKILL.md preview). */
+  --scroll-region-max: 240px;
+
   /* Icon sizes. */
   --icon-xs: 12px;
   --icon-sm: 14px;

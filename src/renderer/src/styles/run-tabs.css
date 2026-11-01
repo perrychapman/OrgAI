@@ -459,9 +459,23 @@
 .history-table .run-row-actions {
   flex-wrap: nowrap;
 }
+/* The Chat folder name never squeezes the prompt column: one line, ellipsis, capped. */
+.history-table td.col-folder {
+  max-width: calc(var(--space-16) * 2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A disabled action keeps its reason reachable: the title sits on this wrapper, the Button inside is truly disabled. */
+.run-act-disabled {
+  display: inline-flex;
+}
 @container history (max-width: 900px) {
   .history-table .col-kind {
     display: none;
+  }
+  .history-table td.col-folder {
+    max-width: calc(var(--space-12) * 2);
   }
 }
 @container history (max-width: 800px) {
