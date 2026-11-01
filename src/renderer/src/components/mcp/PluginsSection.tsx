@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { Plus, Puzzle, Trash2 } from 'lucide-react'
+import { Plus, Puzzle, Settings2, Trash2 } from 'lucide-react'
 import type { PluginSpec, Project } from '@shared/types'
 import { adapterForProject, newId, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
@@ -11,11 +11,20 @@ import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
 import { SettingsSection } from '../settings/SettingsSection'
+import { CatalogGroup } from '../team/CatalogGroup'
+import { PROJECT_SETTINGS_PANES } from '../../lib/settingsTarget'
 import { errMessage } from './mcpHelpers'
 
 const NOT_CLAUDE = 'Plugins work with Claude only. They are ignored on this connection.'
 
-export default function PluginsSection({ project }: { project: Project }): ReactElement {
+/**
+ * Plugins. In Project settings it is the full manager (add, switch, remove). In the Team Catalog (`variant="catalog"`) it
+ * is a short list with the on/off switch and a "Plugin settings" link back to that pane.
+ */
+export default function PluginsSection({ project, variant = 'settings' }: { project: Project; variant?: 'settings' | 'catalog' }): ReactElement {
+  const catalogView = variant === 'catalog'
+  const setView = useAppStore((s) => s.setView)
+  const setPane = useAppStore((s) => s.setProjectSettingsPane)
   const catalog = useAppStore((s) => s.models['litellm'])
   const connection = projectConnection(project)
   const claude = connection === 'anthropic' || (connection === 'litellm' && adapterForProject(project, catalog ?? []).adapter === 'claude')
@@ -56,19 +65,47 @@ export default function PluginsSection({ project }: { project: Project }): React
     }
   }
 
-  return (
-    <SettingsSection
-      id="settings-section-plugins"
-      title="Plugins"
-      description="Claude Code plugin folders (may bundle skills, MCP servers and commands)."
-      testId="plugins-section"
-      actions={
-        <Button icon={Plus} loading={busy} onClick={() => void add()}>
-          Add plugin
-        </Button>
-      }
+  const pluginSettings = (
+    <Button
+      size="sm"
+      icon={Settings2}
+      testId="catalog-plugin-settings"
+      onClick={() => {
+        setPane(project.id, PROJECT_SETTINGS_PANES.tools)
+        setView('settings')
+      }}
     >
-      <div className="mcp-body">
+      Plugin settings
+    </Button>
+  )
+  const shell = (children: ReactElement): ReactElement =>
+    catalogView ? (
+      <CatalogGroup
+        id="catalog-section-plugins"
+        title="Plugins"
+        count={plugins.length}
+        description="Claude Code plugin folders. Add and remove them in Plugin settings."
+        testId="catalog-plugins"
+      >
+        {children}
+      </CatalogGroup>
+    ) : (
+      <SettingsSection
+        id="settings-section-plugins"
+        title="Plugins"
+        description="Claude Code plugin folders (may bundle skills, MCP servers and commands)."
+        actions={
+          <Button icon={Plus} loading={busy} onClick={() => void add()}>
+            Add plugin
+          </Button>
+        }
+      >
+        {children}
+      </SettingsSection>
+    )
+
+  return shell(
+      <div className="mcp-body" data-testid="plugins-section">
         {!claude && <Banner tone="info">{NOT_CLAUDE}</Banner>}
         {error && (
           <Banner tone="danger" title="Could not add the plugin">
@@ -79,7 +116,8 @@ export default function PluginsSection({ project }: { project: Project }): React
           <div className="card-block mcp-empty">
             <Icon icon={Puzzle} size="lg" />
             <strong>No plugins</strong>
-            <p className="muted">Add a plugin folder; it may bundle skills, MCP servers and commands.</p>
+            <p className="muted">{catalogView ? 'Plugin folders are added in Plugin settings.' : 'Add a plugin folder; it may bundle skills, MCP servers and commands.'}</p>
+            {catalogView && pluginSettings}
           </div>
         ) : (
           <ul className="card-block mcp-list" aria-label="Plugins">
@@ -93,9 +131,11 @@ export default function PluginsSection({ project }: { project: Project }): React
                       {p.path}
                     </span>
                   </div>
-                  <div className="mcp-row-actions">
-                    <IconButton icon={Trash2} label={`Remove ${p.name}`} size="sm" onClick={() => setRemoving(p)} />
-                  </div>
+                  {!catalogView && (
+                    <div className="mcp-row-actions">
+                      <IconButton icon={Trash2} label={`Remove ${p.name}`} size="sm" onClick={() => setRemoving(p)} />
+                    </div>
+                  )}
                 </div>
                 {rowError[p.id] && (
                   <p className="invalid-text mcp-row-error" role="alert">
@@ -106,6 +146,7 @@ export default function PluginsSection({ project }: { project: Project }): React
             ))}
           </ul>
         )}
+        {catalogView && plugins.length > 0 && <div>{pluginSettings}</div>}
         <ConfirmDialog
           open={removing !== null}
           title={`Remove ${removing?.name ?? 'plugin'}?`}
@@ -120,6 +161,5 @@ export default function PluginsSection({ project }: { project: Project }): React
           }}
         />
       </div>
-    </SettingsSection>
   )
 }

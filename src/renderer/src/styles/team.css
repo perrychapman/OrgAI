@@ -1,4 +1,4 @@
-/* ---------- Team tab: side panel (Role | Catalog), assistant tray, catalog stub ---------- */
+/* ---------- Team tab: side panel (Role | Catalog), assistant tray, catalog ---------- */
 
 .team-panel {
   flex: 1;
@@ -40,20 +40,99 @@
   margin-top: 0;
 }
 
-.team-catalog-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+/* Catalog: the panel is the container, so the settings-col row layouts (stacked under 480 px, three columns from 480) apply. */
+.team-catalog {
+  container-type: inline-size;
+  container-name: settings-col;
+  min-width: 0;
+}
+.catalog-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-small);
+  gap: var(--space-3);
+  min-width: 0;
+}
+.catalog-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+.catalog-group-heading {
+  flex: 1 1 var(--space-16);
+  min-width: 0;
+}
+.catalog-group-title {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
-.team-catalog-list li {
+.catalog-group-lead {
+  margin: var(--space-0h) 0 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.catalog-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.catalog-note {
+  margin: 0;
+}
+.catalog-used-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.catalog-used-by-label {
+  color: var(--text-secondary);
+}
+.catalog-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: var(--space-5);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.catalog-chip:hover {
+  background: var(--surface-3);
+}
+.catalog-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.mcp-row.is-flash,
+.cs-row.is-flash {
+  animation: skill-flash 1.8s ease-out;
+}
+/* The Evaluate button sits under the folded results. */
+.skill-eval-actions {
+  margin-top: var(--space-2);
+}
+.skill-eval-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 /* The Architect in the tray: a header row, then the form. The tray scrolls; nothing floats over the chart. */
@@ -81,4 +160,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+
+.team-catalog .mcp-row-roles {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
 }

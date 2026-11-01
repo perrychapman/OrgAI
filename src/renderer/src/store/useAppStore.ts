@@ -875,7 +875,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openProjectMcp(projectId, serverId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
-    set((s) => ({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId }, projectSettingsPane: { ...s.projectSettingsPane, [projectId]: 'tools' } }))
+    // Connections live in Team > Catalog; TeamView opens that tab and the connections section focuses the row.
+    set({ view: 'team', mcpFocus: { kind: 'server', projectId, serverId } })
   },
 
   setProjectSettingsPane(projectId, pane) {

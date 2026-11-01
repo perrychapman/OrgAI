@@ -24,7 +24,10 @@ export const APP_SETTINGS_PANES = {
 } as const
 export type AppSettingsPane = (typeof APP_SETTINGS_PANES)[keyof typeof APP_SETTINGS_PANES]
 
-/** Panes of the project Settings tab, in nav order. */
+/**
+ * Panes of the project Settings tab, in nav order. `tools` (id kept for stored choices and links) is now "Plugins and skill
+ * settings": skills and connections live in Team > Catalog (`openProjectMcp` in the store deep-links there).
+ */
 export const PROJECT_SETTINGS_PANES = {
   general: 'general',
   agents: 'agents',
@@ -70,7 +73,7 @@ export function requestAppSettingsSection(id: string): void {
   }
 }
 
-/** Ask App settings to open on the Skill library pane (Project settings > Tools links here). The caller still switches the view. */
+/** Ask App settings to open on the Skill library pane (Team > Catalog > Skills links here). The caller still switches the view. */
 export function requestSkillLibrary(): void {
   requestAppSettingsSection(APP_SETTINGS_SECTIONS.skillLibrary)
 }

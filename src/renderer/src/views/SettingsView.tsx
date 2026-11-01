@@ -3,13 +3,13 @@ import type { Project } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import ProjectConnection from '../components/connections/ProjectConnection'
 import RemapNotices from '../components/RemapNotices'
-import McpSection from '../components/mcp/McpSection'
-import SkillsSection from '../components/skills/SkillsSection'
+import { SkillEvaluationSettings } from '../components/skills/SkillEvaluationPanel'
 import PluginsSection from '../components/mcp/PluginsSection'
 import { GeneralSection } from '../components/settings/GeneralSection'
 import { LimitsSection } from '../components/settings/LimitsSection'
 import { MaintenanceSection } from '../components/settings/MaintenanceSection'
 import { AgentsSection } from '../components/settings/AgentsSection'
+import { SettingsSection } from '../components/settings/SettingsSection'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import type { SettingsNavItem } from '../components/settings/SettingsNav'
 import { Banner } from '../components/ui/Banner'
@@ -22,7 +22,7 @@ const PANES: SettingsNavItem[] = [
   { id: PROJECT_SETTINGS_PANES.agents, label: 'Agents' },
   { id: PROJECT_SETTINGS_PANES.limits, label: 'Limits' },
   { id: PROJECT_SETTINGS_PANES.connection, label: 'Connection' },
-  { id: PROJECT_SETTINGS_PANES.tools, label: 'Plugins and suggestions' },
+  { id: PROJECT_SETTINGS_PANES.tools, label: 'Plugins and skill settings' },
   { id: PROJECT_SETTINGS_PANES.maintenance, label: 'Maintenance' }
 ]
 
@@ -55,7 +55,7 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
           <>
             <Banner
               tone="info"
-              title="Roles, connections and skills are now on the Team tab"
+              title="Roles, connections and skills are on the Team tab"
               label="Team tab"
               testId="tools-team-pointer"
               actions={
@@ -64,9 +64,10 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
                 </Button>
               }
             />
-            <SkillsSection project={project} />
-            <McpSection project={project} />
             <PluginsSection project={project} />
+            <SettingsSection id="settings-section-skill-settings" title="Skills" description="Skills themselves are on the Team tab, under Catalog. Results of the check appear there too." testId="skill-settings-section">
+              <SkillEvaluationSettings project={project} />
+            </SettingsSection>
           </>
         )}
         {pane === 'maintenance' && <MaintenanceSection project={project} />}

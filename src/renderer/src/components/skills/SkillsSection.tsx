@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  ChevronDown,
   ClipboardCheck,
   Download,
   Ellipsis,
@@ -34,7 +35,8 @@ import { useConfirm } from '../ui/ConfirmDialog'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { Switch } from '../ui/Switch'
-import { SettingsSection } from '../settings/SettingsSection'
+import { CatalogGroup } from '../team/CatalogGroup'
+import { UsedBy } from '../team/CatalogUsedBy'
 import AddSkillFromLibraryDialog from './AddSkillFromLibraryDialog'
 import SkillEvaluationPanel, { useSkillEvaluation } from './SkillEvaluationPanel'
 import SkillForm from './SkillForm'
@@ -72,8 +74,11 @@ function scriptFiles(info: SkillInfo): string[] {
 const reducedMotion = (): boolean =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true || document.documentElement.getAttribute('data-reduce-motion') === 'on'
 
-/** Project Settings > Tools > Skills. All skill text is untrusted and rendered as plain text. */
-export default function SkillsSection({ project }: { project: Project }): ReactElement {
+/**
+ * Team > Catalog > Skills: the project's skills, how to add them and the past-run suggestions. All skill text is
+ * untrusted and rendered as plain text. `onSelectRole` makes the "Used by" chips select that role on the canvas.
+ */
+export default function SkillsSection({ project, onSelectRole }: { project: Project; onSelectRole?: (roleId: string) => void }): ReactElement {
   const skillsApi = useProjectSkills(project.id)
   const evaluation = useSkillEvaluation(project.id)
   const setView = useAppStore((s) => s.setView)
@@ -129,45 +134,90 @@ export default function SkillsSection({ project }: { project: Project }): ReactE
     else setModal({ kind: 'form', editing: info })
   }
 
-  const actions = (
-    <div className="skill-toolbar">
-      <div className="skill-toolbar-group" role="group" aria-label="Add skills">
-        <Button variant="primary" icon={Library} testId="skill-add-library" onClick={() => setModal({ kind: 'link' })}>
-          Add from library
-        </Button>
-        <Button icon={Plus} testId="skill-new" onClick={() => setModal({ kind: 'form' })}>
-          New skill
-        </Button>
-        <Button icon={Download} testId="skill-import" onClick={() => setImportOpen(true)}>
-          Import skills
-        </Button>
-      </div>
-      <div className="skill-toolbar-group" role="group" aria-label="Check skills">
-        <span aria-busy={evaluation.evaluating}>
+  // One Add button (header, or in the empty state): the three ways to add sit in its menu with the library link.
+  const addMenu = (
+    <Popover
+      trigger={
+        <>
+          <Icon icon={Plus} size="sm" />
+          Add a skill
+          <Icon icon={ChevronDown} size="sm" />
+        </>
+      }
+      triggerClassName={`btn${skills.length === 0 ? ' primary' : ''}`}
+      triggerTestId="catalog-skills-add"
+      label="Add a skill"
+      role="group"
+      placement="bottom-end"
+      className="mcp-other-menu"
+    >
+      {({ close }) => (
+        <div className="mcp-other-list">
           <Button
-            icon={evaluation.evaluating ? LoaderCircle : ClipboardCheck}
-            testId="skill-evaluate"
-            className={evaluation.evaluating ? 'is-busy' : undefined}
+            variant="ghost"
+            icon={Library}
+            testId="skill-add-library"
             onClick={() => {
-              if (!evaluation.evaluating) void evaluation.run()
+              close()
+              setModal({ kind: 'link' })
             }}
           >
-            {evaluation.evaluating ? 'Evaluating skills' : 'Evaluate skills'}
+            Add from library
           </Button>
-        </span>
-      </div>
-    </div>
+          <Button
+            variant="ghost"
+            icon={Plus}
+            testId="skill-new"
+            onClick={() => {
+              close()
+              setModal({ kind: 'form' })
+            }}
+          >
+            New skill
+          </Button>
+          <Button
+            variant="ghost"
+            icon={Download}
+            testId="skill-import"
+            onClick={() => {
+              close()
+              setImportOpen(true)
+            }}
+          >
+            Import skills
+          </Button>
+          <Button variant="ghost" icon={ExternalLink} testId="skill-manage-library" onClick={openLibrary}>
+            Manage library
+          </Button>
+        </div>
+      )}
+    </Popover>
+  )
+  const evaluateButton = (
+    <span aria-busy={evaluation.evaluating}>
+      <Button
+        icon={evaluation.evaluating ? LoaderCircle : ClipboardCheck}
+        testId="skill-evaluate"
+        className={evaluation.evaluating ? 'is-busy' : undefined}
+        onClick={() => {
+          if (!evaluation.evaluating) void evaluation.run()
+        }}
+      >
+        {evaluation.evaluating ? 'Evaluating skills' : 'Evaluate skills'}
+      </Button>
+    </span>
   )
 
   return (
-    <SettingsSection
-      id="settings-section-skills"
+    <CatalogGroup
+      id="catalog-section-skills"
       title="Skills"
+      count={loading ? undefined : skills.length}
       description="Instructions an agent loads on demand when a task matches. You choose which roles may load each one."
-      actions={actions}
-      testId="skills-section"
+      actions={loading || skills.length === 0 ? undefined : addMenu}
+      testId="catalog-skills"
     >
-      <div className="mcp-body">
+      <div className="mcp-body" data-testid="skills-section">
         {notice && (
           <Banner
             tone={notice.tone}
@@ -212,6 +262,7 @@ export default function SkillsSection({ project }: { project: Project }): ReactE
             <Icon icon={Sparkles} size="lg" />
             <strong>No skills yet</strong>
             <p className="muted">Write one, add one from the library, or import the skills in your repository.</p>
+            {addMenu}
           </div>
         ) : (
           <ul className="card-block mcp-list" aria-label="Skills">
@@ -221,6 +272,7 @@ export default function SkillsSection({ project }: { project: Project }): ReactE
                 info={info}
                 project={project}
                 skillsApi={skillsApi}
+                onSelectRole={onSelectRole}
                 flash={flash?.skillId === info.spec.id ? flash : null}
                 rolesRequest={rolesRequest?.skillId === info.spec.id ? rolesRequest : null}
                 onEdit={() => editSkill(info)}
@@ -249,6 +301,7 @@ export default function SkillsSection({ project }: { project: Project }): ReactE
           onEditSkill={editSkill}
           onShowSkill={showSkill}
           onApplied={(a) => announceAdded(a.name, 'added', a.roleCount, a.skillId)}
+          actions={evaluateButton}
         />
 
         {modal?.kind === 'form' && (
@@ -275,7 +328,7 @@ export default function SkillsSection({ project }: { project: Project }): ReactE
           />
         )}
       </div>
-    </SettingsSection>
+    </CatalogGroup>
   )
 }
 
@@ -283,6 +336,7 @@ function SkillRow({
   info,
   project,
   skillsApi,
+  onSelectRole,
   flash,
   rolesRequest,
   onEdit,
@@ -292,6 +346,7 @@ function SkillRow({
   info: SkillInfo
   project: Project
   skillsApi: ProjectSkills
+  onSelectRole?: (roleId: string) => void
   flash: RowRequest | null
   rolesRequest: RowRequest | null
   onEdit: () => void
@@ -445,6 +500,7 @@ function SkillRow({
         </div>
       </div>
       <div className="skill-row-roles">
+        <UsedBy roles={project.roles.filter((r) => info.grantedTo.includes(r.id))} onSelectRole={onSelectRole} />
         <SkillRoleAccess
           skillName={spec.name}
           roles={project.roles}

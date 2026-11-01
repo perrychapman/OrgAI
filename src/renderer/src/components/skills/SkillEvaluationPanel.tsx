@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ChevronRight, CircleCheck, Info, Pencil, Undo2, TriangleAlert } from 'lucide-react'
 import type { Project, SkillEvaluationReport, SkillInfo, SkillSuggestion } from '@shared/types'
@@ -102,7 +102,8 @@ export default function SkillEvaluationPanel({
   evaluation,
   onEditSkill,
   onApplied,
-  onShowSkill
+  onShowSkill,
+  actions
 }: {
   project: Project
   skillsApi: ProjectSkills
@@ -112,10 +113,9 @@ export default function SkillEvaluationPanel({
   onApplied: (applied: SuggestionApplied) => void
   /** Scrolls to and flashes a skill row. */
   onShowSkill: (skillId: string) => void
+  /** The Evaluate button, placed under the disclosure so it is reachable while the results are folded. */
+  actions?: ReactNode
 }): ReactElement {
-  const uid = useId()
-  const updateProject = useAppStore((s) => s.updateProject)
-  const settings = skillEvaluationOf(project)
   const { report, evaluating, error, finished, reload } = evaluation
   const [open, setOpen] = useState(false)
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
@@ -123,7 +123,6 @@ export default function SkillEvaluationPanel({
   const heading = useRef<HTMLHeadingElement>(null)
   const autoOpened = useRef<number | null>(null)
   const infos = new Map(skillsApi.skills.map((s: SkillInfo) => [s.spec.id, s]))
-  const save = (next: Partial<typeof settings>): void => updateProject({ ...project, skillEvaluation: { ...settings, ...next } })
 
   // A restored result opens by default while a suggestion still waits for a decision, so Apply is visible on return.
   useEffect(() => {
@@ -161,42 +160,7 @@ export default function SkillEvaluationPanel({
   const spent = report && (report.modelAssisted || report.tokensUsed > 0)
 
   return (
-    <SettingsGroup title="Evaluation">
-      <SettingsCard>
-        <SettingRow
-          id={`${uid}-enabled`}
-          title="Suggest new skills"
-          description="Lets a model read recent runs and draft skills for repeated work. Nothing is added until you apply it. The checks for unused, vague or stale skills always run."
-          control={
-            <Switch
-              checked={settings.enabled}
-              label="Suggest new skills"
-              describedBy={settingDescId(`${uid}-enabled`)}
-              testId="skill-eval-enabled"
-              onChange={(enabled) => save({ enabled })}
-            />
-          }
-        />
-        <SettingRow
-          id={`${uid}-budget`}
-          title="Token budget"
-          description="Most tokens one evaluation may spend on suggestions."
-          width="number"
-          control={
-            <span data-testid="skill-eval-budget">
-              <ClampedNumber
-                label="Token budget"
-                value={settings.tokenBudget}
-                min={SKILL_EVAL_MIN_BUDGET}
-                max={SKILL_EVAL_MAX_BUDGET}
-                disabled={!settings.enabled}
-                describedBy={settingDescId(`${uid}-budget`)}
-                onCommit={(tokenBudget) => save({ tokenBudget })}
-              />
-            </span>
-          }
-        />
-      </SettingsCard>
+    <div className="skill-eval-wrap" data-testid="skill-eval">
 
       {error && (
         <Banner tone="danger" title="Could not evaluate skills">
@@ -216,7 +180,7 @@ export default function SkillEvaluationPanel({
         <summary>
           <Icon icon={ChevronRight} size="sm" />
           <h4 className="skill-eval-title" tabIndex={-1} ref={heading} data-testid="skill-eval-heading">
-            Last evaluation
+            Suggestions from past runs
           </h4>
           <span className="muted skill-eval-when">{counted ? evaluationSummary(counted) : 'Not run yet'}</span>
           <span className="skill-eval-toggle" data-testid="skill-eval-toggle">
@@ -337,6 +301,54 @@ export default function SkillEvaluationPanel({
           )}
         </div>
       </details>
+      {actions && <div className="skill-eval-actions">{actions}</div>}
+    </div>
+  )
+}
+
+/** The evaluation switch and token budget (Project settings > Skills). The results and the Evaluate button live in the Catalog. */
+export function SkillEvaluationSettings({ project }: { project: Project }): ReactElement {
+  const uid = useId()
+  const updateProject = useAppStore((s) => s.updateProject)
+  const settings = skillEvaluationOf(project)
+  const save = (next: Partial<typeof settings>): void => updateProject({ ...project, skillEvaluation: { ...settings, ...next } })
+  return (
+    <SettingsGroup title="Evaluation">
+      <SettingsCard>
+        <SettingRow
+          id={`${uid}-enabled`}
+          title="Suggest new skills"
+          description="Lets a model read recent runs and draft skills for repeated work. Nothing is added until you apply it. The checks for unused, vague or stale skills always run."
+          control={
+            <Switch
+              checked={settings.enabled}
+              label="Suggest new skills"
+              describedBy={settingDescId(`${uid}-enabled`)}
+              testId="skill-eval-enabled"
+              onChange={(enabled) => save({ enabled })}
+            />
+          }
+        />
+        <SettingRow
+          id={`${uid}-budget`}
+          title="Token budget"
+          description="Most tokens one evaluation may spend on suggestions."
+          width="number"
+          control={
+            <span data-testid="skill-eval-budget">
+              <ClampedNumber
+                label="Token budget"
+                value={settings.tokenBudget}
+                min={SKILL_EVAL_MIN_BUDGET}
+                max={SKILL_EVAL_MAX_BUDGET}
+                disabled={!settings.enabled}
+                describedBy={settingDescId(`${uid}-budget`)}
+                onCommit={(tokenBudget) => save({ tokenBudget })}
+              />
+            </span>
+          }
+        />
+      </SettingsCard>
     </SettingsGroup>
   )
 }

@@ -1,6 +1,6 @@
-// Token-free (mock adapter). Project Settings > Plugins and suggestions (pane id tools) > Skills: create a skill, grant it to a role, import from a
+// Token-free (mock adapter). Team > Catalog > Skills: create a skill, grant it to a role, import from a
 // fixture repo's .claude/skills (preview, apply, Undo), run Evaluate with evaluation disabled; App settings > Skill library.
-import { check, cleanup, createProject, finish, findProject, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, cleanup, createProject, finish, findProject, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E skills (orgai test)'
@@ -18,14 +18,16 @@ try {
   if (size) await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [Number(size[1]), Number(size[2])])
   await createProject(page, { path: repo, name: NAME })
   await openProject(page, NAME)
-  await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Plugins and suggestions', exact: true }).click()
+  await openTeam(page)
+  await teamPanelTab(page, 'Catalog').click()
   const section = page.locator('[data-testid=skills-section]')
   await section.waitFor({ timeout: 10_000 })
-  await shot('tools')
+  await shot('catalog')
+  check((await page.locator('[data-testid=catalog-skills]').count()) === 1, 'the Catalog has a Skills section')
 
   // Create a skill; invalid input is refused first.
-  await section.locator('[data-testid=skill-new]').click()
+  await page.locator('[data-testid=catalog-skills-add]').click()
+  await page.locator('[data-testid=skill-new]').click()
   const form = page.locator('[data-testid=skill-form]')
   await form.waitFor({ timeout: 5000 })
   await form.locator('[data-testid=skill-name]').fill('Bad Name')
@@ -67,7 +69,8 @@ try {
   const banner = section.locator('[data-testid=skill-import-banner]')
   await banner.waitFor({ timeout: 20_000 })
   check(/2 can be imported, 1 cannot/.test(await banner.innerText()), 'the import banner names the counts once')
-  await section.locator('[data-testid=skill-import]').click()
+  await page.locator('[data-testid=catalog-skills-add]').click()
+  await page.locator('[data-testid=skill-import]').click()
   const dlg = page.locator('[data-testid=skill-import-dialog]')
   await dlg.waitFor({ timeout: 20_000 })
   await dlg.locator('[data-testid=skill-import-item]').first().waitFor({ timeout: 20_000 })
@@ -103,7 +106,7 @@ try {
   await section.locator('[data-testid=skill-evaluate]').click()
   await section.locator('[data-testid=skill-eval-last]').waitFor({ timeout: 20_000 })
   await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'skill-eval-heading', null, { timeout: 10_000 })
-  check(true, 'focus moves to the Last evaluation heading after Evaluate')
+  check(true, 'focus moves to the Last evaluation results heading after Evaluate')
   check(/Evaluation finished, \d+ findings?, \d+ suggestions?/.test(await section.locator('[data-testid=skill-eval-live]').innerText()), 'the live region announces the result')
   check(/Checked/.test(await section.locator('[data-testid=skill-eval-last]').innerText()), 'last evaluation summary shows')
   check(/(Show|Hide) /.test(await section.locator('[data-testid=skill-eval-toggle]').innerText()), 'the disclosure says what it shows')
