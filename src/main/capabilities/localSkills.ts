@@ -21,6 +21,36 @@ const MAX_ENTRIES_PER_PLUGIN = 5
 
 type SkillFolderPayload = Extract<CandidatePayload, { type: 'skillFolder' }>
 
+/**
+ * Home-folder skills only: a path with a dot-file or dot-folder segment, an .env* file, or a .pem / .key file looks
+ * private and is never read into a copy. Repo skills keep the shared scanner's behaviour (src/main/skills/scan.ts is
+ * not ours to change here).
+ */
+export function isPrivateLooking(relPath: string): boolean {
+  const segs = relPath.split('/')
+  if (segs.some((seg) => seg.startsWith('.'))) return true
+  const base = segs[segs.length - 1] ?? ''
+  return /^\.?env(\.|$)/i.test(base) || /\.(pem|key)$/i.test(base)
+}
+
+/** Splits a folder read into the files that may be kept and the relative names left out. Pure. */
+export function dropPrivateFiles(files: FileData[]): { kept: FileData[]; skipped: string[] } {
+  const kept: FileData[] = []
+  const skipped: string[] = []
+  for (const f of files) {
+    if (isPrivateLooking(f.path)) skipped.push(f.path)
+    else kept.push(f)
+  }
+  return { kept, skipped: skipped.sort() }
+}
+
+/** "Left out N private-looking files: .env, key.pem" (at most 5 names, each clamped). */
+export function skippedNote(skipped: string[]): string {
+  const named = skipped.slice(0, 5).map((n) => clampText(n, 40))
+  const more = skipped.length > named.length ? ` and ${skipped.length - named.length} more` : ''
+  return `Left out ${skipped.length} private-looking file${skipped.length === 1 ? '' : 's'}: ${named.join(', ')}${more}`
+}
+
 const LABELS: Record<'claude-skills' | 'agents-skills' | 'copilot-skills', string> = {
   'claude-skills': 'Claude Code',
   'agents-skills': 'Agent skills folder',
@@ -74,7 +104,7 @@ export function discoverRepoSkills(ctx: LocalContext): SourceResult {
     if (rootReal) {
       for (const s of scan.skills) {
         const dir = join(rootReal, ...s.repoPath.split('/'))
-        const payload: SkillFolderPayload = { type: 'skillFolder', dir, rootReal, sourceDigest: s.sourceDigest, files: s.data, sourceRef: s.repoPath, source: 'repo' }
+        const payload: SkillFolderPayload = { type: 'skillFolder', dir, rootReal, sourceDigest: s.sourceDigest, sourceRef: s.repoPath, source: 'repo' }
         out.candidates.push({ item: skillItem(s, 'repo', 'repo-skills', 'This repository', dir, s.repoPath), payload })
       }
     }
@@ -184,11 +214,13 @@ function scanRoot(
       if (reader.exhausted) break
       continue
     }
-    const skill = buildScannedSkill(read.files, name, name, null)
+    const { kept, skipped } = dropPrivateFiles(read.files)
+    const skill = buildScannedSkill(kept, name, name, null)
     if (typeof skill === 'string') {
       warn(`Skipped: ${clampText(skill, 250)}`, loc)
       continue
     }
+    if (skipped.length) skill.notes.unshift(skippedNote(skipped))
     skill.notes.push(...read.notes)
     budget.left--
     found++
@@ -197,7 +229,6 @@ function scanRoot(
       dir: folderAbs,
       rootReal,
       sourceDigest: skill.sourceDigest,
-      files: skill.data,
       sourceRef: displayPath(folderAbs, home),
       source: 'local'
     }
@@ -319,7 +350,7 @@ function discoverPlugins(ctx: LocalContext, paths: ReturnType<typeof localPaths>
 /**
  * Re-reads a skill folder at apply time with the same rules. Refuses when the folder changed since discovery.
  */
-export function rereadSkillFolder(payload: SkillFolderPayload): { ok: true; files: FileData[]; digest: string } | { ok: false; reason: string } {
+export function rereadSkillFolder(payload: SkillFolderPayload): { ok: true; files: FileData[]; digest: string; skipped: string[] } | { ok: false; reason: string } {
   const changed = { ok: false as const, reason: 'The skill changed since the recommendation; run it again.' }
   try {
     if (!usablePath(payload.dir) || !usablePath(payload.rootReal)) return { ok: false, reason: 'The skill folder is not a local absolute path.' }
@@ -332,10 +363,12 @@ export function rereadSkillFolder(payload: SkillFolderPayload): { ok: true; file
     if (!samePathFold(real, payload.rootReal)) return changed
     const read = new FolderReader(payload.rootReal).read(payload.dir)
     if (!read.ok) return { ok: false, reason: `The skill folder could not be read: ${clampText(read.reason, 200)}` }
-    if (digestFiles(read.files) !== payload.sourceDigest) return changed
-    const skill = buildScannedSkill(read.files, basename(payload.dir), basename(payload.dir), null)
+    // Same rule as discovery for home folders, so sourceDigest covers exactly the files that are kept.
+    const { kept, skipped } = payload.source === 'local' ? dropPrivateFiles(read.files) : { kept: read.files, skipped: [] as string[] }
+    if (digestFiles(kept) !== payload.sourceDigest) return changed
+    const skill = buildScannedSkill(kept, basename(payload.dir), basename(payload.dir), null)
     if (typeof skill === 'string') return { ok: false, reason: clampText(skill, 250) }
-    return { ok: true, files: skill.data, digest: skill.digest }
+    return { ok: true, files: skill.data, digest: skill.digest, skipped }
   } catch {
     return { ok: false, reason: 'The skill folder could not be read.' }
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capabilityId, clampText, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName } from './sanitize'
+import { sanitizeArgs, isCredentialArg, capabilityId, clampText, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName } from './sanitize'
 
 describe('clampText', () => {
   it('removes controls and bidi characters, collapses whitespace and clamps', () => {
@@ -65,5 +65,29 @@ describe('displayPath and capabilityId', () => {
     expect(capabilityId('local', 'mcp', 'k', 'n')).toBe(a)
     expect(capabilityId('repo', 'mcp', 'k', 'n')).not.toBe(a)
     expect(capabilityId('local', 'skill', 'k', 'n')).not.toBe(a)
+  })
+})
+
+describe('scrubUrl long segments', () => {
+  it('redacts 20+ char letter-digit segments and keeps short ones', () => {
+    expect(scrubUrl('https://h.example/mcp/a1b2c3d4e5f6g7h8i9j0k1/v2')).toBe('https://h.example/mcp/[redacted]/v2')
+    expect(scrubUrl('https://h.example/some-long-readable-segment-name/x')).toBe('https://h.example/some-long-readable-segment-name/x')
+  })
+})
+
+describe('sanitizeArgs', () => {
+  it('recognises credential args', () => {
+    expect(isCredentialArg('mysql://u:p@h/db')).toBe(true)
+    expect(isCredentialArg('--db=postgres://u:p@h')).toBe(true)
+    expect(isCredentialArg('token abcdef1')).toBe(true)
+    expect(isCredentialArg('Authorization=x')).toBe(true)
+    expect(isCredentialArg('https://h.example/path')).toBe(false)
+  })
+  it('drops secret flags with their value and names them without values', () => {
+    const r = sanitizeArgs(['run', '--header=Foo: SECRETV', '-H', 'SECRETV2', '--keep'])
+    expect(r.kept).toEqual(['run', '--keep'])
+    expect(r.dropped).toBe(3)
+    expect(r.notes.join(' ')).toContain('--header')
+    expect(r.notes.join(' ')).not.toContain('SECRET')
   })
 })

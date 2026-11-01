@@ -130,6 +130,10 @@ export function readBoundedText(abs: string, base: string, cap: number): Bounded
     if (st.isSymbolicLink()) return { ok: false, state: 'unsafe', reason: 'is a link, skipped' }
     if (!st.isFile()) return { ok: false, state: 'unsafe', reason: 'is not a regular file, skipped' }
     if (confinedReal(abs, base) === null) return { ok: false, state: 'unsafe', reason: 'the path goes through a link, skipped' }
+    // Windows gap: constants.O_NOFOLLOW is undefined there, so this open can follow a symlink or junction swapped in
+    // after the lstat above. What remains is the realpath confinement check just before and the fstat regular-file
+    // check just after; a swap in the short window between them is a TOCTOU race we accept (read-only, capped, and
+    // the content is only ever parsed as data, never executed).
     fd = openSync(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     const fst = fstatSync(fd)
     if (!fst.isFile()) return { ok: false, state: 'unsafe', reason: 'is not a regular file, skipped' }

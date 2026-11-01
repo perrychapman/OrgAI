@@ -18,7 +18,6 @@ import type {
   TeamReview,
   TeamReviewInput
 } from '@shared/types'
-import type { FileData } from '../skills/files'
 
 /**
  * Main-process contracts of the Team assistant (src/main/capabilities/). ipc.ts and index.ts depend only on
@@ -54,7 +53,7 @@ export interface CapabilityServiceApi {
 /**
  * What apply needs to turn a candidate into a project item, kept in main only (never crosses IPC).
  * - skillFolder: a repo or local skill folder. `dir` is the absolute folder and `rootReal` the real root it was read
- *   under (the FolderReader root); apply re-reads it and refuses when `sourceDigest` no longer matches.
+ *   under (the FolderReader root); apply re-reads it (no file content is kept in the snapshot) and refuses when `sourceDigest` no longer matches.
  * - skillMd: a GitHub SKILL.md (already fetched, bounded); stored as the only file.
  * - mcpSpec: a sanitized project server definition (local config or registry): no env or header values, secret
  *   slot names only, key-like args removed, URL query scrubbed. Pinned or the item carries blockedReason.
@@ -62,7 +61,7 @@ export interface CapabilityServiceApi {
  * - libraryMcp / librarySkill: link a library entry. projectMcp / projectSkill: grants only.
  */
 export type CandidatePayload =
-  | { type: 'skillFolder'; dir: string; rootReal: string; sourceDigest: string; files: FileData[]; sourceRef: string; source: 'repo' | 'local' }
+  | { type: 'skillFolder'; dir: string; rootReal: string; sourceDigest: string; sourceRef: string; source: 'repo' | 'local' }
   | { type: 'skillMd'; text: string; url: string }
   | { type: 'mcpSpec'; spec: McpServerSpec }
   | { type: 'connector'; connectorId: string }
