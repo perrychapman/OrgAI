@@ -548,10 +548,10 @@
   }
 }
 
-/* Tray share: while results or the Architect's decisions are open the tray may take up to half of the frame. */
+/* Tray share: while results or the Architect's decisions are open the tray may take about two thirds of the frame (the chart keeps 36%). */
 .frame-grid:has(> .frame-tray .team-results-head),
 .frame-grid:has(> .frame-tray .architect-decisions) {
-  --stage-min: 50cqh;
+  --stage-min: 36cqh;
 }
 /* One-line header: heading and mode tabs never wrap. */
 .team-assistant > .team-tray-head {
