@@ -165,7 +165,23 @@ async function sectionAssistant(page, shot) {
   check(n >= 1, 'Recommend shows at least one card', String(n))
   check((await cards.first().locator('[data-testid=capability-source]').innerText()).trim().length > 0, 'a card has a source badge')
   check((await tray.locator('[data-testid=capability-needs]', { hasText: 'GITHUB_TOKEN' }).count()) >= 1, 'a card flags "Needs: GITHUB_TOKEN"')
-  check(/\bread\b|can load/i.test(await cards.first().locator('[data-testid=capability-access]').innerText()), 'the access sentence defaults to reading')
+  check(/\bread\b|can load|can use/i.test(await cards.first().locator('[data-testid=capability-access]').innerText()), 'the access sentence is plain')
+  // The full command is what the user approves: wrapped and scrollable, never clamped, with the runs-code badge beside it.
+  const cmd = tray.locator('[data-testid=capability-card][data-kind=mcp] [data-testid=capability-command]').first()
+  if ((await cmd.count()) > 0) {
+    const code = cmd.locator('code')
+    const style = await code.evaluate((el) => {
+      const c = getComputedStyle(el)
+      return { overflow: c.textOverflow, ws: c.whiteSpace, oy: c.overflowY }
+    })
+    check(style.overflow !== 'ellipsis' && style.ws !== 'nowrap', 'the command is wrapped, not clamped', JSON.stringify(style))
+    check(!/\u2026|\.\.\.$/.test((await code.innerText()).trim()), 'the command text is not truncated with an ellipsis')
+    const card0 = tray.locator('[data-testid=capability-card][data-kind=mcp]').first()
+    if ((await card0.locator('[data-testid=capability-runs-code]').count()) > 0) {
+      check((await cmd.locator('[data-testid=capability-runs-code]').count()) === 1, 'the runs-code badge sits beside the command')
+    }
+    check(/can use/.test(await card0.locator('[data-testid=capability-access]').innerText()), 'a plain connection says "can use", not read or change')
+  }
   await shot('assistant-results')
   log('cards', JSON.stringify(await cards.evaluateAll((els) => els.map((e) => [e.dataset.kind, e.dataset.origin, e.dataset.name]))))
 

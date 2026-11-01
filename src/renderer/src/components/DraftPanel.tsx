@@ -122,8 +122,8 @@ export default function DraftPanel({ project, variant = 'panel', onClose }: { pr
             Revise with the Architect
           </h3>
           <p className="rationale">
-            Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles on the
-            live view for you to approve. Leave it empty for a full review.
+            Say what should change. The Architect reads the repository and the current chart, then proposes the revised roles
+            {tray ? ' in the tray' : ' on the live view'} for you to approve. Leave it empty for a full review.
             {project.setup?.architecturePath ? ` The architecture document at ${project.setup.architecturePath} is revised too.` : ''}
           </p>
           <Textarea

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SAFE_ID } from '@shared/defaults'
-import { accessChoiceOffered, accessSentence, clampText, flagViews, foldProgress, fullAllowed, newRequestId, pinLabel, sourceBadge, suggestionsLine } from './capabilities'
+import { accessChoiceOffered, accessSentence, clampText, flagViews, foldProgress, fullAllowed, newRequestId, pinLabel, sourceBadge, stripControl, suggestionsLine } from './capabilities'
 
 describe('capabilities helpers', () => {
   it('makes safe request ids', () => {
@@ -28,11 +28,19 @@ describe('capabilities helpers', () => {
     expect(fullAllowed([])).toBe(false)
     expect(accessChoiceOffered({ kind: 'skill', flags: [] })).toBe(false)
     expect(accessChoiceOffered({ kind: 'connector', flags: [], readOnlyAvailable: true })).toBe(true)
+    expect(accessChoiceOffered({ kind: 'mcp', flags: ['canChange'] })).toBe(false)
   })
   it('writes the access sentence', () => {
     expect(accessSentence(['Reviewer'], 'GitHub', 'read', 'connector')).toBe('Reviewer can read through GitHub.')
     expect(accessSentence([], 'GitHub', 'read', 'mcp')).toMatch(/Nobody/)
-    expect(accessSentence(['A', 'B', 'C'], 'x', 'full', 'mcp')).toMatch(/^3 roles/)
+    expect(accessSentence(['A', 'B', 'C'], 'x', 'full', 'mcp')).toBe('3 roles can use x.')
+    expect(accessSentence(['A'], 'x', 'read', 'mcp')).toBe('A can use x.')
+    expect(accessSentence(['A'], 'x', 'full', 'connector')).toBe('A can read and change things through x.')
+  })
+  it('keeps a long command whole', () => {
+    const long = 'npx -y pkg@1.0.0 ' + 'x'.repeat(380) + ' --tail'
+    expect(stripControl(long)).toBe(long)
+    expect(stripControl('a\u0000b')).toBe('a b')
   })
   it('folds progress by label', () => {
     let rows = foldProgress([], { projectId: 'p', requestId: 'r', phase: 'registry', state: 'running' })
