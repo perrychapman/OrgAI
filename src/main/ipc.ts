@@ -96,7 +96,8 @@ import { isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
 import { skillAssistPrompt, skillsProject } from './skills/assist'
 import { harnessProject as buildHarnessProject } from './mcp/assist'
-import { createScratchDir } from './quick/scratch'
+import { createScratchDir, scratchDirFor, validateQuickFolder } from './quick/scratch'
+import { existsSync } from 'node:fs'
 import type { QuickRunService } from './quick/quickRuns'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -150,6 +151,37 @@ export interface IpcServices {
 
 /** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
 export const ASSIST_INSTRUCTION_MAX_CHARS = 8000
+/**
+ * The project a harness-level run continues or auto-resumes in. A build session (summary.buildWorkspace) gets its
+ * workspace back (harnessProject allowBuild) only when the recorded path is exactly a <data>/quick/quick_<id> scratch
+ * dir that still exists; a forged or vanished path throws instead of running without the workspace. Exported for tests.
+ */
+export function harnessProjectFor(
+  summary: Pick<RunSummary, 'buildWorkspace'>,
+  settings: AppSettings,
+  dataDir: string,
+  mock: boolean,
+  exists: (p: string) => boolean = existsSync
+): Project {
+  const ws = summary.buildWorkspace
+  if (ws === undefined) return buildHarnessProject(settings, dataDir, { mock })
+  const dir = scratchDirFor(dataDir, ws)
+  if (!dir || !exists(dir)) throw new Error("This build session's workspace is gone; start a new one.")
+  return buildHarnessProject(settings, dataDir, { mock, allowBuild: true, workspace: dir })
+}
+
+/**
+ * Checks a continued or messaged quick run: prompt at most QUICK_RUN_MAX_PROMPT_CHARS (refused, never cut) and, for a
+ * non-scratch folder, validateQuickFolder again (it may have become a link into the data dir). Exported for tests.
+ */
+export function checkQuickContinue(summary: Pick<RunSummary, 'quick'>, text: unknown, dataDir: string, validate: (folder: unknown, dataDir: string) => unknown = validateQuickFolder): void {
+  if (!summary.quick) return
+  if (typeof text === 'string' && text.length > QUICK_RUN_MAX_PROMPT_CHARS) {
+    throw new Error(`That message is too long (at most ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString('en-US')} characters).`)
+  }
+  if (!summary.quick.scratch) validate(summary.quick.folder, dataDir)
+}
+
 /** Longest folder path accepted for a quick run; QuickRunService validates the folder itself. */
 const QUICK_FOLDER_MAX_CHARS = 4096
 
@@ -330,7 +362,10 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     const from = runs.summary(input.runId)
     if (!from) throw new Error('Run not found')
     // A quick run continues as the project rebuilt from its own summary (folder, team, edits), never a stored one.
-    const existing = from.quick ? quick.projectFor(from) : projectOrHarness(from.projectId)
+    checkQuickContinue(from, input.text, settings.dataDir)
+    const existing = from.quick ? quick.projectFor(from)
+      : from.projectId === HARNESS_PROJECT_ID ? harnessProjectFor(from, settings.get(), settings.dataDir, mock)
+      : projectOrHarness(from.projectId)
     if (!existing) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
@@ -343,7 +378,11 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     (_e, input: { runId: string; questionId: string; answer: QuestionAnswer }) =>
       runs.answerQuestion(input.runId, input.questionId, input.answer)
   )
-  ipcMain.handle(IPC.runsSend, (_e, input: SendRunInput) => runs.send(input.runId, input.text, input.images))
+  ipcMain.handle(IPC.runsSend, (_e, input: SendRunInput) => {
+    const from = runs.summary(input.runId)
+    if (from) checkQuickContinue(from, input.text, settings.dataDir)
+    return runs.send(input.runId, input.text, input.images)
+  })
   ipcMain.handle(IPC.runsInterrupt, (_e, runId: string) => runs.interrupt(runId))
   ipcMain.handle(IPC.runsStop, (_e, runId: string) => runs.stop(runId))
   ipcMain.handle(IPC.runsList, (_e, projectId: string) => runs.list(projectId))

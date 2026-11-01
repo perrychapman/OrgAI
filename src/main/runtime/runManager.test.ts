@@ -2225,7 +2225,7 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     const req = await waitFor(isType('proposal.request'))
     m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
     expect(await pending).toEqual({ behavior: 'approve' })
-    expect(applyLibraryProposal).toHaveBeenCalledWith(expect.objectContaining({ scope: 'library' }))
+    expect(applyLibraryProposal).toHaveBeenCalledWith(expect.objectContaining({ scope: 'library' }), {})
     expect(setup.raw.applyProposal).not.toHaveBeenCalled()
     expect(events.some((e) => e.type === 'project.updated')).toBe(false)
     await m.stopAll()
