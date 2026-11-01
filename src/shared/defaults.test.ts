@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit } from './defaults'
+import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit } from './defaults'
 import type { ProviderModel } from './types'
 
 describe('tier-based model defaults', () => {
@@ -74,6 +74,40 @@ describe('creationConnection', () => {
     expect(creationConnection(withConn('litellm', { litellm: { ...ready, enabled: false } }))).toBe('anthropic')
     expect(creationConnection(withConn('litellm', { litellm: { ...ready, baseUrl: ' ' } }))).toBe('anthropic')
     expect(creationConnection(withConn('litellm', { litellm: { ...ready, hasApiKey: false } }))).toBe('anthropic')
+  })
+})
+
+describe('connectionInUse', () => {
+  const settings = (defaultConnection: 'anthropic' | 'openai' | 'litellm', enabled: { openai?: boolean; litellm?: boolean } = {}) => {
+    const c = structuredClone(DEFAULT_APP_SETTINGS.connections)
+    c.openai.enabled = enabled.openai ?? false
+    c.litellm.enabled = enabled.litellm ?? false
+    return { defaultConnection, connections: c }
+  }
+  const on = (connection: 'anthropic' | 'openai' | 'litellm') => ({ provider: { id: 'claude' as const, label: 'x', auth: { kind: 'subscription' as const }, connection } })
+  const mock = { provider: { id: 'mock' as const, label: 'Mock', auth: { kind: 'subscription' as const } } }
+  const legacyCodex = { provider: { id: 'codex' as const, label: 'Codex', auth: { kind: 'subscription' as const } } }
+
+  it('an enabled connection is in use as the default or through a project', () => {
+    expect(connectionInUse('openai', settings('openai', { openai: true }), [])).toBe(true)
+    expect(connectionInUse('openai', settings('anthropic', { openai: true }), [on('anthropic'), on('openai')])).toBe(true)
+    expect(connectionInUse('litellm', settings('anthropic', { litellm: true }), [on('litellm')])).toBe(true)
+    expect(connectionInUse('openai', settings('anthropic', { openai: true }), [legacyCodex])).toBe(true) // saved before connections
+  })
+  it('an enabled connection nothing uses is not in use', () => {
+    expect(connectionInUse('openai', settings('anthropic', { openai: true }), [on('anthropic'), mock])).toBe(false)
+    expect(connectionInUse('litellm', settings('openai', { openai: true, litellm: true }), [on('openai')])).toBe(false)
+  })
+  it('a disabled connection is never in use', () => {
+    expect(connectionInUse('openai', settings('openai'), [on('openai')])).toBe(false)
+    expect(connectionInUse('litellm', settings('litellm'), [on('litellm')])).toBe(false)
+  })
+  it('anthropic counts as enabled; mock projects are on anthropic', () => {
+    const s = settings('openai', { openai: true })
+    s.connections.anthropic.enabled = false
+    expect(connectionInUse('anthropic', s, [])).toBe(false)
+    expect(connectionInUse('anthropic', s, [mock])).toBe(true)
+    expect(connectionInUse('anthropic', settings('anthropic'), [])).toBe(true)
   })
 })
 

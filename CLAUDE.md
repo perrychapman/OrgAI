@@ -355,6 +355,9 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - The ChatGPT login (`account/login/start` with `chatgpt` / `chatgptDeviceCode`), `model/list` and
     `account/rateLimits/read` are unverified (schema-derived). The device-code `expiresAt` field is a guess and
     is optional.
+  - The idle Codex plan-usage probe (`probeCodexUsage`: boot, idle, usage:refresh) runs only while the openai
+    connection is in use (`connectionInUse` in `src/shared/defaults.ts`: the default connection or a project on it),
+    and never spawns the app-server otherwise; live Codex runs still report their own usage. Unit-tested.
 - LiteLLM: `/v1/models` and `/model/info` discovery is unverified against a live proxy. The Claude adapter reaches
   LiteLLM through `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` and maps tiers through
   `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL`. The Codex adapter reaches it with an `orgai` model provider at
@@ -362,7 +365,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   tokens with it.
   - Key spend: `ConnectionService.probeLiteLLMUsage` reads `GET {base}/key/info` (the key only as Bearer/x-api-key,
     no `key` param, `redirect: 'error'`, 10 s) through `litellm.ts` `parseKeyInfo` into `UsageStatus.spend`
-    (`connection: 'litellm'`, `authMode: 'apiKey'`, no provider). Gated on enabled + base URL + stored key; any failure
+    (`connection: 'litellm'`, `authMode: 'apiKey'`, no provider). Gated on enabled + base URL + stored key + in use
+    (`connectionInUse`: the default connection or a project on litellm); any failure
     (500 without the proxy DB, 403, junk) is null. It is a keyed `UsageMonitor` extra probe ('litellm', boot / idle /
     usage:refresh), and index.ts re-reads it 15 s after a LiteLLM run ends (`RunSummary.connection`). Only the key's own
     budget is read, never a team budget. The renderer must keep the latest usage report per `connection`.

@@ -384,6 +384,23 @@ export function creationConnection(settings: Pick<AppSettings, 'defaultConnectio
   return 'anthropic'
 }
 
+/**
+ * Whether a connection is in use: enabled (anthropic always counts as enabled, as in `creationConnection`) and
+ * either the app's default connection or the connection of at least one project (`projectConnection`; mock
+ * projects follow the same rule). Idle probes that cost a process spawn or a network call (Codex plan usage,
+ * LiteLLM key spend) run only then. Pure.
+ */
+export function connectionInUse(
+  id: ConnectionId,
+  settings: Pick<AppSettings, 'defaultConnection' | 'connections'>,
+  projects: readonly Pick<Project, 'provider'>[]
+): boolean {
+  const enabled = id === 'anthropic' || settings.connections?.[id]?.enabled === true
+  if (!enabled) return false
+  if ((settings.defaultConnection ?? 'anthropic') === id) return true
+  return projects.some((p) => projectConnection(p) === id)
+}
+
 /** Provider label for a connection. Anthropic follows the auth choice. */
 export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth']): string {
   return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : 'LiteLLM'

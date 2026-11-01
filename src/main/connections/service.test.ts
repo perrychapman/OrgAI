@@ -359,7 +359,7 @@ describe('anthropic connect', () => {
 })
 
 describe('openai ChatGPT login', () => {
-  function codexSetup(): { ctx: ReturnType<typeof setup>; rpc: FakeRpc } {
+  function codexSetup(): { ctx: ReturnType<typeof setup>; rpc: FakeRpc; factory: ReturnType<typeof vi.fn> } {
     let account: unknown = { account: null, requiresOpenaiAuth: true }
     const rpc = fakeRpc({
       'account/read': () => account,
@@ -379,7 +379,8 @@ describe('openai ChatGPT login', () => {
       account = { account: { type: 'chatgpt', email: 'me@x.io', planType: 'plus' }, requiresOpenaiAuth: true }
     }
     ;(rpc as FakeRpc & { signIn: () => void }).signIn = signIn
-    return { ctx: setup({ codexFactory: () => asCodexServer(rpc) }), rpc }
+    const factory = vi.fn(() => asCodexServer(rpc))
+    return { ctx: setup({ codexFactory: factory }), rpc, factory }
   }
 
   it('test() reports signed out, then connect after login discovers models and keeps the server until done', async () => {
@@ -423,13 +424,35 @@ describe('openai ChatGPT login', () => {
     const { ctx, rpc } = codexSetup()
     expect(await ctx.service.probeCodexUsage()).toBeNull() // openai not enabled
     const s = ctx.settings.get()
-    ctx.settings.set({ ...s, connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true } } })
+    ctx.settings.set({ ...s, defaultConnection: 'openai', connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true } } })
     expect(await ctx.service.probeCodexUsage()).toBeNull() // signed out
     rpc.closed = false
     ;(rpc as unknown as { signIn: () => void }).signIn()
     const usage = await ctx.service.probeCodexUsage()
     expect(usage).toMatchObject({ provider: 'codex', connection: 'openai', subscriptionType: 'plus' })
     expect(usage?.windows.fiveHour?.utilization).toBe(10)
+  })
+
+  it('probeCodexUsage never spawns Codex while openai is not in use', async () => {
+    const { ctx, rpc, factory } = codexSetup()
+    ;(rpc as unknown as { signIn: () => void }).signIn()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, defaultConnection: 'anthropic', connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true, auth: { kind: 'chatgpt' } } } })
+    ctx.projects.save(project({ id: 'a1', provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' }, connection: 'anthropic' } }))
+    expect(await ctx.service.probeCodexUsage()).toBeNull()
+    expect(factory).not.toHaveBeenCalled()
+
+    ctx.projects.save(project({ id: 'o1', provider: { id: 'codex', label: 'Codex', auth: { kind: 'subscription' }, connection: 'openai' } }))
+    expect(await ctx.service.probeCodexUsage()).toMatchObject({ provider: 'codex', connection: 'openai' })
+    expect(factory).toHaveBeenCalledTimes(1)
+
+    ctx.projects.remove('o1')
+    rpc.closed = false
+    expect(await ctx.service.probeCodexUsage()).toBeNull()
+    expect(factory).toHaveBeenCalledTimes(1)
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'openai' })
+    expect(await ctx.service.probeCodexUsage()).toMatchObject({ provider: 'codex', connection: 'openai' })
+    expect(factory).toHaveBeenCalledTimes(2)
   })
 
   it('logout signs out of ChatGPT', async () => {
@@ -464,7 +487,14 @@ describe('LiteLLM spend and pricing', () => {
     expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not enabled
     expect(fetchImpl).not.toHaveBeenCalled()
     await ctx.service.connect('litellm')
-    const usage = await ctx.service.probeLiteLLMUsage()
+    const keyInfoCalls = (): number => fetchImpl.mock.calls.filter(([u]) => String(u).endsWith('/key/info')).length
+    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not in use: no default, no project
+    expect(keyInfoCalls()).toBe(0)
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
+    expect(await ctx.service.probeLiteLLMUsage()).not.toBeNull() // in use as the default connection
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'anthropic' })
+    ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
+    const usage = await ctx.service.probeLiteLLMUsage() // in use by a project
     expect(usage).toEqual({
       connection: 'litellm',
       authMode: 'apiKey',
@@ -493,6 +523,7 @@ describe('LiteLLM spend and pricing', () => {
       const ctx = setup({ fetch: pricedFetch(answer) })
       await configureLiteLLM(ctx)
       await ctx.service.connect('litellm')
+      ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
       expect(await ctx.service.probeLiteLLMUsage()).toBeNull()
     }
   })
