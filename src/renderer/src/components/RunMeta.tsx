@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { Bot, ClipboardList, Clock, ShieldAlert } from 'lucide-react'
+import { Bot, ClipboardList, Clock, Folder, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
@@ -10,6 +10,7 @@ import { predecessorOf, relativeTime } from '../lib/runChains'
 import { runName, runTag, shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
 
 /**
  * The run's quiet metadata line at the start of the canvas toolbar (12 px, tertiary): the run it continues, agents,
@@ -59,6 +60,15 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         </span>
       )}
       {summary.kind === 'setup' && <span className="run-meta-item">Setup session</span>}
+      {summary.quick && (
+        <>
+          <span className="run-meta-item run-meta-folder" title={summary.quick.scratch ? 'A private scratch folder' : summary.quick.folder}>
+            <Icon icon={Folder} size="xs" />
+            {quickFolderLabel(summary.quick)}
+          </span>
+          <span className="run-meta-item run-meta-access">{quickAccessLabel(summary.quick)}</span>
+        </>
+      )}
       <span className="run-meta-item run-meta-agents">
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
@@ -95,7 +105,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {auto.count} of {auto.max} auto-continues
         </span>
       )}
-      {project.permissionMode === 'auto' && (
+      {project.permissionMode === 'auto' && !summary.quick && (
         <span
           className="run-meta-item run-meta-unattended"
           title="Permission mode is auto: Claude approves or denies each call and asks only when unsure. Saved rules never ask."

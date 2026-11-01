@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
-import { ASSISTANT_ORDER, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickAccessLabel, quickFolderLabel, runKindLabel } from './assistants'
+import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickAccessLabel, quickFolderLabel, runKindLabel } from './assistants'
 
 const quick = (over: Partial<QuickRunInfo> = {}): QuickRunInfo => ({ folder: 'C:\\work\\notes-api', team: 'single', allowEdits: false, gitRepo: false, ...over })
 
@@ -48,5 +48,18 @@ describe('assistants', () => {
   it('names the new-session button', () => {
     expect(newSessionLabel('quick')).toBe('New chat')
     expect(newSessionLabel('skills')).toBe('New session')
+  })
+  it('offers the retrospective only for finished real-project work runs', () => {
+    const base = { kind: 'work' as const, projectId: 'p1', status: 'finished' as const }
+    expect(offersRetro(base)).toBe(true)
+    expect(offersRetro({ ...base, quick: quick() })).toBe(false)
+    expect(offersRetro({ ...base, projectId: 'quick' })).toBe(false)
+    expect(offersRetro({ ...base, kind: 'setup' })).toBe(false)
+    expect(offersRetro({ ...base, status: 'running' })).toBe(false)
+  })
+  it('validates the promote name', () => {
+    expect(promoteNameError('  ')).toBeTruthy()
+    expect(promoteNameError('api')).toBeNull()
+    expect(promoteNameError('x'.repeat(81))).toBeTruthy()
   })
 })
