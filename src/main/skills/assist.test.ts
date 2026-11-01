@@ -93,7 +93,7 @@ describe('skillProposalProblem', () => {
 
 describe('skillAssistContext', () => {
   const libInfo = (over: Partial<SkillLibraryInfo['entry']> = {}, usedBy: SkillLibraryInfo['usedBy'] = []): SkillLibraryInfo => ({
-    entry: { id: 'lib1', name: 'release-notes', description: 'Write notes.', source: 'user', digest: 'd', files: [{ path: 'SKILL.md', size: 3 }], addedAt: '', updatedAt: '', ...over } as SkillLibraryInfo['entry'],
+    entry: { id: 'lib1', name: 'release-notes', description: 'Write notes.', source: 'user', digest: 'd', files: [{ path: 'SKILL.md', bytes: 3 }], addedAt: '', updatedAt: '', ...over } as SkillLibraryInfo['entry'],
     usedBy
   })
   const info = (name: string, grantedTo: string[], extra = {}): SkillInfo => ({

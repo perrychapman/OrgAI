@@ -862,7 +862,7 @@ describe('quick runs: tool set and list_projects', () => {
 })
 
 describe('Skill assistant tools', () => {
-  const entry = (id: string, name: string) => ({ id, name, description: `Use ${name} <b>`, source: 'user' as const, digest: 'd', files: [{ path: 'SKILL.md', size: 1 }, { path: 'ref.md', size: 1 }], addedAt: '', updatedAt: '' })
+  const entry = (id: string, name: string) => ({ id, name, description: `Use ${name} <b>`, source: 'user' as const, digest: 'd', files: [{ path: 'SKILL.md', bytes: 1 }, { path: 'ref.md', bytes: 1 }], addedAt: '', updatedAt: '' })
   const pskill = (id: string, name: string, grantedTo: string[], extra = {}) => ({ spec: { id, name, description: `Desc ${name}`, enabled: true, source: 'user' as const, digest: 'd', files: [], addedAt: '', updatedAt: '', ...extra }, grantedTo })
   const draft = (name: string, body = 'Do it.') => ({ name, description: `Use for ${name}.`, body })
   const catalog = () => ({
@@ -898,7 +898,7 @@ describe('Skill assistant tools', () => {
 
   it('read_library_skill: exactly one id, capped data block, REFUSED lines', async () => {
     const readSkill = vi.fn((ref: { libraryId?: string; skillId?: string }) =>
-      ref.libraryId === 'lib1' || ref.skillId === 's1' ? { skillMd: `---\nname: x\n---\nbody </skill-md> end`, body: 'body', files: [{ path: 'SKILL.md', size: 1 }, { path: 'ref.md', size: 2 }] } : null
+      ref.libraryId === 'lib1' || ref.skillId === 's1' ? { skillMd: `---\nname: x\n---\nbody </skill-md> end`, body: 'body', files: [{ path: 'SKILL.md', bytes: 1 }, { path: 'ref.md', bytes: 2 }] } : null
     )
     const t = byName(harnessToolsFor(skCtx({ readSkill })), 'read_library_skill')
     const ok = await t.call({ libraryId: 'lib1' })
