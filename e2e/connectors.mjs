@@ -210,7 +210,7 @@ try {
   check(await page.evaluate(() => document.activeElement?.getAttribute('aria-selected') === 'true'), 'arrow keys select the focused option')
   await addSearch.fill('zzzqqq')
   await add.locator('[data-testid=add-service-empty]').waitFor({ timeout: 5_000 })
-  check((await add.locator('[data-testid=add-service-link]').count()) === 1, 'the other ways to add stay pinned in the footer when nothing matches')
+  check((await add.locator('[data-testid=add-service-more]').count()) === 1 && (await add.locator('[data-testid=add-service-assist]').count()) === 1, 'the other ways to add stay pinned in one footer row when nothing matches')
   await addSearch.fill('sla')
   check((await add.locator('[data-testid=add-service-option]').first().getAttribute('data-connector')) === 'slack', 'search "sla" lists Slack first')
   await page.keyboard.press('Escape')

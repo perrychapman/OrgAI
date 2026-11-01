@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useId, useMemo, useRef, useState } from 'react'
-import { Library, Package, Plus, Search, Sparkles } from 'lucide-react'
+import { ChevronUp, Library, Package, Plus, Search, Sparkles } from 'lucide-react'
 import type { ConnectorInfo, McpMutationResult, McpServerInfo, Project } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -8,6 +8,7 @@ import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
+import { Popover } from '../ui/Popover'
 import { linkedServerFor } from '../mcp/mcpLibraryHelpers'
 import { CATEGORY_LABELS, EASE_BADGE, filterConnectors, infoEase, serviceCount, sortForGallery, stateChip } from '../../lib/connectors'
 import { UseInProjectDialog, connectorAccess } from './ConnectedServices'
@@ -161,27 +162,41 @@ export default function AddServiceDialog({
       testId="add-service-dialog"
       footer={
         <div className="addsvc-foot" data-testid="add-service-other">
-          <div className="addsvc-foot-text">
-            <strong>Can't find it?</strong>
-            <span className="muted">The assistant uses your assistant model and counts toward your usage. You approve each server it proposes.</span>
-          </div>
-          <div className="addsvc-foot-actions">
-            <Button size="sm" icon={Sparkles} onClick={() => other('assist')} testId="add-service-assist">
-              Describe it to an assistant
-            </Button>
-            <Button size="sm" icon={Library} onClick={() => other('link')} testId="add-service-link">
-              Add from your custom servers
-            </Button>
-            <Button size="sm" icon={Package} onClick={() => other('registry')}>
-              Browse community servers (unverified)
-            </Button>
-            <Button size="sm" icon={Plus} onClick={() => other('form')} testId="add-service-custom">
-              Set up a custom server
-            </Button>
-            <Button size="sm" onClick={onClose}>
-              Close
-            </Button>
-          </div>
+          <Button size="sm" icon={Sparkles} onClick={() => other('assist')} testId="add-service-assist">
+            Describe it to an assistant
+          </Button>
+          <Popover
+            label="More ways to add a service"
+            role="group"
+            placement="top-start"
+            className="addsvc-more"
+            triggerClassName="btn sm"
+            triggerTestId="add-service-more"
+            trigger={
+              <>
+                Can't find it? More ways
+                <Icon icon={ChevronUp} size="sm" />
+              </>
+            }
+          >
+            {({ close }) => (
+              <div className="addsvc-more-list">
+                <p className="muted addsvc-more-note">The assistant uses your assistant model and counts toward your usage. You approve each server it proposes.</p>
+                <Button size="sm" icon={Library} onClick={() => { close(); other('link') }} testId="add-service-link">
+                  Add from your custom servers
+                </Button>
+                <Button size="sm" icon={Package} onClick={() => { close(); other('registry') }}>
+                  Browse community servers (unverified)
+                </Button>
+                <Button size="sm" icon={Plus} onClick={() => { close(); other('form') }} testId="add-service-custom">
+                  Set up a custom server
+                </Button>
+              </div>
+            )}
+          </Popover>
+          <Button size="sm" onClick={onClose} className="addsvc-close">
+            Close
+          </Button>
         </div>
       }
     >
@@ -222,13 +237,10 @@ export default function AddServiceDialog({
           {total === 0 ? (
             <div className="connector-empty" data-testid="add-service-empty">
               <strong>{query.trim() ? `No service matches "${query.trim()}"` : 'No services yet'}</strong>
-              <p className="muted">Try a different name, or add it as a custom server.</p>
+              <p className="muted">Try a different name, or use "Can't find it?" below.</p>
               <div className="connector-empty-actions">
                 <Button size="sm" onClick={() => setQuery('')}>
                   Clear search
-                </Button>
-                <Button size="sm" icon={Plus} onClick={() => other('form')}>
-                  Add a custom server
                 </Button>
               </div>
             </div>

@@ -197,6 +197,7 @@ try {
     await teamPanelTab(page, 'Catalog').click()
     await page.locator('[data-testid=catalog-connections]').scrollIntoViewIfNeeded()
     await page.locator('[data-testid=mcp-add-service]').click()
+    await page.locator('[data-testid=add-service-more]').click()
     await page.locator('[data-testid=add-service-link]').click()
     const dlg = page.locator('[data-testid=mcp-link-dialog]')
     await dlg.getByText('e2e-lib-server').first().click()
