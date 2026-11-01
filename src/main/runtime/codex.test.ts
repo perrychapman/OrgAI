@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
 import { CodexAdapter, codexModelFor, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
-import { fakeCtx, project, role } from './testHelpers'
+import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
 
 /** A scripted app-server: records requests, answers them, and lets the test push notifications and server requests. */
@@ -350,6 +350,63 @@ describe('CodexAdapter session', () => {
       s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f1', status: 'inProgress', changes: [{ path: '/r/src/a.ts', kind: { type: 'update', move_path: null }, diff: '' }] } })
       expect(await s.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 })).toEqual({ decision: 'accept' })
       expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'Edit', summary: 'Editing a.ts', input: expect.objectContaining({ file_path: '/r/src/a.ts' }) }))
+    })
+
+    describe('restricted runs', () => {
+      const edit = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 }
+      const change = (s: FakeServer, path: string, id = 'f1') =>
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path, kind: { type: 'update', move_path: null }, diff: '' }] } })
+      const quickCtx = (rules: string[]) => {
+        mkdirSync(join(dir, '.claude'), { recursive: true })
+        writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: rules } }))
+        return { run: runSummary({ quick: { folder: dir } as never }) }
+      }
+
+      it('does not auto-accept a file change from the folder own saved rules (H1)', async () => {
+        const { ctx, s } = await started('default', { ...quickCtx(['Edit']), allowedRules: () => [] })
+        change(s, join(dir, 'a.ts'))
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'Edit' }))
+      })
+
+      it('does not read folder rules for a quick run without allowedRules either', async () => {
+        const { ctx, s } = await started('default', quickCtx(['Edit', 'Bash(ls:*)']))
+        change(s, join(dir, 'a.ts'))
+        await s.ask('item/fileChange/requestApproval', edit)
+        await s.ask('item/commandExecution/requestApproval', cmd('ls'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('never writes a project-scope grant into the folder (M1)', async () => {
+        const { ctx, s } = await started('default', quickCtx([]))
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'project' })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'acceptForSession' })
+        expect(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')).not.toContain('npm')
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+      })
+
+      it('declines a build-session change under .claude/ without a card, but still asks about commands (M2)', async () => {
+        const { ctx, s } = await started('default', { run: runSummary({ kind: 'mcp-assist', buildWorkspace: dir }) })
+        change(s, join(dir, '.claude', 'settings.json'))
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        await s.ask('item/commandExecution/requestApproval', cmd('echo hi'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        change(s, join(dir, 'ok.ts'), 'f2')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('launches a restricted run with project docs off (M4)', async () => {
+        const { s } = await started('default', quickCtx([]))
+        expect(s.options.config).toContain('project_doc_max_bytes=0')
+      })
+
+      it('keeps project docs for an ordinary run', async () => {
+        const { s } = await started('default')
+        expect(s.options.config).not.toContain('project_doc_max_bytes=0')
+      })
     })
 
     it('answers unknown server requests with an error and declines MCP elicitations', async () => {
@@ -717,6 +774,10 @@ describe('CodexAdapter.complete', () => {
     expect(start).not.toHaveProperty('model') // a bare Claude alias is not a Codex model
     expect(start).not.toHaveProperty('dynamicTools')
     expect(server.options.env).toMatchObject({ CODEX_HOME: '/h' })
+    // never the project folder: no AGENTS.md reaches a one-shot, and the launch turns project docs off
+    expect(start.cwd).toBe(tmpdir())
+    expect(server.options.cwd).toBe(tmpdir())
+    expect(server.options.config).toContain('project_doc_max_bytes=0')
     server.push('item/completed', agentMessage('th-1', 'm', 'Blue'))
     server.push('turn/completed', turnDone('th-1', 'tu-1'))
     await expect(promise).resolves.toBe('Blue')
