@@ -67,6 +67,10 @@ export function UseInProjectDialog({
         onClose()
         return
       }
+      if (!entry) {
+        setBusy(false)
+        return
+      }
       const result = await window.orgai.mcp.linkLibrary({
         projectId: project.id,
         libraryId: entry.id,
