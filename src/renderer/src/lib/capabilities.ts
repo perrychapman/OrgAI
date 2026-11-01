@@ -89,7 +89,7 @@ export function sourceBadge(item: Pick<CapabilityItem, 'origin' | 'sourceLabel'>
     case 'project':
       return 'This project'
     case 'catalog': {
-      const vendor = clampText(item.connectorId ? connectorById(item.connectorId)?.vendor : undefined, 40) || clampText(item.name, 40)
+      const vendor = clampText(item.connectorId ? connectorById(item.connectorId)?.vendor : undefined, 40)
       return vendor ? `Curated · ${vendor}` : 'Curated'
     }
     default:
@@ -304,26 +304,17 @@ export interface DismissedEntry {
  * The review's dismissed list, validated. Reads `{ candidateId, name, kind, dismissedAt }` (the restore contract) and
  * also the older `{ candidateId, at }`, taking the name from the review's items. Anything else is dropped.
  */
-export function readDismissed(review: { dismissed?: unknown; discovery?: { items?: readonly Pick<CapabilityItem, 'id' | 'name' | 'kind'>[] } } | null | undefined): DismissedEntry[] {
-  const raw = review?.dismissed
-  if (!Array.isArray(raw)) return []
-  const items = review?.discovery?.items ?? []
+export function readDismissed(review: Pick<TeamReview, 'dismissed'> & { discovery?: { items?: readonly Pick<CapabilityItem, 'id' | 'name' | 'kind'>[] } }): DismissedEntry[] {
+  const items = review.discovery?.items ?? []
   const out: DismissedEntry[] = []
   const seen = new Set<string>()
-  for (const e of raw.slice(0, 200)) {
-    if (!e || typeof e !== 'object') continue
-    const o = e as Record<string, unknown>
-    if (typeof o.candidateId !== 'string' || !o.candidateId || seen.has(o.candidateId)) continue
-    const item = items.find((i) => i.id === o.candidateId)
-    const name = clampText(typeof o.name === 'string' && o.name ? o.name : item?.name, 80)
+  for (const e of (review.dismissed ?? []).slice(0, 200)) {
+    if (!e.candidateId || seen.has(e.candidateId)) continue
+    const item = items.find((i) => i.id === e.candidateId)
+    const name = clampText(e.name || item?.name, 80)
     if (!name) continue
-    seen.add(o.candidateId)
-    out.push({
-      candidateId: o.candidateId,
-      name,
-      kind: typeof o.kind === 'string' ? o.kind : (item?.kind ?? 'mcp'),
-      dismissedAt: typeof o.dismissedAt === 'string' ? o.dismissedAt : typeof o.at === 'string' ? o.at : ''
-    })
+    seen.add(e.candidateId)
+    out.push({ candidateId: e.candidateId, name, kind: e.kind ?? item?.kind ?? 'mcp', dismissedAt: e.at })
   }
   return out
 }
@@ -336,16 +327,13 @@ export const capabilitiesApi = {
     window.orgai.capabilities.review({ projectId, trigger, requestId, includeOutside }),
   lastReview: (projectId: string) => window.orgai.capabilities.lastReview(projectId),
   cancel: (requestId: string) => window.orgai.capabilities.cancel({ requestId }),
-  // candidateId lets main dismiss a card from a fresh recommend() result too (its type lands with the contract update).
+  // candidateId lets main dismiss a card from a fresh recommend() result too.
   dismiss: (projectId: string, recommendationId: string, candidateId?: string) =>
-    window.orgai.capabilities.dismiss({ projectId, recommendationId, candidateId } as Parameters<typeof window.orgai.capabilities.dismiss>[0]),
+    window.orgai.capabilities.dismiss({ projectId, recommendationId, candidateId }),
   apply: (input: Parameters<typeof window.orgai.capabilities.apply>[0]) => window.orgai.capabilities.apply(input),
   undo: (projectId: string, undoId: string) => window.orgai.capabilities.undo({ projectId, undoId }),
-  /** Undo a dismissal in main. Absent until the contract lands: the caller then only restores the card in the session. */
-  restore: (projectId: string, candidateId: string): Promise<TeamReview> | null => {
-    const fn = (window.orgai.capabilities as { restore?: (i: { projectId: string; candidateId: string }) => Promise<TeamReview> }).restore
-    return fn ? fn({ projectId, candidateId }) : null
-  },
+  /** Undo a dismissal in main. */
+  restore: (projectId: string, candidateId: string) => window.orgai.capabilities.restore({ projectId, candidateId }),
   onProgress: (cb: (e: CapabilityProgressEvent) => void) => window.orgai.onCapabilityProgress(cb)
 }
 
