@@ -11,7 +11,14 @@
  *
  * Safety: no credentials are ever sent; redirects are not followed; 10 s timeout and a 64 KB body cap per request;
  * only JSON is parsed; strings and arrays in the report are truncated; https on public hosts only (private,
- * loopback and link-local addresses refused, also after DNS); at most 6 requests in flight.
+ * loopback, link-local, benchmarking and NAT64/6to4 addresses refused, also after DNS, with a 5 s DNS timeout); at
+ * most 6 requests in flight; control and bidi characters are stripped from every server string before it is printed
+ * or written.
+ *
+ * DNS-rebinding window: the private-address check resolves the host itself, and fetch() then resolves it again on
+ * its own, so a hostile DNS server with a short TTL could answer a public address to the check and a private one to
+ * the request. The probe targets only the curated catalog hosts and sends no credentials, so this window is
+ * accepted; do not point it at untrusted URLs.
  *
  * Usage: node scripts/probe-connectors.mjs [--list] [--only id[,id...]] [--out file.json]
  *   --list  print the parsed variants and exit (no network)
@@ -30,6 +37,11 @@ const BODY_CAP = 64 * 1024
 const CONCURRENCY = 6
 const STR_MAX = 200
 const ARR_MAX = 30
+const DNS_TIMEOUT_MS = 5_000
+// C0/C1 controls (ESC, CR, BEL...) and bidi overrides: server text must never drive the terminal.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g
+const clean = (s) => s.replace(CONTROL_CHARS, '')
 
 // ---- args ----
 const argv = process.argv.slice(2)
@@ -71,7 +83,10 @@ export function parseCatalog(text) {
 
 // ---- helpers ----
 const trunc = (v) => {
-  if (typeof v === 'string') return v.length > STR_MAX ? `${v.slice(0, STR_MAX)}...` : v
+  if (typeof v === 'string') {
+    const c = clean(v)
+    return c.length > STR_MAX ? `${c.slice(0, STR_MAX)}...` : c
+  }
   if (Array.isArray(v)) return v.slice(0, ARR_MAX).map(trunc)
   if (typeof v === 'boolean' || typeof v === 'number' || v === null) return v
   return undefined
@@ -80,13 +95,15 @@ const trunc = (v) => {
 function privateAddress(addr) {
   const v = isIP(addr)
   if (v === 4) {
-    const [a, b] = addr.split('.').map(Number)
-    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224
+    const [a, b, c] = addr.split('.').map(Number)
+    return a === 0 || (a === 192 && b === 0 && c === 0) || (a === 198 && (b === 18 || b === 19)) || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224
   }
   if (v === 6) {
     const s = addr.toLowerCase()
     if (s.startsWith('::ffff:')) return privateAddress(s.slice(7))
-    return s === '::' || s === '::1' || s.startsWith('fc') || s.startsWith('fd') || s.startsWith('fe8') || s.startsWith('fe9') || s.startsWith('fea') || s.startsWith('feb') || s.startsWith('ff')
+    return s === '::' || s === '::1' || s.startsWith('fc') || s.startsWith('fd') || s.startsWith('fe8') || s.startsWith('fe9') || s.startsWith('fea') || s.startsWith('feb') || s.startsWith('ff') ||
+      s.startsWith('64:ff9b:') || // NAT64 (RFC 6052 / 8215) embeds an IPv4 address
+      s.startsWith('2002:') // 6to4 embeds an IPv4 address
   }
   return true
 }
@@ -109,7 +126,13 @@ async function assertPublic(url) {
   }
   let addrs = dnsCache.get(host)
   if (!addrs) {
-    addrs = lookup(host, { all: true }).then((r) => r.map((a) => a.address))
+    let timer
+    addrs = Promise.race([
+      lookup(host, { all: true }).then((r) => r.map((a) => a.address)),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('DNS lookup timed out')), DNS_TIMEOUT_MS)
+      })
+    ]).finally(() => clearTimeout(timer))
     dnsCache.set(host, addrs)
   }
   const list = await addrs
