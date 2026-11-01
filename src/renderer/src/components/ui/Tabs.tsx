@@ -9,6 +9,9 @@ export interface TabItem {
   icon?: LucideIcon
   /** Quiet count after the label (e.g. pending cards). */
   count?: number
+  /** Spoken name of the count, e.g. "3 suggestions"; the tab's accessible name becomes "<label>, <countLabel>". */
+  countLabel?: string
+  countTestId?: string
   disabled?: boolean
   testId?: string
 }
@@ -86,11 +89,12 @@ export function Tabs({
             disabled={t.disabled}
             className="tabs-tab"
             data-testid={t.testId}
+            aria-label={t.count !== undefined && t.count > 0 && t.countLabel ? `${t.label}, ${t.countLabel}` : undefined}
             onClick={() => onChange(t.id)}
           >
             {t.icon && <Icon icon={t.icon} size="sm" />}
             {t.label}
-            {t.count !== undefined && t.count > 0 && <span className="tabs-count">{t.count}</span>}
+            {t.count !== undefined && t.count > 0 && <span className="tabs-count" data-testid={t.countTestId}>{t.count}</span>}
           </button>
         )
       })}
