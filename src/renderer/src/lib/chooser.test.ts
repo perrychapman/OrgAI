@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CapabilityItem } from '@shared/types'
-import { localSkillCandidates, nextTabId, skillEmptyCopy } from './chooser'
+import { chooserDesc, chooserName, localSkillCandidates, nextTabId, skillEmptyCopy } from './chooser'
 
 const ids = ['a', 'b', 'c']
 describe('nextTabId', () => {
@@ -30,5 +30,17 @@ describe('skillEmptyCopy', () => {
   it('names the cause', () => {
     expect(skillEmptyCopy('project', 0)).toBe('This project has no skills yet.')
     expect(skillEmptyCopy('project', 3)).toBe('All of them are on this role.')
+  })
+})
+
+describe('chooser text clamps', () => {
+  it('clamps the name to 80 and the description to 200 characters', () => {
+    expect(chooserName('a'.repeat(200))).toHaveLength(80)
+    expect(chooserDesc('b'.repeat(500))).toHaveLength(200)
+    expect(chooserName('short')).toBe('short')
+  })
+  it('flattens control characters and whitespace', () => {
+    expect(chooserDesc('one\n\ttwo   three\u0000x')).toBe('one two three x')
+    expect(chooserName(undefined)).toBe('')
   })
 })
