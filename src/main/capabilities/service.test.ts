@@ -221,8 +221,7 @@ describe('discover', () => {
 })
 
 describe('harness project', () => {
-  it('is refused by every public method', async () => {
-    const h = HARNESS_PROJECT_ID
+  it.each([HARNESS_PROJECT_ID, 'quick', 'skills'])('is refused by every public method (%s)', async (h) => {
     await expect(rig.svc.discover({ projectId: h })).rejects.toThrow(/not found/i)
     await expect(rig.svc.recommend({ projectId: h })).rejects.toThrow(/not found/i)
     await expect(rig.svc.apply({ projectId: h, digest: 'x', candidateId: 'y', roleIds: ['a'] })).rejects.toThrow(/not found/i)

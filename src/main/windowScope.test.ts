@@ -18,10 +18,20 @@ describe('checkRunTarget', () => {
       runProject: (runId: string) => (runId === 'run_h' ? HARNESS_PROJECT_ID : lookup.runProject(runId))
     }
     expect(checkRunTarget({ projectId: 'harness', runId: 'run_h' }, harnessLookup)).toEqual({ projectId: 'harness', runId: 'run_h' })
-    // the stored-project lookup alone does not know it
-    expect(() => checkRunTarget({ projectId: 'harness', runId: 'run_h' }, lookup)).toThrow('Project not found')
+    // the run must still exist and belong to that virtual project
+    expect(() => checkRunTarget({ projectId: 'harness', runId: 'run_h' }, lookup)).toThrow('Run not found')
     expect(() => checkRunTarget({ projectId: 'proj_a', runId: 'run_h' }, harnessLookup)).toThrow('another project')
     expect(parseRunWindowHash(runWindowHash({ projectId: 'harness', runId: 'run_h' }))).toEqual({ projectId: 'harness', runId: 'run_h' })
+  })
+
+  it('accepts runs of all three virtual projects without a stored project', () => {
+    const owners: Record<string, string> = { r_h: 'harness', r_q: 'quick', r_s: 'skills' }
+    const lk = { project: () => null, runProject: (runId: string) => owners[runId] }
+    for (const [runId, projectId] of Object.entries(owners)) {
+      expect(checkRunTarget({ projectId, runId }, lk)).toEqual({ projectId, runId })
+    }
+    expect(() => checkRunTarget({ projectId: 'quick', runId: 'r_s' }, lk)).toThrow('another project')
+    expect(() => checkRunTarget({ projectId: 'quick', runId: 'nope' }, lk)).toThrow('Run not found')
   })
 
   it('refuses unknown, mismatched and malformed targets', () => {

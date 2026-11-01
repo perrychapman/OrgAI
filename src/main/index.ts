@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
-import { HARNESS_PROJECT_ID, IPC, runWindowHash } from '@shared/types'
+import { HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
@@ -20,6 +20,9 @@ import { CommunityPrices } from './connections/communityPrices'
 import type { RuntimeAdapter } from './runtime/types'
 import { McpService } from './mcp/service'
 import { harnessProject } from './mcp/assist'
+import { skillsProject } from './skills/assist'
+import { QuickRunService, projectPeeks } from './quick/quickRuns'
+import { sweepScratchDirs } from './quick/scratch'
 import { McpLibraryStore } from './store/mcpLibrary'
 import { SkillService } from './skills/service'
 import { SkillEvaluationService } from './skills/evaluation'
@@ -248,7 +251,15 @@ app.whenReady().then(() => {
   const mockAdapter = process.env.ORGAI_MOCK === '1'
   /** The virtual project of harness-level runs (library MCP assistant), from the current settings. */
   const harness = () => harnessProject(settings.get(), dataDir, { mock: mockAdapter })
-  const projectOrHarness = (projectId: string) => (projectId === HARNESS_PROJECT_ID ? harness() : projects.get(projectId))
+  // Set once RunManager exists (below); only read when a run or a window asks for a project.
+  let quickRuns: QuickRunService | undefined
+  let skillEvaluationService: SkillEvaluationService | undefined
+  /** A stored project, or the display project of a virtual id (harness, quick, skills). */
+  const projectOrHarness = (projectId: string) =>
+    projectId === HARNESS_PROJECT_ID ? harness()
+    : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
+    : projectId === SKILLS_PROJECT_ID ? skillsProject(settings.get(), dataDir, { mock: mockAdapter })
+    : projects.get(projectId)
   const mcp = new McpService({
     projects,
     secrets,
@@ -272,7 +283,8 @@ app.whenReady().then(() => {
       libraryEntries: () => mcp.libraryEntries(),
       applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
       applyLibraryProposal: (payload) => mcp.applyLibraryProposal(payload)
-    }
+    },
+    skills: { applyProposal: (projectId, payload) => skills.applyProposal(projectId, payload) }
   })
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
@@ -304,7 +316,7 @@ app.whenReady().then(() => {
     if (event.type !== 'run.status' || !['finished', 'error', 'paused'].includes(event.status)) return
     if (event.status !== 'paused') {
       const summary = runManager?.summaryOf(event.runId)
-      if (summary?.kind === 'work' && summary.projectId !== HARNESS_PROJECT_ID) capabilities?.runEnded(summary.projectId, event.runId)
+      if (summary?.kind === 'work' && !isVirtualProjectId(summary.projectId)) capabilities?.runEnded(summary.projectId, event.runId)
     }
     if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
     clearTimeout(spendTimer)
@@ -331,9 +343,50 @@ app.whenReady().then(() => {
       libraryEntries: () => mcp.libraryEntries(),
       searchRegistry: (input) => mcp.registrySearch(input)
     },
-    skills
+    skills,
+    // Chat: a continued or resumed quick run rebuilds its project from summary.quick.
+    quickProject: (summary) => quickRuns?.projectFor(summary),
+    // list_projects (quick runs only): stored projects with their newest run; never virtual ids, never secrets.
+    listProjects: () => projectPeeks(projects.list(), (projectId) => runStore.list(projectId)[0]),
+    // Skill assistant: the library plus (in a project session) the project's skills; reads never throw.
+    skillAssist: {
+      catalog: (projectId) => {
+        try {
+          return {
+            library: skills.libraryList(),
+            project: projectId ? skills.list(projectId) : [],
+            ...(projectId ? { evaluation: skillEvaluationService?.last(projectId) ?? null } : {})
+          }
+        } catch (e) {
+          console.warn(`Skill catalog unavailable: ${(e as Error).message}`)
+          return { library: [], project: [] }
+        }
+      },
+      read: (projectId, ref) => {
+        try {
+          if (typeof ref?.libraryId === 'string') return skills.libraryRead({ libraryId: ref.libraryId })
+          if (typeof ref?.skillId === 'string' && projectId) return skills.read({ projectId, skillId: ref.skillId })
+        } catch {
+          /* unknown id: the tool reports it */
+        }
+        return null
+      }
+    }
   })
   const rm = runManager
+  quickRuns = new QuickRunService({
+    dataDir,
+    settings: () => settings.get(),
+    runs: rm,
+    store: runStore,
+    projects,
+    prepare: (p) => connections.prepareNewProject(p),
+    broadcast,
+    mock: mockAdapter
+  })
+  const quick = quickRuns
+  // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
+  runStore.onRunsRemoved = (removed) => quick.runsRemoved(removed)
   const skillEvaluation = new SkillEvaluationService({
     dataDir,
     project: (projectId) => projects.get(projectId),
@@ -342,6 +395,7 @@ app.whenReady().then(() => {
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
   })
+  skillEvaluationService = skillEvaluation
   if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
   capabilities = new CapabilityService({
     projects,
@@ -380,7 +434,8 @@ app.whenReady().then(() => {
     }),
     skills,
     skillEvaluation,
-    capabilities: caps
+    capabilities: caps,
+    quick
   })
   connections.init()
   connections.startDiscovery()
@@ -418,11 +473,14 @@ app.whenReady().then(() => {
   app.on('before-quit', () => usageMonitor.stop())
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
-  const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID])
+  // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
+  const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID])
   let dropped = 0
   for (const projectId of new Set(runStore.allProjectIds())) if (!knownProjects.has(projectId)) dropped += runStore.removeProject(projectId)
   dropped += runStore.prune(keepRunsFor)
   dropped += runStore.sweepOrphans()
+  // Scratch dirs (Chat without a folder, MCP build workspaces) that no remaining run record points to.
+  dropped += sweepScratchDirs(dataDir, runStore.all())
   sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
   installAppMenu()

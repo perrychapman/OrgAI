@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
-import { HARNESS_PROJECT_ID, isModelTier } from '@shared/types'
+import { HARNESS_PROJECT_ID, isModelTier, isVirtualProjectId } from '@shared/types'
 import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
@@ -239,7 +239,7 @@ export class ProjectStore {
    */
   saveFromRenderer(project: Project): Project {
     if (!isSafeId(project?.id)) throw new Error('Invalid project id')
-    if (project.id === HARNESS_PROJECT_ID) throw new Error('The harness project cannot be saved')
+    if (isVirtualProjectId(project.id)) throw new Error(project.id === HARNESS_PROJECT_ID ? 'The harness project cannot be saved' : 'An assistant project (Chat, Skill assistant) cannot be saved')
     const stored = this.get(project.id)
     if (!stored) throw new Error('Project not found')
     const next: Project = reconcileNearLimitProject(stored, { ...project })
