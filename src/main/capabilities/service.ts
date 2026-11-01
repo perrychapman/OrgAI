@@ -539,26 +539,39 @@ export class CapabilityService implements CapabilityServiceApi {
 
   /**
    * Merge a complete recommend result into the persisted review (after any review in flight): its recommendations
-   * first, then the earlier pending ones whose candidate is unchanged in this discovery, dismissed and already-held
-   * ones dropped, capped at CAPABILITY_MAX_RECOMMENDATIONS. The review is rebound to this discovery (its digest), so
-   * every kept recommendation stays appliable after a restart; with no review yet a stub holds them. A model answer's
-   * gaps replace the earlier ones for the roles in scope. Never awaited by recommend(); never throws.
+   * first, then the earlier pending ones whose candidate is unchanged, dismissed and already-held ones dropped, capped
+   * at CAPABILITY_MAX_RECOMMENDATIONS. The review is rebound to this discovery (its digest) only when the snapshot is
+   * not older than the stored discovery and not narrower (includeOutside on in the review but off here); then
+   * `newCandidateIds` keeps only ids this discovery still lists. Otherwise the stored binding is kept and only the
+   * fresh recommendations whose candidate has the same fingerprint in the stored discovery are merged in. With no
+   * review yet a stub holds them. A model answer's gaps replace the earlier ones for the roles in scope. Never awaited
+   * by recommend(); never throws.
    */
   private persistRecommend(projectId: string, snap: Snapshot, scope: CapabilityScope, outcome: ModelOutcome): void {
     void this.serial(projectId, async () => {
       const project = this.project(projectId)
       const prev = readReview(this.deps.dataDir, projectId)
-      const items = snap.discovery.items
-      const byId = new Map(items.map((i) => [i.id, i]))
+      const prevAt = prev ? Date.parse(prev.discovery.createdAt) : NaN
+      const rebind = !prev || ((!Number.isFinite(prevAt) || snap.at >= prevAt) && (snap.discovery.includeOutside || !prev.discovery.includeOutside))
+      const snapById = new Map(snap.discovery.items.map((i) => [i.id, i]))
+      const prevById = new Map((prev?.discovery.items ?? []).map((i) => [i.id, i]))
+      // The discovery the review stays bound to, and the fresh picks that are valid against it.
+      const items = rebind ? snap.discovery.items : prev!.discovery.items
+      const byId = rebind ? snapById : prevById
       const dismissed = prev?.dismissed ?? []
       const excluded = dismissedIds({ dismissed }, items)
       const refine = (r: CapabilityRecommendation): CapabilityRecommendation | null => refineRecommendation(r, project.roles, byId, excluded)
-      const fresh = outcome.recommendations.map(refine).filter((r): r is CapabilityRecommendation => !!r)
+      const matches = (r: CapabilityRecommendation): boolean => {
+        if (rebind) return true
+        const was = prevById.get(r.candidateId)
+        return !!was && fingerprintOf(was, r.candidateId) === fingerprintOf(snapById.get(r.candidateId), r.candidateId)
+      }
+      const fresh = outcome.recommendations.filter(matches).map(refine).filter((r): r is CapabilityRecommendation => !!r)
       const have = new Set(fresh.map((r) => r.candidateId))
-      const prevById = new Map((prev?.discovery.items ?? []).map((i) => [i.id, i]))
       const carried: CapabilityRecommendation[] = []
       for (const r of prev?.recommendations ?? []) {
-        if (have.has(r.candidateId) || !sameCandidate(r, prevById.get(r.candidateId), byId.get(r.candidateId))) continue
+        if (have.has(r.candidateId)) continue
+        if (rebind && !sameCandidate(r, prevById.get(r.candidateId), snapById.get(r.candidateId))) continue
         const kept = refine(r)
         if (!kept) continue
         have.add(kept.candidateId)
@@ -571,9 +584,17 @@ export class CapabilityService implements CapabilityServiceApi {
         const inScope = (g: CapabilityGap): boolean => !scope.roleId || g.roleId === scope.roleId
         gaps = [...outcome.gaps.filter(known), ...gaps.filter((g) => !inScope(g))].slice(0, CAPABILITY_MAX_GAPS)
       }
-      for (const r of recommendations) snap.recs.set(r.id, r)
-      const base: TeamReview = prev ?? this.stubReview(projectId, snap)
-      this.publish({ ...base, discovery: snap.discovery, digest: snap.digest, recommendations, gaps, pendingCount: recommendations.length, dismissed })
+      if (rebind) {
+        for (const r of recommendations) snap.recs.set(r.id, r)
+        const base: TeamReview = prev ?? this.stubReview(projectId, snap)
+        const newCandidateIds = base.newCandidateIds.filter((id) => snapById.has(id))
+        this.publish({ ...base, discovery: snap.discovery, digest: snap.digest, newCandidateIds, recommendations, gaps, pendingCount: recommendations.length, dismissed })
+      } else {
+        // Kept binding: the merged picks must be found by apply on the stored digest's snapshot when it is still held.
+        const bound = this.findSnapshot(projectId, prev!.digest)
+        for (const r of recommendations) bound?.recs.set(r.id, r)
+        this.publish({ ...prev!, recommendations, gaps, pendingCount: recommendations.length, dismissed })
+      }
     }).catch((e) => console.warn(`[capabilities] Saving the recommendations failed: ${readable(e)}`))
   }
 
@@ -1064,7 +1085,7 @@ export class CapabilityService implements CapabilityServiceApi {
     const evidence = collectEvidence(project, this.recentRecords(projectId))
     const prevIds = new Set((prev?.discovery.items ?? []).map((i) => i.id))
     const newCandidateIds = prev ? items.filter((i) => i.origin !== 'project' && !prevIds.has(i.id)).map((i) => i.id) : []
-    const dismissed = prev?.dismissed ?? []
+    let dismissed = prev?.dismissed ?? []
     const settings = teamReviewOf(project)
     let runsSinceModel = (prev?.runsSinceModel ?? 0) + opts.runsAdded
     const excluded = dismissedIds({ dismissed }, items)
@@ -1149,6 +1170,29 @@ export class CapabilityService implements CapabilityServiceApi {
         skip = outcome.fallbackReason === 'timeout' ? 'timeout' : outcome.fallbackReason === 'cancelled' ? 'cancelled' : outcome.fallbackReason === 'noCandidates' ? 'noChange' : 'error'
       }
       if (outcome.tokens !== undefined) tokensUsed = outcome.tokens
+    }
+    // A dismiss or restore may have landed while this review awaited discovery or the model (they are not in
+    // `serial`): take the stored list as it is now, drop what it dismisses and keep what it restored.
+    const latest = readReview(this.deps.dataDir, projectId)
+    if (latest) {
+      const before = new Set(dismissed.map((d) => d.candidateId))
+      dismissed = latest.dismissed
+      const after = new Set(dismissed.map((d) => d.candidateId))
+      const finalExcluded = dismissedIds({ dismissed }, items)
+      const refineFinal = (r: CapabilityRecommendation): CapabilityRecommendation | null => refineRecommendation(r, project.roles, byId, finalExcluded)
+      recommendations = recommendations.map(refineFinal).filter((r): r is CapabilityRecommendation => !!r)
+      const have = new Set(recommendations.map((r) => r.candidateId))
+      const latestById = new Map(latest.discovery.items.map((i) => [i.id, i]))
+      const restored: CapabilityRecommendation[] = []
+      for (const r of latest.recommendations) {
+        if (!before.has(r.candidateId) || after.has(r.candidateId) || have.has(r.candidateId)) continue
+        if (!sameCandidate(r, latestById.get(r.candidateId), byId.get(r.candidateId))) continue
+        const back = refineFinal(r)
+        if (!back) continue
+        have.add(back.candidateId)
+        restored.push(back)
+      }
+      recommendations = [...restored, ...recommendations].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
     }
     for (const r of recommendations) snap.recs.set(r.id, r)
     const review: TeamReview = {

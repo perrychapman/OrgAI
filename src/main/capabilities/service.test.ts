@@ -1153,3 +1153,179 @@ describe('Team tab walk 3 fixes', () => {
     expect(review.recommendations.map((r) => r.id)).toEqual(res.recommendations.map((r) => r.id))
   })
 })
+
+describe('review persistence fixes (review M1, M2, L2)', () => {
+  type Answer = { text: string }
+  /** The next complete() call blocks until the returned release is called. */
+  const blockNext = (): { release: (a: Answer) => void } => {
+    const gate: { release: (a: Answer) => void } = { release: () => {} }
+    rig.complete.mockImplementationOnce(() => new Promise<Answer>((r) => (gate.release = r)))
+    return gate
+  }
+  it('M1: a dismissal made while a review runs survives the review', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    const b = pick(d, 'skill', 'code-review')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    await rig.svc.recommend({ projectId: 'p1' })
+    await rig.svc.idle('p1')
+    expect(readReview(rig.data, 'p1')!.recommendations.map((r) => r.candidateId)).toEqual([a.id])
+    const gate = blockNext()
+    const p = rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })
+    await vi.waitFor(() => expect(rig.complete).toHaveBeenCalledTimes(2))
+    rig.svc.dismiss({ projectId: 'p1', candidateId: a.id })
+    // The model (asked before the dismissal) offers a again, plus b.
+    gate.release({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }, { candidateId: b.id, roleIds: [REV], reason: 'b' }]) })
+    const out = await p
+    expect(out.dismissed.map((x) => x.candidateId)).toEqual([a.id])
+    expect(out.recommendations.map((r) => r.candidateId)).toEqual([b.id])
+    const saved = readReview(rig.data, 'p1')!
+    expect(saved.dismissed.map((x) => x.candidateId)).toEqual([a.id])
+    expect(saved.recommendations.some((r) => r.candidateId === a.id)).toBe(false)
+  })
+
+  it('M1: a restore made while a review runs survives the review, and its card stays appliable', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    await rig.svc.idle('p1')
+    rig.svc.dismiss({ projectId: 'p1', recommendationId: res.recommendations[0]!.id })
+    const gate = blockNext()
+    const p = rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })
+    await vi.waitFor(() => expect(rig.complete).toHaveBeenCalledTimes(2))
+    expect(rig.svc.restore({ projectId: 'p1', candidateId: a.id }).recommendations.map((r) => r.candidateId)).toEqual([a.id])
+    gate.release({ text: answer([]) })
+    const out = await p
+    expect(out.dismissed).toEqual([])
+    expect(out.recommendations.map((r) => r.candidateId)).toEqual([a.id])
+    const saved = readReview(rig.data, 'p1')!
+    expect(saved.recommendations.map((r) => r.id)).toEqual([res.recommendations[0]!.id])
+    const applied = await rig.make().apply({ projectId: 'p1', digest: saved.digest, recommendationId: saved.recommendations[0]!.id, roleIds: [ENG] })
+    expect(applied.applied.name).toBe('repo-helper')
+  })
+
+  it('M2: a recommend on an older reused snapshot keeps the newer binding and merges only unchanged candidates', async () => {
+    // The snapshot recommend will reuse, made before the repo changed.
+    const old = await rig.svc.discover({ projectId: 'p1', requestId: 'req-old' })
+    const helper = pick(old, 'skill', 'repo-helper')
+    const review = pick(old, 'skill', 'code-review')
+    rig.clock.t += 1000
+    put(join(rig.repo, '.claude', 'skills', 'fresh-skill', 'SKILL.md'), SKILL_MD('fresh-skill', 'Runs the repository tests.'))
+    put(join(rig.repo, '.claude', 'skills', 'repo-helper', 'SKILL.md'), SKILL_MD('repo-helper', 'Changed since.'))
+    const d1 = await rig.svc.discover({ projectId: 'p1' })
+    const fresh = pick(d1, 'skill', 'fresh-skill')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: fresh.id, roleIds: [ENG], reason: 'f' }]) })
+    const bound = await rig.svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })
+    expect(bound.recommendations.map((r) => r.candidateId)).toEqual([fresh.id])
+    // repo-helper changed between the two discoveries (dropped); code-review is the same in both (merged).
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: helper.id, roleIds: [ENG], reason: 'h' }, { candidateId: review.id, roleIds: [REV], reason: 'r' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1', requestId: 'req-old' })
+    expect(res.digest).toBe(old.digest)
+    await rig.svc.idle('p1')
+    const saved = readReview(rig.data, 'p1')!
+    expect(saved.digest).toBe(bound.digest)
+    expect(saved.discovery.createdAt).toBe(bound.discovery.createdAt)
+    expect(saved.recommendations.map((r) => r.candidateId)).toEqual([review.id, fresh.id])
+    // The merged card applies on the kept binding after a restart.
+    const merged = saved.recommendations[0]!
+    const out = await rig.make().apply({ projectId: 'p1', digest: saved.digest, recommendationId: merged.id, roleIds: merged.roleIds })
+    expect(out.applied.name).toBe('code-review')
+  })
+
+  it('M2: a recommend without outside sources never rebinds a review that had them', async () => {
+    const outside = await rig.svc.review({ projectId: 'p1', trigger: 'manual', includeOutside: true })
+    expect(outside.discovery.includeOutside).toBe(true)
+    rig.clock.t += 1000
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    await rig.svc.recommend({ projectId: 'p1' })
+    await rig.svc.idle('p1')
+    const saved = readReview(rig.data, 'p1')!
+    expect(saved.digest).toBe(outside.digest)
+    expect(saved.discovery.includeOutside).toBe(true)
+    expect(saved.recommendations.map((r) => r.candidateId)).toEqual([a.id])
+  })
+
+  it('M2: a newer recommend rebinds and keeps only newCandidateIds the new discovery lists', async () => {
+    await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    put(join(rig.repo, '.claude', 'skills', 'fresh-skill', 'SKILL.md'), SKILL_MD('fresh-skill', 'Runs the repository tests.'))
+    rig.clock.t += 1000
+    const second = await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    const fresh = pick(second.discovery, 'skill', 'fresh-skill')
+    expect(second.newCandidateIds).toEqual([fresh.id])
+    rmSync(join(rig.repo, '.claude', 'skills', 'fresh-skill'), { recursive: true, force: true })
+    rig.clock.t += 1000
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    await rig.svc.idle('p1')
+    const saved = readReview(rig.data, 'p1')!
+    expect(saved.digest).toBe(res.digest)
+    expect(saved.digest).not.toBe(second.digest)
+    expect(saved.newCandidateIds).toEqual([])
+    expect(saved.recommendations.map((r) => r.candidateId)).toEqual([a.id])
+  })
+
+  it('L2: restore after the candidate changed removes the dismissal and brings no card back', async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    await rig.svc.idle('p1')
+    const recId = res.recommendations[0]!.id
+    rig.svc.dismiss({ projectId: 'p1', recommendationId: recId })
+    put(join(rig.repo, '.claude', 'skills', 'repo-helper', 'SKILL.md'), SKILL_MD('repo-helper', 'Changed since.'))
+    rig.clock.t += 1000
+    const rebound = await rig.svc.review({ projectId: 'p1', trigger: 'manual' })
+    expect(rebound.dismissed.map((x) => x.candidateId)).toEqual([a.id])
+    const out = rig.svc.restore({ projectId: 'p1', candidateId: a.id })
+    expect(out.dismissed).toEqual([])
+    expect(out.recommendations.some((r) => r.candidateId === a.id)).toBe(false)
+    expect(readReview(rig.data, 'p1')!.pendingCount).toBe(out.recommendations.length)
+    // The old recommendation was not put back on the held snapshot either.
+    await expect(rig.svc.apply({ projectId: 'p1', digest: out.digest, recommendationId: recId, roleIds: [ENG] })).rejects.toThrow(/Recommendation not found/)
+  })
+
+  it('L2: a recommend queued behind an in-flight automatic review merges with that review', async () => {
+    const live = rig.make({ mock: false })
+    rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: 200_000, everyRuns: 1 } })
+    const d = await live.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    const b = pick(d, 'skill', 'code-review')
+    const gate = blockNext()
+    live.runEnded('p1', 'run-1')
+    await vi.waitFor(() => expect(rig.complete).toHaveBeenCalledTimes(1))
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    const res = await live.recommend({ projectId: 'p1' })
+    expect(res.recommendations.map((r) => r.candidateId)).toEqual([a.id])
+    // The recommend result is not saved until the review in flight is.
+    expect(readReview(rig.data, 'p1')).toBeNull()
+    gate.release({ text: answer([{ candidateId: b.id, roleIds: [REV], reason: 'b' }]) })
+    await live.idle('p1')
+    const saved = readReview(rig.data, 'p1')!
+    expect(saved.trigger).toBe('runEnded')
+    expect(saved.modelInput).toBe('proactive')
+    expect(saved.recommendations.map((r) => r.candidateId)).toEqual([a.id, b.id])
+    expect(saved.digest).toBe(res.digest)
+  })
+
+  it("L2: a stub written by a recommend never satisfies the 'opened' throttle and its pending card carries over", async () => {
+    const d = await rig.svc.discover({ projectId: 'p1' })
+    const a = pick(d, 'skill', 'repo-helper')
+    rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: a.id, roleIds: [ENG], reason: 'a' }]) })
+    const res = await rig.svc.recommend({ projectId: 'p1' })
+    await rig.svc.idle('p1')
+    const stub = readReview(rig.data, 'p1')!
+    expect(stub).toMatchObject({ stub: true, pendingCount: 1 })
+    rig.clock.t += 1000
+    const opened = await rig.svc.review({ projectId: 'p1', trigger: 'opened' })
+    expect(opened.stub).toBeUndefined()
+    expect(opened.trigger).toBe('opened')
+    expect(opened.checkedAt).not.toBe(stub.checkedAt)
+    expect(opened.recommendations.find((r) => r.candidateId === a.id)?.id).toBe(res.recommendations[0]!.id)
+    expect(readReview(rig.data, 'p1')!.stub).toBeUndefined()
+  })
+})
