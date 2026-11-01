@@ -620,10 +620,12 @@
 .connectors-back {
   display: flex;
   position: sticky;
-  top: 0;
+  /* The settings scroller pads its top by --space-5; stick to its real top edge so tiles never show above the bar. */
+  top: calc(-1 * var(--space-5));
   z-index: var(--z-sticky);
   padding-block: var(--space-2);
   margin-block: calc(-1 * var(--space-2)) calc(-1 * var(--space-1));
+  box-shadow: 0 calc(-1 * var(--space-5)) 0 var(--bg);
   background: var(--bg);
   border-bottom: 1px solid var(--border-subtle);
 }
