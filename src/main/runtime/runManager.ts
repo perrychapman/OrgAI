@@ -57,7 +57,7 @@ import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
-import { describePlanChange, peerDeliveryBlocked } from './continuation'
+import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
@@ -1000,7 +1000,8 @@ export class RunManager {
         getPlan: () => active.record.plan,
         updatePlan,
         pendingInteractions: () => pendingCount(active),
-        autoContinue: project.autoContinue !== false,
+        // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
+        autoContinue: project.autoContinue !== false && planNudgesApply(summary),
         maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {

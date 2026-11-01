@@ -217,6 +217,14 @@ describe('quick runs', () => {
     await m.start({ project: p, prompt: 'a', quick: quickInfo({ team: 'default' }) })
     expect(ctxs[0].roles.map((r) => r.model)).toEqual(p.roles.map((r) => r.model))
   })
+
+  it('turns plan nudges off for a single-assistant Chat and keeps them for the default team (UX M5)', async () => {
+    const { m, ctxs } = rig()
+    await m.start({ project: quickProj({ autoContinue: true }), prompt: 'a', quick: quickInfo({ team: 'single' }) })
+    await m.start({ project: quickProj({ autoContinue: true }), prompt: 'b', quick: quickInfo({ team: 'default' }) })
+    await m.start({ project: makeProject({ path: folder(), autoContinue: true }), prompt: 'c' })
+    expect(ctxs.map((c) => c.autoContinue)).toEqual([false, true, true])
+  })
 })
 
 describe('skill assistant runs', () => {
