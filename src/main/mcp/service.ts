@@ -56,9 +56,15 @@ import type { ConnectorAddInput, ConnectorInfo, ConnectorTokenInput } from '@sha
 
 /** Connector fields are written by the main process only (connectors:add): drop whatever an input carries. */
 function noConnector<T extends { connectorId?: string; connectorVariant?: string }>(x: T): T {
-  if (!x || typeof x !== 'object' || (!('connectorId' in x) && !('connectorVariant' in x))) return x
-  const { connectorId: _c, connectorVariant: _v, ...rest } = x
+  if (!x || typeof x !== 'object' || (!('connectorId' in x) && !('connectorVariant' in x) && !('connectedAt' in x))) return x
+  const { connectorId: _c, connectorVariant: _v, connectedAt: _at, ...rest } = x as T & { connectedAt?: number }
   return rest as T
+}
+
+/** The entry with connectedAt set to `at`, or removed when `at` is undefined. */
+function withConnectedAt(entry: McpLibraryEntry, at: number | undefined): McpLibraryEntry {
+  const { connectedAt: _old, ...rest } = entry
+  return at === undefined ? rest : { ...rest, connectedAt: at }
 }
 
 /** The OAuth functions McpService calls; tests inject fakes. */
@@ -281,6 +287,7 @@ export class McpService {
     if (prev?.connectorId && keepsConnector) {
       entry.connectorId = prev.connectorId
       if (prev.connectorVariant) entry.connectorVariant = prev.connectorVariant
+      if (prev.connectedAt !== undefined) entry.connectedAt = prev.connectedAt
     }
     const owner: McpSecretOwner = { libraryId: entry.id }
     if (prev) this.retarget(owner, prev, entry, opts.applied === true)
@@ -601,6 +608,9 @@ export class McpService {
       if (connector?.variant.auth.kind === 'token') {
         throw new OAuthError('authorization', `${connector.def.name} uses a ${connector.variant.auth.label.toLowerCase()}, not OAuth. Paste it instead.`)
       }
+      if (connector?.variant.auth.kind === 'none') {
+        throw new OAuthError('authorization', `${connector.def.name} needs no sign-in.`)
+      }
       if (clientId || enteredSecret) {
         if (enteredSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), enteredSecret)
         const cur = ref.spec.oauth
@@ -665,6 +675,7 @@ export class McpService {
       this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), result.tokens.refreshToken ?? null)
       if (result.clientSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), result.clientSecret)
       this.lastErrors.delete(key)
+      this.markConnected(ref.owner, true)
       return this.statusFor(ref.owner, result.config)
     } catch (e) {
       const secrets = [enteredSecret ?? '', secretOf() ?? '']
@@ -701,6 +712,7 @@ export class McpService {
     const cfg = ref.spec.oauth
     const next = cfg ? ((): McpOAuthConfig => { const { authorizedAt: _a, expiresAt: _e, account: _c, ...keep } = cfg; return keep })() : undefined
     if (next) ref.saveOAuth(next)
+    this.markConnected(ref.owner, false)
     if (ref.library) this.notifyLibrary()
     return this.statusFor(ref.owner, next)
   }
@@ -788,6 +800,19 @@ export class McpService {
 
   // ---------- connectors ----------
 
+  /**
+   * A connector library entry's auth succeeded (connectedAt = now) or was cleared (connectedAt removed). Project-only
+   * servers and ordinary library entries are left alone. No broadcast; the caller notifies.
+   */
+  private markConnected(owner: McpSecretOwner, connected: boolean): void {
+    if (!('libraryId' in owner)) return
+    const lib = this.library
+    const entry = lib?.get(owner.libraryId)
+    if (!lib || !entry?.connectorId) return
+    if (!connected && entry.connectedAt === undefined) return
+    lib.save(withConnectedAt(entry, connected ? this.now() : undefined))
+  }
+
   /** The library entry made from a connector, if any (the first one; connectors:add keeps it unique). */
   private connectorEntry(connectorId: string): McpLibraryEntry | undefined {
     return this.libraryEntries().find((e) => e.connectorId === connectorId)
@@ -801,7 +826,15 @@ export class McpService {
       if (!entry) return { connector: structuredClone(def), state: 'available' as const }
       const info = this.libraryInfo(entry, all)
       const variant = connectorVariant(def, entry.connectorVariant)
-      return { connector: structuredClone(def), library: info, variant: variant.id, state: connectorState(variant, info) }
+      const state = connectorState(variant, info)
+      return {
+        connector: structuredClone(def),
+        library: info,
+        variant: variant.id,
+        state,
+        // Only a connected card carries it: a stale stamp (e.g. a mock sign-in seen outside mock mode) is not shown.
+        ...(state === 'connected' && entry.connectedAt !== undefined ? { connectedAt: entry.connectedAt } : {})
+      }
     })
   }
 
@@ -817,7 +850,9 @@ export class McpService {
     if (existing) return this.libraryInfo(existing, this.projects.list())
     const variant = connectorVariant(def, typeof input.variant === 'string' ? input.variant : undefined)
     const entries = lib.list()
-    const entry = buildConnectorEntry(def, variant, newId('mcpl'), entries.map((e) => e.name), new Date(this.now()))
+    const built = buildConnectorEntry(def, variant, newId('mcpl'), entries.map((e) => e.name), new Date(this.now()))
+    // Nothing to sign in to: the entry is connected as soon as it exists.
+    const entry = variant.auth.kind === 'none' ? withConnectedAt(built, this.now()) : built
     assertValidLibraryEntry(entry, entries)
     const saved = lib.save(entry)
     this.notifyLibrary()
@@ -831,14 +866,16 @@ export class McpService {
     const entry = this.connectorEntry(def.id)
     if (!entry) throw new Error(`Add ${def.name} first.`)
     const auth = connectorVariant(def, entry.connectorVariant).auth
+    if (auth.kind === 'none') throw new Error(`${def.name} needs no sign-in.`)
     if (auth.kind !== 'token') throw new Error(`${def.name} signs in with OAuth; use Authorize instead.`)
     if (!(entry.secretHeaders ?? []).includes(auth.header)) throw new Error(`${def.name} has no ${auth.header} slot. Remove it and add it again.`)
     const key = mcpOwnerSecretKey({ libraryId: entry.id }, 'header', auth.header)
     if (input.token === null) this.secrets.delete(key)
     else if (typeof input.token === 'string') this.secrets.set(key, tokenHeaderValue(auth, input.token))
     else throw new Error('The token must be text.')
+    this.markConnected({ libraryId: entry.id }, input.token !== null)
     this.notifyLibrary()
-    return this.libraryInfo(entry, this.projects.list())
+    return this.libraryInfo(this.lib().get(entry.id) ?? entry, this.projects.list())
   }
 
   /** ORGAI_MOCK=1 only: a connector entry's test without network; undefined otherwise. */
@@ -871,6 +908,7 @@ export class McpService {
     this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), MOCK_CONNECTOR_TOKEN)
     this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), null)
     this.lastErrors.delete(mcpOwnerPrefix(ref.owner))
+    this.markConnected(ref.owner, true)
     return this.statusFor(ref.owner, config)
   }
 

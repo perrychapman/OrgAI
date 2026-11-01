@@ -13,7 +13,14 @@ export const CATEGORY_LABELS: Record<ConnectorCategory, string> = {
   dev: 'Code',
   monitoring: 'Monitoring',
   payments: 'Payments',
-  design: 'Design'
+  design: 'Design',
+  crm: 'Customers',
+  data: 'Data',
+  cloud: 'Cloud',
+  knowledge: 'Knowledge',
+  automation: 'Automation',
+  commerce: 'Commerce',
+  meetings: 'Meetings'
 }
 
 export type ChipTone = 'neutral' | 'warning' | 'success' | 'danger'

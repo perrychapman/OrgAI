@@ -16,12 +16,12 @@ export function connectorOf(entry: Pick<McpServerSpec, 'connectorId' | 'connecto
   return { def, variant: connectorVariant(def, entry.connectorVariant) }
 }
 
-/** The OAuth preset for runAuthorization / refreshTokens; undefined for token connectors and ordinary entries. */
+/** The OAuth preset for runAuthorization / refreshTokens; undefined for token and no-auth connectors and ordinary entries. */
 export function oauthPresetFor(entry: Pick<McpServerSpec, 'connectorId' | 'connectorVariant'> | undefined): OAuthPreset | undefined {
   const c = connectorOf(entry)
   if (!c) return undefined
   const auth = c.variant.auth
-  if (auth.kind === 'token') return undefined
+  if (auth.kind === 'token' || auth.kind === 'none') return undefined
   const o = auth.overrides ?? {}
   return {
     ...(o.issuer ? { issuer: o.issuer } : {}),
@@ -84,6 +84,7 @@ export function tokenHeaderValue(auth: Extract<ConnectorAuth, { kind: 'token' }>
 /** A gallery card's state from the entry's library info. */
 export function connectorState(variant: ConnectorVariant | undefined, info: McpLibraryInfo | undefined): ConnectorState {
   if (!info || !variant) return 'available'
+  if (variant.auth.kind === 'none') return 'connected'
   if (variant.auth.kind === 'token') return info.missingSecrets.length ? 'needsSetup' : 'connected'
   switch (info.auth.state) {
     case 'authorized':
@@ -110,7 +111,14 @@ const MOCK_TOOLS: Record<string, string[]> = {
   dev: ['search_code', 'get_issue', 'list_pull_requests'],
   monitoring: ['search_issues', 'get_event', 'list_releases'],
   payments: ['list_customers', 'get_payment', 'list_subscriptions'],
-  design: ['get_file', 'get_node', 'list_variables']
+  design: ['get_file', 'get_node', 'list_variables'],
+  crm: ['search_contacts', 'get_conversation', 'list_companies'],
+  data: ['list_sheets', 'read_range', 'search_files'],
+  cloud: ['list_projects', 'get_deployment', 'get_logs'],
+  knowledge: ['search', 'read_page', 'ask_question'],
+  automation: ['list_workflows', 'get_run', 'trigger_workflow'],
+  commerce: ['list_orders', 'get_product', 'list_customers'],
+  meetings: ['list_meetings', 'get_transcript', 'search_notes']
 }
 
 /** The mock test result for a connector entry: tools when it is set up, else the same failure a real test gives. */
