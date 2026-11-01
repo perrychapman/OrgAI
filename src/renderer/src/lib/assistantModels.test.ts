@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderModel } from '@shared/types'
-import { modelDisplayName, modelSettingDescription, modelSettingGroups, modelSources } from './assistantModels'
+import { ASSISTANT_MODEL_FALLBACK, modelDisplayName,modelSettingDescription, modelSettingGroups, modelSources } from './assistantModels'
 import type { ModelSource } from './assistantModels'
 
 const catalog: ProviderModel[] = [
@@ -11,6 +11,13 @@ const sources: ModelSource[] = [
   { id: 'anthropic', name: 'Anthropic', tierModels: { deep: 'opus' } },
   { id: 'openai', name: 'OpenAI', tierModels: {}, catalog }
 ]
+
+describe('ASSISTANT_MODEL_FALLBACK', () => {
+  it('shows deep for the Skill assistant and everyday for Chat when a setting is missing', () => {
+    expect(ASSISTANT_MODEL_FALLBACK.skillAssistModel).toBe('deep')
+    expect(ASSISTANT_MODEL_FALLBACK.quickRunModel).toBe('everyday')
+  })
+})
 
 describe('modelDisplayName', () => {
   it('shows tiers (and legacy aliases) as tiers, catalog labels, and unknown ids as written', () => {

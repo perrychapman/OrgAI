@@ -2,8 +2,8 @@ import type { ReactElement } from 'react'
 import type { CSSProperties } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { BellRing, Folder } from 'lucide-react'
-import { HARNESS_PROJECT_ID } from '@shared/types'
-import { activeRun, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
+import { isVirtualProjectId } from '@shared/types'
+import { activeRun, openNewChat, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import TeamView from './views/TeamView'
@@ -17,13 +17,13 @@ import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
 import { useRunTabShortcuts } from './components/RunTabs'
 import { Badge } from './components/ui/Badge'
-import { Button } from './components/ui/Button'
 import { Icon } from './components/ui/Icon'
 import { Tabs, type TabItem } from './components/ui/Tabs'
 import { needsYou } from './lib/runChains'
 import { waitingItems } from './lib/needsYou'
 import { runName, runTag } from './lib/runLabels'
 import { folderName } from './lib/paths'
+import { assistantLabel } from './lib/assistants'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
@@ -39,7 +39,7 @@ export default function App(): ReactElement {
   const run = useAppStore(activeRun)
   const runsById = useAppStore((s) => s.runs)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
-  const isHarness = selectedId === HARNESS_PROJECT_ID
+  const isVirtual = !!selectedId && isVirtualProjectId(selectedId)
   const teamSummary = useTeamReviewSummary(selectedId)
   // Project-wide: every decision any run of this project waits on.
   const waitingHere = useMemo(() => {
@@ -70,7 +70,7 @@ export default function App(): ReactElement {
   }, [init])
 
   useEffect(() => {
-    if (selectedId && selectedId !== HARNESS_PROJECT_ID) seedTeamReview(selectedId)
+    if (selectedId && !isVirtualProjectId(selectedId)) seedTeamReview(selectedId)
   }, [selectedId])
 
   // Ctrl/Cmd+B toggles the sidebar rail.
@@ -86,29 +86,42 @@ export default function App(): ReactElement {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Ctrl/Cmd+Shift+N opens a new Chat on its start page (an accelerator only; the buttons stay the way in).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || !e.shiftKey || e.key.toLowerCase() !== 'n') return
+      const t = e.target as HTMLElement | null
+      if (t?.isContentEditable) return
+      e.preventDefault()
+      void openNewChat()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // The window title names the project and the viewed run first, so the OS task switcher and notifications show
   // which run is on screen. "OrgAI" never leads.
   const runIndex = run ? indexes.get(run.summary.id) : undefined
   useEffect(() => {
-    const where = isHarness ? 'MCP library assistant' : project?.name
+    const where = selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project?.name
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
     else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${runName(run.summary)} · OrgAI`
     else document.title = `${where} · OrgAI`
-  }, [run, runIndex, view, project, isHarness])
+  }, [run, runIndex, view, project, isVirtual])
 
   const teamPending = teamSummary?.pendingCount ?? 0
   const sections: TabItem[] = [
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
-    ...(isHarness
+    ...(isVirtual
       ? []
       : [
           { id: 'team', label: 'Team', testId: 'tab-team', count: teamPending, countLabel: `${teamPending} ${teamPending === 1 ? 'suggestion' : 'suggestions'}`, countTestId: 'team-tab-badge' },
           { id: 'settings', label: 'Settings', testId: 'tab-settings' }
         ])
   ]
-  const folder = project && !isHarness ? folderName(project.path) : ''
+  const folder = project && !isVirtual ? folderName(project.path) : ''
   const showFolder = !!project && !!folder && folder !== project.name
 
   return (
@@ -144,7 +157,7 @@ export default function App(): ReactElement {
           ) : (
             <>
               <div className="topbar project-topbar">
-                <h1 title={isHarness ? undefined : project.name}>{isHarness ? 'MCP library assistant' : project.name}</h1>
+                <h1 title={isVirtual ? undefined : project.name}>{selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project.name}</h1>
                 {showFolder && (
                   <span className="project-folder" data-testid="project-folder" title={project.path}>
                     <Icon icon={Folder} size="xs" />
@@ -161,11 +174,6 @@ export default function App(): ReactElement {
                   className="topbar-tabs"
                 />
                 <div className="spacer" />
-                {isHarness && (
-                  <Button size="sm" variant="ghost" testId="harness-back" onClick={() => useAppStore.getState().openMcpLibrary()}>
-                    Back to MCP library
-                  </Button>
-                )}
                 {view !== 'run' && waitingHere.count > 0 && (
                   <button
                     type="button"
