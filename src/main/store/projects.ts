@@ -224,6 +224,7 @@ export class ProjectStore {
 
   /** Every save (saveFromRenderer, update) passes Role.model through sanitizeRoleModels. */
   save(project: Project): Project {
+    if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
     const updated = { ...sanitizeRoleModels(project, this.tierContext).project, updatedAt: new Date().toISOString() }
     const idx = this.projects.findIndex((p) => p.id === project.id)
     if (idx === -1) this.projects.push(updated)

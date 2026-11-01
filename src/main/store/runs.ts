@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { QUICK_PROJECT_ID } from '@shared/types'
 import type { ImageAttachment, ImageMediaType, RunRecord, RunSummary, RunUsage, TranscriptEntry } from '@shared/types'
 
 const MAX_TRANSCRIPT_ENTRIES = 5000
@@ -256,7 +257,7 @@ export class RunStore {
       if (!run) continue
       run.projectId = projectId
       // Out of the Chat: from now on it is a project run (continuing it uses the project's own roles).
-      if (projectId !== 'quick') delete run.quick
+      if (projectId !== QUICK_PROJECT_ID) delete run.quick
       moved.push({ ...run })
     }
     if (moved.length) this.persist()

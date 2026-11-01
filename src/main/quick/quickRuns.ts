@@ -253,7 +253,7 @@ export class QuickRunService {
       throw new Error(`Give the project a name of 1 to ${QUICK_PROMOTE_NAME_MAX} characters.`)
     }
     const chain = this.deps.runs.chain(run.id)
-    const live = chain.find((r) => LIVE.has(r.status))
+    const live = chain.find((r) => LIVE.has(r.status) || (r.status === 'paused' && r.autoResume === true))
     if (live) throw new Error('End the session first: a run of this conversation is still open.')
     const folder = run.quick.folder
     const existing = this.deps.projects.list().find((p) => pathKey(p.path) === pathKey(folder))

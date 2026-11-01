@@ -9,6 +9,11 @@ import type { McpLibraryEntry } from '@shared/types'
  */
 /** Older records lack connectedAt; a malformed one (not a positive finite number, or on a non-connector) is dropped. */
 function normalizeEntry(e: McpLibraryEntry): McpLibraryEntry {
+  // buildDigest is main-written: a malformed value (not 64 hex chars) is dropped.
+  if ('buildDigest' in e && !(typeof e.buildDigest === 'string' && /^[0-9a-f]{64}$/.test(e.buildDigest))) {
+    const { buildDigest: _bd, ...r } = e
+    e = r
+  }
   if (!('connectedAt' in e)) return e
   const ok = typeof e.connectedAt === 'number' && Number.isFinite(e.connectedAt) && e.connectedAt > 0 && typeof e.connectorId === 'string'
   if (ok) return e
