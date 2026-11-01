@@ -26,7 +26,9 @@ const SOURCE_LABELS: Record<SkillSource, string> = {
   user: 'Written in OrgAI',
   repo: 'From the repository',
   suggestion: 'From a suggestion',
-  library: 'From the library'
+  library: 'From the library',
+  local: 'From this computer',
+  github: 'From GitHub'
 }
 
 export function sourceLabel(source: SkillSource): string {
