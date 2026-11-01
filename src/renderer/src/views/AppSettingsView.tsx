@@ -105,7 +105,15 @@ export default function AppSettingsView(): ReactElement {
   const mcpFocus = useAppStore((st) => st.mcpFocus)
   const [pane, setPane] = useState<string>(() => (useAppStore.getState().mcpFocus?.kind === 'library' ? APP_SETTINGS_PANES.mcpLibrary : APP_SETTINGS_PANES.general))
   // Leaving App settings for good drops the "Back to Team" way back.
-  useEffect(() => () => clearTeamOrigin(), [])
+  // Deferred and checked against the view so StrictMode's simulated remount (dev) keeps it.
+  useEffect(
+    () => () => {
+      setTimeout(() => {
+        if (useAppStore.getState().view !== 'appSettings') clearTeamOrigin()
+      }, 0)
+    },
+    []
+  )
   // A jump from elsewhere ("App settings > Connections") opens the pane that holds its section.
   useEffect(() => {
     const take = (): void => {
