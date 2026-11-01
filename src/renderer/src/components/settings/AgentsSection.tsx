@@ -113,13 +113,13 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
           <SettingsCard>
           <SettingRow
             id={row('team-review-row')}
-            title="Team review"
+            title="Team assistant review"
             description="After every N finished runs, within the token budget; AI review sends the names of found tools and skills to the model."
             width="select"
             control={
               <Select
                 id={row('team-review')}
-                label="Team review"
+                label="Team assistant review"
                 describedBy={settingDescId(row('team-review-row'))}
                 value={review.auto}
                 options={[
@@ -146,11 +146,11 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
             }
           />
           <SettingRow
-            title="Team review token budget"
+            title="Team assistant review token budget"
             width="number"
             control={
               <ClampedNumber
-                label="Team review token budget"
+                label="Team assistant review token budget"
                 min={TEAM_REVIEW_MIN_BUDGET}
                 max={TEAM_REVIEW_MAX_BUDGET}
                 disabled={review.auto !== 'ai'}
