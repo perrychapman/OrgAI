@@ -488,6 +488,11 @@ export interface Project {
   skills?: SkillSpec[]
   /** Proactive skill evaluation (skills:evaluate). Missing = DEFAULT_SKILL_EVALUATION (off). Saved through projects:save. */
   skillEvaluation?: SkillEvaluationSettings
+  /**
+   * Proactive Team setup review (capabilities:review). Missing = DEFAULT_TEAM_REVIEW (auto 'ai', bounded by tokenBudget
+   * and everyRuns). Saved through projects:save, normalized by teamReviewOf.
+   */
+  teamReview?: TeamReviewSettings
   /** AI-driven setup state. Missing on projects created before setup existed. */
   setup?: ProjectSetup
   createdAt: string
@@ -3007,6 +3012,122 @@ export const CAPABILITY_MAX_RECOMMENDATIONS = 12
 export const CAPABILITY_MAX_GAPS = 8
 export const CAPABILITY_RECOMMEND_TIMEOUT_MS = 60_000
 
+// ---------- Team setup review (phase 2): re-checked on demand and as work happens ----------
+
+/**
+ * Project.teamReview. 'off' = only the manual re-check; 'free' = proactive token-free discovery and run evidence;
+ * 'ai' (default) = also the one-shot recommend completion (everyday tier) within tokenBudget, at most once per
+ * everyRuns finished work runs and only when there is new evidence or new candidates.
+ */
+export type TeamReviewAuto = 'off' | 'free' | 'ai'
+export interface TeamReviewSettings {
+  auto: TeamReviewAuto
+  /** Most tokens (input + output) one proactive model step may spend. Clamped TEAM_REVIEW_MIN_BUDGET..MAX. */
+  tokenBudget: number
+  /** The proactive model step runs at most once per this many finished work runs (>= 1). */
+  everyRuns: number
+}
+
+/** What started a review. 'opened' = the Team tab opened (throttled); 'runEnded' = a work run reached an outcome. */
+export type TeamReviewTrigger = 'manual' | 'runEnded' | 'opened' | 'sourcesChanged'
+
+/**
+ * Token-free signals from finished work runs (permission denials, rule requests, tools or connections a role asked
+ * for or lacked, repeated tool sequences, repeated corrections). summary is redacted and untrusted.
+ */
+export type TeamEvidenceKind = 'permissionDenied' | 'ruleRequest' | 'missingTool' | 'missingConnection' | 'repeatedSequence' | 'repeatedCorrection'
+export interface TeamEvidence {
+  /** Stable for the same signal: `ev-<16 hex>`. */
+  id: string
+  kind: TeamEvidenceKind
+  roleId?: string
+  /** Runs it was seen in, newest first, at most 5. */
+  runIds: string[]
+  /** One plain sentence, redacted (no keys, tokens or long ids), at most 300 chars. */
+  summary: string
+  count: number
+  /** ISO timestamp of the newest sighting. */
+  lastSeenAt: string
+}
+
+/** A dismissed recommendation: never offered again while the candidate's fingerprint (digest, version, target) is unchanged. */
+export interface TeamDismissal {
+  candidateId: string
+  fingerprint: string
+  /** ISO timestamp. */
+  at: string
+}
+
+/** Why the review's model step did not run. */
+export type TeamReviewModelSkip = 'autoOff' | 'autoFree' | 'noChange' | 'everyRuns' | 'budget' | 'error' | 'timeout' | 'cancelled' | 'mockFree'
+
+/**
+ * The persisted review (<data>/team-reviews/<projectId>.json). recommendations are the pending ones only: applied
+ * and dismissed ones are removed. Apply them with capabilities:apply and `digest`; main re-discovers when its
+ * in-memory snapshot is gone (after a restart) and refuses when the sources changed.
+ */
+export interface TeamReview {
+  projectId: string
+  /** ISO timestamp. */
+  checkedAt: string
+  trigger: TeamReviewTrigger
+  /** 'model' when this check ran the recommend completion, else 'free'. */
+  mode: 'free' | 'model'
+  modelSkipped?: TeamReviewModelSkip
+  /** The discovery this review is bound to (secret-free; items capped at CAPABILITY_MAX_ITEMS). */
+  discovery: CapabilityDiscovery
+  /** Equal to discovery.digest; pass it to capabilities:apply with a recommendation id. */
+  digest: string
+  /** Items not seen at the previous review. */
+  newCandidateIds: string[]
+  recommendations: CapabilityRecommendation[]
+  gaps: CapabilityGap[]
+  evidence: TeamEvidence[]
+  dismissed: TeamDismissal[]
+  /** recommendations.length: the Team tab badge. */
+  pendingCount: number
+  /** Finished work runs since the last model step (drives everyRuns). */
+  runsSinceModel: number
+  /** Tokens the last model step spent, when known. */
+  tokensUsed?: number
+}
+
+/** capabilities:reviewUpdated push and the badge source. */
+export interface TeamReviewSummary {
+  projectId: string
+  checkedAt: string
+  trigger: TeamReviewTrigger
+  mode: 'free' | 'model'
+  pendingCount: number
+  newCount: number
+  evidenceCount: number
+}
+
+/** capabilities:review input: the manual "Re-check setup" (trigger 'manual') or the Team tab opening ('opened', throttled). */
+export interface TeamReviewInput {
+  projectId: string
+  trigger?: 'manual' | 'opened'
+  requestId?: string
+  /** Manual only: also fetch outside sources. Proactive reviews never go outside. */
+  includeOutside?: boolean
+  /** Manual only: run the recommend completion now (the user's explicit call; not gated by auto or everyRuns). */
+  useModel?: boolean
+}
+
+/** capabilities:dismiss input. */
+export interface TeamDismissInput {
+  projectId: string
+  recommendationId: string
+}
+
+export const TEAM_REVIEW_MIN_BUDGET = 1_000
+export const TEAM_REVIEW_MAX_BUDGET = 500_000
+export const TEAM_REVIEW_MAX_EVERY_RUNS = 100
+/** An 'opened' review with nothing changed is skipped when the last check is newer than this. */
+export const TEAM_REVIEW_OPEN_THROTTLE_MS = 10 * 60_000
+/** Dismissals kept per project (oldest dropped). */
+export const TEAM_REVIEW_MAX_DISMISSED = 500
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
@@ -3224,7 +3345,19 @@ export interface OrgAIApi {
     undo(input: CapabilityUndoInput): Promise<CapabilityUndoResult>
     /** Grant or revoke one existing project skill or MCP server for one role. Returns the saved project. */
     setGrant(input: CapabilityGrantInput): Promise<Project>
+    /**
+     * Re-check the team setup and persist the review. trigger 'manual' (default) always runs; 'opened' is throttled
+     * (TEAM_REVIEW_OPEN_THROTTLE_MS when nothing changed) and returns the last review instead. Never goes outside
+     * unless includeOutside on a manual check; spends tokens only with useModel (manual) or Project.teamReview.auto 'ai'.
+     */
+    review(input: TeamReviewInput): Promise<TeamReview>
+    /** The persisted review, or null. */
+    lastReview(projectId: string): Promise<TeamReview | null>
+    /** Drop one pending recommendation and remember it so it never returns while its candidate is unchanged. */
+    dismiss(input: TeamDismissInput): Promise<TeamReview>
   }
+  /** A review was saved (manual, proactive or after apply/dismiss). Returns an unsubscribe function. */
+  onTeamReviewUpdated(cb: (summary: TeamReviewSummary) => void): () => void
   /** Progress of a discover/recommend started with a requestId. Returns an unsubscribe function. */
   onCapabilityProgress(cb: (event: CapabilityProgressEvent) => void): () => void
   plugins: {
@@ -3486,5 +3619,10 @@ export const IPC = {
   capabilitiesUndo: 'capabilities:undo',
   capabilitiesSetGrant: 'capabilities:setGrant',
   /** main -> renderer push channel carrying CapabilityProgressEvent. */
-  capabilitiesProgress: 'capabilities:progress'
+  capabilitiesProgress: 'capabilities:progress',
+  capabilitiesReview: 'capabilities:review',
+  capabilitiesLastReview: 'capabilities:lastReview',
+  capabilitiesDismiss: 'capabilities:dismiss',
+  /** main -> renderer push channel carrying TeamReviewSummary. */
+  capabilitiesReviewUpdated: 'capabilities:reviewUpdated'
 } as const

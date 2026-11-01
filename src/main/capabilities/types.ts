@@ -13,7 +13,10 @@ import type {
   CapabilityWarning,
   McpServerSpec,
   Project,
-  TeamRecommendations
+  TeamDismissInput,
+  TeamRecommendations,
+  TeamReview,
+  TeamReviewInput
 } from '@shared/types'
 import type { FileData } from '../skills/files'
 
@@ -33,8 +36,19 @@ export interface CapabilityServiceApi {
   apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult>
   undo(input: CapabilityUndoInput): CapabilityUndoResult
   setGrant(input: CapabilityGrantInput): Project
-  /** Drop snapshots and the undo of a removed project. */
+  /** Drop snapshots, the undo and the persisted review of a removed project. */
   forgetProject(projectId: string): void
+  /** capabilities:review (manual or 'opened'). */
+  review(input: TeamReviewInput): Promise<TeamReview>
+  lastReview(projectId: string): TeamReview | null
+  dismiss(input: TeamDismissInput): TeamReview
+  /**
+   * A work run of the project reached an outcome (index.ts calls it from the run-event broadcast for kind 'work'
+   * only, never setup-like or harness runs). Debounced, never awaited, never throws.
+   */
+  runEnded(projectId: string, runId: string): void
+  /** Stop timers and in-flight work at quit. */
+  dispose(): void
 }
 
 /**

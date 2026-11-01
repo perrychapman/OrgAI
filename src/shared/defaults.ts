@@ -18,11 +18,12 @@ import type {
   Role,
   SetupKind,
   SkillEvaluationSettings,
+  TeamReviewSettings,
   SkillSpec,
   TokenUsage,
   ToolName
 } from './types'
-import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, isModelTier } from './types'
+import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -622,6 +623,23 @@ export function skillEvaluationOf(project: Pick<Project, 'skillEvaluation'> | nu
   return {
     enabled: s?.enabled === true,
     tokenBudget: Math.min(SKILL_EVAL_MAX_BUDGET, Math.max(SKILL_EVAL_MIN_BUDGET, budget))
+  }
+}
+
+/**
+ * Project.teamReview when unset (existing projects too): proactive AI review on, bounded by the budget and by
+ * everyRuns, and only when a check finds new evidence or new candidates.
+ */
+export const DEFAULT_TEAM_REVIEW: TeamReviewSettings = { auto: 'ai', tokenBudget: 20_000, everyRuns: 3 }
+
+/** The project's team review settings with defaults filled in and every number clamped. */
+export function teamReviewOf(project: Pick<Project, 'teamReview'> | null | undefined): TeamReviewSettings {
+  const s = project?.teamReview
+  const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : d)
+  return {
+    auto: s?.auto === 'off' || s?.auto === 'free' || s?.auto === 'ai' ? s.auto : DEFAULT_TEAM_REVIEW.auto,
+    tokenBudget: Math.min(TEAM_REVIEW_MAX_BUDGET, Math.max(TEAM_REVIEW_MIN_BUDGET, num(s?.tokenBudget, DEFAULT_TEAM_REVIEW.tokenBudget))),
+    everyRuns: Math.min(TEAM_REVIEW_MAX_EVERY_RUNS, Math.max(1, num(s?.everyRuns, DEFAULT_TEAM_REVIEW.everyRuns)))
   }
 }
 
