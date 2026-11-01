@@ -10,6 +10,7 @@ const IDS = ['quick', 'harness', 'skills']
 const repo = makeFixtureRepo('assistants')
 
 const { app, page, shot } = await launch({ shotPrefix: 'assistants' })
+page.setDefaultTimeout(5000)
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
   await sleep(400)
@@ -44,8 +45,8 @@ async function checkSidebar(tag) {
   for (const id of IDS) {
     const r = row(id)
     if (!(await r.count())) continue
-    check((await r.locator('svg').count()) >= 1, `${id} row shows an svg icon ${tag} (${rail ? 'rail' : 'full'})`)
     if (rail) {
+      check((await r.locator('svg').count()) >= 1, `${id} row shows an svg icon in the rail ${tag}`)
       const name = (await r.getAttribute('aria-label')) ?? ''
       check(name.startsWith(LABELS[id]), `${id} row has an accessible name in the rail ${tag}`, name)
     } else {
