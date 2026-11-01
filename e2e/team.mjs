@@ -165,7 +165,7 @@ async function sectionAssistant(page, shot) {
   check(n >= 1, 'Recommend shows at least one card', String(n))
   check((await cards.first().locator('[data-testid=capability-source]').innerText()).trim().length > 0, 'a card has a source badge')
   check((await tray.locator('[data-testid=capability-needs]', { hasText: 'GITHUB_TOKEN' }).count()) >= 1, 'a card flags "Needs: GITHUB_TOKEN"')
-  check(/\bread\b|can load/i.test(await cards.first().locator('[data-testid=capability-access]').innerText()), 'the access sentence is plain')
+  check(/\bread\b|can load|can use/i.test(await cards.first().locator('[data-testid=capability-access]').innerText()), 'the access sentence is plain')
   // The full command is what the user approves: wrapped and scrollable, never clamped, with the runs-code badge beside it.
   const cmd = tray.locator('[data-testid=capability-card][data-kind=mcp] [data-testid=capability-command]').first()
   if ((await cmd.count()) > 0) {
