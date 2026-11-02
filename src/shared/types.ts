@@ -421,11 +421,24 @@ export function isPermissionMode(v: unknown): v is PermissionMode {
   return typeof v === 'string' && (PERMISSION_MODES as string[]).includes(v)
 }
 
+/** Most extra folders a project may list in `Project.allowedDirectories`. */
+export const PROJECT_ALLOWED_DIRECTORIES_MAX = 20
+/** Longest path accepted in `Project.allowedDirectories`. */
+export const PROJECT_ALLOWED_DIRECTORY_MAX_CHARS = 1024
+
 export interface Project {
   id: string
   name: string
   /** Working directory the agents operate in. */
   path: string
+  /**
+   * Extra folders, absolute paths, that agents may read and edit like the project folder (passed to the provider as
+   * additional working directories; edits there follow the project's permission mode). At most
+   * PROJECT_ALLOWED_DIRECTORIES_MAX. Normalized by the main process on save and on read (ProjectStore
+   * `cleanAllowedDirectories`): relative paths, drive roots, UNC / device paths, OrgAI's data folder (or a folder
+   * inside or containing it) and duplicates are dropped silently. The folders need not exist.
+   */
+  allowedDirectories?: string[]
   /** Free text describing the project and the kind of work done in it. Feeds the AI drafter. */
   brief: string
   provider: ProviderConfig

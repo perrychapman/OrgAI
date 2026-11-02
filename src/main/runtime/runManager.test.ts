@@ -2668,6 +2668,7 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     const ctx = ctxs[0]
     const path = ctx.project.path
     expect(ctx.skills!()).toEqual([])
+    const callsBefore = forRun.mock.calls.length
     const pending = ctx.requestProposal({ kind, agentId: 'root', title: 't', payload: { upsert: [], items: [], roles: [], rationale: 'r', scope: 'project' } as never })
     const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === kind))
     m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
@@ -2678,6 +2679,7 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     if (kind === 'orgChart') {
       // The org chart card says it applies from the next run: this run's grants stay (review M1).
       expect(ctx.skills!()).toEqual([])
+      expect(forRun).toHaveBeenCalledTimes(callsBefore)
     } else {
       expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
       expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'After', path }), expect.any(Array))

@@ -1,10 +1,11 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, posix, sep, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@shared/types'
+import { PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, cleanAllowedDirectories, acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -289,5 +290,75 @@ describe('Role.model validation', () => {
     const importRoles = (p: Project): Project => ({ ...p, roles: [bad('--imported', 'deep')] })
     const p = store.create({ name: 'I', path: d, brief: '', importAgents: ['claude'] }, undefined, { importRoles })
     expect(p.roles[0]).toMatchObject({ model: 'opus', tier: 'deep' })
+  })
+})
+
+describe('cleanAllowedDirectories', () => {
+  const winOpts = { path: win32, touchesData: (d: string) => d.toLowerCase().startsWith('c:\\data'), same: (a: string, b: string) => a.toLowerCase() === b.toLowerCase() }
+  const posixOpts = { path: posix, touchesData: (d: string) => d === '/home/u' || d.startsWith('/home/u/.orgai'), same: (a: string, b: string) => a === b }
+
+  it('drops non-arrays and keeps the field absent', () => {
+    expect(cleanAllowedDirectories(undefined, 'C:\\data', winOpts)).toBeUndefined()
+    expect(cleanAllowedDirectories('C:\\x', 'C:\\data', winOpts)).toBeUndefined()
+    expect(cleanAllowedDirectories({ 0: 'C:\\x' }, 'C:\\data', winOpts)).toBeUndefined()
+  })
+
+  it('win32: keeps drive-letter paths, trims and normalizes them, drops the rest', () => {
+    const out = cleanAllowedDirectories(
+      [' D:\\shared\\lib\\ ', 'relative\\dir', '\\rooted-no-drive', 'C:foo', 'C:\\', 'C:', 'C:/', 'D:\\a\\..', '\\\\server\\share', '\\\\?\\C:\\x', '\\\\.\\pipe\\x', '//host/x', 'C:\\data', 'c:\\DATA\\sub', 'E:/other/dir', 42, null, '', 'D:\\a\0b'],
+      'C:\\data',
+      winOpts
+    )
+    expect(out).toEqual(['D:\\shared\\lib', 'E:\\other\\dir'])
+  })
+
+  it('posix: keeps absolute paths, drops relative, root, UNC-style and the data folder (and a folder that contains it)', () => {
+    const out = cleanAllowedDirectories(['/srv/shared/', 'rel/dir', './x', '/', '/a/..', '//host/share', '/home/u', '/home/u/.orgai/projects', '/opt/x'], '/home/u/.orgai', posixOpts)
+    expect(out).toEqual(['/srv/shared', '/opt/x'])
+  })
+
+  it('collapses duplicates, keeping the first spelling', () => {
+    expect(cleanAllowedDirectories(['D:\\Lib', 'd:\\lib\\', 'D:/Lib', 'D:\\lib\\.\\'], 'C:\\data', winOpts)).toEqual(['D:\\Lib'])
+    expect(cleanAllowedDirectories(['/srv/a', '/srv/a/', '/srv//a', '/srv/A'], '/home/u/.orgai', posixOpts)).toEqual(['/srv/a', '/srv/A'])
+  })
+
+  it('caps the list and the path length', () => {
+    const many = Array.from({ length: 30 }, (_, i) => `/srv/d${i}`)
+    const out = cleanAllowedDirectories(many, '/home/u/.orgai', posixOpts)!
+    expect(out).toHaveLength(PROJECT_ALLOWED_DIRECTORIES_MAX)
+    expect(out[PROJECT_ALLOWED_DIRECTORIES_MAX - 1]).toBe(`/srv/d${PROJECT_ALLOWED_DIRECTORIES_MAX - 1}`)
+    const exact = '/' + 'a'.repeat(PROJECT_ALLOWED_DIRECTORY_MAX_CHARS - 1)
+    expect(cleanAllowedDirectories([exact, exact + 'b'], '/home/u/.orgai', posixOpts)).toEqual([exact])
+  })
+
+  it('native defaults: refuses the real data dir, a folder inside it and one that contains it; accepts a missing folder', () => {
+    const data = dataDir()
+    const outside = join(tmpdir(), `orgai-allowed-missing-${Date.now()}`)
+    const out = cleanAllowedDirectories([data, join(data, 'projects'), dirname(data), outside, outside + sep], data)
+    expect(out).toEqual([outside])
+  })
+})
+
+describe('ProjectStore allowedDirectories', () => {
+  it('normalizes on saveFromRenderer and on save', () => {
+    const data = dataDir()
+    const store = new ProjectStore(data)
+    store.save(project())
+    const keep = join(tmpdir(), 'orgai-allowed-keep')
+    const saved = store.saveFromRenderer(project({ allowedDirectories: [keep, 'relative', join(data, 'x'), keep] }))
+    expect(saved.allowedDirectories).toEqual([keep])
+    expect(store.get('p1')?.allowedDirectories).toEqual([keep])
+    const bad = store.save(project({ allowedDirectories: 'nope' as never }))
+    expect('allowedDirectories' in bad).toBe(false)
+  })
+
+  it('normalizes on read and persists the cleaned list once', () => {
+    const dir = dataDir()
+    const keep = join(tmpdir(), 'orgai-allowed-keep')
+    writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version: 1, projects: [project({ allowedDirectories: [keep, dir, 'x', 7] as never })] }))
+    const store = new ProjectStore(dir)
+    expect(store.get('p1')?.allowedDirectories).toEqual([keep])
+    expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).projects[0].allowedDirectories).toEqual([keep])
+    expect(new ProjectStore(dir).migrateAll()).toBe(0)
   })
 })
