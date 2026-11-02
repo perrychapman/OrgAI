@@ -196,6 +196,18 @@ function hasOpenCard(r: PendingCardMaps): boolean {
   )
 }
 
+/**
+ * A run.status event with the summary's endedBy / endedWhile: on 'finished' / 'error' when the summary has them, on
+ * 'stopping' only with endedBy 'user'. Any an adapter put on the event are dropped (RunManager is their only source).
+ */
+export function withEndFacts(e: Extract<RunEvent, { type: 'run.status' }>, s: Pick<RunSummary, 'endedBy' | 'endedWhile'>): Extract<RunEvent, { type: 'run.status' }> {
+  const { endedBy: _by, endedWhile: _while, ...rest } = e
+  const terminal = e.status === 'finished' || e.status === 'error'
+  if (terminal && s.endedBy) return { ...rest, endedBy: s.endedBy, ...(s.endedBy === 'app' && s.endedWhile ? { endedWhile: s.endedWhile } : {}) }
+  if (e.status === 'stopping' && s.endedBy === 'user') return { ...rest, endedBy: 'user' }
+  return rest
+}
+
 /** RunSummary.endedWhile for a run cut by the app: idle or an open card is 'waiting', live work 'working', paused none. */
 export function quitEndedWhile(status: RunSummary['status'], openCard: boolean): 'working' | 'waiting' | undefined {
   if (status === 'paused' || status === 'finished' || status === 'error') return undefined
@@ -936,6 +948,8 @@ export class RunManager {
           else this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
         }
         this.store.upsert(summary)
+        // Who ended it rides on the terminal status (and on 'stopping' after End session), never from an adapter.
+        e = withEndFacts(e, summary)
       } else if (e.type === 'run.cost') {
         // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
         // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
@@ -2081,7 +2095,8 @@ export class RunManager {
    */
   private writeCut(r: ActiveRun, quit: boolean): void {
     const s = r.summary
-    if (quit && r.endedBy && s.status !== 'finished' && s.status !== 'error' && s.status !== 'paused') {
+    const forced = quit && !!r.endedBy && s.status !== 'finished' && s.status !== 'error' && s.status !== 'paused'
+    if (forced) {
       s.status = 'finished'
       s.endedAt ??= Date.now()
       if (s.autoResume) delete s.autoResume
@@ -2099,6 +2114,8 @@ export class RunManager {
       console.error('Failed to persist run summary:', e)
     }
     this.flush(r)
+    // The session never reported its end: tell the renderer it is finished, and who cut it.
+    if (forced) this.broadcast(withEndFacts({ type: 'run.status', runId: s.id, status: 'finished' }, s))
   }
 
   /**

@@ -2722,6 +2722,14 @@ export type RunEvent =
       pausedUntil?: number
       pauseReason?: string
       autoResume?: boolean
+      /**
+       * Who ended the run (RunSummary.endedBy). 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while
+       * it was live. Set by RunManager on a terminal status ('finished' / 'error') of a cut run, and on 'stopping' with
+       * 'user'. Absent: the run ended on its own. Adapters never set it. Structured-clone safe.
+       */
+      endedBy?: 'user' | 'app'
+      /** Only with endedBy 'app' (RunSummary.endedWhile): 'waiting' (idle or a card open) or 'working' when OrgAI cut it. */
+      endedWhile?: 'working' | 'waiting'
     }
   /**
    * The run's AI-generated title (RunSummary.title) arrived. Sent at most once per run, work runs only, possibly

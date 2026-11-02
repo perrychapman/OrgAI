@@ -37,7 +37,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     normalization, `endedBy ??= 'app'`), always next to `endedWithApp: true` (only then), and absent when the run
     ended on its own; junk values are dropped on read, a legacy lone `endedWithApp` gets 'app'. With 'app',
     `endedWhile` says what it was doing: 'waiting' (idle or a card open), 'working' (starting, running, stopping),
-    absent for a paused run. Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
+    absent for a paused run. The terminal `run.status` event ('finished' / 'error', including the quit write-out's
+    forced 'finished') carries the summary's `endedBy` / `endedWhile`, and 'stopping' carries `endedBy: 'user'` after
+    End session (`withEndFacts` in runManager.ts; adapter-set values are dropped). Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
     session still opening is stopped when it opens. The renderer's adoption of endedBy lands with the
     one-conversation UI change. Unit-tested; the real Electron quit path is not.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
