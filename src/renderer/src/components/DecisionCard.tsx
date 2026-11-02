@@ -29,6 +29,11 @@ interface Props {
   agentId?: string
   /** The action asked of the user, one line ("Run npm test"). Never the agent. The full text belongs in the body. */
   title: string
+  /**
+   * One line naming what the decision contains, under the title ("add github-issues, link mock-fs"). Shown at every
+   * size, so a folded compact card still names its content. Untrusted text: plain React text only.
+   */
+  summary?: string
   /** Extra content at the end of the meta line (a time, a branch name, an outcome badge). */
   headerExtra?: ReactNode
   /** Body: detail, capped in height with its own scroll. */
@@ -97,7 +102,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
@@ -166,6 +171,11 @@ export default function DecisionCard({ kind, runId, who, agentId, title, headerE
             </button>
           )}
         </div>
+        {summary && (
+          <p className="decision-summary" data-testid="decision-summary" title={summary}>
+            {summary}
+          </p>
+        )}
       </header>
       {hasBody && (
         <div className="decision-body" id={bodyId}>

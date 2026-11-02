@@ -4,6 +4,8 @@
  * it; the full text lives in the card body. Output is only ever rendered as React text.
  */
 
+import type { ProposalKind } from '@shared/types'
+
 const MAX_TITLE = 120
 
 // eslint-disable-next-line no-control-regex
@@ -84,9 +86,20 @@ export function rulesTitle(rules: readonly string[], risky = 0): string {
   return `Allow ${rules.length} rules${flag}`
 }
 
-/** "Approve architecture proposal". `label` is the proposal kind label. */
-export function proposalTitle(label: string): string {
-  return oneLine(`Approve ${label.toLowerCase()} proposal`)
+/** The kind of a proposal, as the user reads it (Needs-you labels, tray chips, card titles). */
+export const PROPOSAL_KIND_LABEL: Record<ProposalKind, string> = {
+  architecture: 'Architecture',
+  orgChart: 'Org chart',
+  settings: 'Run settings',
+  mcpServers: 'MCP servers',
+  skills: 'Skills'
+}
+
+/** "Approve architecture proposal", "Approve MCP servers proposal": a leading capital on a plain word is lowered, an acronym is kept. */
+export function proposalTitle(kind: ProposalKind): string {
+  const label = PROPOSAL_KIND_LABEL[kind]
+  const word = /^[A-Z][a-z]/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label
+  return oneLine(`Approve ${word} proposal`)
 }
 
 /** "Merge engineer-1's changes". */

@@ -25,15 +25,9 @@ interface Props {
   currentRoles: Role[]
   /** The proposing agent's display name, when known. */
   who?: string
+  /** The proposing agent's id, for the avatar's role colour (unset for setup runs). */
+  agentId?: string
   onDecide: (decision: ProposalDecision) => void | Promise<void>
-}
-
-const KIND_LABEL: Record<Proposal['kind'], string> = {
-  architecture: 'Architecture',
-  orgChart: 'Org chart',
-  settings: 'Run settings',
-  mcpServers: 'MCP servers',
-  skills: 'Skills'
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
@@ -52,7 +46,7 @@ export function skillsApplyNote(payload: Extract<Proposal, { kind: 'skills' }>['
     : 'Approving writes these skills to this project and grants them to the listed roles.'
 }
 
-export default function ProposalCard({ proposal, runId, currentRoles, who, onDecide }: Props): ReactElement {
+export default function ProposalCard({ proposal, runId, currentRoles, who, agentId, onDecide }: Props): ReactElement {
   const [revising, setRevising] = useState(false)
   const [feedback, setFeedback] = useState('')
   const { busy, error, submit } = useDecisionAnswer()
@@ -83,7 +77,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       error={error}
       runId={runId}
       who={who}
-      title={proposalTitle(KIND_LABEL[proposal.kind])}
+      agentId={agentId}
+      title={proposalTitle(proposal.kind)}
       helper={
         proposal.kind === 'mcpServers'
           ? mcpApplyNote(proposalScope(proposal.payload))
