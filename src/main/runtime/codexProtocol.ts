@@ -441,8 +441,16 @@ export interface LaunchConfig {
  * Two stdio servers needing the same secret name with different values cannot both use env_vars; the later one
  * gets the value inline in `env` (visible in the process arguments) and the summary says so.
  */
-export function buildLaunchConfig(connection: RunConnection | undefined, servers: ResolvedMcpServer[], opts: { noProjectDocs?: boolean } = {}): LaunchConfig {
+export function buildLaunchConfig(
+  connection: RunConnection | undefined,
+  servers: ResolvedMcpServer[],
+  opts: { noProjectDocs?: boolean; writableRoots?: string[] } = {}
+): LaunchConfig {
   const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
+  // Allowed folders become extra writable roots of the workspace-write sandbox (key found in the codex 0.166.0
+  // binary; whether it takes effect with thread/start's sandbox mode string is unverified live).
+  const roots = (opts.writableRoots ?? []).filter((r) => typeof r === 'string' && r.length > 0)
+  if (roots.length) config.push(`sandbox_workspace_write.writable_roots=${tomlArray(roots)}`)
   const env: Record<string, string> = { ...(connection?.env ?? {}) }
   const summary: string[] = []
   const skipped: LaunchConfig['skipped'] = []

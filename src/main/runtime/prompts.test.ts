@@ -241,3 +241,19 @@ describe('quick run (Chat) prompts', () => {
     expect(buildRolePrompt(lead, roles, proj, { isSetup: false, isolation: false })).toContain('propose_org_change')
   })
 })
+
+describe('allowed folders sentence', () => {
+  const roles = orgChart()
+  const dirs = ['C:\\shared\\lib', 'D:\\other <x>\ntwo']
+  it('names the folders on work-run prompts, one line each, with no angle brackets', () => {
+    const text = buildRolePrompt(roles[1], roles, project(), { isSetup: false, isolation: false, allowedDirectories: dirs })
+    expect(text).toContain('You may also read and edit files in: "C:\\shared\\lib", "D:\\other ‹x› two".')
+  })
+  it('adds nothing for none, setup runs or quick runs', () => {
+    expect(buildRolePrompt(roles[1], roles, project(), { isSetup: false, isolation: false, allowedDirectories: [] })).not.toContain('read and edit files in')
+    expect(buildRolePrompt(roles[1], roles, project(), { isSetup: false, isolation: false })).not.toContain('read and edit files in')
+    expect(buildRolePrompt(roles[0], roles, project(), { isSetup: true, isolation: false, allowedDirectories: dirs })).not.toContain('read and edit files in')
+    const quick = { folder: 'C:\\work', team: 'single' as const, allowEdits: false, gitRepo: false }
+    expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false, quick, allowedDirectories: dirs })).not.toContain('read and edit files in')
+  })
+})

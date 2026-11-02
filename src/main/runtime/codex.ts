@@ -50,6 +50,8 @@ import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArch
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
+import { dirname } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { tmpdir } from 'node:os'
@@ -155,6 +157,10 @@ class CodexSession implements RuntimeSession {
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
   private sessionRules: string[] = []
+  /** A session (or project) grant of a setMode acceptEdits suggestion: edits inside free folders need no card. */
+  private sessionAcceptEdits = false
+  /** Folders granted through an addDirectories suggestion for this session (also free for `cd` and edits). */
+  private sessionDirs: string[] = []
   private limited = false
   private ending = false
   private ended = false
@@ -417,7 +423,7 @@ class CodexSession implements RuntimeSession {
     const isSetup = this.setupLike
     const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
     const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}),...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -544,7 +550,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
-      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run) })
+      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: isTrustRestrictedRun(ctx.run) ? [] : (ctx.allowedDirectories?.() ?? []) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       this.server = this.createServer(this.launch)
@@ -811,10 +817,16 @@ class CodexSession implements RuntimeSession {
     }
   }
 
+  /** MatchOptions right now: the project, the allowed folders (live) and the folders granted for this session. */
+  private matchOpts(): MatchOptions {
+    const base = matchOptionsFor(this.ctx)
+    return { ...base, freeDirs: [...(base.freeDirs ?? []), ...this.sessionDirs] }
+  }
+
   private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>) {
     const summary = describePermission(toolName, input)
     this.setState(agentId, 'waiting', `Needs approval: ${summary}`)
-    const suggestions = chooseSuggestions(toolName, input, undefined)
+    const suggestions = chooseSuggestions(toolName, input, undefined, false, this.matchOpts())
     try {
       const decision = await this.ctx.requestPermission({
         agentId,
@@ -827,10 +839,18 @@ class CodexSession implements RuntimeSession {
       if (decision.behavior === 'allow') {
         // Never write rules into an untrusted folder: a 'project' grant becomes a run grant (RunManager downgrades first).
         const safe = isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' as const } : decision
-        const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message))
+        const persist = {
+          ...(this.ctx.allowDirectories ? { allowDirectories: this.ctx.allowDirectories.bind(this.ctx) } : {}),
+          ...(this.ctx.acceptEditsForProject ? { acceptEditsForProject: this.ctx.acceptEditsForProject.bind(this.ctx) } : {})
+        }
+        const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message), persist)
         if (scoped) {
           granted = true
           this.sessionRules.push(...allowRuleStrings(scoped))
+          for (const s of scoped) {
+            if (s.type === 'setMode' && s.mode === 'acceptEdits') this.sessionAcceptEdits = true
+            if (s.type === 'addDirectories') for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d)) this.sessionDirs.push(d)
+          }
         }
       }
       return { decision, granted }
@@ -851,7 +871,8 @@ class CodexSession implements RuntimeSession {
     }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
     const rules = [...(this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))), ...this.sessionRules]
-    if (req.command && matchesBashRule(req.command, rules)) return { decision: 'accept' }
+    const opts = this.matchOpts()
+    if (req.command && matchesBashRule(req.command, rules, opts)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
     const { decision, granted } = await this.ask(agentId, 'Bash', input)
     if (decision.behavior === 'deny') return { decision: 'decline' }
@@ -875,6 +896,14 @@ class CodexSession implements RuntimeSession {
     }
     const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
     if ([...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
+    // Accept edits (the project's mode, read now: RunManager refreshes ctx.project) or a session grant of it: files
+    // inside the project, an allowed folder or a granted folder need no card. Anything outside asks.
+    const mode = this.ctx.project.permissionMode
+    if (mode === 'acceptEdits' || mode === 'auto' || this.sessionAcceptEdits) {
+      const paths = changes.length ? changes.map((c) => c.path) : req.grantRoot ? [req.grantRoot] : []
+      const opts = this.matchOpts()
+      if (paths.length && paths.every((p) => typeof p === 'string' && p.length > 0 && (isFreeCdTarget(dirname(p), opts) || isFreeCdTarget(p, opts)))) return { decision: 'accept' }
+    }
     const input: Record<string, unknown> = {
       file_path: changes[0]?.path ?? req.grantRoot ?? '',
       ...(changes.length ? { changes } : {}),
@@ -1023,7 +1052,10 @@ class CodexSession implements RuntimeSession {
     this.mcpRestartPending = false
     try {
       const servers = await this.ctx.resolvedMcpServers!()
-      const launch = buildLaunchConfig(this.ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(this.ctx.run) })
+      const launch = buildLaunchConfig(this.ctx.connection, servers, {
+        noProjectDocs: isTrustRestrictedRun(this.ctx.run),
+        writableRoots: isTrustRestrictedRun(this.ctx.run) ? [] : (this.ctx.allowedDirectories?.() ?? [])
+      })
       const old = this.server
       this.unwire()
       old.close()

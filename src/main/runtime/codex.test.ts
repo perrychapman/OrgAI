@@ -353,8 +353,88 @@ describe('CodexAdapter session', () => {
       expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'Edit', summary: 'Editing a.ts', input: expect.objectContaining({ file_path: '/r/src/a.ts' }) }))
     })
 
-    describe('restricted runs', () => {
+    describe('allowed folders', () => {
       const edit = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 }
+      const change = (s: FakeServer, path: string, id = 'f1') =>
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path, kind: { type: 'update', move_path: null }, diff: '' }] } })
+      let other = ''
+      beforeEach(() => {
+        other = mkdtempSync(join(tmpdir(), 'orgai-codex-other-'))
+      })
+      afterEach(() => rmSync(other, { recursive: true, force: true }))
+
+      it('passes the allowed folders as writable roots, and none on a restricted run', async () => {
+        const { s } = await started('default', { allowedDirectories: () => [other] })
+        expect(s.options.config).toContain(`sandbox_workspace_write.writable_roots=${JSON.stringify([other])}`)
+        const plain = await started('default')
+        expect((plain.s.options.config ?? []).join('\n')).not.toContain('writable_roots')
+      })
+
+      it('does not add writable roots to a restricted run even when asked', async () => {
+        const { s } = await started('default', { run: runSummary({ quick: { folder: dir } as never }), allowedDirectories: () => [other] })
+        expect((s.options.config ?? []).join('\n')).not.toContain('writable_roots')
+      })
+
+      it('lets a cd inside the project or an allowed folder ride on the command rule', async () => {
+        const { ctx, s } = await started('default', { allowedDirectories: () => [other] })
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+        await s.ask('item/commandExecution/requestApproval', cmd('npm test'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        expect(await s.ask('item/commandExecution/requestApproval', cmd(`cd ${join(dir, 'sub')} && npm test`))).toEqual({ decision: 'accept' })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd(`cd ${other} && npm test`))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        // a cd outside both still asks
+        await s.ask('item/commandExecution/requestApproval', cmd(`cd ${join(other, '..')} && npm test`))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('accepts a file change inside the project only in acceptEdits mode', async () => {
+        const inside = await started('acceptEdits')
+        change(inside.s, join(dir, 'src', 'a.ts'))
+        expect(await inside.s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        expect(inside.ctx.requestPermission).not.toHaveBeenCalled()
+      })
+
+      it('asks for a file change in default mode, and for one outside every folder', async () => {
+        const { ctx, s } = await started('default', { allowedDirectories: () => [other] })
+        change(s, join(dir, 'a.ts'))
+        await s.ask('item/fileChange/requestApproval', edit)
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        const acc = await started('acceptEdits', { allowedDirectories: () => [other] })
+        change(acc.s, join(other, 'x.ts'))
+        expect(await acc.s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        expect(acc.ctx.requestPermission).not.toHaveBeenCalled()
+      })
+
+      it('remembers a session grant of accept edits for files in allowed folders but still asks outside', async () => {
+        const { ctx, s } = await started('default', { allowedDirectories: () => [other] })
+        change(s, join(other, 'x.ts'))
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+        await s.ask('item/fileChange/requestApproval', edit)
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ suggestions: expect.arrayContaining([expect.objectContaining({ type: 'setMode', mode: 'acceptEdits' })]) }))
+        change(s, join(dir, 'b.ts'), 'f2')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        change(s, join(other, '..', 'elsewhere.ts'), 'f3')
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f3' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('project scope saves the folders and mode through the context hooks', async () => {
+        const allowDirectories = vi.fn((d: string[]) => d)
+        const acceptEditsForProject = vi.fn(() => true)
+        const { ctx, s } = await started('default', { allowDirectories, acceptEditsForProject })
+        change(s, join(other, 'x.ts'))
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'project' })
+        await s.ask('item/fileChange/requestApproval', edit)
+        expect(allowDirectories).toHaveBeenCalledWith([expect.stringContaining(other.slice(-12))])
+        expect(acceptEditsForProject).toHaveBeenCalledTimes(1)
+      })
+    })
+
+    describe('restricted runs', () => {
+      const edit ={ threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 }
       const change = (s: FakeServer, path: string, id = 'f1') =>
         s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path, kind: { type: 'update', move_path: null }, diff: '' }] } })
       const quickCtx = (rules: string[]) => {
