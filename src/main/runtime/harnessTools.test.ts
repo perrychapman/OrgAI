@@ -355,12 +355,12 @@ describe('MCP tools', () => {
     const addMcpServer = vi.fn(async () => ({ prefix: 'mcp__github__', availability: 'after-idle' as const }))
     const t = byName(workTools(fakeCtx(), { addMcpServer }), 'request_mcp_install')
     const text = await t.call({ reason: 'r', manual: pinned })
-    expect(text).toContain('will be attached once the current agents are idle, and you will be told then')
-    expect(text).toContain('Do not call them yet')
+    expect(text).toContain('Its tools (mcp__github__<tool>) are not callable yet: they become callable only after your current turn ends and no report is still running')
+    expect(text).toContain('The harness will send you a message once they are attached; do not call them before then.')
     expect(text).not.toContain('available now')
     expect(text).not.toContain('Use them to continue')
     expect(text).toContain('may still ask the user for permission')
-    expect(await t.call({ reason: 'r', manual: pinned })).toContain('do not call them yet')
+    expect(await t.call({ reason: 'r', manual: pinned })).toContain('Do not ask again, and do not call them before then.')
   })
 
   it('request_mcp_install: names the roles when the final spec limits them', async () => {

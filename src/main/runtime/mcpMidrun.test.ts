@@ -74,6 +74,8 @@ describe('request_mcp_install mid-run (RunManager + mock)', () => {
 
     const installText = resultOf(run.id, ROOT_AGENT_ID, 'request_mcp_install')?.content ?? ''
     expect(installText.startsWith(`The user approved installing ${MOCK_MIDRUN_SERVER} for this run.`)).toBe(true)
+    expect(installText).toContain(`Its tools are available now as mcp__${MOCK_MIDRUN_SERVER}__<tool>. Use them to continue.`)
+    expect(installText).toContain("Calls to its tools may still ask the user for permission under the project's permission mode")
     expect(resultOf(run.id, ROOT_AGENT_ID, MOCK_MIDRUN_TOOL)).toMatchObject({ content: 'PONG', isError: false })
     const denied = resultOf(run.id, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_TOOL)
     expect(denied?.isError).toBe(true)

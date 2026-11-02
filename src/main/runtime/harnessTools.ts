@@ -690,7 +690,7 @@ export const requestMcpInstall = defineTool({
     const prior = state.get(spec.name)
     if (prior) {
       if (prior === 'approved') return `You already asked for ${spec.name} in this run and it was approved. Its tools are available as mcp__${spec.name}__<tool>. Do not ask again.`
-      if (prior === 'approved-after-idle') return `You already asked for ${spec.name} in this run and it was approved. Its tools will be attached once the current agents are idle and you will be told then. Do not ask again, and do not call them yet.`
+      if (prior === 'approved-after-idle') return `You already asked for ${spec.name} in this run and it was approved. Its tools become callable only after your current turn ends; the harness will send you a message once they are attached. Do not ask again, and do not call them before then.`
       if (prior === 'approved-unattached') return `You already asked for ${spec.name} in this run and it was approved, but it could not be attached to this session; it will be available from the next run. Do not ask again.`
       return `You already asked for ${spec.name} in this run and the user denied it (or the answer is still pending). Do not ask again; find another way to complete the task.`
     }
@@ -719,15 +719,15 @@ export const requestMcpInstall = defineTool({
       const attach: McpAttachResult = typeof res === 'string' ? { prefix: res, availability: 'now' } : res
       const prefix = attach.prefix || `mcp__${final.name}__`
       const tail = `${MCP_PERMISSION_NOTE}${mcpRoleSentence(ctx, final.roles)}`
-      if (attach.availability === 'after-idle') {
-        state.set(spec.name, 'approved-after-idle')
-        return `${lead} Its tools (${prefix}<tool>) will be attached once the current agents are idle, and you will be told then. Do not call them yet; continue with other work or wait. ${tail}`
-      }
-      state.set(spec.name, 'approved')
       const tools = (attach.tools ?? []).filter((t) => typeof t === 'string' && t.trim())
       const listed = tools.length
         ? tools.slice(0, MCP_TOOL_LIST_CAP).map((t) => `${prefix}${datum(t, 60)}`).join(', ') + (tools.length > MCP_TOOL_LIST_CAP ? `, and ${tools.length - MCP_TOOL_LIST_CAP} more` : '')
         : `${prefix}<tool>`
+      if (attach.availability === 'after-idle') {
+        state.set(spec.name, 'approved-after-idle')
+        return `${lead} Its tools (${listed}) are not callable yet: they become callable only after your current turn ends and no report is still running, when the harness re-attaches the session. The harness will send you a message once they are attached; do not call them before then. ${tail}`
+      }
+      state.set(spec.name, 'approved')
       return `${lead} Its tools are available now as ${listed}. Use them to continue. ${tail}`
     } catch (e) {
       return `${lead} Attaching it to this session failed: ${(e as Error).message} It will be available from the next run. Continue without it for now.`
