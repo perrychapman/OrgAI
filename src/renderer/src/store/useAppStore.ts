@@ -6,7 +6,7 @@ import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
-import { needsYou } from '../lib/runChains'
+import { chainOf, needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
 import { cleanIpcError } from '../lib/ipcError'
@@ -112,6 +112,11 @@ export interface RunState {
   mcpInstalls: McpInstallRequest[]
   /** Answered installs (secret-free outcomes), keyed by request id, kept so the card shows its resolution. */
   mcpResolved: Record<string, { request: McpInstallRequest; outcome: McpInstallOutcome }>
+  /**
+   * Ended runs loaded from a record: what the run was doing when it ended (lib/runStatus cutWhile, read before the
+   * agents were settled). Only meaningful for a run cut by OrgAI closing.
+   */
+  cutWhile?: 'working' | 'waiting'
 }
 
 /** A model-change notice (Banner). Per project it keeps the pre-change copy so Undo can restore it. */
@@ -208,6 +213,10 @@ interface AppState {
   /** The request id that jump asked to open (a specific card in the tray); null opens the default card. */
   pendingDecisionRequest: string | null
   clearDecisionFocus(): void
+  /** The chain member the user asked to see (History, a link): the merged feed scrolls to its divider once. Cleared by the view. */
+  chainFocusRun: string | null
+  /** Load the records of `runId`'s chain members that are not in `runs` yet (lazy, cached, one fetch per id in flight). */
+  loadChain(runId: string): Promise<void>
   /** Run whose composer should open on "Continue this run" (set by History's Continue). */
   continueIntent: string | null
   /** Open a finished run with its composer preset to Continue, and focus the composer. */
@@ -508,6 +517,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingDecisionFocus: null,
   pendingDecisionRequest: null,
   continueIntent: null,
+  chainFocusRun: null,
+  async loadChain() {
+    // Contract stub: the chain-data engineer implements it (see the brief).
+  },
   historyByProject: {},
   usage: null,
   usageByConnection: {},
@@ -1506,6 +1519,21 @@ export function useRunIndexes(): Map<string, number> {
 
 /** Runs across all projects that wait for the user. Returns a fresh array: use with `useShallow`. */
 export const waitingRuns = (s: AppState): RunState[] => Object.values(s.runs).filter((r) => r.summary.projectId && needsYou(r))
+
+/**
+ * The loaded members of `runId`'s session chain, oldest first (the run itself included). Members whose records are
+ * not loaded yet are missing until `loadChain` fetches them. Chains come from the selected project's summaries.
+ */
+export function useChainRuns(runId: string | undefined): RunState[] {
+  const summaries = useProjectSummaries()
+  const runs = useAppStore((s) => s.runs)
+  return useMemo(() => {
+    if (!runId) return []
+    const members = chainOf(summaries, runId)
+    const list = (members.length ? members.map((m) => m.id) : [runId]).map((id) => runs[id]).filter((r): r is RunState => !!r)
+    return list
+  }, [summaries, runs, runId])
+}
 
 /** Runs of the selected project that have a tab (not hidden), oldest first. Fresh array: use with `useShallow`. */
 export const projectTabRuns = (s: AppState): RunState[] => (s.selectedProjectId ? tabRunsOf(s, s.selectedProjectId) : [])

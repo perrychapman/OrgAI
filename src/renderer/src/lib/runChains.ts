@@ -140,7 +140,7 @@ export function sessionOpenRunId(message: string): string | null {
 
 // ---------- One conversation per session chain (docs/design/ux-review-continue.md, model 1-6) ----------
 
-type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error'>> & { endedBy?: 'user' | 'app' }
+type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error'>> & { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' }
 
 /** The chain's key: its oldest member's id. Stable across continues, so a chain tab or a chain view keeps its identity. */
 export function chainKeyOf<T extends ChainSummary>(runs: readonly T[], id: string): string {
@@ -240,7 +240,7 @@ export function endedComposerCopy(
       mode: 'continue',
       modeLabel: ended,
       placeholder: 'Pick up where it was cut off',
-      notice: `OrgAI closed while this run was ${opts.cutWhile === 'waiting' ? 'waiting for you' : 'working'}. Send to pick up where it stopped.`
+      notice: `OrgAI closed while this run was ${(summary.endedWhile ?? opts.cutWhile) === 'waiting' ? 'waiting for you' : 'working'}. Send to pick up where it stopped.`
     }
   }
   return { mode: 'continue', modeLabel: ended, placeholder }
