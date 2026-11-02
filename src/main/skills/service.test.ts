@@ -442,6 +442,11 @@ describe('applyProposal', () => {
     expect(() => svc.applyProposal(null, { rationale: 'r', items: [] })).toThrow(/no items/)
   })
 
+  it('projectOnly (work runs, review L3) refuses scope library items and writes nothing', () => {
+    expect(() => svc.applyProposal('p1', payload(item()), { projectOnly: true })).toThrow(/scope "library" is not available/)
+    expect(svc.libraryList()).toEqual([])
+  })
+
   it('project session: creates with role slugs, updates by name, mixes library items, returns the project', () => {
     const saved = svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('review-code'), roles: ['engineer'] }), item({ draft: draft('shared') })))
     expect(saved?.id).toBe('p1')

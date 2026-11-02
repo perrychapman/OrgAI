@@ -1674,7 +1674,12 @@ export interface SettingsProposalPayload {
  * fields are a display snapshot); otherwise a new server that is also saved to the library and linked, unless
  * `projectOnly`. Library scope: a library entry (enabled, roles, libraryId and projectOnly are ignored).
  */
-export type McpProposalServer = McpServerSpec & { projectOnly?: boolean }
+/**
+ * `configOnly` (main-written, work runs): a name-only item that only switches an existing project server on or off or
+ * changes its roles. It lists the fields the item sets; at approval main applies just those onto the server as stored
+ * then, and the rest of the spec (a snapshot for the card) is never written back.
+ */
+export type McpProposalServer = McpServerSpec & { projectOnly?: boolean; configOnly?: ('enabled' | 'roles')[] }
 
 /**
  * MCP proposal (propose_mcp_servers, from the MCP assistant or the Architect in setup): servers to add or replace,

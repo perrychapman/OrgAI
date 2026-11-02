@@ -11,6 +11,32 @@ function stdio(command: string, args: string[], over: Partial<McpServerSpec> = {
   return { id: 'm1', name: 'srv', transport: 'stdio', command, args, enabled: true, source: 'user', addedAt: '', ...over }
 }
 
+describe('validateSpec hidden characters', () => {
+  const hidden = (errors: string[], field: string, code: string): boolean => errors.some((e) => e.startsWith(`${field} contains a hidden character (${code}`))
+
+  it('refuses a bidi or zero-width character in every string field and names the field', () => {
+    const s = stdio('npx', ['-y', 'pkg@1.2.3', '--root=/a‮/b'], { description: 'Reads​ issues', env: { MODE: 'r‮o' }, roles: ['le​ad'] })
+    const errors = validateSpec(s)
+    expect(hidden(errors, 'Argument 3', 'U+202E')).toBe(true)
+    expect(hidden(errors, 'The description', 'U+200B')).toBe(true)
+    expect(hidden(errors, 'Environment variable "MODE"', 'U+202E')).toBe(true)
+    expect(hidden(errors, 'A role slug', 'U+200B')).toBe(true)
+    expect(hidden(validateSpec(stdio('np​x', ['-y', 'pkg@1.2.3'])), 'The command', 'U+200B')).toBe(true)
+    expect(hidden(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { name: 'g​h' })), 'The name', 'U+200B')).toBe(true)
+    const http: McpServerSpec = { id: 'm2', name: 'web', transport: 'http', url: 'https://ex‮ample.com/mcp', headers: { 'X-Mode': 'read​' }, enabled: true, source: 'user', addedAt: '' }
+    const httpErrors = validateSpec(http)
+    expect(hidden(httpErrors, 'The URL', 'U+202E')).toBe(true)
+    expect(hidden(httpErrors, 'Header "X-Mode"', 'U+200B')).toBe(true)
+    // A name holding hidden characters is never echoed back.
+    expect(hidden(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { env: { 'A‮B': 'x' } })), 'An environment variable name', 'U+202E')).toBe(true)
+    expect(hidden(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { secretEnv: ['TOK​EN'] })), 'A secret environment variable name', 'U+200B')).toBe(true)
+  })
+
+  it('allows tab and line breaks in multi-line fields', () => {
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3', 'line1\nline2'], { description: 'Reads\tissues\nand PRs', env: { NOTE: 'a\nb' } }))).toEqual([])
+  })
+})
+
 describe('validateSpec names and transports', () => {
   it('accepts a pinned npx server', () => {
     expect(validateSpec(stdio('npx', ['-y', '@scope/pkg@1.2.3']))).toEqual([])

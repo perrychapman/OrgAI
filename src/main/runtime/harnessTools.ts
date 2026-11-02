@@ -14,6 +14,7 @@ import { pendingWorktrees } from './worktrees'
 import { PLAN_TOOLS, finishedCount, remainingSteps } from './continuation'
 import { PERMISSION_HARNESS_TOOLS, type PermissionRuleDecision } from '@shared/types'
 import { isValidRule } from './ruleMatch'
+import { hiddenCharProblem } from '../capabilities/sanitize'
 
 /**
  * The harness's own tools, defined once for every provider. Each definition is a name, a description,
@@ -178,6 +179,9 @@ export function decisionText(d: ProposalOutcome, applied: string): string {
     if (d.note === REPEAT_DECLINE) {
       return 'DECLINED. You already proposed this exact change in this run and the user declined it, so no card was shown. Continue without it; do not propose the same change again this run.'
     }
+    if (d.note === KIND_DECLINE_CAP) {
+      return `DECLINED. The user already declined ${DECLINED_PER_KIND_MAX} proposals of this kind in this run, so no card was shown. Continue without this kind of change; do not propose it again this run, and mention it to the user in prose if it still matters.`
+    }
     const note = d.note?.trim()
     return `DECLINED. The user declined this proposal.${note ? ` Note from the user: ${note}` : ''} Continue without it; do not propose the same change again this run.`
   }
@@ -187,8 +191,17 @@ export function decisionText(d: ProposalOutcome, applied: string): string {
 /** The decline note askProposal returns for a proposal the user already declined in this run (no card shown). */
 const REPEAT_DECLINE = '\u0000repeat-decline'
 
-/** Declined proposals per run (kind + payload without the rationale), like request_mcp_install's 'denied' state. */
-const declined = new WeakMap<RuntimeContext, Set<string>>()
+/** The decline note askProposal returns once the user declined DECLINED_PER_KIND_MAX proposals of a kind (no card shown). */
+const KIND_DECLINE_CAP = '\u0000kind-decline-cap'
+
+/** After this many declined proposals of one kind in a run, further propose_* calls of that kind get DECLINED without a card. */
+export const DECLINED_PER_KIND_MAX = 3
+
+/**
+ * Declined proposals per run (kind + payload without the rationale), like request_mcp_install's 'denied' state, and
+ * how many of each kind the user declined.
+ */
+const declined = new WeakMap<RuntimeContext, { keys: Set<string>; perKind: Map<string, number> }>()
 
 /** Fields a repeated proposal differs in without being a different change (fresh ids, times, layout, wording). */
 const VOLATILE_PROPOSAL_KEYS = new Set(['id', 'addedAt', 'rationale', 'position', 'color', 'serverId'])
@@ -199,15 +212,20 @@ function proposalKey(req: { kind: string; payload: unknown }): string {
 
 /**
  * Every proposal tool asks through here: a proposal the user declined earlier in this run (same kind and payload,
- * rationale aside) is not shown again and answers decline with REPEAT_DECLINE; a new decline is remembered.
+ * rationale aside) is not shown again and answers decline with REPEAT_DECLINE; a new decline is remembered. Once the
+ * user declined DECLINED_PER_KIND_MAX proposals of a kind, every later one of that kind answers KIND_DECLINE_CAP.
  */
 async function askProposal(ctx: RuntimeContext, req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>): Promise<ProposalOutcome> {
-  const set = declined.get(ctx) ?? new Set<string>()
-  declined.set(ctx, set)
+  const state = declined.get(ctx) ?? { keys: new Set<string>(), perKind: new Map<string, number>() }
+  declined.set(ctx, state)
   const key = proposalKey(req)
-  if (set.has(key)) return { behavior: 'decline', note: REPEAT_DECLINE }
+  if (state.keys.has(key)) return { behavior: 'decline', note: REPEAT_DECLINE }
+  if ((state.perKind.get(req.kind) ?? 0) >= DECLINED_PER_KIND_MAX) return { behavior: 'decline', note: KIND_DECLINE_CAP }
   const d = await ctx.requestProposal(req)
-  if (d.behavior === 'decline') set.add(key)
+  if (d.behavior === 'decline') {
+    state.keys.add(key)
+    state.perKind.set(req.kind, (state.perKind.get(req.kind) ?? 0) + 1)
+  }
   return d
 }
 
@@ -352,6 +370,8 @@ export const proposeSettings = defineTool({
       .describe('Automatic continues allowed per run (default 40); lower it for small projects or tight budgets')
   }),
   async handler(ctx, { title, ...payload }, hooks) {
+    const hidden = (payload.allowRules ?? []).map((r, i) => hiddenCharProblem(`allowRules item ${i + 1}`, r)).find((p) => p !== null)
+    if (hidden) return `REVISE. The settings were not shown to the user: ${hidden}`
     const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title, payload })
     hooks.onDecided?.()
     return decisionText(d, 'The settings were applied. If everything is approved, call complete_setup.')
@@ -1021,7 +1041,9 @@ export const proposeMcpServers = defineTool({
         // An existing project-only server: toggle or re-grant it from its current definition.
         const spec: McpServerSpec = { ...named, enabled: u.enabled ?? named.enabled, ...(u.roles ? { roles: u.roles } : {}) }
         // projectOnly (review M3): if the server is gone by approval time, McpService never takes the library path.
-        specs.push({ ...spec, projectOnly: true })
+        // configOnly (review L1): approval applies only these fields onto the server as stored then, never this snapshot.
+        const configOnly: ('enabled' | 'roles')[] = [...(u.enabled !== undefined ? (['enabled'] as const) : []), ...(u.roles ? (['roles'] as const) : [])]
+        specs.push({ ...spec, projectOnly: true, configOnly })
         noSecrets.add(spec.id)
         const n = datum(spec.name, 60)
         const before = changes.length
@@ -1045,7 +1067,7 @@ export const proposeMcpServers = defineTool({
         ...(workRun ? { enabled: u.enabled ?? same?.enabled ?? true } : {})
       }
       if (same) spec.addedAt = same.addedAt
-      if (same && !same.libraryId && !sameTarget(same, spec) && mcpSecretNames(same).length) retargeted.push(spec.name)
+      if (same && !same.libraryId && !sameTarget(same, spec) && mcpSecretNames(same).length) retargeted.push(`${spec.name} (${mcpSecretNames(same).join(', ')})`)
       if (libraryScope) {
         const errors = validateLibraryEntry(libraryEntryFromSpec(spec, id), [...keep.filter((s) => s.id !== id), ...specs.map((s) => libraryEntryFromSpec(s, s.id))])
         if (errors.length) return reject(errors.join(' '))
@@ -1112,18 +1134,31 @@ export const proposeMcpServers = defineTool({
     if (!workRun && waiting) {
       if (waiting.length) follow.push(`Waiting for a secret: ${waiting.map((n) => datum(n, 60)).join(', ')}. ${waiting.length === 1 ? 'It does' : 'They do'} not start until the user sets the value in Settings > MCP servers (values are never shared with you).`)
     } else if (!workRun && secrets.length) follow.push(`The user still has to enter ${secrets.map((s) => s.name).join(', ')} in Settings (values are never shared with you).`)
-    if (retargeted.length) follow.push(`Changed address or command (${retargeted.join(', ')}): their stored secret values were cleared, so the user must re-enter them in Settings.`)
+    if (retargeted.length) {
+      follow.push(`Changed address, command, env or headers of ${retargeted.map((r) => datum(r, 200)).join('; ')}: those stored secret values were cleared, so the user must set them again (on the card or in Settings) before the server starts.`)
+    }
     if (needAuth.length) follow.push(`Remote servers (${[...new Set(needAuth)].join(', ')}): if they sign in with OAuth, the user authorizes them in Settings > MCP servers.`)
     if (workRun && d.behavior === 'approve') follow.push(await mcpAvailabilityText(ctx, hooks, specs, removedNames))
     return decisionText(d, `${saved.join(' ')}${follow.length ? ` ${follow.join(' ')}` : ''} Tell the user briefly what to do next.`)
   }
 })
 
-/** Same launch target: transport plus url, or command plus args. A change clears the stored secret values. */
+/**
+ * Same launch target: transport plus url, or command plus args, and the same plain env and header names and values
+ * (NODE_OPTIONS, NPM_CONFIG_REGISTRY or a *_PROXY change what runs or where it connects). A change clears the stored
+ * secret values. Mirrors mcp/service.ts sameLaunch.
+ */
 function sameTarget(a: McpServerSpec, b: McpServerSpec): boolean {
   if (a.transport !== b.transport) return false
+  if (!samePairs(a.env, b.env) || !samePairs(a.headers, b.headers)) return false
   if (a.transport === 'stdio') return (a.command ?? '') === (b.command ?? '') && JSON.stringify(a.args ?? []) === JSON.stringify(b.args ?? [])
   return (a.url ?? '').trim() === (b.url ?? '').trim()
+}
+
+/** The same plain name-value pairs, in any order. */
+export function samePairs(a: Record<string, string> | undefined, b: Record<string, string> | undefined): boolean {
+  const key = (r: Record<string, string> | undefined): string => JSON.stringify(Object.entries(r ?? {}).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)))
+  return key(a) === key(b)
 }
 
 /** The text request_permission_rules returns for a decision. */
@@ -1156,6 +1191,8 @@ export const requestPermissionRules = defineTool({
     reason: z.string().describe('One line: what the call does and why the task needs it')
   }),
   async handler(ctx, { rules, reason }, hooks, caller) {
+    const hidden = rules.map((r, i) => hiddenCharProblem(`Rule ${i + 1}`, r)).find((p) => p !== null)
+    if (hidden) return `Invalid request: ${hidden}`
     const clean = [...new Set(rules.map((r) => r.trim()).filter(Boolean))]
     const bad = clean.filter((r) => !isValidRule(r))
     if (bad.length) return `Invalid rule${bad.length === 1 ? '' : 's'}: ${bad.join(', ')}. Use Tool(prefix:*), Tool(exact command) or a bare tool name.`

@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeArgs, isCredentialArg, capabilityId, clampText, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
+import { sanitizeArgs, isCredentialArg, capabilityId, clampText, hiddenCharIn, hiddenCharProblem, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
+
+describe('hiddenCharIn / hiddenCharProblem', () => {
+  it('finds bidi, zero-width and control characters; multi-line fields allow tab and line breaks', () => {
+    expect(hiddenCharIn('a‮b')).toBe('U+202E')
+    expect(hiddenCharIn('a​b')).toBe('U+200B')
+    expect(hiddenCharIn('tag\u{e0041}')).toBe('U+E0041')
+    expect(hiddenCharIn('a\tb')).toBe('U+0009')
+    expect(hiddenCharIn('a\tb\r\nc', { multiline: true })).toBeNull()
+    expect(hiddenCharIn('a\u0007b', { multiline: true })).toBe('U+0007')
+    expect(hiddenCharIn('plain')).toBeNull()
+    expect(hiddenCharIn(42)).toBeNull()
+    expect(hiddenCharProblem('The URL', 'x‮')).toBe('The URL contains a hidden character (U+202E, a control, zero-width, bidi or other invisible character); remove it.')
+    expect(hiddenCharProblem('The URL', 'x')).toBeNull()
+  })
+})
 
 describe('clampText', () => {
   it('removes controls and bidi characters, collapses whitespace and clamps', () => {

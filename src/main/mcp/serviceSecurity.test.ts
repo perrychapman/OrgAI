@@ -157,6 +157,45 @@ describe('M5: retargeting through a proposal clears secret values', () => {
     svc.applyProposal(pid, { scope: 'project', upsert: [spec({ id: 'gh', name: 'gh', args: ['-y', '@evil/github@1.0.0'] })] } as McpServersProposalPayload)
     expect(secrets.has(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'))).toBe(false)
   })
+
+  // Review M2: same command and args or URL, but new plain env or header names or values.
+  it('project: an apply that adds or changes a plain env value clears values; a user edit keeps them', () => {
+    svc.upsert({ projectId: pid, spec: spec({ id: 'gh', name: 'gh', env: { LOG: '1' } }) })
+    secrets.set(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'), 'T')
+    svc.upsert({ projectId: pid, spec: spec({ id: 'gh', name: 'gh', env: { LOG: '2' } }) })
+    expect(secrets.get(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'))).toBe('T')
+    svc.applyProposal(pid, { scope: 'project', upsert: [spec({ id: 'gh', name: 'gh', env: { LOG: '2' } })] } as McpServersProposalPayload)
+    expect(secrets.get(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'))).toBe('T')
+    svc.applyProposal(pid, { scope: 'project', upsert: [spec({ id: 'gh', name: 'gh', env: { LOG: '2', NODE_OPTIONS: '--require ./x.js' } })] } as McpServersProposalPayload)
+    expect(secrets.has(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'))).toBe(false)
+  })
+
+  it('library: an apply that changes a plain header value clears values', () => {
+    secrets.set(mcpLibrarySecretKey('mcpl_1', 'header', 'X-Key'), 'K')
+    svc.applyLibraryProposal({ scope: 'library', upsert: [{ ...REMOTE, headers: { 'X-Region': 'eu' }, enabled: true }], rationale: 'r' })
+    expect(secrets.has(mcpLibrarySecretKey('mcpl_1', 'header', 'X-Key'))).toBe(false)
+  })
+})
+
+describe('L1: a name-only toggle applies onto the stored server', () => {
+  it('keeps a Settings edit made while the card was open', () => {
+    svc.upsert({ projectId: pid, spec: spec({ id: 'gh', name: 'gh', enabled: false }) })
+    secrets.set(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'), 'T')
+    // The card's snapshot is the server as it was when proposed.
+    const snapshot = { ...projects.get(pid)!.mcpServers!.find((s) => s.id === 'gh')!, enabled: true, projectOnly: true, configOnly: ['enabled' as const] }
+    // The user edits it in Settings before approving.
+    svc.upsert({ projectId: pid, spec: spec({ id: 'gh', name: 'gh', enabled: false, args: ['-y', '@modelcontextprotocol/server-github@2.0.0'], description: 'edited' }) })
+    svc.applyProposal(pid, { scope: 'project', upsert: [snapshot], rationale: 'r' }, { projectOnly: true })
+    const saved = projects.get(pid)!.mcpServers!.find((s) => s.id === 'gh')!
+    expect(saved).toMatchObject({ enabled: true, description: 'edited', args: ['-y', '@modelcontextprotocol/server-github@2.0.0'] })
+    expect(saved).not.toHaveProperty('configOnly')
+    expect(secrets.get(mcpSecretKey(pid, 'gh', 'env', 'GITHUB_TOKEN'))).toBe('T')
+    // Roles-only keeps enabled as stored.
+    svc.upsert({ projectId: pid, spec: { ...saved, enabled: false } })
+    svc.applyProposal(pid, { scope: 'project', upsert: [{ ...snapshot, enabled: true, roles: ['lead'], configOnly: ['roles'] }], rationale: 'r' }, { projectOnly: true })
+    expect(projects.get(pid)!.mcpServers!.find((s) => s.id === 'gh')).toMatchObject({ enabled: false, roles: ['lead'] })
+    expect(() => svc.applyProposal(pid, { scope: 'project', upsert: [{ ...snapshot, id: 'gone' }], rationale: 'r' }, { projectOnly: true })).toThrow(/no longer in this project/)
+  })
 })
 
 describe('L8: secret kinds', () => {

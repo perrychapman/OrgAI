@@ -250,6 +250,6 @@ describe('discoverLocalMcp review target', () => {
     put(join(proj, '.mcp.json'), JSON.stringify({ mcpServers: { spaced: { command: 'node', args: ['server.js', 'two words'] }, hidden: { command: 'node', args: ['a‮b'] } } }))
     const r = discoverLocalMcp(ctx())
     expect(r.candidates.find((c) => c.item.name === 'spaced')!.item.target).toBe('node server.js "two words"')
-    expect(r.candidates.find((c) => c.item.name === 'hidden')!.item.blockedReason).toMatch(/hidden or control characters/)
+    expect(r.candidates.find((c) => c.item.name === 'hidden')!.item.blockedReason).toMatch(/hidden (or control )?character/)
   })
 })

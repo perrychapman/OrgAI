@@ -1,5 +1,6 @@
 import type { McpLibraryEntry, McpRegistryEntry, McpServerSpec } from '@shared/types'
 import { SAFE_ID, isValidMcpServerName, newId } from '@shared/defaults'
+import { hiddenCharProblem } from '../capabilities/sanitize'
 
 /**
  * Validation of MCP server specs and building specs from registry entries. Pure; shared by the settings
@@ -177,6 +178,7 @@ function tooLong(s: unknown): boolean {
 export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSpec[] = [], where: 'project' | 'library' = 'project'): string[] {
   const errors: string[] = []
   if (!spec || typeof spec !== 'object') return ['The server spec is missing.']
+  errors.push(...hiddenCharProblems(spec))
   if (typeof spec.id !== 'string' || !SAFE_ID.test(spec.id)) errors.push('The server id must be 1-128 letters, digits, hyphens or underscores.')
   if (typeof spec.name !== 'string' || !isValidMcpServerName(spec.name)) {
     errors.push('The name must be lowercase kebab-case (letters, digits and single hyphens, at most 48 characters), e.g. "github".')
@@ -239,6 +241,45 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
     errors.push(...pinErrors(spec.command.trim(), spec.args ?? []))
   }
   return errors
+}
+
+/**
+ * One refusal per spec field holding a control, zero-width, bidi or other invisible character (capabilities/sanitize.ts
+ * hiddenCharIn). Names, the command, the URL, header values, secret slot names and role slugs are one line; args, env
+ * values and the description may hold tab and line breaks. Proposals, library entries and settings edits all pass here.
+ */
+export function hiddenCharProblems(spec: Partial<McpServerSpec>): string[] {
+  const out: string[] = []
+  const one = (field: string, v: unknown): void => {
+    const p = hiddenCharProblem(field, v)
+    if (p) out.push(p)
+  }
+  const multi = (field: string, v: unknown): void => {
+    const p = hiddenCharProblem(field, v, { multiline: true })
+    if (p) out.push(p)
+  }
+  one('The name', spec.name)
+  one('The command', spec.command)
+  one('The URL', spec.url)
+  multi('The description', spec.description)
+  if (Array.isArray(spec.args)) spec.args.forEach((a, i) => multi(`Argument ${i + 1}`, a))
+  for (const [k, v] of Object.entries(spec.env && typeof spec.env === 'object' ? spec.env : {})) {
+    one('An environment variable name', k)
+    multi(`Environment variable ${safeLabel(k)}`, v)
+  }
+  for (const [k, v] of Object.entries(spec.headers && typeof spec.headers === 'object' ? spec.headers : {})) {
+    one('A header name', k)
+    one(`Header ${safeLabel(k)}`, v)
+  }
+  for (const n of Array.isArray(spec.secretEnv) ? spec.secretEnv : []) one('A secret environment variable name', n)
+  for (const n of Array.isArray(spec.secretHeaders) ? spec.secretHeaders : []) one('A secret header name', n)
+  for (const r of Array.isArray(spec.roles) ? spec.roles : []) one('A role slug', r)
+  return out
+}
+
+/** A name quoted for a message only when it is plain; otherwise it is left out (never echo hidden characters). */
+function safeLabel(name: string): string {
+  return /^[\w.-]{1,64}$/.test(name) ? `"${name}"` : '(unnamed)'
 }
 
 /** Library ids double as secret-key segments, so they stay in a safe alphabet. */

@@ -46,6 +46,19 @@ describe('skillAssistPrompt', () => {
   })
 })
 
+describe('skillProposalProblem hidden characters', () => {
+  it('refuses a bidi or zero-width character in name, description and roles, naming the field', () => {
+    const bidi = { ...draft('fresh'), description: 'Use for ‮fresh work.' }
+    expect(skillProposalProblem([item({ draft: bidi })], env())).toMatch(/^Item 1: draft\.description contains a hidden character \(U\+202E/)
+    expect(skillProposalProblem([item({ draft: { ...draft('fresh'), name: 'fre​sh' } })], env())).toMatch(/^Item 1: draft\.name contains a hidden character \(U\+200B/)
+    expect(skillProposalProblem([item({ scope: 'project', draft: draft('fresh'), roles: ['lead', 'engi​neer'] })], env())).toMatch(/^Item 1: A role slug in roles contains a hidden character \(U\+200B/)
+    const grant = { action: 'grant', scope: 'project', name: 'review‮-code', draft: draft('review-code'), roles: ['lead'] } as SkillProposalItem
+    expect(skillProposalProblem([grant], env())).toMatch(/^Item 1: name contains a hidden character \(U\+202E/)
+    // A line break in a description is folded, not refused.
+    expect(skillProposalProblem([item({ draft: { ...draft('fresh'), description: 'Use for\nfresh work.' } })], env())).toBeNull()
+  })
+})
+
 describe('skillProposalProblem', () => {
   it('accepts valid library and project items', () => {
     expect(skillProposalProblem([item(), item({ scope: 'project', draft: draft('fresh'), roles: ['lead'] })], env())).toBeNull()
