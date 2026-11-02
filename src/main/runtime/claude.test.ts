@@ -88,7 +88,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 
-import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
@@ -1224,6 +1224,96 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
       { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
       { type: 'addDirectories', directories: [sibling], destination: 'session' }
     ])
+  })
+
+  const hook = async (q: Fake, tool: string, input: Record<string, unknown>): Promise<HookOut> =>
+    (q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>)(
+      { hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd: '/repo', tool_name: tool, tool_input: input, tool_use_id: `tu-${Math.random()}` },
+      'x',
+      {}
+    )
+  const signal = () => new AbortController().signal
+
+  it('userMcpServerNames: enabled servers minus agent installs, never orgai', () => {
+    const live = [mcpSpec({ name: 'keep', source: 'user' }), mcpSpec({ id: 'b', name: 'late' }), mcpSpec({ id: 'c', name: 'off', enabled: false }), mcpSpec({ id: 'd', name: 'orgai' })]
+    expect(userMcpServerNames(live, new Set(['late']))).toEqual(['keep'])
+  })
+
+  it('restrictedSafeSuggestions drops setMode on a quick run only', () => {
+    const sugg = [
+      { type: 'setMode' as const, mode: 'acceptEdits' as const, destination: 'session' as const },
+      { type: 'addDirectories' as const, directories: ['/x'], destination: 'session' as const }
+    ]
+    expect(restrictedSafeSuggestions({ run: runSummary({}) }, sugg)).toEqual(sugg)
+    const quick = runSummary({ projectId: 'quick', quick: { folder: '/f', team: 'single', allowEdits: true, gitRepo: false } })
+    expect(restrictedSafeSuggestions({ run: quick }, sugg)).toEqual([sugg[1]])
+  })
+
+  it('a configured server card offers mcp__<server>; after a session grant its other tools pass the hook; an agent install keeps exact rules', async () => {
+    const keep = mcpSpec({ id: 'k1', name: 'keep', source: 'user', secretEnv: [] })
+    const late = mcpSpec({ id: 'l1', name: 'late', source: 'agent', secretEnv: [] })
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-mcpsrv-'))
+    const { ctx } = start({ project: project({ path: dir, mcpServers: [keep] }), mcpServers: () => [keep, late], resolvedMcpServers: async () => [keep, late].map((spec) => ({ spec, env: {}, headers: {} })) })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const q = await firstQuery()
+    expect((await hook(q, 'mcp__keep__read', {})).hookSpecificOutput?.permissionDecision).toBeUndefined()
+    const out = await canUseTool(q)('mcp__keep__list', {}, { signal: signal() })
+    expect(vi.mocked(ctx.requestPermission).mock.calls[0]![0].ruleLabels).toEqual(['All tools of keep'])
+    expect(out.updatedPermissions).toEqual([{ type: 'addRules', rules: [{ toolName: 'mcp__keep' }], behavior: 'allow', destination: 'session' }])
+    expect((await hook(q, 'mcp__keep__read', {})).hookSpecificOutput?.permissionDecision).toBe('allow')
+    await canUseTool(q)('mcp__late__list', {}, { signal: signal() })
+    expect(vi.mocked(ctx.requestPermission).mock.calls[1]![0].ruleLabels).toEqual(['mcp__late__list'])
+    expect((await hook(q, 'mcp__late__list', {})).hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect((await hook(q, 'mcp__late__read', {})).hookSpecificOutput?.permissionDecision).toBeUndefined()
+  })
+
+  it('issue #14: a session grant on a compound command lets the same command through the hook', async () => {
+    const { ctx, dir } = start()
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const q = await firstQuery()
+    const command = `cd ${join(dir, 'sub')} && npm test && npm run lint`
+    expect(await bash(q, command)).toEqual({})
+    await canUseTool(q)('Bash', { command }, { signal: signal(), suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: `${command} *` }], behavior: 'allow', destination: 'localSettings' }] })
+    expect((await bash(q, command)).hookSpecificOutput?.permissionDecision).toBe('allow')
+  })
+
+  it('a once allow grants nothing for later calls', async () => {
+    const { ctx, dir } = start()
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'once' })
+    const q = await firstQuery()
+    const command = `cd ${join(dir, 'sub')} && npm test`
+    const out = await canUseTool(q)('Bash', { command }, { signal: signal() })
+    expect(out.updatedPermissions).toBeUndefined()
+    expect(await bash(q, command)).toEqual({})
+  })
+
+  it('a project-scope grant logs Saved only for new rules', async () => {
+    const { ctx, dir } = start()
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'project' })
+    const q = await firstQuery()
+    const command = `cd ${join(dir, 'sub')} && npm test`
+    await canUseTool(q)('Bash', { command }, { signal: signal() })
+    await canUseTool(q)('Bash', { command }, { signal: signal() })
+    const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    expect(logs.filter((m) => m.startsWith('Saved permission rule'))).toEqual(['Saved permission rule for this project: Bash(npm test:*)'])
+    expect(logs.some((m) => m.includes('do not cover this command'))).toBe(false)
+  })
+
+  it('a quick run gets no setMode suggestion on the card or in updatedPermissions', async () => {
+    const { ctx, dir } = start({ run: runSummary({ projectId: 'quick', quick: { folder: '/f', team: 'single', allowEdits: true, gitRepo: false } }) })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const q = await firstQuery()
+    const sibling = join(dir, '..', 'sibling-notes')
+    const out = await canUseTool(q)('Edit', { file_path: join(sibling, 'README.md') }, {
+      signal: signal(),
+      suggestions: [
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+        { type: 'addDirectories', directories: [sibling], destination: 'session' }
+      ]
+    })
+    const card = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+    expect(card.suggestions?.some((s) => s.type === 'setMode')).toBe(false)
+    expect(out.updatedPermissions).toEqual([{ type: 'addDirectories', directories: [sibling], destination: 'session' }])
   })
 
   it('a quick run never persists folders or the mode, even when the hooks are present', async () => {

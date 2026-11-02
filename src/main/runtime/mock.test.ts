@@ -625,6 +625,36 @@ describe('mock adapter MCP gate parity (review L3, M3)', () => {
   })
 })
 
+describe('mock adapter MCP server-level suggestions (issue #14 C)', () => {
+  const spec = (name: string, source: 'user' | 'agent', id = `id-${name}`): McpServerSpec => ({ id, name, transport: 'stdio', command: 'npx', enabled: true, source, addedAt: '2026-01-01T00:00:00.000Z' })
+  async function runTools(ctx: ReturnType<typeof fakeCtx>, work: { name: string; ask?: boolean }[]) {
+    const session = await new MockAdapter({ script: { delayMs: 0, work: work.map((w) => ({ type: 'tool' as const, result: 'ok', ...w })) } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+  }
+
+  it('offers mcp__<server> for a configured server, exact rules for an agent-installed one; a session grant covers the next tool', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-mcpsrv-'))
+    const keep = spec('keep', 'user')
+    const late = spec('late', 'agent')
+    const ctx = fakeCtx({ autoContinue: false, project: project({ path: dir, mcpServers: [keep] }), mcpServers: () => [keep, late] })
+    vi.mocked(ctx.requestPermission).mockImplementation(async () => ({ behavior: 'allow', scope: 'session' }))
+    await runTools(ctx, [
+      { name: 'mcp__keep__list', ask: true },
+      { name: 'mcp__keep__read', ask: true },
+      { name: 'mcp__late__list', ask: true },
+      { name: 'mcp__late__read', ask: true }
+    ])
+    const cards = vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0])
+    expect(cards.map((c) => c.toolName)).toEqual(['mcp__keep__list', 'mcp__late__list', 'mcp__late__read'])
+    expect(cards[0]!.ruleLabels).toEqual(['All tools of keep'])
+    expect(cards[0]!.suggestions).toEqual([{ type: 'addRules', rules: [{ toolName: 'mcp__keep' }], behavior: 'allow', destination: 'session' }])
+    expect(cards[1]!.ruleLabels).toEqual(['mcp__late__list'])
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
 describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
   // Never created on disk: the script only names these folders.
   const base = join(tmpdir(), `orgai-fatigue-${process.pid}`)
@@ -674,6 +704,61 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     expect(acceptEditsForProject).toHaveBeenCalledTimes(1)
     // A one-time Bash allow grants nothing: the last cd + npm test asks again.
     expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit', 'Bash'])
+  })
+
+  it('issue #14: the same compound command twice shows one card, then none after a session grant', async () => {
+    const command = `cd ${join(projPath, 'sub')} && npm test && npm run lint`
+    const step = { type: 'tool' as const, name: 'Bash', input: { command }, ask: true, suggestions: [{ type: 'addRules' as const, rules: [{ toolName: 'Bash', ruleContent: `${command} *` }], behavior: 'allow' as const, destination: 'localSettings' as const }], result: 'ok' }
+    const { cards } = await play({}, () => ({ behavior: 'allow', scope: 'session' }), { work: [step, step] })
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.ruleLabels).toEqual(['Bash(npm test:*)', 'Bash(npm run:*)'])
+  })
+
+  it('a project-scope grant logs Saved only for new rules and the second identical command needs no card', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-saved-'))
+    const command = `cd ${join(dir, 'sub')} && npm test`
+    const step = { type: 'tool' as const, name: 'Bash', input: { command }, ask: true, result: 'ok' }
+    const { ctx, cards } = await play({ project: project({ path: dir }) }, () => ({ behavior: 'allow', scope: 'project' }), { work: [step, step] })
+    expect(cards).toHaveLength(1)
+    const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    expect(logs.filter((m) => m.startsWith('Saved permission rule'))).toEqual(['Saved permission rule for this project: Bash(npm test:*)'])
+    expect(logs.some((m) => m.includes('do not cover this command'))).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('a quick run gets no setMode suggestion and stays ask-only after "allow for session"', async () => {
+    const quick = { folder: projPath, team: 'single' as const, allowEdits: true, gitRepo: false }
+    const edit = (file: string) => ({
+      type: 'tool' as const,
+      name: 'Edit',
+      input: { file_path: file },
+      ask: true,
+      suggestions: [
+        { type: 'setMode' as const, mode: 'acceptEdits' as const, destination: 'session' as const },
+        { type: 'addDirectories' as const, directories: [sibling], destination: 'session' as const }
+      ]
+    })
+    const { cards } = await play({ run: runSummary({ projectId: 'quick', quick }) }, () => ({ behavior: 'allow', scope: 'session' }), { work: [edit(join(sibling, 'a.md')), edit(join(sibling, 'b.md'))] })
+    expect(cards).toHaveLength(2)
+    expect(cards[0]!.ruleLabels).toEqual([`Edits and reads in ${sibling}`])
+    expect(cards[0]!.suggestions?.some((s) => s.type === 'setMode')).toBe(false)
+  })
+
+  it('never offers or grants a protected folder as a session directory', async () => {
+    const data = join(base, 'orgai-data')
+    const edit = (file: string) => ({
+      type: 'tool' as const,
+      name: 'Edit',
+      input: { file_path: file },
+      ask: true,
+      suggestions: [
+        { type: 'setMode' as const, mode: 'acceptEdits' as const, destination: 'session' as const },
+        { type: 'addDirectories' as const, directories: [data], destination: 'session' as const }
+      ]
+    })
+    const { cards } = await play({ protectedDirectories: () => [data] }, () => ({ behavior: 'allow', scope: 'session' }), { work: [edit(join(data, 'a.json')), edit(join(data, 'b.json'))] })
+    expect(cards).toHaveLength(2)
+    expect(cards[0]!.ruleLabels).toEqual(['Auto-accept file edits in this project'])
   })
 
   it('a quick run never calls the persist hooks, even on a project scope', async () => {

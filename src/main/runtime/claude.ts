@@ -31,7 +31,7 @@ import { SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
-import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
+import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist, type SuggestOptions } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
@@ -563,7 +563,7 @@ export function buildAgents(
         isSetup,
         isolation,
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
-        // PromptFlags.allowedDirectories (prompts.ts, Runtime Engineer's change, merged separately).
+        // The run's allowed directories, so agents know where a plain `cd` and edits need no approval.
         ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
@@ -628,6 +628,25 @@ export function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
     ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
     ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
   }
+}
+
+/**
+ * Card suggestions for a run: a trust-restricted run (quick run, build session) never gets a setMode suggestion, so
+ * "allow for session" cannot switch it to acceptEdits and it stays ask-only.
+ */
+export function restrictedSafeSuggestions(ctx: Pick<RuntimeContext, 'run'>, suggestions: PermissionSuggestion[]): PermissionSuggestion[] {
+  return isTrustRestrictedRun(ctx.run) ? suggestions.filter((s) => s.type !== 'setMode') : suggestions
+}
+
+/**
+ * MCP servers whose tool cards may offer the server-level rule `mcp__<server>` (SuggestOptions.userMcpServers): the
+ * run's enabled servers by the name in their tool prefix (the mcpServers record key), minus every server an agent
+ * installed this run (review M3: those keep exact tool rules) and never the harness's own `orgai`.
+ */
+export function userMcpServerNames(live: readonly McpServerSpec[], agentInstalled: ReadonlySet<string>): string[] {
+  const out = new Set<string>()
+  for (const s of live) if (s.enabled && s.name !== ORGAI_MCP && !agentInstalled.has(s.name)) out.add(s.name)
+  return [...out]
 }
 
 /** A quick or build run's "project" scope becomes "session": nothing is ever written into the user's folder. */
@@ -857,6 +876,12 @@ export class ClaudeSession implements RuntimeSession {
   private turnEndDeferred = false
   /** Every server attached mid-run through addMcpServer (agent installs): server-level rules never approve them. */
   private attachedMcp = new Set<string>()
+  /**
+   * Allow rules granted from a card for the rest of this session (session and project scope). They also go to the CLI
+   * as updatedPermissions, but the PreToolUse hook matches them itself (ruleMatch.ts), so a per-segment shell grant or
+   * a server-level `mcp__<server>` grant holds whatever the CLI's own matcher does, and survives a restarted query.
+   */
+  private sessionRules = new Set<string>()
   /** Open non-subagent tasks (task_started with another task_type) until their notification: restart blockers. */
   private backgroundTasks = new Set<string>()
   /**
@@ -1358,7 +1383,7 @@ export class ClaudeSession implements RuntimeSession {
       if (harness) return hookAllow('OrgAI harness tool')
       // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
       // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
-      const rules = this.ctx.allowedRules?.() ?? []
+      const rules = [...new Set([...(this.ctx.allowedRules?.() ?? []), ...this.sessionRules])]
       // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
       // ask per call unless an exact tool rule covers them.
       const usable = rules.length && input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
@@ -1500,6 +1525,17 @@ export class ClaudeSession implements RuntimeSession {
       this.log('warn', `Could not read the run's MCP servers for ${input.tool_name}: ${(e as Error).message}`)
       return 'OrgAI could not check which MCP servers this agent may use, so the call was refused. Try again shortly.'
     }
+  }
+
+  /** Match options plus the user's MCP servers (server-level card rules) for chooseSuggestions. */
+  private suggestOptions(): SuggestOptions {
+    let live: McpServerSpec[] = []
+    try {
+      live = this.liveMcpServers()
+    } catch {
+      /* no server-level offers */
+    }
+    return { ...matchOptionsFor(this.ctx), userMcpServers: userMcpServerNames(live, this.agentInstalledMcp()) }
   }
 
   /** Servers agents installed during this run (attached mid-run, or run-scoped 'agent' installs): no server-level rule approves them. */
@@ -2229,12 +2265,16 @@ export class ClaudeSession implements RuntimeSession {
         const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
         this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
-        const suggestions = chooseSuggestions(
-          toolName,
-          input,
-          permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
-          !!permOptions.suppressAlwaysAllowRule,
-          matchOptionsFor(this.ctx)
+        // A trust-restricted run never gets a setMode suggestion (it stays ask-only after "allow for session").
+        const suggestions = restrictedSafeSuggestions(
+          this.ctx,
+          chooseSuggestions(
+            toolName,
+            input,
+            permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
+            !!permOptions.suppressAlwaysAllowRule,
+            this.suggestOptions()
+          )
         )
         const decision = await this.ctx.requestPermission({
           agentId,
@@ -2245,7 +2285,7 @@ export class ClaudeSession implements RuntimeSession {
         })
         const a = this.agents.get(agentId)
         if (a && a.state === 'waiting') this.setState(agentId, 'tool', describe(toolName, input))
-        if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input)
+        if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input, toolName)
         return { behavior: 'deny', message: decision.message }
       }
     }
@@ -2287,16 +2327,19 @@ export class ClaudeSession implements RuntimeSession {
   private allowWithScope(
     decision: Extract<PermissionDecision, { behavior: 'allow' }>,
     suggestions: PermissionSuggestion[],
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    toolName: string
   ): PermissionResult {
     const granted = applyAllowScope(
       this.ctx.project.path,
       quickSafeDecision(this.ctx, decision),
       suggestions,
       (level, message) => this.log(level, message),
-      allowScopePersist(this.ctx)
+      allowScopePersist(this.ctx),
+      { toolName, input, opts: matchOptionsFor(this.ctx) }
     )
     if (!granted) return { behavior: 'allow', updatedInput: input }
+    for (const r of allowRuleStrings(granted)) this.sessionRules.add(r)
     return {
       behavior: 'allow',
       updatedInput: input,

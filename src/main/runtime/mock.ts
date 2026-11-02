@@ -8,7 +8,7 @@ import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigC
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
-import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
+import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
@@ -946,13 +946,18 @@ export class MockSession implements RuntimeSession {
     if (step.ask) {
       const restricted = isTrustRestrictedRun(this.ctx.run)
       const opts = matchOptionsFor(this.ctx)
-      const suggestions = chooseSuggestions(step.name, input, step.suggestions, false, opts)
+      // Same as the Claude adapter: server-level rules are offered for the user's MCP servers only (never one an agent
+      // installed this run, never orgai), and a trust-restricted run never gets a setMode suggestion.
+      const installedAll = agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name))
+      const userMcpServers = [...new Set(this.liveMcpServers().filter((s) => s.enabled && s.name !== 'orgai' && !installedAll.has(s.name)).map((s) => s.name))]
+      const chosen = chooseSuggestions(step.name, input, step.suggestions, false, { ...opts, userMcpServers })
+      const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
       const rules = allowRuleStrings(suggestions)
       // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
       const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
-      const installed = step.name.startsWith('mcp__') ? agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name)) : new Set<string>()
+      const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
       const savedUsable = new Set(withoutServerRules([...saved], installed))
       const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
       const preApproved =
@@ -984,12 +989,15 @@ export class MockSession implements RuntimeSession {
           restricted && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision,
           suggestions,
           (level, message) => this.log(level, message),
-          restricted ? undefined : allowScopePersist(this.ctx)
+          restricted ? undefined : allowScopePersist(this.ctx),
+          { toolName: step.name, input, opts }
         )
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
         for (const s of granted ?? []) {
-          if (s.type === 'setMode' && s.mode === 'acceptEdits') this.sessionAcceptEdits = true
-          if (s.type === 'addDirectories') for (const d of s.directories) this.sessionDirs.add(d)
+          // A trust-restricted run stays ask-only: a session acceptEdits is never honoured there.
+          if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+          // Only folders the card may offer (never the data folder, home, a credential folder or a root).
+          if (s.type === 'addDirectories') for (const d of s.directories) if (isOfferableDirectory(d, opts)) this.sessionDirs.add(d)
         }
       }
     }
@@ -1004,7 +1012,7 @@ export class MockSession implements RuntimeSession {
    */
   private editPreApproved(toolName: string, input: unknown, restricted: boolean): boolean {
     if (!EDIT_TOOLS.has(toolName)) return false
-    const acceptEdits = this.sessionAcceptEdits || (!restricted && this.ctx.project.permissionMode === 'acceptEdits')
+    const acceptEdits = !restricted && (this.sessionAcceptEdits || this.ctx.project.permissionMode === 'acceptEdits')
     if (!acceptEdits) return false
     const target = editTargetOf(input)
     if (!target) return false
