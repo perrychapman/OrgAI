@@ -531,6 +531,25 @@ export interface StartInput {
   buildWorkspace?: string
 }
 
+/**
+ * Copy the grant fields (Role.mcpServers, Role.skills) of the saved roles onto a running session's roles, matched by id,
+ * in place: the adapters hold these objects (role maps, the spawn network, the MCP and Skill gates, agent definitions
+ * rebuilt on a restart), so an ungrant or a new grant approved mid-run is in force on the next call. Role identity never
+ * changes mid-run: a role an org change added joins on the next run, and a role it removed keeps its start-time
+ * definition (and grants) until this run ends. Every other field stays as the run started.
+ */
+export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void {
+  const byId = new Map(saved.map((r) => [r.id, r]))
+  for (const role of running) {
+    const next = byId.get(role.id)
+    if (!next) continue
+    if (next.mcpServers) role.mcpServers = [...next.mcpServers]
+    else delete role.mcpServers
+    if (next.skills) role.skills = [...next.skills]
+    else delete role.skills
+  }
+}
+
 export class RunManager {
   private runs = new Map<string, ActiveRun>()
   /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
@@ -1013,9 +1032,12 @@ export class RunManager {
       const setLive = (saved: Project, skills = true): void => {
         live = { ...saved, path: live.path }
         ctx.project = live
+        // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
+        // objects. An org chart approval (skills false) leaves them as they started.
+        if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
         if (skills && !bare && this.options.skills) {
           try {
-            active.skills = this.options.skills.forRun(live, live.roles) ?? []
+            active.skills = this.options.skills.forRun(live, ctx.roles) ?? []
           } catch (e) {
             log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
           }
@@ -1048,7 +1070,7 @@ export class RunManager {
           kind === 'setup' ? [architectRole(builtinModel)]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
-          : project.roles,
+          : project.roles.map((r) => ({ ...r })),
         prompt,
         images: images.length ? images : undefined,
         hiddenContext,

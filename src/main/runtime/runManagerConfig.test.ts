@@ -8,6 +8,7 @@ import { PROPOSAL_TOOLS } from '@shared/setup'
 import { RunManager } from './runManager'
 import { MockAdapter, CONFIG_CHANGE_TOKEN, MOCK_CONFIG_SERVER, MOCK_CONFIG_SKILL } from './mock'
 import { harnessToolsFor, type ConfigChange } from './harnessTools'
+import { mcpCallDenial } from './mcpGrants'
 import type { RuntimeAdapter, RuntimeContext } from './types'
 import { RunStore } from '../store/runs'
 import { ProjectStore } from '../store/projects'
@@ -127,6 +128,45 @@ describe('a work run changes its own MCP and skill configuration (mock adapter)'
   })
 })
 
+describe('a mid-run ungrant reaches the mock adapter through RunManager (review M1)', () => {
+  it('a role holding a server through Role.mcpServers loses it when the user limits the server, and its next call is refused', async () => {
+    let p = newProject()
+    const root = p.roles.find((r) => r.reportsTo === null)!
+    const other = p.roles.find((r) => r.reportsTo !== null && root.spawnable.includes(r.id))!
+    mcp.upsert({ projectId: p.id, spec: { id: 'mcp-docs', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'docs-mcp@1.0.0'], enabled: true, source: 'user', addedAt: '', projectOnly: true } as McpServerSpec })
+    p = store.get(p.id)!
+    store.save({ ...p, roles: p.roles.map((r) => (r.id === other.id ? { ...r, mcpServers: ['mcp-docs'] } : r)) })
+    p = store.get(p.id)!
+    const adapter = new MockAdapter({
+      script: {
+        delayMs: 0,
+        work: [
+          { type: 'spawn', id: 'w1', role: other.slug, description: 'Look it up' },
+          { type: 'tool', agent: 'w1', name: 'mcp__docs__search', input: {}, result: 'first answer' },
+          { type: 'harness', name: MCP_HARNESS_TOOLS.proposeServers, args: { title: 'Root only', rationale: 'r', upsert: [{ name: 'docs', roles: [root.slug] }] } },
+          { type: 'tool', agent: 'w1', name: 'mcp__docs__search', input: {}, result: 'second answer' },
+          { type: 'finish', id: 'w1', result: 'Done.' },
+          { type: 'text', text: 'Ungrant done.' }
+        ]
+      }
+    })
+    const m = manager({ mock: adapter })
+    const run = await m.start({ project: { ...p, provider: { ...p.provider, id: 'mock' } }, prompt: 'go' })
+    const card = await waitFor(proposalOf('mcpServers'))
+    const session = adapter.sessions[0]!
+    expect(session.mcpServersByRole[other.slug]).toEqual(['docs'])
+    m.decideProposal(run.id, card.proposal.id, { behavior: 'approve' })
+    await waitFor((e): e is RunEvent => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'Ungrant done.')
+    expect(session.mcpServersByRole[other.slug]).toEqual([])
+    const results = events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === 'w1' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+    expect(results.map((b) => [b.content, !!b.isError])).toEqual([
+      ['first answer', false],
+      [expect.stringContaining('does not grant the MCP server "docs"'), true]
+    ])
+    await m.stopAll()
+  })
+})
+
 describe('approved changes reach the live context (real services, capturing adapter)', () => {
   async function rig() {
     let p = newProject()
@@ -177,6 +217,7 @@ describe('approved changes reach the live context (real services, capturing adap
     expect(changes).toContainEqual({ skills: true })
     // Grants recomputed: no role loads it any more, so the next call is refused.
     expect(ctx.skills!()).toEqual([])
+    expect(ctx.roles.find((r) => r.id === other.id)!.skills ?? []).toEqual([])
     expect(await call(SKILL_HARNESS_TOOLS.load, { name: 'triage' }, { agentId: 'a1', roleId: other.id })).toContain('REFUSED')
     await m.stopAll()
   })
@@ -237,7 +278,7 @@ describe('approved changes reach the live context (real services, capturing adap
   })
 
   it('an approved org change keeps role ids and every grant', async () => {
-    const { approve, m, p, other } = await rig()
+    const { approve, ctx, m, p, other } = await rig()
     const before = store.get(p.id)!
     const drafts = before.roles.map((r) => ({
       name: r.name,
@@ -260,15 +301,24 @@ describe('approved changes reach the live context (real services, capturing adap
     expect(kept.mcpServers).toEqual(['mcp-docs'])
     expect(kept.skills).toEqual(before.roles.find((r) => r.id === other.id)!.skills)
     expect(after.mcpServers![0].roles).toEqual(before.mcpServers![0].roles)
+    // The org chart card applies from the next run: the live run keeps its start-time role definitions (review M1).
+    const running = ctx.roles.find((r) => r.id === other.id)!
+    expect(running.prompt).not.toContain('Sharper.')
+    expect(running.mcpServers).toEqual(['mcp-docs'])
     await m.stopAll()
   })
 
   it('an ungrant also drops explicit Role.mcpServers grants, and the run cannot label provenance or write the library', async () => {
     const { approve, ctx, m, p, other, root } = await rig()
+    expect(mcpCallDenial('mcp__docs__search', { role: ctx.roles.find((r) => r.id === other.id)!, isRoot: false }, ctx.mcpServers!())).toBeUndefined()
     // other holds docs through an explicit Role.mcpServers grant; limiting docs to root removes it (review M2).
     const { text } = await approve(MCP_HARNESS_TOOLS.proposeServers, { title: 'Root only', rationale: 'r', upsert: [{ name: 'docs', roles: [root.slug] }] })
     expect(text).toMatch(/^APPROVED/)
     expect(store.get(p.id)!.roles.find((r) => r.id === other.id)!.mcpServers).toEqual([])
+    // The live run's roles follow (review M1): the adapters' gates hold these objects, so the next call is refused.
+    const liveOther = ctx.roles.find((r) => r.id === other.id)!
+    expect(liveOther.mcpServers).toEqual([])
+    expect(mcpCallDenial('mcp__docs__search', { role: liveOther, isRoot: false }, ctx.mcpServers!())).toContain('does not grant the MCP server "docs"')
     // A registry label from the agent is dropped (review M4) and the new server stays in the project (review M3).
     const { card } = await approve(MCP_HARNESS_TOOLS.proposeServers, {
       title: 'New',
