@@ -42,6 +42,33 @@ export interface HarnessToolHooks {
    * string means availability 'now'. Missing = the server is available from the next run only.
    */
   addMcpServer?(spec: McpServerSpec): Promise<string | McpAttachResult>
+  /**
+   * An approved propose_mcp_servers or propose_skills proposal changed this work run's own project, and RunManager
+   * already updated the run's view (ctx.project, ctx.mcpServers(), ctx.resolvedMcpServers(), ctx.skills() now
+   * return the new configuration). Bring the live session in line (Claude: setMcpServers with the live list, a
+   * restart at idle for new tool whitelists or a rebuilt skill plugin; Codex: an app-server restart at idle for MCP;
+   * mock: at once). Missing hook or a rejection = the change applies from the next run, and the tool says so.
+   */
+  configChanged?(change: ConfigChange): Promise<ConfigChangeResult>
+}
+
+/** What changed in the run's project (ConfigChange for HarnessToolHooks.configChanged). */
+export interface ConfigChange {
+  /** MCP servers by name: upserted = added, re-defined, enabled / disabled or re-granted; removed = gone from the project. */
+  mcp?: { upserted: string[]; removed: string[] }
+  /** The project's skills or skill grants changed (ctx.skills() was recomputed). */
+  skills?: boolean
+}
+
+/** What an adapter's configChanged hook reports back, so the proposal tools say exactly what is true. */
+export interface ConfigChangeResult {
+  /**
+   * 'now': the change is in effect for the next tool call. 'after-idle': it takes effect once the agents are idle and
+   * the session is re-created (Claude) or the app-server restarted (Codex); the harness messages the orchestrator then.
+   */
+  availability: 'now' | 'after-idle'
+  /** Per upserted server name, the tool names (without prefix) it listed, when the adapter knows them. */
+  tools?: Record<string, string[]>
 }
 
 /** What an adapter's addMcpServer hook reports back, so request_mcp_install says exactly what is true. */

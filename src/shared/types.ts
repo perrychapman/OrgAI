@@ -1689,21 +1689,38 @@ export interface McpServersProposalPayload {
 export const SKILL_PROPOSAL_MAX_ITEMS = 10
 
 /**
- * One skill change in a Skill assistant proposal. 'create' writes a new skill; 'update' rewrites SKILL.md of an
- * existing one (resource files kept). scope 'library' targets the skill library (libraryId names the entry on
- * update); scope 'project' targets the session's project (libraryId unused; the skill is matched by draft.name on
- * update). The draft follows the skill limits (name [a-z0-9-] at most 64, never "anthropic" or "claude";
- * description 1..1024 without < or >; body at most SKILL_BODY_MAX_CHARS; no shell injection).
+ * One skill change in a skills proposal (propose_skills: the Skill assistant, and a work run's orchestrator for its
+ * own project). 'create' writes a new skill; 'update' rewrites SKILL.md of an existing one (resource files kept).
+ * scope 'library' targets the skill library (libraryId names the entry on update); scope 'project' targets the
+ * session's project (libraryId unused; the skill is matched by draft.name on update). The draft follows the skill
+ * limits (name [a-z0-9-] at most 64, never "anthropic" or "claude"; description 1..1024 without < or >; body at most
+ * SKILL_BODY_MAX_CHARS; no shell injection).
+ *
+ * Configuration actions, scope 'project' only, never write a SKILL.md: draft.body is '' and the harness fills
+ * draft.name / draft.description with the target skill's (a library entry's for 'link'), so a card can name it.
+ * - 'link': link the library entry `libraryId` into the project; `roles` are the slugs that load it.
+ * - 'grant': change which roles load the project skill named draft.name and/or whether it is enabled. `roles` is
+ *   the complete slug list after the change ([] = no role); omitted keeps the grants. `enabled` omitted keeps the
+ *   state. At least one of the two is set.
+ * - 'remove': remove the project skill named draft.name (a link is unlinked; the library entry stays) and its grants.
  */
 export interface SkillProposalItem {
-  action: 'create' | 'update'
-  /** Library entry id; 'update' with scope 'library' only. */
+  action: 'create' | 'update' | 'link' | 'grant' | 'remove'
+  /** Library entry id: 'update' with scope 'library', and 'link'. */
   libraryId?: string
   draft: SkillDraft
-  /** Role slugs to grant the skill to after creating or updating it. Project scope only; ignored for the library. */
+  /**
+   * Role slugs to grant the skill to after the change. Project scope only; ignored for the library. On 'grant' it is
+   * the complete list after the change.
+   */
   roles?: string[]
+  /** 'grant' only: enable (true) or disable (false) the project skill; omitted keeps the state. */
+  enabled?: boolean
   scope: 'library' | 'project'
 }
+
+/** Actions of SkillProposalItem that change configuration only (no SKILL.md is written; draft.body is ''). */
+export const SKILL_CONFIG_ACTIONS = ['link', 'grant', 'remove'] as const
 
 /** Skill proposal (propose_skills, from the Skill assistant): at most SKILL_PROPOSAL_MAX_ITEMS items. */
 export interface SkillsProposalPayload {

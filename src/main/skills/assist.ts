@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AppSettings, Project, SkillDraft, SkillProposalItem } from '@shared/types'
-import { SKILLS_PROJECT_ID, SKILL_PROPOSAL_MAX_ITEMS } from '@shared/types'
+import { SKILLS_PROJECT_ID, SKILL_CONFIG_ACTIONS, SKILL_PROPOSAL_MAX_ITEMS } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import type { SkillAssistCatalog } from '../runtime/types'
 import { promptDatum } from '../mcp/assist'
@@ -57,6 +57,11 @@ export interface SkillProposalEnv {
   roleSlugs: string[]
   library: { id: string; name: string }[]
   projectSkills: { id: string; name: string; libraryId?: string }[]
+  /**
+   * False refuses scope 'library' items (a work run's orchestrator changes its own project only). Default true (the
+   * Skill assistant).
+   */
+  allowLibrary?: boolean
 }
 
 /**
@@ -75,8 +80,16 @@ export function skillProposalProblem(items: unknown, env: SkillProposalEnv): str
     const at = `Item ${n}`
     if (!raw || typeof raw !== 'object') return `${at} is not a skill change.`
     const it = raw as Partial<SkillProposalItem>
-    if (it.action !== 'create' && it.action !== 'update') return `${at}: action must be "create" or "update".`
+    if (!ACTIONS.has(it.action as string)) return `${at}: action must be "create", "update", "link", "grant" or "remove".`
     if (it.scope !== 'library' && it.scope !== 'project') return `${at}: scope must be "library" or "project".`
+    if (it.scope === 'library' && env.allowLibrary === false) {
+      return `${at}: this session changes this project only; scope "library" is not available. Link a library skill with action "link" instead.`
+    }
+    if (CONFIG_ACTIONS.has(it.action as string)) {
+      const problem = configItemProblem(it, at, env, roleSlugs, seen)
+      if (problem) return problem
+      continue
+    }
     const problem = draftProblem(it.draft)
     if (problem) return `${at}: ${problem}`
     const name = (it.draft as SkillDraft).name.trim()
@@ -106,6 +119,45 @@ export function skillProposalProblem(items: unknown, env: SkillProposalEnv): str
       if (typeof slug !== 'string' || !roleSlugs.has(slug)) return `${at}: there is no role "${promptDatum(slug, 60)}" in this project.`
     }
   }
+  return null
+}
+
+const ACTIONS = new Set<string>(['create', 'update', ...SKILL_CONFIG_ACTIONS])
+const CONFIG_ACTIONS = new Set<string>(SKILL_CONFIG_ACTIONS)
+
+/** The first problem with a 'link' / 'grant' / 'remove' item (project scope, no SKILL.md written), or null. */
+function configItemProblem(it: Partial<SkillProposalItem>, at: string, env: SkillProposalEnv, roleSlugs: Set<string>, seen: Set<string>): string | null {
+  if (it.scope !== 'project') return `${at}: action "${it.action}" changes this project's skills, so scope must be "project".`
+  if (!env.projectSession) return `${at}: this is the skill library session; action "${it.action}" needs a project.`
+  const draft = it.draft as Partial<SkillDraft> | undefined
+  if (!draft || typeof draft !== 'object' || typeof draft.name !== 'string') return `${at}: name the skill (draft.name).`
+  if (it.roles !== undefined && !Array.isArray(it.roles)) return `${at}: roles must be a list of role slugs.`
+  for (const slug of it.roles ?? []) {
+    if (typeof slug !== 'string' || !roleSlugs.has(slug)) return `${at}: there is no role "${promptDatum(slug, 60)}" in this project.`
+  }
+  const name = draft.name.trim()
+  const shown = promptDatum(name, 80)
+  if (it.action === 'link') {
+    const entry = typeof it.libraryId === 'string' ? env.library.find((e) => e.id === it.libraryId) : undefined
+    if (!entry) return `${at}: libraryId "${promptDatum(it.libraryId, 80)}" is not a library skill; take it from list_skill_library.`
+    if (env.projectSkills.some((s) => s.libraryId === entry.id)) {
+      return `${at}: "${promptDatum(entry.name, 80)}" is already linked to this project; use action "grant" to change who loads it.`
+    }
+    if (env.projectSkills.some((s) => s.name === entry.name)) return `${at}: this project already has a skill named "${promptDatum(entry.name, 80)}".`
+    const key = `project:${entry.name}`
+    if (seen.has(key)) return `${at}: "${promptDatum(entry.name, 80)}" appears twice in this proposal.`
+    seen.add(key)
+    return null
+  }
+  const existing = env.projectSkills.find((s) => s.name === name)
+  if (!existing) return `${at}: this project has no skill named "${shown}" (the name must match exactly).`
+  if (it.action === 'grant') {
+    if (it.roles === undefined && typeof it.enabled !== 'boolean') return `${at}: a "grant" item sets roles (the complete list after the change), enabled, or both.`
+    if (it.enabled !== undefined && typeof it.enabled !== 'boolean') return `${at}: enabled must be true or false.`
+  }
+  const key = `project:${name}`
+  if (seen.has(key)) return `${at}: "${shown}" appears twice in this proposal.`
+  seen.add(key)
   return null
 }
 
