@@ -633,8 +633,8 @@ describe('CodexAdapter session', () => {
     // request_mcp_install's approval path calls hooks.addMcpServer; reach it through the harness tool list the session built.
     mcp.push({ spec: { id: 'm', name: 'files', transport: 'stdio', command: 'npx', enabled: true, source: 'agent', addedAt: '' }, env: {}, headers: {} })
     // request_mcp_install (the MCP engineer's tool) reaches this through hooks.addMcpServer; call that path directly.
-    const prefix = await (session as any).addMcpServer(mcp[0].spec)
-    expect(prefix).toBe('mcp__files__')
+    const attach = await (session as any).addMcpServer(mcp[0].spec)
+    expect(attach).toEqual({ prefix: 'mcp__files__', availability: 'after-idle' })
     expect(servers).toHaveLength(1) // the turn is still running: no restart yet
     s1.push('turn/completed', turnDone('th-1', 'tu-1'))
     await vi.waitFor(() => expect(servers).toHaveLength(2))
@@ -645,6 +645,7 @@ describe('CodexAdapter session', () => {
     expect(s2.of('thread/resume')[0].params.threadId).toBe('th-1')
     await vi.waitFor(() => expect(s2.turnStarts('th-1')).toHaveLength(1))
     expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('mcp__files__')
+    expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('may still ask the user for permission')
   })
 })
 

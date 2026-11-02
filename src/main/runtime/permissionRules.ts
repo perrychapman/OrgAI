@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
+import { mcpServerOfRule } from './ruleMatch'
 
 /**
  * Saved "always allow in this project" rules. They live where Claude Code keeps per-user project
@@ -77,6 +78,8 @@ const DESTRUCTIVE_SHELL = /^(rm|rmdir|del|rd|sudo|su|chmod|chown|mkfs|dd|shutdow
  * wildcard-only shell rule, or one whose command starts with a destructive verb (rm, sudo, git push, git reset, ...).
  */
 export function isUnsafeAllowRule(rule: string): boolean {
+  const r0 = rule.trim()
+  if (/^mcp__[^()]*\*/.test(r0) || /^mcp__orgai$/i.test(r0)) return mcpServerOfRule(r0) === null
   const m = /^([\w-]+)(?:\((.*)\))?$/.exec(rule.trim())
   if (!m) return true
   const [, tool, content] = m
@@ -94,12 +97,18 @@ export function ruleToString(rule: PermissionRuleSpec): string {
   return rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName
 }
 
+/** The card label for a rule: server-level MCP forms read "All tools of <server>", everything else is the rule. */
+export function ruleLabel(rule: string): string {
+  const server = mcpServerOfRule(rule)
+  return server ? `All tools of ${server}` : rule
+}
+
 /** Labels for the approval card, one per rule or directory the suggestions grant. */
 export function suggestionLabels(suggestions: PermissionSuggestion[]): string[] {
   const labels: string[] = []
   for (const s of suggestions) {
     if (s.type === 'addRules' || s.type === 'replaceRules') {
-      if (s.behavior === 'allow') labels.push(...s.rules.map(ruleToString))
+      if (s.behavior === 'allow') labels.push(...s.rules.map((r) => ruleLabel(ruleToString(r))))
     } else if (s.type === 'addDirectories') labels.push(...s.directories.map((d) => `Access to ${d}`))
     else if (s.type === 'setMode') labels.push(`Permission mode: ${s.mode}`)
   }

@@ -19,10 +19,29 @@ export const SHELL_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell'])
 /** Shell syntax a segment may not contain for a rule to apply. */
 const UNSAFE_SEGMENT = /[|&`<>\n\r]|\$\(/
 
-/** `Tool`, `Tool(content)`; one line, no stray parentheses around the content. */
+/** The harness's own MCP server: its tools are never granted wholesale through a saved rule. */
+const HARNESS_SERVER = 'orgai'
+
+/**
+ * The server name of a server-level MCP rule, else null. Two forms: `mcp__<server>` and `mcp__<server>__*`.
+ * A server name is letters, digits, `-` and single `_` (starting with a letter or digit): a doubled underscore is
+ * the tool separator, so a name containing it cannot be told apart from `<server>__<tool>` and is not a server
+ * rule. `mcp__*`, any other wildcard and the harness's own `orgai` server are never server rules.
+ */
+export function mcpServerOfRule(rule: string): string | null {
+  const m = /^mcp__([A-Za-z0-9](?:[A-Za-z0-9-]|_(?!_))*)(?:__\*)?$/.exec(rule.trim())
+  if (!m) return null
+  const name = m[1]
+  if (name.endsWith('_') || name.toLowerCase() === HARNESS_SERVER) return null
+  return name
+}
+
+/** True for `Tool`, `Tool(content)` or a server-level MCP rule; one line, no stray parentheses around the content. Refuses `mcp__*` and the harness server's wildcard forms. */
 export function isValidRule(rule: string): boolean {
   const r = rule.trim()
   if (!r || /[\n\r]/.test(r)) return false
+  if (r.startsWith('mcp__') && r.includes('*')) return mcpServerOfRule(r) !== null
+  if (/^mcp__orgai$/i.test(r)) return false
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)
 }
 
@@ -112,6 +131,10 @@ export function matchingRule(toolName: string, input: unknown, rules: readonly s
   for (const rule of rules) {
     const r = rule.trim()
     if (isWholeToolRule(r) && r === toolName) return r
+    // Server-level rules: exact `mcp__<server>__` prefix, so `mcp__a` never covers `mcp__ab__x` or `mcp__a_b__x`.
+    // A tool named `mcp__a__b__c` is covered by `mcp__a` (the split is ambiguous; the first segment is the server).
+    const server = mcpServerOfRule(r)
+    if (server && toolName.startsWith(`mcp__${server}__`) && toolName.length > server.length + 7) return r
   }
   if (!SHELL_TOOLS.has(toolName)) return undefined
   const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined

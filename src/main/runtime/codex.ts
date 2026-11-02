@@ -44,7 +44,7 @@ import {
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
-import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolHooks } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { describeTool } from './activity'
@@ -983,15 +983,15 @@ class CodexSession implements RuntimeSession {
    * app-server starts (`-c mcp_servers.*`, with secrets forwarded through its environment), so a server added
    * mid-run needs a restart. The restart waits until no turn is running (it would cut the install call itself
    * short otherwise), re-launches with every server and thread/resumes each thread; the orchestrator is then
-   * told the server is connected. Returns the tool prefix now; the tools appear after the restart.
+   * told the server is connected. Returns the prefix with availability 'after-idle': the tools appear after the restart, never now.
    */
-  private async addMcpServer(spec: McpServerSpec): Promise<string> {
+  private async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     if (!this.ctx.resolvedMcpServers) throw new Error('This run cannot attach MCP servers; the server is available from the next run.')
     this.mcpRestartPending = true
     this.pendingMcpPrefixes.push(mcpToolPrefix(spec.name))
     this.log('info', `MCP server ${spec.name} will be attached when the agents are idle (Codex reads MCP servers at start-up).`)
     void this.maybeRestartForMcp()
-    return mcpToolPrefix(spec.name)
+    return { prefix: mcpToolPrefix(spec.name), availability: 'after-idle' }
   }
 
   private async maybeRestartForMcp(): Promise<void> {
@@ -1026,7 +1026,7 @@ class CodexSession implements RuntimeSession {
       this.activeTurn.clear()
       const prefixes = this.pendingMcpPrefixes.splice(0)
       this.log('info', `Codex restarted with ${servers.filter((s) => s.spec.enabled).length} MCP server(s).`)
-      this.notifyOrchestrator(`Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}.`, 'Using a new MCP server…')
+      this.notifyOrchestrator(`Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`, 'Using a new MCP server…')
     } catch (e) {
       this.restarting = false
       this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
