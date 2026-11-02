@@ -222,6 +222,9 @@ export const LAUNCHERS: ReadonlySet<string> = new Set([
   'npm', 'npx', 'pnpm', 'yarn', 'bun', 'git', 'go', 'cargo', 'dotnet', 'python', 'python3', 'pip', 'uv', 'node', 'deno', 'make', 'docker', 'gh'
 ])
 
+/** A launcher's second words that only say "run something": the rule takes the third word too. */
+const RUNNER_WORDS: ReadonlySet<string> = new Set(['run', 'run-script', 'exec', 'x', 'dlx'])
+
 /** A plain command word: no quotes, parentheses, variables, globs, assignments or redirects. */
 const PLAIN_WORD = /^[\w.@/\\:+-]+$/
 
@@ -239,6 +242,12 @@ export function segmentRulePrefix(toolName: string, segment: string): string | n
     const second = words[1] ?? ''
     if (!second || second.startsWith('-') || !PLAIN_WORD.test(second)) return null
     prefix = `${first} ${second}`
+    // `npm run lint`, `docker exec x`, `uv run pytest`: the runner word alone would allow any script, so take the third.
+    if (RUNNER_WORDS.has(second.toLowerCase())) {
+      const third = words[2] ?? ''
+      if (!third || third.startsWith('-') || !PLAIN_WORD.test(third)) return null
+      prefix = `${prefix} ${third}`
+    }
   }
   if (isUnsafeAllowRule(`${toolName}(${prefix}:*)`)) return null
   return prefix

@@ -711,7 +711,7 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     const step = { type: 'tool' as const, name: 'Bash', input: { command }, ask: true, suggestions: [{ type: 'addRules' as const, rules: [{ toolName: 'Bash', ruleContent: `${command} *` }], behavior: 'allow' as const, destination: 'localSettings' as const }], result: 'ok' }
     const { cards } = await play({}, () => ({ behavior: 'allow', scope: 'session' }), { work: [step, step] })
     expect(cards).toHaveLength(1)
-    expect(cards[0]!.ruleLabels).toEqual(['Bash(npm test:*)', 'Bash(npm run:*)'])
+    expect(cards[0]!.ruleLabels).toEqual(['Bash(npm test:*)', 'Bash(npm run lint:*)'])
   })
 
   it('a project-scope grant logs Saved only for new rules and the second identical command needs no card', async () => {
