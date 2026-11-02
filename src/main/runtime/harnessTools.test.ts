@@ -10,8 +10,15 @@ import { INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor,
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
 import { pendingWorktrees } from './worktrees'
+import { mergeOrgChart } from '../setup/orgMerge'
+import type { ConfigChange, ConfigChangeResult } from './harnessTools'
 
 vi.mock('./worktrees', () => ({ pendingWorktrees: vi.fn(async () => []) }))
+// Spy on mergeOrgChart (the real one runs by default); the merge behaviour itself is tested beside orgMerge.ts.
+vi.mock('../setup/orgMerge', async (orig) => {
+  const actual = await orig<typeof import('../setup/orgMerge')>()
+  return { ...actual, mergeOrgChart: vi.fn(actual.mergeOrgChart) }
+})
 
 const byName = (tools: HarnessTool[], name: string): HarnessTool => {
   const t = tools.find((x) => x.name === name)
@@ -187,6 +194,10 @@ describe('plan tools', () => {
       'list_mcp_servers',
       'search_mcp_registry',
       'request_mcp_install',
+      'propose_mcp_servers',
+      'list_skill_library',
+      'read_library_skill',
+      'propose_skills',
       'request_permission_rules',
       'list_runs',
       'message_run'
@@ -199,6 +210,8 @@ describe('plan tools', () => {
       'integrate_worktrees',
       'list_mcp_servers',
       'search_mcp_registry',
+      'list_skill_library',
+      'read_library_skill',
       'list_runs',
       'message_run'
     ])
@@ -755,11 +768,12 @@ describe('list_skills and load_skill', () => {
     return { ctx, tools: harnessToolsFor(ctx, {}, opts) }
   }
 
-  it('is absent with nativeSkills, with no skills, and in setup', () => {
+  it('is absent with nativeSkills and in setup, present with no skills at start', () => {
     const names = (t: HarnessTool[]) => t.map((x) => x.name)
     expect(names(toolsFor([mkSkill()]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
     expect(names(toolsFor([mkSkill()], { nativeSkills: true }).tools)).not.toContain('load_skill')
-    expect(names(toolsFor([]).tools)).not.toContain('list_skills')
+    // Present without skills at start: they read ctx.skills() at call time.
+    expect(names(toolsFor([]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
     expect(names(setupTools(fakeCtx({ skills: () => [mkSkill()] })))).not.toContain('load_skill')
     expect(isBlockingHarnessTool('load_skill')).toBe(false)
     expect(isBlockingHarnessTool('list_skills')).toBe(false)
@@ -886,7 +900,7 @@ describe('quick runs: tool set and list_projects', () => {
   it('binds the quick set only for quick work runs', () => {
     const names = harnessToolsFor(quickCtx()).map((t) => t.name)
     expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects'])
-    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install']) expect(names).not.toContain(gone)
+    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'list_skills', 'load_skill']) expect(names).not.toContain(gone)
     const work = harnessToolsFor(fakeCtx()).map((t) => t.name)
     expect(work).not.toContain('list_projects')
     expect(work).toContain('propose_org_change')
@@ -934,7 +948,7 @@ describe('Skill assistant tools', () => {
 
   it('skill-assist runs get the four assistant tools and ask_user; no other kind gets them', () => {
     expect(harnessToolsFor(skCtx()).map((t) => t.name)).toEqual(['list_skill_library', 'read_library_skill', 'propose_skills', 'ask_user', 'request_permission_rules'])
-    for (const c of [fakeCtx(), fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) }), fakeCtx({ run: runSummary({ kind: 'work', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } }) })]) {
+    for (const c of [fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) }), fakeCtx({ run: runSummary({ kind: 'work', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } }) })]) {
       const n = harnessToolsFor(c).map((t) => t.name)
       for (const name of ['list_skill_library', 'read_library_skill', 'propose_skills']) expect(n).not.toContain(name)
     }
@@ -1033,5 +1047,318 @@ describe('Skill assistant tools', () => {
     it('rejects malformed input at the schema', async () => {
       await expect(call(skCtx(), { title: 't', rationale: 'r' })).rejects.toThrow()
     })
+  })
+})
+
+// ---------- work runs: the orchestrator configures its own project ----------
+
+describe('work run: propose_mcp_servers', () => {
+  const libEntry = (over: Record<string, unknown> = {}) => ({
+    id: 'mcpl_1',
+    name: 'docs',
+    transport: 'http' as const,
+    url: 'https://docs.test/mcp',
+    source: 'user' as const,
+    addedAt: '2026-01-01T00:00:00.000Z',
+    ...over
+  })
+  const fresh = { name: 'local-db', transport: 'stdio' as const, command: 'npx', args: ['-y', 'db-mcp@1.0.0'] }
+  const workCtx = (over: Record<string, unknown> = {}, servers: McpServerSpec[] = []) => fakeCtx({ project: project({ mcpServers: servers }), ...over })
+  const call = (ctx: ReturnType<typeof fakeCtx>, args: Record<string, unknown>, hooks = {}) =>
+    byName(harnessToolsFor(ctx, hooks), 'propose_mcp_servers').call({ title: 't', rationale: 'r', ...args })
+  const payloadOf = (ctx: ReturnType<typeof fakeCtx>) => vi.mocked(ctx.requestProposal).mock.calls[0][0].payload as McpServersProposalPayload
+
+  it('is a root-audience tool', () => {
+    expect(byName(harnessToolsFor(workCtx()), 'propose_mcp_servers').audience).toBe('root')
+    expect(byName(harnessToolsFor(workCtx()), 'propose_skills').audience).toBe('root')
+  })
+
+  it('forces every new server project-only, even when the library has a different one with that name', async () => {
+    const ctx = workCtx({ mcpLibrary: () => [libEntry({ name: 'local-db', url: undefined, transport: 'stdio', command: 'other' })] })
+    const text = await call(ctx, { upsert: [fresh] })
+    expect(text).toMatch(/^APPROVED\./)
+    expect(payloadOf(ctx).upsert[0]).toMatchObject({ name: 'local-db', projectOnly: true })
+    expect(text).toContain('Added local-db (this project only; not saved to the MCP library)')
+    expect(text).not.toContain('Saved to the MCP library')
+  })
+
+  it('enables, disables and re-grants an existing server from its name alone, keeping its definition and roles', async () => {
+    const gh = mcpSpec({ enabled: false, roles: ['lead'] })
+    const ctx = workCtx({}, [gh])
+    const text = await call(ctx, { upsert: [{ name: 'github', enabled: true }] })
+    expect(text).toContain('Enabled github.')
+    const spec = payloadOf(ctx).upsert[0]
+    expect(spec).toMatchObject({ id: gh.id, name: 'github', command: 'npx', enabled: true, roles: ['lead'] })
+    expect(payloadOf(ctx).secrets).toBeUndefined()
+
+    const ctx2 = workCtx({}, [mcpSpec({ roles: ['lead'] })])
+    const t2 = await call(ctx2, { upsert: [{ name: 'github', roles: ['lead', 'engineer'] }] })
+    expect(t2).toContain('Changed who can use github (now lead, engineer)')
+    expect(payloadOf(ctx2).upsert[0]).toMatchObject({ enabled: true, roles: ['lead', 'engineer'] })
+
+    const ctx3 = workCtx({}, [mcpSpec()])
+    expect(await call(ctx3, { upsert: [{ name: 'github', enabled: false }] })).toContain('Disabled github.')
+    expect(payloadOf(ctx3).upsert[0]).toMatchObject({ enabled: false })
+    expect(payloadOf(ctx3).upsert[0].roles).toBeUndefined()
+  })
+
+  it('keeps the roles of an existing server when it is redefined without roles', async () => {
+    const ctx = workCtx({}, [mcpSpec({ roles: ['lead'] })])
+    await call(ctx, { upsert: [{ name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'pkg@2.0.0'], secretEnv: ['GITHUB_TOKEN'] }] })
+    expect(payloadOf(ctx).upsert[0]).toMatchObject({ id: 'mcp-1', roles: ['lead'], projectOnly: true })
+  })
+
+  it('refuses unknown role slugs and an empty roles list without asking the user', async () => {
+    const ctx = workCtx({}, [mcpSpec()])
+    expect(await call(ctx, { upsert: [{ name: 'github', roles: ['ghost'] }] })).toMatch(/^REVISE\..*no role "ghost"/)
+    expect(await call(ctx, { upsert: [{ ...fresh, roles: ['ghost'] }] })).toMatch(/^REVISE/)
+    expect(await call(ctx, { upsert: [{ name: 'github', roles: [] }] })).toMatch(/^REVISE\..*roles is empty/)
+    expect(await call(ctx, { upsert: [{ name: 'unknown-server', enabled: true }] })).toMatch(/^REVISE\..*name and transport are required/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('a linked server named alone keeps its link; a libraryId item links and applies roles', async () => {
+    const link = mcpSpec({ id: 'mcp-9', name: 'docs', transport: 'http', url: 'https://docs.test/mcp', command: undefined, args: undefined, secretEnv: undefined, libraryId: 'mcpl_1', enabled: true, roles: ['lead'] })
+    const ctx = workCtx({ mcpLibrary: () => [libEntry()] }, [link])
+    const text = await call(ctx, { upsert: [{ name: 'docs', enabled: false }] })
+    expect(text).toContain('Disabled docs.')
+    expect(payloadOf(ctx).upsert[0]).toMatchObject({ id: 'mcp-9', libraryId: 'mcpl_1', enabled: false, roles: ['lead'] })
+
+    const ctx2 = workCtx({ mcpLibrary: () => [libEntry()] })
+    const t2 = await call(ctx2, { upsert: [{ libraryId: 'mcpl_1', roles: ['engineer'] }] })
+    expect(t2).toContain('Linked docs from the MCP library; only engineer can use it')
+    expect(payloadOf(ctx2).upsert[0]).toMatchObject({ libraryId: 'mcpl_1', roles: ['engineer'], enabled: true })
+  })
+
+  it('removes by name and reports the removal', async () => {
+    const ctx = workCtx({}, [mcpSpec()])
+    const text = await call(ctx, { upsert: [], remove: ['github'] }, { configChanged: async () => ({ availability: 'now' }) })
+    expect(text).toContain('Removed from the project: github.')
+    expect(payloadOf(ctx).remove).toEqual(['mcp-1'])
+  })
+
+  describe('configChanged', () => {
+    const run = async (hooks: Record<string, unknown>, ctxOver: Record<string, unknown> = {}, args: Record<string, unknown> = { upsert: [fresh], remove: ['old'] }) => {
+      const ctx = workCtx(ctxOver, [mcpSpec({ id: 'mcp-old', name: 'old' })])
+      const text = await call(ctx, args, hooks)
+      return { ctx, text }
+    }
+
+    it("'now' says in effect now and names tools the adapter listed", async () => {
+      const configChanged = vi.fn(async (_c: ConfigChange): Promise<ConfigChangeResult> => ({ availability: 'now', tools: { 'local-db': ['query', 'bad name!'] } }))
+      const { text } = await run({ configChanged }, { mcpServers: () => [mcpSpec({ name: 'local-db' })] })
+      expect(configChanged).toHaveBeenCalledWith({ mcp: { upserted: ['local-db'], removed: ['old'] } })
+      expect(text).toContain('The change is in effect now')
+      expect(text).toContain('mcp__local-db__query')
+      expect(text).not.toContain('bad name')
+      expect(text).toContain('Tools of disabled or removed servers (old) stop working for your next call')
+      expect(text).not.toContain('Not started')
+    })
+
+    it("'after-idle' says the change waits for the turn to end", async () => {
+      const { text } = await run({ configChanged: async () => ({ availability: 'after-idle' as const }) }, { mcpServers: () => [mcpSpec({ name: 'local-db' })] })
+      expect(text).toContain('takes effect only after your current turn ends and no report is running')
+      expect(text).toContain('Do not call the new tools before then')
+      expect(text).toContain('stop working once the session is re-attached')
+    })
+
+    it('a missing hook or a rejection says it applies from the next run', async () => {
+      const none = await run({})
+      expect(none.text).toContain("This session's tools do not change; the change applies from the next run.")
+      expect(none.text).toContain('may keep working in this session until it ends')
+      const failed = await run({
+        configChanged: async () => {
+          throw new Error('boom <x>')
+        }
+      })
+      expect(failed.text).toContain('Bringing this session in line failed (boom ‹x›)')
+      expect(failed.text).toContain('applies from the next run')
+    })
+
+    it('names an enabled server that did not start because a secret slot is empty', async () => {
+      const { text } = await run({ configChanged: async () => ({ availability: 'now' as const }) }, { mcpServers: () => [] })
+      expect(text).toContain('Not started because a secret slot is empty: local-db')
+    })
+
+    it('is not called when the user asks for changes', async () => {
+      const configChanged = vi.fn(async (_c: ConfigChange): Promise<ConfigChangeResult> => ({ availability: 'now' }))
+      const ctx = workCtx({ requestProposal: vi.fn(async () => ({ behavior: 'revise' as const, feedback: 'no' })) })
+      const text = await call(ctx, { upsert: [fresh] }, { configChanged })
+      expect(text).toMatch(/^REVISE\./)
+      expect(configChanged).not.toHaveBeenCalled()
+    })
+
+    it('is not called outside work runs (mcp-assist)', async () => {
+      const configChanged = vi.fn(async (_c: ConfigChange): Promise<ConfigChangeResult> => ({ availability: 'now' }))
+      const ctx = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) })
+      await call(ctx, { upsert: [{ name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'pkg@1.2.3'] }] }, { configChanged })
+      expect(configChanged).not.toHaveBeenCalled()
+    })
+  })
+
+  it('list_mcp_servers in a work run adds the configured servers (disabled too, with roles) and the library', async () => {
+    const ctx = workCtx({ mcpServers: () => [mcpSpec({ name: 'live' })], mcpLibrary: () => [libEntry({ description: 'Docs <b>' })] }, [
+      mcpSpec({ id: 'a', name: 'live' }),
+      mcpSpec({ id: 'b', name: 'off', enabled: false, roles: ['lead'], libraryId: 'mcpl_1' })
+    ])
+    const text = await byName(harnessToolsFor(ctx), 'list_mcp_servers').call({})
+    expect(text).toContain('<mcp-servers>')
+    expect(text).toContain('<project-servers>')
+    expect(text).toContain('off | stdio | disabled | roles: lead | library link libraryId=mcpl_1')
+    expect(text).toContain('live | stdio | enabled | roles: every role | project-only')
+    expect(text).toContain('<mcp-library>')
+    expect(text).toContain('docs | http | libraryId=mcpl_1 | Docs ‹b›')
+    // Nothing configured, nothing live, empty library: the old one-liner.
+    expect(await byName(harnessToolsFor(fakeCtx()), 'list_mcp_servers').call({})).toBe('No MCP servers are available in this run.')
+  })
+})
+
+describe('work run: propose_skills', () => {
+  const entry = (id: string, name: string) => ({ id, name, description: `Use ${name}`, source: 'user' as const, digest: 'd', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: '', updatedAt: '' })
+  const pskill = (id: string, name: string, grantedTo: string[], extra = {}) => ({ spec: { id, name, description: `Desc ${name}`, enabled: true, source: 'user' as const, digest: 'd', files: [], addedAt: '', updatedAt: '', ...extra }, grantedTo })
+  const catalog = () => ({
+    library: [{ entry: entry('lib1', 'triage'), usedBy: [] }],
+    project: [pskill('s1', 'review-code', ['r-eng']), pskill('s3', 'old-skill', [])]
+  })
+  const wCtx = (over = {}) => fakeCtx({ skillCatalog: catalog, ...over })
+  const call = (ctx: ReturnType<typeof fakeCtx>, items: unknown[], hooks = {}) => byName(harnessToolsFor(ctx, hooks), 'propose_skills').call({ title: 't', rationale: 'Because.', items })
+  const payloadOf = (ctx: ReturnType<typeof fakeCtx>) => vi.mocked(ctx.requestProposal).mock.calls[0][0].payload as { items: Array<Record<string, unknown>>; rationale: string }
+
+  it('refuses library scope without asking the user', async () => {
+    const ctx = wCtx()
+    const text = await call(ctx, [{ action: 'create', scope: 'library', draft: { name: 'x', description: 'd', body: 'b' } }])
+    expect(text).toMatch(/^REVISE\..*scope "library" is not available/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('create without a draft is refused; unknown roles, skills and an empty grant are refused', async () => {
+    const ctx = wCtx()
+    expect(await call(ctx, [{ action: 'create', scope: 'project' }])).toMatch(/^REVISE\..*needs a draft/)
+    expect(await call(ctx, [{ action: 'grant', scope: 'project', name: 'review-code', roles: ['ghost'] }])).toMatch(/^REVISE\..*no role "ghost"/)
+    expect(await call(ctx, [{ action: 'grant', scope: 'project', name: 'nope', roles: [] }])).toMatch(/^REVISE\..*no skill named "nope"/)
+    expect(await call(ctx, [{ action: 'grant', scope: 'project', name: 'review-code' }])).toMatch(/^REVISE\..*sets roles/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('builds clean link / grant / remove items, fills drafts and puts a summary line first in the rationale', async () => {
+    const ctx = wCtx()
+    const text = await call(ctx, [
+      { action: 'link', scope: 'project', libraryId: 'lib1', roles: ['lead'] },
+      { action: 'grant', scope: 'project', name: 'review-code', roles: ['lead', 'engineer', 'lead'], enabled: false },
+      { action: 'remove', scope: 'project', name: 'old-skill' }
+    ])
+    expect(text).toMatch(/^APPROVED\./)
+    const p = payloadOf(ctx)
+    expect(p.items[0]).toEqual({ action: 'link', scope: 'project', libraryId: 'lib1', draft: { name: 'triage', description: 'Use triage', body: '' }, roles: ['lead'] })
+    expect(p.items[1]).toEqual({ action: 'grant', scope: 'project', draft: { name: 'review-code', description: 'Desc review-code', body: '' }, roles: ['lead', 'engineer'], enabled: false })
+    expect(p.items[2]).toEqual({ action: 'remove', scope: 'project', draft: { name: 'old-skill', description: 'Desc old-skill', body: '' } })
+    expect(p.rationale).toBe('Changes: link triage (lead); grant review-code to lead, engineer; disable review-code; remove old-skill.\nBecause.')
+    expect(text).toContain('Linked triage from the skill library to this project (loaded by lead).')
+    expect(text).toContain('Changed who loads review-code (now lead, engineer). Disabled review-code.')
+    expect(text).toContain('Removed old-skill from this project.')
+  })
+
+  it('a grant with an empty roles list means no role; create keeps its draft and needs no summary line', async () => {
+    const ctx = wCtx()
+    await call(ctx, [{ action: 'grant', scope: 'project', name: 'review-code', roles: [] }])
+    expect(payloadOf(ctx).items[0].roles).toEqual([])
+    expect(payloadOf(ctx).rationale).toContain('grant review-code to no role')
+    const ctx2 = wCtx()
+    const text = await call(ctx2, [{ action: 'create', scope: 'project', draft: { name: 'new-skill', description: 'When X.', body: 'Do it.' }, roles: ['lead'] }])
+    expect(payloadOf(ctx2).items[0]).toEqual({ action: 'create', scope: 'project', draft: { name: 'new-skill', description: 'When X.', body: 'Do it.' }, roles: ['lead'] })
+    expect(payloadOf(ctx2).rationale).toBe('Because.')
+    expect(text).toContain('Created new-skill in this project (loaded by lead).')
+  })
+
+  describe('configChanged', () => {
+    const items = [{ action: 'grant', scope: 'project', name: 'review-code', roles: ['lead'] }]
+
+    it('is called with skills: true after approval, with each availability text', async () => {
+      const configChanged = vi.fn(async (_c: ConfigChange): Promise<ConfigChangeResult> => ({ availability: 'now' }))
+      expect(await call(wCtx(), items, { configChanged })).toContain('The change is in effect now: list_skills and load_skill show the new grants from your next call')
+      expect(configChanged).toHaveBeenCalledWith({ skills: true })
+      expect(await call(wCtx(), items, { configChanged: async () => ({ availability: 'after-idle' as const }) })).toContain('takes effect only after your current turn ends and no report is running')
+      expect(await call(wCtx(), items)).toContain("This session's skills do not change; the change applies from the next run.")
+      expect(
+        await call(wCtx(), items, {
+          configChanged: async () => {
+            throw new Error('nope')
+          }
+        })
+      ).toContain('Bringing this session in line failed (nope)')
+    })
+
+    it('is not called on REVISE', async () => {
+      const configChanged = vi.fn(async (_c: ConfigChange): Promise<ConfigChangeResult> => ({ availability: 'now' }))
+      const ctx = wCtx({ requestProposal: vi.fn(async () => ({ behavior: 'revise' as const, feedback: 'no' })) })
+      expect(await call(ctx, items, { configChanged })).toMatch(/^REVISE\./)
+      expect(configChanged).not.toHaveBeenCalled()
+    })
+  })
+
+  it('list_skill_library and read_library_skill work in a work run when the inputs are wired', async () => {
+    const ctx = wCtx({ readSkill: (ref: { libraryId?: string }) => (ref.libraryId === 'lib1' ? { skillMd: 'Triage text', files: [] } : null) })
+    const tools = harnessToolsFor(ctx)
+    expect(await byName(tools, 'list_skill_library').call({})).toContain('name=triage | libraryId=lib1')
+    expect(await byName(tools, 'read_library_skill').call({ libraryId: 'lib1' })).toContain('Triage text')
+  })
+})
+
+describe('list_skills / load_skill read ctx.skills() at call time', () => {
+  it('shows a skill that was granted after the tools were bound, and drops a removed one', async () => {
+    let skills: RunSkill[] = []
+    const ctx = fakeCtx({ skills: () => skills })
+    const tools = harnessToolsFor(ctx)
+    const list = byName(tools, 'list_skills')
+    expect(await list.call({})).toBe('No skills are granted to your role.')
+    skills = [{ id: 'sk', name: 'triage', description: 'd', dir: '/nowhere', files: [], roleIds: ['r-lead'] } as RunSkill]
+    expect(await list.call({})).toContain('triage')
+    expect(await byName(tools, 'load_skill').call({ name: 'triage' })).toContain('REFUSED: skill triage cannot be loaded')
+    skills = []
+    expect(await byName(tools, 'load_skill').call({ name: 'triage' })).toContain('REFUSED: no skill named "triage"')
+  })
+})
+
+describe('org change: slug, grants by name, mergeOrgChart', () => {
+  const proj = () =>
+    project({
+      mcpServers: [mcpSpec({ id: 'mcp-1', name: 'github' })],
+      skills: [{ id: 'sk-1', name: 'triage' } as never]
+    })
+  const roleDraft = (name: string, over: Record<string, unknown> = {}) => ({ ...draftRole(name, null), ...over })
+  const orgCall = (ctx: ReturnType<typeof fakeCtx>, roles: unknown[], tool: 'propose_org_change' | 'propose_org_chart' = 'propose_org_change') =>
+    byName(tool === 'propose_org_change' ? workTools(ctx) : setupTools(ctx), tool).call({ title: 'T', rationale: 'r', roles })
+
+  it('sets the slug of an existing role, maps server and skill names to ids, merges and sends the merged roles', async () => {
+    const ctx = fakeCtx({ project: proj() })
+    const marker = [{ id: 'merged-marker' } as never]
+    vi.mocked(mergeOrgChart).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
+    const text = await orgCall(ctx, [roleDraft('Boss', { slug: 'lead', mcpServers: ['github'], skills: ['triage'] }), draftRole('Dev', 'Boss')])
+    expect(text).toMatch(/^APPROVED\. The org chart was updated for future runs/)
+    expect(text).toContain('keep their MCP and skill grants')
+    const [existing, converted] = vi.mocked(mergeOrgChart).mock.calls.at(-1)!
+    expect(existing).toBe(ctx.project)
+    expect(converted[0]).toMatchObject({ slug: 'lead', name: 'Boss', mcpServers: ['mcp-1'], skills: ['sk-1'] })
+    expect(converted[1].slug).toBe('dev')
+    expect(converted[1].mcpServers).toBeUndefined()
+    expect(converted[1].skills).toBeUndefined()
+    const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
+    expect((req.payload as { roles: unknown }).roles).toBe(marker)
+  })
+
+  it('setup propose_org_chart goes through the same conversion', async () => {
+    const ctx = fakeCtx({ project: proj() })
+    await orgCall(ctx, [roleDraft('Lead', { slug: 'lead', mcpServers: ['github'] })], 'propose_org_chart')
+    const [, converted] = vi.mocked(mergeOrgChart).mock.calls.at(-1)!
+    expect(converted[0]).toMatchObject({ slug: 'lead', mcpServers: ['mcp-1'] })
+  })
+
+  it('refuses unknown slugs, server names, skill names and duplicate slugs without asking the user', async () => {
+    const ctx = fakeCtx({ project: proj() })
+    expect(await orgCall(ctx, [roleDraft('A', { slug: 'ghost' })])).toMatch(/^REVISE\..*no existing role with slug "ghost"/)
+    expect(await orgCall(ctx, [roleDraft('A', { mcpServers: ['nope'] })])).toMatch(/^REVISE\..*MCP server "nope"/)
+    expect(await orgCall(ctx, [roleDraft('A', { skills: ['nope'] })])).toMatch(/^REVISE\..*skill "nope"/)
+    expect(await orgCall(ctx, [roleDraft('A', { slug: 'lead' }), { ...draftRole('B', 'A'), slug: 'lead' }])).toMatch(/^REVISE\..*used by two roles/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
   })
 })

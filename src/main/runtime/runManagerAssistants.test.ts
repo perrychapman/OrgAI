@@ -119,6 +119,10 @@ describe('quick runs', () => {
     expect(ctx.skills?.()).toEqual([])
     expect(skills.forRun).not.toHaveBeenCalled()
     expect(ctx.requestMcpInstall).toBeUndefined()
+    // Quick runs never get the library or the skill catalog (work runs of a real project do).
+    expect(ctx.mcpLibrary).toBeUndefined()
+    expect(ctx.skillCatalog).toBeUndefined()
+    expect(ctx.readSkill).toBeUndefined()
     expect(ctx.listRuns?.()).toEqual([])
     expect(await ctx.messageRun?.('run-x', 'hi')).toMatchObject({ result: 'refused', refusal: 'not-work' })
     expect(ctx.listProjects).toBeTypeOf('function')

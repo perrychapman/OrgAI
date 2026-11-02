@@ -916,7 +916,8 @@ export class RunManager {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
       }
-      // Work runs only; read once and kept for the session (grants do not change mid-run).
+      // Work runs only. Computed at start and again by setLive when an approved install or proposal changes the
+      // project's servers, skills or chart mid-run.
       if (!bare && this.options.skills) {
         try {
           active.skills = this.options.skills.forRun(live, project.roles) ?? []
@@ -927,6 +928,21 @@ export class RunManager {
       const builtinModel = this.builtinRoleModel(kind, project, choice)
       if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
       if (quickWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: quickWarning })
+      /**
+       * The project as saved after an install or an approved proposal on this run's own project: the canonical path is
+       * kept, the harness tools' view (ctx.project) follows, and a work run's skills are recomputed from the new grants.
+       */
+      const setLive = (saved: Project): void => {
+        live = { ...saved, path: live.path }
+        ctx.project = live
+        if (!bare && this.options.skills) {
+          try {
+            active.skills = this.options.skills.forRun(live, live.roles) ?? []
+          } catch (e) {
+            log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
+          }
+        }
+      }
       const ctx: RuntimeContext = {
         run: summary,
         project,
@@ -947,19 +963,17 @@ export class RunManager {
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
-            // Keep the harness tools' view of the project current after an approved MCP change.
-            if (req.kind === 'mcpServers') {
-              live = { ...saved, path: live.path }
-              ctx.project = live
-            }
+            // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
+            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved)
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare
           ? {}
-          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })) }),
+          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, setLive) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
-        ...(setupLike ? { mcpLibrary: libraryEntries } : {}),
+        // Setup-like runs and work runs of a real project (not quick runs) read the library; work runs link from it.
+        ...(setupLike || (!bare && !isQuick) ? { mcpLibrary: libraryEntries } : {}),
         resolveMcpSecrets: async (serverId) => {
           const spec = allServers().find((s) => s.id === serverId)
           if (!spec) return { env: {}, headers: {} }
@@ -983,6 +997,12 @@ export class RunManager {
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
+        ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
+          ? {
+              skillCatalog: () => this.options.skillAssist!.catalog(project.id),
+              readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(project.id, ref)
+            }
+          : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),

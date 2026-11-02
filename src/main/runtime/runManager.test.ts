@@ -2639,3 +2639,122 @@ describe('skills in runs', () => {
     await expect(m.completeForProject({ ...p, id: 'harness' }, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast' })).rejects.toThrow(/harness/)
   })
 })
+
+describe('approved installs and proposals keep the run current (setLive)', () => {
+  const skill = (over: Partial<RunSkill> = {}): RunSkill => ({ id: 'sk1', name: 'triage', description: 'Triage', dir: join(dir, 'sk'), files: [{ path: 'SKILL.md' }] as RunSkill['files'], roleIds: ['r-lead'], ...over })
+  function rig(options: RunManagerOptions = {}) {
+    const p = makeProject({ path: join(dir, 'repo'), name: 'Before' })
+    const ctxs: RuntimeContext[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    // The saved project after the change: a new name, a server and a skill that grants only exist on it.
+    const saved: Project = { ...p, name: 'After', path: '/somewhere/else', mcpServers: [{ id: 'm1', name: 'docs', transport: 'http', url: 'https://d.test/mcp', enabled: true, source: 'user', addedAt: '' }] }
+    const setup = fakeSetup(saved)
+    const forRun = vi.fn((proj: Project): RunSkill[] => (proj.name === 'After' ? [skill()] : []))
+    const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), setup.service, () => 100, { skills: { forRun }, ...options })
+    return { p, saved, m, ctxs, forRun }
+  }
+
+  it.each(['mcpServers', 'skills', 'orgChart'] as const)('an approved %s proposal updates ctx.project (keeping the path) and recomputes the skills', async (kind) => {
+    const { p, m, ctxs, forRun } = rig()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const path = ctx.project.path
+    expect(ctx.skills!()).toEqual([])
+    const pending = ctx.requestProposal({ kind, agentId: 'root', title: 't', payload: { upsert: [], items: [], roles: [], rationale: 'r', scope: 'project' } as never })
+    const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === kind))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(await pending).toEqual({ behavior: 'approve' })
+    expect(ctx.project.name).toBe('After')
+    expect(ctx.project.mcpServers?.[0].name).toBe('docs')
+    expect(ctx.project.path).toBe(path)
+    expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
+    expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'After', path }), expect.any(Array))
+    await m.stopAll()
+  })
+
+  it('other proposal kinds and denied proposals leave the view alone', async () => {
+    const { p, m, ctxs } = rig()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const pending = ctx.requestProposal({ kind: 'settings', agentId: 'root', title: 't', payload: {} as never })
+    const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === 'settings'))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    await pending
+    expect(ctx.project.name).toBe('Before')
+    const denied = ctx.requestProposal({ kind: 'skills', agentId: 'root', title: 't', payload: { items: [], rationale: 'r' } as never })
+    const req2 = await waitFor(isType('proposal.request', (e) => e.proposal.kind === 'skills'))
+    m.decideProposal(run.id, req2.proposal.id, { behavior: 'revise', feedback: 'no' })
+    await denied
+    expect(ctx.project.name).toBe('Before')
+    expect(ctx.skills!()).toEqual([])
+    await m.stopAll()
+  })
+
+  it('an approved MCP install updates ctx.project and the skills too', async () => {
+    const { p, saved, m, ctxs } = rig({
+      mcp: {
+        enabledServers: (proj) => (proj.mcpServers ?? []).filter((s) => s.enabled),
+        resolve: (_pid, s) => ({ spec: s, env: {}, headers: {} }),
+        persistInstall: vi.fn((): Project => saved),
+        searchRegistry: vi.fn(async () => ({ entries: [] }))
+      }
+    })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const spec: McpServerSpec = { id: 'mcp-new', name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], enabled: true, source: 'agent', addedAt: '' }
+    const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'r', spec, requiredSecrets: [] })
+    const req = await waitFor(isType('mcpInstall.request'))
+    m.answerMcpInstall(run.id, req.request.id, { approved: true, scope: 'project' })
+    expect(await pending).toMatchObject({ approved: true })
+    expect(ctx.project.name).toBe('After')
+    expect(ctx.project.path).not.toBe('/somewhere/else')
+    expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
+    expect(ctx.mcpServers!().map((s) => s.name)).toEqual(['docs'])
+    await m.stopAll()
+  })
+
+  it('wires the library and the skill catalog into work runs only (not setup runs)', async () => {
+    const catalog = vi.fn(() => ({ library: [], project: [] }))
+    const read = vi.fn(() => null)
+    const libraryEntries = vi.fn(() => [])
+    const { p, m, ctxs } = rig({
+      skillAssist: { catalog, read },
+      mcp: {
+        enabledServers: () => [],
+        resolve: (_pid, s) => ({ spec: s, env: {}, headers: {} }),
+        persistInstall: vi.fn(),
+        searchRegistry: vi.fn(async () => ({ entries: [] })),
+        libraryEntries
+      }
+    })
+    await m.start({ project: p, prompt: 'work' })
+    await m.start({ project: p, prompt: 'setup', kind: 'setup' })
+    const [work, setupCtx] = ctxs
+    expect(work.mcpLibrary).toBeTypeOf('function')
+    work.mcpLibrary!()
+    expect(libraryEntries).toHaveBeenCalled()
+    work.skillCatalog!()
+    expect(catalog).toHaveBeenCalledWith(p.id)
+    work.readSkill!({ libraryId: 'lib1' })
+    expect(read).toHaveBeenCalledWith(p.id, { libraryId: 'lib1' })
+    expect(setupCtx.mcpLibrary).toBeTypeOf('function')
+    expect(setupCtx.skillCatalog).toBeUndefined()
+    expect(setupCtx.readSkill).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('a work run without skillAssist gets no catalog', async () => {
+    const { p, m, ctxs } = rig()
+    await m.start({ project: p, prompt: 'work' })
+    expect(ctxs[0].skillCatalog).toBeUndefined()
+    await m.stopAll()
+  })
+})
