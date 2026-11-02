@@ -36,6 +36,19 @@ export interface ChangedRole<R extends DiffRole = DiffRole> {
   changes: FieldChange[]
   /** The proposal gave the role a new slug and a similar name: shown as one renamed row. */
   renamed?: boolean
+  /** Set when the proposal states a different prompt: both texts, so the card can show the new one (review M3). */
+  prompt?: PromptChange
+}
+
+export interface PromptChange {
+  before: string
+  after: string
+}
+
+/** The prompt change between two roles, or undefined when the proposal leaves the prompt out or keeps it. */
+export function promptChange(before: DiffRole, after: DiffRole): PromptChange | undefined {
+  if (after.prompt === undefined || (before.prompt ?? '') === after.prompt) return undefined
+  return { before: before.prompt ?? '', after: after.prompt }
 }
 
 export interface OrgDiff<R extends DiffRole = DiffRole> {
@@ -122,6 +135,11 @@ export function diffSummary(added: number, removed: number, changed: number): st
   return parts.length > 0 ? parts.join(', ') : 'No changes'
 }
 
+function withPrompt<R extends DiffRole>(c: ChangedRole<R>): ChangedRole<R> {
+  const prompt = promptChange(c.before, c.role)
+  return prompt ? { ...c, prompt } : c
+}
+
 export function diffOrgChart<R extends DiffRole>(current: readonly DiffRole[], proposed: readonly R[]): OrgDiff<R> {
   const curById = new Map(current.map((r) => [r.id, r]))
   const propById = new Map<string, DiffRole>(proposed.map((r) => [r.id, r]))
@@ -139,7 +157,7 @@ export function diffOrgChart<R extends DiffRole>(current: readonly DiffRole[], p
     }
     seen.add(key)
     const changes = fieldChanges(before, role, curById, propById)
-    if (changes.length > 0) changed.push({ role, before, changes })
+    if (changes.length > 0) changed.push(withPrompt({ role, before, changes }))
     else unchanged.push(role)
   }
   let removed = current.filter((r) => !seen.has(keyOf(r)))
@@ -155,7 +173,7 @@ export function diffOrgChart<R extends DiffRole>(current: readonly DiffRole[], p
     usedAdded.add(a)
     const changes = fieldChanges(r, a, curById, propById)
     if (keyOf(r) !== keyOf(a)) changes.push({ field: 'slug', label: 'id', from: keyOf(r), to: keyOf(a) })
-    changed.push({ role: a, before: r, changes, renamed: true })
+    changed.push(withPrompt({ role: a, before: r, changes, renamed: true }))
   }
   if (usedRemoved.size > 0) {
     removed = removed.filter((r) => !usedRemoved.has(r))

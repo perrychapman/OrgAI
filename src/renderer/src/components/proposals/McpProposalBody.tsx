@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
-import { useId } from 'react'
+import { useEffect, useId } from 'react'
+import { useFrameAnnounce } from '../layout/CanvasFrame'
 import { Check, Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
 import type { McpServerSpec, McpServersProposalPayload } from '@shared/types'
 import { clampLabel } from '../../lib/clampLabel'
@@ -178,6 +179,12 @@ export function McpProposalBody({
   setSecret: (index: number, v: string) => void
 }): ReactElement {
   const scope = proposalScope(payload)
+  const readError = current.failed.library ? 'Could not read your library; changes may show as new.' : current.failed.servers ? 'Could not read this project’s servers; changes may show as new.' : null
+  const announce = useFrameAnnounce()
+  useEffect(() => {
+    // The frame's one polite announcer says it; the line itself is not a live region (review L5).
+    if (readError && announce) announce(readError)
+  }, [readError, announce])
   if (current.status === 'loading') {
     return (
       <div className="mcp-prop">
@@ -197,7 +204,6 @@ export function McpProposalBody({
   }
   const ignored = unique.filter((x) => !shown(x)).length
   const unchangedNames = [...(diff.untouched ?? []), ...diff.same]
-  const readError = current.failed.library ? 'Could not read your library; changes may show as new.' : current.failed.servers ? 'Could not read this project’s servers; changes may show as new.' : null
   return (
     <div className="mcp-prop">
       <div className="mcp-prop-scope">
@@ -207,7 +213,7 @@ export function McpProposalBody({
         <span className="mcp-prop-scope-note">{scope === 'library' ? 'Changes your MCP library' : 'Changes this project’s MCP servers'}</span>
       </div>
       {readError && (
-        <p className="proposal-read-error" role="status" data-testid="proposal-read-error">
+        <p className="proposal-read-error" role={announce ? undefined : 'status'} data-testid="proposal-read-error">
           <TriangleAlert size={14} aria-hidden="true" /> {readError}
         </p>
       )}

@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode, Ref } from 'react'
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 /** Frame height under which the tray's cards switch to their compact layout (data-compact on section.frame-tray). */
 export const COMPACT_FRAME_HEIGHT = 480
@@ -9,11 +9,19 @@ export const COMPACT_FRAME_HEIGHT = 480
  * the composer and shrink the frame again, forever.
  */
 export const COMPACT_EXIT_MARGIN = 64
-const FrameContext = createContext({ compact: false })
+const FrameContext = createContext<{ compact: boolean; announce: ((text: string) => void) | null }>({ compact: false, announce: null })
 
 /** True while the surrounding CanvasFrame is under the compact height (cards fold their body, a proposal may take the stage). */
 export function useFrameCompact(): boolean {
   return useContext(FrameContext).compact
+}
+
+/**
+ * Says a line through the frame's one polite announcer (`tray-announce`), so a card never adds a live region of its
+ * own. null outside a CanvasFrame: the caller then keeps its own status role. The function is stable.
+ */
+export function useFrameAnnounce(): ((text: string) => void) | null {
+  return useContext(FrameContext).announce
 }
 
 
@@ -71,6 +79,20 @@ export function CanvasFrame({
 }): ReactElement {
   const inner = useRef<HTMLDivElement | null>(null)
   const [compact, setCompact] = useState(false)
+  // The arrival line from the view and lines cards say through useFrameAnnounce share the one announcer: the newest wins.
+  const seq = useRef(0)
+  const [said, setSaid] = useState<FrameAnnouncement | undefined>(undefined)
+  const announce = useCallback((text: string) => {
+    if (!text) return
+    seq.current += 1
+    setSaid({ text, n: seq.current })
+  }, [])
+  const arrivalKey = announcement ? announcement.n : 0
+  useEffect(() => {
+    if (announcement?.text) announce(announcement.text)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrivalKey])
+  const ctx = useMemo(() => ({ compact, announce }), [compact, announce])
   const setRef = useCallback(
     (el: HTMLDivElement | null) => {
       inner.current = el
@@ -89,10 +111,10 @@ export function CanvasFrame({
     return () => ro.disconnect()
   }, [])
   return (
-    <FrameContext.Provider value={{ compact }}>
+    <FrameContext.Provider value={ctx}>
       <div className="canvas canvas-frame" ref={setRef} data-testid={testId}>
         <div className="frame-grid">{children}</div>
-        <FrameAnnouncer announcement={announcement} />
+        <FrameAnnouncer announcement={said} />
       </div>
     </FrameContext.Provider>
   )

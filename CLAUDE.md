@@ -267,6 +267,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   ("3 decisions · 1 run") and the topbar all come from `lib/needsYou.ts` `waitingItems` / `decisionCount`. A run row's dot
   is the run's status. A Needs-you item names the kind and the ask first, then the location, and opens that card.
   A question card shows its options inline at every size (`DecisionCard` `inline`); the tray shows the first open decision.
+- Proposal cards (`docs/design/proposal-cards.md`): an org chart card shows a changed role's new prompt ("Show new prompt") and an added role's prompt ("Show prompt") in an `org-diff-prompt` disclosure through `ClampText`/`showHidden` with the hidden-characters badge (review M3; e2e/proposals.mjs); card read errors speak through the frame's one `tray-announce` (`useFrameAnnounce` in `CanvasFrame`).
 - Project tabs are Live, History, Org chart and Settings. The org chart editor is `views/OrgChartView.tsx`, and project
   settings are sectioned through `components/settings/*`.
 - e2e:free is `e2e/layout.mjs`, `runs.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs` and `assistants.mjs` (package.json). Update selectors in the same change.

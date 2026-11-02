@@ -61,6 +61,22 @@ describe('diffOrgChart', () => {
     const prop = [role('a', { tools: ['Edit', 'Read'], prompt: 'new secret' })]
     const d = diffOrgChart(cur, prop)
     expect(d.changed[0].changes).toEqual([{ field: 'prompt', label: 'prompt', from: '', to: 'prompt changed' }])
+    // The texts travel separately so the card can show the new prompt (review M3).
+    expect(d.changed[0].prompt).toEqual({ before: 'old secret', after: 'new secret' })
+  })
+
+  it('carries no prompt change when the prompt is kept or left out', () => {
+    const cur = [role('a', { prompt: 'same', model: 'fast' }), role('b', { prompt: 'kept', model: 'fast' })]
+    const prop = [role('a', { prompt: 'same', model: 'deep' }), { ...role('b', { model: 'deep' }), prompt: undefined }]
+    const d = diffOrgChart(cur, prop)
+    expect(d.changed).toHaveLength(2)
+    expect(d.changed.every((c) => c.prompt === undefined)).toBe(true)
+  })
+
+  it('carries the new prompt on a renamed role and from an empty prompt', () => {
+    const d = diffOrgChart([role('dev', { name: 'Dev', prompt: '' })], [role('developer', { name: 'Developer', prompt: 'Write code' })])
+    expect(d.changed[0].renamed).toBe(true)
+    expect(d.changed[0].prompt).toEqual({ before: '', after: 'Write code' })
   })
 
   it('falls back to id without a slug and compares spawn rights and skills', () => {
