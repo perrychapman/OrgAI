@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isUnsafeAllowRule, isWholeToolRule } from './permissionRules'
+import { isUnsafeAllowRule, isWholeToolRule, ruleLabel, suggestionLabels } from './permissionRules'
 
 describe('isUnsafeAllowRule', () => {
   it('accepts the safe workflow and git commands the Architect proposes', () => {
@@ -26,5 +26,18 @@ describe('isWholeToolRule', () => {
     expect(isWholeToolRule('mcp__orgai__propose_settings')).toBe(true)
     expect(isWholeToolRule('Bash(npm:*)')).toBe(false)
     expect(isWholeToolRule('WebFetch(domain:example.com)')).toBe(false)
+  })
+})
+
+describe('server-level MCP rules', () => {
+  it('saves mcp__<server> forms and refuses wildcards and the harness server', () => {
+    for (const r of ['mcp__github', 'mcp__github__*']) expect(isUnsafeAllowRule(r), r).toBe(false)
+    for (const r of ['mcp__*', 'mcp__orgai', 'mcp__orgai__*', 'mcp__a*']) expect(isUnsafeAllowRule(r), r).toBe(true)
+  })
+  it('labels both server forms the same way', () => {
+    expect(ruleLabel('mcp__github')).toBe('All tools of github')
+    expect(ruleLabel('mcp__github__*')).toBe('All tools of github')
+    expect(ruleLabel('mcp__github__create')).toBe('mcp__github__create')
+    expect(suggestionLabels([{ type: 'addRules', rules: [{ toolName: 'mcp__github__*' }, { toolName: 'Edit' }], behavior: 'allow', destination: 'session' }])).toEqual(['All tools of github', 'Edit'])
   })
 })

@@ -1435,6 +1435,22 @@ describe('RunManager adapter selection, connections and MCP', () => {
       await m.stopAll()
     })
 
+    it('right after approval ctx.mcpServers() and resolvedMcpServers() carry the card-edited roles (run and project scope)', async () => {
+      for (const scope of ['run', 'project'] as const) {
+        const p = makeProject({ path: join(dir, 'repo') })
+        const { m, ctxs } = withMcp(p)
+        const run = await m.start({ project: p, prompt: 'go' })
+        const ctx = ctxs[0]
+        const { pending, req } = await ask(ctx)
+        expect(ctx.mcpServers!()).toEqual([])
+        m.answerMcpInstall(run.id, req.id, { approved: true, scope, secrets: { GITHUB_TOKEN: SECRET }, spec: spec({ roles: ['dev'] }) })
+        await pending
+        expect(ctx.mcpServers!().map((s) => [s.name, s.roles])).toEqual([['github', ['dev']]])
+        expect((await ctx.resolvedMcpServers!()).map((r) => r.spec.roles)).toEqual([['dev']])
+        await m.stopAll()
+      }
+    })
+
     it('a run-scoped server never reads stored secrets: only the values typed on the card', async () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m, ctxs, mcp } = withMcp(p)

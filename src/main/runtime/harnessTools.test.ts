@@ -338,6 +338,50 @@ describe('MCP tools', () => {
     expect(ctx.requestMcpInstall).toHaveBeenCalledWith(expect.objectContaining({ reason: 'triage issues', requiredSecrets: ['GITHUB_TOKEN'] }))
   })
 
+  it('request_mcp_install: availability now lists the capped, quoted tool names and the permission note', async () => {
+    const tools = ['create_issue', 'x<script>\ny', ...Array.from({ length: 25 }, (_, i) => `t${i}`)]
+    const addMcpServer = vi.fn(async () => ({ prefix: 'mcp__github__', availability: 'now' as const, tools }))
+    const text = await byName(workTools(fakeCtx(), { addMcpServer }), 'request_mcp_install').call({ reason: 'r', manual: pinned })
+    expect(text).toContain('available now as mcp__github__create_issue, mcp__github__x‹script› y, mcp__github__t0')
+    expect(text).toContain('and 7 more')
+    expect(text).not.toContain('<script>')
+    expect(text).toContain("may still ask the user for permission under the project's permission mode")
+    expect(text).not.toContain('Only these roles')
+    const bare = await byName(workTools(fakeCtx(), { addMcpServer: vi.fn(async () => 'mcp__github__') }), 'request_mcp_install').call({ reason: 'r', manual: pinned })
+    expect(bare).toContain('available now as mcp__github__<tool>')
+  })
+
+  it('request_mcp_install: after-idle says the tools come later and does not tell the agent to use them', async () => {
+    const addMcpServer = vi.fn(async () => ({ prefix: 'mcp__github__', availability: 'after-idle' as const }))
+    const t = byName(workTools(fakeCtx(), { addMcpServer }), 'request_mcp_install')
+    const text = await t.call({ reason: 'r', manual: pinned })
+    expect(text).toContain('will be attached once the current agents are idle, and you will be told then')
+    expect(text).toContain('Do not call them yet')
+    expect(text).not.toContain('available now')
+    expect(text).not.toContain('Use them to continue')
+    expect(text).toContain('may still ask the user for permission')
+    expect(await t.call({ reason: 'r', manual: pinned })).toContain('do not call them yet')
+  })
+
+  it('request_mcp_install: names the roles when the final spec limits them', async () => {
+    const edited = mcpSpec({ name: 'github', roles: ['dev', 'ghost'] })
+    const ctx = fakeCtx({ requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'run' as const, spec: edited })) })
+    const text = await byName(workTools(ctx, { addMcpServer: vi.fn(async () => 'mcp__github__') }), 'request_mcp_install').call({ reason: 'r', manual: pinned })
+    expect(text).toContain('Only these roles can use it: dev')
+    expect(text).toContain('ghost')
+    const none = fakeCtx({ requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'run' as const, spec: mcpSpec({ name: 'github', roles: [] }) })) })
+    expect(await byName(workTools(none, { addMcpServer: vi.fn(async () => 'mcp__github__') }), 'request_mcp_install').call({ reason: 'r', manual: pinned })).toContain('only roles granted it directly')
+  })
+
+  it('request_mcp_install: the already-approved answer matches how the first one attached', async () => {
+    const now = byName(workTools(fakeCtx(), { addMcpServer: vi.fn(async () => 'mcp__github__') }), 'request_mcp_install')
+    await now.call({ reason: 'r', manual: pinned })
+    expect(await now.call({ reason: 'r', manual: pinned })).toContain('it was approved. Its tools are available as mcp__github__<tool>')
+    const none = byName(workTools(fakeCtx()), 'request_mcp_install')
+    await none.call({ reason: 'r', manual: pinned })
+    expect(await none.call({ reason: 'r', manual: pinned })).toContain('could not be attached to this session')
+  })
+
   it('request_mcp_install: names the calling agent, defaulting to the root', async () => {
     const ctx = fakeCtx()
     await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'triage issues', manual: pinned }, { agentId: 'agent-7' })
