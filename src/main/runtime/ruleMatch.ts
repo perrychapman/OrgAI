@@ -1,5 +1,6 @@
 import { posix, win32 } from 'node:path'
 import { isWholeToolRule } from '@shared/types'
+import { hiddenCharProblem } from '../capabilities/sanitize'
 import type { RuntimeContext } from './types'
 
 /**
@@ -79,6 +80,8 @@ export function mcpServerOfRule(rule: string): string | null {
 export function isValidRule(rule: string): boolean {
   const r = rule.trim()
   if (!r || /[\n\r]/.test(r)) return false
+  // Control, zero-width, bidi and other invisible characters (sanitize.ts): a rule must read as what it matches.
+  if (hiddenCharProblem('rule', r) !== null) return false
   if (r.startsWith('mcp__') && r.includes('*')) return mcpServerOfRule(r) !== null
   if (/^mcp__orgai$/i.test(r)) return false
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)

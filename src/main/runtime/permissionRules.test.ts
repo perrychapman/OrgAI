@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -125,6 +125,25 @@ describe('issue #14: saving dedupes and reports only new rules', () => {
       writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(cd:*)', ' Bash(cd:*)', 'Bash(x:*)'] } }))
       expect(removeRule(dir, 'Bash(cd:*)')).toEqual(['Bash(x:*)'])
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('never saves a rule with a hidden character, from addRules or a card grant; a plain rule still saves', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const zw = 'Bash(npm​ test:*)'
+      const bidi = 'Bash(git ‮push:*)'
+      expect(addRulesReport(dir, [zw, bidi, 'Bash(npm test:*)'])).toEqual({ rules: ['Bash(npm test:*)'], added: ['Bash(npm test:*)'] })
+      expect(warn).toHaveBeenCalledTimes(2)
+      expect(String(warn.mock.calls[0][0])).toMatch(/hidden character \(U\+200B/)
+      const s: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'make​:*' }, { toolName: 'Bash', ruleContent: 'make lint:*' }], behavior: 'allow', destination: 'session' }]
+      applyAllowScope(dir, { behavior: 'allow', scope: 'project' }, s, () => {})
+      expect(listRules(dir)).toEqual(['Bash(npm test:*)', 'Bash(make lint:*)'])
+      expect(JSON.parse(readFileSync(settingsLocalPath(dir), 'utf8')).permissions.allow).toEqual(['Bash(npm test:*)', 'Bash(make lint:*)'])
+    } finally {
+      warn.mockRestore()
       rmSync(dir, { recursive: true, force: true })
     }
   })

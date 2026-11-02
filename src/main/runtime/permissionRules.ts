@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
+import { hiddenCharProblem } from '../capabilities/sanitize'
 import { posix, win32 } from 'node:path'
 import { homedir } from 'node:os'
 import { isFreeCd, isFreeCdTarget, mcpServerOfRule, shellRulesFor, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
@@ -64,7 +65,13 @@ export function addRulesReport(projectPath: string, rules: string[]): { rules: s
   const settings = readLocalSettings(projectPath)
   const raw = allowOf(settings)
   const current = uniqueRules(raw)
-  const added = uniqueRules(rules).filter((r) => !current.includes(r))
+  // Never write a rule with a hidden character (card suggestions, install-card edits and permissions:add alike).
+  const clean = rules.filter((r) => {
+    const problem = typeof r === 'string' ? hiddenCharProblem('Permission rule', r.trim()) : null
+    if (problem) console.warn(`Skipped a permission rule: ${problem}`)
+    return !problem
+  })
+  const added = uniqueRules(clean).filter((r) => !current.includes(r))
   const next = [...current, ...added]
   if (added.length || raw.length !== current.length || raw.some((r, i) => r !== current[i])) {
     settings.permissions = { ...(settings.permissions ?? {}), allow: next }

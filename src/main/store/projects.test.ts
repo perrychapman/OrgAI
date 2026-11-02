@@ -362,3 +362,64 @@ describe('ProjectStore allowedDirectories', () => {
     expect(new ProjectStore(dir).migrateAll()).toBe(0)
   })
 })
+
+describe('cleanAllowedDirectories: too broad or sensitive (allowedDirectoryRisk, review M2)', () => {
+  const winOpts = { path: win32, touchesData: () => false, same: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(), home: 'C:\\Users\\me', projectPath: 'C:\\work\\proj' }
+  const posixOpts = { path: posix, touchesData: () => false, same: (a: string, b: string) => a === b, home: '/home/me', projectPath: '/work/proj' }
+
+  it('win32: drops home, its parent, home config folders and the project in every direction; keeps a sibling and another drive', () => {
+    const dropped = [
+      'C:\\Users\\me',
+      'C:\\Users',
+      'C:\\Users\\me\\.ssh',
+      'c:\\users\\ME\\.SSH\\keys',
+      'C:\\Users\\me\\.claude',
+      'C:\\Users\\me\\.codex',
+      'C:\\Users\\me\\AppData\\Roaming',
+      'C:\\Users\\me\\AppData\\Roaming\\Code',
+      'C:\\work\\proj',
+      'c:\\WORK\\proj\\',
+      'C:\\work\\proj\\src',
+      'C:\\work'
+    ]
+    const kept = ['C:\\work\\sibling', 'D:\\shared\\lib', 'C:\\Users\\me\\notes']
+    expect(cleanAllowedDirectories([...dropped, ...kept], 'C:\\data', winOpts)).toEqual(kept)
+  })
+
+  it('posix: the same rules', () => {
+    const dropped = ['/home/me', '/home', '/home/me/.ssh', '/home/me/.claude', '/home/me/.config/gh', '/work/proj', '/work/proj/src', '/work']
+    const kept = ['/work/sibling', '/mnt/other/lib']
+    expect(cleanAllowedDirectories([...dropped, ...kept], '/data', posixOpts)).toEqual(kept)
+  })
+
+  it('without home or project path only the syntax and data rules apply', () => {
+    expect(cleanAllowedDirectories(['C:\\Users\\me', 'C:\\work\\proj'], 'C:\\data', { ...winOpts, home: undefined, projectPath: undefined })).toEqual(['C:\\Users\\me', 'C:\\work\\proj'])
+  })
+
+  it('ProjectStore drops them on save (returning the cleaned list) and on read, with a home override', () => {
+    const data = dataDir()
+    const root = dataDir()
+    const home = join(root, 'home')
+    const proj = join(root, 'work', 'proj')
+    const sibling = join(root, 'work', 'sibling')
+    const other = process.platform === 'win32' ? (/^z:/i.test(root) ? 'Y:\\lib' : 'Z:\\lib') : '/mnt/other-drive/lib'
+    const all = [home, root, join(home, '.ssh'), join(home, '.claude'), join(home, 'AppData', 'Roaming'), proj, join(proj, 'src'), join(root, 'work'), sibling, other]
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const store = new ProjectStore(data, { home })
+      store.save(project({ path: proj }))
+      const saved = store.saveFromRenderer(project({ path: proj, allowedDirectories: all }))
+      expect(saved.allowedDirectories).toEqual([sibling, other])
+      expect(store.get('p1')?.allowedDirectories).toEqual([sibling, other])
+      expect(debug.mock.calls.some((c) => String(c[0]).includes('too broad or sensitive'))).toBe(true)
+      expect(debug.mock.calls.some((c) => String(c[0]).includes('the project folder or inside it'))).toBe(true)
+      // A list written before the rule existed is cleaned at boot and persisted once.
+      writeFileSync(join(data, 'projects.json'), JSON.stringify({ version: 1, projects: [project({ path: proj, allowedDirectories: all })] }))
+      const reread = new ProjectStore(data, { home })
+      expect(reread.get('p1')?.allowedDirectories).toEqual([sibling, other])
+      expect(JSON.parse(readFileSync(join(data, 'projects.json'), 'utf8')).projects[0].allowedDirectories).toEqual([sibling, other])
+    } finally {
+      debug.mockRestore()
+    }
+  })
+})

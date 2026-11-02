@@ -10,6 +10,10 @@ describe('isValidRule', () => {
   it('rejects empty, multi-line and malformed rules', () => {
     for (const r of ['', '  ', 'Bash(', 'Bash()', 'gh repo create', 'Bash(x)\nrm', '(Bash)', '1Tool']) expect(isValidRule(r), JSON.stringify(r)).toBe(false)
   })
+  it('rejects rules with hidden characters (zero-width, bidi override, controls)', () => {
+    for (const r of ['Bash(npm​ test:*)', 'Bash(git ‮push:*)', 'Web‍Search', 'Bash(ls\u0007)', 'mcp__gh⁦__x']) expect(isValidRule(r), JSON.stringify(r)).toBe(false)
+    expect(isValidRule('Bash(npm test:*)')).toBe(true)
+  })
 })
 
 describe('splitCommand', () => {

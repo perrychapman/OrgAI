@@ -62,7 +62,8 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
-import { addRules, isBlanketAllowRule, isOfferableDirectory, isUnsafeAllowRule, listRules } from './permissionRules'
+import { addRules, isBlanketAllowRule, isUnsafeAllowRule, listRules } from './permissionRules'
+import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
@@ -126,7 +127,13 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
       out.dropped.push(given)
       continue
     }
-    if (!isOfferableDirectory(canon, { cwd: opts.projectPath, deniedDirs: denied, ...(opts.home ? { home: opts.home } : {}) })) {
+    // The static rules (allowedDirectories.ts, shared with ProjectStore's save-time clean), on the canonical path.
+    const risk = allowedDirectoryRisk(canon, { projectPath: opts.projectPath, deniedDirs: denied, ...(opts.home ? { home: opts.home } : {}) })
+    if (risk === 'project') {
+      out.dropped.push(given)
+      continue
+    }
+    if (risk) {
       out.dropped.push(given)
       out.unsafe.push(given)
       continue
