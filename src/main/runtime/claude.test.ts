@@ -1,10 +1,84 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
-import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
+
+// Only `query` is faked (a scripted stand-in for the CLI); everything else is the real SDK module. The pure tests in
+// this file never call query; the ClaudeSession tests at the end drive the fake.
+const sdk = vi.hoisted(() => {
+  type Msg = Record<string, unknown>
+  class FakeQuery {
+    inputs: Msg[] = []
+    setMcpCalls: Record<string, unknown>[] = []
+    private out: Msg[] = []
+    private waiters: ((r: IteratorResult<Msg>) => void)[] = []
+    private done = false
+    constructor(
+      readonly prompt: AsyncIterable<Msg>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      readonly options: Record<string, any>
+    ) {
+      // Like the CLI: read the input stream, and exit once it ends.
+      void (async () => {
+        for await (const m of prompt) this.inputs.push(m)
+        this.end()
+      })()
+    }
+    emit(m: Msg): void {
+      const w = this.waiters.shift()
+      if (w) w({ value: m, done: false })
+      else this.out.push(m)
+    }
+    end(): void {
+      this.done = true
+      for (const w of this.waiters.splice(0)) w({ value: undefined as never, done: true })
+    }
+    get ended(): boolean {
+      return this.done
+    }
+    [Symbol.asyncIterator](): AsyncIterator<Msg> {
+      return {
+        next: () => {
+          if (this.out.length) return Promise.resolve({ value: this.out.shift()!, done: false })
+          if (this.done) return Promise.resolve({ value: undefined as never, done: true })
+          return new Promise((r) => this.waiters.push(r))
+        }
+      }
+    }
+    async setMcpServers(rec: Record<string, unknown>) {
+      this.setMcpCalls.push(rec)
+      return { added: Object.keys(rec), removed: [], errors: {} }
+    }
+    async mcpServerStatus() {
+      return state.status
+    }
+    async interrupt() {}
+    close(): void {
+      this.end()
+    }
+  }
+  const state = {
+    FakeQuery,
+    queries: [] as FakeQuery[],
+    status: [] as { name: string; status: string; tools?: { name: string }[] }[]
+  }
+  return state
+})
+vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>()
+  return {
+    ...orig,
+    query: (args: { prompt: AsyncIterable<Record<string, unknown>>; options: Record<string, unknown> }) => {
+      const q = new sdk.FakeQuery(args.prompt, args.options)
+      sdk.queries.push(q)
+      return q
+    }
+  }
+})
+
+import { ClaudeSession, MCP_RESTART_DELAY_MS, mcpAttachedNotice, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
 function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpServerSpec {
@@ -434,4 +508,153 @@ describe('build sessions (M1/M2 trust restriction)', () => {
     expect(buildConfigWriteDenial(run, 'Read', { file_path: join(ws, '.claude', 'x') })).toBeUndefined()
     expect(buildConfigWriteDenial(runSummary(), 'Write', { file_path: join(ws, '.claude', 'x') })).toBeUndefined()
   })
+})
+
+describe('mcpRestartBlocker', () => {
+  const idle = { stopping: false, held: false, limited: false, rootIdle: true, liveReports: 0, pendingInteractions: 0 }
+  it('allows a restart only when the run is idle, unheld, not limited and not ending', () => {
+    expect(mcpRestartBlocker(idle)).toBeUndefined()
+    expect(mcpRestartBlocker({ ...idle, stopping: true })).toBe('the run is ending')
+    expect(mcpRestartBlocker({ ...idle, held: true })).toBe('the run is held for the user')
+    expect(mcpRestartBlocker({ ...idle, limited: true })).toBe('the run is at a usage limit')
+    expect(mcpRestartBlocker({ ...idle, rootIdle: false })).toBe('the orchestrator is mid-turn')
+    expect(mcpRestartBlocker({ ...idle, liveReports: 1 })).toBe('reports are still running')
+    expect(mcpRestartBlocker({ ...idle, pendingInteractions: 2 })).toBe('a decision card is open')
+  })
+})
+
+describe('mcpAttachedNotice', () => {
+  it('names every tool with its prefix and the roles granted', () => {
+    const text = mcpAttachedNotice([{ name: 'pg', tools: ['query', 'schema'], roles: [{ name: 'Engineer', slug: 'engineer' }] }])
+    expect(text).toContain('The MCP server pg is attached now. Its tools: mcp__pg__query, mcp__pg__schema.')
+    expect(text).toContain('Roles that may use it: Engineer (engineer).')
+    expect(text).toContain('may still ask the user for permission')
+    expect(text.startsWith('[OrgAI harness]')).toBe(true)
+  })
+  it('falls back to the prefix and says when no role has it', () => {
+    const text = mcpAttachedNotice([{ name: 'pg', tools: [], roles: [] }])
+    expect(text).toContain('Its tool names start with mcp__pg__.')
+    expect(text).toContain('No role in the org chart is granted it')
+  })
+})
+
+describe('buildAgents with run-scoped installs', () => {
+  it('grants a server installed mid-run to the roles the card left on it (live list), root held to the same rule', () => {
+    const ctx = fakeCtx()
+    const live = { mcpServers: [mcpSpec({ id: 'mcp-run', name: 'pg', roles: ['engineer'], secretEnv: [] })] }
+    const agents = buildAgents(ctx, [], false, live)
+    expect(agents.engineer.tools).toContain(mcpToolRule('pg'))
+    expect(agents.engineer.mcpServers).toEqual(['pg'])
+    expect(agents.reviewer.tools).not.toContain('mcp__pg')
+    expect(agents.lead.tools).not.toContain('mcp__pg')
+    const all = buildAgents(ctx, [], false, { mcpServers: [mcpSpec({ name: 'pg', roles: undefined })] })
+    for (const slug of ['lead', 'engineer', 'reviewer']) expect(all[slug].tools).toContain('mcp__pg')
+  })
+})
+
+describe('ClaudeSession MCP mid-run attach (fake query)', () => {
+  type Fake = InstanceType<typeof sdk.FakeQuery>
+  type HookOut = { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }
+  const sessions: ClaudeSession[] = []
+  afterEach(async () => {
+    for (const s of sessions.splice(0)) await s.stop()
+    sdk.queries.length = 0
+    sdk.status = []
+  })
+
+  function start(servers: McpServerSpec[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-mcp-'))
+    const ctx = fakeCtx({
+      project: project({ path: dir }),
+      autoContinue: false,
+      mcpServers: () => servers,
+      resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} }))
+    })
+    const session = new ClaudeSession(ctx)
+    sessions.push(session)
+    return { ctx, session }
+  }
+  const attach = (s: ClaudeSession, spec: McpServerSpec) => (s as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(spec)
+  const init = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
+  const result = { type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} }
+  const preToolUse = (q: Fake) => q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>
+  const call = (tool: string, agent?: { id: string; type: string }) => ({
+    hook_event_name: 'PreToolUse',
+    session_id: 'sess-1',
+    transcript_path: '',
+    cwd: '/repo',
+    tool_name: tool,
+    tool_input: {},
+    tool_use_id: `tu-${Math.random()}`,
+    ...(agent ? { agent_id: agent.id, agent_type: agent.type } : {})
+  })
+  const decision = async (q: Fake, tool: string, agent?: { id: string; type: string }) => (await preToolUse(q)(call(tool, agent), 'x', {})).hookSpecificOutput
+  const texts = (q: Fake) => q.inputs.map((m) => String((m.message as { content: unknown }).content)).join('\n')
+
+  it('PreToolUse denies an MCP call the role is not granted, from the live list, and passes granted ones on', async () => {
+    const servers = [mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })]
+    start(servers)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    const denied = await decision(q, 'mcp__github__list', { id: 'a1', type: 'reviewer' })
+    expect(denied?.permissionDecision).toBe('deny')
+    expect(denied?.permissionDecisionReason).toContain('does not grant the MCP server "github" to the Reviewer role (reviewer)')
+    expect((await decision(q, 'mcp__github__list', { id: 'a2', type: 'engineer' }))?.permissionDecision).not.toBe('deny')
+    // The root is held to the card's roles too; a card edit that adds it applies at once.
+    expect((await decision(q, 'mcp__github__list'))?.permissionDecision).toBe('deny')
+    servers[0] = { ...servers[0]!, roles: ['engineer', 'lead'] }
+    expect((await decision(q, 'mcp__github__list'))?.permissionDecision).not.toBe('deny')
+    expect((await decision(q, 'mcp__nope__x'))?.permissionDecisionReason).toContain('not configured for this run')
+    // Harness tool audiences stay enforced in the hook.
+    expect((await decision(q, 'mcp__orgai__set_plan', { id: 'a1', type: 'reviewer' }))?.permissionDecision).toBe('deny')
+    expect((await decision(q, 'mcp__orgai__set_plan'))?.permissionDecision).toBe('allow')
+  })
+
+  it('attaches with setMcpServers, reports after-idle, and resumes with widened definitions once the turn ends', async () => {
+    const servers: McpServerSpec[] = []
+    const { session } = start(servers)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+    expect(q1.options.agents.engineer.tools).not.toContain('mcp__pg')
+    // RunManager adds the approved server to the run, then the harness hook runs.
+    servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['engineer'], secretEnv: [] }))
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    expect(await attach(session, servers[0]!)).toEqual({ prefix: 'mcp__pg__', availability: 'after-idle', tools: ['query'] })
+    expect(Object.keys(q1.setMcpCalls[0]!)).toEqual(expect.arrayContaining(['pg', 'orgai']))
+    expect(sdk.queries).toHaveLength(1)
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+    const q2 = sdk.queries[1]!
+    expect(q1.ended).toBe(true)
+    expect(q2.options.resume).toBe('sess-1')
+    expect(q2.options.agents.engineer.tools).toContain('mcp__pg')
+    expect(q2.options.agents.reviewer.tools).not.toContain('mcp__pg')
+    expect(Object.keys(q2.options.mcpServers)).toEqual(expect.arrayContaining(['pg', 'orgai']))
+    await vi.waitFor(() => expect(texts(q2)).toContain('The MCP server pg is attached now. Its tools: mcp__pg__query.'))
+    expect(texts(q2)).toContain('Roles that may use it: Engineer (engineer).')
+    // The gate on the new query still follows the live list (subagents spawned after the restart included).
+    expect((await decision(q2, 'mcp__pg__query', { id: 'a9', type: 'reviewer' }))?.permissionDecision).toBe('deny')
+    expect((await decision(q2, 'mcp__pg__query', { id: 'a8', type: 'engineer' }))?.permissionDecision).not.toBe('deny')
+  }, 10_000)
+
+  it('never restarts while the run is held by an interrupt, and does once the user sends', async () => {
+    const servers: McpServerSpec[] = []
+    const { session } = start(servers)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', secretEnv: [] }))
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await attach(session, servers[0]!)
+    await session.interrupt()
+    q1.emit(result)
+    await new Promise((r) => setTimeout(r, MCP_RESTART_DELAY_MS + 500))
+    expect(sdk.queries).toHaveLength(1)
+    expect(q1.ended).toBe(false)
+    await session.send('go on')
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+  }, 10_000)
 })
