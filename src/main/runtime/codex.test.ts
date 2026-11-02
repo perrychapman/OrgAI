@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -338,12 +338,86 @@ describe('CodexAdapter session', () => {
       expect(ctx.requestPermission).not.toHaveBeenCalled()
     })
 
-    it('accepts file changes itself in acceptEdits mode but still asks for commands', async () => {
+    it('accepts a concrete file change in acceptEdits mode (path-checked) but still asks for commands', async () => {
       const { ctx, s } = await started('acceptEdits')
+      s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f', status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: null }, diff: '' }] } })
       expect(await s.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'f', startedAtMs: 1 })).toEqual({ decision: 'accept' })
       expect(ctx.requestPermission).not.toHaveBeenCalled()
       await s.ask('item/commandExecution/requestApproval', cmd('make'))
       expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    })
+
+    describe('file approval hardening (H1/H2)', () => {
+      const fe = (id = 'f') => ({ threadId: 'th-1', turnId: 'tu-1', itemId: id, startedAtMs: 1 })
+      const chg = (s: FakeServer, path: string, id = 'f') =>
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path, kind: { type: 'update', move_path: null }, diff: '' }] } })
+
+      it('asks in acceptEdits mode for a grantRoot alone or an item with no changes', async () => {
+        const { ctx, s } = await started('acceptEdits')
+        await s.ask('item/fileChange/requestApproval', { ...fe(), grantRoot: dir })
+        await s.ask('item/fileChange/requestApproval', fe('none'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('asks in acceptEdits mode for a path outside every free folder', async () => {
+        const { ctx, s } = await started('acceptEdits')
+        chg(s, join(dir, '..', 'outside-x.ts'))
+        await s.ask('item/fileChange/requestApproval', fe())
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+      })
+
+      it('never auto-accepts .git, .codex, .agents or .claude segments, any case', async () => {
+        const { ctx, s } = await started('acceptEdits')
+        let n = 0
+        for (const seg of ['.git', '.CODEX', '.Agents', '.claude']) {
+          chg(s, join(dir, seg, 'x'), `p${n}`)
+          await s.ask('item/fileChange/requestApproval', fe(`p${n}`))
+          n++
+          expect(ctx.requestPermission).toHaveBeenCalledTimes(n)
+        }
+      })
+
+      it('asks for a protected path even with a saved blanket Edit rule', async () => {
+        const { ctx, s } = await started('default', { allowedRules: () => ['Edit'] })
+        chg(s, join(dir, '.git', 'config'))
+        await s.ask('item/fileChange/requestApproval', fe())
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+      })
+
+      it('asks when the path is a link that leaves the free folders', async () => {
+        const outside = mkdtempSync(join(tmpdir(), 'orgai-codex-out-'))
+        try {
+          try {
+            symlinkSync(outside, join(dir, 'link'), 'junction')
+          } catch {
+            return
+          }
+          const { ctx, s } = await started('acceptEdits')
+          chg(s, join(dir, 'link', 'x.ts'))
+          await s.ask('item/fileChange/requestApproval', fe())
+          expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        } finally {
+          rmSync(outside, { recursive: true, force: true })
+        }
+      })
+
+      it('on a restricted run never honours a session accept-edits grant and drops setMode suggestions', async () => {
+        const { ctx, s } = await started('default', { run: runSummary({ quick: { folder: dir } as never }) })
+        chg(s, join(dir, 'a.ts'))
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+        await s.ask('item/fileChange/requestApproval', fe())
+        const req = (ctx.requestPermission as any).mock.calls[0][0]
+        expect((req.suggestions ?? []).some((x: { type: string }) => x.type === 'setMode')).toBe(false)
+        chg(s, join(dir, 'b.ts'), 'f2')
+        await s.ask('item/fileChange/requestApproval', fe('f2'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('passes the command cwd through to the card', async () => {
+        const { ctx, s } = await started('default')
+        await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })
+        expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ input: expect.objectContaining({ cwd: dir }) }))
+      })
     })
 
     it('asks about file changes with the changed path from the item', async () => {

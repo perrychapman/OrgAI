@@ -50,7 +50,7 @@ import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
-import { isTrustRestrictedRun, isInsideEither, samePath } from '../quick/scratch'
+import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
 import type { SkillRunSource } from '../skills/types'
@@ -62,7 +62,7 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
-import { addRules, isBlanketAllowRule, isUnsafeAllowRule, listRules } from './permissionRules'
+import { addRules, isBlanketAllowRule, isOfferableDirectory, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
@@ -86,6 +86,14 @@ export interface ResolvedAllowedDirectories {
   missing: string[]
   /** Entries left out on purpose: OrgAI's data folder (either direction) or the project folder itself / inside it. */
   dropped: string[]
+  /** The subset of `dropped` left out as too broad or sensitive (home, a folder holding the project, ~/.ssh ...). */
+  unsafe: string[]
+}
+
+/** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
+export function protectedDirsOf(dataDir: string | undefined): string[] {
+  if (!dataDir) return []
+  return [...new Set([dataDir, canonicalDeep(dataDir)])]
 }
 
 /**
@@ -93,8 +101,9 @@ export interface ResolvedAllowedDirectories {
  * that sit inside OrgAI's data dir or contain it, drops the project folder and anything inside it (already free),
  * and dedupes. `dataDir` is optional for tests only: without it the data-dir check is skipped.
  */
-export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, opts: { projectPath: string; dataDir?: string }): ResolvedAllowedDirectories {
-  const out: ResolvedAllowedDirectories = { dirs: [], missing: [], dropped: [] }
+export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, opts: { projectPath: string; dataDir?: string; home?: string }): ResolvedAllowedDirectories {
+  const out: ResolvedAllowedDirectories = { dirs: [], missing: [], dropped: [], unsafe: [] }
+  const denied = protectedDirsOf(opts.dataDir)
   for (const entry of raw ?? []) {
     if (typeof entry !== 'string' || !entry.trim()) continue
     const given = entry.trim()
@@ -115,6 +124,11 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
     }
     if (isInsideEither(opts.projectPath, canon)) {
       out.dropped.push(given)
+      continue
+    }
+    if (!isOfferableDirectory(canon, { cwd: opts.projectPath, deniedDirs: denied, ...(opts.home ? { home: opts.home } : {}) })) {
+      out.dropped.push(given)
+      out.unsafe.push(given)
       continue
     }
     if (out.dirs.some((d) => samePath(d, canon))) continue
@@ -1020,6 +1034,11 @@ export class RunManager {
           warnedMissing.add(m)
           emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${m} does not exist; agents cannot use it in this run.` })
         }
+        for (const u of r.unsafe) {
+          if (warnedMissing.has(u)) continue
+          warnedMissing.add(u)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
+        }
       }
       if (foldersOn) resolveFolders()
       const ctx: RuntimeContext = {
@@ -1074,6 +1093,7 @@ export class RunManager {
         requestPermissionRules: (req) => this.requestRules(active, req),
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
+        protectedDirectories: () => protectedDirsOf(this.options.dataDir),
         allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
         ...(foldersOn
           ? {
@@ -1094,6 +1114,7 @@ export class RunManager {
                       if (live.permissionMode !== 'default') return false
                       const saved = folderSave(live.id, { acceptEdits: true })
                       setLive(saved, false)
+                      if (saved.permissionMode !== 'acceptEdits') return false
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       emit({ type: 'log', runId: summary.id, level: 'info', message: 'Permission mode set to Accept edits for this project.' })
                       return true
