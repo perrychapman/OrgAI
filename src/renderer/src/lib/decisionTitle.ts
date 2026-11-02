@@ -5,11 +5,11 @@
  */
 
 import type { ProposalKind } from '@shared/types'
+import { HIDDEN_OR_CONTROL_RUN } from './hiddenChars'
 
 const MAX_TITLE = 120
 
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u061c\ufeff\u202a-\u202e\u2066-\u2069]+/g
+const CONTROL = HIDDEN_OR_CONTROL_RUN
 
 /** One line, no control or bidi override characters, clipped to `max` with an ellipsis. */
 export function oneLine(s: unknown, max = MAX_TITLE): string {

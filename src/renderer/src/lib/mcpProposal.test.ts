@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { McpProposalServer, McpServerSpec, McpServersProposalPayload } from '@shared/types'
 import {
-  PROPOSAL_EFFECT_COPY,
-  SECRETS_HELP,
+  proposalEffectCopy,
+  secretsHelp,
+  toggleLine,
+  newEffectLine,
+  mcpSummaryLine,
+  targetText,
   codeLoadingEnv,
   mcpFieldChanges,
   mcpServerHidden,
@@ -65,11 +69,51 @@ describe('mcpProposal', () => {
     expect(proposalCommand(link, spec({ command: 'npx', args: ['-y', 'y'] }))).toBe('npx -y y')
     expect(proposalCommand({ ...base, command: 'npx', args: ['z'] } as McpProposalServer)).toBe('npx z')
   })
-  it('exports the effect copy', () => {
-    expect(PROPOSAL_EFFECT_COPY.now).toBe('Takes effect now.')
-    expect(PROPOSAL_EFFECT_COPY['next-run']).toBe('Takes effect from the next run. This run keeps what it has.')
-    expect(PROPOSAL_EFFECT_COPY['after-turn']).toBe("Takes effect after the orchestrator's current turn. Reports already running keep what they have.")
-    expect(SECRETS_HELP).toContain('A server with an empty secret does not start.')
+  it('words the effect by proposer and drops unknown values', () => {
+    expect(proposalEffectCopy('now')).toBe('Takes effect now.')
+    expect(proposalEffectCopy('next-run')).toBe('Takes effect from the next run. This run keeps what it has.')
+    expect(proposalEffectCopy('after-turn')).toBe("Takes effect after the orchestrator's current turn. Reports already running keep what they have.")
+    expect(proposalEffectCopy('after-turn', 'assistant')).toContain("the assistant's current turn")
+    expect(proposalEffectCopy('after-turn', 'architect')).toContain("the Architect's current turn")
+    expect(proposalEffectCopy(undefined)).toBeNull()
+    expect(proposalEffectCopy('bogus' as never)).toBeNull()
+  })
+  it('names where to set secrets later by scope', () => {
+    expect(secretsHelp('project')).toContain('Project settings > Tools')
+    expect(secretsHelp('library')).toContain('App settings > Connectors')
+    expect(secretsHelp('project')).toContain('A server with an empty secret does not start.')
+  })
+  it('the apply note does not say secrets are entered separately when fields are inline', () => {
+    expect(mcpApplyNote('project', true)).toContain('Secrets you leave empty can be set later.')
+    expect(mcpApplyNote('project', true)).not.toContain('separately')
+  })
+  it('classifies an enabled difference as a toggle and words it', () => {
+    const cur = spec({ id: 'a', name: 'pg', enabled: false, command: undefined, args: undefined })
+    const on = { ...base, enabled: true } as McpProposalServer
+    expect(classifyUpsert(on, [cur], 'project')).toMatchObject({ change: 'toggle' })
+    expect(classifyUpsert({ ...base, enabled: undefined } as unknown as McpProposalServer, [{ ...cur, command: undefined, args: undefined }], 'project').change).not.toBe('toggle')
+    expect(toggleLine(on, cur)).toBe('Switches pg on. It runs code on this machine from the next run.')
+    const remote = spec({ id: 'a', transport: 'http', url: 'https://h.example.com/mcp', enabled: false, command: undefined, args: undefined })
+    expect(toggleLine({ ...base, transport: 'http', url: 'https://h.example.com/mcp', enabled: true } as McpProposalServer, remote)).toBe('Switches pg on. It connects to h.example.com from the next run.')
+    expect(toggleLine({ ...base, enabled: false } as McpProposalServer, spec({ id: 'a', enabled: true }))).toBe('Switches pg off.')
+    expect(toggleLine(on, spec({ id: 'a', enabled: true }))).toBeNull()
+  })
+  it('counts switches in the summary and fold verbs', () => {
+    const payload = { rationale: '', upsert: [{ ...base, enabled: true }, { ...base, id: 'b', name: 'fs', enabled: false }] } as unknown as McpServersProposalPayload
+    const cur = [spec({ id: 'a', name: 'pg', enabled: false, command: undefined, args: undefined }), spec({ id: 'b', name: 'fs', enabled: true, command: undefined, args: undefined })]
+    const d = diffMcpProposal(payload, cur, roles)
+    expect(d.rows.map((r) => r.change)).toEqual(['toggle', 'toggle'])
+    expect(d.summary).toBe('1 switched on, 1 switched off')
+    expect(d.rows.map(mcpRowVerb)).toEqual(['switch on pg', 'switch off fs'])
+    expect(mcpSummaryLine({ new: 0, link: 0, access: 0, update: 0, removal: 0, on: 2 }, null)).toBe('2 switched on')
+  })
+  it('a new server added switched off says it does not start', () => {
+    expect(newEffectLine({ ...base, enabled: false } as McpProposalServer)).toBe('Added switched off; it does not start until you switch it on.')
+    expect(newEffectLine(base)).toBe('Runs code on this machine')
+  })
+  it('quotes arguments with hidden or non-ASCII characters', () => {
+    const t = targetText({ transport: 'stdio', command: 'npx', args: ['a\u200bb', 'caf\u00e9', 'plain'] })
+    expect(t).toBe('npx "a\u200bb" "caf\u00e9" plain')
   })
 })
 
@@ -147,7 +191,7 @@ describe('full target', () => {
   })
   it('escapes hidden characters and flags them', () => {
     const s = { ...base, command: 'node', args: ['a‮b'] } as McpProposalServer
-    expect(proposalTarget(s)).toBe(String.raw`node a\u202eb`)
+    expect(proposalTarget(s)).toBe(String.raw`node "a\u202eb"`)
     expect(mcpServerHidden(s)).toBe(true)
     expect(mcpServerHidden(base)).toBe(false)
     expect(mcpServerHidden({ ...base, name: 'p​g' })).toBe(true)

@@ -7,6 +7,7 @@ import {
   codeLoadingEnv,
   diffMcpProposal,
   effectLine,
+  newEffectLine,
   mcpFieldChanges,
   mcpServerHidden,
   pinState,
@@ -14,6 +15,7 @@ import {
   proposalSource,
   proposalTarget,
   secretSlotNames,
+  toggleLine,
   uniqueSecretSlots,
   upsertAction,
   whoCanUse,
@@ -37,6 +39,7 @@ export type SecretValues = Record<number, string>
 const BADGE: Record<Exclude<McpChange, 'same'>, { text: string; tone: 'success' | 'info' | 'warning'; icon: typeof Plus }> = {
   new: { text: 'New', tone: 'success', icon: Plus },
   link: { text: 'From library', tone: 'info', icon: Plus },
+  toggle: { text: 'Changed', tone: 'warning', icon: Pencil },
   access: { text: 'Changed', tone: 'warning', icon: Pencil },
   update: { text: 'Changed', tone: 'warning', icon: Pencil }
 }
@@ -51,7 +54,7 @@ function SecretField({ slot, forServer, value, onChange }: { slot: McpSecretSlot
         {name}
         {forServer ? ` for ${forServer}` : ''} <span className="muted">(optional, set it later if you prefer)</span>
       </label>
-      <Input id={id} type="password" mono autoComplete="off" value={value} onChange={onChange} aria-describedby={slot.description ? hintId : undefined} />
+      <Input id={id} type="password" mono autoComplete="new-password" spellCheck={false} value={value} onChange={onChange} aria-describedby={slot.description ? hintId : undefined} />
       {slot.description && (
         <span id={hintId} className="mcp-prop-secret-hint">
           {clampLabel(slot.description, 160)}
@@ -84,11 +87,15 @@ function ServerRow({
   const pin = row.change === 'new' ? pinState(s) : null
   const target = proposalTarget(s, libraryCommand)
   const source = proposalSource(s)
-  const who = row.change === 'access' || row.change === 'update' ? whoCanUseChange(s, row.current, roles) : whoCanUse(s, roles, scope)
+  const who = row.change === 'access' || row.change === 'update' || row.change === 'toggle' ? whoCanUseChange(s, row.current, roles) : whoCanUse(s, roles, scope)
   const hidden = mcpServerHidden(s, libraryCommand)
   const loads = codeLoadingEnv(s).length > 0 || (!!libraryCommand && s.libraryId !== undefined && codeLoadingEnv(libraryCommand).length > 0)
   const changes = row.change === 'update' && row.current ? mcpFieldChanges(s, row.current) : []
-  const secretNames = secretSlotNames(s.libraryId && !s.command && !s.url && libraryCommand ? libraryCommand : s)
+  const specForSecrets = s.libraryId && !s.command && !s.url && libraryCommand ? libraryCommand : s
+  const secretNames = secretSlotNames(specForSecrets)
+  const shownSlots = slots.filter(({ slot }) => secretNames.includes(slot.name))
+  const switches = toggleLine(s, row.current)
+  const off = (row.change === 'new' || row.change === 'link') && s.enabled === false
   const name = clampLabel(s.name, 60)
   return (
     <div className="mcp-prop-server" data-testid="mcp-proposal-server" data-server={clampLabel(s.name)} data-change={row.change}>
@@ -98,6 +105,7 @@ function ServerRow({
         </Badge>
         <strong>{upsertAction(s, scope)}</strong>
         {scope === 'project' && s.projectOnly && !s.libraryId && <Badge tone="neutral">Project only</Badge>}
+        {off && <Badge tone="neutral">Off</Badge>}
         {pin === 'pinned' && (
           <Badge tone="success" icon={Check}>
             Pinned
@@ -123,10 +131,10 @@ function ServerRow({
       {source && <div className="mcp-prop-source muted">{source}</div>}
       {target && (
         <div className="mcpi-command">
-          <div className="code-block" data-testid="mcp-proposal-command" title={target}>
+          <div className="code-block" data-testid="mcp-proposal-command">
             {target}
           </div>
-          <CopyButton text={target} label={`${s.transport === 'stdio' ? 'Copy command' : 'Copy URL'} for ${name}`} />
+          <CopyButton text={target} label={`${s.transport === 'stdio' ? 'Copy command' : 'Copy URL'} for ${name}${hidden ? ' (hidden characters escaped)' : ''}`} />
         </div>
       )}
       {changes.length > 0 && (
@@ -137,7 +145,9 @@ function ServerRow({
         </ul>
       )}
       <ul className="mcp-prop-effects">
-        <li>{effectLine(s)}</li>
+        {switches && <li data-testid="mcp-proposal-toggle">{switches}</li>}
+        {(row.change === 'new' || row.change === 'link') && <li>{newEffectLine(s)}</li>}
+        {row.change === 'update' && <li>{effectLine(s)}</li>}
         {who && <li>Who can use it: {who}</li>}
         {secretNames.length > 0 && (
           <li>
@@ -145,8 +155,8 @@ function ServerRow({
           </li>
         )}
       </ul>
-      {slots.map(({ index, slot }) => (
-        <SecretField key={index} slot={slot} value={secretValues[index] ?? ''} onChange={(v) => setSecret(index, v)} />
+      {shownSlots.map(({ index, slot }) => (
+        <SecretField key={index} slot={slot} forServer={name} value={secretValues[index] ?? ''} onChange={(v) => setSecret(index, v)} />
       ))}
     </div>
   )
@@ -179,8 +189,13 @@ export function McpProposalBody({
   }
   const diff = diffMcpProposal(payload, current.servers, roles)
   const unique = uniqueSecretSlots(payload)
-  const rowIds = new Set(diff.rows.map((r) => r.server.id))
-  const orphans = unique.filter((x) => !rowIds.has(x.slot.serverId))
+  const shown = (x: { slot: McpSecretSlot }): boolean => {
+    const row = diff.rows.find((d) => d.server.id === x.slot.serverId)
+    if (!row) return false
+    const lib = current.library?.find((e) => e.id === row.server.libraryId) ?? null
+    return secretSlotNames(row.server.libraryId && !row.server.command && !row.server.url && lib ? lib : row.server).includes(x.slot.name)
+  }
+  const ignored = unique.filter((x) => !shown(x)).length
   const unchangedNames = [...(diff.untouched ?? []), ...diff.same]
   const readError = current.failed.library ? 'Could not read your library; changes may show as new.' : current.failed.servers ? 'Could not read this project’s servers; changes may show as new.' : null
   return (
@@ -228,15 +243,10 @@ export function McpProposalBody({
           )}
         </div>
       ))}
-      {orphans.length > 0 && (
-        <div className="mcp-prop-server" data-testid="mcp-proposal-secrets">
-          <div className="mcp-prop-head">
-            <strong>Secrets</strong>
-          </div>
-          {orphans.map(({ index, slot }) => (
-            <SecretField key={index} slot={slot} forServer={clampLabel(slot.serverId, 40)} value={secretValues[index] ?? ''} onChange={(v) => setSecret(index, v)} />
-          ))}
-        </div>
+      {ignored > 0 && (
+        <p className="muted" data-testid="mcp-proposal-secrets-ignored">
+          {ignored} secret {ignored === 1 ? 'slot' : 'slots'} for servers not in this proposal {ignored === 1 ? 'was' : 'were'} ignored.
+        </p>
       )}
       {unchangedNames.length > 0 && (
         <details className="org-diff-unchanged" data-testid="mcp-proposal-unchanged">

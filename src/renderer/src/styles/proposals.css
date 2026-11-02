@@ -108,3 +108,25 @@
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
 }
+
+/* Decline and revise notes: a visible label and a quiet limit hint. */
+.proposal-note-label {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-1);
+}
+.proposal-note-hint {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  margin-block-start: var(--space-1);
+}
+.proposal-rule {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}

@@ -59,6 +59,11 @@ interface Props {
   inline?: boolean
   /** Skip moving focus on mount (a card that is only a record, e.g. an answered install). */
   noAutoFocus?: boolean
+  /**
+   * Opens the folded body when its value changes (a mode that puts a field in the body). Ignored outside compact mode,
+   * where the body is always open, and for 0 (the initial value).
+   */
+  expandSignal?: number
   /** A failed answer, shown above the footer so the buttons stay in place. */
   error?: string | null
   testId?: string
@@ -103,7 +108,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
@@ -113,6 +118,9 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
   useEffect(() => {
     if (!frameCompact) setExpanded(false)
   }, [frameCompact])
+  useEffect(() => {
+    if (expandSignal && frameCompact) setExpanded(true)
+  }, [expandSignal, frameCompact])
   const color = useAppStore((st) => {
     const roleId = agentId ? st.runs[runId]?.agents[agentId]?.roleId : undefined
     return roleId ? selectedProject(st)?.roles.find((r) => r.id === roleId)?.color : undefined

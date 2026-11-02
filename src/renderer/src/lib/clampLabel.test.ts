@@ -15,4 +15,7 @@ describe('clampLabel', () => {
     expect(clampLabel('  x\ny ')).toBe('x y')
   })
   it('does not fail on a non-string', () => expect(clampLabel(undefined as unknown as string)).toBe(''))
+  it('replaces the extended hidden set', () => {
+    expect(clampLabel('a\u00adb\u3164c\u{e0041}d')).toBe('a b c d')
+  })
 })
