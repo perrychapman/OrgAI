@@ -958,7 +958,9 @@ export class MockSession implements RuntimeSession {
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
       const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
-      const savedUsable = new Set(withoutServerRules([...saved], installed))
+      // The suggestion shortcut stands in for the CLI's own match of allowedTools and session updates, which never
+      // carry Bash / PowerShell rules (Claude adapter H-A / H1): shell calls are approved only through matchingRule.
+      const savedUsable = new Set(withoutServerRules([...saved], installed).filter((r) => !/^(Bash|PowerShell)(\(|$)/.test(r.trim())))
       const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
       const preApproved =
         (rules.length > 0 && rules.every((r) => savedUsable.has(r))) ||
