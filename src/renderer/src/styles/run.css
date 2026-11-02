@@ -399,7 +399,7 @@
 .composer-notice .link-btn {
   margin-left: var(--space-2);
 }
-/* Cut by OrgAI closing: a warning-tone status row above the field. */
+/* Cut by OrgAI closing: a warning-tone plain-text notice above the field (no live-region role). */
 .composer-notice.cut {
   background: var(--warning-soft);
   border-radius: var(--radius-md);

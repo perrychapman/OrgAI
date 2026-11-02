@@ -623,15 +623,18 @@ try {
   await sleep(1500)
   await endSession(page)
   const tabCount = () => page.locator('.run-tablist [role="tab"]').count()
-  const chainOf = () => page.locator('.run-tablist [role="tab"][aria-selected=true]').first().getAttribute('data-chain')
+  // data-chain sits on the tab's wrapper, not on the [role=tab] button.
+  const chainOf = () => page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-chain')
   const tabsBefore = await tabCount()
   const chainBefore = await chainOf()
+  check(!!chainBefore, 'the selected tab wrapper carries data-chain', String(chainBefore))
   const ta = page.locator('.composer textarea')
   await ta.fill('Chain second turn')
   await ta.press('Enter')
   await sleep(2500)
   check((await tabCount()) === tabsBefore, 'Send on an ended run keeps one tab for the chain', `${tabsBefore} -> ${await tabCount()}`)
-  check((await chainOf()) === chainBefore, 'the same chain tab stays selected after Send')
+  const chainAfter = await chainOf()
+  check(!!chainAfter && chainAfter === chainBefore, 'the same chain tab stays selected after Send', `${chainBefore} -> ${chainAfter}`)
   const divider = page.locator('[data-testid=chain-divider]').first()
   await divider.waitFor({ timeout: 10_000 }).catch(() => {})
   check(/Continued/.test((await divider.innerText().catch(() => '')) || ''), 'the feed shows a Continued divider')
@@ -640,6 +643,35 @@ try {
   check(await page.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && !!document.activeElement.closest('.composer')), 'focus stays in the composer after Send')
   await shot('chain-continued')
   await endSession(page)
+
+  // History lists the chain as one row (two sessions), named by its first turn, and one row per chain overall.
+  const projectId = (await findProject(page, NAME)).id
+  await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
+  const chainRow = page.locator('tr.run-row[data-sessions="2"]')
+  await chainRow.first().waitFor({ timeout: 10_000 })
+  check((await chainRow.count()) === 1, 'History shows the continued chain as one row with data-sessions=2', String(await chainRow.count()))
+  check(/Chain first turn/.test(await chainRow.first().innerText()), 'the chain row is named by its first turn')
+  const chainTotal = await page.evaluate(async (pid) => {
+    const rows = (await window.orgai.runs.list(pid)).filter((r) => r.surface !== 'team')
+    const parent = new Map(rows.map((r) => [r.id, r.id]))
+    const find = (x) => {
+      while (parent.get(x) !== x) x = parent.get(x)
+      return x
+    }
+    const bySession = new Map()
+    for (const r of rows) {
+      if (r.resumedFrom && parent.has(r.resumedFrom)) parent.set(find(r.id), find(r.resumedFrom))
+      if (r.sessionId) {
+        if (bySession.has(r.sessionId)) parent.set(find(r.id), find(bySession.get(r.sessionId)))
+        else bySession.set(r.sessionId, r.id)
+      }
+    }
+    return new Set(rows.map((r) => find(r.id))).size
+  }, projectId)
+  const historyRows = await page.locator('tr.run-row').count()
+  check(historyRows === chainTotal, 'History has one row per chain', `${historyRows} rows, ${chainTotal} chains`)
+  await shot('history-chain')
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
 
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
@@ -680,21 +712,52 @@ try {
   await startOnPage('Cut by quitting')
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
   await sleep(1500)
+  // Open tabs: the remembered chains (localStorage) and every tab on the strip, visible or behind "+n".
+  const rememberedTabs = () => page.evaluate((k) => (JSON.parse(localStorage.getItem(k) || '{"chains":[]}').chains || []).slice().sort(), `orgai.openTabs.${projectId}`)
+  const tabTotal = async () => {
+    const wraps = await page.locator('.run-tablist .run-tab-wrap:not([data-run="new"])').count()
+    const more = page.locator('.run-tab-more')
+    const extra = (await more.count()) ? Number(((await more.innerText()).match(/\d+/) || ['0'])[0]) : 0
+    return wraps + extra
+  }
+  const tabsBeforeQuit = await rememberedTabs()
+  const totalBeforeQuit = await tabTotal()
+  check(tabsBeforeQuit.length > 0, 'open tabs are remembered before quitting', JSON.stringify(tabsBeforeQuit))
   ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'runs-relaunch' }))
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   const cut = page.locator('.run-tablist [role="tab"]', { hasText: 'Cut by quitting' }).first()
-  await cut.waitFor({ timeout: 15_000 }).catch(() => {})
-  await cut.click().catch(() => {})
-  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await cut.waitFor({ timeout: 15_000 })
+  let totalAfter = await tabTotal()
+  for (let i = 0; i < 20 && totalAfter !== totalBeforeQuit; i++) {
+    await sleep(500)
+    totalAfter = await tabTotal()
+  }
+  check(totalAfter === totalBeforeQuit, 'the open tabs come back after relaunch', `${totalBeforeQuit} -> ${totalAfter}`)
+  const tabsAfterQuit = await rememberedTabs()
+  check(JSON.stringify(tabsAfterQuit) === JSON.stringify(tabsBeforeQuit), 'the remembered tab set is unchanged by the relaunch', `${JSON.stringify(tabsBeforeQuit)} -> ${JSON.stringify(tabsAfterQuit)}`)
+  await cut.click()
+  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: 10_000 })
+  check((await page.locator('.react-flow__node', { hasText: /Thinking/ }).count()) === 0, 'no agent node shows Thinking… after the relaunch')
   check((await page.locator('[data-testid=composer-cut-notice]').count()) === 1, 'a run cut by closing OrgAI shows the cut notice in its composer')
   check(/Ended when OrgAI closed/.test((await cut.getAttribute('aria-label').catch(() => '')) + (await cut.innerText().catch(() => '')) + (await cut.getAttribute('title').catch(() => ''))), 'the tab reads Ended when OrgAI closed')
+  // History reads the cut run the same way.
+  await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
+  const cutRow = page.locator('tr.run-row', { hasText: 'Cut by quitting' }).first()
+  await cutRow.waitFor({ timeout: 10_000 })
+  const cutRowText = (await cutRow.innerText()) + ' ' + (await cutRow.locator('[title]').evaluateAll((els) => els.map((e) => e.getAttribute('title') || '').join(' ')))
+  check(/Ended when OrgAI closed/.test(cutRowText), 'the History row of the cut run reads Ended when OrgAI closed', cutRowText.replace(/\s+/g, ' ').slice(0, 300))
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
+  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: 10_000 })
   const cutTabs = await page.locator('.run-tablist [role="tab"]').count()
   await page.locator('.composer textarea').fill('Pick it up')
   await page.locator('.composer textarea').press('Enter')
   await sleep(2500)
   check((await page.locator('.run-tablist [role="tab"]').count()) === cutTabs, 'Send after relaunch continues in the same tab')
+  const cutDivider = page.locator('[data-testid=chain-divider]', { hasText: 'Continued after OrgAI closed' }).first()
+  await cutDivider.waitFor({ timeout: 10_000 })
+  check((await cutDivider.count()) === 1, 'the feed shows "Continued after OrgAI closed" after the relaunch continue')
   await shot('relaunch-continued')
   await endSession(page)
 } catch (e) {

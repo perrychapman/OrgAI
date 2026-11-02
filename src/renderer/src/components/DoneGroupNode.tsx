@@ -48,8 +48,17 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
         {conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
         <Cost value={cost} hideEmpty className="done-cost" />
       </div>
-      <span className="done-expand" onClick={(e) => e.stopPropagation()}>
-        <IconButton icon={ChevronDown} size="sm" label={earlier ? "Show these agents on the chart" : "Show these reports on the chart"} onClick={() => onToggle(parentId)} />
+      <span className="done-expand">
+        <IconButton
+          icon={ChevronDown}
+          size="sm"
+          label={earlier && label ? `Show ${label} on the chart` : 'Show these reports on the chart'}
+          onClick={(e) => {
+            // The click expands the group; it must not also select the node.
+            e.stopPropagation()
+            onToggle(parentId)
+          }}
+        />
       </span>
     </div>
   )

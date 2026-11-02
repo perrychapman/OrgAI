@@ -93,6 +93,19 @@
   height: 1px;
   background: var(--border-subtle);
 }
+/* Top of a chain's merged feed: earlier entries cut by the feed cap, and the button that loads earlier sessions. */
+.chain-omitted {
+  margin: var(--space-2) 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  text-align: center;
+}
+.chain-load-earlier {
+  display: flex;
+  justify-content: center;
+  margin: var(--space-1) 0 var(--space-2);
+}
 /* Compact one-line rows: tool calls, tool results and harness lines. */
 .entry.tool_use,
 .entry.tool_result,

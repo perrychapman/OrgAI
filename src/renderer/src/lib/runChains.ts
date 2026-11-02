@@ -38,26 +38,54 @@ export function chainOf<T extends ChainSummary>(runs: readonly T[], id: string):
 /** How many fetch rounds `loadChain` walks back along `resumedFrom` before it stops. */
 export const CHAIN_WALK_MAX_HOPS = 50
 
+/** How many of a chain's newest members a chain load fetches before the user asks for earlier ones ("Load earlier sessions"). */
+export const CHAIN_EAGER_MEMBERS = 10
+
+/** How many run records a chain load fetches at once. */
+export const CHAIN_FETCH_CONCURRENCY = 4
+
 /**
- * The run ids a chain load should fetch next: the known chain members (the run alone when it is unknown) and every
- * `resumedFrom` target of those members, minus `skip` (already fetched or tried). Empty means the walk is done.
+ * The run ids a chain load should fetch next: the newest `limit` known chain members (the run alone when it is
+ * unknown) and, while that window is not full, every unknown `resumedFrom` target of them, minus `skip` (already
+ * fetched or tried). Empty means the walk is done.
  */
-export function chainIdsToLoad<T extends ChainSummary>(runs: readonly T[], id: string, skip: ReadonlySet<string>): string[] {
+export function chainIdsToLoad<T extends ChainSummary>(runs: readonly T[], id: string, skip: ReadonlySet<string>, limit: number = CHAIN_EAGER_MEMBERS): string[] {
   const members = chainOf(runs, id)
+  const known = new Set(members.map((m) => m.id))
+  const window = members.length > 0 ? members.slice(-Math.max(1, limit)) : [{ id } as ChainSummary]
   const out = new Set<string>()
-  for (const m of members.length > 0 ? members : [{ id } as ChainSummary]) {
+  // The viewed run is always loaded, even when it is not among the newest members.
+  out.add(id)
+  for (const m of window) {
     out.add(m.id)
-    if (m.resumedFrom) out.add(m.resumedFrom)
+    if (m.resumedFrom && !known.has(m.resumedFrom) && window.length < limit) out.add(m.resumedFrom)
   }
   return [...out].filter((x) => !skip.has(x))
+}
+
+/** How many known chain members are older than the eager window `limit` and not loaded yet (the "Load earlier sessions" count). */
+export function earlierMembersToLoad<T extends ChainSummary>(chain: readonly T[], loaded: (id: string) => boolean, limit: number): number {
+  return chain.slice(0, Math.max(0, chain.length - limit)).filter((m) => !loaded(m.id)).length
+}
+
+/** Runs `fn` over `items` with at most `size` calls in flight at once; resolves when all settled (rejections are swallowed). */
+export async function runBatched<T>(items: readonly T[], size: number, fn: (item: T) => Promise<unknown>): Promise<void> {
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const item = items[next++]
+      await fn(item).catch(() => undefined)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, size), items.length) }, worker))
 }
 
 const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['finished', 'error', 'paused'])
 const END_FIELDS = ['endedBy', 'endedWhile', 'endedWithApp', 'endedAt', 'error'] as const
 
 /**
- * A live run's summary lacks how it ended (run.status events carry no `endedBy`). When the persisted `row` has those
- * fields and the run is terminal, returns the summary with them adopted; null when nothing differs. A live status
+ * A live run's summary may lack how it ended (older main processes send run.status without `endedBy`, and `error`,
+ * `endedWithApp` come only from the record). When the persisted `row` has those fields and the run is terminal, returns the summary with them adopted; null when nothing differs. A live status
  * never adopts: main sets `endedBy` while the status is still 'stopping'.
  */
 export function adoptEndFacts(summary: RunSummary, row: Partial<RunSummary>): RunSummary | null {
@@ -69,6 +97,16 @@ export function adoptEndFacts(summary: RunSummary, row: Partial<RunSummary>): Ru
     next = { ...(next ?? summary), [f]: v }
   }
   return next
+}
+
+/**
+ * The end facts a run.status event carries (`endedBy`, `endedWhile`): taken on 'finished' / 'error', and on 'stopping'
+ * only when `endedBy` is 'user' (End session). Other statuses, or an event without them, give {}.
+ */
+export function statusEventEndFacts(e: { status: RunStatus; endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' }): { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' } {
+  const terminal = e.status === 'finished' || e.status === 'error'
+  if (!terminal && !(e.status === 'stopping' && e.endedBy === 'user')) return {}
+  return { ...(e.endedBy ? { endedBy: e.endedBy } : {}), ...(terminal && e.endedWhile ? { endedWhile: e.endedWhile } : {}) }
 }
 
 /** The chain's newest member. */
@@ -268,7 +306,7 @@ export interface EndedComposerCopy {
   /** The mode line above the field. */
   modeLabel: string
   placeholder: string
-  /** A warning-tone role=status notice above the field (cut by OrgAI closing). */
+  /** A warning-tone notice above the field, plain text (cut by OrgAI closing). */
   notice?: string
 }
 
@@ -280,18 +318,19 @@ const clipReason = (s: string): string => {
 /**
  * Copy for an ended run's composer. `continuable` is canContinue (newest member, a session id, ended). `cutWhile` is
  * lib/runStatus cutWhile of the record as loaded (before settling); 'working' when unknown (a clean quit settles
- * the agents before saving, so only a crash leaves the trace).
+ * the agents before saving, so only a crash leaves the trace). `errorShown`: the view's danger Banner shows the error.
  */
 export function endedComposerCopy(
   summary: EndSummary & Pick<RunSummary, 'status'>,
-  opts: { continuable: boolean; cutWhile?: 'working' | 'waiting'; now?: number }
+  opts: { continuable: boolean; cutWhile?: 'working' | 'waiting'; now?: number; errorShown?: boolean }
 ): EndedComposerCopy {
   if (!opts.continuable) return { mode: 'new', modeLabel: 'This run cannot be continued (no saved session).', placeholder: 'Describe the task' }
   const now = opts.now ?? Date.now()
   const placeholder = 'Message the orchestrator'
   const ended = `Session ended ${relativeTime(lastActivityAt(summary), now)}. Send to continue with its memory.`
   if (summary.status === 'error') {
-    const reason = clipReason(summary.error ?? '')
+    // The danger Banner above already says why (L4): the mode line then leaves the reason out.
+    const reason = opts.errorShown ? '' : clipReason(summary.error ?? '')
     return { mode: 'continue', modeLabel: `This run failed${reason ? `: ${reason}` : ''}. Send to try again with its memory.`, placeholder }
   }
   if (cutByApp(summary)) {

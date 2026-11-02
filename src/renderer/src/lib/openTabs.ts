@@ -73,3 +73,14 @@ export function tabsSignature(runs: readonly TabsRunFacts[], dismissed: readonly
   const rows = runs.map((r) => `${r.id}|${r.resumedFrom ?? ''}|${r.sessionId ?? ''}|${LIVE_STATUS.has(r.status) ? 'o' : 'e'}`).sort()
   return `${rows.join(';')}#${[...dismissed].sort().join(',')}#${viewed ?? ''}#${draft ? 1 : 0}`
 }
+
+/**
+ * True when two `runs` maps hold the same runs with the same summary objects: only transcripts, partial text, agents
+ * or cards changed (L13), which never changes the tab set.
+ */
+export function sameRunSummaries(a: Record<string, { summary: unknown }>, b: Record<string, { summary: unknown }>): boolean {
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  for (const k of keys) if (a[k].summary !== b[k]?.summary) return false
+  return true
+}

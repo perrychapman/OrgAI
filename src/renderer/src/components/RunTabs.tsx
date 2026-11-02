@@ -150,7 +150,8 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     // Untrusted text in a tooltip: capped. The full prompt lives only in the transcript.
     const full = shortPrompt(first.prompt, PROMPT_TIP_CHARS)
     const sessions = item.sessions > 1 ? `${item.sessions} sessions` : ''
-    const hasDraft = draftKeys.includes(run.summary.id)
+    // The composer draft is kept per conversation (chain key), like the tab.
+    const hasDraft = draftKeys.includes(item.key)
     const unread = unreadByRun[run.summary.id] ?? 0
     return {
       tag,

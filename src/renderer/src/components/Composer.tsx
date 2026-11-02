@@ -14,7 +14,7 @@ import { composerPlaceholder } from '../lib/assistants'
 const HINT = 'Enter to send · Shift+Enter for a new line · paste or drop images'
 
 interface Props {
-  /** Key of the draft in the store: a run id, or newRunDraftKey(projectId). */
+  /** Key of the draft in the store: a run's chain key (one draft per conversation), or newRunDraftKey(projectId). */
   draftKey: string
   /** Says what the primary button does ("Replying to Orchestrator", "New run: 2 open runs keep going"). */
   modeLabel: string

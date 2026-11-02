@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
@@ -39,7 +39,7 @@ import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
-import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -58,6 +58,8 @@ interface Props {
   variant?: 'panel' | 'conversation'
   /** The chain's first member: its index is the header tag (the conversation keeps one name). Defaults to `runId`. */
   tagRunId?: string
+  /** Shown above the feed (the chain's "Load earlier sessions" row); only with `feed`. */
+  lead?: ReactNode
 }
 
 const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
@@ -227,7 +229,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
   return { hidden, body }
 }
 
-export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -262,6 +264,13 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const visible = entries.filter(shown)
 
   const rows = items.map((item) => {
+    if (item.kind === 'omitted') {
+      return (
+        <p key="feed-omitted" className="chain-omitted" data-testid="chain-omitted">
+          {omittedLabel(item.count)}
+        </p>
+      )
+    }
     if (item.kind === 'divider') {
       return (
         <div key={`divider-${item.divider.runId}`} className="chain-divider" data-testid="chain-divider" data-run={item.divider.runId} title={item.divider.title}>
@@ -379,6 +388,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             setAway(!atEnd)
           }}
         >
+          {feed && lead}
           {splitAt > 0 && <div className="conversation-earlier">{earlierRows}</div>}
           <div className="conversation-newest" role="log" aria-label="Conversation">
             {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
@@ -467,6 +477,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+          {feed && lead}
           {rows}
           {agent && partial && (
             <div className="entry text streaming">

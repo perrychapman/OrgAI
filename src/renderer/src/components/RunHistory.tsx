@@ -6,7 +6,7 @@ import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/t
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
 import { runCostInput, sumCosts } from '../lib/cost'
-import { canContinue, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
+import { canContinueIn, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
 import { promptLine, runName, runTag, shortPrompt } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
@@ -136,7 +136,6 @@ export default function RunHistory(): ReactElement {
                   group={g}
                   indexes={indexes}
                   viewed={viewedKey === g.key}
-                  summaries={summaries}
                   isExpanded={!!expanded[g.key]}
                   onToggle={() => setExpanded((e) => ({ ...e, [g.key]: !e[g.key] }))}
                   onOpen={(id) => void openRun(id)}
@@ -159,7 +158,6 @@ function HistoryChain({
   group,
   indexes,
   viewed,
-  summaries,
   isExpanded,
   onToggle,
   onOpen,
@@ -171,7 +169,6 @@ function HistoryChain({
   group: ChainGroup<RunSummary>
   indexes: Map<string, number>
   viewed: boolean
-  summaries: RunSummary[]
   isExpanded: boolean
   onToggle: () => void
   onOpen: (id: string) => void
@@ -195,7 +192,7 @@ function HistoryChain({
       <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions}>
         <td className="col-prompt">
           <div className="run-head">
-            {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={members.map((m) => memberRowId(m.id)).join(' ')} onClick={onToggle} testId="history-sessions-toggle" />}
+            {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={isExpanded ? members.map((m) => memberRowId(m.id)).join(' ') : undefined} onClick={onToggle} testId="history-sessions-toggle" />}
             <div className="run-head-text">
               {first.title ? (
                 <>
@@ -249,7 +246,7 @@ function HistoryChain({
                 Open in Live
               </Badge>
             )}
-            {canContinue(summaries, newest.id) && (
+            {canContinueIn(members, newest.id) && (
               <Button size="sm" variant="secondary" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
                 Continue
               </Button>

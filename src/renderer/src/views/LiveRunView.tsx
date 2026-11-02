@@ -38,7 +38,7 @@ import RunMeta from '../components/RunMeta'
 import { useCssVar } from '../lib/useCssVar'
 import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
-import { canContinueIn, chainKeyOf, chainOf, continuedByIn, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
+import { CHAIN_EAGER_MEMBERS, canContinueIn, chainKeyOf, chainOf, continuedByIn, earlierMembersToLoad, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
 import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
@@ -223,6 +223,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const historyLoaded = useAppStore((s) => s.historyByProject[project.id] !== undefined)
   const continueIntent = useAppStore((s) => s.continueIntent === chainIds[0])
   const loadChain = useAppStore((s) => s.loadChain)
+  const loadEarlierSessions = useAppStore((s) => s.loadEarlierSessions)
+  // M2: only the newest members load at first; the rest wait behind "Load earlier sessions" at the top of the feed.
+  const chainLimit = useAppStore((s) => s.chainLoadLimit[chainIds[chainIds.length - 1]] ?? CHAIN_EAGER_MEMBERS)
+  const earlierToLoad = useMemo(() => earlierMembersToLoad(chainSummaries, (id) => !!allRuns[id], chainLimit), [chainSummaries, allRuns, chainLimit])
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
   const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
@@ -524,7 +529,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // conversation; a run with no saved session can only start a new run. An assistant (virtual project) that cannot
   // continue is over and a new session starts from the start page.
   const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue ? 'continue' : 'new'
-  const endedCopy = sendMode === 'reply' ? undefined : endedComposerCopy(run.summary, { continuable: canContinue, cutWhile: run.cutWhile })
+  // L4: the danger Banner names the error, so the mode line does not repeat it.
+  const endedCopy = sendMode === 'reply' ? undefined : endedComposerCopy(run.summary, { continuable: canContinue, cutWhile: run.cutWhile, errorShown: !!run.summary.error })
   const openCardCount = (run.ruleRequests?.length ?? 0) + (run.questions?.length ?? 0) + run.proposals.length + (run.mergeReviews?.length ?? 0) + run.permissions.length + (run.mcpInstalls?.length ?? 0)
   const modeLabel =
     sendMode === 'reply'
@@ -689,6 +695,24 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return run.transcript.filter((e) => e.agentId === selectedAgentId)
   }, [run.transcript, upto, chain.origin, selectedAgentId])
   const rootSelected = !!selectedAgent && selectedAgent.parentId === null
+  const loadEarlierRow =
+    earlierToLoad > 0 ? (
+      <div className="chain-load-earlier">
+        <Button
+          variant="ghost"
+          size="sm"
+          testId="chain-load-earlier"
+          onClick={() => {
+            // Never disabled while loading: a disabled button would drop keyboard focus.
+            if (loadingEarlier) return
+            setLoadingEarlier(true)
+            void loadEarlierSessions(runId).finally(() => setLoadingEarlier(false))
+          }}
+        >
+          {loadingEarlier ? 'Loading earlier sessions…' : `Load earlier sessions (${earlierToLoad})`}
+        </Button>
+      </div>
+    ) : null
   // A new chain member to show (after Send, End session, History): clear the request when it has no divider to scroll to.
   useEffect(() => {
     if (!chainFocusRun) return undefined
@@ -818,7 +842,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
-            <RunMeta run={run} project={project} agentCount={agents.length} />
+            <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
             <div className="frame-toolbar-end">
               {!conversation && (agents.length > 1 || chain.earlier.length > 0) && (
                 <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
@@ -843,7 +867,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className="conversation-stage" data-testid="run-conversation">
-                <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} logs={[]} />
+                <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} />
               </div>
             ) : (
             <ReactFlow
@@ -901,7 +925,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             <div className="composer-notice info">
               This conversation continues in {runName(newestRun)}.
             </div>
-            <Button variant="primary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id).then(() => focusComposer())}>
+            <Button variant="secondary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id).then(() => focusComposer())}>
               Go to latest
             </Button>
           </div>
@@ -921,7 +945,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           </div>
         ) : (
         <Composer
-          draftKey={runId}
+          draftKey={chainIds[chainIds.length - 1]}
           modeLabel={modeLabel}
           primaryLabel={primaryLabel}
           placeholder={placeholder}
@@ -968,6 +992,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
               entries={selectedAgent && !rootSelected ? entries : []}
               feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}
+              lead={loadEarlierRow}
               logs={run.logs ?? []}
               finished={finishedGroup}
             />

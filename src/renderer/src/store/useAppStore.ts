@@ -6,9 +6,9 @@ import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
-import { adoptEndFacts, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainOf, needsYou, type ChainGroup } from '../lib/runChains'
+import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
-import { readOpenTabs, tabsSignature, writeOpenTabs } from '../lib/openTabs'
+import { readOpenTabs, sameRunSummaries, tabsSignature, writeOpenTabs } from '../lib/openTabs'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
 import { cleanIpcError } from '../lib/ipcError'
@@ -219,6 +219,10 @@ interface AppState {
   chainFocusRun: string | null
   /** Load the records of `runId`'s chain members that are not in `runs` yet (lazy, cached, one fetch per id in flight). */
   loadChain(runId: string): Promise<void>
+  /** How many of a chain's newest members load (chain key -> count); missing means CHAIN_EAGER_MEMBERS. */
+  chainLoadLimit: Record<string, number>
+  /** "Load earlier sessions": widen the chain's load window by CHAIN_EAGER_MEMBERS and load the next batch. */
+  loadEarlierSessions(runId: string): Promise<void>
   /** Run whose composer should open on "Continue this run" (set by History's Continue). */
   continueIntent: string | null
   /** Open a finished run with its composer preset to Continue, and focus the composer. */
@@ -475,8 +479,8 @@ function tabRunsOf(s: AppState, projectId: string): RunState[] {
 // ---------- Chain loading and open-tab restore (docs/design/ux-review-continue.md H1, M2) ----------
 
 /**
- * Live-ended runs carry no endedBy / endedWhile / error (the run.status event has none): the persisted rows do. A
- * terminal run adopts them; a live one never does. Returns a `runs` patch, or {} when nothing differs.
+ * The run.status event carries endedBy / endedWhile (statusEventEndFacts) but not every end fact (error text, a record
+ * from an older main process): the persisted rows do. A terminal run adopts them as a fallback; a live one never does. Returns a `runs` patch, or {} when nothing differs.
  */
 function adoptRowsPatch(s: AppState, rows: readonly RunSummary[]): Partial<AppState> {
   let runs: Record<string, RunState> | null = null as Record<string, RunState> | null
@@ -490,7 +494,7 @@ function adoptRowsPatch(s: AppState, rows: readonly RunSummary[]): Partial<AppSt
   return runs ? { runs } : {}
 }
 
-/** One delayed history reload per project after a run ends, so its end facts arrive (events carry none). */
+/** One delayed history reload per project after a run ends, so the end facts events do not carry arrive. */
 const endReloads = new Map<string, ReturnType<typeof setTimeout>>()
 function reloadHistoryAfterEnd(projectId: string): void {
   if (!projectId || endReloads.has(projectId)) return
@@ -548,7 +552,7 @@ function restoreOpenTabs(projectId: string): Promise<string | undefined> {
     const sums = summariesOf(useAppStore.getState(), projectId)
     const newestOfKey = (key: string): string | undefined => chainOf(sums, key).at(-1)?.id
     const ids = remembered.chains.map(newestOfKey).filter((id): id is string => !!id)
-    await Promise.all(ids.map((id) => fetchRun(id)))
+    await runBatched(ids, CHAIN_FETCH_CONCURRENCY, fetchRun)
     return remembered.viewed ? newestOfKey(remembered.viewed) : undefined
   })()
   restoredTabs.set(projectId, p)
@@ -562,7 +566,8 @@ function watchOpenTabs(): void {
   const written = new Map<string, string>()
   const signatures = new Map<string, string>()
   tabsWatch = useAppStore.subscribe((s, prev) => {
-    if (s.runs === prev.runs && s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject) return
+    const othersSame = s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject
+    if (othersSame && (s.runs === prev.runs || sameRunSummaries(s.runs, prev.runs))) return
     for (const [projectId, state] of restoreDone) {
       if (!state || isVirtualProjectId(projectId)) continue
       // Streamed events change `runs` constantly; rebuild the chains only when something that decides the tabs changed.
@@ -684,13 +689,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   async loadChain(runId) {
     const projectId = get().runs[runId]?.summary.projectId || get().selectedProjectId || ''
     // Walk back along resumedFrom: each fetched record can name an earlier member the summaries did not know yet.
+    // Only the newest members load eagerly (M2); earlier ones wait for "Load earlier sessions". Fetches go out in small batches.
     const tried = new Set<string>()
     for (let hop = 0; hop < CHAIN_WALK_MAX_HOPS; hop++) {
-      const ids = chainIdsToLoad(summariesOf(get(), projectId), runId, tried)
+      const sums = summariesOf(get(), projectId)
+      const limit = get().chainLoadLimit[chainKeyOf(sums, runId)] ?? CHAIN_EAGER_MEMBERS
+      const ids = chainIdsToLoad(sums, runId, tried, limit)
       if (ids.length === 0) break
       for (const id of ids) tried.add(id)
-      await Promise.all(ids.map((id) => fetchRun(id)))
+      await runBatched(ids, CHAIN_FETCH_CONCURRENCY, fetchRun)
     }
+  },
+  chainLoadLimit: {},
+  async loadEarlierSessions(runId) {
+    const projectId = get().runs[runId]?.summary.projectId || get().selectedProjectId || ''
+    const key = chainKeyOf(summariesOf(get(), projectId), runId)
+    set((s) => ({ chainLoadLimit: { ...s.chainLoadLimit, [key]: (s.chainLoadLimit[key] ?? CHAIN_EAGER_MEMBERS) + CHAIN_EAGER_MEMBERS } }))
+    await get().loadChain(runId)
   },
   historyByProject: {},
   usage: null,
@@ -897,6 +912,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const newest = chainOf(summariesOf(s, s.selectedProjectId ?? ''), runId).at(-1)?.id ?? runId
     set({ continueIntent: newest })
     await get().openRun(runId)
+    // L6: openRun can return early (a newer click, an unknown run); a stale intent must not fire on a later open.
+    const after = get()
+    const shown = after.selectedProjectId ? after.activeRunByProject[after.selectedProjectId] : undefined
+    const showsChain = !!shown && chainOf(summariesOf(after, after.selectedProjectId ?? ''), newest).some((m) => m.id === shown)
+    if (!showsChain) {
+      set((st) => (st.continueIntent === newest ? { continueIntent: null } : {}))
+      return
+    }
     get().focusComposer()
   },
 
@@ -1296,9 +1319,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async stopRun() {
     const run = activeRun(get())
-    if (run) await window.orgai.runs.stop(run.summary.id)
-    // M3: End session must not strand focus; the composer takes it back.
-    get().focusComposer()
+    try {
+      if (run) await window.orgai.runs.stop(run.summary.id)
+    } finally {
+      // M3: End session must not strand focus; the composer takes it back, also when the stop call fails.
+      get().focusComposer()
+    }
   },
 
   async decide(requestId, decision) {
@@ -1453,7 +1479,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             endedAt: e.status === 'finished' || e.status === 'error' || e.status === 'paused' ? Date.now() : run.summary.endedAt,
             pausedUntil: e.pausedUntil ?? run.summary.pausedUntil,
             pauseReason: e.pauseReason ?? run.summary.pauseReason,
-            autoResume: e.autoResume ?? run.summary.autoResume
+            autoResume: e.autoResume ?? run.summary.autoResume,
+            // How it ended, right away (the status word after End session); adoptEndFacts stays the fallback for older events.
+            ...statusEventEndFacts(e as typeof e & { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' })
           }
           // A run that ended or paused has no open decisions: main cancels them, and no card keeps live-looking buttons (H4).
           if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') {
@@ -1615,6 +1643,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().loadVirtualProject(projectId)
     } else if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    // L7: the chain key comes from the project's summaries; with History in first the view mounts once under its final key.
+    if (get().historyByProject[projectId] === undefined) await get().loadHistory().catch(() => undefined)
     if (!get().runs[runId]) {
       const record = await window.orgai.runs.get(runId).catch(() => null)
       if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
