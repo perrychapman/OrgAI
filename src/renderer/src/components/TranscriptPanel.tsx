@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
@@ -39,7 +39,7 @@ import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
-import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -58,6 +58,8 @@ interface Props {
   variant?: 'panel' | 'conversation'
   /** The chain's first member: its index is the header tag (the conversation keeps one name). Defaults to `runId`. */
   tagRunId?: string
+  /** Shown above the feed (the chain's "Load earlier sessions" row); only with `feed`. */
+  lead?: ReactNode
 }
 
 const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
@@ -227,7 +229,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
   return { hidden, body }
 }
 
-export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -243,12 +245,14 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   // One list for both shapes: the merged feed, or this run's entries as feed items.
   const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
   const entries = useMemo(() => items.flatMap((i) => (i.kind === 'entry' ? [i.entry] : [])), [items])
+  const lastEntryId = entries[entries.length - 1]?.id
 
   useEffect(() => {
     // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
     const body = bottom.current?.parentElement
     if (body) body.scrollTop = body.scrollHeight
-  }, [entries.length, logs.length, tab, partial])
+    // Keyed by the last entry, not the count: entries prepended by "Load earlier sessions" must not jump to the end.
+  }, [lastEntryId, logs.length, tab, partial])
 
   const toolNames = useMemo(() => {
     const m = new Map<string, string>()
@@ -262,6 +266,13 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const visible = entries.filter(shown)
 
   const rows = items.map((item) => {
+    if (item.kind === 'omitted') {
+      return (
+        <p key="feed-omitted" className="chain-omitted" data-testid="chain-omitted">
+          {omittedLabel(item.count)}
+        </p>
+      )
+    }
     if (item.kind === 'divider') {
       return (
         <div key={`divider-${item.divider.runId}`} className="chain-divider" data-testid="chain-divider" data-run={item.divider.runId} title={item.divider.title}>
@@ -328,7 +339,8 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
 
   // The newest member's items are the live region; everything before its divider is history and must not be re-announced when a chain load inserts it.
   const newestAt = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
-  const splitAt = newestAt < 0 ? 0 : newestAt
+  // The "N earlier entries not shown" row never sits in the live log, so its changing count is not re-announced.
+  const splitAt = Math.max(newestAt < 0 ? 0 : newestAt, items[0]?.kind === 'omitted' ? 1 : 0)
   const earlierRows = rows.slice(0, splitAt)
   const newestRows = rows.slice(splitAt)
 
@@ -354,7 +366,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   useEffect(() => {
     const el = listRef.current
     if (variant === 'conversation' && el && stuck.current) el.scrollTop = el.scrollHeight
-  }, [variant, entries.length, partial, showThinking])
+  }, [variant, lastEntryId, partial, showThinking])
 
   if (variant === 'conversation') {
     const toEnd = (): void => {
@@ -379,6 +391,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             setAway(!atEnd)
           }}
         >
+          {feed && lead}
           {splitAt > 0 && <div className="conversation-earlier">{earlierRows}</div>}
           <div className="conversation-newest" role="log" aria-label="Conversation">
             {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
@@ -467,6 +480,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+          {feed && lead}
           {rows}
           {agent && partial && (
             <div className="entry text streaming">

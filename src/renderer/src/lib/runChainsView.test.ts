@@ -56,6 +56,18 @@ describe('gapLabel and continuationDivider', () => {
   })
 })
 
+describe('resumedFrom cycles (L12)', () => {
+  it('groups an a<->b cycle once and terminates', () => {
+    const cyc = [r('a', 100, { resumedFrom: 'b' }), r('b', 200, { resumedFrom: 'a' })]
+    const groups = chainGroups(cyc)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].members.map((m) => m.id)).toEqual(['a', 'b'])
+    expect(groups[0].key).toBe('a')
+    expect(chainKeyOf(cyc, 'a')).toBe('a')
+    expect(chainKeyOf(cyc, 'b')).toBe('a')
+  })
+})
+
 describe('endedComposerCopy', () => {
   const base = { ...r('a', 0), endedAt: 1000 }
   const now = 1000 + 5 * 60_000
@@ -75,6 +87,10 @@ describe('endedComposerCopy', () => {
   it('lets endedWhile from main beat the loaded cutWhile', () => {
     const cut = { ...base, endedBy: 'app' as const, endedWhile: 'waiting' as const }
     expect(endedComposerCopy(cut, { continuable: true, cutWhile: 'working', now }).notice).toMatch(/waiting for you/)
+  })
+  it('leaves the reason out of the mode line while the error Banner shows it (L4)', () => {
+    const c = endedComposerCopy({ ...base, status: 'error', error: 'Rate limit hit.' }, { continuable: true, now, errorShown: true })
+    expect(c.modeLabel).toBe('This run failed. Send to try again with its memory.')
   })
   it('names why a failed run ended', () => {
     const c = endedComposerCopy({ ...base, status: 'error', error: 'Rate limit hit.  Try later.' }, { continuable: true, now })

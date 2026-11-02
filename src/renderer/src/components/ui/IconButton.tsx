@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { MouseEvent, ReactElement } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { Icon } from './Icon'
 
@@ -17,7 +17,7 @@ export function IconButton({
 }: {
   icon: LucideIcon
   label: string
-  onClick?: () => void
+  onClick?: (e: MouseEvent<HTMLButtonElement>) => void
   disabled?: boolean
   size?: 'sm' | 'md'
   /** Sets aria-expanded for disclosure toggles. */

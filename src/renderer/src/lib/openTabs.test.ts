@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { OPEN_TABS_MAX, parseOpenTabs, serializeOpenTabs, tabsSignature } from './openTabs'
+import { OPEN_TABS_MAX, parseOpenTabs, sameRunSummaries, serializeOpenTabs, tabsSignature } from './openTabs'
+
+describe('sameRunSummaries (L13)', () => {
+  it('is true only when every run keeps its summary object', () => {
+    const s1 = { id: 'a' }
+    const s2 = { id: 'b' }
+    const a = { a: { summary: s1, transcript: [1] }, b: { summary: s2 } }
+    const onlyTranscript = { a: { summary: s1, transcript: [] }, b: { summary: s2 } }
+    expect(sameRunSummaries(a, onlyTranscript)).toBe(true)
+    expect(sameRunSummaries(a, { a: { summary: { id: 'a' } }, b: { summary: s2 } })).toBe(false)
+    expect(sameRunSummaries(a, { a: { summary: s1 } })).toBe(false)
+    expect(sameRunSummaries(a, { a: { summary: s1 }, c: { summary: s2 } })).toBe(false)
+  })
+})
 
 describe('openTabs', () => {
   it('reads a stored value back', () => {

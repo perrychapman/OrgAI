@@ -4,7 +4,17 @@ import type { RunSummary, TranscriptEntry } from '@shared/types'
 import { continuationDivider, type ContinuationDivider } from './runChains'
 
 /** One row of a chain's merged feed: an entry of one member, or the divider where a continuation starts. */
-export type FeedItem = { kind: 'entry'; runId: string; entry: TranscriptEntry } | { kind: 'divider'; divider: ContinuationDivider }
+export type FeedItem =
+  | { kind: 'entry'; runId: string; entry: TranscriptEntry }
+  | { kind: 'divider'; divider: ContinuationDivider }
+  /** Leads a capped feed: how many earlier entries were cut (a quiet row, "N earlier entries not shown"). */
+  | { kind: 'omitted'; count: number }
+
+/** The most items a merged chain feed keeps (the newest ones), like the live transcript trim. */
+export const FEED_MAX_ITEMS = 5000
+
+/** "1 earlier entry not shown", "1,234 earlier entries not shown". */
+export const omittedLabel = (n: number): string => `${n.toLocaleString('en-US')} earlier ${n === 1 ? 'entry' : 'entries'} not shown`
 
 /** A chain member as the merged feed needs it. */
 export interface FeedMember {
@@ -35,7 +45,7 @@ function prefixed(runId: string, entry: TranscriptEntry): TranscriptEntry {
  * "Continued from run <id>" row is dropped only among the first few entries of a member that has `resumedFrom`.
  * Entry ids of all but the newest member are prefixed with the run id, so keys never collide across members.
  */
-export function mergeChainFeed(members: readonly FeedMember[]): FeedItem[] {
+export function mergeChainFeed(members: readonly FeedMember[], max: number = FEED_MAX_ITEMS): FeedItem[] {
   const out: FeedItem[] = []
   members.forEach((m, i) => {
     const newest = i === members.length - 1
@@ -45,7 +55,23 @@ export function mergeChainFeed(members: readonly FeedMember[]): FeedItem[] {
       out.push({ kind: 'entry', runId: m.summary.id, entry: newest ? entry : prefixed(m.summary.id, entry) })
     })
   })
-  return out
+  return capFeed(out, members.length > 1 ? members[members.length - 1].summary.id : undefined, max)
+}
+
+/**
+ * Keeps the newest `max` items, led by an 'omitted' row counting the entries cut. The divider of `newestId` (the
+ * newest member) always stays, even when the newest member alone fills the cap.
+ */
+function capFeed(items: FeedItem[], newestId: string | undefined, max: number): FeedItem[] {
+  if (items.length <= max) return items
+  const dividerAt = newestId === undefined ? -1 : items.findIndex((x) => x.kind === 'divider' && x.divider.runId === newestId)
+  let start = items.length - Math.max(1, max)
+  // The newest member's divider would be cut: keep it and give its slot up from the tail's start.
+  const pinDivider = dividerAt >= 0 && dividerAt < start
+  if (pinDivider) start = Math.min(items.length - 1, start + 1)
+  const kept = pinDivider ? [items[dividerAt], ...items.slice(start)] : items.slice(start)
+  const cut = items.slice(0, start).filter((x) => x.kind === 'entry').length
+  return cut > 0 ? [{ kind: 'omitted', count: cut }, ...kept] : kept
 }
 
 export type ToolKind = 'ask' | 'plan' | 'propose' | 'permission' | 'edit' | 'read' | 'run' | 'search' | 'agent' | 'message' | 'other'

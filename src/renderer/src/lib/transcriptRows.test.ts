@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '@shared/types'
-import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, mergeChainFeed, resultSummary } from './transcriptRows'
+import { autoContinueLine, bareToolName, FEED_MAX_ITEMS, humanizeToolResult, humanizeToolUse, mergeChainFeed, omittedLabel, resultSummary } from './transcriptRows'
 
 describe('mergeChainFeed', () => {
   const entry = (id: string, block: TranscriptEntry['block'], source?: 'harness'): TranscriptEntry => ({ id, agentId: 'root', at: 1, block, ...(source ? { source } : {}) }) as TranscriptEntry
@@ -8,6 +8,31 @@ describe('mergeChainFeed', () => {
   const m = (id: string, startedAt: number, resumedFrom: string | undefined, entries: TranscriptEntry[]) => ({
     summary: { id, startedAt, status: 'finished' as const, ...(resumedFrom ? { resumedFrom } : {}), endedAt: startedAt + 1000 },
     entries
+  })
+
+  const texts = (prefix: string, n: number): TranscriptEntry[] => Array.from({ length: n }, (_, i) => entry(`${prefix}${i}`, { kind: 'text', text: `${prefix}${i}` }))
+
+  it('caps the merged feed at the newest items and leads with how many entries were cut', () => {
+    const feed = mergeChainFeed([m('run_1', 0, undefined, texts('a', 8)), m('run_2', 10, 'run_1', texts('b', 3))], 6)
+    expect(feed).toHaveLength(7)
+    expect(feed[0]).toEqual({ kind: 'omitted', count: 6 })
+    // Newest 6 of [a0..a7, divider, b0..b2]: a6, a7, divider, b0, b1, b2.
+    expect(feed.slice(1).map((f) => (f.kind === 'entry' ? f.entry.id : f.kind))).toEqual(['run_1:a6', 'run_1:a7', 'divider', 'b0', 'b1', 'b2'])
+  })
+
+  it('keeps the newest member divider when the newest member alone fills the cap', () => {
+    const feed = mergeChainFeed([m('run_1', 0, undefined, texts('a', 2)), m('run_2', 10, 'run_1', texts('b', 10))], 4)
+    expect(feed[0]).toEqual({ kind: 'omitted', count: 9 })
+    expect(feed.slice(1).map((f) => (f.kind === 'entry' ? f.entry.id : f.kind === 'divider' ? `divider:${f.divider.runId}` : f.kind))).toEqual(['divider:run_2', 'b7', 'b8', 'b9'])
+  })
+
+  it('leaves a feed under the cap untouched and defaults to FEED_MAX_ITEMS', () => {
+    expect(mergeChainFeed([m('run_1', 0, undefined, texts('a', 3))], 3).map((f) => f.kind)).toEqual(['entry', 'entry', 'entry'])
+    const big = mergeChainFeed([m('run_1', 0, undefined, texts('a', FEED_MAX_ITEMS + 5))])
+    expect(big).toHaveLength(FEED_MAX_ITEMS + 1)
+    expect(big[0]).toEqual({ kind: 'omitted', count: 5 })
+    expect(omittedLabel(1)).toBe('1 earlier entry not shown')
+    expect(omittedLabel(1234)).toBe('1,234 earlier entries not shown')
   })
 
   it('puts one divider before each continuation and prefixes older entry ids', () => {
