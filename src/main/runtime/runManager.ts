@@ -941,10 +941,11 @@ export class RunManager {
        * The project as saved after an install or an approved proposal on this run's own project: the canonical path is
        * kept, the harness tools' view (ctx.project) follows, and a work run's skills are recomputed from the new grants.
        */
-      const setLive = (saved: Project): void => {
+      // skills false (an approved org chart, review M1): the card says it applies from the next run, so this run's grants stay.
+      const setLive = (saved: Project, skills = true): void => {
         live = { ...saved, path: live.path }
         ctx.project = live
-        if (!bare && this.options.skills) {
+        if (skills && !bare && this.options.skills) {
           try {
             active.skills = this.options.skills.forRun(live, live.roles) ?? []
           } catch (e) {
@@ -973,7 +974,7 @@ export class RunManager {
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
             // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
-            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved)
+            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved, req.kind !== 'orgChart')
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare

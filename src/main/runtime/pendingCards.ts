@@ -134,7 +134,7 @@ export function cleanProposalDecision(raw: unknown): ProposalDecision {
   const d = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   if (d.behavior === 'approve') {
     const src = d.secrets && typeof d.secrets === 'object' && !Array.isArray(d.secrets) ? (d.secrets as Record<string, unknown>) : undefined
-    const secrets: Record<string, string> = {}
+    const secrets: Record<string, string> = Object.create(null) as Record<string, string>
     for (const [k, v] of Object.entries(src ?? {}).slice(0, PROPOSAL_SECRET_KEYS_MAX)) {
       if (typeof v === 'string' && v && v.length <= SECRET_VALUE_MAX && k.length <= 300) secrets[k] = v
     }

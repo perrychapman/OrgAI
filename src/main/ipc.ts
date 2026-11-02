@@ -864,7 +864,7 @@ export function proposalDecideArgs(input: unknown): { runId: string; proposalId:
     if (!dec.secrets || typeof dec.secrets !== 'object' || Array.isArray(dec.secrets)) throw new Error('Secrets must be name-value pairs.')
     const entries = Object.entries(dec.secrets as Record<string, unknown>)
     if (entries.length > PROPOSAL_SECRETS_MAX) throw new Error(`At most ${PROPOSAL_SECRETS_MAX} secret values.`)
-    const secrets: Record<string, string> = {}
+    const secrets: Record<string, string> = Object.create(null) as Record<string, string>
     for (const [k, v] of entries) {
       if (!k || k.length > PROPOSAL_SECRET_KEY_MAX) throw new Error('Unknown secret slot.')
       if (typeof v !== 'string') throw new Error('A secret value must be text.')

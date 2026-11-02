@@ -1319,7 +1319,7 @@ describe('list_skills / load_skill read ctx.skills() at call time', () => {
   })
 })
 
-describe('org change: slug, grants by name, mergeOrgChart', () => {
+describe('org change: slug, never grants (review H1), mergeOrgChart', () => {
   const proj = () =>
     project({
       mcpServers: [mcpSpec({ id: 'mcp-1', name: 'github' })],
@@ -1329,7 +1329,7 @@ describe('org change: slug, grants by name, mergeOrgChart', () => {
   const orgCall = (ctx: ReturnType<typeof fakeCtx>, roles: unknown[], tool: 'propose_org_change' | 'propose_org_chart' = 'propose_org_change') =>
     byName(tool === 'propose_org_change' ? workTools(ctx) : setupTools(ctx), tool).call({ title: 'T', rationale: 'r', roles })
 
-  it('sets the slug of an existing role, maps server and skill names to ids, merges and sends the merged roles', async () => {
+  it('sets the slug of an existing role, drops any grant fields, merges and sends the merged roles', async () => {
     const ctx = fakeCtx({ project: proj() })
     const marker = [{ id: 'merged-marker' } as never]
     vi.mocked(mergeOrgChart).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
@@ -1338,7 +1338,10 @@ describe('org change: slug, grants by name, mergeOrgChart', () => {
     expect(text).toContain('keep their MCP and skill grants')
     const [existing, converted] = vi.mocked(mergeOrgChart).mock.calls.at(-1)!
     expect(existing).toBe(ctx.project)
-    expect(converted[0]).toMatchObject({ slug: 'lead', name: 'Boss', mcpServers: ['mcp-1'], skills: ['sk-1'] })
+    expect(converted[0]).toMatchObject({ slug: 'lead', name: 'Boss' })
+    // Grant fields on a draft never become grants: the org chart card does not show them.
+    expect(converted[0].mcpServers).toBeUndefined()
+    expect(converted[0].skills).toBeUndefined()
     expect(converted[1].slug).toBe('dev')
     expect(converted[1].mcpServers).toBeUndefined()
     expect(converted[1].skills).toBeUndefined()
@@ -1350,14 +1353,13 @@ describe('org change: slug, grants by name, mergeOrgChart', () => {
     const ctx = fakeCtx({ project: proj() })
     await orgCall(ctx, [roleDraft('Lead', { slug: 'lead', mcpServers: ['github'] })], 'propose_org_chart')
     const [, converted] = vi.mocked(mergeOrgChart).mock.calls.at(-1)!
-    expect(converted[0]).toMatchObject({ slug: 'lead', mcpServers: ['mcp-1'] })
+    expect(converted[0]).toMatchObject({ slug: 'lead' })
+    expect(converted[0].mcpServers).toBeUndefined()
   })
 
-  it('refuses unknown slugs, server names, skill names and duplicate slugs without asking the user', async () => {
+  it('refuses unknown and duplicate slugs without asking the user', async () => {
     const ctx = fakeCtx({ project: proj() })
     expect(await orgCall(ctx, [roleDraft('A', { slug: 'ghost' })])).toMatch(/^REVISE\..*no existing role with slug "ghost"/)
-    expect(await orgCall(ctx, [roleDraft('A', { mcpServers: ['nope'] })])).toMatch(/^REVISE\..*MCP server "nope"/)
-    expect(await orgCall(ctx, [roleDraft('A', { skills: ['nope'] })])).toMatch(/^REVISE\..*skill "nope"/)
     expect(await orgCall(ctx, [roleDraft('A', { slug: 'lead' }), { ...draftRole('B', 'A'), slug: 'lead' }])).toMatch(/^REVISE\..*used by two roles/)
     expect(ctx.requestProposal).not.toHaveBeenCalled()
   })
