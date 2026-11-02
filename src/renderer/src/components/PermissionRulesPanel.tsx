@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { Button } from './ui/Button'
@@ -26,6 +26,25 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
   const inputId = useId()
   const errorId = `${inputId}-error`
   const kindId = `${inputId}-kind`
+  const listRef = useRef<HTMLUListElement>(null)
+
+  /**
+   * Focus to restore once the save settles and controls are enabled again: a remove button index (clamped to the last
+   * row) or null for the rule input. Applied in an effect, so it never lands on a still-disabled button.
+   */
+  const pendingFocus = useRef<number | null | undefined>(undefined)
+  const focusAfter = (index: number | null): void => {
+    pendingFocus.current = index
+  }
+  useEffect(() => {
+    if (busy !== null || pendingFocus.current === undefined) return
+    const index = pendingFocus.current
+    pendingFocus.current = undefined
+    const buttons = listRef.current?.querySelectorAll<HTMLElement>('[data-testid=rule-remove]')
+    const target = index === null || !buttons?.length ? null : buttons[Math.min(index, buttons.length - 1)]
+    if (target) target.focus()
+    else document.getElementById(inputId)?.focus()
+  }, [busy, rules, inputId])
 
   const refresh = useCallback(async () => {
     try {
@@ -43,6 +62,7 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
 
   const check = draft.trim() ? checkRuleDraft(draft) : null
   const add = async (): Promise<void> => {
+    if (busy !== null) return
     const checked = checkRuleDraft(draft)
     if (!checked.ok) {
       setError(checked.reason)
@@ -58,16 +78,22 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
       setError(cleanError(e))
     } finally {
       setBusy(null)
+      // The Add button was disabled while saving; keep the keyboard in the rule input.
+      focusAfter(null)
     }
   }
 
-  const remove = async (rule: string): Promise<void> => {
+  const remove = async (rule: string, index: number): Promise<void> => {
     setBusy(rule)
     setListError(null)
     try {
       setRules(await window.orgai.permissions.remove({ projectId: project.id, rule }))
+      // The row is gone: the next row's Remove (the previous one for the last row), else the rule input.
+      focusAfter(index)
     } catch (e) {
       setListError(cleanError(e))
+      // The row is still there: back to its own Remove button.
+      focusAfter(index)
     } finally {
       setBusy(null)
     }
@@ -87,8 +113,8 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
         ) : rules.length === 0 ? (
           <p className="settings-card-note">No saved rules yet.</p>
         ) : (
-          <ul className="settings-card-list" aria-label="Saved permission rules">
-            {collapseRules(rules).map(({ rule, count }) => {
+          <ul className="settings-card-list" aria-label="Saved permission rules" ref={listRef}>
+            {collapseRules(rules).map(({ rule, count }, index) => {
               const info = ruleInfo(rule)
               return (
                 <li key={rule} className="settings-card-item" data-testid="rule-row" data-rule={rule}>
@@ -106,7 +132,15 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
                     </div>
                     <span className="rule-explain">{info.explain}</span>
                   </div>
-                  <Button size="sm" variant="danger" ariaLabel={`Remove rule ${rule}`} disabled={busy !== null} onClick={() => void remove(rule)}>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    testId="rule-remove"
+                    ariaLabel={busy === rule ? `Removing rule ${rule}` : `Remove rule ${rule}`}
+                    loading={busy === rule}
+                    disabled={busy !== null}
+                    onClick={() => void remove(rule, index)}
+                  >
                     {busy === rule ? 'Removing…' : 'Remove'}
                   </Button>
                 </li>
@@ -127,7 +161,8 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
                 aria-label="New permission rule"
                 mono
                 value={draft}
-                disabled={busy !== null}
+                readOnly={busy !== null}
+                aria-busy={busy !== null || undefined}
                 placeholder="Bash(npm test:*)"
                 spellCheck={false}
                 invalid={!!error}

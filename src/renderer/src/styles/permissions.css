@@ -196,7 +196,7 @@
   padding: 0;
   list-style: none;
 }
-.allowed-folder-notices[hidden] {
+.allowed-folder-notices:empty {
   display: none;
 }
 .allowed-folder-notice {
