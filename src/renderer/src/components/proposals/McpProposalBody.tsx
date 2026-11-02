@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId } from 'react'
-import { useFrameAnnounce } from '../layout/CanvasFrame'
+import { useId } from 'react'
+import { useAnnounceOnce, useFrameAnnounce } from '../layout/CanvasFrame'
 import { Check, Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
 import type { McpServerSpec, McpServersProposalPayload } from '@shared/types'
 import { clampLabel } from '../../lib/clampLabel'
@@ -165,12 +165,15 @@ function ServerRow({
 
 /** The body of an mcpServers proposal: a summary against what the project has, then New, Link, Changed and Remove rows. */
 export function McpProposalBody({
+  proposalId,
   payload,
   current,
   roles,
   secretValues,
   setSecret
 }: {
+  /** Keys the read-error announcement, so a remount does not say it again. */
+  proposalId: string
   payload: Payload
   /** What the card compares against (read through the preload). */
   current: McpCurrent
@@ -181,10 +184,8 @@ export function McpProposalBody({
   const scope = proposalScope(payload)
   const readError = current.failed.library ? 'Could not read your library; changes may show as new.' : current.failed.servers ? 'Could not read this project’s servers; changes may show as new.' : null
   const announce = useFrameAnnounce()
-  useEffect(() => {
-    // The frame's one polite announcer says it; the line itself is not a live region (review L5).
-    if (readError && announce) announce(readError)
-  }, [readError, announce])
+  // The frame's one polite announcer says it once per proposal (review L5, L-b); the line itself is not a live region.
+  useAnnounceOnce(proposalId, readError)
   if (current.status === 'loading') {
     return (
       <div className="mcp-prop">

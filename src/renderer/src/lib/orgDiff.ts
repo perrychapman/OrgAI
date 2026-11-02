@@ -21,6 +21,9 @@ export interface DiffRole {
   spawnable?: readonly string[]
   skills?: readonly string[]
   prompt?: string
+  responsibilities?: readonly string[]
+  /** The tier behind `model` (Role.tier); remaps follow it, so a change the model line does not show is diffed too. */
+  tier?: string
 }
 
 export interface FieldChange {
@@ -38,6 +41,31 @@ export interface ChangedRole<R extends DiffRole = DiffRole> {
   renamed?: boolean
   /** Set when the proposal states a different prompt: both texts, so the card can show the new one (review M3). */
   prompt?: PromptChange
+  /** Set when the proposal states a different responsibilities list (they go into the role's system prompt). */
+  responsibilities?: ResponsibilitiesChange
+}
+
+export interface ResponsibilitiesChange {
+  before: readonly string[]
+  after: readonly string[]
+}
+
+/** The responsibilities change between two roles (compared in order), or undefined when the proposal leaves them out or keeps them. */
+export function responsibilitiesChange(before: DiffRole, after: DiffRole): ResponsibilitiesChange | undefined {
+  if (after.responsibilities === undefined) return undefined
+  const was = before.responsibilities ?? []
+  const now = after.responsibilities
+  if (was.length === now.length && was.every((x, i) => x === now[i])) return undefined
+  return { before: was, after: now }
+}
+
+/** The tier a role is remapped by: its own, else the one its model stands for (legacy roles), else none. */
+function effectiveTier(r: DiffRole): string | undefined {
+  return r.tier ?? tierForModel(r.model)
+}
+
+function tierLabel(tier: string | undefined): string {
+  return tier ? (MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label ?? tier) : NONE
 }
 
 export interface PromptChange {
@@ -87,7 +115,15 @@ function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRo
     if (from !== to) out.push({ field, label, from, to })
   }
   push('name', 'name', before.name, after.name)
-  push('model', 'model', modelDisplay(before.model), modelDisplay(after.model))
+  const modelFrom = modelDisplay(before.model)
+  const modelTo = modelDisplay(after.model)
+  // Two ids that read as the same tier ("claude-sonnet-4-5" and "claude-sonnet-4-6") still re-pin the role: show the ids.
+  if (modelFrom === modelTo && before.model !== after.model) push('model', 'model', `${modelFrom} (${before.model})`, `${modelTo} (${after.model})`)
+  else push('model', 'model', modelFrom, modelTo)
+  // A tier change the model line already shows (both models read as their tier) is not repeated.
+  const tierFrom = tierLabel(effectiveTier(before))
+  const tierTo = tierLabel(effectiveTier(after))
+  if (tierFrom !== tierTo && !(modelDisplay(before.model) === tierFrom && modelDisplay(after.model) === tierTo)) push('tier', 'tier', tierFrom, tierTo)
   push('reportsTo', 'reports to', parentName(before, cur), parentName(after, prop))
   // A field the proposal leaves out (undefined) is not a change: only what it states is compared.
   if (after.description !== undefined) push('description', 'description', before.description ?? '', after.description)
@@ -96,6 +132,7 @@ function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRo
     push('canSpawn', 'spawns', spawnNames(before, cur), spawnNames(after, prop))
   }
   if (after.skills !== undefined) push('skills', 'skills', sortedList(before.skills), sortedList(after.skills))
+  if (responsibilitiesChange(before, after)) out.push({ field: 'responsibilities', label: 'responsibilities', from: '', to: 'responsibilities changed' })
   if (after.prompt !== undefined && (before.prompt ?? '') !== after.prompt) out.push({ field: 'prompt', label: 'prompt', from: '', to: 'prompt changed' })
   return out
 }
@@ -137,7 +174,8 @@ export function diffSummary(added: number, removed: number, changed: number): st
 
 function withPrompt<R extends DiffRole>(c: ChangedRole<R>): ChangedRole<R> {
   const prompt = promptChange(c.before, c.role)
-  return prompt ? { ...c, prompt } : c
+  const responsibilities = responsibilitiesChange(c.before, c.role)
+  return { ...c, ...(prompt ? { prompt } : {}), ...(responsibilities ? { responsibilities } : {}) }
 }
 
 export function diffOrgChart<R extends DiffRole>(current: readonly DiffRole[], proposed: readonly R[]): OrgDiff<R> {

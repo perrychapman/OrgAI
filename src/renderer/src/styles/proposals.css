@@ -172,3 +172,20 @@
   margin: 0;
   color: var(--text-tertiary);
 }
+/* A changed role's new responsibilities (review M-a): untrusted agent text, so long words wrap inside the box. */
+.org-diff-resp {
+  align-self: stretch;
+  overflow-wrap: anywhere;
+}
+.org-diff-resp.is-removed {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+.org-diff-resp-head {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.org-diff-resp-tag {
+  font-weight: 600;
+}

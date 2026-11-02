@@ -7,7 +7,7 @@ import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import { diffSkillsProposal, type SkillCurrent, type SkillGroup, type SkillRowItem, type SkillRowView } from '../../lib/skillProposal'
 import { Badge } from '../ui/Badge'
 import { ClampText } from './ClampText'
-import { useFrameAnnounce } from '../layout/CanvasFrame'
+import { useAnnounceOnce, useFrameAnnounce } from '../layout/CanvasFrame'
 
 const ICONS: Record<SkillGroup, typeof Plus | undefined> = { create: Plus, link: Plus, grant: Pencil, update: Pencil, remove: Minus }
 
@@ -34,7 +34,19 @@ function useCurrentBody(projectId: string | undefined, skillId: string | undefin
   return state
 }
 
-function SkillItemRow({ item, view, projectId, current }: { item: SkillProposalItemLike; view: SkillRowView; projectId?: string; current: SkillCurrent }): ReactElement {
+function SkillItemRow({
+  proposalId,
+  item,
+  view,
+  projectId,
+  current
+}: {
+  proposalId: string
+  item: SkillProposalItemLike
+  view: SkillRowView
+  projectId?: string
+  current: SkillCurrent
+}): ReactElement {
   const spec = item.scope === 'project' ? current.skills.find((s) => s.name === item.draft.name) : undefined
   const read = useCurrentBody(projectId, spec?.id, view.showChanges)
   const before = read.body
@@ -42,11 +54,9 @@ function SkillItemRow({ item, view, projectId, current }: { item: SkillProposalI
   const changed = before !== null && before !== after
   const announce = useFrameAnnounce()
   const readFailed = view.showChanges && read.status === 'error'
-  useEffect(() => {
-    // The frame's one polite announcer says it; the line itself is not a live region (review L5).
-    if (readFailed && announce) announce(`Current instructions of ${clampLabel(showHidden(item.draft.name), 64)} could not be read.`)
-  }, [readFailed, announce, item.draft.name])
-  const name = clampLabel(item.draft.name, 64)
+  const name = clampLabel(showHidden(item.draft.name), 64)
+  // The frame's one polite announcer says it once per proposal (review L5, L-b); the line itself is not a live region.
+  useAnnounceOnce(proposalId, readFailed ? `Current instructions of ${name} could not be read.` : null)
   return (
     <li className="skill-prop-item" data-testid="proposal-skill-item" data-skill={clampLabel(item.draft.name)} data-action={item.action}>
       <div className="skill-prop-head">
@@ -103,7 +113,17 @@ function SkillItemRow({ item, view, projectId, current }: { item: SkillProposalI
 type SkillProposalItemLike = SkillRowItem
 
 /** The body of a skills proposal: a summary against the project, then New, Link, Access, Changed and Remove rows. */
-export function SkillsProposalBody({ payload, current, projectId }: { payload: SkillsProposalPayload; current: SkillCurrent; projectId?: string }): ReactElement {
+export function SkillsProposalBody({
+  proposalId,
+  payload,
+  current,
+  projectId
+}: {
+  proposalId: string
+  payload: SkillsProposalPayload
+  current: SkillCurrent
+  projectId?: string
+}): ReactElement {
   const diff = diffSkillsProposal(payload.items, current)
   return (
     <div className="skill-prop">
@@ -113,7 +133,7 @@ export function SkillsProposalBody({ payload, current, projectId }: { payload: S
       <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
       <ul className="skill-prop-list" aria-label="Skills in this proposal">
         {diff.rows.map(({ item, view }, i) => (
-          <SkillItemRow key={`${item.draft.name}-${i}`} item={item} view={view} projectId={projectId} current={current} />
+          <SkillItemRow key={`${item.draft.name}-${i}`} proposalId={proposalId} item={item} view={view} projectId={projectId} current={current} />
         ))}
       </ul>
       {diff.untouched && diff.untouched.length > 0 && (
@@ -123,7 +143,7 @@ export function SkillsProposalBody({ payload, current, projectId }: { payload: S
           </summary>
           <ul className="proposal-list">
             {diff.untouched.map((n, i) => (
-              <li key={`${n}-${i}`}>{n}</li>
+              <li key={`${n}-${i}`}>{showHidden(n)}</li>
             ))}
           </ul>
         </details>

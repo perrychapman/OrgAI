@@ -24,6 +24,36 @@ export function useFrameAnnounce(): ((text: string) => void) | null {
   return useContext(FrameContext).announce
 }
 
+/** Lines already said, keyed by owner (a proposal id) and text, so a remounted card does not say them again (review L-b). */
+const saidOnce = new Set<string>()
+const SAID_ONCE_MAX = 500
+
+/** Says `text` through the frame's announcer once per `key` and text for the life of the window; null says nothing. */
+export function useAnnounceOnce(key: string, text: string | null): void {
+  const announce = useFrameAnnounce()
+  useEffect(() => {
+    if (!text || !announce) return
+    const k = JSON.stringify([key, text])
+    if (saidOnce.has(k)) return
+    // Evict the oldest line only, so cards still mounted do not repeat theirs.
+    if (saidOnce.size >= SAID_ONCE_MAX) saidOnce.delete(saidOnce.values().next().value as string)
+    saidOnce.add(k)
+    announce(text)
+  }, [key, text, announce])
+}
+
+/** Within this long of the previous line a new one is appended to it, so two lines said together are both heard (review L-a). */
+const JOIN_WINDOW_MS = 1000
+const JOIN_MAX_CHARS = 600
+
+/** The line to say: `text` alone, or appended to a previous line younger than JOIN_WINDOW_MS. Pure. */
+export function joinAnnouncement(prev: { text: string; at: number } | null, text: string, now: number): string {
+  if (!prev || !prev.text || now - prev.at >= JOIN_WINDOW_MS) return text
+  if (prev.text === text || prev.text.endsWith(` ${text}`)) return prev.text
+  const joined = `${prev.text} ${text}`
+  return joined.length > JOIN_MAX_CHARS ? text : joined
+}
+
 
 /**
  * Canvas region with named slots. Nothing is positioned over the canvas: every slot is a grid area.
@@ -79,13 +109,20 @@ export function CanvasFrame({
 }): ReactElement {
   const inner = useRef<HTMLDivElement | null>(null)
   const [compact, setCompact] = useState(false)
-  // The arrival line from the view and lines cards say through useFrameAnnounce share the one announcer: the newest wins.
+  // The arrival line from the view and lines cards say through useFrameAnnounce share the one announcer: a line said
+  // within a second of the previous one is appended to it, otherwise the newest replaces it.
   const seq = useRef(0)
   const [said, setSaid] = useState<FrameAnnouncement | undefined>(undefined)
+  const last = useRef<{ text: string; at: number } | null>(null)
   const announce = useCallback((text: string) => {
     if (!text) return
+    const now = Date.now()
+    const line = joinAnnouncement(last.current, text, now)
+    // A line already said within the window is not said again.
+    if (last.current && line === last.current.text && now - last.current.at < JOIN_WINDOW_MS) return
+    last.current = { text: line, at: now }
     seq.current += 1
-    setSaid({ text, n: seq.current })
+    setSaid({ text: line, n: seq.current })
   }, [])
   const arrivalKey = announcement ? announcement.n : 0
   useEffect(() => {
