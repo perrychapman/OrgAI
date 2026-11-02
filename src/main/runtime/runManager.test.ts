@@ -2662,7 +2662,7 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     return { p, saved, m, ctxs, forRun }
   }
 
-  it.each(['mcpServers', 'skills', 'orgChart'] as const)('an approved %s proposal updates ctx.project (keeping the path) and recomputes the skills', async (kind) => {
+  it.each(['mcpServers', 'skills', 'orgChart'] as const)('an approved %s proposal updates ctx.project (keeping the path); MCP and skills changes recompute the skills', async (kind) => {
     const { p, m, ctxs, forRun } = rig()
     const run = await m.start({ project: p, prompt: 'go' })
     const ctx = ctxs[0]
@@ -2675,8 +2675,13 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     expect(ctx.project.name).toBe('After')
     expect(ctx.project.mcpServers?.[0].name).toBe('docs')
     expect(ctx.project.path).toBe(path)
-    expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
-    expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'After', path }), expect.any(Array))
+    if (kind === 'orgChart') {
+      // The org chart card says it applies from the next run: this run's grants stay (review M1).
+      expect(ctx.skills!()).toEqual([])
+    } else {
+      expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
+      expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'After', path }), expect.any(Array))
+    }
     await m.stopAll()
   })
 

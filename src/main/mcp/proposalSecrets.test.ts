@@ -76,3 +76,17 @@ describe('McpService.storeProposalSecrets', () => {
     expect(mcp.storeProposalSecrets(null, payload, { 'mcpl-1:env:GH_TOKEN': 'v' })).toEqual([])
   })
 })
+
+describe('McpService.applyProposal with projectOnly (work runs)', () => {
+  it('never writes the library, even for a server that is not marked projectOnly', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    const payload: McpServersProposalPayload = { scope: 'project', upsert: [spec({ id: 'mcp-9', name: 'gone' })], rationale: 'r' }
+    const saved = mcp.applyProposal(p.id, payload, { projectOnly: true })
+    expect(mcp.libraryEntries()).toEqual([])
+    expect(saved.mcpServers?.map((s) => [s.name, s.libraryId])).toEqual([['gone', undefined]])
+    // Without the flag the same proposal goes to the library (setup and the assistant).
+    const p2 = store.create({ name: 'Y', path: join(dir, 'repo'), brief: '' })
+    mcp.applyProposal(p2.id, { ...payload, upsert: [spec({ id: 'mcp-10', name: 'shared' })] })
+    expect(mcp.libraryEntries().map((e) => e.name)).toEqual(['shared'])
+  })
+})
