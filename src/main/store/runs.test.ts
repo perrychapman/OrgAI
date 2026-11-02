@@ -79,6 +79,24 @@ describe('RunStore', () => {
     expect('endedBy' in reloaded.get('obj')!).toBe(false)
   })
 
+  it('derives endedWhile from the status as saved and drops junk values', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('idle', { status: 'idle' }))
+    s.upsert(run('starting', { status: 'starting' }))
+    s.upsert(run('running', { status: 'running' }))
+    s.upsert(run('stopping', { status: 'stopping' }))
+    s.upsert(run('paused', { status: 'paused', endedWhile: 'working' }))
+    s.upsert(run('kept', { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' }))
+    s.upsert(run('junk', { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'sleeping' as never }))
+    s.upsert(run('user', { status: 'finished', endedBy: 'user', endedWhile: 'working' }))
+    s.upsert(run('own', { status: 'finished', endedWhile: { x: 1 } as never }))
+    const reloaded = new RunStore(dataDir)
+    expect(reloaded.get('idle')!.endedWhile).toBe('waiting')
+    for (const id of ['starting', 'running', 'stopping']) expect(reloaded.get(id)!.endedWhile).toBe('working')
+    expect(reloaded.get('kept')!.endedWhile).toBe('waiting')
+    for (const id of ['paused', 'junk', 'user', 'own']) expect(id + ':' + ('endedWhile' in reloaded.get(id)!)).toBe(id + ':false')
+  })
+
   it('finishes a paused run on load but keeps when it could continue', () => {
     const s = new RunStore(dataDir)
     s.upsert(run('paused', { status: 'paused', pausedUntil: 5000, pauseReason: 'limit', autoResume: true }))

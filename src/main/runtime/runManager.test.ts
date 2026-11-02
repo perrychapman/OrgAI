@@ -1732,6 +1732,7 @@ describe('who ended a run (RunSummary.endedBy)', () => {
     // A later quit does not relabel a run the user already ended.
     await m.stopAll({ reason: 'quit' })
     expect(store.get(run.id)!.endedBy).toBe('user')
+    expect(store.get(run.id)!.endedWhile).toBeUndefined()
   })
 
   it('stopAll on quit marks live runs endedBy app with endedWithApp, on disk before it resolves', async () => {
@@ -1746,7 +1747,7 @@ describe('who ended a run (RunSummary.endedBy)', () => {
     const disk = new RunStore(join(dir, 'data'))
     for (const id of [a.id, b.id]) {
       expect(store.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
-      expect(disk.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+      expect(disk.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
       expect(disk.get(id)!.autoResume).toBeUndefined()
     }
     // The root still settles as a cut run (not "Waiting for you").
@@ -1769,7 +1770,36 @@ describe('who ended a run (RunSummary.endedBy)', () => {
     const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Silent' })
     await m.stopAll({ reason: 'quit' })
-    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({
+      status: 'finished',
+      endedBy: 'app',
+      endedWithApp: true,
+      endedWhile: 'working'
+    })
+  })
+
+  it('stopAll on quit counts a running run with an open card as waiting', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-card' })
+        void ctx.requestQuestion({ agentId: 'root', question: 'q?', options: [{ label: 'a' }, { label: 'b' }], allowMultiple: false, allowFreeText: false })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: async () => ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' }),
+          finished: new Promise<void>(() => {})
+        }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ask' })
+    await vi.waitFor(() => expect(m.pendingCards(run.id).questions).toHaveLength(1))
+    await m.stopAll({ reason: 'quit' })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWhile: 'waiting' })
   })
 
   it('a run that finished on its own has no endedBy', async () => {
@@ -1792,6 +1822,7 @@ describe('who ended a run (RunSummary.endedBy)', () => {
     expect(saved.status).toBe('finished')
     expect(saved.endedBy).toBeUndefined()
     expect(saved.endedWithApp).toBeUndefined()
+    expect(saved.endedWhile).toBeUndefined()
   })
 })
 

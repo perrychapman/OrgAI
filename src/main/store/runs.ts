@@ -48,11 +48,20 @@ export class RunStore {
     // endedBy comes from an untrusted file: anything but 'user' | 'app' is dropped.
     for (const r of this.runs) {
       if (r.endedBy !== undefined && r.endedBy !== 'user' && r.endedBy !== 'app') delete r.endedBy
+      // endedWhile (also untrusted) only means something next to endedBy 'app'.
+      if (r.endedWhile !== undefined && ((r.endedWhile !== 'working' && r.endedWhile !== 'waiting') || r.endedBy !== 'app')) {
+        delete r.endedWhile
+      }
       if (r.status !== 'finished' && r.status !== 'error') {
+        // What it was doing, from the status as saved: idle is the user's turn, paused gets none.
+        const was = r.status
         r.status = 'finished'
         r.endedAt = r.endedAt ?? Date.now()
         r.endedWithApp = true
         r.endedBy = 'app'
+        if (was === 'idle') r.endedWhile = 'waiting'
+        else if (was === 'starting' || was === 'running' || was === 'stopping') r.endedWhile = 'working'
+        else delete r.endedWhile
       }
       if (r.autoResume) delete r.autoResume
       if (!r.kind) r.kind = 'work'
