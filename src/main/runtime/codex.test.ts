@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
-import { CodexAdapter, codexModelFor, type CodexServerLike } from './codex'
+import { CodexAdapter, codexModelFor, offerableByRealPath, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
@@ -1088,6 +1088,27 @@ describe('CodexAdapter.complete', () => {
     expect(server.closed).toBe(true)
     expect((await caught).message).toContain('cancelled')
     expect(server.of('turn/start')).toHaveLength(0)
+  })
+})
+
+describe('offerableByRealPath (session folders, reviewer-3 M3)', () => {
+  it('refuses a link whose real path is a credential folder under home, keeps a plain folder', () => {
+    const base = mkdtempSync(join(tmpdir(), 'orgai-realpath-'))
+    try {
+      const home = join(base, 'home')
+      const ssh = join(home, '.ssh')
+      const notes = join(base, 'notes')
+      mkdirSync(ssh, { recursive: true })
+      mkdirSync(notes)
+      const link = join(base, 'innocent')
+      symlinkSync(ssh, link, process.platform === 'win32' ? 'junction' : 'dir')
+      const opts = { home }
+      expect(offerableByRealPath(link, opts)).toBe(false)
+      expect(offerableByRealPath(join(link, 'not-yet'), opts)).toBe(false)
+      expect(offerableByRealPath(notes, opts)).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })
 

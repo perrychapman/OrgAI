@@ -269,12 +269,20 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `sandbox_workspace_write.writable_roots`; never on trust-restricted runs.
   - Matching (ruleMatch.ts): `prefix:*` = `prefix *`; a `cd` into the project, a worktree or an allowed folder is
     free (lexical; MSYS `/c/` only for bash; win32 names ending in dot or space refused). Refused: pipes, redirects,
-    `$(`, backtick, `&`, newline, unquoted `( ) { }` and word-initial `@` (PowerShell), git options that run a program,
-    typographic quotes and dashes, hidden characters in a rule. Only bare shells or shells in the exact
-    `SYSTEM_SHELL_DIRS` are unwrapped.
-  - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words,
-    runner words three; `isTooBroadPrefix` (writers, fetchers, config/eval pairs, interpreters) and blanket or
-    destructive rules are never offered or saved; a provider setMode survives only as acceptEdits. User-configured
+    `$(`, backtick, `&`, newline, unquoted `( ) { }` / `@(` / `@{`, a word-initial `@` only on PowerShell, typographic
+    quotes and dashes, hidden characters in a rule or command. `programRunsProgram` (curated table in ARCHITECTURE.md)
+    refuses, for every rule, options that run another program or read other config: npm-family `--script-shell` /
+    `--node-options` / `--prefix` / `-C`..., go `-exec` / `-toolexec`, cargo `--config` / `-Z`, make `-f` / `SHELL=`,
+    dotnet `-p:*Event=`, node `--import` / `-r` / `-e`, git global `-c` / `--git-dir`, `--config`, `--template`,
+    `--output`, clone `-c`, branch `-D`, stash drop, and `PROGRAM_ENV` assignments (NODE_OPTIONS, GIT_*...); any `$`
+    outside single quotes refuses the segment. `ruleCoversButRefused` says when the Claude hook must answer ask (the CLI
+    would approve by its own prefix match); claude.ts does not call it yet (open, reviewer-4 H-A). Only bare
+    shells or shells in the exact `SYSTEM_SHELL_DIRS` are unwrapped.
+  - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words
+    (podman, nerdctl, kubectl, terraform, helm too), runner words and gh / aws / az / gcloud three; `isTooBroadPrefix`
+    (writers, fetchers, config/eval pairs, container run / exec / compose / buildx / container, gh auth / secret,
+    npm init / create, uv tool, interpreters) and blanket or destructive rules (git restore too) are never offered or
+    saved, and permissions:add refuses them (`permissionAddRefusal`); folder checks fold case on darwin; a provider setMode survives only as acceptEdits. User-configured
     MCP servers get `mcp__<server>`, agent-installed ones exact tool rules. "Always allow for project" saves rules,
     the folders (ctx.allowDirectories) and acceptEdits only from 'default'. Codex file approvals in accept-edits modes
     accept only paths inside the free folders (lexical and real), never `.git` / `.codex` / `.agents` / `.claude`.

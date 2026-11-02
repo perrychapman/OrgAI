@@ -1,6 +1,5 @@
 import { posix, win32 } from 'node:path'
-import { isOfferableDirectory } from './permissionRules'
-import { isFreeCdTarget } from './ruleMatch'
+import { isOfferableDirectory, isWithinDir } from './permissionRules'
 
 /** Why a folder is never an allowed directory on static grounds alone (no file-system access). */
 export type AllowedDirectoryRisk = 'project' | 'unsafe'
@@ -19,7 +18,7 @@ export interface AllowedDirectoryRiskOpts {
 /**
  * The static "too broad or sensitive" rules for Project.allowedDirectories, shared by ProjectStore
  * (cleanAllowedDirectories, on save and at boot) and RunManager (resolveAllowedDirectories, at run start, on the
- * canonical path). Lexical (win32 case-insensitive) and pure:
+ * canonical path). Lexical (win32 and darwin case-insensitive) and pure:
  * - 'project': the project folder or a folder inside it (already free).
  * - 'unsafe' (isOfferableDirectory, the one rule list): not absolute, a root, UNC / device, touching a denied folder,
  *   home or a folder containing it, a credential / agent config folder under home (.ssh, .aws, .gnupg, .claude,
@@ -30,7 +29,7 @@ export function allowedDirectoryRisk(dir: string, opts: AllowedDirectoryRiskOpts
   const platform = opts.platform ?? process.platform
   const p = platform === 'win32' ? win32 : posix
   const project = opts.projectPath && p.isAbsolute(opts.projectPath) ? opts.projectPath : undefined
-  if (project && typeof dir === 'string' && p.isAbsolute(dir) && isFreeCdTarget(dir, { freeDirs: [project], platform })) return 'project'
+  if (project && typeof dir === 'string' && p.isAbsolute(dir) && isWithinDir(project, dir, platform)) return 'project'
   const ok = isOfferableDirectory(dir, {
     platform,
     ...(project ? { cwd: project } : {}),

@@ -28,9 +28,16 @@ const UNSAFE_SEGMENT = /[|&`<>\n\r]|\$\(/
 /**
  * Syntax refused outside quotes (review re-check High 1): parentheses and braces (bash subshells and brace
  * expansion; PowerShell argument-mode expressions such as `cd (Stop-Computer)`, `npm test (calc)`, script blocks) and
- * PowerShell splatting / array and hash literals (`@x`, `@(...)`, `@{...}`). A mid-word `@` (`pkg@1.2.3`) stays.
+ * PowerShell array and hash literals (`@(...)`, `@{...}`) in every shell.
  */
-const UNSAFE_UNQUOTED = /[(){}]|(?:^|[\s,;=])@|@[({]/
+const UNSAFE_UNQUOTED = /[(){}]|@[({]/
+
+/**
+ * PowerShell splatting (`@args`) at the start of a word or after `,` / `;` / `=` (reviewer-3 M4): refused only for
+ * PowerShell, so bash keeps `npm install @types/node` and `npx @biomejs/biome check`. A mid-word `@` (`pkg@1.2.3`)
+ * stays plain in both.
+ */
+const UNSAFE_UNQUOTED_POWERSHELL = /(?:^|[\s,;=])@/
 
 /** The segment with quoted text removed (quotes included); an unclosed quote drops the rest. */
 function unquotedPart(segment: string): string {
@@ -51,35 +58,383 @@ function unquotedPart(segment: string): string {
   return out
 }
 
+/** The segment with single-quoted text removed (double-quoted text kept: both shells expand `$` there). */
+function outsideSingleQuotes(segment: string): string {
+  let out = ''
+  let quote: string | null = null
+  for (const ch of segment) {
+    if (quote) {
+      if (ch === quote) quote = null
+      else if (quote === '"') out += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") quote = ch
+    else out += ch
+  }
+  return out
+}
+
 /**
- * git options that run another program (review re-check M2): a saved `git fetch:*` or `git grep:*` must not cover
- * `git fetch --upload-pack=evil`, `git grep -O evil`, `git difftool -x evil`, `git clone -u evil` or `git -c
- * core.pager=evil log`.
+ * A segment's words the way a shell hands them to the program: split on whitespace outside quotes, quote characters
+ * removed (so `--upload-p"ack"=x` reads `--upload-pack=x`). Backslashes are kept (Windows paths).
  */
-function gitRunsProgram(segment: string): boolean {
-  const words = segment.trim().split(/\s+/)
-  const bin = (words[0] ?? '').split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '')
-  if (bin !== 'git') return false
-  const sub = (words[1] ?? '').toLowerCase()
-  if (sub === '-c' || sub.startsWith('--config-env') || sub.startsWith('--exec-path')) return true
-  const rest = words.slice(2).map((w) => w.replace(/^["']|["']$/g, '').toLowerCase())
+export function segmentWords(segment: string): string[] {
+  const words: string[] = []
+  let cur = ''
+  let inWord = false
+  let quote: string | null = null
+  for (const ch of segment) {
+    if (quote) {
+      if (ch === quote) quote = null
+      else cur += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      inWord = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (inWord) words.push(cur)
+      cur = ''
+      inWord = false
+      continue
+    }
+    cur += ch
+    inWord = true
+  }
+  if (inWord) words.push(cur)
+  return words
+}
+
+/** A program word's name: base name, lowercase, `.exe` / `.cmd` / `.bat` / `.ps1` dropped. */
+function binName(word: string): string {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '')
+}
+
+/**
+ * Environment variables that make the next program run another one or load code (`NODE_OPTIONS=--import=x npm test`,
+ * `GIT_SSH_COMMAND=x git fetch`). A leading `NAME=value` with one of these names is refused even under a rule that
+ * spells it out. Curated, not complete.
+ */
+const PROGRAM_ENV =
+  /^(?:NODE_OPTIONS|NODE_PATH|NPM_CONFIG_\w+|YARN_\w+|PNPM_\w+|BUN_\w+|GIT_\w+|LD_\w+|DYLD_\w+|PAGER|EDITOR|VISUAL|SHELL|BASH_ENV|ENV|PATH|PYTHON\w*|PERL5\w*|RUBYOPT|RUBYLIB|CARGO_\w+|RUSTC\w*|RUSTDOC\w*|RUSTFLAGS|GOFLAGS|GOENV|GOTOOLCHAIN|MAKEFLAGS|MAKEFILES|MFLAGS|DOTNET_\w+|MSBUILD\w*|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|PROMPT_COMMAND|PS4|IFS|SSH_ASKPASS|SUDO_ASKPASS|DOCKER_\w+|KUBECONFIG|CC|CXX)$/i
+
+/** The long option name of `--name` / `--name=value` (lowercase, `_` read as `-`), else null. */
+function longName(word: string): string | null {
+  const m = /^--([^=]+)/.exec(word)
+  return m ? m[1].toLowerCase().replace(/_/g, '-') : null
+}
+
+/** True when `n` names one of `refused` or abbreviates one (two letters at least), unless it is one of `exact`. */
+function refusedName(n: string, refused: readonly string[], exact: ReadonlySet<string> = EMPTY): boolean {
+  if (exact.has(n) || n.startsWith('no-')) return refused.includes(n)
+  return n.length >= 2 && refused.some((r) => r.startsWith(n))
+}
+const EMPTY: ReadonlySet<string> = new Set()
+
+/**
+ * True when a long option names one of `refused`, abbreviates one (npm's nopt, git's parse-options and GNU make's
+ * getopt accept unique prefixes: `--node-opt=x`, `--upload-p=x`; two letters at least) or starts with one of `prefixes`.
+ */
+function refusedLong(word: string, refused: readonly string[], prefixes: readonly string[] = []): boolean {
+  const n = longName(word)
+  if (!n) return false
+  if (prefixes.some((p) => n.startsWith(p))) return true
+  return n.length >= 2 && refused.some((r) => r.startsWith(n))
+}
+
+/**
+ * True when `args[i]` is a `--` that really ends the options (reviewer-4 H-E): go's flag parser and git's parse-options
+ * take the next word as an option's value even when it is `--` (`go test -run -- -exec=calc`, `git clone -b -- -c x`),
+ * so a `--` right after an option without `=` (other than a known flag in `bools`) is that option's value.
+ */
+function endsOptions(args: readonly string[], i: number, bools: ReadonlySet<string> = EMPTY, markers: readonly string[] = ['--']): boolean {
+  if (!markers.includes(args[i])) return false
+  const prev = i > 0 ? args[i - 1] : ''
+  return !prev.startsWith('-') || prev.includes('=') || bools.has(prev)
+}
+
+/** go test / build flags that take no value, so a following `-args` / `--` is real. */
+const GO_BOOL_FLAGS: ReadonlySet<string> = new Set(['-v', '-race', '-short', '-cover', '-x', '-n', '-a', '-json', '-failfast', '-benchmem', '-trimpath', '-mod=mod'])
+
+const NPM_FAMILY: ReadonlySet<string> = new Set(['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'yarnpkg', 'bun', 'bunx'])
+/**
+ * npm-family options that run another program, load other config or switch the package folder (reviewer-3 H1,
+ * reviewer-4 M-4): `--git` (git dependencies), `--browser`, `--editor`, `--shell`, `--node-gyp` and `--viewer` name a
+ * program npm runs.
+ */
+const NPM_REFUSED_LONG = [
+  'script-shell', 'node-options', 'userconfig', 'globalconfig', 'prefix', 'dir', 'cwd', 'call', 'use-yarnrc', 'git', 'browser', 'editor',
+  'shell', 'node-gyp', 'viewer'
+]
+/** bun options that load code before the tests or scripts (reviewer-4 M-4). */
+const BUN_REFUSED_LONG = ['preload', 'env-file']
+/** Real npm keys that are prefixes of a refused name: never read as an abbreviation (`--global`, `--no`). */
+const NPM_EXACT_KEYS: ReadonlySet<string> = new Set(['global', 'no'])
+/** Subcommands that run a package. */
+const NPM_EXEC_SUBS: ReadonlySet<string> = new Set(['exec', 'x', 'dlx'])
+/** Flags that take no value, so the word after one is a positional (`npx --yes eslint -c x`). */
+const NPM_BOOL_FLAGS: ReadonlySet<string> = new Set([
+  '--yes', '-y', '--no', '--no-install', '--quiet', '-q', '--silent', '-s', '--ignore-existing', '--prefer-offline', '--offline',
+  '--verbose', '--recursive', '-r', '--if-present', '--frozen-lockfile', '--save-dev', '-D', '--save', '-S', '--global', '-g',
+  '--production', '--force', '--watch', '--coverage', '--ci', '--dev', '--exact', '-E'
+])
+
+/**
+ * npm, pnpm, yarn, bun and their runners, up to a real `--` (endsOptions):
+ * - the names in NPM_REFUSED_LONG (and bun's BUN_REFUSED_LONG / `-r`) in any spelling: `=`, a separate value, quoted,
+ *   abbreviated, `_` for `-`, and any number of leading dashes (nopt strips `^-+`, so `-script-shell=x` and
+ *   `---script-shell=x` are long options too; reviewer-4 H-C); pnpm's `--config.<key>`;
+ * - `-C` (npm's --prefix, pnpm's --dir) anywhere for npm and before the subcommand for the others; `-c` (--call / shell
+ *   mode) anywhere for `npm exec` / `npm x`, else before the subcommand or before the package of npx / pnpm dlx.
+ * npm parses its options everywhere, `npm exec` included (reviewer-4 H-D); only npx, pnpx, bunx and the dlx / exec /
+ * x subcommands of pnpm, yarn and bun stop at the package, whose arguments are its own (`npx eslint -c .eslintrc`).
+ */
+function npmRunsProgram(bin: string, args: readonly string[]): boolean {
+  const runner = bin === 'npx' || bin === 'pnpx' || bin === 'bunx'
+  const isBun = bin === 'bun' || bin === 'bunx'
+  let positional = 0
+  let execMode = runner
+  let prev = ''
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (endsOptions(args, i, NPM_BOOL_FLAGS)) break
+    if (!a.startsWith('-') || a === '-' || a === '--') {
+      // A word right after an option that takes a value is that value, not a positional.
+      const isValue = prev.startsWith('-') && !prev.includes('=') && !NPM_BOOL_FLAGS.has(prev)
+      prev = a
+      if (isValue) continue
+      positional++
+      if (positional === 1 && !runner && NPM_EXEC_SUBS.has(a.toLowerCase())) {
+        execMode = true
+        continue
+      }
+      // The package of a runner: what follows is the package's own (npm exec keeps parsing, H-D).
+      if (execMode && bin !== 'npm') return false
+      continue
+    }
+    prev = a
+    const name = /^-+([^=]+)/.exec(a)?.[1].toLowerCase().replace(/_/g, '-') ?? ''
+    if (name.startsWith('config.')) return true
+    // Short flags (`-g`, `-w`, `-C`) are handled below; any longer name after one or more dashes is a long option.
+    if (name.length > 1 && (refusedName(name, NPM_REFUSED_LONG, NPM_EXACT_KEYS) || (isBun && refusedName(name, BUN_REFUSED_LONG)))) return true
+    if (isBun && /^-r(?:=|$)/.test(a)) return true
+    const beforeSub = positional === 0 || execMode
+    if (/^-C/.test(a) && (bin === 'npm' || beforeSub)) return true
+    if (/^-c/.test(a) && beforeSub) return true
+  }
+  return false
+}
+
+/**
+ * go: `-exec`, `-toolexec`, `-vettool` (one or two dashes) before a real `-args` / `--` (endsOptions: `-run -- -exec`
+ * keeps scanning), and `go env -w` / `-u` (writes GOFLAGS).
+ */
+function goRunsProgram(args: readonly string[]): boolean {
+  const sub = (args.find((a) => !a.startsWith('-')) ?? '').toLowerCase()
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (endsOptions(args, i, GO_BOOL_FLAGS, ['--', '-args', '--args'])) break
+    if (/^--?(?:exec|toolexec|vettool)(?:=|$)/i.test(a)) return true
+    if (sub === 'env' && /^--?[wu](?:=|$)/.test(a)) return true
+  }
+  return false
+}
+
+/** cargo: `--config` (runner, rustc wrapper, aliases) and the unstable `-Z` flags, before a real `--`. */
+function cargoRunsProgram(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (endsOptions(args, i)) break
+    if (/^--config(?:=|$)/i.test(args[i]) || /^-Z/.test(args[i])) return true
+  }
+  return false
+}
+
+/** make variable values that cannot name a program: empty, numbers and switches (`VERBOSE=1`, `DEBUG=true`). */
+const MAKE_SAFE_VALUE = /^(?:\d+|true|false|yes|no|on|off)?$/i
+
+/**
+ * make: another makefile or folder (`-f`, `-C`, `-I`, `--file`, `--makefile`, `--directory`, `--include-dir`),
+ * `--eval` / `-E`, and any `NAME=value` argument whose value is not a number or switch (`SHELL=calc`, `CC=calc`: a
+ * recipe may run the variable). Short options may be clustered (`-sf x`).
+ */
+function makeRunsProgram(args: readonly string[]): boolean {
+  for (const a of args) {
+    if (refusedLong(a, ['file', 'makefile', 'eval', 'directory', 'include-dir'])) return true
+    if (/^-[a-zA-Z]*[fECI]/.test(a)) return true
+    const assign = /^[A-Za-z_.][\w.]*\s*[:?+!]?=(.*)$/.exec(a)
+    if (assign && !MAKE_SAFE_VALUE.test(assign[1])) return true
+  }
+  return false
+}
+
+/** MSBuild properties that run a program. */
+const DOTNET_PROGRAM_PROPERTY = /(?:event|runcommand|runarguments|runworkingdirectory)\s*=/i
+
+/**
+ * dotnet / msbuild before a real `--`: build-event and run-command properties in every form (`-p:PreBuildEvent=calc`,
+ * `/property:RunCommand=calc`, `-p=X=calc`, and a separate value `-p PreBuildEvent=calc` / `--property X=calc`;
+ * reviewer-4 H-F), loggers (`-logger:x.dll`, `-dl:`) and response files (`@x.rsp`).
+ */
+function dotnetRunsProgram(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (endsOptions(args, i)) break
+    if (a.startsWith('@')) return true
+    const m = /^(?:--?|\/)([a-zA-Z]+)(?:[:=](.*))?$/.exec(a)
+    if (!m) continue
+    const name = m[1].toLowerCase()
+    if (name === 'p' || name === 'property') {
+      const value = m[2] ?? args[i + 1] ?? ''
+      if (DOTNET_PROGRAM_PROPERTY.test(value)) return true
+    }
+    if (['l', 'logger', 'dl', 'distributedlogger'].includes(name) && m[2] !== undefined) return true
+  }
+  return false
+}
+
+/** node options that load or evaluate code. */
+const NODE_REFUSED = /^(?:-r|-e|-p|-pe|--require|--import|--loader|--experimental-loader|--eval|--print|--env-file|--env-file-if-exists)(?:=|$)/
+/** node options that take a separate value (`--title x`): the next word is not the script. Curated. */
+const NODE_VALUE_OPTS: ReadonlySet<string> = new Set([
+  '--title', '--conditions', '-C', '--input-type', '--inspect-port', '--redirect-warnings', '--test-reporter', '--test-reporter-destination',
+  '--test-name-pattern', '--test-skip-pattern', '--watch-path', '--disable-warning', '--diagnostic-dir', '--report-dir', '--cpu-prof-dir',
+  '--heap-prof-dir', '--stack-size', '--max-old-space-size', '--localstorage-file', '--test-concurrency', '--test-timeout'
+])
+
+/** node's built-in test reporters; any other `--test-reporter` value is a module node loads (reviewer-4 M-4). */
+const NODE_BUILTIN_REPORTERS: ReadonlySet<string> = new Set(['spec', 'tap', 'dot', 'junit', 'lcov'])
+
+/**
+ * node: NODE_REFUSED options before the script (node reads `_` as `-` in option names: `--experimental_loader`), and a
+ * `--test-reporter` that is not built in; the script's own arguments (`node build.js -p prod`) are its own.
+ */
+function nodeRunsProgram(args: readonly string[]): boolean {
+  let prev = ''
+  for (let i = 0; i < args.length; i++) {
+    if (endsOptions(args, i)) break
+    const raw = args[i]
+    const eq = raw.indexOf('=')
+    const a = raw.startsWith('-') ? (eq < 0 ? raw.replace(/_/g, '-') : raw.slice(0, eq).replace(/_/g, '-') + raw.slice(eq)) : raw
+    if (!a.startsWith('-')) {
+      if (!NODE_VALUE_OPTS.has(prev)) return false
+      if (prev === '--test-reporter' && !NODE_BUILTIN_REPORTERS.has(a)) return true
+      prev = a
+      continue
+    }
+    if (NODE_REFUSED.test(a)) return true
+    if (a.startsWith('--test-reporter=') && !NODE_BUILTIN_REPORTERS.has(a.slice('--test-reporter='.length))) return true
+    prev = a
+  }
+  return false
+}
+
+/**
+ * git long options that run another program, read other config or write a file anywhere (any subcommand); send-email's
+ * `--to-cmd` / `--cc-cmd` / `--header-cmd` / `--sendmail-cmd` / `--smtp-server` and instaweb's `--httpd` / `--browser`
+ * name a program (reviewer-4 M-4).
+ */
+const GIT_REFUSED_LONG = [
+  'upload-pack', 'receive-pack', 'exec', 'open-files-in-pager', 'extcmd', 'config-env', 'tool', 'config', 'template', 'output', 'output-directory',
+  'to-cmd', 'cc-cmd', 'header-cmd', 'sendmail-cmd', 'smtp-server', 'httpd', 'browser'
+]
+/** git global options (before the subcommand) that change what runs or which repository's config is read. */
+const GIT_REFUSED_GLOBAL_LONG = ['exec-path', 'config-env', 'git-dir', 'work-tree']
+/** git global options that take a separate value. */
+const GIT_GLOBAL_VALUE_OPTS: ReadonlySet<string> = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix'])
+
+/**
+ * git (review re-check M2, reviewer-3 H2 / M2 / L1 / L2 / L5): every global option before the subcommand is read
+ * (`git --no-pager -c core.pager=x log`), `-c` case-sensitively so `git -C sub status` keeps matching; then the
+ * subcommand's options, abbreviations included; destructive branch / switch / stash forms.
+ */
+function gitRunsProgram(args: readonly string[]): boolean {
+  let i = 0
+  for (; i < args.length && args[i].startsWith('-'); i++) {
+    const a = args[i]
+    if (/^-c/.test(a) || refusedLong(a, GIT_REFUSED_GLOBAL_LONG)) return true
+    if (GIT_GLOBAL_VALUE_OPTS.has(a)) i++
+  }
+  const sub = (args[i] ?? '').toLowerCase()
+  const rest = args.slice(i + 1)
+  const lower = rest.map((w) => w.toLowerCase())
   // `git submodule foreach <cmd>` and `git bisect run <cmd>` run a command even under a saved submodule / bisect rule.
-  if ((sub === 'submodule' && rest.includes('foreach')) || (sub === 'bisect' && rest.includes('run'))) return true
-  return words.slice(1).some((w) => {
-    const o = w.replace(/^["']|["']$/g, '')
-    if (/^--(?:upload-pack|receive-pack|exec|open-files-in-pager|extcmd|config-env|tool)(?:=|$)/i.test(o)) return true
+  if ((sub === 'submodule' && lower.includes('foreach')) || (sub === 'bisect' && lower.includes('run'))) return true
+  if (sub === 'stash' && (lower.includes('clear') || lower.includes('drop'))) return true
+  for (let j = 0; j < rest.length; j++) {
+    const o = rest[j]
+    // A `--` right after an option without `=` is that option's value (`git clone -b -- -c x`, reviewer-4 H-E).
+    if (endsOptions(rest, j)) break
+    if (refusedLong(o, GIT_REFUSED_LONG)) return true
+    if (sub === 'rebase' && /^-[a-zA-Z]*x/.test(o)) return true
+    if ((sub === 'branch' || sub === 'switch' || sub === 'stash') && refusedLong(o, ['force', 'discard-changes', 'force-create'])) return true
     // Short options may be clustered (`-iOcalc`, `-qu calc`): look for the letter anywhere in a single-dash word.
+    if (!/^-[a-zA-Z]/.test(o)) continue
     if (sub === 'grep' && /^-[a-zA-Z]*O/.test(o)) return true
     if (sub === 'difftool' && /^-[a-zA-Z]*[xt]/.test(o)) return true
     if (sub === 'mergetool' && /^-[a-zA-Z]*t/.test(o)) return true
     if ((sub === 'clone' || sub === 'fetch' || sub === 'pull' || sub === 'ls-remote' || sub === 'archive') && /^-[a-zA-Z]*u/.test(o)) return true
-    return false
-  })
+    if (sub === 'clone' && /^-[a-zA-Z]*c/.test(o)) return true
+    if ((sub === 'format-patch' || sub === 'archive') && /^-[a-zA-Z]*o/.test(o)) return true
+    if (sub === 'branch' && /^-[a-zA-Z]*[DfMC]/.test(o)) return true
+    if (sub === 'switch' && /^-[a-zA-Z]*[fC]/.test(o)) return true
+  }
+  return false
 }
 
-/** True when a segment holds syntax no rule may cover (UNSAFE_SEGMENT anywhere, UNSAFE_UNQUOTED outside quotes). */
-export function isUnsafeSegment(segment: string): boolean {
-  return UNSAFE_SEGMENT.test(segment) || UNSAFE_UNQUOTED.test(unquotedPart(segment)) || gitRunsProgram(segment)
+/**
+ * True when a segment's program would run another program, read other config or write outside the project through
+ * its own options (reviewer-3 H1): a saved `npm test:*`, `go test:*`, `cargo test:*`, `make test:*` or `git clone:*`
+ * must not cover `npm test --script-shell=calc`, `go test -exec=calc`, `cargo test --config target.x.runner=calc`,
+ * `make test SHELL=calc` or `git clone -c core.sshCommand=calc url`. A leading `NAME=value` with a PROGRAM_ENV name is
+ * refused too. Checked at match time for every rule, saved ones included. Exported for tests.
+ */
+export function programRunsProgram(segment: string): boolean {
+  const words = segmentWords(segment)
+  let i = 0
+  for (; i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]); i++) {
+    if (PROGRAM_ENV.test(words[i].slice(0, words[i].indexOf('=')))) return true
+  }
+  const bin = binName(words[i] ?? '')
+  // Option words are compared without backslashes: bash reads `--node\-options` as `--node-options`.
+  const args = words.slice(i + 1).map((w) => (w.replace(/\\/g, '').startsWith('-') ? w.replace(/\\/g, '') : w))
+  if (NPM_FAMILY.has(bin)) return npmRunsProgram(bin, args)
+  switch (bin) {
+    case 'git':
+      return gitRunsProgram(args)
+    case 'go':
+      return goRunsProgram(args)
+    case 'cargo':
+      return cargoRunsProgram(args)
+    case 'make':
+    case 'gmake':
+    case 'mingw32-make':
+      return makeRunsProgram(args)
+    case 'dotnet':
+    case 'msbuild':
+      return dotnetRunsProgram(args)
+    case 'node':
+    case 'nodejs':
+      return nodeRunsProgram(args)
+    default:
+      return false
+  }
+}
+
+/**
+ * True when a segment holds syntax no rule may cover (UNSAFE_SEGMENT anywhere, UNSAFE_UNQUOTED outside quotes,
+ * PowerShell splatting when `shell` is 'powershell') or its program's options run another program (programRunsProgram).
+ */
+export function isUnsafeSegment(segment: string, shell: 'bash' | 'powershell' = 'bash'): boolean {
+  if (UNSAFE_SEGMENT.test(segment)) return true
+  // Expansions (reviewer-4 H-B): `$_`, `${Z:---script-shell=x}`, `$"..."`, `$var` / `$env:X` expand to words the option
+  // table never sees, in bash and PowerShell alike. A `$` counts unless it sits inside single quotes (literal in both).
+  if (outsideSingleQuotes(segment).includes('$')) return true
+  const unquoted = unquotedPart(segment)
+  if (UNSAFE_UNQUOTED.test(unquoted)) return true
+  if (shell === 'powershell' && UNSAFE_UNQUOTED_POWERSHELL.test(unquoted)) return true
+  return programRunsProgram(segment)
 }
 
 /** The harness's own MCP server: its tools are never granted wholesale through a saved rule. */
@@ -322,11 +677,14 @@ export function isFreeCd(segment: string, opts: MatchOptions | undefined): boole
  */
 export function shellRulesFor(command: string, rules: readonly string[], opts?: MatchOptions): string[] | null {
   if (AMBIGUOUS_QUOTING.test(command)) return null
+  // Control, zero-width, bidi and other invisible characters (reviewer-3 L3): a covered command must read as what runs.
+  // A tab is plain whitespace to the shell and the splitter (reviewer-4 L-4).
+  if (hiddenCharProblem('command', command.replace(/\t/g, ' ')) !== null) return null
   const cmd = unwrapShellCommand(command)
   if (!cmd) return null
   const hits: string[] = []
   for (const segment of splitCommand(cmd)) {
-    if (!segment || isUnsafeSegment(segment)) return null
+    if (!segment || isUnsafeSegment(segment, opts?.shell ?? 'bash')) return null
     if (isFreeCd(segment, opts)) continue
     const rule = shellRuleFor(segment, rules)
     if (!rule) return null
@@ -359,6 +717,24 @@ export function matchingRule(toolName: string, input: unknown, rules: readonly s
   const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined
   if (typeof command !== 'string') return undefined
   const scoped = rules.filter((r) => r.trim().startsWith(`${toolName}(`))
-  const hits = shellRulesFor(command, scoped, opts && { ...opts, shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+  const hits = shellRulesFor(command, scoped, { ...(opts ?? {}), shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
   return hits ? hits.join(', ') : undefined
+}
+
+/**
+ * True when a shell rule's text covers the command, or one of its `&&` / `||` / `;` segments, but matchingRule refuses
+ * it (syntax, expansions, hidden characters, or programRunsProgram). The CLI matches saved rules (`allowedTools`) by
+ * its own prefix test, so an adapter that only stays silent would let the CLI approve `npm test --script-shell=calc`
+ * under a saved `Bash(npm test:*)` (reviewer-4 H-A): when this is true the adapter must answer "ask" (or deny), never
+ * fall through. False for non-shell tools and when matchingRule allows the call.
+ */
+export function ruleCoversButRefused(toolName: string, input: unknown, rules: readonly string[], opts?: MatchOptions): boolean {
+  if (!SHELL_TOOLS.has(toolName)) return false
+  const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined
+  if (typeof command !== 'string' || !command.trim()) return false
+  if (matchingRule(toolName, input, rules, opts) !== undefined) return false
+  const scoped = rules.filter((r) => r.trim().startsWith(`${toolName}(`))
+  if (!scoped.length) return false
+  const candidates = [command.trim(), unwrapShellCommand(command), ...splitCommand(unwrapShellCommand(command)), ...splitCommand(command.trim())]
+  return candidates.some((c) => !!c && shellRuleFor(c.trim(), scoped) !== undefined)
 }
