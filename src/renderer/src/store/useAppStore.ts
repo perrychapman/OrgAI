@@ -1481,7 +1481,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             pauseReason: e.pauseReason ?? run.summary.pauseReason,
             autoResume: e.autoResume ?? run.summary.autoResume,
             // How it ended, right away (the status word after End session); adoptEndFacts stays the fallback for older events.
-            ...statusEventEndFacts(e as typeof e & { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' })
+            ...statusEventEndFacts(e)
           }
           // A run that ended or paused has no open decisions: main cancels them, and no card keeps live-looking buttons (H4).
           if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') {
