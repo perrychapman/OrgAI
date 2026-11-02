@@ -166,7 +166,7 @@ function cdTarget(segment: string, project: string): string | null {
   if (q === '"' || q === "'") {
     if (rest.length < 2 || rest[rest.length - 1] !== q) return null
     target = rest.slice(1, -1)
-    if (!target || target.includes(q) || /[$`]/.test(target) || target.startsWith('-') || target.startsWith('~')) return null
+    if (!target || target.includes(q) || /[$`%]/.test(target) || target.startsWith('-') || target.startsWith('~')) return null
   } else {
     if (!BARE_WORD.test(rest)) return null
     target = rest
@@ -176,7 +176,7 @@ function cdTarget(segment: string, project: string): string | null {
 }
 
 /** Steps whose folder change OrgAI cannot follow: a subshell or group, or a nested shell (`bash -c "..."`). */
-const NESTED = /^[({]|(?:^|[\s/\\])(?:(?:ba|z|da|k)?sh|pwsh|powershell|cmd)(?:\.exe)?\s+(?:-\w+\s+)*(?:-l?c|-Command|-EncodedCommand|\/c|\/k)(?:\s|$)|(?:^|\s)eval\s/i
+const NESTED = /^[({]|(?:^|[\s/\\])(?:(?:ba|z|da|k)?sh|pwsh|powershell|cmd)(?:\.exe)?\s+(?:--?[\w-]+\s+)*(?:-l?c|-Command|-EncodedCommand|\/c|\/k)(?:\s|$)|(?:^|\s)eval\s/i
 
 /** Name of the folder an absolute path is in, relative to the project: worktree, project, allowed folder or outside. */
 function classify(target: string, isFile: boolean, ctx: LocationContext, shell = false): PermissionLocation {

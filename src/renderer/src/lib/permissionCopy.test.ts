@@ -86,6 +86,8 @@ describe('permissionLocation', () => {
     unknown('(cd / && rm -rf x)')
     unknown('bash -c "cd / && rm -rf x"')
     unknown('sh -lc "cd /; ls"')
+    unknown('bash --norc -c "cd / && rm x"')
+    unknown('cd "%TEMP%" && dir', WIN)
     unknown('eval "cd /" && ls')
     unknown('npm test\ncd / && rm -rf x')
     unknown('cd a\\b && ls')
