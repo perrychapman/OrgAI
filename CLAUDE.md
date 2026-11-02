@@ -234,8 +234,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   Verified by unit tests, fake query() / fake Codex server tests and the mock (runManagerConfig.test.ts end to end);
   nothing live. The renderer side is the proposal-cards pass (see Renderer below).
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
-    characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; tab and line breaks allowed only in
-    descriptions, args and env values) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside
+    characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
+    breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside
     `validateSpec`, so proposals, library entries and Settings edits alike), in skill proposal name, libraryId,
     draft name and description and role slugs (`skillProposalProblem`), and in allow rules (propose_settings REVISE,
     request_permission_rules "Invalid request", `cleanAllowRules` drops them). `storeProposalSecrets` stores a value

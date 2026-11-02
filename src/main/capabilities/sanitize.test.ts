@@ -11,6 +11,12 @@ describe('hiddenCharIn / hiddenCharProblem', () => {
     expect(hiddenCharIn('a\u0007b', { multiline: true })).toBe('U+0007')
     expect(hiddenCharIn('plain')).toBeNull()
     expect(hiddenCharIn(42)).toBeNull()
+    // Prose keeps emoji and Persian joiners and soft hyphens, refuses bidi, zero-width space and controls.
+    expect(hiddenCharIn('\u{1F469}‍\u{1F4BB} می‌ co­op\n\t', { prose: true })).toBeNull()
+    expect(hiddenCharIn('a‮b', { prose: true })).toBe('U+202E')
+    expect(hiddenCharIn('a​b', { prose: true })).toBe('U+200B')
+    expect(hiddenCharIn('a⁧b', { prose: true })).toBe('U+2067')
+    expect(hiddenCharIn('a\u0007b', { prose: true })).toBe('U+0007')
     expect(hiddenCharProblem('The URL', 'x‮')).toBe('The URL contains a hidden character (U+202E, a control, zero-width, bidi or other invisible character); remove it.')
     expect(hiddenCharProblem('The URL', 'x')).toBeNull()
   })

@@ -32,8 +32,17 @@ describe('validateSpec hidden characters', () => {
     expect(hidden(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { secretEnv: ['TOK​EN'] })), 'A secret environment variable name', 'U+200B')).toBe(true)
   })
 
-  it('allows tab and line breaks in multi-line fields', () => {
-    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3', 'line1\nline2'], { description: 'Reads\tissues\nand PRs', env: { NOTE: 'a\nb' } }))).toEqual([])
+  it('a description is prose: tab, line breaks and emoji / Persian joiners pass; args and env values stay one line', () => {
+    // U+200D (ZWJ) in an emoji sequence, U+200C (ZWNJ) in Persian text, a soft hyphen: stored data keeps validating.
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { description: 'Reads\tissues\nand PRs \u{1F469}‍\u{1F4BB} می‌خواهم co­op' }))).toEqual([])
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3', 'line1\nline2']))[0]).toMatch(/^Argument 3 contains a hidden character \(U\+000A/)
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { env: { NODE: 'a\n--require x' } }))[0]).toMatch(/^Environment variable "NODE" contains a hidden character \(U\+000A/)
+  })
+
+  it('returns only the hidden-character problems, so later checks never echo the value', () => {
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { env: { 'A‮B': 'x' } }))).toEqual([
+      'An environment variable name contains a hidden character (U+202E, a control, zero-width, bidi or other invisible character); remove it.'
+    ])
   })
 })
 

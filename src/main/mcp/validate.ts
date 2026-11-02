@@ -178,7 +178,9 @@ function tooLong(s: unknown): boolean {
 export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSpec[] = [], where: 'project' | 'library' = 'project'): string[] {
   const errors: string[] = []
   if (!spec || typeof spec !== 'object') return ['The server spec is missing.']
-  errors.push(...hiddenCharProblems(spec))
+  // Hidden characters first and alone: the checks below quote names and args, which would echo them.
+  const hidden = hiddenCharProblems(spec)
+  if (hidden.length) return hidden
   if (typeof spec.id !== 'string' || !SAFE_ID.test(spec.id)) errors.push('The server id must be 1-128 letters, digits, hyphens or underscores.')
   if (typeof spec.name !== 'string' || !isValidMcpServerName(spec.name)) {
     errors.push('The name must be lowercase kebab-case (letters, digits and single hyphens, at most 48 characters), e.g. "github".')
@@ -245,8 +247,10 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
 
 /**
  * One refusal per spec field holding a control, zero-width, bidi or other invisible character (capabilities/sanitize.ts
- * hiddenCharIn). Names, the command, the URL, header values, secret slot names and role slugs are one line; args, env
- * values and the description may hold tab and line breaks. Proposals, library entries and settings edits all pass here.
+ * hiddenCharIn). Every field is one line (no control character at all, so a card that clamps a value to one line never
+ * hides the rest of it) except the description, which is prose: tab and line breaks, ZWJ, ZWNJ, soft hyphen and tag
+ * characters (emoji, Persian and Indic text) are allowed there; bidi marks, zero-width space and controls are not.
+ * Proposals, library entries and settings edits all pass here.
  */
 export function hiddenCharProblems(spec: Partial<McpServerSpec>): string[] {
   const out: string[] = []
@@ -254,18 +258,15 @@ export function hiddenCharProblems(spec: Partial<McpServerSpec>): string[] {
     const p = hiddenCharProblem(field, v)
     if (p) out.push(p)
   }
-  const multi = (field: string, v: unknown): void => {
-    const p = hiddenCharProblem(field, v, { multiline: true })
-    if (p) out.push(p)
-  }
   one('The name', spec.name)
   one('The command', spec.command)
   one('The URL', spec.url)
-  multi('The description', spec.description)
-  if (Array.isArray(spec.args)) spec.args.forEach((a, i) => multi(`Argument ${i + 1}`, a))
+  const prose = hiddenCharProblem('The description', spec.description, { prose: true })
+  if (prose) out.push(prose)
+  if (Array.isArray(spec.args)) spec.args.forEach((a, i) => one(`Argument ${i + 1}`, a))
   for (const [k, v] of Object.entries(spec.env && typeof spec.env === 'object' ? spec.env : {})) {
     one('An environment variable name', k)
-    multi(`Environment variable ${safeLabel(k)}`, v)
+    one(`Environment variable ${safeLabel(k)}`, v)
   }
   for (const [k, v] of Object.entries(spec.headers && typeof spec.headers === 'object' ? spec.headers : {})) {
     one('A header name', k)

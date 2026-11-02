@@ -127,8 +127,8 @@ export function skillProposalProblem(items: unknown, env: SkillProposalEnv): str
 
 /**
  * The first field of an item holding a control, zero-width, bidi or other invisible character, or null: name,
- * libraryId and role slugs are one line; a create / update draft's name is one line and its description may hold
- * line breaks (normalizeDescription folds them). Config items carry the target's own draft, which is not checked
+ * libraryId and role slugs are one line; a create / update draft's name is one line and its description is prose
+ * (line breaks, which normalizeDescription folds, and emoji / Persian joiners are allowed; bidi and controls are not). Config items carry the target's own draft, which is not checked
  * here (it is already stored). The SKILL.md body is not checked.
  */
 function hiddenItemProblem(it: Partial<SkillProposalItem> & { name?: unknown }): string | null {
@@ -138,7 +138,7 @@ function hiddenItemProblem(it: Partial<SkillProposalItem> & { name?: unknown }):
     hiddenCharProblem('name', it.name) ??
     hiddenCharProblem('libraryId', it.libraryId) ??
     hiddenCharProblem('draft.name', draft?.name) ??
-    hiddenCharProblem('draft.description', draft?.description, { multiline: true }) ??
+    hiddenCharProblem('draft.description', draft?.description, { prose: true }) ??
     roles.map((r) => hiddenCharProblem('A role slug in roles', r)).find((p) => p !== null) ??
     null
   )
