@@ -1,12 +1,12 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Minus, Pencil, Plus } from 'lucide-react'
-import type { McpServerSpec, Proposal, ProposalDecision, Role } from '@shared/types'
-import { PERMISSION_MODE_OPTIONS } from '@shared/types'
+import type { Proposal, ProposalDecision, Role } from '@shared/types'
+import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { proposalNextFor } from '../lib/proposalNext'
-import { mcpApplyNote, proposalScope, PROPOSAL_EFFECT_COPY, SKIP_MCP_FEEDBACK, type ProposalEffect } from '../lib/mcpProposal'
+import { mcpApplyNote, proposalScope, PROPOSAL_EFFECT_COPY, SECRETS_HELP, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
 import { diffOrgChart, modelDisplay, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
@@ -14,8 +14,9 @@ import { oneLine, proposalTitle } from '../lib/decisionTitle'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
-import { McpProposalBody, type SecretInputs } from './proposals/McpProposalBody'
+import { McpProposalBody, type SecretValues } from './proposals/McpProposalBody'
 import { SkillsProposalBody } from './proposals/SkillsProposalBody'
+import { useMcpCurrent } from './proposals/useCurrent'
 
 interface Props {
   proposal: Proposal
@@ -28,18 +29,6 @@ interface Props {
   /** The proposing agent's id, for the avatar's role colour (unset for setup runs). */
   agentId?: string
   onDecide: (decision: ProposalDecision) => void | Promise<void>
-  /**
-   * Second pass (not wired yet): when given, a quiet "Not now" button (`proposal-decline`) after Request changes. The
-   * caller owns what declining sends; it runs through `submit`, so it is disabled while busy.
-   */
-  onDecline?: () => void | Promise<void>
-  /** Second pass (not wired yet): when the approved change takes effect; adds a `proposal-effect` line to the helper. */
-  effect?: ProposalEffect
-  /**
-   * Second pass (not wired yet): inline optional secret fields for each `payload.secrets` slot of an mcpServers
-   * proposal. Values live in component state only and reach the caller through onChange (non-empty values).
-   */
-  secretInputs?: SecretInputs
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
@@ -58,47 +47,49 @@ export function skillsApplyNote(payload: Extract<Proposal, { kind: 'skills' }>['
     : 'Approving writes these skills to this project and grants them to the listed roles.'
 }
 
-export default function ProposalCard({ proposal, runId, currentRoles, who, agentId, onDecide, onDecline, effect, secretInputs }: Props): ReactElement {
-  const [revising, setRevising] = useState(false)
+type Mode = 'idle' | 'revise' | 'decline'
+
+export default function ProposalCard({ proposal, runId, currentRoles, who, agentId, onDecide }: Props): ReactElement {
+  const [mode, setMode] = useState<Mode>('idle')
   const [feedback, setFeedback] = useState('')
+  const [note, setNote] = useState('')
+  // Typed secret values by slot index in payload.secrets. They stay in this component's state until Approve.
+  const [secretValues, setSecretValues] = useState<SecretValues>({})
   const { busy, error, submit } = useDecisionAnswer()
   const runSummary = useAppStore((st) => st.runs[runId]?.summary)
   const isSetup = runSummary?.kind === 'setup'
   const canSkip = isSetup && proposal.kind === 'mcpServers'
+  const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills')
   const project = useAppStore((st) => st.projects.find((p) => p.id === runSummary?.projectId))
-  const scope = proposal.kind === 'mcpServers' ? proposalScope(proposal.payload) : 'project'
-  // The library is read through the preload when the card needs it: library scope (what is there now) and link rows (their command).
-  const needsLibrary = proposal.kind === 'mcpServers' && (scope === 'library' || proposal.payload.upsert.some((s) => s.libraryId))
-  const [library, setLibrary] = useState<McpServerSpec[] | null>(null)
-  useEffect(() => {
-    if (!needsLibrary) return
-    let live = true
-    window.orgai.mcpLibrary
-      .list()
-      .then((list) => {
-        if (live) setLibrary(list.map((i) => ({ ...i.entry, enabled: true }) as McpServerSpec))
-      })
-      .catch(() => {})
-    return () => {
-      live = false
-    }
-  }, [needsLibrary])
-  const mcpCurrent: McpServerSpec[] | null = scope === 'library' ? library : (project?.mcpServers ?? null)
+  const mcp = proposal.kind === 'mcpServers' ? proposal.payload : null
+  const scope = mcp ? proposalScope(mcp) : 'project'
+  // The library is read when the card needs it: library scope (what is there now) and link rows (their command). The
+  // project's servers are read through the preload too: the store's copy can be stale.
+  const needsLibrary = !!mcp && (scope === 'library' || mcp.upsert.some((s) => s.libraryId))
+  const mcpCurrent = useMcpCurrent({ active: !!mcp, scope, projectId: project?.id, needsLibrary, storeServers: project?.mcpServers ?? null })
   const skillCurrent = useMemo(() => ({ roles: currentRoles, skills: project?.skills ?? [] }), [currentRoles, project?.skills])
+  const mcpLoading = !!mcp && mcpCurrent.status === 'loading'
   const foldSummary = useMemo(
-    () => proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent, skills: skillCurrent }),
-    [proposal, currentRoles, mcpCurrent, skillCurrent]
+    () => (mcpLoading ? undefined : proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent.servers, skills: skillCurrent })),
+    [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading]
   )
   const helperText =
     proposal.kind === 'mcpServers' ? mcpApplyNote(scope) : proposal.kind === 'skills' ? skillsApplyNote(proposal.payload) : APPLY_NOTE[proposal.kind]
+  const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
+
+  const setSecret = (index: number, v: string): void => setSecretValues((cur) => ({ ...cur, [index]: v }))
 
   const skip = (): void => {
     void submit(() => onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK }))
   }
 
   const approve = (): void => {
+    // Only non-empty values, keyed by the contract's slot key; omitted when none were typed.
+    const secrets: Record<string, string> = {}
+    if (mcp) for (const { index, slot } of uniqueSecretSlots(mcp)) if (secretValues[index]) secrets[proposalSecretKey(slot)] = secretValues[index]
+    const decision: ProposalDecision = Object.keys(secrets).length > 0 ? { behavior: 'approve', secrets } : { behavior: 'approve' }
     void submit(async () => {
-      await onDecide({ behavior: 'approve' })
+      await onDecide(decision)
       // The card disappears once resolved; the run's metadata line keeps the pointer to where the result went.
       const home = useAppStore.getState().runs[runId]?.summary.projectId
       useAppStore.getState().noteProposalNext(runId, home ? proposalNextFor(proposal, home) : null)
@@ -108,8 +99,10 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
     if (!feedback.trim()) return
     void submit(() => onDecide({ behavior: 'revise', feedback: feedback.trim() }))
   }
+  const decline = (): void => {
+    void submit(() => onDecide({ behavior: 'decline', note: note.trim() || undefined }))
+  }
 
-  // No Reject: ProposalDecision only has approve and revise.
   return (
     <DecisionCard
       kind="proposal"
@@ -121,36 +114,39 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       title={proposalTitle(proposal.kind)}
       summary={foldSummary}
       helper={
-        effect ? (
-          <>
-            {helperText}
+        <>
+          {helperText}
+          {hasSecrets && <span className="proposal-effect">{SECRETS_HELP}</span>}
+          {proposal.effect && (
             <span className="proposal-effect" data-testid="proposal-effect">
-              {PROPOSAL_EFFECT_COPY[effect]}
+              {PROPOSAL_EFFECT_COPY[proposal.effect]}
             </span>
-          </>
-        ) : (
-          helperText
-        )
+          )}
+        </>
       }
       primary={
-        !revising ? (
+        mode === 'idle' ? (
           <Button variant="primary" onClick={approve} disabled={busy}>
             Approve
           </Button>
-        ) : (
+        ) : mode === 'revise' ? (
           <Button variant="primary" onClick={revise} disabled={busy || !feedback.trim()}>
             Send feedback
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={decline} disabled={busy} testId="proposal-decline-send">
+            Decline
           </Button>
         )
       }
       secondary={
-        !revising ? (
+        mode === 'idle' ? (
           <>
-            <Button onClick={() => setRevising(true)} disabled={busy}>
+            <Button onClick={() => setMode('revise')} disabled={busy}>
               Request changes
             </Button>
-            {onDecline && (
-              <Button variant="ghost" onClick={() => void submit(async () => onDecline())} disabled={busy} testId="proposal-decline">
+            {canDecline && (
+              <Button variant="ghost" onClick={() => setMode('decline')} disabled={busy} testId="proposal-decline">
                 Not now
               </Button>
             )}
@@ -161,7 +157,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
             )}
           </>
         ) : (
-          <Button variant="ghost" onClick={() => setRevising(false)} disabled={busy}>
+          <Button variant="ghost" onClick={() => setMode('idle')} disabled={busy}>
             Back
           </Button>
         )
@@ -171,9 +167,9 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
-      {proposal.kind === 'mcpServers' && <McpProposalBody payload={proposal.payload} current={mcpCurrent} roles={currentRoles} library={library} secretInputs={secretInputs} />}
+      {proposal.kind === 'mcpServers' && <McpProposalBody payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
       {proposal.kind === 'skills' && <SkillsProposalBody payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
-      {revising && (
+      {mode === 'revise' && (
         <div className="proposal-feedback">
           <Textarea
             autoFocus
@@ -181,6 +177,19 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
             value={feedback}
             onChange={setFeedback}
             placeholder={revisePlaceholder(proposerName(runSummary))}
+          />
+        </div>
+      )}
+      {mode === 'decline' && (
+        <div className="proposal-feedback">
+          <Textarea
+            autoFocus
+            aria-label="Anything the agent should know? (optional)"
+            data-testid="proposal-decline-note"
+            maxLength={PROPOSAL_NOTE_MAX_CHARS}
+            value={note}
+            onChange={setNote}
+            placeholder="Anything the agent should know? (optional)"
           />
         </div>
       )}

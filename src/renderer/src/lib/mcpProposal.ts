@@ -1,6 +1,7 @@
-import type { McpProposalServer, McpServerSpec, McpServersProposalPayload } from '@shared/types'
+import type { McpProposalServer, McpServerSpec, McpServersProposalPayload, ProposalEffect } from '@shared/types'
 import { pinnedVersionOf } from './mcpVersion'
 import { clampLabel } from './clampLabel'
+import { hasHidden, showHidden } from './hiddenChars'
 
 export const SKIP_MCP_FEEDBACK = 'Skipped by the user; continue without MCP servers.'
 
@@ -89,9 +90,100 @@ export function mcpApplyNote(scope: McpProposalScope): string {
 }
 
 export function secretsLine(payload: McpServersProposalPayload, serverId?: string): string | null {
-  const list = (payload.secrets ?? []).filter((x) => serverId === undefined || x.serverId === serverId)
+  const list = uniqueSecretSlots(payload).filter((x) => serverId === undefined || x.slot.serverId === serverId)
   if (list.length === 0) return null
-  return `You will set ${list.length} ${list.length === 1 ? 'secret' : 'secrets'} after approving: ${list.map((x) => x.name).join(', ')}`
+  return `You will set ${list.length} ${list.length === 1 ? 'secret' : 'secrets'} after approving: ${list.map((x) => clampLabel(x.slot.name, 40)).join(', ')}`
+}
+
+export type McpSecretSlot = NonNullable<McpServersProposalPayload['secrets']>[number]
+
+/** The payload's secret slots without duplicates (same server, kind and name), each with its index in payload.secrets. */
+export function uniqueSecretSlots(payload: Pick<McpServersProposalPayload, 'secrets'>): { index: number; slot: McpSecretSlot }[] {
+  const seen = new Set<string>()
+  const out: { index: number; slot: McpSecretSlot }[] = []
+  ;(payload.secrets ?? []).forEach((slot, index) => {
+    const key = JSON.stringify([slot.serverId, slot.kind, slot.name])
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ index, slot })
+  })
+  return out
+}
+
+// ---------- The whole target: what actually runs (mirrors src/main/capabilities/sanitize.ts reviewTarget) ----------
+
+type TargetSpec = Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url' | 'env' | 'headers' | 'secretEnv' | 'secretHeaders'>
+
+const byKey = ([a]: [string, string], [b]: [string, string]): number => (a < b ? -1 : a > b ? 1 : 0)
+const quote = (a: string): string => (a === '' || /[\s"']/.test(a) ? JSON.stringify(a) : a)
+
+/** `NAME=value` pairs before the command and args (stdio), or the URL plus `-H "Name: value"` headers. Secret slots are never here. */
+export function targetText(s: TargetSpec): string {
+  const env = Object.entries(s.env ?? {}).sort(byKey)
+  const headers = Object.entries(s.headers ?? {}).sort(byKey)
+  return s.transport === 'stdio'
+    ? [...env.map(([k, v]) => `${k}=${quote(v)}`), quote(s.command ?? ''), ...(s.args ?? []).map(quote)].join(' ').trim()
+    : [s.url ?? '', ...headers.map(([k, v]) => `-H ${JSON.stringify(`${k}: ${v}`)}`)].join(' ').trim()
+}
+
+/** Names of the secret slots a spec carries (env or header names only, never values). */
+export function secretSlotNames(s: TargetSpec): string[] {
+  return s.transport === 'stdio' ? [...(s.secretEnv ?? [])] : [...(s.secretHeaders ?? [])]
+}
+
+function hiddenIn(s: TargetSpec): boolean {
+  const parts = [s.command, s.url, ...(s.args ?? []), ...Object.entries(s.env ?? {}).flat(), ...Object.entries(s.headers ?? {}).flat(), ...(s.secretEnv ?? []), ...(s.secretHeaders ?? [])]
+  return parts.some((p) => hasHidden(p))
+}
+
+/** True when the server's name, text or any part of what it runs holds a hidden character. */
+export function mcpServerHidden(s: McpProposalServer, entry?: TargetSpec | null): boolean {
+  return hasHidden(s.name) || hasHidden(s.description) || hiddenIn(s) || (!!s.libraryId && !!entry && hiddenIn(entry))
+}
+
+const CODE_LOADING_ENV = /^(NODE_OPTIONS|PATH|LD_.*|DYLD_.*|PYTHON.*|NPM_CONFIG_.*|UV_.*|PIP_.*|DOCKER_.*|.*_PROXY)$/i
+
+/** Environment names that change what a stdio command loads or where it connects. */
+export function codeLoadingEnv(s: Pick<McpServerSpec, 'env' | 'secretEnv'>): string[] {
+  return [...Object.keys(s.env ?? {}), ...(s.secretEnv ?? [])].filter((n) => CODE_LOADING_ENV.test(n))
+}
+
+/** What the card shows as the command or address, and what Copy copies (hidden characters escaped). Null when there is none. */
+export function proposalTarget(s: McpProposalServer, entry?: TargetSpec | null): string | null {
+  const spec: TargetSpec = commandOf(s) === null && s.libraryId && entry ? entry : s
+  const text = targetText(spec)
+  return text ? showHidden(text) : null
+}
+
+function nameDiff(label: string, before: Record<string, string> | undefined, after: Record<string, string> | undefined): string | null {
+  const b = before ?? {}
+  const a = after ?? {}
+  const parts = [
+    ...Object.keys(a).filter((k) => !(k in b)).sort().map((k) => `+${showHidden(k)}`),
+    ...Object.keys(b).filter((k) => !(k in a)).sort().map((k) => `-${showHidden(k)}`),
+    ...Object.keys(a).filter((k) => k in b && b[k] !== a[k]).sort().map((k) => `${showHidden(k)} changed`)
+  ]
+  return parts.length > 0 ? `${label}: ${parts.join(', ')}` : null
+}
+
+function listDiff(label: string, before: readonly string[] | undefined, after: readonly string[] | undefined): string | null {
+  const b = before ?? []
+  const a = after ?? []
+  const parts = [...a.filter((x) => !b.includes(x)).map((x) => `+${showHidden(x)}`), ...b.filter((x) => !a.includes(x)).map((x) => `-${showHidden(x)}`)]
+  return parts.length > 0 ? `${label}: ${parts.join(', ')}` : null
+}
+
+/** The changed fields of an updated server, before and after ("Args: a b -> a c", "Environment: +NODE_OPTIONS"). */
+export function mcpFieldChanges(s: McpProposalServer, current: McpServerSpec): string[] {
+  const out: (string | null)[] = []
+  const args = (a: readonly string[] | undefined): string => showHidden((a ?? []).join(' ') || 'none')
+  if (s.transport !== current.transport) out.push(`Type: ${current.transport} -> ${s.transport}`)
+  if ((s.command ?? '') !== (current.command ?? '')) out.push(`Command: ${showHidden(current.command ?? 'none')} -> ${showHidden(s.command ?? 'none')}`)
+  if (JSON.stringify(s.args ?? []) !== JSON.stringify(current.args ?? [])) out.push(`Args: ${args(current.args)} -> ${args(s.args)}`)
+  if ((s.url ?? '') !== (current.url ?? '')) out.push(`URL: ${showHidden(current.url ?? 'none')} -> ${showHidden(s.url ?? 'none')}`)
+  out.push(nameDiff('Environment', current.env, s.env), nameDiff('Headers', current.headers, s.headers))
+  out.push(listDiff('Secret environment', current.secretEnv, s.secretEnv), listDiff('Secret headers', current.secretHeaders, s.secretHeaders))
+  return out.filter((x): x is string => x !== null)
 }
 
 type SpecLike = Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url'>
@@ -276,10 +368,12 @@ export function mcpRowVerb(r: McpRow): string {
   }
 }
 
-/** When an approved change takes effect (ProposalCard `effect` prop, wired by the second pass). */
-export const PROPOSAL_EFFECT_COPY = {
-  turn: "Takes effect after the orchestrator's current turn. Reports already running keep what they have.",
-  nextRun: 'Applies to future runs. This run keeps its roles.',
-  now: 'Takes effect now.'
-} as const
-export type ProposalEffect = keyof typeof PROPOSAL_EFFECT_COPY
+/** When an approved change takes effect (Proposal.effect), as the card's helper says it. */
+export const PROPOSAL_EFFECT_COPY: Record<ProposalEffect, string> = {
+  now: 'Takes effect now.',
+  'after-turn': "Takes effect after the orchestrator's current turn. Reports already running keep what they have.",
+  'next-run': 'Takes effect from the next run. This run keeps what it has.'
+}
+
+/** Helper text for filling secrets on the card. */
+export const SECRETS_HELP = 'Fill them now or later in Project settings > Tools. A server with an empty secret does not start.'

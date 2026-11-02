@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec, Proposal, Role } from '@shared/types'
-import { foldList, proposalFoldSummary, proposerName, revisePlaceholder, type ProposalContext } from './proposalSummary'
+import { HIDDEN_PREFIX, foldList, proposalFoldSummary, proposerName, revisePlaceholder, type ProposalContext } from './proposalSummary'
 
 const srv = (id: string, name: string, extra: Partial<McpServerSpec> = {}): McpServerSpec => ({ id, name, transport: 'stdio', command: 'npx', args: ['x'], enabled: true, source: 'user', addedAt: '', ...extra }) as McpServerSpec
 const ctx: ProposalContext = {
@@ -22,6 +22,10 @@ describe('proposalFoldSummary', () => {
   it('lists a short MCP summary', () => {
     const p = { ...base, kind: 'mcpServers', payload: { upsert: [srv('g', 'github-issues')], remove: ['o'], rationale: '' } } as Proposal
     expect(proposalFoldSummary(p, ctx)).toBe('add github-issues, remove old-fs')
+  })
+  it('flags hidden characters in the summary', () => {
+    const p = { ...base, kind: 'mcpServers', payload: { upsert: [srv('g', 'github-issues', { args: ['a‮b'] })], rationale: '' } } as Proposal
+    expect(proposalFoldSummary(p, ctx)).toBe(HIDDEN_PREFIX + 'add github-issues')
   })
   it('lists skills', () => {
     const p = {
