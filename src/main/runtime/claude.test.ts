@@ -88,7 +88,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 
-import { ClaudeSession, MCP_RESTART_DELAY_MS, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
@@ -786,7 +786,14 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     spent.q1.emit({ ...result, total_cost_usd: 1.2 })
     await vi.waitFor(() => expect(texts(spent.q1)).toContain('could not be attached to this session (this run has used its budget)'), restartWait)
     expect(sdk.queries).toHaveLength(1)
-  }, 10_000)
+
+    // N7: less than the minimum left counts as nothing left (never rounded up past the budget).
+    sdk.queries.length = 0
+    const almost = await attached({}, { maxBudgetUsd: 1 })
+    almost.q1.emit({ ...result, total_cost_usd: 1 - MCP_RESTART_MIN_BUDGET_USD / 2 })
+    await vi.waitFor(() => expect(texts(almost.q1)).toContain('could not be attached to this session (this run has used its budget)'), restartWait)
+    expect(sdk.queries).toHaveLength(1)
+  }, 15_000)
 
   it('M3: server-level rules never approve a server an agent installed this run; exact tool rules and other servers still do', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-mcp-'))
@@ -859,6 +866,82 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(5))
     expect(Object.keys(sdk.queries[4]!.options.mcpServers)).toEqual(expect.arrayContaining(['pg', 'docs']))
   }, 15_000)
+
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1
+
+  it('N1: a run interrupted during the restart window pauses without auto-resume when no restarted query starts', async () => {
+    const { session, ctx, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    await session.interrupt()
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3))
+    sdk.queries[2]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(4))
+    sdk.queries[3]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused')
+    expect(paused).toMatchObject({ autoResume: false, pauseReason: expect.stringContaining('could not be resumed after attaching an MCP server') })
+    expect(paused).not.toHaveProperty('pausedUntil')
+  }, 10_000)
+
+  it('N2: a message the dying restarted query had read is replayed into the next query, once', async () => {
+    const { session, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    const q2 = sdk.queries[1]!
+    await vi.waitFor(() => expect(texts(q2)).toContain('The MCP server pg is attached now.'))
+    // The user writes before the restarted query's init; the fake CLI reads it at once, then dies.
+    await session.send('hello again')
+    await vi.waitFor(() => expect(texts(q2)).toContain('hello again'))
+    q2.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3))
+    const q3 = sdk.queries[2]!
+    await vi.waitFor(() => expect(texts(q3)).toContain('hello again'))
+    await vi.waitFor(() => expect(texts(q3)).toContain('The MCP server pg is attached now.'))
+    await sleep(50)
+    expect(count(texts(q3), 'hello again')).toBe(1)
+    // The dead query's attach notice is not replayed: the new query announces the server itself, once.
+    expect(count(texts(q3), 'The MCP server pg is attached now.')).toBe(1)
+  }, 10_000)
+
+  it('N2: once the restarted query sent init, a later failed restart does not replay what it already read', async () => {
+    const { session, servers, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    const q2 = sdk.queries[1]!
+    q2.emit(init)
+    await session.send('hello again')
+    await vi.waitFor(() => expect(texts(q2)).toContain('hello again'))
+    servers.push(mcpSpec({ id: 'mcp-docs', name: 'docs', roles: undefined, secretEnv: [] }))
+    sdk.status = [{ name: 'docs', status: 'connected', tools: [{ name: 'search' }] }]
+    await attach(session, servers[1]!)
+    q2.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3), restartWait)
+    sdk.queries[2]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(4))
+    const q4 = sdk.queries[3]!
+    await vi.waitFor(() => expect(texts(q4)).toContain('The MCP server docs is attached now.'))
+    expect(texts(sdk.queries[2]!)).not.toContain('hello again')
+    expect(texts(q4)).not.toContain('hello again')
+  }, 15_000)
+
+  it('N4: when the attach notice cannot read the grants, a notice with the known tools still goes out and the turn end is released', async () => {
+    sdk.autoEnd = false
+    const { session, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(q1.inputClosed).toBe(true), restartWait)
+    const s = session as unknown as { liveMcpServers(): McpServerSpec[]; turnEndDeferred: boolean }
+    expect(s.turnEndDeferred).toBe(true)
+    vi.spyOn(s, 'liveMcpServers').mockImplementationOnce(() => {
+      throw new Error('store gone')
+    })
+    q1.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    const q2 = sdk.queries[1]!
+    await vi.waitFor(() => expect(texts(q2)).toContain('The MCP server pg is attached now. Its tools: mcp__pg__query. Only roles the org chart grants it may call it.'))
+    expect(s.turnEndDeferred).toBe(false)
+  }, 10_000)
 
   it('L2: only MCP calls read the live server list, and an unreadable list denies the MCP call', async () => {
     let reads = 0
