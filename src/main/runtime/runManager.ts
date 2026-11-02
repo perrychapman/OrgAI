@@ -1550,7 +1550,7 @@ export class RunManager {
             } else if (active.summary.kind === 'skill-assist' && proposal.kind !== 'skills') {
               throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
-              const updated = this.setup.applyProposal(active.summary.projectId, proposal)
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work' })
               // Before onApplied: a stored secret lets the server start (enabledServers reads the SecretStore live).
               waitingForSecrets = this.storeProposalSecrets(active.summary.projectId, proposal, decision.secrets)
               onApplied?.(updated)

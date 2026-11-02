@@ -1193,7 +1193,8 @@ export class McpService {
    * project; any other new server becomes a library entry and is linked under the item's id. Everything is
    * validated first; nothing is saved on any problem.
    */
-  applyProposal(projectId: string, p: McpServersProposalPayload): Project {
+  /** opts.projectOnly: every new server stays in the project, never the library (work runs, review M3). */
+  applyProposal(projectId: string, p: McpServersProposalPayload, opts: { projectOnly?: boolean } = {}): Project {
     if (p.scope === 'library') throw new Error('A library proposal cannot be applied to a project.')
     const lib = this.library
     const project = this.project(projectId)
@@ -1244,7 +1245,7 @@ export class McpService {
       )
       delete (spec as { projectOnly?: boolean }).projectOnly
       delete spec.libraryId
-      if (raw.projectOnly || current || !lib) {
+      if (raw.projectOnly || opts.projectOnly || current || !lib) {
         const errors = validateSpec(spec, servers.filter((s) => s.id !== spec.id))
         if (errors.length) fail(errors.join(' '))
         else {
@@ -1282,7 +1283,15 @@ export class McpService {
     }
     if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
     for (const entry of newEntries) lib?.save(entry)
-    const roles = project.roles.map((r) => (r.mcpServers?.some((id) => removeIds.has(id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => !removeIds.has(id)) } : r))
+    // A roles list on a server is the whole answer to "who can use it" (review M2): an explicit Role.mcpServers grant of
+    // a role left off the list goes too, so an ungrant is never reported done while the grant still lets it through.
+    const allowed = new Map<string, Set<string>>()
+    for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
+      const saved = servers.find((s) => s.id === raw?.id || (raw?.libraryId && s.libraryId === raw.libraryId))
+      if (saved && Array.isArray(saved.roles)) allowed.set(saved.id, new Set(saved.roles))
+    }
+    const keeps = (r: { slug: string }, id: string): boolean => !removeIds.has(id) && (!allowed.has(id) || allowed.get(id)!.has(r.slug))
+    const roles = project.roles.map((r) => (r.mcpServers?.some((id) => !keeps(r, id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => keeps(r, id)) } : r))
     const saved = this.projects.save({ ...project, roles, mcpServers: servers })
     for (const [before, after] of redefined) this.retarget({ projectId: project.id, serverId: before.id }, before, after, true)
     for (const s of removed) if (!s.libraryId) this.removeServerSecrets(project.id, s.id)

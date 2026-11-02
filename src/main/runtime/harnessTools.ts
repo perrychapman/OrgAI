@@ -236,16 +236,17 @@ export const draftRoleSchema = z.object({
   model: z.string().describe("A tier: top, deep, everyday or fast (mapped to the project's connection), or inherit. An exact model id only when listed as available."),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
-  reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator'),
-  mcpServers: z.array(z.string()).optional().describe("Names of this project's MCP servers to grant this role (the complete list); omit to keep the role's current grants"),
-  skills: z.array(z.string()).optional().describe("Names of this project's skills to grant this role (the complete list); omit to keep the role's current grants")
+  reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
 })
+// No grant fields (review H1): the org chart card does not show Role.mcpServers / Role.skills, so an org change never
+// grants servers or skills; a kept role keeps its grants (mergeOrgChart) and grant changes go through
+// propose_mcp_servers / propose_skills, whose cards show them.
 
 type DraftRole = z.infer<typeof draftRoleSchema>
 
 /**
  * Drafts to roles for an org chart proposal: toRoles (new ids, no grants), then the explicit slug of an existing role,
- * grants by server / skill name, and mergeOrgChart so approved changes keep ids and grants. A problem comes back as
+ * no grant fields (review H1), and mergeOrgChart so approved changes keep ids and grants. A problem comes back as
  * the REVISE text (nothing is shown to the user).
  */
 function rolesFromDrafts(ctx: RuntimeContext, rationale: string, drafts: DraftRole[]): { error: string } | { roles: Role[]; merged: OrgMergeResult } {
@@ -256,8 +257,6 @@ function rolesFromDrafts(ctx: RuntimeContext, rationale: string, drafts: DraftRo
     return { error: `REVISE. The org chart could not be validated: ${(e as Error).message}` }
   }
   const existing = ctx.project.roles
-  const servers = ctx.project.mcpServers ?? []
-  const skills = ctx.project.skills ?? []
   const used = new Set<string>()
   for (const [i, d] of drafts.entries()) {
     const role = converted[i]
@@ -268,24 +267,10 @@ function rolesFromDrafts(ctx: RuntimeContext, rationale: string, drafts: DraftRo
       used.add(slug)
       role.slug = slug
     }
-    if (d.mcpServers) {
-      const ids: string[] = []
-      for (const n of d.mcpServers) {
-        const s = servers.find((x) => x.name === n.trim())
-        if (!s) return { error: `REVISE. The org chart was not shown to the user: role "${datum(d.name, 60)}" names an MCP server "${datum(n, 60)}" that this project does not have.` }
-        ids.push(s.id)
-      }
-      role.mcpServers = [...new Set(ids)]
-    }
-    if (d.skills) {
-      const ids: string[] = []
-      for (const n of d.skills) {
-        const s = skills.find((x) => x.name === n.trim())
-        if (!s) return { error: `REVISE. The org chart was not shown to the user: role "${datum(d.name, 60)}" names a skill "${datum(n, 60)}" that this project does not have.` }
-        ids.push(s.id)
-      }
-      role.skills = [...new Set(ids)]
-    }
+    // Never grants (review H1): whatever a caller put on the draft, the role carries no grant fields, so mergeOrgChart
+    // keeps a matched role's grants and a new role starts with none.
+    delete role.mcpServers
+    delete role.skills
   }
   return { roles: converted, merged: mergeOrgChart(ctx.project, converted) }
 }
@@ -1035,7 +1020,8 @@ export const proposeMcpServers = defineTool({
       if (named) {
         // An existing project-only server: toggle or re-grant it from its current definition.
         const spec: McpServerSpec = { ...named, enabled: u.enabled ?? named.enabled, ...(u.roles ? { roles: u.roles } : {}) }
-        specs.push(spec)
+        // projectOnly (review M3): if the server is gone by approval time, McpService never takes the library path.
+        specs.push({ ...spec, projectOnly: true })
         noSecrets.add(spec.id)
         const n = datum(spec.name, 60)
         const before = changes.length
@@ -1052,9 +1038,10 @@ export const proposeMcpServers = defineTool({
       // Work run: an omitted roles list on a redefinition keeps who can use it.
       const specRoles = libraryScope ? undefined : u.roles?.length ? u.roles : workRun ? same?.roles : undefined
       const spec: McpServerSpec = {
-        ...specFromManual(u as ManualSpecInput, id, u.source ?? 'user'),
+        // Work run (review M4): provenance is never the agent's to claim, so no registry label on the card.
+        ...specFromManual(u as ManualSpecInput, id, workRun ? 'agent' : (u.source ?? 'user')),
         ...(specRoles?.length ? { roles: specRoles } : {}),
-        ...(u.registry ? { registry: u.registry } : {}),
+        ...(u.registry && !workRun ? { registry: u.registry } : {}),
         ...(workRun ? { enabled: u.enabled ?? same?.enabled ?? true } : {})
       }
       if (same) spec.addedAt = same.addedAt

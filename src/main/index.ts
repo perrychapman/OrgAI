@@ -281,7 +281,7 @@ app.whenReady().then(() => {
     removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
     mcp: {
       libraryEntries: () => mcp.libraryEntries(),
-      applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
+      applyProposal: (projectId, payload, opts) => mcp.applyProposal(projectId, payload, opts),
       applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
     },
     skills: { applyProposal: (projectId, payload) => skills.applyProposal(projectId, payload) }

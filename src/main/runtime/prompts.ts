@@ -118,7 +118,7 @@ export function architectureText(architecturePath: string): string {
 export function orgChangeText(): string {
   return (
     'The org chart is yours to keep honest. If this task shows a gap, such as a missing specialty, a role whose prompt misled its report, ' +
-    'tools a role lacked, or work you had to do yourself because no role fit, call propose_org_change at the end of the run with the full chart and the smallest change that fixes it; give every existing role its current slug so it is updated and keeps its MCP and skill grants (list mcpServers or skills on a role only to change its grants). ' +
+    'tools a role lacked, or work you had to do yourself because no role fit, call propose_org_change at the end of the run with the full chart and the smallest change that fixes it; give every existing role its current slug so it is updated and keeps its MCP and skill grants (an org change never changes grants: use propose_mcp_servers or propose_skills for that). ' +
     'The user approves it; it applies to future runs, not this one. Do not propose changes for one-off situations.'
   )
 }
