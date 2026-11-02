@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, type MockSession } from './mock'
+import { FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -622,5 +622,71 @@ describe('mock adapter MCP gate parity (review L3, M3)', () => {
     await runTools(again, [{ name: 'mcp__late__list', ask: true }])
     expect(again.requestPermission).not.toHaveBeenCalled()
     rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
+  // Never created on disk: the script only names these folders.
+  const base = join(tmpdir(), `orgai-fatigue-${process.pid}`)
+  const projPath = join(base, 'proj')
+  const sibling = join(base, 'sibling-notes')
+  type Decide = (req: { toolName: string }) => { behavior: 'allow'; scope?: 'once' | 'session' | 'project' }
+  async function play(over: Parameters<typeof fakeCtx>[0], decide: Decide, script?: { work: ReturnType<typeof fatigueSteps> }) {
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Run the tests ${FATIGUE_TOKEN}`, project: project({ path: projPath }), ...over })
+    vi.mocked(ctx.requestPermission).mockImplementation(async (req) => decide(req))
+    const session = await new MockAdapter({ script: { delayMs: 0, ...script } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+    const cards = vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0])
+    return { ctx, cards }
+  }
+  const lastText = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'text' ? [e.entry.block.text] : [])).at(-1)
+
+  it('offers Bash(npm test:*) for the compound cd; a session grant makes the later cd + npm test card-free', async () => {
+    const { ctx, cards } = await play({}, () => ({ behavior: 'allow', scope: 'session' }))
+    expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit'])
+    expect(cards[0]!.ruleLabels).toEqual(['Bash(npm test:*)'])
+    expect(cards[1]!.ruleLabels).toEqual(['Auto-accept file edits in this project', `Edits and reads in ${sibling}`])
+    expect(lastText(ctx)).toBe('Mock: the fatigue script is done.')
+  })
+
+  it('pre-approves the outside edit when its folder is allowed and the project accepts edits; auto mode does not', async () => {
+    const { cards } = await play({ project: project({ path: projPath, permissionMode: 'acceptEdits' }), allowedDirectories: () => [sibling] }, () => ({ behavior: 'allow', scope: 'session' }))
+    expect(cards.map((c) => c.toolName)).toEqual(['Bash'])
+    const auto = await play({ project: project({ path: projPath, permissionMode: 'auto' }), allowedDirectories: () => [sibling] }, () => ({ behavior: 'allow', scope: 'session' }))
+    expect(auto.cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit'])
+  })
+
+  it('a session acceptEdits + folder grant pre-approves later edits there, never edits elsewhere', async () => {
+    const edit = (file: string) => ({ type: 'tool' as const, name: 'Edit', input: { file_path: file }, ask: true })
+    const work = [edit(join(sibling, 'a.md')), edit(join(sibling, 'b.md')), edit(join(projPath, 'src', 'x.ts')), edit(join(base, 'other', 'c.md'))]
+    const { cards } = await play({}, () => ({ behavior: 'allow', scope: 'session' }), { work })
+    expect(cards.map((c) => (c as { input: { file_path: string } }).input.file_path)).toEqual([join(sibling, 'a.md'), join(base, 'other', 'c.md')])
+  })
+
+  it('a project scope on the edit card persists the folder and acceptEdits through the ctx hooks', async () => {
+    const allowDirectories = vi.fn((d: string[]) => d)
+    const acceptEditsForProject = vi.fn(() => true)
+    const { cards } = await play({ allowDirectories, acceptEditsForProject }, (req) => ({ behavior: 'allow', scope: req.toolName === 'Edit' ? 'project' : 'once' }))
+    expect(allowDirectories).toHaveBeenCalledTimes(1)
+    expect(allowDirectories).toHaveBeenCalledWith([sibling])
+    expect(acceptEditsForProject).toHaveBeenCalledTimes(1)
+    // A one-time Bash allow grants nothing: the last cd + npm test asks again.
+    expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit', 'Bash'])
+  })
+
+  it('a quick run never calls the persist hooks, even on a project scope', async () => {
+    const allowDirectories = vi.fn((d: string[]) => d)
+    const acceptEditsForProject = vi.fn(() => true)
+    const quick = { folder: projPath, team: 'single' as const, allowEdits: true, gitRepo: false }
+    const { cards } = await play(
+      { run: runSummary({ projectId: 'quick', quick }), allowDirectories, acceptEditsForProject },
+      (req) => ({ behavior: 'allow', scope: req.toolName === 'Edit' ? 'project' : 'session' }),
+      { work: fatigueSteps(projPath) }
+    )
+    expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit'])
+    expect(allowDirectories).not.toHaveBeenCalled()
+    expect(acceptEditsForProject).not.toHaveBeenCalled()
   })
 })

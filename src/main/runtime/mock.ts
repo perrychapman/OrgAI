@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import { dirname, join } from 'node:path'
+import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
@@ -7,12 +8,12 @@ import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigC
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
-import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
-import { matchingRule } from './ruleMatch'
+import { isFreeCdTarget, matchOptionsFor, matchingRule } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
 
 /**
@@ -20,6 +21,19 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * real adapter would, going through the same RuntimeContext round-trips (permissions, proposals, setup
  * completion) and the shared harness tools. Used by tests and for UI work: set ORGAI_MOCK=1 and a
  * project's provider.id to "mock"; ORGAI_MOCK_SCRIPT may point at a JSON MockScript.
+ *
+ * Prompt markers (default script only): [mock:auth-fail], [mock:skill], [mock:mcp-midrun], [mock:config-change],
+ * [mock:no-price], [mock:computed-cost], [mock:title-fail] (complete()), and [mock:fatigue] (fatigueSteps): the root
+ * runs `cd <project>/.claude/worktrees/agent-x && npm test` with a provider-style compound rule suggestion (the card
+ * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
+ * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
+ * granted; the free cd needs no rule).
+ *
+ * Permission asks follow the Claude adapter: saved, session and live rules (matchingRule with matchOptionsFor, so a
+ * `cd` into the project or an allowed directory needs no rule), and an edit is pre-approved when its file is inside
+ * the project, an allowed directory or a session-granted directory AND the project mode is 'acceptEdits' (not on a
+ * trust-restricted run) or the session was granted acceptEdits. Deviation: the real CLI's auto mode also
+ * auto-approves in-cwd edits; the mock does not, so e2e can rely on the default script's Edit card.
  */
 
 export type MockStep =
@@ -31,7 +45,17 @@ export type MockStep =
    * `background` too, the turn goes on without waiting for the answer (a report's call still pending
    * while the orchestrator's turn ends).
    */
-  | { type: 'tool'; agent?: string; name: string; input?: Record<string, unknown>; result?: string; ask?: boolean; background?: boolean }
+  | {
+      type: 'tool'
+      agent?: string
+      name: string
+      input?: Record<string, unknown>
+      result?: string
+      ask?: boolean
+      background?: boolean
+      /** Provider-style permission suggestions passed to chooseSuggestions as `provided` (like the CLI's canUseTool). */
+      suggestions?: PermissionSuggestion[]
+    }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
   | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
@@ -251,6 +275,47 @@ const MCP_MIDRUN_STEPS: MockStep[] = [
   { type: 'text', text: 'Mock: the new MCP server was used.' }
 ]
 
+/** Trigger token (work runs, default script): the permission-fatigue script (fatigueSteps). */
+export const FATIGUE_TOKEN = '[mock:fatigue]'
+/** The report the [mock:fatigue] script spawns. */
+export const MOCK_FATIGUE_REPORT = 'mock-fatigue-report'
+
+/**
+ * The [mock:fatigue] turn for a project folder: a compound `cd <worktree> && npm test` with the CLI's compound rule
+ * suggestion (replaced on the card by `Bash(npm test:*)`), an edit outside the project with setMode acceptEdits +
+ * addDirectories suggestions, then `cd <project>/sub && npm test`. Nothing touches the disk.
+ */
+export function fatigueSteps(projectPath: string): MockStep[] {
+  const worktree = join(projectPath, '.claude', 'worktrees', 'agent-x')
+  const sibling = join(dirname(projectPath), 'sibling-notes')
+  const sub = join(projectPath, 'sub')
+  const bashRule = (cmd: string): PermissionSuggestion[] => [
+    { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: `${cmd} *` }], behavior: 'allow', destination: 'localSettings' }
+  ]
+  const first = `cd ${worktree} && npm test`
+  const last = `cd ${sub} && npm test`
+  return [
+    { type: 'text', text: 'Running the tests in the worktree.' },
+    { type: 'tool', name: 'Bash', input: { command: first }, ask: true, suggestions: bashRule(first), result: 'Tests passed.' },
+    { type: 'spawn', id: MOCK_FATIGUE_REPORT, description: 'Update the sibling notes' },
+    {
+      type: 'tool',
+      agent: MOCK_FATIGUE_REPORT,
+      name: 'Edit',
+      input: { file_path: join(sibling, 'README.md'), old_string: 'old', new_string: 'new' },
+      ask: true,
+      suggestions: [
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+        { type: 'addDirectories', directories: [sibling], destination: 'session' }
+      ],
+      result: 'File updated.'
+    },
+    { type: 'finish', id: MOCK_FATIGUE_REPORT, result: 'Updated the sibling notes. Files touched: ../sibling-notes/README.md' },
+    { type: 'tool', name: 'Bash', input: { command: last }, ask: true, suggestions: bashRule(last), result: 'Tests passed.' },
+    { type: 'text', text: 'Mock: the fatigue script is done.' }
+  ]
+}
+
 /** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
 export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
 /** The server and the skill the [mock:config-change] script proposes. */
@@ -339,6 +404,10 @@ export class MockSession implements RuntimeSession {
   private spawnToolUse = new Map<string, string>()
   /** Allow rules granted for the rest of this session. */
   private sessionRules = new Set<string>()
+  /** A setMode acceptEdits granted for the rest of this session (the CLI's session permission mode). */
+  private sessionAcceptEdits = false
+  /** Folders granted for the rest of this session (addDirectories). */
+  private sessionDirs = new Set<string>()
   private handles = new HandleNamer()
   /** Harness tool name -> audience, for the MCP grant gate (same as the Claude adapter's PreToolUse). */
   private harnessAudiences = new Map<string, HarnessToolAudience>()
@@ -702,6 +771,7 @@ export class MockSession implements RuntimeSession {
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
     return this.isSetup ? this.script.setup : this.script.work
   }
 
@@ -874,7 +944,9 @@ export class MockSession implements RuntimeSession {
       return
     }
     if (step.ask) {
-      const suggestions = chooseSuggestions(step.name, input, undefined)
+      const restricted = isTrustRestrictedRun(this.ctx.run)
+      const opts = matchOptionsFor(this.ctx)
+      const suggestions = chooseSuggestions(step.name, input, step.suggestions, false, opts)
       const rules = allowRuleStrings(suggestions)
       // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
       const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
@@ -883,7 +955,10 @@ export class MockSession implements RuntimeSession {
       const installed = step.name.startsWith('mcp__') ? agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name)) : new Set<string>()
       const savedUsable = new Set(withoutServerRules([...saved], installed))
       const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
-      const preApproved = (rules.length > 0 && rules.every((r) => savedUsable.has(r))) || matchingRule(step.name, input, usable) !== undefined
+      const preApproved =
+        (rules.length > 0 && rules.every((r) => savedUsable.has(r))) ||
+        matchingRule(step.name, input, usable, opts) !== undefined ||
+        this.editPreApproved(step.name, input, restricted)
       if (!preApproved) {
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(
@@ -903,12 +978,38 @@ export class MockSession implements RuntimeSession {
           this.setState(agentId, 'thinking', 'Thinking…')
           return
         }
-        const granted = applyAllowScope(this.ctx.project.path, isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision, suggestions, (level, message) => this.log(level, message))
+        // Same as the Claude adapter: a trust-restricted run never persists anything (project scope becomes session).
+        const granted = applyAllowScope(
+          this.ctx.project.path,
+          restricted && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision,
+          suggestions,
+          (level, message) => this.log(level, message),
+          restricted ? undefined : allowScopePersist(this.ctx)
+        )
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
+        for (const s of granted ?? []) {
+          if (s.type === 'setMode' && s.mode === 'acceptEdits') this.sessionAcceptEdits = true
+          if (s.type === 'addDirectories') for (const d of s.directories) this.sessionDirs.add(d)
+        }
       }
     }
     this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
     this.setState(agentId, 'thinking', 'Thinking…')
+  }
+
+  /**
+   * An edit the CLI would auto-accept: the file is inside the project, an allowed directory or a session directory,
+   * and the session runs in acceptEdits (project mode, not on a trust-restricted run, or a session grant). The
+   * project's 'auto' mode deliberately does not count (see the header comment).
+   */
+  private editPreApproved(toolName: string, input: unknown, restricted: boolean): boolean {
+    if (!EDIT_TOOLS.has(toolName)) return false
+    const acceptEdits = this.sessionAcceptEdits || (!restricted && this.ctx.project.permissionMode === 'acceptEdits')
+    if (!acceptEdits) return false
+    const target = editTargetOf(input)
+    if (!target) return false
+    const opts = matchOptionsFor(this.ctx)
+    return isFreeCdTarget(target, { ...opts, freeDirs: [...(opts.freeDirs ?? []), ...this.sessionDirs] })
   }
 
   private async spawnStep(step: Extract<MockStep, { type: 'spawn' }>): Promise<void> {
@@ -1012,6 +1113,14 @@ export class MockSession implements RuntimeSession {
 export interface MockAdapterOptions {
   /** Use this script instead of ORGAI_MOCK_SCRIPT or the default. Missing fields come from the default. */
   script?: MockScript
+}
+
+/** What a 'project' scope may persist besides rules: the ctx hooks bound to ctx, each undefined when absent. */
+function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
+  return {
+    ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
+  }
 }
 
 const MOCK_CONFIG_WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
