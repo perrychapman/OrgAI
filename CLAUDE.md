@@ -248,7 +248,41 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `DECLINED_PER_KIND_MAX` (3) declined proposals of one kind in a run, further ones of that kind answer DECLINED
     without a card (L6). The SKILL.md body is not checked for hidden characters. Verified by unit tests only.
 
+- Permissions (prompt fatigue, GitHub issue #14; ARCHITECTURE.md "Permissions and prompt fatigue"):
+  - Allowed folders: `Project.allowedDirectories` (max 20, 1,024 chars each) are extra folders agents may read and
+    edit like the project. ProjectStore drops on save and at boot (`cleanAllowedDirectories`, silent, logged at
+    debug): relative, roots, UNC/device, the data dir either way, and through `runtime/allowedDirectories.ts`
+    `allowedDirectoryRisk` the project or inside it, a folder containing it, home or above, and home config /
+    credential / autorun folders (`HOME_CONFIG_DIRS` in permissionRules.ts: .ssh, .claude, .codex, .config,
+    AppData/Roaming, .local/bin, Documents/PowerShell, browser profiles ...). projects:save returns the cleaned list.
+    RunManager `resolveAllowedDirectories` repeats the rules at run start on real paths (both spellings of home and
+    project) and warns per missing or dropped folder. Claude: `Options.additionalDirectories`; Codex:
+    `sandbox_workspace_write.writable_roots`; never on trust-restricted runs.
+  - Matching (ruleMatch.ts): `prefix:*` = `prefix *`; a `cd` into the project, a worktree or an allowed folder is
+    free (lexical; MSYS `/c/` only for bash; win32 names ending in dot or space refused). Refused: pipes, redirects,
+    `$(`, backtick, `&`, newline, unquoted `( ) { }` and word-initial `@` (PowerShell), git options that run a program,
+    typographic quotes and dashes, hidden characters in a rule. Only bare shells or shells in the exact
+    `SYSTEM_SHELL_DIRS` are unwrapped.
+  - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words,
+    runner words three; `isTooBroadPrefix` (writers, fetchers, config/eval pairs, interpreters) and blanket or
+    destructive rules are never offered or saved; a provider setMode survives only as acceptEdits. User-configured
+    MCP servers get `mcp__<server>`, agent-installed ones exact tool rules. "Always allow for project" saves rules,
+    the folders (ctx.allowDirectories) and acceptEdits only from 'default'. Codex file approvals in accept-edits modes
+    accept only paths inside the free folders (lexical and real), never `.git` / `.codex` / `.agents` / `.claude`.
+    permissions:add / remove inputs are rebuilt (`permissionRuleArgs`, rule <= 1,000 chars).
+  - Mock: `[mock:fatigue]` (compound cd + npm test, a sibling-folder edit with setMode + addDirectories, a repeat
+    pre-approved after the session grant); in-project edits are pre-approved in acceptEdits only.
+  - Verified by unit tests, the mock and e2e/permissions.mjs. Unverified live: additionalDirectories making cds and
+    edits free, session setMode / addDirectories from canUseTool, the CLI's per-segment matching agreeing with ours,
+    a restarted query picking up new additionalDirectories, Codex writable_roots and its file-approval wire shape.
+
 ## Renderer
+
+- Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard
+  glance block `perm-location[data-kind]` (fails closed to "Working folder unclear"), effect sentence, rule chips with
+  `data-broad`, a no-rule line, `perm-settings-link` (window event `orgai:project-settings-section`); Settings >
+  Agents Allowed folders `allowed-folder-*` (quiet notice for folders main dropped on save); rules panel grammar
+  check and kind chips. Helpers `lib/permissionCopy.ts`, `lib/decisionTitle.ts`; e2e `e2e/permissions.mjs` (e2e:free).
 
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
 

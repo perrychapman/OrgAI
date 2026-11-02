@@ -62,13 +62,17 @@ function gitRunsProgram(segment: string): boolean {
   if (bin !== 'git') return false
   const sub = (words[1] ?? '').toLowerCase()
   if (sub === '-c' || sub.startsWith('--config-env') || sub.startsWith('--exec-path')) return true
+  const rest = words.slice(2).map((w) => w.replace(/^["']|["']$/g, '').toLowerCase())
+  // `git submodule foreach <cmd>` and `git bisect run <cmd>` run a command even under a saved submodule / bisect rule.
+  if ((sub === 'submodule' && rest.includes('foreach')) || (sub === 'bisect' && rest.includes('run'))) return true
   return words.slice(1).some((w) => {
     const o = w.replace(/^["']|["']$/g, '')
     if (/^--(?:upload-pack|receive-pack|exec|open-files-in-pager|extcmd|config-env|tool)(?:=|$)/i.test(o)) return true
-    if (sub === 'grep' && /^-O/.test(o)) return true
+    // Short options may be clustered (`-iOcalc`, `-qu calc`): look for the letter anywhere in a single-dash word.
+    if (sub === 'grep' && /^-[a-zA-Z]*O/.test(o)) return true
     if (sub === 'difftool' && /^-[a-zA-Z]*[xt]/.test(o)) return true
     if (sub === 'mergetool' && /^-[a-zA-Z]*t/.test(o)) return true
-    if ((sub === 'clone' || sub === 'fetch' || sub === 'pull' || sub === 'ls-remote' || sub === 'archive') && /^-u/.test(o)) return true
+    if ((sub === 'clone' || sub === 'fetch' || sub === 'pull' || sub === 'ls-remote' || sub === 'archive') && /^-[a-zA-Z]*u/.test(o)) return true
     return false
   })
 }

@@ -232,6 +232,12 @@ describe('free cd segments', () => {
 
   it('second re-check M2 / L2: git options that run a program, and @ after , or =', () => {
     const rules = ['Bash(git fetch:*)', 'Bash(git grep:*)', 'Bash(git difftool:*)', 'Bash(git log:*)', 'Bash(git clone:*)', 'Bash(npm test:*)']
+    const saved = ['Bash(git submodule:*)', 'Bash(git bisect:*)', 'Bash(git grep:*)', 'Bash(git clone:*)', 'Bash(git ls-remote:*)']
+    for (const c of ['git grep -iOcalc x', 'git clone -qu calc .', 'git ls-remote -qu calc .', 'git submodule foreach calc', 'git bisect run calc']) {
+      expect(matchesBashRule(c, saved), c).toBe(false)
+    }
+    expect(matchesBashRule('git submodule update --init', saved)).toBe(true)
+    expect(matchesBashRule('git bisect good', saved)).toBe(true)
     for (const c of ['git fetch --upload-pack=evil origin', 'git fetch "--upload-pack=evil"', 'git grep -O evil x', 'git grep --open-files-in-pager=evil x', 'git difftool -x evil', 'git difftool --extcmd=evil', 'git clone -u evil url', 'git -c core.pager=evil log', 'git log --exec=x']) {
       expect(matchesBashRule(c, rules), c).toBe(false)
     }
