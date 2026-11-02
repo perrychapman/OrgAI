@@ -1,5 +1,5 @@
-import type { RunStatus } from '@shared/types'
-import { oneLine, permissionTitle } from './decisionTitle'
+import type { ProposalKind, RunStatus } from '@shared/types'
+import { oneLine, permissionTitle, PROPOSAL_KIND_LABEL } from './decisionTitle'
 import { isOpenStatus, needsYou } from './runChains'
 
 /** Structural view of a run's open decisions, so this stays free of store types. */
@@ -7,7 +7,7 @@ export interface WaitRun {
   summary: { id: string; status: RunStatus; startedAt: number }
   agents: Record<string, { name: string }>
   permissions?: readonly { id: string; agentId: string; toolName: string; input?: unknown }[]
-  proposals?: readonly { id: string; title?: string }[]
+  proposals?: readonly { id: string; title?: string; kind?: ProposalKind }[]
   questions?: readonly { id: string; agentId: string; question: string }[]
   ruleRequests?: readonly { id: string; agentId: string }[]
   mergeReviews?: readonly { id: string; agentName: string }[]
@@ -33,7 +33,7 @@ export function waitingItems(run: WaitRun): WaitingItem[] {
   const items: WaitingItem[] = []
   for (const r of run.ruleRequests ?? []) items.push({ key: r.id, runId, kind: 'rules', label: `Rules: ${who(r.agentId)} asks for permission rules` })
   for (const q of run.questions ?? []) items.push({ key: q.id, runId, kind: 'question', label: `Question: ${oneLine(q.question, 100)}` })
-  for (const p of run.proposals ?? []) items.push({ key: p.id, runId, kind: 'proposal', label: `Proposal: ${p.title ? oneLine(p.title, 100) : 'to approve'}` })
+  for (const p of run.proposals ?? []) items.push({ key: p.id, runId, kind: 'proposal', label: `${p.kind ? PROPOSAL_KIND_LABEL[p.kind] : 'Proposal'}: ${p.title ? oneLine(p.title, 100) : 'to approve'}` })
   for (const m of run.mergeReviews ?? []) items.push({ key: m.id, runId, kind: 'merge', label: `Merge: review ${oneLine(m.agentName, 40)}'s changes` })
   for (const p of run.permissions ?? []) items.push({ key: p.id, runId, kind: 'permission', label: `Allow: ${permissionTitle(p.toolName, p.input)}` })
   for (const i of run.mcpInstalls ?? []) items.push({ key: i.id, runId, kind: 'install', label: `Install: ${who(i.agentId)} asks to install an MCP server` })

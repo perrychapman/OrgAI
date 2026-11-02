@@ -25,7 +25,7 @@ import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
 import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
-import { oneLine, permissionTitle } from '../lib/decisionTitle'
+import { oneLine, permissionTitle, PROPOSAL_KIND_LABEL } from '../lib/decisionTitle'
 import { defaultDecisionIndex } from '../lib/needsYou'
 import { Icon } from '../components/ui/Icon'
 import { Popover } from '../components/ui/Popover'
@@ -489,7 +489,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : 'o'}`).join('|') +
     `/${run.permissions.length}.${run.proposals.length}.${run.questions?.length ?? 0}.${run.ruleRequests?.length ?? 0}.${run.mergeReviews?.length ?? 0}.${status === 'paused' ? 'p' : ''}`
   useEffect(() => {
-    const t = setTimeout(() => fitView(fitOpts({ duration: 200 })), 80)
+    const t = setTimeout(() => {
+      // An expanded proposal in a compact frame takes the stage's room (height 0): nothing to fit then.
+      if ((canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8) return
+      void fitView(fitOpts({ duration: 200 }))
+    }, 80)
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
 
@@ -497,7 +501,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const focusDecision = useCallback((): void => {
     const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
     if (!region) return
+    // A folded proposal in a compact frame lands on Details: the user must see what Approve covers first.
+    const details = region.querySelector<HTMLElement>('.decision-card[data-focus-details="true"] .decision-details')
+    const foldedDetails = details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true' ? details : null
     const target =
+      foldedDetails ??
       region.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
       region.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ??
       region
@@ -560,9 +568,23 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       }, 100)
     })
     ro.observe(el)
+    // An expanded proposal in a compact frame collapses the stage to height 0 (the canvas stays mounted, nothing floats).
+    // Refit only when the stage comes back; while it is collapsed there is nothing to fit.
+    const stage = el.querySelector('.frame-stage')
+    let stageShown = (stage?.clientHeight ?? 1) >= 8
+    const so = stage ? new ResizeObserver(() => {
+      const shown = stage.clientHeight >= 8
+      if (shown === stageShown) return
+      stageShown = shown
+      if (!shown) return
+      clearTimeout(t)
+      t = setTimeout(() => void fitView(fitOpts({ duration: 0 })), 100)
+    }) : null
+    if (stage) so?.observe(stage)
     return () => {
       clearTimeout(t)
       ro.disconnect()
+      so?.disconnect()
     }
   }, [fitView])
 
@@ -601,8 +623,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     })),
     ...run.proposals.map((p) => ({
       key: p.id,
-      label: short(p.title),
-      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : undefined} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
+      label: `${PROPOSAL_KIND_LABEL[p.kind]}: ${short(p.title)}`,
+      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : who(p.agentId)} agentId={isSetupRun ? undefined : p.agentId} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
     })),
     ...(run.mergeReviews ?? []).map((m) => ({
       key: m.id,

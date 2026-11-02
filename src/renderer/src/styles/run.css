@@ -350,6 +350,15 @@
 .composer-hint svg {
   flex: none;
 }
+/* An expanded proposal takes a compact frame (layout.css): the composer under it folds to one line, textarea kept. */
+.run-body:has(.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) .composer-mode,
+.run-body:has(.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) .composer-hint {
+  display: none;
+}
+.run-body:has(.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) .composer-row textarea {
+  min-height: 32px;
+  max-height: 32px;
+}
 /* A narrow composer drops the hint so "Replying to <agent>" stays whole. */
 @container composer (max-width: 560px) {
   .composer-hint {
