@@ -21,7 +21,7 @@ try {
 
   // Usage side tab
   // Under about 1100 px the side panel starts as its rail.
-  const showPanel = page.getByRole('button', { name: /^Show / })
+  const showPanel = page.locator('aside.side-panel[data-collapsed=true]').getByRole('button', { name: /^Show / })
   if (await showPanel.count()) await showPanel.first().click()
   const tab = page.locator('[data-testid=side-tab-usage]')
   await tab.waitFor({ timeout: 10_000 })
