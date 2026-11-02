@@ -6,7 +6,7 @@ import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Propos
 import { ROOT_AGENT_ID, type RunMessageOutcome, type RunSkill } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
-import { INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor, isBlockingHarnessTool, isInsideDir, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor, isBlockingHarnessTool, isInsideDir, safeMcpToolNames, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
 import { pendingWorktrees } from './worktrees'
@@ -338,13 +338,30 @@ describe('MCP tools', () => {
     expect(ctx.requestMcpInstall).toHaveBeenCalledWith(expect.objectContaining({ reason: 'triage issues', requiredSecrets: ['GITHUB_TOKEN'] }))
   })
 
+  it('safeMcpToolNames keeps a 64-char name whole and drops invalid names', () => {
+    const long = 'a'.repeat(64)
+    expect(safeMcpToolNames([long, 'ok_name-1', 'has space', 'new
+line', 'a'.repeat(65), '', 7, null])).toEqual([long, 'ok_name-1'])
+  })
+
+  it('request_mcp_install: a 64-char tool name survives and the result uses the filtered list with the more tail', async () => {
+    const long = 'b'.repeat(64)
+    const tools = [long, 'bad name', 'c'.repeat(65), '', ...Array.from({ length: 21 }, (_, i) => `t${i}`)]
+    const addMcpServer = vi.fn(async () => ({ prefix: 'mcp__github__', availability: 'now' as const, tools }))
+    const text = await byName(workTools(fakeCtx(), { addMcpServer }), 'request_mcp_install').call({ reason: 'r', manual: pinned })
+    expect(text).toContain(`mcp__github__${long},`)
+    expect(text).not.toContain('bad name')
+    expect(text).not.toContain('c'.repeat(65))
+    expect(text).toContain('and 2 more')
+  })
+
   it('request_mcp_install: availability now lists the capped, quoted tool names and the permission note', async () => {
     const tools = ['create_issue', 'x<script>\ny', ...Array.from({ length: 25 }, (_, i) => `t${i}`)]
     const addMcpServer = vi.fn(async () => ({ prefix: 'mcp__github__', availability: 'now' as const, tools }))
     const text = await byName(workTools(fakeCtx(), { addMcpServer }), 'request_mcp_install').call({ reason: 'r', manual: pinned })
-    expect(text).toContain('available now as mcp__github__create_issue, mcp__github__x‹script› y, mcp__github__t0')
-    expect(text).toContain('and 7 more')
-    expect(text).not.toContain('<script>')
+    expect(text).toContain('available now as mcp__github__create_issue, mcp__github__t0')
+    expect(text).toContain('and 6 more')
+    expect(text).not.toContain('script')
     expect(text).toContain("may still ask the user for permission under the project's permission mode")
     expect(text).not.toContain('Only these roles')
     const bare = await byName(workTools(fakeCtx(), { addMcpServer: vi.fn(async () => 'mcp__github__') }), 'request_mcp_install').call({ reason: 'r', manual: pinned })
