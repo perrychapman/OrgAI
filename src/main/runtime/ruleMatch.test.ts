@@ -203,6 +203,30 @@ describe('free cd segments', () => {
     expect(unwrapShellCommand("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command 'cd src'")).toBe('cd src')
   })
 
+  it('reviewer Low: only the exact system shell folders, never a subfolder of Program Files or System32', () => {
+    for (const bin of [
+      '"C:\\Program Files\\Git\\bin\\bash.exe"',
+      '"C:\\Program Files\\Git\\usr\\bin\\sh.exe"',
+      '"C:\\Program Files (x86)\\Git\\bin\\bash.exe"',
+      '"C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe"',
+      'C:\\Windows\\System32\\bash.exe',
+      '"C:\\Program Files\\PowerShell\\7\\pwsh.exe"'
+    ]) {
+      expect(unwrapShellCommand(`${bin} -c 'cd src'`), bin).toBe('cd src')
+    }
+    for (const bin of [
+      'C:\\Windows\\System32\\spool\\drivers\\color\\bash.exe',
+      'C:\\Windows\\System32\\Tasks\\sh.exe',
+      '"C:\\Program Files\\Vendor\\bash.exe"',
+      '"C:\\Program Files (x86)\\Vendor\\tools\\bash.exe"',
+      '"C:\\Program Files\\Git\\bin\\extra\\bash.exe"',
+      'C:\\Windows\\System32\\..\\Temp\\bash.exe'
+    ]) {
+      const c = `${bin} -c 'cd src'`
+      expect(unwrapShellCommand(c), bin).toBe(c)
+    }
+  })
+
   it('review H3: backslash-quote and $\'...\' quoting never match a rule', () => {
     expect(matchesBashRule('echo "a\\" "; evil; ": ', ['Bash(echo:*)'])).toBe(false)
     expect(matchesBashRule("echo $'\\'' ; evil ; echo $'\\''", ['Bash(echo:*)'])).toBe(false)

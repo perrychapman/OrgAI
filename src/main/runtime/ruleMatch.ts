@@ -87,10 +87,16 @@ export function isValidRule(rule: string): boolean {
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)
 }
 
-/** System folders a wrapped shell may be named by absolute path (lowercase, forward slashes, no trailing slash). */
+/**
+ * The exact folders a wrapped shell may be named in by absolute path (lowercase, forward slashes, no trailing
+ * slash). Exact matches only, never a subfolder: some folders under Program Files and System32 are user-writable
+ * (System32\spool\drivers\color, System32\Tasks).
+ */
 const SYSTEM_SHELL_DIRS = [
   '/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin',
-  'c:/program files/git/bin', 'c:/program files/git/usr/bin', 'c:/windows/system32/windowspowershell/v1.0', 'c:/program files/powershell/7'
+  'c:/program files/git/bin', 'c:/program files/git/usr/bin',
+  'c:/program files (x86)/git/bin', 'c:/program files (x86)/git/usr/bin',
+  'c:/windows/system32', 'c:/windows/system32/windowspowershell/v1.0', 'c:/program files/powershell/7'
 ]
 
 /**
@@ -103,8 +109,6 @@ function isSystemShell(bin: string): boolean {
   if (!SHELL_BINARY.test(base)) return false
   if (parts.length === 0) return true
   const dir = parts.join('/').toLowerCase()
-  // Admin-only Windows install folders (Git, PowerShell 7 and Windows PowerShell live there).
-  if (/^c:\/(?:program files|program files \(x86\)|windows\/system32)\/[^.]/.test(dir) && !dir.split('/').includes('..')) return true
   return SYSTEM_SHELL_DIRS.includes(dir)
 }
 
@@ -119,7 +123,8 @@ export function unwrapShellCommand(command: string): string {
   const m = /^("[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(?:'([^']*)'|"([^"$`]*)")$/i.exec(c)
   if (!m) return c
   const bin = m[1].replace(/^"|"$/g, '')
-  if (/[$`(){};&|<>'"]/.test(bin)) return c
+  // Shell metacharacters refuse the wrapper; the literal "Program Files (x86)" folder of a quoted path is the one exception.
+  if (/[$`(){};&|<>'"]/.test(bin.replace(/^c:[\\/]program files \(x86\)(?=[\\/])/i, 'c:/pf86'))) return c
   if (!isSystemShell(bin)) return c
   return (m[2] ?? m[3] ?? '').trim()
 }
