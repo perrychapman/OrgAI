@@ -3,7 +3,8 @@ import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, Plugi
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
+import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
+import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
@@ -220,14 +221,50 @@ const AUTH_FAIL_TOKEN = '[mock:auth-fail]'
 /** Trigger token: the root calls list_skills (or loads its first granted skill). */
 const SKILL_TOKEN = '[mock:skill]'
 
+/** Trigger token (work runs, default script): request_mcp_install mid-run, then call the new server from the root and a report. */
+export const MCP_MIDRUN_TOKEN = '[mock:mcp-midrun]'
+/** The server the [mock:mcp-midrun] script asks for, its report's id and the tool both agents call. */
+export const MOCK_MIDRUN_SERVER = 'mock-midrun'
+export const MOCK_MIDRUN_REPORT = 'mock-midrun-report'
+export const MOCK_MIDRUN_TOOL = `mcp__${MOCK_MIDRUN_SERVER}__ping`
+
+/**
+ * The [mock:mcp-midrun] turn: ask for a server, then (once approved) call one of its tools from the root and from a
+ * spawned report. Each call goes through the MCP grant gate and then the permission card, like the live adapter; a
+ * role the install card left out gets the gate's denial as the tool result.
+ */
+const MCP_MIDRUN_STEPS: MockStep[] = [
+  { type: 'text', text: 'This needs a server the project does not have; asking you to add it.' },
+  {
+    type: 'harness',
+    name: MCP_HARNESS_TOOLS.requestInstall,
+    retryOnRevise: false,
+    args: {
+      reason: 'Mock: exercise attaching an MCP server mid-run.',
+      manual: { name: MOCK_MIDRUN_SERVER, transport: 'stdio', command: 'npx', args: ['-y', 'mock-midrun-server@1.0.0'] }
+    }
+  },
+  { type: 'tool', name: MOCK_MIDRUN_TOOL, ask: true, result: 'PONG' },
+  { type: 'spawn', id: MOCK_MIDRUN_REPORT, description: 'Ping the new MCP server' },
+  { type: 'tool', agent: MOCK_MIDRUN_REPORT, name: MOCK_MIDRUN_TOOL, ask: true, result: 'PONG' },
+  { type: 'finish', id: MOCK_MIDRUN_REPORT, result: 'Pinged the new MCP server.' },
+  { type: 'text', text: 'Mock: the new MCP server was used.' }
+]
+
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
   readonly harnessMessages: string[] = []
   /** Raw messages from other runs delivered through receive(), in order. For tests. */
   readonly peerMessages: PeerMessage[] = []
-  /** What a real adapter would grant: role slug -> names of the MCP servers that role may use. For tests. */
-  readonly mcpServersByRole: Record<string, string[]> = {}
+  /**
+   * What a real adapter would grant: role slug -> names of the MCP servers that role may use, from the LIVE server
+   * list (servers installed mid-run and the install card's roles included). For tests.
+   */
+  get mcpServersByRole(): Record<string, string[]> {
+    const specs = { mcpServers: this.liveMcpServers() }
+    return Object.fromEntries(this.ctx.roles.map((r) => [r.slug, mcpServersForRole(specs, r).map((s) => s.name)]))
+  }
   /** The enabled plugins the session would load. For tests. */
   readonly plugins: PluginSpec[] = []
   /** Which adapter and connection the run was routed to; never secrets. Undefined without ctx.connection. For tests. */
@@ -252,6 +289,8 @@ export class MockSession implements RuntimeSession {
   /** Allow rules granted for the rest of this session. */
   private sessionRules = new Set<string>()
   private handles = new HandleNamer()
+  /** Harness tool name -> audience, for the MCP grant gate (same as the Claude adapter's PreToolUse). */
+  private harnessAudiences = new Map<string, HarnessToolAudience>()
 
   constructor(
     private ctx: RuntimeContext,
@@ -273,8 +312,7 @@ export class MockSession implements RuntimeSession {
       if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
     }
     this.tools = harnessToolsFor(ctx, { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec) })
-    const mcpSpecs = { mcpServers: ctx.mcpServers ? ctx.mcpServers() : ctx.project.mcpServers }
-    for (const r of ctx.roles) this.mcpServersByRole[r.slug] = mcpServersForRole(mcpSpecs, r).map((s) => s.name)
+    this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
     this.plugins.push(...(ctx.plugins?.() ?? []).filter((p) => p.enabled))
     if (ctx.connection) this.connection = { adapter: ctx.connection.adapter, connection: ctx.connection.connection }
     this.continueTurns = [...(script.continue ?? [])]
@@ -335,10 +373,25 @@ export class MockSession implements RuntimeSession {
     this.poke()
   }
 
-  /** The addMcpServer harness hook: record the server the way a live adapter would attach it. */
-  async addMcpServer(spec: McpServerSpec): Promise<string> {
+  /**
+   * The addMcpServer harness hook: record the server. The mock has no whitelists to widen, so the tools are callable
+   * at once ('now'); the per-role grant gate in toolStep still applies (the Claude adapter answers 'after-idle').
+   */
+  async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     this.addedMcpServers.push(spec)
-    return `mcp__${spec.name}__`
+    return { prefix: `mcp__${spec.name}__`, availability: 'now' }
+  }
+
+  /** The run's MCP servers as they are now (project servers plus run-scoped installs). */
+  private liveMcpServers(): McpServerSpec[] {
+    return this.ctx.mcpServers ? this.ctx.mcpServers() : (this.ctx.project.mcpServers ?? [])
+  }
+
+  /** The role behind an agent id (the root's for the root). */
+  private roleOf(agentId: string): Role | undefined {
+    if (agentId === ROOT_AGENT_ID) return this.root
+    const a = this.agents.get(agentId)
+    return (a?.roleId ? this.ctx.roles.find((r) => r.id === a.roleId) : undefined) ?? (a ? this.rolesBySlug.get(a.roleSlug) : undefined)
   }
 
   // ---------- events ----------
@@ -580,6 +633,7 @@ export class MockSession implements RuntimeSession {
       }
       return at < 0 ? [...DEFAULT_SETUP, step] : [...DEFAULT_SETUP.slice(0, at), step, ...DEFAULT_SETUP.slice(at)]
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     return this.isSetup ? this.script.setup : this.script.work
   }
 
@@ -730,6 +784,15 @@ export class MockSession implements RuntimeSession {
         return
       }
     }
+    // Same per-role MCP grant gate as the Claude adapter's PreToolUse, from the live server list; the MCP resource
+    // tools are gated on input.server.
+    const mcpDenial = mcpCallDenial(step.name, { role: this.roleOf(agentId), isRoot: agentId === ROOT_AGENT_ID }, this.liveMcpServers(), this.harnessAudiences, input)
+    if (mcpDenial) {
+      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: mcpDenial, isError: true })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
+    }
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
@@ -748,8 +811,11 @@ export class MockSession implements RuntimeSession {
       // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
       const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
-      const live = this.ctx.allowedRules?.() ?? []
-      const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
+      // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
+      const installed = step.name.startsWith('mcp__') ? agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name)) : new Set<string>()
+      const savedUsable = new Set(withoutServerRules([...saved], installed))
+      const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
+      const preApproved = (rules.length > 0 && rules.every((r) => savedUsable.has(r))) || matchingRule(step.name, input, usable) !== undefined
       if (!preApproved) {
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(

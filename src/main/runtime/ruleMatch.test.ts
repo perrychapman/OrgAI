@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isValidRule, matchesBashRule, matchingRule, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
+import { isValidRule, matchesBashRule, mcpServerOfRule, matchingRule, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
 
 describe('isValidRule', () => {
   it('accepts tool names, prefix rules and exact rules', () => {
@@ -73,5 +73,37 @@ describe('matchingRule', () => {
     expect(matchingRule('Read', { file_path: '/tmp/x' }, rules)).toBeUndefined()
     expect(matchingRule('Bash', {}, rules)).toBeUndefined()
     expect(matchingRule('Bash', { command: 'rm -rf /' }, ['Bash'])).toBe('Bash')
+  })
+})
+
+describe('server-level MCP rules', () => {
+  it('mcp__<server> and mcp__<server>__* cover every tool of that server only', () => {
+    for (const rule of ['mcp__github', 'mcp__github__*']) {
+      expect(matchingRule('mcp__github__create_issue', {}, [rule])).toBe(rule)
+      expect(matchingRule('mcp__github-enterprise__x', {}, [rule])).toBeUndefined()
+      expect(matchingRule('mcp__github2__x', {}, [rule])).toBeUndefined()
+      expect(matchingRule('mcp__github', {}, [rule])).toBe(rule === 'mcp__github' ? 'mcp__github' : undefined)
+    }
+  })
+  it('matches the exact mcp__<server>__ prefix, underscores and hyphens included', () => {
+    expect(matchingRule('mcp__ab__x', {}, ['mcp__a'])).toBeUndefined()
+    expect(matchingRule('mcp__a_b__x', {}, ['mcp__a'])).toBeUndefined()
+    expect(matchingRule('mcp__a-b__x', {}, ['mcp__a__*'])).toBeUndefined()
+    expect(matchingRule('mcp__a_b__x', {}, ['mcp__a_b'])).toBe('mcp__a_b')
+    expect(matchingRule('mcp__a__x', {}, ['mcp__a_b__*'])).toBeUndefined()
+    // ambiguous split: the first segment is the server
+    expect(matchingRule('mcp__a__b__c', {}, ['mcp__a'])).toBe('mcp__a')
+  })
+  it('never treats mcp__*, other wildcards or the harness server as a rule', () => {
+    for (const rule of ['mcp__*', 'mcp__a*', 'mcp__*__x', 'mcp__orgai', 'mcp__orgai__*', 'mcp____*', 'mcp__']) {
+      expect(matchingRule('mcp__a__x', {}, [rule]), rule).toBeUndefined()
+      expect(matchingRule('mcp__orgai__spawn', {}, [rule]), rule).toBeUndefined()
+    }
+    expect(mcpServerOfRule('mcp__orgai')).toBeNull()
+    expect(mcpServerOfRule('mcp__a__b')).toBeNull()
+  })
+  it('isValidRule accepts server forms and refuses the wildcard and harness forms', () => {
+    for (const r of ['mcp__github', 'mcp__github__*', 'mcp__a_b__*', 'mcp__a-b__*', 'mcp__a__tool']) expect(isValidRule(r), r).toBe(true)
+    for (const r of ['mcp__*', 'mcp__orgai', 'mcp__orgai__*', 'MCP__ORGAI__*', 'mcp__a*', 'mcp__*__x']) expect(isValidRule(r), r).toBe(false)
   })
 })

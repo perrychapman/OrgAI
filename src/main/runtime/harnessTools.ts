@@ -38,10 +38,24 @@ export interface HarnessToolHooks {
    * request_mcp_install was approved and RunManager added the server to the run (ctx.mcpServers() now lists
    * it): attach it to the live session (Claude: Query.setMcpServers with every resolved server; Codex: restart
    * or resume the thread with the new config). Resolves with the tool prefix the agent should use
-   * (mcp__<name>__) or rejects with a reason the tool returns to the agent. Missing = the server is available
-   * from the next run only.
+   * (mcp__<name>__) or an McpAttachResult, or rejects with a reason the tool returns to the agent. A bare
+   * string means availability 'now'. Missing = the server is available from the next run only.
    */
-  addMcpServer?(spec: McpServerSpec): Promise<string>
+  addMcpServer?(spec: McpServerSpec): Promise<string | McpAttachResult>
+}
+
+/** What an adapter's addMcpServer hook reports back, so request_mcp_install says exactly what is true. */
+export interface McpAttachResult {
+  /** The tool prefix, mcp__<name>__. */
+  prefix: string
+  /**
+   * 'now': the tools are callable by the granted roles in the current turn. 'after-idle': the session is
+   * re-created (or the app-server restarted) once the agents are idle, and the orchestrator is told through
+   * the harness-message path when the tools are there.
+   */
+  availability: 'now' | 'after-idle'
+  /** Tool names (without prefix) the attached server listed, when the adapter knows them. */
+  tools?: string[]
 }
 
 /**
@@ -467,10 +481,26 @@ export const markBlocked = defineTool({
 // ---------- MCP tools ----------
 
 /** Names of servers an agent already asked to install in this run (any answer), per run context. */
-const asked = new WeakMap<RuntimeContext, Map<string, 'approved' | 'denied'>>()
+type AskedState = 'approved' | 'approved-after-idle' | 'approved-unattached' | 'denied'
+const asked = new WeakMap<RuntimeContext, Map<string, AskedState>>()
+
+const MCP_PERMISSION_NOTE = "Calls to its tools may still ask the user for permission under the project's permission mode; that is expected."
+const MCP_TOOL_LIST_CAP = 20
+const MCP_ROLE_LIST_CAP = 12
+
+/** One sentence naming the roles an install is limited to, or '' when it is open to every role. */
+function mcpRoleSentence(ctx: RuntimeContext, roles: string[] | undefined): string {
+  if (!roles) return ''
+  const names = roles.slice(0, MCP_ROLE_LIST_CAP).map((slug) => {
+    const r = ctx.roles.find((x) => x.slug === slug)
+    return datum(r && r.name !== slug ? `${slug} (${r.name})` : slug, 80)
+  })
+  if (!names.length) return ' No role is listed for it, so only roles granted it directly can use it.'
+  return ` Only these roles can use it: ${names.join(', ')}${roles.length > names.length ? `, and ${roles.length - names.length} more` : ''}.`
+}
 
 /** Registry and project strings are data: one line, no angle brackets (so they cannot close a delimiter). */
-function datum(s: string | undefined, max = 240): string {
+export function datum(s: string | undefined, max = 240): string {
   return (s ?? '').replace(/[\r\n\t]+/g, ' ').replace(/</g, '‹').replace(/>/g, '›').trim().slice(0, max)
 }
 
@@ -624,7 +654,7 @@ export const requestMcpInstall = defineTool({
     manual: manualSpecInput.optional().describe('A server the registry does not list (or that you know how to launch)')
   }),
   async handler(ctx, args, hooks, caller) {
-    const state = asked.get(ctx) ?? new Map<string, 'approved' | 'denied'>()
+    const state = asked.get(ctx) ?? new Map<string, AskedState>()
     asked.set(ctx, state)
     const existing = ctx.mcpServers?.() ?? []
     let spec: McpServerSpec
@@ -659,9 +689,10 @@ export const requestMcpInstall = defineTool({
 
     const prior = state.get(spec.name)
     if (prior) {
-      return prior === 'approved'
-        ? `You already asked for ${spec.name} in this run and it was approved. Use its tools (prefix mcp__${spec.name}__). Do not ask again.`
-        : `You already asked for ${spec.name} in this run and the user denied it (or the answer is still pending). Do not ask again; find another way to complete the task.`
+      if (prior === 'approved') return `You already asked for ${spec.name} in this run and it was approved. Its tools are available as mcp__${spec.name}__<tool>. Do not ask again.`
+      if (prior === 'approved-after-idle') return `You already asked for ${spec.name} in this run and it was approved. Its tools become callable only after your current turn ends; the harness will send you a message once they are attached. Do not ask again, and do not call them before then.`
+      if (prior === 'approved-unattached') return `You already asked for ${spec.name} in this run and it was approved, but it could not be attached to this session; it will be available from the next run. Do not ask again.`
+      return `You already asked for ${spec.name} in this run and the user denied it (or the answer is still pending). Do not ask again; find another way to complete the task.`
     }
     const clash = existing.find((s) => s.name === spec.name)
     if (clash) return `A server named "${spec.name}" is already available (tools: mcp__${spec.name}__<tool>). Use it instead of requesting another.`
@@ -676,7 +707,7 @@ export const requestMcpInstall = defineTool({
     if (!decision.approved) {
       return `The user denied installing this server.${note ? ` ${note}` : ''} Find another way to complete the task without it.`
     }
-    state.set(spec.name, 'approved')
+    state.set(spec.name, 'approved-unattached')
     const final = decision.spec ?? spec
     const where = decision.scope === 'library' ? ' for this project (saved to your MCP library)' : decision.scope === 'project' ? ' for this project' : ' for this run'
     const lead = `The user approved installing ${final.name}${where}.${note ? ` Note from the user: ${note}` : ''}`
@@ -684,8 +715,20 @@ export const requestMcpInstall = defineTool({
       return `${lead} It could not be attached to this running session, so it will be available from the next run${decision.scope === 'run' ? ' only if the user saves it to the project' : ''}. Continue without it for now.`
     }
     try {
-      const prefix = await hooks.addMcpServer(final)
-      return `${lead} Its tools are now available as ${prefix || `mcp__${final.name}__`}<tool>. Use them to continue.`
+      const res = await hooks.addMcpServer(final)
+      const attach: McpAttachResult = typeof res === 'string' ? { prefix: res, availability: 'now' } : res
+      const prefix = attach.prefix || `mcp__${final.name}__`
+      const tail = `${MCP_PERMISSION_NOTE}${mcpRoleSentence(ctx, final.roles)}`
+      const tools = (attach.tools ?? []).filter((t) => typeof t === 'string' && t.trim())
+      const listed = tools.length
+        ? tools.slice(0, MCP_TOOL_LIST_CAP).map((t) => `${prefix}${datum(t, 60)}`).join(', ') + (tools.length > MCP_TOOL_LIST_CAP ? `, and ${tools.length - MCP_TOOL_LIST_CAP} more` : '')
+        : `${prefix}<tool>`
+      if (attach.availability === 'after-idle') {
+        state.set(spec.name, 'approved-after-idle')
+        return `${lead} Its tools (${listed}) are not callable yet: they become callable only after your current turn ends and no report is still running, when the harness re-attaches the session. The harness will send you a message once they are attached; do not call them before then. ${tail}`
+      }
+      state.set(spec.name, 'approved')
+      return `${lead} Its tools are available now as ${listed}. Use them to continue. ${tail}`
     } catch (e) {
       return `${lead} Attaching it to this session failed: ${(e as Error).message} It will be available from the next run. Continue without it for now.`
     }

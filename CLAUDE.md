@@ -94,7 +94,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   description only, shell-injection bodies (!`cmd`, ```! fences) are refused, UNC/device paths are refused, and
   `skillLibrary:addFromFolder` accepts only a path from the main-process folder picker (`wasPickedFolder`).
   - Claude: granted skills go into a run-scoped temp plugin named `orgai-<8 hex>` (`claudeSkills.ts`), passed as
-    `plugins` with `options.skills` (it only adds Skill(<name>) allow rules), `settings.disableBundledSkills` plus env
+    `plugins` with `options.skills` (the 0.3.312 typings, sdk.d.ts `Options.skills`, call it a context filter: only the
+    listed skills are enabled, unlisted ones are hidden from the listing and rejected by the Skill tool, their files stay
+    readable by Read/Bash; the earlier source read found it also adds Skill(<name>) allow rules; neither is checked live), `settings.disableBundledSkills` plus env
     `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, and `settings.disableSkillShellExecution` on every run; `settingSources`
     stays `['project']`. The PreToolUse Skill gate allows only `<plugin>:<name>` granted to the calling role, before
     any rule; `skill.used` is emitted from PostToolUse. `AgentDefinition.skills` is not used (it preloads content and
@@ -330,6 +332,21 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   stops. Registering `WorktreeCreate`/`WorktreeRemove` hooks makes the host responsible for creating/removing the
   worktree (the hook must return `worktreePath`), so do not register them just to observe. Commit and merge are
   the harness's job: `src/main/runtime/worktrees.ts`.
+- MCP servers added mid-session (`scripts/smoke-mcp-midrun.mjs`, run once on 2026-11-02, haiku, Max login, about
+  $0.014; results in its header):
+  - In a main-thread `AgentDefinition.tools` whitelist, `mcp__<server>` and `mcp__<server>__*` admit that server's
+    tools; `mcp__*` admits nothing (init tools []), and a subagent whose list is only `mcp__*` is refused at spawn
+    ("would be spawned with zero tools ... unrecognized [mcp__*]").
+  - `Query.setMcpServers` mid-session returns `{ added: [name], removed: [], errors: {} }`; `mcpServerStatus` right
+    after shows the server 'pending' with no tools, and the next turn's init shows it 'connected'.
+  - Whitelists are exact and fixed per query: with a whitelist that does not name the new server its tools never
+    appear in init `tools`, the model is never offered them, and neither PreToolUse nor canUseTool fires. With `tools`
+    omitted the new tool appears; the model reached it through ToolSearch, PreToolUse fired (agent_type main), then
+    canUseTool (options carry `agentID` and `mcpServer`) and the call ran.
+  - A subagent spawned after the add, with `tools` omitted, can call the new server even when its definition says
+    `mcpServers: ['alpha']`: `AgentDefinition.mcpServers` does not restrict a subagent to the named servers.
+  - Not checked: `reloadSkills()`, `Options.skills` blocking, resume honouring new `agents`, and whether a resumed
+    session keeps its session id or `total_cost_usd`.
 - Smoke tests cost real tokens (fractions of a cent on haiku). Do not run them in loops.
 
 ## Connections, Codex, LiteLLM, MCP and macOS
@@ -458,8 +475,36 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     token totals include the earlier run. Prices appear only after the next discovery (connect or models refresh).
 - MCP:
   - Claude runs set `strictMcpConfig`, so only the project's enabled servers plus run-scoped installs load (this
-    also stops plugin-declared MCP servers). An approved mid-run install is attached with `Query.setMcpServers`.
-    Covered by unit tests only; `setMcpServers` at runtime is unverified.
+    also stops plugin-declared MCP servers).
+  - Mid-run installs (2026-11-02): `request_mcp_install`'s result follows the adapter hook's `McpAttachResult`
+    (`harnessTools.ts`: `{ prefix, availability: 'now' | 'after-idle', tools? }`). 'now' (mock) says "Its tools are
+    available now as mcp__<name>__<tool>..." (tool names `datum`-quoted, at most 20); 'after-idle' (Claude, Codex) says
+    they become callable only after the current turn ends and the harness will message the orchestrator once they are
+    attached. Both add that calls may still ask the user for permission under the project's permission mode (nothing is
+    auto-allowed on approval) and name the roles when the card restricts `roles`. Claude: `addMcpServer` calls
+    `Query.setMcpServers` at once (errors surface immediately), reads tool names from `mcpServerStatus` (up to 5 s),
+    and because whitelists are fixed per query (smoke facts below) re-creates the query with `resume` and agent
+    definitions rebuilt from the live `ctx.mcpServers()` once the root is idle and no report, background task or card
+    is open (`mcpRestartBlocker`), then sends `mcpAttachedNotice` through `notifyOrchestrator`. Plan nudges are held
+    while such a restart is pending, a restarted query gets the remaining run budget only, and server-level rules never
+    auto-allow a run-scoped install the agent requested. Codex restarts its app-server at idle (unchanged, now reported
+    'after-idle'). Verified by unit tests (fake `query()`) and the mock (`[mock:mcp-midrun]`, `mcpMidrun.test.ts`);
+    the resume restart itself has never run live.
+  - Per-role MCP grants (`mcpGrants.ts` `mcpCallDenial`): the Claude PreToolUse hook (and the mock) checks every
+    `mcp__<server>__<tool>` call, plus ListMcpResourcesTool / ReadMcpResourceTool by their `server` input, against
+    `mcpServersForRole` over the live server list (run-scoped installs and the card's `roles` included), root
+    included, before any allow path; unknown callers and unknown or disabled servers are denied with a reason naming
+    the role and server. It also enforces `mcp__orgai__*` audiences. This is the only grant boundary on Claude:
+    `AgentDefinition.mcpServers` does not restrict a subagent (smoke, below). Codex does NOT enforce per-role MCP
+    grants (every thread shares the app-server's servers; review M6, open). Unit-tested.
+  - Server-level permission rules (`ruleMatch.ts` `mcpServerOfRule`, `matchingRule`): `mcp__<server>` and
+    `mcp__<server>__*` match every tool with the exact prefix `mcp__<server>__` (a server name with `__` inside is not
+    a server rule); `mcp__*`, other wildcards, `mcp__orgai` and `mcp__orgai__*` are refused by `isValidRule` and
+    `isUnsafeAllowRule`. `permissionRules.ts` `ruleLabel` reads both forms as "All tools of <server>" (the rules card
+    still shows raw strings). Unit-tested.
+  - Skills have no mid-run path: `active.skills` is read once at run start and the Claude skill plugin is built once
+    in `buildOptions` (a restart reuses it), so a skill added or granted during a live run reaches only the next run.
+    `Query.reloadSkills()` / `reloadPlugins` exist in the 0.3.312 typings and are untested.
   - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
     another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
     Claude reads it from the PreToolUse `agent_id`. Claude matches the MCP call by a tool_use id in `extra._meta` if
