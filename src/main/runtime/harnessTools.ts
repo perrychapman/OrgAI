@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { constants as fsConstants, promises as fsp } from 'node:fs'
 import path from 'node:path'
-import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProposalDecision, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
+import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
 import { skillProposalProblem } from '../skills/assist'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId } from '@shared/defaults'
@@ -172,8 +172,43 @@ function bind(defs: HarnessToolDef[], ctx: RuntimeContext, hooks: HarnessToolHoo
 export const SETUP_TOOLS_INSTRUCTIONS =
   'Proposal tools for OrgAI setup. Each call blocks until the user decides; the result begins with APPROVED or REVISE.'
 
-export function decisionText(d: ProposalDecision, applied: string): string {
-  return d.behavior === 'approve' ? `APPROVED. ${applied}` : `REVISE. The user asked for changes:\n${d.feedback}`
+export function decisionText(d: ProposalOutcome, applied: string): string {
+  if (d.behavior === 'approve') return `APPROVED. ${applied}`
+  if (d.behavior === 'decline') {
+    if (d.note === REPEAT_DECLINE) {
+      return 'DECLINED. You already proposed this exact change in this run and the user declined it, so no card was shown. Continue without it; do not propose the same change again this run.'
+    }
+    const note = d.note?.trim()
+    return `DECLINED. The user declined this proposal.${note ? ` Note from the user: ${note}` : ''} Continue without it; do not propose the same change again this run.`
+  }
+  return `REVISE. The user asked for changes:\n${d.feedback}`
+}
+
+/** The decline note askProposal returns for a proposal the user already declined in this run (no card shown). */
+const REPEAT_DECLINE = '\u0000repeat-decline'
+
+/** Declined proposals per run (kind + payload without the rationale), like request_mcp_install's 'denied' state. */
+const declined = new WeakMap<RuntimeContext, Set<string>>()
+
+/** Fields a repeated proposal differs in without being a different change (fresh ids, times, layout, wording). */
+const VOLATILE_PROPOSAL_KEYS = new Set(['id', 'addedAt', 'rationale', 'position', 'color', 'reportsTo', 'spawnable', 'serverId'])
+
+function proposalKey(req: { kind: string; payload: unknown }): string {
+  return `${req.kind}:${JSON.stringify(req.payload, (k, v) => (VOLATILE_PROPOSAL_KEYS.has(k) ? undefined : v))}`
+}
+
+/**
+ * Every proposal tool asks through here: a proposal the user declined earlier in this run (same kind and payload,
+ * rationale aside) is not shown again and answers decline with REPEAT_DECLINE; a new decline is remembered.
+ */
+async function askProposal(ctx: RuntimeContext, req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>): Promise<ProposalOutcome> {
+  const set = declined.get(ctx) ?? new Set<string>()
+  declined.set(ctx, set)
+  const key = proposalKey(req)
+  if (set.has(key)) return { behavior: 'decline', note: REPEAT_DECLINE }
+  const d = await ctx.requestProposal(req)
+  if (d.behavior === 'decline') set.add(key)
+  return d
 }
 
 export function answerText(answer: QuestionAnswer): string {
@@ -268,7 +303,7 @@ export const proposeArchitecture = defineTool({
     risks: z.array(z.string()).describe('Gaps or risks the user should know about')
   }),
   async handler(ctx, { title, ...payload }, hooks) {
-    const d = await ctx.requestProposal({ kind: 'architecture', agentId: ROOT_AGENT_ID, title, payload })
+    const d = await askProposal(ctx, { kind: 'architecture', agentId: ROOT_AGENT_ID, title, payload })
     hooks.onDecided?.()
     return decisionText(d, 'The architecture was saved and written to .orgai/ARCHITECTURE.md. Continue with the org chart.')
   }
@@ -285,7 +320,7 @@ export const proposeOrgChart = defineTool({
   async handler(ctx, { title, rationale, roles }, hooks) {
     const built = rolesFromDrafts(ctx, rationale, roles)
     if ('error' in built) return built.error
-    const d = await ctx.requestProposal({ kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
+    const d = await askProposal(ctx, { kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
     hooks.onDecided?.()
     return decisionText(d, 'The org chart was applied to the project. Continue with the settings.')
   }
@@ -332,7 +367,7 @@ export const proposeSettings = defineTool({
       .describe('Automatic continues allowed per run (default 40); lower it for small projects or tight budgets')
   }),
   async handler(ctx, { title, ...payload }, hooks) {
-    const d = await ctx.requestProposal({ kind: 'settings', agentId: ROOT_AGENT_ID, title, payload })
+    const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title, payload })
     hooks.onDecided?.()
     return decisionText(d, 'The settings were applied. If everything is approved, call complete_setup.')
   }
@@ -408,7 +443,7 @@ export const proposeOrgChange = defineTool({
   async handler(ctx, { title, rationale, roles }, hooks) {
     const built = rolesFromDrafts(ctx, rationale, roles)
     if ('error' in built) return built.error
-    const d = await ctx.requestProposal({ kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
+    const d = await askProposal(ctx, { kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
     hooks.onDecided?.()
     return decisionText(
       d,
@@ -1060,7 +1095,7 @@ export const proposeMcpServers = defineTool({
         ...(s.secretEnv ?? []).map((name) => ({ serverId: s.id, kind: 'env' as const, name })),
         ...(s.secretHeaders ?? []).map((name) => ({ serverId: s.id, kind: 'header' as const, name }))
       ])
-    const d = await ctx.requestProposal({
+    const d = await askProposal(ctx, {
       kind: 'mcpServers',
       agentId: ROOT_AGENT_ID,
       title,
@@ -1085,7 +1120,11 @@ export const proposeMcpServers = defineTool({
       if (!saved.length) saved.push('The servers were removed from the project.')
     }
     const follow: string[] = []
-    if (secrets.length) follow.push(`The user still has to enter ${secrets.map((s) => s.name).join(', ')} in Settings (values are never shared with you).`)
+    // A work run's availability text names the servers left out for an empty secret slot itself.
+    const waiting = d.behavior === 'approve' ? d.waitingForSecrets : undefined
+    if (!workRun && waiting) {
+      if (waiting.length) follow.push(`Waiting for a secret: ${waiting.map((n) => datum(n, 60)).join(', ')}. ${waiting.length === 1 ? 'It does' : 'They do'} not start until the user sets the value in Settings > MCP servers (values are never shared with you).`)
+    } else if (!workRun && secrets.length) follow.push(`The user still has to enter ${secrets.map((s) => s.name).join(', ')} in Settings (values are never shared with you).`)
     if (retargeted.length) follow.push(`Changed address or command (${retargeted.join(', ')}): their stored secret values were cleared, so the user must re-enter them in Settings.`)
     if (needAuth.length) follow.push(`Remote servers (${[...new Set(needAuth)].join(', ')}): if they sign in with OAuth, the user authorizes them in Settings > MCP servers.`)
     if (workRun && d.behavior === 'approve') follow.push(await mcpAvailabilityText(ctx, hooks, specs, removedNames))
@@ -1591,7 +1630,7 @@ export const proposeSkills = defineTool({
       }
     })
     const summary = clean.some((it) => SKILL_CONFIG.has(it.action)) ? `${skillChangeSummary(clean)}\n` : ''
-    const d = await ctx.requestProposal({ kind: 'skills', agentId: ROOT_AGENT_ID, title, payload: { items: clean, rationale: `${summary}${rationale}` } })
+    const d = await askProposal(ctx, { kind: 'skills', agentId: ROOT_AGENT_ID, title, payload: { items: clean, rationale: `${summary}${rationale}` } })
     hooks.onDecided?.()
     const saved = clean.map(skillResultLine)
     const tail = workRun && d.behavior === 'approve' ? ` ${await skillsAvailabilityText(hooks)}` : ''

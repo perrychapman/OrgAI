@@ -29,6 +29,7 @@ import type {
   SkillContent,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   ProviderId,
   ProviderModel,
   QuestionAnswer,
@@ -59,7 +60,7 @@ import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
+import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
@@ -137,6 +138,8 @@ interface ActiveRun {
   titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
   outcome?: RunOutcome
+  /** The adapter driving this run (Proposal.effect). */
+  adapter?: ProviderId
   /** Agents still live when the run ended; they read Stopped / Failed however the adapter re-reports them. */
   cutOff?: Set<string>
   /** The provider session this run resumes; known before the adapter reports summary.sessionId at init. */
@@ -347,6 +350,11 @@ export interface RunManagerOptions {
     skippedServers?(project: Project): { name: string; missing: string[] }[]
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
+    /**
+     * Store an approved MCP proposal's typed secret values (ProposalDecision.secrets) and return the names of its
+     * servers still waiting for a secret (McpService.storeProposalSecrets). projectId null = library session.
+     */
+    storeProposalSecrets?(projectId: string | null, payload: McpServersProposalPayload, values: Record<string, string> | undefined): string[]
   }
   /** Project skills for work runs (SkillService, RuntimeContext.skills). Missing = runs have no skills. */
   skills?: SkillRunSource
@@ -692,6 +700,7 @@ export class RunManager {
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
     const active: ActiveRun = {
       summary,
+      adapter: choice.adapter,
       pending: new Map(),
       pendingProposals: new Map(),
       pendingQuestions: new Map(),
@@ -1510,18 +1519,28 @@ export class RunManager {
 
   private requestProposal(
     active: ActiveRun,
-    req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>,
+    req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>,
     onApplied?: (saved: Project) => void
-  ): Promise<ProposalDecision> {
-    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now() } as Proposal
+  ): Promise<ProposalOutcome> {
+    const effect = proposalEffect(req.kind, active.summary, active.adapter)
+    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect } as Proposal
     return new Promise((resolve) => {
-      active.pendingProposals.set(proposal.id, { proposal, resolve: (decision) => {
-        if (decision.behavior === 'approve') {
+      active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
+        // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
+        const decision = cleanProposalDecision(raw)
+        if (decision.behavior !== 'approve') {
+          const outcome = proposalOutcome(decision)
+          resolve(outcome)
+          return outcome
+        }
+        let waitingForSecrets: string[] | undefined
+        {
           try {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
               this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
+              waitingForSecrets = this.storeProposalSecrets(null, proposal, decision.secrets)
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
@@ -1532,6 +1551,8 @@ export class RunManager {
               throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
               const updated = this.setup.applyProposal(active.summary.projectId, proposal)
+              // Before onApplied: a stored secret lets the server start (enabledServers reads the SecretStore live).
+              waitingForSecrets = this.storeProposalSecrets(active.summary.projectId, proposal, decision.secrets)
               onApplied?.(updated)
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
@@ -1539,14 +1560,28 @@ export class RunManager {
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
-            resolve({ behavior: 'revise', feedback: `The harness could not apply this proposal: ${message}` })
-            return
+            const failed: ProposalOutcome = { behavior: 'revise', feedback: `The harness could not apply this proposal: ${message}` }
+            resolve(failed)
+            return failed
           }
         }
-        resolve(decision)
+        const outcome: ProposalOutcome = { behavior: 'approve', ...(waitingForSecrets ? { waitingForSecrets } : {}) }
+        resolve(outcome)
+        return outcome
       } })
       this.broadcast({ type: 'proposal.request', runId: active.summary.id, proposal })
     })
+  }
+
+  /** Store an approved MCP proposal's secret values; the names of its servers still waiting for one. Never throws. */
+  private storeProposalSecrets(projectId: string | null, proposal: Proposal, values: Record<string, string> | undefined): string[] | undefined {
+    if (proposal.kind !== 'mcpServers' || !this.options.mcp?.storeProposalSecrets) return undefined
+    try {
+      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, values)
+    } catch (e) {
+      log.warn(`Proposal secrets could not be stored: ${(e as Error).message}`)
+      return undefined
+    }
   }
 
   decideProposal(runId: string, proposalId: string, decision: ProposalDecision): void {
@@ -1554,8 +1589,9 @@ export class RunManager {
     const pending = active?.pendingProposals.get(proposalId)
     if (!active || !pending) return
     active.pendingProposals.delete(proposalId)
-    pending.resolve(decision)
-    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
+    // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
+    const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
+    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome })
     this.cardSettled(active)
   }
 

@@ -1736,7 +1736,17 @@ interface ProposalBase {
   agentId: string
   title: string
   createdAt: number
+  /**
+   * When an approved proposal takes effect, set by the harness (runManager.ts proposalEffect) so the card can say so:
+   * 'now' (the live run sees it from the next tool call), 'after-turn' (once the current turn ends and the session is
+   * re-attached), 'next-run' (this run keeps its configuration). Work-run 'mcpServers' / 'skills' proposals:
+   * 'after-turn' on Claude and Codex, 'now' on the mock; everything else 'next-run'. Missing on older events.
+   */
+  effect?: ProposalEffect
 }
+
+/** When an approved proposal takes effect (Proposal.effect). */
+export type ProposalEffect = 'now' | 'after-turn' | 'next-run'
 
 export type Proposal =
   | (ProposalBase & { kind: 'architecture'; payload: ArchitectureSpec })
@@ -1745,7 +1755,36 @@ export type Proposal =
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
 
-export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
+/**
+ * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
+ * propose again; 'decline' applies nothing and tells the agent not to propose the same change again in this run.
+ * `secrets` (kind 'mcpServers' approvals only, like McpInstallDecision.secrets): values for the payload's secret
+ * slots, keyed by proposalSecretKey(slot) = '<serverId>:<env|header>:<name>'; a key that names no slot of the payload
+ * is ignored. Stored in SecretStore on apply under the server's owner (the project server, or its library entry when
+ * linked; the library entry in a library session) and never put in any event or tool result.
+ */
+export type ProposalDecision =
+  | { behavior: 'approve'; secrets?: Record<string, string> }
+  | { behavior: 'revise'; feedback: string }
+  | { behavior: 'decline'; note?: string }
+
+/**
+ * The secret-free outcome of a proposal, carried by the proposal.resolved event and returned to the harness tool.
+ * `waitingForSecrets` (approved 'mcpServers' only): names of servers that still have an empty secret slot and do
+ * not start until the user sets it in Settings.
+ */
+export type ProposalOutcome =
+  | { behavior: 'approve'; waitingForSecrets?: string[] }
+  | { behavior: 'revise'; feedback: string }
+  | { behavior: 'decline'; note?: string }
+
+/** At most this many characters in a proposal decision's feedback or note (longer text is cut in main). */
+export const PROPOSAL_NOTE_MAX_CHARS = 4000
+
+/** The key of one secret slot of an MCP proposal in ProposalDecision.secrets. */
+export function proposalSecretKey(slot: { serverId: string; kind: McpSecretKind; name: string }): string {
+  return `${slot.serverId}:${slot.kind}:${slot.name}`
+}
 
 /** A multiple-choice question the Architect (setup) or the orchestrator (work runs) puts to the user (ask_user tool). */
 export interface UserQuestion {
@@ -2693,7 +2732,7 @@ export type RunEvent =
   | { type: 'run.usage'; runId: string; usage: RunUsage }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
-  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
+  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalOutcome; cancelled?: true }
   | { type: 'question.request'; runId: string; question: UserQuestion }
   | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true }
   /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */

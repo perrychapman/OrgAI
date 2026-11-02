@@ -20,6 +20,7 @@ import type {
   Project,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   ProviderAuth,
   ProviderId,
   QuestionAnswer,
@@ -201,8 +202,11 @@ export interface RuntimeContext {
   emit(event: RunEvent): void
   /** Ask the user to approve a tool call. Resolves with their decision. */
   requestPermission(req: Omit<PermissionRequest, 'id' | 'runId'>): Promise<PermissionDecision>
-  /** Setup runs only: put a proposal in front of the user. Resolves when they approve or ask for changes. */
-  requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>): Promise<ProposalDecision>
+  /**
+   * Put a proposal in front of the user. Resolves with the secret-free outcome (approve, revise or decline) once it
+   * is applied or refused. RunManager sets Proposal.effect.
+   */
+  requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>): Promise<ProposalOutcome>
   /** Work runs with reviewMerges: show a finished report's diff and wait for merge, discard or hold. */
   requestMergeReview(req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>): Promise<MergeDecision>
   /** Setup runs only: the Architect declares setup finished. */

@@ -24,6 +24,7 @@ import type {
   Project
 } from '@shared/types'
 import { MCP_OAUTH_REFRESH_SKEW_MS, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId } from '@shared/defaults'
+import { proposalSecretKey } from '@shared/types'
 import type { ProjectStore } from '../store/projects'
 import type { McpLibraryStore } from '../store/mcpLibrary'
 import {
@@ -1086,6 +1087,47 @@ export class McpService {
     const ws = this.dataDir ? scratchDirFor(this.dataDir, workspace) : null
     if (!ws) throw new Error('That build folder is not one OrgAI created, so its files were not saved.')
     return ws
+  }
+
+  /**
+   * After an approved MCP proposal was applied: store the values the user typed on the card (ProposalDecision.secrets,
+   * keyed by proposalSecretKey) for the payload's own secret slots only, under each server's owner (projectId null =
+   * library session: the slot's serverId is the entry id; a project server linked to the library: its entry). Keys
+   * naming no slot, empty values and multi-line header values are ignored. Returns the names of the proposal's
+   * upserted servers that still have an unset slot (they do not start until the user sets it). Never throws on a
+   * missing server; values never leave the SecretStore.
+   */
+  storeProposalSecrets(projectId: string | null, p: McpServersProposalPayload, values: Record<string, string> | undefined): string[] {
+    const project = projectId === null ? null : this.refreshed(this.project(projectId)).project
+    const specOf = (id: string): McpServerSpec | undefined => {
+      if (project) return (project.mcpServers ?? []).find((s) => s.id === id)
+      const entry = this.library?.get(id)
+      return entry ? { ...entry, enabled: true } : undefined
+    }
+    const ownerFor = (spec: McpServerSpec): McpSecretOwner => (project ? this.ownerOf(project.id, spec) : { libraryId: spec.id })
+    for (const slot of Array.isArray(p.secrets) ? p.secrets : []) {
+      if (!values || !isSecretKind(slot?.kind) || typeof slot.serverId !== 'string' || typeof slot.name !== 'string') continue
+      const key = proposalSecretKey(slot)
+      const v = Object.hasOwn(values, key) ? values[key] : undefined
+      if (typeof v !== 'string' || !v || (slot.kind === 'header' && /[\r\n]/.test(v))) continue
+      const spec = specOf(slot.serverId)
+      const slots = spec ? (slot.kind === 'env' ? spec.secretEnv : spec.secretHeaders) : undefined
+      if (!spec || !slots?.includes(slot.name)) continue
+      this.secrets.set(mcpOwnerSecretKey(ownerFor(spec), slot.kind, slot.name), v)
+    }
+    if (projectId === null) this.notifyLibrary()
+    const waiting: string[] = []
+    for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
+      const spec = typeof raw?.id === 'string' ? specOf(raw.id) : undefined
+      if (!spec || !spec.enabled) continue
+      const owner = ownerFor(spec)
+      const unset = [
+        ...(spec.secretEnv ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'env', n))),
+        ...(spec.secretHeaders ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'header', n)))
+      ]
+      if (unset.length) waiting.push(spec.name)
+    }
+    return waiting
   }
 
   applyLibraryProposal(p: McpServersProposalPayload, opts: LibraryProposalOptions = {}): void {

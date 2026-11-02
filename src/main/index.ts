@@ -343,6 +343,7 @@ app.whenReady().then(() => {
       prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
       skippedServers: (project) => mcp.skippedServers(project),
       libraryEntries: () => mcp.libraryEntries(),
+      storeProposalSecrets: (projectId, payload, values) => mcp.storeProposalSecrets(projectId, payload, values),
       searchRegistry: (input) => mcp.registrySearch(input)
     },
     skills,
