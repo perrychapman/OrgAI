@@ -1719,6 +1719,82 @@ describe('RunManager session chains', () => {
   })
 })
 
+describe('who ended a run (RunSummary.endedBy)', () => {
+  it('End session marks the run endedBy user, without endedWithApp', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'Work' })
+    await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    expect(store.get(run.id)).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(store.get(run.id)!.endedWithApp).toBeUndefined()
+    // A later quit does not relabel a run the user already ended.
+    await m.stopAll({ reason: 'quit' })
+    expect(store.get(run.id)!.endedBy).toBe('user')
+  })
+
+  it('stopAll on quit marks live runs endedBy app with endedWithApp, on disk before it resolves', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const a = await m.start({ project: p, prompt: 'A' })
+    const b = await m.start({ project: p, prompt: 'B' })
+    await waitFor(isType('run.status', (e) => e.runId === a.id && e.status === 'idle'))
+    await waitFor(isType('run.status', (e) => e.runId === b.id && e.status === 'idle'))
+    await m.stopAll({ reason: 'quit' })
+    // A fresh store reads the index from disk: the summaries were flushed before stopAll resolved.
+    const disk = new RunStore(join(dir, 'data'))
+    for (const id of [a.id, b.id]) {
+      expect(store.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+      expect(disk.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+      expect(disk.get(id)!.autoResume).toBeUndefined()
+    }
+    // The root still settles as a cut run (not "Waiting for you").
+    const root = m.get(a.id)?.agents[ROOT_AGENT_ID]
+    expect(root?.state).toBe('done')
+    expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
+  })
+
+  it('stopAll on quit writes a run that never reported its end as ended by the app', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-silent' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Silent' })
+    await m.stopAll({ reason: 'quit' })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+  })
+
+  it('a run that finished on its own has no endedBy', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-self' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Done' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    await m.stopAll({ reason: 'quit' })
+    const saved = store.get(run.id)!
+    expect(saved.status).toBe('finished')
+    expect(saved.endedBy).toBeUndefined()
+    expect(saved.endedWithApp).toBeUndefined()
+  })
+})
+
 /** A MockAdapter that remembers each run's RuntimeContext and session. */
 class CapturingAdapter extends MockAdapter {
   readonly ctxs = new Map<string, RuntimeContext>()

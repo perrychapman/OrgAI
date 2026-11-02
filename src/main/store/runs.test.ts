@@ -59,16 +59,31 @@ describe('RunStore', () => {
     expect(live.status).toBe('finished')
     expect(live.endedAt).toBeTypeOf('number')
     expect(live.endedWithApp).toBe(true)
+    expect(live.endedBy).toBe('app')
+    expect(reloaded.find((r) => r.id === 'done')!.endedBy).toBeUndefined()
     expect(reloaded.find((r) => r.id === 'bad')!.status).toBe('error')
     expect(reloaded.find((r) => r.id === 'bad')!.endedWithApp).toBeUndefined()
     expect(reloaded.find((r) => r.id === 'done')!.endedWithApp).toBeUndefined()
+  })
+
+  it('keeps a valid endedBy and drops junk values on load', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('user', { status: 'finished', endedBy: 'user' }))
+    s.upsert(run('app', { status: 'finished', endedBy: 'app', endedWithApp: true }))
+    s.upsert(run('junk', { status: 'finished', endedBy: 'someone' as never }))
+    s.upsert(run('obj', { status: 'error', endedBy: { x: 1 } as never }))
+    const reloaded = new RunStore(dataDir)
+    expect(reloaded.get('user')!.endedBy).toBe('user')
+    expect(reloaded.get('app')!.endedBy).toBe('app')
+    expect('endedBy' in reloaded.get('junk')!).toBe(false)
+    expect('endedBy' in reloaded.get('obj')!).toBe(false)
   })
 
   it('finishes a paused run on load but keeps when it could continue', () => {
     const s = new RunStore(dataDir)
     s.upsert(run('paused', { status: 'paused', pausedUntil: 5000, pauseReason: 'limit', autoResume: true }))
     const reloaded = new RunStore(dataDir).get('paused')!
-    expect(reloaded).toMatchObject({ status: 'finished', pausedUntil: 5000, pauseReason: 'limit', endedWithApp: true })
+    expect(reloaded).toMatchObject({ status: 'finished', pausedUntil: 5000, pauseReason: 'limit', endedWithApp: true, endedBy: 'app' })
     expect(reloaded.autoResume).toBeUndefined()
   })
 
