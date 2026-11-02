@@ -38,6 +38,57 @@ export const PROJECT_SETTINGS_PANES = {
 } as const
 export type ProjectSettingsPane = (typeof PROJECT_SETTINGS_PANES)[keyof typeof PROJECT_SETTINGS_PANES]
 
+/** Section ids inside project Settings panes that deep links target. */
+export const PROJECT_SETTINGS_SECTIONS = {
+  permissions: 'settings-section-permissions',
+  allowedFolders: 'settings-section-allowed-folders',
+  rules: 'settings-section-rules'
+} as const
+export type ProjectSettingsSection = (typeof PROJECT_SETTINGS_SECTIONS)[keyof typeof PROJECT_SETTINGS_SECTIONS]
+
+const PROJECT_SECTION_PANE: Record<ProjectSettingsSection, ProjectSettingsPane> = {
+  [PROJECT_SETTINGS_SECTIONS.permissions]: 'agents',
+  [PROJECT_SETTINGS_SECTIONS.allowedFolders]: 'agents',
+  [PROJECT_SETTINGS_SECTIONS.rules]: 'agents'
+}
+
+/** The project Settings pane holding a section id; undefined when unknown. */
+export function projectPaneForSection(id: string): ProjectSettingsPane | undefined {
+  return (PROJECT_SECTION_PANE as Record<string, ProjectSettingsPane>)[id]
+}
+
+/** Window event a mounted project Settings pane listens to after `requestProjectSettingsSection`. */
+export const PROJECT_SECTION_EVENT = 'orgai:project-settings-section'
+
+const PROJECT_SECTION_KEY = 'orgai.pendingProjectSection'
+
+/**
+ * Ask project Settings to scroll to and focus a section the next time its pane mounts (or now, through
+ * PROJECT_SECTION_EVENT). Unknown ids are dropped. The caller still selects the project, the pane and the view.
+ */
+export function requestProjectSettingsSection(id: ProjectSettingsSection): void {
+  if (!projectPaneForSection(id)) return
+  try {
+    sessionStorage.setItem(PROJECT_SECTION_KEY, id)
+  } catch {
+    /* storage unavailable: the pane just opens at the top */
+  }
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(PROJECT_SECTION_EVENT))
+}
+
+/** Read and clear the requested project section, when it lives in `pane` (null otherwise; the request is kept). */
+export function takeProjectSettingsSection(pane: ProjectSettingsPane): ProjectSettingsSection | null {
+  try {
+    const id = sessionStorage.getItem(PROJECT_SECTION_KEY)
+    if (!id) return null
+    if (projectPaneForSection(id) !== pane) return null
+    sessionStorage.removeItem(PROJECT_SECTION_KEY)
+    return id as ProjectSettingsSection
+  } catch {
+    return null
+  }
+}
+
 const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
   [APP_SETTINGS_SECTIONS.appearance]: 'general',
   [APP_SETTINGS_SECTIONS.notifications]: 'general',

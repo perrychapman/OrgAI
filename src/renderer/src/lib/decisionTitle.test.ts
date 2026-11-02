@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { baseName, installTitle, isHiddenCommand, mergeTitle, oneLine, permissionTitle, proposalTitle, questionTitle, rulesTitle } from './decisionTitle'
+import { baseName, installTitle, isCdSegment, isHiddenCommand, mergeTitle, oneLine, permissionTitle, proposalTitle, questionTitle, rulesTitle, shellAction, shellSegments } from './decisionTitle'
 
 describe('decisionTitle', () => {
   it('names the action for a shell command and uses the first line', () => {
@@ -41,6 +41,31 @@ describe('decisionTitle', () => {
     expect(isHiddenCommand('Bash', { command: 'a'.repeat(300) })).toBe(true)
     expect(isHiddenCommand('Bash', { command: 'npm test' })).toBe(false)
     expect(isHiddenCommand('Edit', { command: 'a\nb' })).toBe(false)
+  })
+  it('names the real action of a compound command, not the cd', () => {
+    expect(permissionTitle('Bash', { command: 'cd C:\\repo\\.claude\\worktrees\\agent-a1 && npm test' })).toBe('Run npm test')
+    expect(permissionTitle('Bash', { command: 'cd /wt && git add -A && git commit -m "a && b"' })).toBe('Run git commit -m "a && b" (+1 more)')
+    expect(permissionTitle('Bash', { command: 'npm test; git status --short' })).toBe('Run git status --short (+1 more)')
+    expect(permissionTitle('PowerShell', { command: 'Set-Location C:\\x; npm test' })).toBe('Run npm test')
+    expect(permissionTitle('Bash', { command: 'cd /a && cd b' })).toBe('Run cd b')
+    expect(permissionTitle('Bash', { command: 'cd /wt && npm test\necho done' })).toBe('Run npm test (+1 line)')
+    expect(permissionTitle('Bash', { command: 'npm test | tail -5' })).toBe('Run npm test | tail -5')
+  })
+  it('splits shell steps outside quotes only', () => {
+    expect(shellSegments('cd x && npm test || echo "a;b" ; ls')).toEqual(['cd x', 'npm test', 'echo "a;b"', 'ls'])
+    expect(shellSegments('a &&  && b')).toEqual(['a', 'b'])
+    expect(isCdSegment('cd /x')).toBe(true)
+    expect(isCdSegment('pushd x')).toBe(true)
+    expect(isCdSegment('cdk deploy')).toBe(false)
+    expect(isCdSegment('cd..')).toBe(true)
+    expect(isCdSegment('cd/d D:\\x')).toBe(true)
+    expect(isCdSegment('popd')).toBe(true)
+    expect(oneLine('a\u00adb\u2060c\u{e0041}d')).toBe('a b c d')
+    expect(shellAction('npm test')).toEqual({ action: 'npm test', more: 0 })
+  })
+  it('flags a compound command as more than its title', () => {
+    expect(isHiddenCommand('Bash', { command: 'cd /wt && npm test' })).toBe(true)
+    expect(isHiddenCommand('Bash', { command: 'npm test | tail' })).toBe(false)
   })
   it('strips zero-width and mark characters', () => {
     expect(oneLine('a​b‏c؜d﻿e')).toBe('a b c d e')

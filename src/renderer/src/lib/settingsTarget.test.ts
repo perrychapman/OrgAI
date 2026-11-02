@@ -3,6 +3,10 @@ import {
   APP_SETTINGS_PANES,
   APP_SETTINGS_SECTIONS,
   PROJECT_SETTINGS_PANES,
+  PROJECT_SETTINGS_SECTIONS,
+  projectPaneForSection,
+  requestProjectSettingsSection,
+  takeProjectSettingsSection,
   appPaneForSection,
   isConnectorId,
   requestAppSettingsSection,
@@ -64,6 +68,33 @@ describe('section request round trip', () => {
     })
     expect(() => requestAppSettingsSection('a')).not.toThrow()
     expect(takeAppSettingsSection()).toBeNull()
+  })
+})
+
+describe('project settings section requests', () => {
+  beforeEach(() => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k)
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+  it('maps sections to the Agents pane', () => {
+    expect(projectPaneForSection(PROJECT_SETTINGS_SECTIONS.permissions)).toBe('agents')
+    expect(projectPaneForSection(PROJECT_SETTINGS_SECTIONS.allowedFolders)).toBe('agents')
+    expect(projectPaneForSection('nope')).toBeUndefined()
+  })
+  it('hands the section once to its own pane only', () => {
+    requestProjectSettingsSection(PROJECT_SETTINGS_SECTIONS.permissions)
+    expect(takeProjectSettingsSection('general')).toBeNull()
+    expect(takeProjectSettingsSection('agents')).toBe(PROJECT_SETTINGS_SECTIONS.permissions)
+    expect(takeProjectSettingsSection('agents')).toBeNull()
+  })
+  it('drops unknown ids', () => {
+    requestProjectSettingsSection('x' as never)
+    expect(takeProjectSettingsSection('agents')).toBeNull()
   })
 })
 
