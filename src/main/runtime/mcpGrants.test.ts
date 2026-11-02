@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { HarnessToolAudience } from './harnessTools'
-import { mcpCallDenial, parseMcpToolName, rolesGrantedServer } from './mcpGrants'
+import { agentInstalledServers, isMcpGated, mcpCallDenial, parseMcpToolName, rolesGrantedServer, withoutServerRules } from './mcpGrants'
 import { mcpSpec, orgChart } from './testHelpers'
 
 const [lead, engineer, reviewer] = orgChart()
@@ -77,5 +77,46 @@ describe('rolesGrantedServer', () => {
     expect(rolesGrantedServer(roles, [mcpSpec({ name: 'github', roles: ['engineer'] })], 'github').map((r) => r.slug)).toEqual(['engineer'])
     expect(rolesGrantedServer(roles, [mcpSpec({ name: 'github' })], 'github')).toHaveLength(3)
     expect(rolesGrantedServer(roles, [], 'github')).toEqual([])
+  })
+})
+
+describe('MCP resource tools (review L3)', () => {
+  const servers = [mcpSpec({ name: 'github', roles: ['engineer'] }), mcpSpec({ id: 'm2', name: 'docs', roles: undefined })]
+  it('are gated on input.server with the same grant check', () => {
+    for (const tool of ['ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'ListMcpResourcesTool']) {
+      expect(mcpCallDenial(tool, eng, servers, undefined, { server: 'github', uri: 'x://1' })).toBeUndefined()
+      expect(mcpCallDenial(tool, rev, servers, undefined, { server: 'github', uri: 'x://1' })).toContain('does not grant the MCP server "github"')
+      expect(mcpCallDenial(tool, rev, servers, undefined, { server: 'nope' })).toContain('not configured for this run')
+      expect(mcpCallDenial(tool, { role: undefined, isRoot: false }, servers, undefined, { server: 'docs' })).toContain('could not tell which role')
+    }
+  })
+  it('refuses a read without a server', () => {
+    expect(mcpCallDenial('ReadMcpResourceTool', eng, servers, undefined, { uri: 'x://1' })).toContain('needs the MCP server name')
+    expect(mcpCallDenial('ReadMcpResourceTool', eng, servers, undefined, undefined)).toContain('needs the MCP server name')
+  })
+  it('lists every server only for a role granted all enabled ones', () => {
+    expect(mcpCallDenial('ListMcpResourcesTool', eng, servers, undefined, {})).toBeUndefined()
+    expect(mcpCallDenial('ListMcpResourcesTool', rev, servers, undefined, {})).toContain('not available to the Reviewer role (reviewer)')
+    const off = [mcpSpec({ name: 'github', roles: ['engineer'], enabled: false }), servers[1]!]
+    expect(mcpCallDenial('ListMcpResourcesTool', rev, off, undefined, { server: '' })).toBeUndefined()
+  })
+  it('lets the harness server through and marks which tools the gate looks at', () => {
+    expect(mcpCallDenial('ListMcpResourcesTool', rev, servers, undefined, { server: 'orgai' })).toBeUndefined()
+    for (const t of ['mcp__x__y', 'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool']) expect(isMcpGated(t)).toBe(true)
+    for (const t of ['Read', 'Bash', 'Skill', 'mcp_x']) expect(isMcpGated(t)).toBe(false)
+  })
+})
+
+describe('server-level rules and agent installs (review M3)', () => {
+  it('withoutServerRules drops only server-level rules for the named servers', () => {
+    const rules = ['mcp__pg', 'mcp__pg__*', 'mcp__pg__query', 'mcp__github', 'Read', 'Bash(npm test:*)']
+    expect(withoutServerRules(rules, new Set(['pg']))).toEqual(['mcp__pg__query', 'mcp__github', 'Read', 'Bash(npm test:*)'])
+    expect(withoutServerRules(rules, new Set())).toEqual(rules)
+  })
+  it('agentInstalledServers is the attached set plus run-only agent installs', () => {
+    const saved = [mcpSpec({ id: 's1', name: 'old-agent', source: 'agent' })]
+    const live = [saved[0]!, mcpSpec({ id: 'r1', name: 'new-agent', source: 'agent' }), mcpSpec({ id: 'u1', name: 'mine', source: 'user' })]
+    expect([...agentInstalledServers(live, saved, ['from-registry'])].sort()).toEqual(['from-registry', 'new-agent'])
+    expect([...agentInstalledServers(live, undefined, [])].sort()).toEqual(['new-agent', 'old-agent'])
   })
 })

@@ -9,6 +9,7 @@ import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
+import { addRules } from './permissionRules'
 
 describe('mock listModels', () => {
   it('lists the builtin aliases plus an unknown family', async () => {
@@ -574,5 +575,52 @@ describe('mock adapter build sessions', () => {
     expect(vi.mocked(ctx.requestPermission).mock.calls[0][0].input).toEqual({ file_path: join(ws, 'server.mjs') })
     expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.block.isError && /cannot write/.test(String(e.entry.block.content)))).toBe(true)
     rmSync(ws, { recursive: true, force: true })
+  })
+})
+
+describe('mock adapter MCP gate parity (review L3, M3)', () => {
+  const toolResults = (events: RunEvent[]) => events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+  async function runTools(ctx: ReturnType<typeof fakeCtx>, work: { name: string; input?: Record<string, unknown>; ask?: boolean }[]) {
+    const session = await new MockAdapter({ script: { delayMs: 0, work: work.map((w) => ({ type: 'tool' as const, result: 'ok', ...w })) } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+    return toolResults(ctx.events)
+  }
+
+  it('gates the MCP resource tools on input.server like the Claude hook', async () => {
+    const servers = [
+      { id: 'm1', name: 'github', transport: 'stdio' as const, command: 'npx', enabled: true, source: 'user' as const, roles: ['engineer'], addedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'm2', name: 'docs', transport: 'stdio' as const, command: 'npx', enabled: true, source: 'user' as const, addedAt: '2026-01-01T00:00:00.000Z' }
+    ]
+    const ctx = fakeCtx({ autoContinue: false, mcpServers: () => servers })
+    const results = await runTools(ctx, [
+      { name: 'ReadMcpResourceTool', input: { server: 'github', uri: 'x://1' } },
+      { name: 'ListMcpResourcesTool', input: {} },
+      { name: 'ReadMcpResourceTool', input: { server: 'docs', uri: 'x://2' } }
+    ])
+    expect(results.map((r) => r.isError)).toEqual([true, true, false])
+    expect(String(results[0]!.content)).toContain('does not grant the MCP server "github" to the Lead role (lead)')
+    expect(String(results[1]!.content)).toContain('Listing the resources of every MCP server is not available')
+  })
+
+  it('never pre-approves an agent-installed server through a server-level rule; other servers keep theirs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-rules-'))
+    addRules(dir, ['mcp__late', 'mcp__keep'])
+    const keep: McpServerSpec = { id: 'k1', name: 'keep', transport: 'stdio', command: 'npx', enabled: true, source: 'user', addedAt: '2026-01-01T00:00:00.000Z' }
+    const late: McpServerSpec = { id: 'l1', name: 'late', transport: 'stdio', command: 'npx', enabled: true, source: 'agent', addedAt: '2026-01-01T00:00:00.000Z' }
+    let granted: string[] = []
+    const ctx = fakeCtx({ autoContinue: false, project: project({ path: dir, mcpServers: [keep] }), mcpServers: () => [keep, late], allowedRules: () => granted })
+    await runTools(ctx, [
+      { name: 'mcp__keep__list', ask: true },
+      { name: 'mcp__late__list', ask: true }
+    ])
+    expect(vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0].toolName)).toEqual(['mcp__late__list'])
+    // An exact tool grant for this run still applies.
+    granted = ['mcp__late__list']
+    const again = fakeCtx({ autoContinue: false, project: project({ path: dir, mcpServers: [keep] }), mcpServers: () => [keep, late], allowedRules: () => granted })
+    await runTools(again, [{ name: 'mcp__late__list', ask: true }])
+    expect(again.requestPermission).not.toHaveBeenCalled()
+    rmSync(dir, { recursive: true, force: true })
   })
 })
