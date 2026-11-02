@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionRuleArgs } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs } = await import('./ipc')
 
 describe('permissionRuleArgs (permissions:add / permissions:remove, review re-check L8)', () => {
   it('rebuilds the input with a trimmed rule and drops extra fields', () => {
@@ -26,6 +26,26 @@ describe('permissionRuleArgs (permissions:add / permissions:remove, review re-ch
     for (const rule of [undefined, null, 5, {}, ['WebSearch']]) expect(() => permissionRuleArgs({ projectId: 'p1', rule })).toThrow('must be text')
     expect(() => permissionRuleArgs({ projectId: 'p1', rule: '   ' })).toThrow('empty')
     expect(() => permissionRuleArgs({ projectId: 'p1', rule: 'x'.repeat(PERMISSION_RULE_MAX_CHARS + 1) })).toThrow('too long')
+  })
+})
+
+describe('permissionAddRefusal (permissions:add, reviewer-3 L4)', () => {
+  it('refuses destructive, wildcard and too-broad rules with a readable reason', () => {
+    expect(permissionAddRefusal('Bash(rm -rf:*)')).toMatch(/destructive or unbounded/)
+    expect(permissionAddRefusal('Bash(git push:*)')).toMatch(/destructive/)
+    expect(permissionAddRefusal('Bash(*)')).toMatch(/destructive or unbounded/)
+    expect(permissionAddRefusal('Bash(curl:*)')).toMatch(/far more than one command.*Bash\(curl\)/)
+    expect(permissionAddRefusal('Bash(docker compose:*)')).toMatch(/far more than one command/)
+    expect(permissionAddRefusal('Bash(npx tsx *)')).toMatch(/far more than one command/)
+    expect(permissionAddRefusal('Bash(bash:*)')).toMatch(/run any other command/)
+    expect(permissionAddRefusal('Edit')).toMatch(/edits anywhere/)
+    expect(permissionAddRefusal('not a rule(')).toMatch(/A rule looks like/)
+  })
+
+  it('accepts plain prefix, exact, tool and MCP server rules', () => {
+    for (const r of ['Bash(npm test:*)', 'Bash(npm test *)', 'Bash(git status:*)', 'Bash(curl https://example.com)', 'WebSearch', 'mcp__github', 'PowerShell(npm install:*)']) {
+      expect(permissionAddRefusal(r), r).toBeNull()
+    }
   })
 })
 

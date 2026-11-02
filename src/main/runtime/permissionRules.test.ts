@@ -14,6 +14,8 @@ import {
   addRules,
   addRulesReport,
   isOfferableDirectory,
+  isTooBroadPrefix,
+  isWithinDir,
   listRules,
   pathRuleRefusal,
   removeRule,
@@ -262,7 +264,8 @@ describe('per-segment shell rules', () => {
     expect(segmentRulePrefix('Bash', 'python3 script.py')).toBe('python3 script.py')
     expect(segmentRulePrefix('Bash', 'git -C x status')).toBeNull()
     expect(segmentRulePrefix('Bash', 'npm run lint -- --fix')).toBe('npm run lint')
-    expect(segmentRulePrefix('Bash', 'docker exec web ls')).toBe('docker exec web')
+    // reviewer-3 H3: `docker exec` is never derived any more (it was `docker exec web`).
+    expect(segmentRulePrefix('Bash', 'docker exec web ls')).toBeNull()
     expect(segmentRulePrefix('Bash', 'npm run')).toBeNull()
     expect(segmentRulePrefix('Bash', 'npm')).toBeNull()
     expect(segmentRulePrefix('Bash', 'FOO=1 npm test')).toBeNull()
@@ -488,5 +491,72 @@ describe('server-level MCP rules', () => {
     expect(ruleLabel('mcp__github__*')).toBe('All tools of github')
     expect(ruleLabel('mcp__github__create')).toBe('mcp__github__create')
     expect(suggestionLabels([{ type: 'addRules', rules: [{ toolName: 'mcp__github__*' }, { toolName: 'Edit' }], behavior: 'allow', destination: 'session' }])).toEqual(['All tools of github', 'Edit'])
+  })
+})
+
+describe('reviewer-3: derive lists', () => {
+  it('H3: container run / exec / compose / buildx are never derived; podman and nerdctl like docker', () => {
+    for (const c of [
+      'docker container run --privileged -v /:/h img', 'docker compose run -v /:/host app', 'docker compose up', 'docker buildx build .', 'docker exec web ls',
+      'podman run img', 'podman container run img', 'podman ps', 'nerdctl run img', 'nerdctl compose up', 'docker-compose run app', 'docker-compose up', 'podman-compose run app'
+    ]) {
+      if (c === 'podman ps') expect(shellRuleContents('Bash', c)).toEqual(['podman ps:*'])
+      else expect(shellRuleContents('Bash', c), c).toEqual([])
+    }
+    // Launchers: two words, never one.
+    expect(segmentRulePrefix('Bash', 'podman ps -a')).toBe('podman ps')
+    expect(segmentRulePrefix('Bash', 'docker-compose ps')).toBeNull()
+    expect(segmentRulePrefix('Bash', 'docker build .')).toBe('docker build')
+    expect(isTooBroadPrefix('docker compose')).toBe(true)
+    expect(isTooBroadPrefix('podman exec web')).toBe(true)
+  })
+
+  it('M1: gh takes three words; credentials, scaffolders, uv tool and cloud CLIs are never broad', () => {
+    expect(segmentRulePrefix('Bash', 'gh pr list --state open')).toBe('gh pr list')
+    expect(segmentRulePrefix('Bash', 'gh repo view x')).toBe('gh repo view')
+    expect(segmentRulePrefix('Bash', 'gh pr')).toBeNull()
+    for (const c of ['gh auth token', 'gh auth status', 'gh secret set X', 'gh repo delete x --yes', 'npm init vite', 'npm create vite@latest', 'yarn create next-app', 'bun create x', 'pnpm create x', 'uv tool run x', 'uv tool install x', 'kubectl exec -it p -- sh', 'kubectl delete pod x']) {
+      expect(shellRuleContents('Bash', c), c).toEqual([])
+    }
+    expect(isUnsafeAllowRule('Bash(gh repo delete:*)')).toBe(true)
+    expect(segmentRulePrefix('Bash', 'kubectl get pods')).toBe('kubectl get')
+    expect(segmentRulePrefix('Bash', 'terraform plan')).toBe('terraform plan')
+    expect(segmentRulePrefix('Bash', 'helm list')).toBe('helm list')
+    expect(segmentRulePrefix('Bash', 'aws s3 ls s3://b')).toBe('aws s3 ls')
+    expect(segmentRulePrefix('Bash', 'az vm list')).toBe('az vm list')
+    expect(segmentRulePrefix('Bash', 'gcloud config list')).toBe('gcloud config list')
+    for (const c of ['kubectl', 'terraform', 'aws', 'az', 'gcloud', 'helm']) expect(segmentRulePrefix('Bash', `${c} --version`), c).toBeNull()
+  })
+
+  it('L5: git restore is destructive', () => {
+    expect(isUnsafeAllowRule('Bash(git restore:*)')).toBe(true)
+    expect(shellRuleContents('Bash', 'git restore src/a.ts')).toEqual([])
+  })
+
+  it('M4: plain bash commands with a word-initial @ derive and match; PowerShell gets none', () => {
+    expect(shellRuleContents('Bash', 'npm install @types/node')).toEqual(['npm install:*'])
+    expect(shellRuleContents('Bash', 'npx @biomejs/biome check')).toEqual(['npx @biomejs/biome:*'])
+    expect(shellRuleContents('Bash', 'npm test -w @org/app')).toEqual(['npm test:*'])
+    expect(shellRuleContents('PowerShell', 'npm install @types/node')).toEqual([])
+    expect(shellRuleContents('Bash', 'npm install @types/node', { shell: 'powershell' })).toEqual([])
+  })
+
+  it('plain commands still derive (prompt fatigue)', () => {
+    expect(shellRuleContents('Bash', 'npm test')).toEqual(['npm test:*'])
+    expect(shellRuleContents('Bash', 'git status')).toEqual(['git status:*'])
+    expect(shellRuleContents('Bash', 'cd src && npm run build', posixOpts)).toEqual(['npm run build:*'])
+    expect(shellRuleContents('Bash', 'make test')).toEqual(['make test:*'])
+    expect(shellRuleContents('Bash', 'make')).toEqual([])
+  })
+
+  it('M3: darwin folder checks fold case like win32', () => {
+    const o = { home: '/Users/u', platform: 'darwin' as const }
+    for (const d of ['/Users/u/.SSH', '/Users/u/.Ssh/keys', '/USERS/u/.aws', '/Users/u/library/keychains', '/Users/U']) expect(isOfferableDirectory(d, o), d).toBe(false)
+    expect(isOfferableDirectory('/Users/u/Notes', o)).toBe(true)
+    expect(isOfferableDirectory('/Users/u/PROJ', { ...o, deniedDirs: ['/Users/u/proj'] })).toBe(false)
+    // linux stays case-sensitive.
+    expect(isOfferableDirectory('/home/u/.SSH', { home: '/home/u', platform: 'linux' })).toBe(true)
+    expect(isWithinDir('/Users/u/.ssh', '/Users/u/.SSH/x', 'darwin')).toBe(true)
+    expect(isWithinDir('/home/u/.ssh', '/home/u/.SSH/x', 'linux')).toBe(false)
   })
 })

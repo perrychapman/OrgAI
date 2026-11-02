@@ -114,8 +114,8 @@ import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { projectConnection } from '@shared/defaults'
 import { log, logPath, logsDir } from './log'
-import { addRules, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
-import { isValidRule } from './runtime/ruleMatch'
+import { addRules, isTooBroadPrefix, isUnsafeAllowRule, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
+import { isValidRule, rulePrefix } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
 import { checkProjectPath } from './store/projects'
 import { checkRunTarget, isValidId } from './windowScope'
@@ -474,8 +474,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
     const rule = input.rule
-    if (!isValidRule(rule)) throw new Error('A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(gh:*)')
-    const refusal = ruleSaveRefusal(rule)
+    const refusal = permissionAddRefusal(rule)
     if (refusal) throw new Error(refusal)
     return addRules(project.path, [rule])
   })
@@ -855,6 +854,25 @@ export function permissionRuleArgs(input: unknown): { projectId: string; rule: s
   if (!rule) throw new Error('The rule is empty.')
   if (rule.length > PERMISSION_RULE_MAX_CHARS) throw new Error(`The rule is too long (at most ${PERMISSION_RULE_MAX_CHARS} characters).`)
   return { projectId: i.projectId, rule }
+}
+
+/**
+ * Why permissions:add refuses a rule, or null (reviewer-3 L4): bad grammar, a blanket or ambiguous path rule
+ * (ruleSaveRefusal), a destructive or wildcard shell rule (isUnsafeAllowRule) or a shell prefix that grants far more
+ * than one command (isTooBroadPrefix: `curl:*`, `docker compose:*`, `npx tsx:*`). Exact shell rules stay allowed
+ * unless destructive. Exported for tests.
+ */
+export function permissionAddRefusal(rule: string): string | null {
+  if (!isValidRule(rule)) return 'A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(npm test:*)'
+  const refusal = ruleSaveRefusal(rule)
+  if (refusal) return refusal
+  if (isUnsafeAllowRule(rule)) return `"${rule}" would allow a destructive or unbounded command. Allow the command once from its card instead.`
+  const m = /^(?:Bash|PowerShell)\((.*)\)$/.exec(rule.trim())
+  const prefix = m ? rulePrefix(m[1]) : null
+  if (prefix !== null && isTooBroadPrefix(prefix)) {
+    return `"${rule}" would allow far more than one command (it writes, fetches, runs code or controls containers). Use an exact rule such as ${rule.trim().replace(/(?::\*| \*)\)$/, ')')} instead.`
+  }
+  return null
 }
 
 /** Most secret values one proposal decision may carry, and the longest key / value. */

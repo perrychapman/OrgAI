@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FREE_CD_LABEL, cdTarget, isFreeCdTarget, isValidRule, matchOptionsFor, matchesBashRule, mcpServerOfRule, matchingRule, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
+import { FREE_CD_LABEL, cdTarget, isFreeCdTarget, isValidRule, matchOptionsFor, matchesBashRule, mcpServerOfRule, matchingRule, programRunsProgram, segmentWords, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
 
 describe('isValidRule', () => {
   it('accepts tool names, prefix rules and exact rules', () => {
@@ -210,9 +210,11 @@ describe('free cd segments', () => {
         expect(matchingRule(tool, { command: c }, [], posixOpts), `${tool} ${c}`).toBeUndefined()
         expect(matchingRule(tool, { command: c }, [], winOpts), `${tool} ${c} (win32)`).toBeUndefined()
       }
-      for (const c of ['npm test (calc)', 'npm test @{a=calc}', 'npm test @(calc)', 'npm test @args', 'npm test {calc}', 'npm test x@{a=calc}']) {
+      for (const c of ['npm test (calc)', 'npm test @{a=calc}', 'npm test @(calc)', 'npm test {calc}', 'npm test x@{a=calc}']) {
         expect(matchingRule(tool, { command: c }, rules, posixOpts), `${tool} ${c}`).toBeUndefined()
       }
+      // Splatting (`@args`) only means something to PowerShell (reviewer-3 M4).
+      expect(matchingRule(tool, { command: 'npm test @args' }, rules, posixOpts)).toBe(tool === 'PowerShell' ? undefined : rules[0])
       // Quoted text and a mid-word @ stay plain.
       expect(matchingRule(tool, { command: 'npm test "(calc)"' }, rules, posixOpts)).toBe(rules[0])
       expect(matchingRule(tool, { command: 'npm test pkg@1.2.3' }, rules, posixOpts)).toBe(rules[0])
@@ -243,7 +245,7 @@ describe('free cd segments', () => {
     }
     expect(matchesBashRule('git fetch origin', rules)).toBe(true)
     expect(matchesBashRule('git grep -n foo', rules)).toBe(true)
-    for (const c of ['npm test a,@b', 'npm test x=@b', 'npm test ;@b']) expect(matchesBashRule(c, rules), c).toBe(false)
+    for (const c of ['npm test a,@b', 'npm test x=@b', 'npm test ;@b']) expect(matchesBashRule(c, rules, { shell: 'powershell' }), c).toBe(false)
   })
 
   it('review re-check L7: win32 trailing dot or space names are never free; MSYS paths only for bash', () => {
@@ -304,5 +306,149 @@ describe('free cd segments', () => {
     expect(matchOptionsFor(ctx).freeDirs).toEqual(['/p', '/x', '/y'])
     expect(matchOptionsFor({ project: { path: '/p' } as never })).toEqual({ cwd: '/p', freeDirs: ['/p'] })
     expect(matchOptionsFor({ project: { path: '/p' } as never, protectedDirectories: () => ['/data'] }).deniedDirs).toEqual(['/data'])
+  })
+})
+
+describe('reviewer-3: program options that run another program (programRunsProgram)', () => {
+  type Opts = Parameters<typeof matchesBashRule>[2]
+  const ok = (c: string, rules: string[], opts?: Opts) => expect(matchesBashRule(c, rules, opts), c).toBe(true)
+  const no = (c: string, rules: string[], opts?: Opts) => expect(matchesBashRule(c, rules, opts), c).toBe(false)
+
+  it('segmentWords drops quotes the way a shell does', () => {
+    expect(segmentWords(`npm test --node-options="--import=data:text/javascript,(x)" 'a b'`)).toEqual(['npm', 'test', '--node-options=--import=data:text/javascript,(x)', 'a b'])
+    expect(segmentWords('git fetch --upload-p"ack"=x')).toEqual(['git', 'fetch', '--upload-pack=x'])
+    expect(segmentWords(`x "" y`)).toEqual(['x', '', 'y'])
+  })
+
+  it('H1 npm family: script shell, node options, other config or package folders, in every spelling', () => {
+    const rules = ['Bash(npm test:*)', 'Bash(pnpm test:*)', 'Bash(yarn test:*)', 'Bash(bun test:*)', 'Bash(npm run lint:*)', 'Bash(npx eslint:*)', 'Bash(npm exec eslint:*)', 'Bash(pnpm -C:*)', 'Bash(pnpm --dir:*)', 'Bash(npx -c:*)', 'Bash(npx --call:*)', 'Bash(npx --node-options=--import=x eslint:*)', 'Bash(npm exec -c:*)']
+    for (const c of [
+      'npm test --node-options="--import=data:text/javascript,process.exit()"',
+      'npm test --node-options "--require ./evil.js"',
+      "npm test '--node-options=--import=x'",
+      'npm test --node_options=--import=x',
+      'npm test --node-opt=--import=x',
+      'npm test --node\\-options=--import=x',
+      'npm test --script-shell=calc',
+      'npm test --script-shell calc',
+      'npm test --userconfig=/tmp/x',
+      'npm test --globalconfig=/tmp/x',
+      'npm test --prefix /tmp/evil',
+      'npm test -C /tmp/evil',
+      'npm run lint --script-shell=calc',
+      'pnpm test --config.script-shell=calc',
+      'pnpm -C /tmp/evil test',
+      'pnpm --dir /tmp/evil test',
+      'yarn test --cwd /tmp/evil',
+      'npx --node-options=--import=x eslint',
+      'npx -c calc eslint',
+      'npx --call calc eslint',
+      'npm exec -c calc eslint'
+    ]) no(c, rules)
+    for (const c of [
+      'npm test',
+      'npm test -- --coverage',
+      'npm test -- --dir src -c jest.config.js',
+      'npm test -w @org/app',
+      'npm run lint -- --fix',
+      'pnpm test -c vitest.config.ts',
+      'npx eslint -c .eslintrc src',
+      'npx eslint --prefix x',
+      'npm exec eslint -c .eslintrc'
+    ]) ok(c, rules)
+  })
+
+  it('H1 NODE_OPTIONS and other program env words: a prefix mismatch, and refused even under a rule that spells them', () => {
+    no('NODE_OPTIONS=--import=x npm test', ['Bash(npm test:*)'])
+    no('NODE_OPTIONS=--import=x npm test', ['Bash(NODE_OPTIONS=--import=x npm test:*)'])
+    no('GIT_SSH_COMMAND=calc git fetch', ['Bash(GIT_SSH_COMMAND=calc git fetch:*)'])
+    no('npm_config_script_shell=calc npm test', ['Bash(npm_config_script_shell=calc npm test:*)'])
+    ok('CI=1 npm test', ['Bash(CI=1 npm test:*)'])
+  })
+
+  it('H1 go, cargo, make, dotnet and node', () => {
+    const rules = ['Bash(go test:*)', 'Bash(go vet:*)', 'Bash(go env:*)', 'Bash(cargo test:*)', 'Bash(make test:*)', 'Bash(dotnet build:*)', 'Bash(node --test:*)', 'Bash(node build.js:*)']
+    for (const c of [
+      'go test -exec=calc ./...', 'go test -exec calc ./...', 'go test --toolexec=calc ./...', 'go vet -vettool=/tmp/x ./...', 'go env -w GOFLAGS=-toolexec=calc',
+      'cargo test --config target.x.runner=calc', 'cargo test --config=x', 'cargo test -Zunstable-options',
+      'make test SHELL=calc', 'make test CC=calc', 'make test -f /tmp/Makefile', 'make test -sf /tmp/Makefile', 'make test --eval=x', 'make test -E x', 'make test -C /tmp', 'make test --dir=/tmp', 'make test --file=x',
+      'dotnet build -p:PreBuildEvent=calc', 'dotnet build /p:PostBuildEvent=calc', 'dotnet build "-property:A=1;PostBuildEvent=calc"', 'dotnet build -logger:/tmp/x.dll', 'dotnet build @x.rsp',
+      'node --test --import=data:x', 'node --test -r ./x.js', 'node --test --require ./x.js', 'node --test -e 1', 'node --test --experimental-loader x', 'node --test --title t -e 1'
+    ]) no(c, rules)
+    for (const c of [
+      'go test ./...', 'go test -run TestX -v ./...', 'go test ./... -args -exec x', 'go vet ./...', 'go env GOPATH',
+      'cargo test', 'cargo test -- --nocapture --config x', 'cargo test --release',
+      'make test', 'make test -j4', 'make test VERBOSE=1', 'make test DEBUG=true',
+      'dotnet build -p:Configuration=Release', 'dotnet build -c Release',
+      'node --test', 'node build.js -p prod', 'node build.js --eval x'
+    ]) ok(c, rules)
+  })
+
+  it('H2 git clone -c / --config / --template, --config on every subcommand, every global option scanned', () => {
+    const rules = ['Bash(git clone:*)', 'Bash(git log:*)', 'Bash(git init:*)', 'Bash(git commit:*)', 'Bash(git --no-pager:*)']
+    for (const c of [
+      'git clone -c core.sshCommand=calc git@h:x', 'git clone -qc core.sshCommand=calc git@h:x', 'git clone --config=core.sshCommand=calc git@h:x',
+      'git clone --config core.sshCommand=calc git@h:x', 'git clone --template=/tmp/hooks url', 'git clone --templ=/tmp/hooks url', 'git init --template=/tmp/hooks',
+      'git log --config=x', 'git commit --conf=x', 'git --no-pager -c core.pager=calc log', 'git --no-pager --git-dir=/tmp/x log', 'git --no-pager --work-tree /tmp log',
+      'git --no-pager --exec-path=/tmp log', 'git --no-pager --config-env=core.pager=X log', 'git --no-pager log --upload-p=x'
+    ]) no(c, rules)
+    ok('git clone https://h/x.git', rules)
+    ok('git clone --depth 1 https://h/x.git', rules)
+    ok('git log --oneline -n 5', rules)
+    ok('git --no-pager log --stat', rules)
+  })
+
+  it('L1: git -C is not -c, so an exact rule still matches', () => {
+    ok('git -C sub status', ['Bash(git -C sub status)'])
+    no('git -c core.pager=x status', ['Bash(git -c core.pager=x status)'])
+  })
+
+  it('M2: git writing outside the project (--output, format-patch / archive -o)', () => {
+    const rules = ['Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git format-patch:*)', 'Bash(git archive:*)']
+    for (const c of [
+      'git diff --output=/home/u/.bashrc', 'git diff --output /tmp/x', 'git log --output=x', 'git log --outp=x', 'git format-patch -o /tmp HEAD~1',
+      'git format-patch --output-directory=/tmp HEAD~1', 'git archive -o /tmp/x.zip HEAD', 'git archive --output=/tmp/x HEAD'
+    ]) no(c, rules)
+    for (const c of ['git diff --stat', 'git diff --output-indicator-new=+', 'git format-patch HEAD~1', 'git archive HEAD']) ok(c, rules)
+  })
+
+  it('L5: destructive branch, switch and stash forms under their prefix rules', () => {
+    const rules = ['Bash(git branch:*)', 'Bash(git stash:*)', 'Bash(git switch:*)']
+    for (const c of [
+      'git branch -D x', 'git branch -Dq x', 'git branch -f x HEAD', 'git branch --force x', 'git branch -M x', 'git stash clear', 'git stash drop',
+      'git stash drop 0', 'git switch -f main', 'git switch --discard-changes main', 'git switch -C x', 'git switch --force main'
+    ]) no(c, rules)
+    for (const c of ['git branch', 'git branch -a', 'git branch -d merged', 'git branch -vv', 'git stash', 'git stash list', 'git stash pop', 'git switch main', 'git switch -c feature']) ok(c, rules)
+  })
+
+  it('M4: a word-initial @ is plain on bash, splatting on PowerShell', () => {
+    ok('npm install @types/node', ['Bash(npm install:*)'])
+    ok('npx @biomejs/biome check', ['Bash(npx @biomejs/biome:*)'])
+    ok('npm test -w @org/app', ['Bash(npm test:*)'])
+    expect(matchingRule('PowerShell', { command: 'npm install @types/node' }, ['PowerShell(npm install:*)'])).toBeUndefined()
+    expect(matchingRule('PowerShell', { command: 'npm test @{a=calc}' }, ['PowerShell(npm test:*)'])).toBeUndefined()
+    expect(matchingRule('Bash', { command: 'npm test @{a=calc}' }, ['Bash(npm test:*)'])).toBeUndefined()
+    // Codex on win32 reads commands with PowerShell.
+    no('npm install @types/node', ['Bash(npm install:*)'], { shell: 'powershell' })
+  })
+
+  it('L3: hidden characters in the command never match', () => {
+    no('npm test​', ['Bash(npm test:*)'])
+    no('npm test ‮x', ['Bash(npm test:*)'])
+  })
+
+  it('plain commands keep matching their rules', () => {
+    ok('cd src && npm run build', ['Bash(npm run build:*)'], { cwd: '/home/u/proj', freeDirs: ['/home/u/proj'], platform: 'linux' })
+    ok('git status', ['Bash(git status:*)'])
+    ok('npm test', ['Bash(npm test:*)'])
+    expect(programRunsProgram('ls -la')).toBe(false)
+    for (const c of [
+      'git commit -m "fix: x"', 'git commit --amend --no-edit', 'git add -A', 'git diff HEAD~1 --stat', 'git fetch origin', 'git pull --rebase origin dev',
+      'git status -s', 'git log -p -n 3', 'git log --format="%H %s"', 'git show --stat HEAD', 'git merge --no-ff feature', 'git tag -l', 'git remote -v',
+      'git worktree add ../x -b x', 'git grep -n foo', 'npm ci', 'npm run build', 'npm run typecheck', 'pnpm install --frozen-lockfile', 'yarn install',
+      'cargo build --release', 'go build ./...', 'dotnet test', 'npx vitest run src/main', 'npx tsc --noEmit -p tsconfig.json', 'make -j8 all', 'node scripts/gen.js --out x'
+    ]) {
+      expect(programRunsProgram(c), c).toBe(false)
+    }
   })
 })

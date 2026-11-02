@@ -99,7 +99,7 @@ export function removeRule(projectPath: string, rule: string): string[] {
 }
 
 /** Shell rules that must never be saved as a blanket allow: destructive or privilege-raising commands. */
-const DESTRUCTIVE_SHELL = /^(rm|rmdir|del|rd|ri|erase|sudo|su|chmod|chown|mkfs|dd|shutdown|reboot|git\s+push|git\s+reset|git\s+clean|git\s+checkout|git\s+rebase|git\s+branch\s+-D|Remove-Item|Clear-Content)(?![\w-])/i
+const DESTRUCTIVE_SHELL = /^(rm|rmdir|del|rd|ri|erase|sudo|su|chmod|chown|mkfs|dd|shutdown|reboot|git\s+push|git\s+reset|git\s+clean|git\s+checkout|git\s+restore|git\s+rebase|git\s+branch\s+-D|gh\s+[\w-]+\s+delete|Remove-Item|Clear-Content)(?![\w-])/i
 
 /**
  * True for a rule the harness refuses to save from a proposal: a bare shell tool (every command), a
@@ -164,12 +164,22 @@ const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(['npx', 'bunx', 'pnpx', 'uv
 const NEVER_DERIVE_FIRST: ReadonlySet<string> = new Set([
   'cp', 'mv', 'curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'ftp', 'nc', 'netcat', 'socat', 'telnet',
   'copy-item', 'copy', 'cpi', 'move-item', 'move', 'mi', 'set-content', 'add-content', 'out-file', 'invoke-webrequest', 'iwr',
-  'invoke-restmethod', 'irm'
+  'invoke-restmethod', 'irm',
+  // Compose files can mount the host and run privileged (reviewer-3 H3), like `docker compose`.
+  'docker-compose', 'podman-compose'
 ])
 const NEVER_DERIVE_PAIRS: ReadonlySet<string> = new Set([
   'git config', 'git submodule', 'git bisect', 'git difftool', 'git filter-branch', 'npm pkg', 'npm config', 'npm set',
-  'pnpm config', 'pnpm pkg', 'yarn config', 'yarn node', 'gh api', 'gh extension', 'gh alias', 'deno eval', 'docker run'
+  'pnpm config', 'pnpm pkg', 'yarn config', 'yarn node', 'gh api', 'gh extension', 'gh alias', 'deno eval',
+  // Containers (reviewer-3 H3): run / exec / compose / buildx can mount the host or run as root; podman and nerdctl alike.
+  ...['docker', 'podman', 'nerdctl'].flatMap((c) => ['run', 'container', 'compose', 'buildx', 'exec'].map((s) => `${c} ${s}`)),
+  // Credentials and package scaffolders that run any package (reviewer-3 M1).
+  'gh auth', 'gh secret', 'gh ssh-key', 'gh gpg-key', 'gh codespace', 'npm init', 'npm create', 'pnpm create', 'yarn create', 'bun create',
+  'uv tool', 'kubectl exec', 'kubectl run', 'kubectl delete', 'terraform destroy'
 ])
+
+/** Launchers whose second word is only a command group: the rule takes the third word too (`gh pr list`, `aws s3 ls`). */
+const THREE_WORD_LAUNCHERS: ReadonlySet<string> = new Set(['gh', 'aws', 'az', 'gcloud'])
 
 /** True when a shell prefix (`npm test`, `npx tsx`) must never be derived or kept as a prefix rule. */
 export function isTooBroadPrefix(prefix: string): boolean {
@@ -282,7 +292,9 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 /** Commands whose first word alone says little: their rule is the first two words (`npm test`, `git status`). */
 export const LAUNCHERS: ReadonlySet<string> = new Set([
   'npm', 'npx', 'pnpm', 'yarn', 'bun', 'git', 'go', 'cargo', 'dotnet', 'python', 'python3', 'pip', 'uv', 'node', 'deno', 'make', 'docker', 'gh',
-  'py', 'pythonw', 'bunx', 'pnpx', 'uvx', 'pipx', 'poetry', 'pdm', 'hatch', 'pipenv', 'conda', 'rye', 'nix'
+  'py', 'pythonw', 'bunx', 'pnpx', 'uvx', 'pipx', 'poetry', 'pdm', 'hatch', 'pipenv', 'conda', 'rye', 'nix',
+  // Containers and cloud CLIs (reviewer-3 H3 / M1): a one-word rule would cover every verb.
+  'podman', 'nerdctl', 'kubectl', 'terraform', 'aws', 'az', 'gcloud', 'helm'
 ])
 
 /** A launcher's second words that only say "run something": the rule takes the third word too. */
@@ -306,7 +318,7 @@ export function segmentRulePrefix(toolName: string, segment: string): string | n
     if (!second || second.startsWith('-') || !PLAIN_WORD.test(second)) return null
     prefix = `${first} ${second}`
     // `npm run lint`, `docker exec x`, `uv run pytest`: the runner word alone would allow any script, so take the third.
-    if (RUNNER_WORDS.has(second.toLowerCase())) {
+    if (RUNNER_WORDS.has(second.toLowerCase()) || THREE_WORD_LAUNCHERS.has(programName(first))) {
       const third = words[2] ?? ''
       if (!third || third.startsWith('-') || !PLAIN_WORD.test(third)) return null
       prefix = `${prefix} ${third}`
@@ -323,7 +335,8 @@ export function segmentRulePrefix(toolName: string, segment: string): string | n
  * redirect, `$(`, backtick, `&`, newline, ambiguous quoting) or gives no safe rule, the result is empty, never a
  * partial set. A non-empty result always covers the command (shellRulesFor).
  */
-export function shellRuleContents(toolName: string, command: string, opts?: MatchOptions): string[] {
+export function shellRuleContents(toolName: string, command: string, opts0?: MatchOptions): string[] {
+  const opts = withShell(toolName, opts0)
   const out: string[] = []
   for (const segment of splitCommand(unwrapShellCommand(command))) {
     if (!segment) return []
@@ -334,6 +347,11 @@ export function shellRuleContents(toolName: string, command: string, opts?: Matc
   }
   if (!out.length) return []
   return shellRulesFor(command, out.map((c) => `${toolName}(${c})`), opts) ? out : []
+}
+
+/** The options with the shell reading the command: opts.shell (Codex on win32 sets 'powershell'), else from the tool name. */
+function withShell(toolName: string, opts: MatchOptions | undefined): MatchOptions {
+  return { ...(opts ?? {}), shell: opts?.shell ?? (toolName === 'PowerShell' ? 'powershell' : 'bash') }
 }
 
 function commandOf(input: unknown): string | undefined {
@@ -375,10 +393,15 @@ const HOME_CONFIG_DIRS = [
   'AppData/Local/Mozilla', '.cargo/credentials', '.cargo/credentials.toml', '.password-store', '.local/share/keyrings', 'Library/Cookies'
 ]
 
-/** True when `child` is `parent` or inside it (lexical; win32 case-insensitive). */
-function within(parent: string, child: string, platform: NodeJS.Platform): boolean {
+/**
+ * True when `child` is `parent` or inside it. Lexical; case-insensitive on win32 and on darwin (reviewer-3 M3: APFS and
+ * HFS+ are case-insensitive by default, so `~/.SSH` is `~/.ssh`). Only used for refusals, so folding never frees more.
+ */
+export function isWithinDir(parent: string, child: string, platform: NodeJS.Platform): boolean {
+  if (platform === 'darwin') return isFreeCdTarget(child.toLowerCase(), { freeDirs: [parent.toLowerCase()], platform })
   return isFreeCdTarget(child, { freeDirs: [parent], platform })
 }
+const within = isWithinDir
 
 /**
  * True for a folder the card may offer as an extra directory (addDirectories): absolute, not a root, not UNC or a
@@ -497,7 +520,7 @@ export function chooseSuggestions(
     const command = commandOf(input) ?? ''
     const derived = deriveSuggestions(toolName, input, opts)
     const providedRules = allowRuleStrings(out).filter((r) => r.startsWith(`${toolName}(`))
-    const providedCovers = providedRules.length > 0 && !!command && shellRulesFor(command, providedRules, opts) !== null
+    const providedCovers = providedRules.length > 0 && !!command && shellRulesFor(command, providedRules, withShell(toolName, opts)) !== null
     const others = out.filter((s) => !isAllowRules(s))
     const template = out.find(isAllowRules)
     if (derived.length) {

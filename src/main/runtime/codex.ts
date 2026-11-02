@@ -60,6 +60,18 @@ const PROTECTED_SEGMENTS = new Set(['.git', '.codex', '.agents', '.claude'])
 export function hasProtectedSegment(p: string): boolean {
   return p.split(/[\\/]+/).some((seg) => PROTECTED_SEGMENTS.has(seg.toLowerCase()))
 }
+
+/**
+ * True when a folder is still offerable by its real path (canonicalDeep; reviewer-3 M3): a link or an alternate
+ * spelling that resolves into ~/.ssh or OrgAI's data folder is refused. A path that cannot be resolved is refused.
+ */
+export function offerableByRealPath(dir: string, opts: Parameters<typeof isOfferableDirectory>[1]): boolean {
+  try {
+    return isOfferableDirectory(canonicalDeep(dir), opts)
+  } catch {
+    return false
+  }
+}
 import { tmpdir } from 'node:os'
 
 /**
@@ -886,7 +898,8 @@ class CodexSession implements RuntimeSession {
           for (const s of scoped) {
             if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
             if (s.type === 'addDirectories') {
-              for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer)) this.sessionDirs.push(d)
+              // Checked as written and by real path (reviewer-3 M3: a link or another case spelling of ~/.ssh).
+              for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer) && offerableByRealPath(d, offer)) this.sessionDirs.push(d)
             }
           }
         }
