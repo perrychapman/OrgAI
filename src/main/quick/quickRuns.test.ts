@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, QuickRunInfo, RunEvent, RunSummary } from '@shared/types'
 import { PROJECT_PEEK_BRIEF_CHARS, QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
@@ -10,7 +10,7 @@ import { RunStore } from '../store/runs'
 import { sessionChain } from '../runtime/runManager'
 import { project as makeProject } from '../runtime/testHelpers'
 import { QuickRunService, projectPeeks, quickDisplayProject, quickProject } from './quickRuns'
-import { createScratchDir, isInside, isInsideEither, isReferencedScratch, referencedScratch, removeScratchDir, scratchDirFor, scratchRoot, sweepScratchDirs, validateQuickFolder } from './scratch'
+import { createScratchDir, isInside, isInsideEither, isReferencedScratch, pathKey, referencedScratch, removeScratchDir, scratchDirFor, scratchRoot, sweepScratchDirs, validateQuickFolder } from './scratch'
 
 let dir: string
 let data: string
@@ -49,6 +49,22 @@ describe('validateQuickFolder', () => {
     expect(() => validateQuickFolder(outer, nested)).toThrow("That folder contains OrgAI's data; choose a folder outside it or a subfolder.")
     expect(() => validateQuickFolder(outer, join(nested, 'not-yet-created'))).toThrow(/contains OrgAI's data/)
     expect(validateQuickFolder(userFolder('sibling'), nested).folder).toBeTruthy()
+  })
+
+  it('refuses a drive or filesystem root, which contains the data dir whatever the cwd is', () => {
+    const root = parse(data).root
+    expect(isInside(root, data)).toBe(true)
+    expect(isInside(join(root, '.'), data)).toBe(true)
+    expect(pathKey(root).length).toBeGreaterThan(0)
+    expect(() => validateQuickFolder(root, data)).toThrow(/contains OrgAI's data/)
+    expect(() => validateQuickFolder(join(root, '.'), data)).toThrow(/contains OrgAI's data/)
+    expect(() => validateQuickFolder(root, join(data, 'not-yet-created'))).toThrow(/contains OrgAI's data/)
+  })
+
+  it('treats a child whose name starts with two dots as inside', () => {
+    expect(isInside(dir, join(dir, '..foo', 'x'))).toBe(true)
+    expect(isInside(dir, join(dir, '..'))).toBe(false)
+    expect(isInside(join(dir, 'a'), join(dir, 'ab'))).toBe(false)
   })
 
   it('refuses non-strings, empty, relative, UNC and device paths', () => {
