@@ -11,7 +11,8 @@ describe('mock configChanged hook', () => {
     let skills: RunSkill[] = []
     const ctx = fakeCtx({ autoContinue: false, skills: () => skills })
     const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
-    expect(toolNames(session)).not.toContain(SKILL_HARNESS_TOOLS.load)
+    // list_skills / load_skill are bound on every non-native work run, even with no skills at start.
+    expect(toolNames(session)).toContain(SKILL_HARNESS_TOOLS.load)
     await expect(session.configChanged({ mcp: { upserted: ['notes'], removed: ['old'] } })).resolves.toEqual({ availability: 'now' })
     skills = [{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }]
     await expect(session.configChanged({ skills: true })).resolves.toEqual({ availability: 'now' })
@@ -41,21 +42,16 @@ describe('[mock:config-change] script', () => {
     expect(done).toEqual({ type: 'text', text: 'Config change done.' })
   })
 
-  it('with the proposal tools missing from the run, warns for each and still finishes the turn', async () => {
+  it('runs every step through the work-run tools and finishes the turn', async () => {
     const ctx = fakeCtx({ prompt: `Change the config ${CONFIG_CHANGE_TOKEN}`, autoContinue: false })
     const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
     const texts = () => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
     await vi.waitFor(() => expect(texts()).toContain('Config change done.'))
     const tools = toolNames(session)
+    // The work-run root now has every tool the script calls (no unknown-tool warning).
+    expect(tools).toEqual(expect.arrayContaining([MCP_HARNESS_TOOLS.proposeServers, SKILL_ASSIST_HARNESS_TOOLS.propose, SKILL_HARNESS_TOOLS.load]))
     const logs = ctx.events.flatMap((e) => (e.type === 'log' && e.level === 'warn' ? [e.message] : []))
-    let missing = 0
-    for (const name of [MCP_HARNESS_TOOLS.proposeServers, SKILL_ASSIST_HARNESS_TOOLS.propose, SKILL_HARNESS_TOOLS.load]) {
-      if (tools.includes(name)) continue
-      missing += 1
-      expect(logs).toContain(`Mock script calls unknown harness tool ${name} for a work run`)
-    }
-    // No skill is granted in this run, so load_skill is never bound; the warning path ran at least once.
-    expect(missing).toBeGreaterThan(0)
+    expect(logs.some((m) => m.startsWith('Mock script calls unknown harness tool'))).toBe(false)
     // The default script did not run.
     expect(texts()).not.toContain('Planning the work: I will read the project, delegate the change and review the result.')
     await session.stop()
