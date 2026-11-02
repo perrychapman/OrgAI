@@ -1037,7 +1037,7 @@ export class RunManager {
         if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
         if (skills && !bare && this.options.skills) {
           try {
-            active.skills = this.options.skills.forRun(live, live.roles) ?? []
+            active.skills = this.options.skills.forRun(live, ctx.roles) ?? []
           } catch (e) {
             log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
           }
