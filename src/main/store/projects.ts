@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
-import { HARNESS_PROJECT_ID, isModelTier, isVirtualProjectId } from '@shared/types'
+import { HARNESS_PROJECT_ID, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isVirtualProjectId } from '@shared/types'
 import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
+import { isInsideEither, pathKey, samePath } from '../quick/scratch'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
 export type TierContextFor = (connection: ConnectionId) => TierContext | undefined
@@ -141,15 +142,110 @@ export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupK
   return null
 }
 
+/** Raw entries looked at by cleanAllowedDirectories before it stops (a hostile list cannot cost unbounded fs work). */
+const ALLOWED_DIRECTORIES_SCAN_MAX = 200
+
+export interface AllowedDirectoryOpts {
+  /** Path flavour for the syntax checks (tests pass `path.win32` / `path.posix`). Default: the native one. */
+  path?: PlatformPath
+  /** True when `dir` is the data dir, inside it or contains it. Default: isInsideEither both ways (fails closed). */
+  touchesData?: (dir: string) => boolean
+  /** True when two accepted folders name the same place. Default: scratch.ts pathKey / samePath. */
+  same?: (a: string, b: string) => boolean
+}
+
+/** Why an allowed-directory entry is refused on syntax alone, or null. */
+function allowedDirectoryProblem(text: string, p: PlatformPath): string | null {
+  if (!text) return 'empty'
+  if (text.length > PROJECT_ALLOWED_DIRECTORY_MAX_CHARS) return 'too long'
+  if (text.includes('\0')) return 'NUL character'
+  // UNC and device paths (\\server\share, \\?\, \\.\, //host), on every platform.
+  if (/^[\\/]{2}/.test(text)) return 'network share or device path'
+  if (p === win32 ?!/^[a-zA-Z]:[\\/]/.test(text) : !p.isAbsolute(text)) return 'not an absolute path'
+  const resolved = p.resolve(text)
+  // A bare root (C:\, /, or C:\a\.. which resolves to one) would mean "everything".
+  if (p.parse(resolved).root === resolved) return 'a drive or file-system root'
+  return null
+}
+
+/**
+ * Normalize `Project.allowedDirectories` (see its doc in shared/types.ts): strings only, trimmed, at most
+ * PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, absolute (win32: a drive-letter path), never a root, never UNC or device,
+ * never OrgAI's data folder, a folder inside it or a folder that contains it, no duplicates (first spelling kept), at
+ * most PROJECT_ALLOWED_DIRECTORIES_MAX. Each kept entry is `path.normalize`d with its trailing separator dropped.
+ * Rejected entries are dropped silently (logged at debug). A non-array gives undefined. Existence is not required.
+ */
+export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts = {}): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const p = opts.path ?? (process.platform === 'win32' ? win32 : posix)
+  const touchesData =
+    opts.touchesData ??
+    ((dir: string): boolean => {
+      try {
+        return isInsideEither(dataDir, dir) || isInsideEither(dir, dataDir)
+      } catch {
+        return true
+      }
+    })
+  const same =
+    opts.same ??
+    ((a: string, b: string): boolean => {
+      if (pathKey(a) === pathKey(b)) return true
+      try {
+        return samePath(a, b)
+      } catch {
+        return false
+      }
+    })
+  const out: string[] = []
+  for (const entry of raw.slice(0, ALLOWED_DIRECTORIES_SCAN_MAX)) {
+    if (out.length >= PROJECT_ALLOWED_DIRECTORIES_MAX) {
+      console.debug('allowedDirectories: over the limit, dropping the rest')
+      break
+    }
+    if (typeof entry !== 'string') {
+      console.debug('allowedDirectories: dropped a non-string entry')
+      continue
+    }
+    const text = entry.trim()
+    const problem = allowedDirectoryProblem(text, p)
+    if (problem) {
+      console.debug(`allowedDirectories: dropped an entry (${problem})`)
+      continue
+    }
+    let dir = p.normalize(text)
+    if (dir.length > p.parse(dir).root.length) dir = dir.replace(/[\\/]+$/, '')
+    if (touchesData(dir)) {
+      console.debug("allowedDirectories: dropped an entry (OrgAI's data folder)")
+      continue
+    }
+    if (out.some((d) => same(d, dir))) continue
+    out.push(dir)
+  }
+  return out
+}
+
+/** The project with allowedDirectories normalized (removed when it is not an array); `changed` when it differs. */
+function withCleanAllowedDirectories(project: Project, dataDir: string): { project: Project; changed: boolean } {
+  if (!project || typeof project !== 'object' || !('allowedDirectories' in project)) return { project, changed: false }
+  const clean = cleanAllowedDirectories(project.allowedDirectories, dataDir)
+  const next = { ...project }
+  if (clean === undefined) delete next.allowedDirectories
+  else next.allowedDirectories = clean
+  return { project: next, changed: JSON.stringify(clean) !== JSON.stringify(project.allowedDirectories) }
+}
+
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
 export class ProjectStore {
   private file: string
   private projects: Project[] = []
   private tierContext?: TierContextFor
+  private dataDir: string
 
   /** `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels). */
   constructor(dataDir: string, opts: { tierContext?: TierContextFor } = {}) {
     this.tierContext = opts.tierContext
+    this.dataDir = dataDir
     this.file = join(dataDir, 'projects.json')
     this.load()
     this.migrateAll()
@@ -183,8 +279,9 @@ export class ProjectStore {
     this.projects = this.projects.map((p) => {
       const m = migrateProject(p)
       const clean = sanitizeRoleModels(m.project, this.tierContext)
-      if (m.changed || clean.changed) changed++
-      return clean.project
+      const dirs = withCleanAllowedDirectories(clean.project, this.dataDir)
+      if (m.changed || clean.changed || dirs.changed) changed++
+      return dirs.project
     })
     if (changed) this.persist()
     return changed
@@ -222,10 +319,13 @@ export class ProjectStore {
     return project
   }
 
-  /** Every save (saveFromRenderer, update) passes Role.model through sanitizeRoleModels. */
+  /**
+   * Every save (saveFromRenderer, update) passes Role.model through sanitizeRoleModels and allowedDirectories through
+   * cleanAllowedDirectories.
+   */
   save(project: Project): Project {
     if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
-    const updated = { ...sanitizeRoleModels(project, this.tierContext).project, updatedAt: new Date().toISOString() }
+    const updated = { ...withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir).project, updatedAt: new Date().toISOString() }
     const idx = this.projects.findIndex((p) => p.id === project.id)
     if (idx === -1) this.projects.push(updated)
     else this.projects[idx] = updated
