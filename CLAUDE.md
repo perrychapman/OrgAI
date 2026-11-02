@@ -507,9 +507,14 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
       re-schedules it. Field shapes from the 0.3.312 typings only.
     - Failed starts (M4): the failure count resets at a restarted query's init. Failures before init: the 1st resumes
       again with the same servers, the 2nd resumes without the new servers (`droppedMcp`, the orchestrator is told), the
-      3rd or no budget ends the run `paused` (not error, except a throw from `buildOptions` inside `recoverRestart`, open M2) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
+      3rd or no budget ends the run `paused` (never error; a throw from `buildOptions` inside `recoverRestart` counts as
+      one more failed start, M2) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
       `pauseReason`, `autoResume: !(held || capTripped)` (N1: an interrupted run waits for the user; RunManager schedules no resume for `autoResume: false`, runManager.test.ts; it gets no
-      `pausedUntil`), an error log line and a harness transcript row. Each new query gets a fresh input stream; after a
+      `pausedUntil`), an error log line and a harness transcript row. A user message that never reached a query that
+      sent init (`undeliveredUserMessages`: in `preInit` or unread, harness messages excluded) also makes it
+      `autoResume: false`, and the pauseReason adds "Your last message was not delivered; send it again to continue."
+      (M1: never replayed, so it cannot arrive twice and RESUME_TEXT never replaces it; a peer message in `preInit` is
+      dropped silently). The attach-notice fallback's error log line goes through `redactSecrets` (L3). Each new query gets a fresh input stream; after a
       failed start `replayInput` fills it with every message pushed before the dead query's init (`preInit`, cleared at
       init) plus any unread ones, each once, leaving out notices flagged `restart` because the next query sends them
       again (N2).
@@ -524,8 +529,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
       returns null (no restart, the no-budget path) when less than `MCP_RESTART_MIN_BUDGET_USD` is left, so a
       restarted query never gets more than what is left (N7). The request_mcp_install result lists tool names through
       harnessTools.ts `safeMcpToolNames` (twin of claude.ts's, same `^[A-Za-z0-9_-]{1,64}$` rule, keep them in sync)
-      with `datum(t, 64)` (N5, harnessTools.test.ts). Open: N3, N6, N8 and the third check's M1, M2,
-      L1-L4 (ARCHITECTURE.md Risks).
+      with `datum(t, 64)` (N5, harnessTools.test.ts). Third check fixes M1, M2, L3 (6327506, unit-tested
+      only, none run live). Open: N3, N6, N8 and the third check's L1, L2, L4 (ARCHITECTURE.md Risks).
   - Per-role MCP grants (`mcpGrants.ts` `mcpCallDenial`): the Claude PreToolUse hook (and the mock) checks every
     `mcp__<server>__<tool>` call against `mcpServersForRole` over the live server list (run-scoped installs and the
     card's `roles` included), root included, before any allow path; unknown callers and unknown or disabled servers

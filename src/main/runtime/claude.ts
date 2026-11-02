@@ -1596,23 +1596,43 @@ export class ClaudeSession implements RuntimeSession {
   /**
    * A restarted query failed before its init (review M4). First failure: resume once more with the same servers.
    * Second: resume without the newly attached servers (they may be what breaks the start; the orchestrator is told).
-   * Third, or no budget left: undefined, and run() ends the session paused instead of failing the run.
+   * Third, or no budget left: no next query, and run() ends the session paused instead of failing the run.
+   * Options that cannot be built count as a failed start too (review M2): each throw is one more failure, so this
+   * gives up after at most three and never throws. `why` is the latest failure, already redacted.
    */
-  private async recoverRestart(why: string): Promise<NextQuery | undefined> {
-    this.restartFailures += 1
-    const budget = this.restartBudget()
-    if (budget === null || !this.sessionId) return undefined
-    const { servers, tools } = this.lastRestart
-    if (this.restartFailures === 1) {
-      this.log('warn', `The resumed session failed to start (${why}); trying once more.`)
-      return { options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget }), servers, tools }
+  private async recoverRestart(why: string): Promise<{ next?: NextQuery; why: string }> {
+    for (;;) {
+      this.restartFailures += 1
+      const budget = this.restartBudget()
+      if (budget === null || !this.sessionId) return { why }
+      const { servers, tools } = this.lastRestart
+      let next: Omit<NextQuery, 'options'>
+      if (this.restartFailures === 1) {
+        this.log('warn', `The resumed session failed to start (${why}); trying once more.`)
+        next = { servers, tools }
+      } else if (this.restartFailures === 2 && servers.length) {
+        for (const n of servers) this.droppedMcp.add(n)
+        this.log('warn', `The resumed session failed to start again (${why}); resuming without the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
+        next = { servers: [], tools: new Map(), dropped: servers }
+      } else return { why }
+      try {
+        return { next: { ...next, options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget }) }, why }
+      } catch (e) {
+        why = redactSecrets((e as Error)?.message ?? String(e), this.secrets)
+        this.log('warn', `Could not prepare the resumed session (${why}).`)
+      }
     }
-    if (this.restartFailures === 2 && servers.length) {
-      for (const n of servers) this.droppedMcp.add(n)
-      this.log('warn', `The resumed session failed to start again (${why}); resuming without the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
-      return { options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget }), servers: [], tools: new Map(), dropped: servers }
-    }
-    return undefined
+  }
+
+  /**
+   * User messages a dead restarted query may have read before its init, or that still wait unread (review M1): they
+   * never reached a query that started. Harness messages (notices, nudges, peer messages) are left out.
+   */
+  private undeliveredUserMessages(): number {
+    const pending = new Set([...this.preInit, ...this.input.peek()])
+    let n = 0
+    for (const m of pending) if (!this.harnessMessages.has(m)) n += 1
+    return n
   }
 
   /**
@@ -1656,7 +1676,7 @@ export class ClaudeSession implements RuntimeSession {
         try {
           this.sendAttachNotice(q, next.servers.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers)
         } catch (e2) {
-          this.log('warn', `Could not send the MCP attach notice: ${(e2 as Error)?.message ?? String(e2)}`)
+          this.log('warn', `Could not send the MCP attach notice: ${redactSecrets((e2 as Error)?.message ?? String(e2), this.secrets)}`)
         } finally {
           this.releaseTurnEnd()
         }
@@ -1873,8 +1893,7 @@ export class ClaudeSession implements RuntimeSession {
             // The old query was closed for an MCP restart; the next one takes over below.
           } else if (this.restarts > 0 && !this.queryInitSeen && this.sessionId) {
             // A restarted query failed before it started: never fail the run for it (review M4).
-            const why = redactSecrets((e as Error).message ?? String(e), this.secrets)
-            const next = await this.recoverRestart(why)
+            const { next, why } = await this.recoverRestart(redactSecrets((e as Error).message ?? String(e), this.secrets))
             if (!next) {
               this.endPausedAfterRestart(why)
               break
@@ -1917,19 +1936,26 @@ export class ClaudeSession implements RuntimeSession {
 
   /**
    * No restarted query could start (recoverRestart gave up): end the session paused, not failed. Unless the user held
-   * the run (interrupt or window cap: autoResume false, no pausedUntil, it waits for the user), RunManager resumes it at
-   * pausedUntil (a fresh resume of the same session, without this run's run-scoped servers).
+   * the run (interrupt or window cap) or a message of theirs never reached a started query, RunManager resumes it at
+   * pausedUntil (a fresh resume of the same session, without this run's run-scoped servers). Otherwise autoResume is
+   * false with no pausedUntil and the run waits for the user. An undelivered message is never replayed (review M1):
+   * the pause reason asks the user to send it again, so it cannot arrive twice and RESUME_TEXT never replaces it.
    */
   private endPausedAfterRestart(why: string): void {
     this.pausedEnd = true
     this.ending = true
+    const undelivered = this.undeliveredUserMessages()
     // A run the user interrupted (or the window cap stopped) waits for the user, never auto-resumes (review N1).
-    const autoResume = !(this.held || this.capTripped)
+    const autoResume = !(this.held || this.capTripped || undelivered > 0)
     const pausedUntil = autoResume ? Date.now() + MCP_RESTART_PAUSE_MS : undefined
-    const reason = 'The session could not be resumed after attaching an MCP server.'
+    const base = 'The session could not be resumed after attaching an MCP server.'
+    const resend = undelivered
+      ? ` ${undelivered === 1 ? 'Your last message was' : `Your last ${undelivered} messages were`} not delivered; send ${undelivered === 1 ? 'it' : 'them'} again to continue.`
+      : ''
+    const reason = base + resend
     const when = pausedUntil ? `it resumes at ${new Date(pausedUntil).toLocaleString()} or when you continue it` : 'it waits until you continue it'
-    this.log('error', `${reason} Pausing the run; ${when}. Last error: ${why}`)
-    this.transcript(ROOT_ID, { kind: 'system', text: `${reason} The run is paused.`, detail: why }, { source: 'harness' })
+    this.log('error', `${base} Pausing the run; ${when}. Last error: ${why}`)
+    this.transcript(ROOT_ID, { kind: 'system', text: `${base} The run is paused.${resend}`, detail: why }, { source: 'harness' })
     this.setState(ROOT_ID, 'idle', 'Paused')
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'paused', ...(pausedUntil ? { pausedUntil } : {}), pauseReason: reason, autoResume })
   }
