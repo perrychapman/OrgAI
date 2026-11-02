@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSettings, Project, RunSummary, ProjectPeek, Proposal, QuickRunInfo, RunEvent, SkillsProposalPayload } from '@shared/types'
 import { DEFAULT_APP_SETTINGS, defaultConnections } from '@shared/defaults'
 import { harnessProject } from '../mcp/assist'
-import { RunManager, type RunManagerOptions } from './runManager'
+import { RunManager, resolveAllowedDirectories, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import { addRules, listRules } from './permissionRules'
 import { skillAssistContext } from '../skills/assist'
@@ -495,6 +495,57 @@ describe('allowed folders and permission hooks', () => {
     expect(ctxs[0].acceptEditsForProject!()).toBe(false)
     expect(s.save).toHaveBeenCalledTimes(1)
     expect(events.some((e) => e.type === 'log' && e.message === 'Permission mode set to Accept edits for this project.')).toBe(true)
+    await m.stopAll()
+  })
+
+  it('acceptEditsForProject returns false and stays quiet when the store declined the switch', async () => {
+    const p = makeProject({ path: mk('repo'), permissionMode: 'default' })
+    const save = vi.fn(() => p)
+    const { m, ctxs } = rig({ saveProjectPermissions: save }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    expect(ctxs[0].acceptEditsForProject!()).toBe(false)
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(events.some((e) => e.type === 'project.updated')).toBe(false)
+    expect(events.some((e) => e.type === 'log' && e.message === 'Permission mode set to Accept edits for this project.')).toBe(false)
+    await m.stopAll()
+  })
+
+  it('exposes the data folder (both spellings, deduped) as protectedDirectories on every run, restricted included', async () => {
+    const data = join(dir, 'data')
+    mkdirSync(data, { recursive: true })
+    const { m, ctxs } = rig({ dataDir: data }, { live: true })
+    await m.start({ project: makeProject({ path: mk('repo') }), prompt: 'go' })
+    await m.start({ project: quickProj({}), prompt: 'q', quick: quickInfo() })
+    expect(ctxs).toHaveLength(2)
+    for (const c of ctxs) {
+      const prot = c.protectedDirectories!()
+      expect(prot.length).toBeGreaterThanOrEqual(1)
+      expect(prot.length).toBeLessThanOrEqual(2)
+      expect(new Set(prot).size).toBe(prot.length)
+      expect(prot[0]).toBe(data)
+    }
+    const none = rig({}, { live: true })
+    await none.m.start({ project: makeProject({ path: mk('repo3') }), prompt: 'go' })
+    expect(none.ctxs[0].protectedDirectories!()).toEqual([])
+    await none.m.stopAll()
+    await m.stopAll()
+  })
+
+  it('drops too-broad folders (home, one holding the project, inside home config) with one warning each', async () => {
+    const home = mk('home')
+    mkdirSync(join(home, '.ssh'), { recursive: true })
+    const repo = join(home, 'work', 'repo')
+    mkdirSync(repo, { recursive: true })
+    const fine = mk('fine')
+    const direct = resolveAllowedDirectories([home, join(home, 'work'), join(home, '.ssh'), fine], { projectPath: repo, home })
+    expect(direct.dirs).toHaveLength(1)
+    expect(direct.unsafe).toEqual([home, join(home, 'work'), join(home, '.ssh')])
+    expect(direct.dropped).toEqual(direct.unsafe)
+    const { m } = rig({}, { live: true })
+    await m.start({ project: makeProject({ path: repo, allowedDirectories: [dir, join(dir, 'home', 'work')] }), prompt: 'go' })
+    const broad = warnings().filter((w) => w.includes('too broad or sensitive'))
+    expect(broad).toHaveLength(2)
+    expect(broad[0]).toContain(dir)
     await m.stopAll()
   })
 

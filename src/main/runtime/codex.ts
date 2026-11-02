@@ -49,11 +49,17 @@ import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
-import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import { isGitRepo } from './worktrees'
-import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { canonicalDeep, isInsideEither, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+
+const PROTECTED_SEGMENTS = new Set(['.git', '.codex', '.agents', '.claude'])
+/** True when a path has a .git, .codex, .agents or .claude segment (case-insensitive, either separator). */
+export function hasProtectedSegment(p: string): boolean {
+  return p.split(/[\\/]+/).some((seg) => PROTECTED_SEGMENTS.has(seg.toLowerCase()))
+}
 import { tmpdir } from 'node:os'
 
 /**
@@ -818,15 +824,36 @@ class CodexSession implements RuntimeSession {
   }
 
   /** MatchOptions right now: the project, the allowed folders (live) and the folders granted for this session. */
-  private matchOpts(): MatchOptions {
+  private matchOpts(cwd?: string): MatchOptions {
     const base = matchOptionsFor(this.ctx)
-    return { ...base, freeDirs: [...(base.freeDirs ?? []), ...this.sessionDirs] }
+    return { ...base, ...(cwd && isAbsolute(cwd) ? { cwd } : {}), freeDirs: [...(base.freeDirs ?? []), ...this.sessionDirs] }
   }
 
-  private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>) {
+  /** Free to edit without a card: every path is concrete, has no protected segment, and sits in a free dir lexically and by real path. */
+  private editPathsFree(paths: readonly string[]): boolean {
+    if (!paths.length) return false
+    const opts = this.matchOpts()
+    return paths.every((p) => {
+      if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
+      if (!isFreeCdTarget(dirname(p), opts)) return false
+      let real: string
+      try {
+        real = canonicalDeep(p)
+      } catch {
+        return false
+      }
+      return (opts.freeDirs ?? []).some((d) => typeof d === 'string' && isAbsolute(d) && isInsideEither(d, real))
+    })
+  }
+
+  private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>, cwd?: string) {
     const summary = describePermission(toolName, input)
     this.setState(agentId, 'waiting', `Needs approval: ${summary}`)
-    const suggestions = chooseSuggestions(toolName, input, undefined, false, this.matchOpts())
+    const restricted = isTrustRestrictedRun(this.ctx.run)
+    const callOpts = this.matchOpts(cwd)
+    const chosen = chooseSuggestions(toolName, input, undefined, false, callOpts)
+    // A restricted run never turns on accept-edits: its folder is not the user's project.
+    const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
     try {
       const decision = await this.ctx.requestPermission({
         agentId,
@@ -843,13 +870,16 @@ class CodexSession implements RuntimeSession {
           ...(this.ctx.allowDirectories ? { allowDirectories: this.ctx.allowDirectories.bind(this.ctx) } : {}),
           ...(this.ctx.acceptEditsForProject ? { acceptEditsForProject: this.ctx.acceptEditsForProject.bind(this.ctx) } : {})
         }
-        const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message), persist)
+        const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message), persist, { toolName, input, opts: callOpts })
         if (scoped) {
           granted = true
           this.sessionRules.push(...allowRuleStrings(scoped))
+          const offer = matchOptionsFor(this.ctx)
           for (const s of scoped) {
-            if (s.type === 'setMode' && s.mode === 'acceptEdits') this.sessionAcceptEdits = true
-            if (s.type === 'addDirectories') for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d)) this.sessionDirs.push(d)
+            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+            if (s.type === 'addDirectories') {
+              for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer)) this.sessionDirs.push(d)
+            }
           }
         }
       }
@@ -871,10 +901,10 @@ class CodexSession implements RuntimeSession {
     }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
     const rules = [...(this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))), ...this.sessionRules]
-    const opts = this.matchOpts()
+    const opts = this.matchOpts(req.cwd)
     if (req.command && matchesBashRule(req.command, rules, opts)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
-    const { decision, granted } = await this.ask(agentId, 'Bash', input)
+    const { decision, granted } = await this.ask(agentId, 'Bash', input, req.cwd)
     if (decision.behavior === 'deny') return { decision: 'decline' }
     return { decision: granted ? 'acceptForSession' : 'accept' }
   }
@@ -885,7 +915,6 @@ class CodexSession implements RuntimeSession {
     const agentId = this.agentOf(req.threadId)
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { decision: 'decline' }
-    if (policy?.autoAcceptEdits) return { decision: 'accept' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
     const buildWorkspace = this.ctx.run.buildWorkspace
@@ -895,14 +924,17 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
-    if ([...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
-    // Accept edits (the project's mode, read now: RunManager refreshes ctx.project) or a session grant of it: files
-    // inside the project, an allowed folder or a granted folder need no card. Anything outside asks.
+    const paths = changes.map((c) => c.path)
+    // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
+    const touchesProtected = paths.some((p) => hasProtectedSegment(p)) || (req.grantRoot ? hasProtectedSegment(req.grantRoot) : false)
+    if (!touchesProtected && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
+    // Accept edits (the project's mode, read now: RunManager refreshes ctx.project, or the thread's policy) or a
+    // session grant of it: concrete changed files inside the project, an allowed folder or a granted folder, by lexical
+    // and real path, need no card. A grantRoot alone, or anything outside, asks.
     const mode = this.ctx.project.permissionMode
-    if (mode === 'acceptEdits' || mode === 'auto' || this.sessionAcceptEdits) {
-      const paths = changes.length ? changes.map((c) => c.path) : req.grantRoot ? [req.grantRoot] : []
-      const opts = this.matchOpts()
-      if (paths.length && paths.every((p) => typeof p === 'string' && p.length > 0 && (isFreeCdTarget(dirname(p), opts) || isFreeCdTarget(p, opts)))) return { decision: 'accept' }
+    const restricted = isTrustRestrictedRun(this.ctx.run)
+    if (policy?.autoAcceptEdits || mode === 'acceptEdits' || mode === 'auto' || (this.sessionAcceptEdits && !restricted)) {
+      if (!touchesProtected && this.editPathsFree(paths)) return { decision: 'accept' }
     }
     const input: Record<string, unknown> = {
       file_path: changes[0]?.path ?? req.grantRoot ?? '',

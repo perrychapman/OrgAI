@@ -301,7 +301,7 @@ export interface PolicyChoice {
   sandbox: SandboxMode
   /** 'auto': Codex's own reviewer subagent approves or denies each request (ThreadStartParams.approvalsReviewer, UNSTABLE). */
   approvalsReviewer?: 'auto_review'
-  /** acceptEdits: the harness accepts file-change approvals itself and only asks for commands. */
+  /** acceptEdits: the harness accepts file-change approvals whose concrete paths are inside a free folder (codex.ts onFileApproval checks every path); anything else, and every command, asks. */
   autoAcceptEdits: boolean
   /** dontAsk / plan: any approval request that still arrives is declined. */
   denyApprovals: boolean
@@ -310,7 +310,7 @@ export interface PolicyChoice {
 /**
  * Map the project's permission mode onto Codex's approval policy and sandbox.
  *   auto              on-request + workspace-write, Codex's auto_review reviewer decides, asks only when unsure
- *   acceptEdits       untrusted + workspace-write; the harness accepts file edits, commands ask
+ *   acceptEdits       untrusted + workspace-write; the harness accepts file edits whose concrete paths are in free folders (path-checked), commands ask
  *   default           untrusted + workspace-write; everything not known-safe asks
  *   dontAsk           never + workspace-write; whatever the sandbox refuses stays refused (approvals declined)
  *   plan              never + read-only
