@@ -13,7 +13,7 @@ import type {
 } from '@shared/types'
 import { PROJECT_PEEK_BRIEF_CHARS, QUICK_PROJECT_ID, isVirtualProjectId, QUICK_RUN_MAX_PROMPT_CHARS, VIRTUAL_PROJECT_LABELS } from '@shared/types'
 import { QUICK_ASSISTANT_SLUG, ROLE_COLORS, newId, newProject, quickRunPermissionMode, quickRunTools } from '@shared/defaults'
-import { createScratchDir, pathKey, referencedScratch, removeScratchDir, validateQuickFolder } from './scratch'
+import { createScratchDir, isReferencedScratch, referencedScratch, removeScratchDir, samePath, validateQuickFolder } from './scratch'
 
 /**
  * Chat (quick runs): project-less work runs on the virtual project QUICK_PROJECT_ID. Folder validation and scratch
@@ -226,7 +226,7 @@ export class QuickRunService {
 
   /** Remove a scratch dir when no run record points to it (RunStore.onRunsRemoved, a failed start). */
   removeScratch(dir: string): boolean {
-    return removeScratchDir(this.deps.dataDir, dir, (d) => referencedScratch(this.deps.store.all()).has(pathKey(d)))
+    return removeScratchDir(this.deps.dataDir, dir, (d) => isReferencedScratch(referencedScratch(this.deps.store.all()), d))
   }
 
   /** RunStore.onRunsRemoved: drop the scratch dirs of removed runs that nothing else uses. */
@@ -256,7 +256,9 @@ export class QuickRunService {
     const live = chain.find((r) => LIVE.has(r.status) || (r.status === 'paused' && r.autoResume === true))
     if (live) throw new Error('End the session first: a run of this conversation is still open.')
     const folder = run.quick.folder
-    const existing = this.deps.projects.list().find((p) => pathKey(p.path) === pathKey(folder))
+    // The run stores the canonical folder; a project may have been created with another spelling (a link, macOS
+    // /var vs /private/var, a Windows 8.3 short name), so compare both spellings of both sides.
+    const existing = this.deps.projects.list().find((p) => typeof p.path === 'string' && !!p.path && samePath(p.path, folder))
     if (existing) return { kind: 'existing', projectId: existing.id, name: existing.name }
     const project = this.deps.projects.create(
       { name, path: folder, brief: '', ...(this.deps.mock ? { mock: true } : {}) },
