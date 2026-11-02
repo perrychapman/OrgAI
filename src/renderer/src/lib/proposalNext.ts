@@ -3,6 +3,7 @@
  * resolved, so the pointer lives in the run's metadata line. Pure.
  */
 import type { Proposal, ProposalOutcome } from '@shared/types'
+import { clampLabel } from './clampLabel'
 import { proposalScope } from './mcpProposal'
 
 export type ProposalNextKind = 'skillsLibrary' | 'skillsProject' | 'connectors' | 'mcpProject' | 'mcpSecrets'
@@ -42,7 +43,7 @@ const NAMES_SHOWN = 3
 /** The visible sentence of a notice. Server names are plain text, clamped. */
 export function proposalNextLead(next: ProposalNext): string {
   if (next.kind !== 'mcpSecrets') return PROPOSAL_NEXT_COPY[next.kind].lead
-  const names = (next.names ?? []).map((n) => (n.length > NAME_MAX ? `${n.slice(0, NAME_MAX - 1)}…` : n))
+  const names = (next.names ?? []).map((n) => clampLabel(n, NAME_MAX)).filter(Boolean)
   const shown = names.slice(0, NAMES_SHOWN).join(', ')
   const more = names.length > NAMES_SHOWN ? ` and ${names.length - NAMES_SHOWN} more` : ''
   return `${shown}${more} ${names.length === 1 ? 'needs' : 'need'} a secret before ${names.length === 1 ? 'it' : 'they'} can start.`

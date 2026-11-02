@@ -31,7 +31,44 @@ export function useFrameCompact(): boolean {
  * Every slot is optional. FrameTray and FrameToolbar render nothing (no gap) when they have no children.
  * The frame is a container (name "frame"), so layout follows its own width, not the window.
  */
-export function CanvasFrame({ children, frameRef, testId }: { children: ReactNode; frameRef?: Ref<HTMLDivElement>; testId?: string }): ReactElement {
+/** An arrival line for assistive tech. `n` changes on every arrival so an identical line is announced again. */
+export interface FrameAnnouncement {
+  text: string
+  n: number
+}
+
+/**
+ * One persistent, visually hidden polite status region (always mounted, empty when idle). For each announcement the text
+ * is cleared and set on the next animation frame, so screen readers see a change in an existing region.
+ */
+function FrameAnnouncer({ announcement }: { announcement?: FrameAnnouncement }): ReactElement {
+  const [text, setText] = useState('')
+  const key = announcement ? announcement.n : 0
+  useEffect(() => {
+    setText('')
+    if (!announcement?.text) return undefined
+    const id = requestAnimationFrame(() => setText(announcement.text))
+    return () => cancelAnimationFrame(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  return (
+    <p className="sr-only" role="status" aria-live="polite" data-testid="tray-announce">
+      {text}
+    </p>
+  )
+}
+
+export function CanvasFrame({
+  children,
+  frameRef,
+  testId,
+  announcement
+}: {
+  children: ReactNode
+  frameRef?: Ref<HTMLDivElement>
+  testId?: string
+  announcement?: FrameAnnouncement
+}): ReactElement {
   const inner = useRef<HTMLDivElement | null>(null)
   const [compact, setCompact] = useState(false)
   const setRef = useCallback(
@@ -55,6 +92,7 @@ export function CanvasFrame({ children, frameRef, testId }: { children: ReactNod
     <FrameContext.Provider value={{ compact }}>
       <div className="canvas canvas-frame" ref={setRef} data-testid={testId}>
         <div className="frame-grid">{children}</div>
+        <FrameAnnouncer announcement={announcement} />
       </div>
     </FrameContext.Provider>
   )
@@ -80,13 +118,12 @@ export function FrameStage({ children }: { children?: ReactNode }): ReactElement
   return <div className="frame-stage">{children}</div>
 }
 
-/** Decision tray. `label` names the region for assistive tech; arrivals are announced through `announcement`. */
+/** Decision tray. `label` names the region for assistive tech; arrivals are announced by CanvasFrame's `announcement`. */
 export function FrameTray({
   children,
   label = 'Decisions',
   shortcutHint,
-  shortcutKeys,
-  announcement
+  shortcutKeys
 }: {
   children?: ReactNode
   label?: string
@@ -94,19 +131,12 @@ export function FrameTray({
   shortcutHint?: string
   /** `aria-keyshortcuts` value for that shortcut. */
   shortcutKeys?: string
-  /** One short line for assistive tech when something arrives ("New decision: ..."). The only live text in the tray. */
-  announcement?: string
 }): ReactElement | null {
   const { compact } = useContext(FrameContext)
   if (!hasContent(children)) return null
   return (
     // tabIndex -1: a programmatic jump can land on the region itself when it holds no button.
     <section className="frame-tray" data-compact={compact ? 'true' : undefined} aria-label={label} tabIndex={-1} title={shortcutHint} aria-keyshortcuts={shortcutKeys}>
-      {announcement ? (
-        <p className="sr-only" role="status" aria-live="polite" data-testid="tray-announce">
-          {announcement}
-        </p>
-      ) : null}
       {children}
     </section>
   )
