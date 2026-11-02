@@ -236,7 +236,8 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
     await page.reload()
     await page.waitForSelector('.sidebar', { timeout: 60_000 })
   }
-  await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
+  // A relaunch on existing data may open on a project list or a run, not the new-project form.
+  if (clearPrefs) await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
