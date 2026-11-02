@@ -2815,3 +2815,29 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     await m.stopAll()
   })
 })
+
+describe('resolveAllowedDirectories through a linked home or project (review re-check L1)', () => {
+  it('drops a folder that holds home or the project when home or the project is reached through a link', async () => {
+    const { mkdirSync, symlinkSync } = await import('node:fs')
+    const { resolveAllowedDirectories } = await import('./runManager')
+    const root = mkdtempSync(join(tmpdir(), 'orgai-linked-'))
+    try {
+      const realHome = join(root, 'real', 'home')
+      const realProj = join(root, 'real', 'work', 'proj')
+      const sibling = join(root, 'real', 'work', 'sibling')
+      mkdirSync(realHome, { recursive: true })
+      mkdirSync(realProj, { recursive: true })
+      mkdirSync(sibling, { recursive: true })
+      const linkHome = join(root, 'home-link')
+      const linkProj = join(root, 'proj-link')
+      symlinkSync(realHome, linkHome, 'junction')
+      symlinkSync(realProj, linkProj, 'junction')
+      const r = resolveAllowedDirectories([join(root, 'real'), join(root, 'real', 'work'), sibling], { projectPath: linkProj, home: linkHome })
+      expect(r.dirs).toHaveLength(1)
+      expect(r.dirs[0].toLowerCase().endsWith(join('work', 'sibling').toLowerCase())).toBe(true)
+      expect(r.unsafe).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

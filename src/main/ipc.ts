@@ -463,15 +463,17 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (!project) throw new Error('Project not found')
     return listRules(project.path)
   })
-  ipcMain.handle(IPC.permissionsRemove, (_e, input: { projectId: string; rule: string }) => {
+  ipcMain.handle(IPC.permissionsRemove, (_e, raw: unknown) => {
+    const input = permissionRuleArgs(raw)
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
     return removeRule(project.path, input.rule)
   })
-  ipcMain.handle(IPC.permissionsAdd, (_e, input: { projectId: string; rule: string }) => {
+  ipcMain.handle(IPC.permissionsAdd, (_e, raw: unknown) => {
+    const input = permissionRuleArgs(raw)
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
-    const rule = String(input.rule ?? '').trim()
+    const rule = input.rule
     if (!isValidRule(rule)) throw new Error('A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(gh:*)')
     const refusal = ruleSaveRefusal(rule)
     if (refusal) throw new Error(refusal)
@@ -834,6 +836,25 @@ export const connectorArgs = {
     if (i.token.length > CONNECTOR_TOKEN_MAX_CHARS) throw new Error(`The token is too long (at most ${CONNECTOR_TOKEN_MAX_CHARS} characters).`)
     return { connectorId: i.connectorId, token: i.token }
   }
+}
+
+/** Longest permission rule accepted over IPC (permissions:add / permissions:remove). */
+export const PERMISSION_RULE_MAX_CHARS = 1000
+
+/**
+ * Renderer input for permissions:add / permissions:remove rebuilt as `{ projectId, rule }`: both strings, the project
+ * id at most 200 chars, the rule trimmed, non-empty and at most PERMISSION_RULE_MAX_CHARS; anything else is refused
+ * (review re-check L8). Exported for tests.
+ */
+export function permissionRuleArgs(input: unknown): { projectId: string; rule: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Project not found')
+  const i = input as Record<string, unknown>
+  if (typeof i.projectId !== 'string' || !i.projectId || i.projectId.length > 200) throw new Error('Project not found')
+  if (typeof i.rule !== 'string') throw new Error('The rule must be text.')
+  const rule = i.rule.trim()
+  if (!rule) throw new Error('The rule is empty.')
+  if (rule.length > PERMISSION_RULE_MAX_CHARS) throw new Error(`The rule is too long (at most ${PERMISSION_RULE_MAX_CHARS} characters).`)
+  return { projectId: i.projectId, rule }
 }
 
 /** Most secret values one proposal decision may carry, and the longest key / value. */

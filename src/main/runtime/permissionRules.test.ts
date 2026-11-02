@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -139,6 +139,25 @@ describe('issue #14: saving dedupes and reports only new rules', () => {
     }
   })
 
+  it('never saves a rule with a hidden character, from addRules or a card grant; a plain rule still saves', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const zw = 'Bash(npm​ test:*)'
+      const bidi = 'Bash(git ‮push:*)'
+      expect(addRulesReport(dir, [zw, bidi, 'Bash(npm test:*)'])).toEqual({ rules: ['Bash(npm test:*)'], added: ['Bash(npm test:*)'] })
+      expect(warn).toHaveBeenCalledTimes(2)
+      expect(String(warn.mock.calls[0][0])).toMatch(/hidden character \(U\+200B/)
+      const s: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'make​:*' }, { toolName: 'Bash', ruleContent: 'make lint:*' }], behavior: 'allow', destination: 'session' }]
+      applyAllowScope(dir, { behavior: 'allow', scope: 'project' }, s, () => {})
+      expect(listRules(dir)).toEqual(['Bash(npm test:*)', 'Bash(make lint:*)'])
+      expect(JSON.parse(readFileSync(settingsLocalPath(dir), 'utf8')).permissions.allow).toEqual(['Bash(npm test:*)', 'Bash(make lint:*)'])
+    } finally {
+      warn.mockRestore()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('logs "Saved" only for new rules and warns when the saved set does not cover the command', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
     try {
@@ -171,6 +190,69 @@ describe('path rule hygiene (issue #14 E)', () => {
     expect(ruleSaveRefusal('WebSearch')).toBeNull()
   })
 })
+
+describe('review re-check M2 / L6: rules that grant more than the command, provider setMode', () => {
+  it('never derives a prefix rule for writers, fetchers, config verbs or interpreters behind a launcher', () => {
+    for (const c of [
+      'git config core.fsmonitor x', 'npm pkg set scripts.test=x', 'npm config set registry x', 'gh api repos/x/y', 'deno eval 1',
+      'npx tsx x.ts', 'npx ts-node x.ts', 'uv run python x.py', 'pnpm dlx tsx x.ts', 'npm exec node x.js', 'bunx node x.js',
+      'wsl ls', 'cp a b', 'mv a b', 'curl https://x', 'wget https://x', 'ssh host', 'scp a host:b', 'rsync a b'
+    ]) {
+      expect(shellRuleContents('Bash', c), c).toEqual([])
+      expect(deriveSuggestions('Bash', { command: c }).filter((s) => s.type === 'addRules'), c).toEqual([])
+    }
+    // py / pythonw are launchers now (two words), like python.
+    expect(segmentRulePrefix('Bash', 'py -m pytest')).toBeNull()
+    expect(segmentRulePrefix('Bash', 'py tools/gen.py')).toBe('py tools/gen.py')
+    expect(segmentRulePrefix('Bash', 'npm test')).toBe('npm test')
+    expect(segmentRulePrefix('Bash', 'uv run pytest')).toBe('uv run pytest')
+    expect(segmentRulePrefix('Bash', 'git status')).toBe('git status')
+  })
+
+  it('second re-check M1 / M2: interpreter spellings, package runners, git / docker pairs, PowerShell writers', () => {
+    for (const c of [
+      'python.exe -c 1', '/usr/bin/python3 -c 1', 'node.exe -e 1', 'npx.cmd tsx x.ts', 'npm.cmd exec node x.js', 'poetry run python x.py',
+      'uvx python x', 'pipx run python', 'yarn node x.js', 'docker run img', 'git submodule foreach x', 'git bisect run x',
+      'Copy-Item a b', 'iwr https://x', 'Invoke-RestMethod https://x', 'Set-Content a b', 'command ls', 'forfiles /c x', 'icm -s x'
+    ]) {
+      expect(shellRuleContents('Bash', c), c).toEqual([])
+    }
+    expect(segmentRulePrefix('Bash', 'poetry run pytest')).toBe('poetry run pytest')
+    expect(segmentRulePrefix('Bash', 'npm.cmd test')).toBe('npm.cmd test')
+    expect(isUnsafeAllowRule('PowerShell(ri:*)')).toBe(true)
+    expect(isUnsafeAllowRule('PowerShell(Clear-Content:*)')).toBe(true)
+    expect(isBlanketAllowRule('Bash(forfiles:*)')).toBe(true)
+  })
+
+  it('second re-check M3: PowerShell profiles, editor extensions, browser profiles and credential stores are never offered', () => {
+    const o = { home: '/home/u', platform: 'linux' as const }
+    for (const d of ['/home/u/Documents/PowerShell', '/home/u/Documents/WindowsPowerShell/x', '/home/u/.vscode/extensions', '/home/u/.cursor', '/home/u/.password-store', '/home/u/.local/share/keyrings', '/home/u/Library/Cookies']) {
+      expect(isOfferableDirectory(d, o), d).toBe(false)
+    }
+    expect(isOfferableDirectory('C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data', { home: 'C:\\Users\\me', platform: 'win32' })).toBe(false)
+    expect(isOfferableDirectory('/home/u/Documents/notes', o)).toBe(true)
+  })
+
+  it('drops a provider prefix rule that is too broad, keeps exact rules', () => {
+    const provided: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm pkg:*' }, { toolName: 'Bash', ruleContent: 'curl *' }], behavior: 'allow', destination: 'localSettings' }]
+    expect(chooseSuggestions('Bash', { command: 'npm pkg get name' }, provided).filter((s) => s.type === 'addRules')).toEqual([])
+    const exact: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm pkg get name' }], behavior: 'allow', destination: 'localSettings' }]
+    expect(allowRules(chooseSuggestions('Bash', { command: 'npm pkg get name' }, exact))).toEqual(['Bash(npm pkg get name)'])
+  })
+
+  it('keeps only an acceptEdits setMode from the provider', () => {
+    for (const mode of ['bypassPermissions', 'auto', 'dontAsk', 'plan', 'default'] as const) {
+      const provided = [{ type: 'setMode', mode, destination: 'session' }] as PermissionSuggestion[]
+      expect(chooseSuggestions('Edit', { file_path: '/x/a.ts' }, provided), mode).toEqual([])
+    }
+    const ok = [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }] as PermissionSuggestion[]
+    expect(chooseSuggestions('Edit', { file_path: '/x/a.ts' }, ok)).toEqual(ok)
+  })
+})
+
+function allowRules(s: PermissionSuggestion[]): string[] {
+  return s.flatMap((x) => (x.type === 'addRules' ? x.rules.map((r) => (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName)) : []))
+}
 
 describe('per-segment shell rules', () => {
   it('use the first word, or the first two after a launcher', () => {

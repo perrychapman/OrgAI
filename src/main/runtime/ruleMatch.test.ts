@@ -10,6 +10,10 @@ describe('isValidRule', () => {
   it('rejects empty, multi-line and malformed rules', () => {
     for (const r of ['', '  ', 'Bash(', 'Bash()', 'gh repo create', 'Bash(x)\nrm', '(Bash)', '1Tool']) expect(isValidRule(r), JSON.stringify(r)).toBe(false)
   })
+  it('rejects rules with hidden characters (zero-width, bidi override, controls)', () => {
+    for (const r of ['Bash(npm​ test:*)', 'Bash(git ‮push:*)', 'Web‍Search', 'Bash(ls\u0007)', 'mcp__gh⁦__x']) expect(isValidRule(r), JSON.stringify(r)).toBe(false)
+    expect(isValidRule('Bash(npm test:*)')).toBe(true)
+  })
 })
 
 describe('splitCommand', () => {
@@ -197,6 +201,81 @@ describe('free cd segments', () => {
     expect(unwrapShellCommand("/usr/bin/bash -c 'cd src'")).toBe('cd src')
     expect(unwrapShellCommand("sh -c 'cd src'")).toBe('cd src')
     expect(unwrapShellCommand("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command 'cd src'")).toBe('cd src')
+  })
+
+  it('review re-check High 1: PowerShell expressions, script blocks and splatting never pass as plain words', () => {
+    for (const tool of ['Bash', 'PowerShell']) {
+      const rules = [`${tool}(npm test:*)`]
+      for (const c of ['cd (calc)', 'cd (Stop-Computer)', 'cd (.\\run.ps1)', 'cd @x', 'cd a,b', 'cd "(calc)"']) {
+        expect(matchingRule(tool, { command: c }, [], posixOpts), `${tool} ${c}`).toBeUndefined()
+        expect(matchingRule(tool, { command: c }, [], winOpts), `${tool} ${c} (win32)`).toBeUndefined()
+      }
+      for (const c of ['npm test (calc)', 'npm test @{a=calc}', 'npm test @(calc)', 'npm test @args', 'npm test {calc}', 'npm test x@{a=calc}']) {
+        expect(matchingRule(tool, { command: c }, rules, posixOpts), `${tool} ${c}`).toBeUndefined()
+      }
+      // Quoted text and a mid-word @ stay plain.
+      expect(matchingRule(tool, { command: 'npm test "(calc)"' }, rules, posixOpts)).toBe(rules[0])
+      expect(matchingRule(tool, { command: 'npm test pkg@1.2.3' }, rules, posixOpts)).toBe(rules[0])
+    }
+    expect(matchesBashRule(`pwsh -Command 'npm test (calc)'`, ['Bash(npm test:*)'], winOpts)).toBe(false)
+  })
+
+  it('second re-check H1: typographic quotes and dashes never match (PowerShell pairs them with ASCII quotes)', () => {
+    for (const tool of ['Bash', 'PowerShell']) {
+      const rules = [`${tool}(npm test:*)`]
+      for (const c of ["npm test ‘x' ; calc ; 'y’", "npm test ‘x' (calc) 'y’", 'npm test “x" ; calc ; "y”', 'npm test –watch']) {
+        expect(matchingRule(tool, { command: c }, rules, winOpts), `${tool} ${c}`).toBeUndefined()
+      }
+      expect(matchingRule(tool, { command: 'cd ‘..\\..\\x’' }, [], winOpts)).toBeUndefined()
+    }
+  })
+
+  it('second re-check M2 / L2: git options that run a program, and @ after , or =', () => {
+    const rules = ['Bash(git fetch:*)', 'Bash(git grep:*)', 'Bash(git difftool:*)', 'Bash(git log:*)', 'Bash(git clone:*)', 'Bash(npm test:*)']
+    const saved = ['Bash(git submodule:*)', 'Bash(git bisect:*)', 'Bash(git grep:*)', 'Bash(git clone:*)', 'Bash(git ls-remote:*)']
+    for (const c of ['git grep -iOcalc x', 'git clone -qu calc .', 'git ls-remote -qu calc .', 'git submodule foreach calc', 'git bisect run calc']) {
+      expect(matchesBashRule(c, saved), c).toBe(false)
+    }
+    expect(matchesBashRule('git submodule update --init', saved)).toBe(true)
+    expect(matchesBashRule('git bisect good', saved)).toBe(true)
+    for (const c of ['git fetch --upload-pack=evil origin', 'git fetch "--upload-pack=evil"', 'git grep -O evil x', 'git grep --open-files-in-pager=evil x', 'git difftool -x evil', 'git difftool --extcmd=evil', 'git clone -u evil url', 'git -c core.pager=evil log', 'git log --exec=x']) {
+      expect(matchesBashRule(c, rules), c).toBe(false)
+    }
+    expect(matchesBashRule('git fetch origin', rules)).toBe(true)
+    expect(matchesBashRule('git grep -n foo', rules)).toBe(true)
+    for (const c of ['npm test a,@b', 'npm test x=@b', 'npm test ;@b']) expect(matchesBashRule(c, rules), c).toBe(false)
+  })
+
+  it('review re-check L7: win32 trailing dot or space names are never free; MSYS paths only for bash', () => {
+    for (const c of ['cd "sub\\.. "', 'cd sub.', 'cd "sub "']) expect(matchesBashRule(c, [], winOpts), c).toBe(false)
+    expect(matchesBashRule('cd sub', [], winOpts)).toBe(true)
+    expect(matchingRule('Bash', { command: 'cd /c/Users/me/proj/sub' }, [], winOpts)).toBe(FREE_CD_LABEL)
+    expect(matchingRule('PowerShell', { command: 'cd /c/Users/me/proj/sub' }, [], winOpts)).toBeUndefined()
+    expect(matchesBashRule('cd /c/Users/me/proj/sub', [], { ...winOpts, shell: 'powershell' })).toBe(false)
+  })
+
+  it('reviewer Low: only the exact system shell folders, never a subfolder of Program Files or System32', () => {
+    for (const bin of [
+      '"C:\\Program Files\\Git\\bin\\bash.exe"',
+      '"C:\\Program Files\\Git\\usr\\bin\\sh.exe"',
+      '"C:\\Program Files (x86)\\Git\\bin\\bash.exe"',
+      '"C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe"',
+      'C:\\Windows\\System32\\bash.exe',
+      '"C:\\Program Files\\PowerShell\\7\\pwsh.exe"'
+    ]) {
+      expect(unwrapShellCommand(`${bin} -c 'cd src'`), bin).toBe('cd src')
+    }
+    for (const bin of [
+      'C:\\Windows\\System32\\spool\\drivers\\color\\bash.exe',
+      'C:\\Windows\\System32\\Tasks\\sh.exe',
+      '"C:\\Program Files\\Vendor\\bash.exe"',
+      '"C:\\Program Files (x86)\\Vendor\\tools\\bash.exe"',
+      '"C:\\Program Files\\Git\\bin\\extra\\bash.exe"',
+      'C:\\Windows\\System32\\..\\Temp\\bash.exe'
+    ]) {
+      const c = `${bin} -c 'cd src'`
+      expect(unwrapShellCommand(c), bin).toBe(c)
+    }
   })
 
   it('review H3: backslash-quote and $\'...\' quoting never match a rule', () => {

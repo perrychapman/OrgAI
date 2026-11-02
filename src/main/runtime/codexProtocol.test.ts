@@ -96,7 +96,7 @@ describe('matchesBashRule (saved allow rules)', () => {
 
   it('unwraps bash -lc and powershell -Command wrappers', () => {
     expect(unwrapShellCommand(`bash -lc 'npm test'`)).toBe('npm test')
-    expect(unwrapShellCommand(`"C:\\Program Files\\PowerShell\\pwsh.exe" -Command "npm test"`)).toBe('npm test')
+    expect(unwrapShellCommand(`"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "npm test"`)).toBe('npm test')
     expect(matchesBashRule(`bash -lc 'npm test --silent'`, rules)).toBe(true)
     expect(matchesBashRule(`bash -lc 'npm test && rm x'`, rules)).toBe(false)
     expect(unwrapShellCommand('ls -la')).toBe('ls -la')

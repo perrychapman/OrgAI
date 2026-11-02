@@ -501,6 +501,33 @@ describe('CodexAdapter session', () => {
         expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
       })
 
+      it('adds a granted session folder to the session dirs only when it passes the safety check at grant time', async () => {
+        // Control: the folder is offerable when the grant lands, so the next edit there needs no card.
+        const ok = await started('default')
+        change(ok.s, join(other, 'x.ts'))
+        ;(ok.ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+        await ok.s.ask('item/fileChange/requestApproval', edit)
+        expect(ok.ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ suggestions: expect.arrayContaining([expect.objectContaining({ type: 'addDirectories', directories: [other] })]) }))
+        change(ok.s, join(other, 'y.ts'), 'f2')
+        expect(await ok.s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })).toEqual({ decision: 'accept' })
+        expect(ok.ctx.requestPermission).toHaveBeenCalledTimes(1)
+        await session?.stop()
+
+        // The same folder becomes protected while the card is open: the grant answers this call but never joins the session dirs.
+        let denied: string[] = []
+        const { ctx, s } = await started('default', { protectedDirectories: () => denied })
+        change(s, join(other, 'x.ts'))
+        ;(ctx.requestPermission as any).mockImplementationOnce(async () => {
+          denied = [other]
+          return { behavior: 'allow', scope: 'session' }
+        })
+        await s.ask('item/fileChange/requestApproval', edit)
+        expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ suggestions: expect.arrayContaining([expect.objectContaining({ type: 'addDirectories', directories: [other] })]) }))
+        change(s, join(other, 'y.ts'), 'f2')
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
       it('project scope saves the folders and mode through the context hooks', async () => {
         const allowDirectories = vi.fn((d: string[]) => d)
         const acceptEditsForProject = vi.fn(() => true)

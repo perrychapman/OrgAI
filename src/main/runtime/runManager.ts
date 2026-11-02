@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
@@ -62,7 +63,8 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
-import { addRules, isBlanketAllowRule, isOfferableDirectory, isUnsafeAllowRule, listRules } from './permissionRules'
+import { addRules, isBlanketAllowRule, isUnsafeAllowRule, listRules } from './permissionRules'
+import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
@@ -126,7 +128,25 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
       out.dropped.push(given)
       continue
     }
-    if (!isOfferableDirectory(canon, { cwd: opts.projectPath, deniedDirs: denied, ...(opts.home ? { home: opts.home } : {}) })) {
+    // The static rules (allowedDirectories.ts, shared with ProjectStore's save-time clean), on the canonical path.
+    // Both spellings of home and the project (a junction or symlink in either must not hide a containing folder).
+    const home = opts.home ?? homedir()
+    const both = (p: string): string[] => {
+      try {
+        return [...new Set([p, canonicalDeep(p)])]
+      } catch {
+        return [p]
+      }
+    }
+    const homes = both(home)
+    const projects = both(opts.projectPath)
+    const risks = homes.flatMap((h) => projects.map((projectPath) => allowedDirectoryRisk(canon, { projectPath, deniedDirs: denied, home: h })))
+    const risk = risks.includes('project') ? 'project' : risks.find((r) => r !== null) ?? null
+    if (risk === 'project') {
+      out.dropped.push(given)
+      continue
+    }
+    if (risk) {
       out.dropped.push(given)
       out.unsafe.push(given)
       continue

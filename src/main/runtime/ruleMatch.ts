@@ -1,5 +1,6 @@
 import { posix, win32 } from 'node:path'
 import { isWholeToolRule } from '@shared/types'
+import { hiddenCharProblem } from '../capabilities/sanitize'
 import type { RuntimeContext } from './types'
 
 /**
@@ -24,6 +25,63 @@ export const SHELL_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell'])
 /** Shell syntax a segment may not contain for a rule to apply. */
 const UNSAFE_SEGMENT = /[|&`<>\n\r]|\$\(/
 
+/**
+ * Syntax refused outside quotes (review re-check High 1): parentheses and braces (bash subshells and brace
+ * expansion; PowerShell argument-mode expressions such as `cd (Stop-Computer)`, `npm test (calc)`, script blocks) and
+ * PowerShell splatting / array and hash literals (`@x`, `@(...)`, `@{...}`). A mid-word `@` (`pkg@1.2.3`) stays.
+ */
+const UNSAFE_UNQUOTED = /[(){}]|(?:^|[\s,;=])@|@[({]/
+
+/** The segment with quoted text removed (quotes included); an unclosed quote drops the rest. */
+function unquotedPart(segment: string): string {
+  let out = ''
+  let quote: string | null = null
+  for (const ch of segment) {
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      out += ' '
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+/**
+ * git options that run another program (review re-check M2): a saved `git fetch:*` or `git grep:*` must not cover
+ * `git fetch --upload-pack=evil`, `git grep -O evil`, `git difftool -x evil`, `git clone -u evil` or `git -c
+ * core.pager=evil log`.
+ */
+function gitRunsProgram(segment: string): boolean {
+  const words = segment.trim().split(/\s+/)
+  const bin = (words[0] ?? '').split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '')
+  if (bin !== 'git') return false
+  const sub = (words[1] ?? '').toLowerCase()
+  if (sub === '-c' || sub.startsWith('--config-env') || sub.startsWith('--exec-path')) return true
+  const rest = words.slice(2).map((w) => w.replace(/^["']|["']$/g, '').toLowerCase())
+  // `git submodule foreach <cmd>` and `git bisect run <cmd>` run a command even under a saved submodule / bisect rule.
+  if ((sub === 'submodule' && rest.includes('foreach')) || (sub === 'bisect' && rest.includes('run'))) return true
+  return words.slice(1).some((w) => {
+    const o = w.replace(/^["']|["']$/g, '')
+    if (/^--(?:upload-pack|receive-pack|exec|open-files-in-pager|extcmd|config-env|tool)(?:=|$)/i.test(o)) return true
+    // Short options may be clustered (`-iOcalc`, `-qu calc`): look for the letter anywhere in a single-dash word.
+    if (sub === 'grep' && /^-[a-zA-Z]*O/.test(o)) return true
+    if (sub === 'difftool' && /^-[a-zA-Z]*[xt]/.test(o)) return true
+    if (sub === 'mergetool' && /^-[a-zA-Z]*t/.test(o)) return true
+    if ((sub === 'clone' || sub === 'fetch' || sub === 'pull' || sub === 'ls-remote' || sub === 'archive') && /^-[a-zA-Z]*u/.test(o)) return true
+    return false
+  })
+}
+
+/** True when a segment holds syntax no rule may cover (UNSAFE_SEGMENT anywhere, UNSAFE_UNQUOTED outside quotes). */
+export function isUnsafeSegment(segment: string): boolean {
+  return UNSAFE_SEGMENT.test(segment) || UNSAFE_UNQUOTED.test(unquotedPart(segment)) || gitRunsProgram(segment)
+}
+
 /** The harness's own MCP server: its tools are never granted wholesale through a saved rule. */
 const HARNESS_SERVER = 'orgai'
 
@@ -37,6 +95,12 @@ export interface MatchOptions {
   platform?: NodeJS.Platform
   /** Folders never offered as extra directories (RuntimeContext.protectedDirectories: OrgAI's data folder). */
   deniedDirs?: readonly string[]
+  /**
+   * The shell reading the command. On win32 the MSYS spelling `/c/x` means `C:\x` only in bash (Git Bash); PowerShell
+   * reads it as `<current drive>:\c\x`, so with 'powershell' it is never free. Missing = bash (matchingRule sets it
+   * from the tool name; Codex on win32 passes 'powershell').
+   */
+  shell?: 'bash' | 'powershell'
 }
 
 /** The label a command made only of free `cd` segments is allowed by. */
@@ -57,9 +121,11 @@ const SHELL_BINARY = /^(?:bash|sh|zsh|dash|pwsh|powershell)(?:\.exe)?$/i
 
 /**
  * Quote handling bash and PowerShell disagree on, or the splitter does not model: a backslash next to a quote
- * (`"a\" ; b"`) and ANSI-C quoting (`$'...'`). A command containing either is never covered by a rule.
+ * (`"a\" ; b"`), ANSI-C quoting (`$'...'`), and PowerShell's typographic quotes (U+2018-U+201E, which pair with
+ * ASCII quotes there) and dashes (U+2013-U+2015, read as `-`). A command containing any of them is never covered by
+ * a rule.
  */
-const AMBIGUOUS_QUOTING = /\\["']|\$'/
+const AMBIGUOUS_QUOTING = /\\["']|\$'|[–-―‘-„]/
 
 /**
  * The server name of a server-level MCP rule, else null. Two forms: `mcp__<server>` and `mcp__<server>__*`.
@@ -79,15 +145,23 @@ export function mcpServerOfRule(rule: string): string | null {
 export function isValidRule(rule: string): boolean {
   const r = rule.trim()
   if (!r || /[\n\r]/.test(r)) return false
+  // Control, zero-width, bidi and other invisible characters (sanitize.ts): a rule must read as what it matches.
+  if (hiddenCharProblem('rule', r) !== null) return false
   if (r.startsWith('mcp__') && r.includes('*')) return mcpServerOfRule(r) !== null
   if (/^mcp__orgai$/i.test(r)) return false
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)
 }
 
-/** System folders a wrapped shell may be named by absolute path (lowercase, forward slashes, no trailing slash). */
+/**
+ * The exact folders a wrapped shell may be named in by absolute path (lowercase, forward slashes, no trailing
+ * slash). Exact matches only, never a subfolder: some folders under Program Files and System32 are user-writable
+ * (System32\spool\drivers\color, System32\Tasks).
+ */
 const SYSTEM_SHELL_DIRS = [
   '/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin',
-  'c:/program files/git/bin', 'c:/program files/git/usr/bin', 'c:/windows/system32/windowspowershell/v1.0', 'c:/program files/powershell/7'
+  'c:/program files/git/bin', 'c:/program files/git/usr/bin',
+  'c:/program files (x86)/git/bin', 'c:/program files (x86)/git/usr/bin',
+  'c:/windows/system32', 'c:/windows/system32/windowspowershell/v1.0', 'c:/program files/powershell/7'
 ]
 
 /**
@@ -100,8 +174,6 @@ function isSystemShell(bin: string): boolean {
   if (!SHELL_BINARY.test(base)) return false
   if (parts.length === 0) return true
   const dir = parts.join('/').toLowerCase()
-  // Admin-only Windows install folders (Git, PowerShell 7 and Windows PowerShell live there).
-  if (/^c:\/(?:program files|program files \(x86\)|windows\/system32)\/[^.]/.test(dir) && !dir.split('/').includes('..')) return true
   return SYSTEM_SHELL_DIRS.includes(dir)
 }
 
@@ -116,7 +188,8 @@ export function unwrapShellCommand(command: string): string {
   const m = /^("[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(?:'([^']*)'|"([^"$`]*)")$/i.exec(c)
   if (!m) return c
   const bin = m[1].replace(/^"|"$/g, '')
-  if (/[$`(){};&|<>'"]/.test(bin)) return c
+  // Shell metacharacters refuse the wrapper; the literal "Program Files (x86)" folder of a quoted path is the one exception.
+  if (/[$`(){};&|<>'"]/.test(bin.replace(/^c:[\\/]program files \(x86\)(?=[\\/])/i, 'c:/pf86'))) return c
   if (!isSystemShell(bin)) return c
   return (m[2] ?? m[3] ?? '').trim()
 }
@@ -175,8 +248,11 @@ function shellRuleFor(segment: string, rules: readonly string[]): string | undef
   return undefined
 }
 
-/** Characters that make a `cd` target depend on the shell: variables, home, globs, braces, history. */
-const CD_UNSAFE = /[$~*?[\]{}%!`]/
+/**
+ * Characters that make a `cd` target depend on the shell: variables, home, globs, braces, history, and PowerShell
+ * expressions, splatting and arrays (`(`, `)`, `@`, `,`), even inside quotes.
+ */
+const CD_UNSAFE = /[$~*?[\]{}%!`(),@]/
 
 /**
  * The target of a `cd <dir>` segment, quotes stripped; null for `cd` alone, `cd -`, flags, several words, variables,
@@ -198,6 +274,8 @@ export function cdTarget(segment: string, platform: NodeJS.Platform = process.pl
   }
   // `cd -` / `cd +` walk the location history (bash, PowerShell 7).
   if (!dir || dir.startsWith('-') || dir.startsWith('+') || CD_UNSAFE.test(dir)) return null
+  // win32 drops a trailing dot or space from a name (`proj.` and `proj ` open `proj`): never compared lexically.
+  if (platform === 'win32' && dir.split(/[\\/]/).some((part) => part !== '.' && part !== '..' && /[. ]$/.test(part))) return null
   return dir
 }
 
@@ -210,7 +288,7 @@ export function isFreeCdTarget(dir: string, opts: MatchOptions): boolean {
   let target = dir
   if (platform === 'win32') {
     // MSYS / Git Bash spelling of a drive path: /c/Users/x -> C:\Users\x.
-    const msys = /^\/([a-zA-Z])(?:\/(.*))?$/.exec(target)
+    const msys = opts.shell === 'powershell' ? null : /^\/([a-zA-Z])(?:\/(.*))?$/.exec(target)
     if (msys) target = `${msys[1].toUpperCase()}:\\${(msys[2] ?? '').replace(/\//g, '\\')}`
     // UNC and device paths are never free.
     if (/^[\\/]{2}/.test(target)) return false
@@ -248,7 +326,7 @@ export function shellRulesFor(command: string, rules: readonly string[], opts?: 
   if (!cmd) return null
   const hits: string[] = []
   for (const segment of splitCommand(cmd)) {
-    if (!segment || UNSAFE_SEGMENT.test(segment)) return null
+    if (!segment || isUnsafeSegment(segment)) return null
     if (isFreeCd(segment, opts)) continue
     const rule = shellRuleFor(segment, rules)
     if (!rule) return null
@@ -281,6 +359,6 @@ export function matchingRule(toolName: string, input: unknown, rules: readonly s
   const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined
   if (typeof command !== 'string') return undefined
   const scoped = rules.filter((r) => r.trim().startsWith(`${toolName}(`))
-  const hits = shellRulesFor(command, scoped, opts)
+  const hits = shellRulesFor(command, scoped, opts && { ...opts, shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
   return hits ? hits.join(', ') : undefined
 }

@@ -6,6 +6,8 @@ import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectCon
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
+import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
+import { homedir } from 'node:os'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
 export type TierContextFor = (connection: ConnectionId) => TierContext | undefined
@@ -152,6 +154,13 @@ export interface AllowedDirectoryOpts {
   touchesData?: (dir: string) => boolean
   /** True when two accepted folders name the same place. Default: scratch.ts pathKey / samePath. */
   same?: (a: string, b: string) => boolean
+  /** The project's folder: it, anything inside it and any folder containing it are dropped (allowedDirectoryRisk). */
+  projectPath?: string
+  /**
+   * The user's home folder: home, its ancestors and the config folders under it are dropped (allowedDirectoryRisk).
+   * Omitted = no home rules (pure tests); ProjectStore always passes one (os.homedir() unless overridden).
+   */
+  home?: string
 }
 
 /** Why an allowed-directory entry is refused on syntax alone, or null. */
@@ -178,6 +187,7 @@ function allowedDirectoryProblem(text: string, p: PlatformPath): string | null {
 export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts = {}): string[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const p = opts.path ?? (process.platform === 'win32' ? win32 : posix)
+  const platform: NodeJS.Platform = p === win32 ? 'win32' : process.platform === 'win32' ? 'linux' : process.platform
   const touchesData =
     opts.touchesData ??
     ((dir: string): boolean => {
@@ -219,6 +229,11 @@ export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: All
       console.debug("allowedDirectories: dropped an entry (OrgAI's data folder)")
       continue
     }
+    const risk = allowedDirectoryRisk(dir, { platform, home: opts.home ?? '', ...(opts.projectPath ? { projectPath: opts.projectPath } : {}) })
+    if (risk) {
+      console.debug(`allowedDirectories: dropped an entry (${risk === 'project' ? 'the project folder or inside it' : 'too broad or sensitive'})`)
+      continue
+    }
     if (out.some((d) => same(d, dir))) continue
     out.push(dir)
   }
@@ -226,9 +241,10 @@ export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: All
 }
 
 /** The project with allowedDirectories normalized (removed when it is not an array); `changed` when it differs. */
-function withCleanAllowedDirectories(project: Project, dataDir: string): { project: Project; changed: boolean } {
+function withCleanAllowedDirectories(project: Project, dataDir: string, home: string): { project: Project; changed: boolean } {
   if (!project || typeof project !== 'object' || !('allowedDirectories' in project)) return { project, changed: false }
-  const clean = cleanAllowedDirectories(project.allowedDirectories, dataDir)
+  const projectPath = typeof project.path === 'string' && project.path ? project.path : undefined
+  const clean = cleanAllowedDirectories(project.allowedDirectories, dataDir, { home, ...(projectPath ? { projectPath } : {}) })
   const next = { ...project }
   if (clean === undefined) delete next.allowedDirectories
   else next.allowedDirectories = clean
@@ -241,11 +257,16 @@ export class ProjectStore {
   private projects: Project[] = []
   private tierContext?: TierContextFor
   private dataDir: string
+  private home: string
 
-  /** `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels). */
-  constructor(dataDir: string, opts: { tierContext?: TierContextFor } = {}) {
+  /**
+   * `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels).
+   * `opts.home` overrides os.homedir() for the allowed-directory rules (tests).
+   */
+  constructor(dataDir: string, opts: { tierContext?: TierContextFor; home?: string } = {}) {
     this.tierContext = opts.tierContext
     this.dataDir = dataDir
+    this.home = opts.home ?? homedir()
     this.file = join(dataDir, 'projects.json')
     this.load()
     this.migrateAll()
@@ -279,7 +300,7 @@ export class ProjectStore {
     this.projects = this.projects.map((p) => {
       const m = migrateProject(p)
       const clean = sanitizeRoleModels(m.project, this.tierContext)
-      const dirs = withCleanAllowedDirectories(clean.project, this.dataDir)
+      const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
       if (m.changed || clean.changed || dirs.changed) changed++
       return dirs.project
     })
@@ -325,7 +346,7 @@ export class ProjectStore {
    */
   save(project: Project): Project {
     if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
-    const updated = { ...withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir).project, updatedAt: new Date().toISOString() }
+    const updated = { ...withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project, updatedAt: new Date().toISOString() }
     const idx = this.projects.findIndex((p) => p.id === project.id)
     if (idx === -1) this.projects.push(updated)
     else this.projects[idx] = updated
