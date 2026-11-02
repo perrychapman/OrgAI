@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -40,7 +40,7 @@ import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
-import { matchOptionsFor, matchingRule } from './ruleMatch'
+import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -609,6 +609,62 @@ export function claudeSettingSources(ctx: RuntimeContext): Options['settingSourc
 /** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
 export function claudeSavedRules(ctx: RuntimeContext): string[] {
   return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
+}
+
+/**
+ * The saved rules handed to the CLI as `options.allowedTools`: every shell rule (`Bash`, `Bash(...)`, `PowerShell`,
+ * `PowerShell(...)`) is left out, because the PreToolUse hook evaluates those itself through ruleMatch.ts and the CLI's
+ * own prefix match would approve commands the harness refuses (`npm test --script-shell=calc` under
+ * `Bash(npm test:*)`, reviewer-4 H-A). Rules the harness cannot evaluate (other tools, content rules) are kept. Pure.
+ */
+export function cliAllowedTools(rules: readonly string[]): string[] {
+  return rules.filter((r) => !isShellRule(r))
+}
+
+function isShellRule(rule: string): boolean {
+  const r = rule.trim()
+  for (const tool of SHELL_TOOLS) if (r === tool || r.startsWith(`${tool}(`)) return true
+  return false
+}
+
+/**
+ * `permissions.allow` of `<project>/.claude/settings.json`, which settingSources ['project'] makes the CLI load and
+ * prefix-match on its own. Read only to decide whether a refused command must be asked about; never an allow source.
+ * None on a trust-restricted run (settingSources []); unreadable or malformed = none.
+ */
+export function cliProjectSettingsRules(ctx: Pick<RuntimeContext, 'run' | 'project'>): string[] {
+  if (isTrustRestrictedRun(ctx.run) || !ctx.project.path) return []
+  try {
+    const parsed = JSON.parse(readFileSync(join(ctx.project.path, '.claude', 'settings.json'), 'utf8')) as { permissions?: { allow?: unknown } } | null
+    const allow = parsed?.permissions?.allow
+    return Array.isArray(allow) ? allow.filter((r): r is string => typeof r === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The PreToolUse 'ask' reason for a shell call that no rule allowed but whose command (or one of its segments) a rule's
+ * text appears to cover (ruleMatch.ts `ruleCoversButRefused`): "OrgAI: <rule> does not cover this command (<why>);
+ * asking", naming the first such rule. Undefined when no rule covers it, so the call goes on to the CLI's normal
+ * permission flow. Pure.
+ */
+export function refusedShellReason(toolName: string, input: unknown, rules: readonly string[], opts?: MatchOptions): string | undefined {
+  if (!SHELL_TOOLS.has(toolName) || !ruleCoversButRefused(toolName, input, rules, opts)) return undefined
+  const rule = rules.find((r) => ruleCoversButRefused(toolName, input, [r], opts)) ?? rules.find((r) => r.trim().startsWith(`${toolName}(`)) ?? toolName
+  const command = String((input as { command?: unknown }).command ?? '')
+  // The why comes from the segments the rule covers but refuses on their own; none means the rule's segment is fine
+  // and some other segment has no rule.
+  const shell = toolName === 'PowerShell' ? 'powershell' : 'bash'
+  const segments = splitCommand(unwrapShellCommand(command))
+    .map((s) => s.trim())
+    .filter((s) => s && ruleCoversButRefused(toolName, { command: s }, [rule], opts))
+  const why = segments.some((s) => programRunsProgram(s))
+    ? 'it can run another program'
+    : segments.some((s) => isUnsafeSegment(s, shell))
+      ? 'it uses shell syntax or an expansion OrgAI does not approve'
+      : 'another part of the command is not covered'
+  return `OrgAI: ${rule.trim()} does not cover this command (${why}); asking`
 }
 
 /**
@@ -1383,12 +1439,28 @@ export class ClaudeSession implements RuntimeSession {
       if (harness) return hookAllow('OrgAI harness tool')
       // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
       // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
-      const rules = [...new Set([...(this.ctx.allowedRules?.() ?? []), ...this.sessionRules])]
+      // Saved rules are read here as well: shell rules no longer reach the CLI's allowedTools (cliAllowedTools), so the
+      // hook is their only allow path even when a context has no allowedRules (RunManager's already include them).
+      const rules = [...new Set([...claudeSavedRules(this.ctx), ...(this.ctx.allowedRules?.() ?? []), ...this.sessionRules])]
       // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
       // ask per call unless an exact tool rule covers them.
       const usable = rules.length && input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
       const hit = matchingRule(input.tool_name, toolInput, usable, matchOptionsFor(this.ctx))
       if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
+      // Reviewer-4 H-A: a shell command a rule's text appears to cover but ruleMatch refuses (`npm test
+      // --script-shell=calc` under `Bash(npm test:*)`, a `$` expansion, a program-running option) must never fall
+      // through, or the CLI's own prefix match of a session rule or a `.claude/settings.json` rule approves it.
+      // Per the Claude Code hooks docs, PreToolUse 'deny' always blocks and 'ask' prompts the user; that 'ask' beats an
+      // `allowedTools` / settings allow rule is UNVERIFIED live (scripts/smoke-permission-hook.mjs could check it; it
+      // spends tokens and needs the user's consent). Shell rules are also kept out of options.allowedTools (cliAllowedTools).
+      if (SHELL_TOOLS.has(input.tool_name)) {
+        const all = [...new Set([...rules, ...cliProjectSettingsRules(this.ctx)])]
+        const reason = refusedShellReason(input.tool_name, toolInput, all, matchOptionsFor(this.ctx))
+        if (reason) {
+          this.log('info', reason)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
+        }
+      }
       return {}
     }
 
@@ -2309,7 +2381,8 @@ export class ClaudeSession implements RuntimeSession {
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     // A quick run never reads the user's folder for rules: its grants arrive through allowedRules() (the PreToolUse hook).
     // A server an agent installed this run is never approved wholesale by a saved server-level rule (review M3).
-    const savedRules = withoutServerRules(claudeSavedRules(this.ctx), this.agentInstalledMcp())
+    // Shell rules stay with the PreToolUse hook (ruleMatch.ts), never the CLI's prefix match (reviewer-4 H-A).
+    const savedRules = cliAllowedTools(withoutServerRules(claudeSavedRules(this.ctx), this.agentInstalledMcp()))
     if (savedRules.length) options.allowedTools = savedRules
     if (this.root.model && this.root.model !== 'inherit') {
       if (validModelId(this.root.model)) options.model = this.root.model

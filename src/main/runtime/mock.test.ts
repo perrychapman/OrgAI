@@ -726,6 +726,24 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  it('H-A parity: a command a saved Bash(npm test:*) seems to cover but the matcher refuses raises a card; plain npm test does not', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-refused-'))
+    addRules(dir, ['Bash(npm test:*)'])
+    const bashStep = (command: string) => ({
+      type: 'tool' as const,
+      name: 'Bash',
+      input: { command },
+      ask: true,
+      suggestions: [{ type: 'addRules' as const, rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow' as const, destination: 'localSettings' as const }],
+      result: 'ok'
+    })
+    const { cards } = await play({ project: project({ path: dir }) }, () => ({ behavior: 'allow', scope: 'once' }), {
+      work: [bashStep('npm test'), bashStep('npm test --script-shell=calc'), bashStep('npm test $X')]
+    })
+    expect(cards.map((c) => (c.input as { command: string }).command)).toEqual(['npm test --script-shell=calc', 'npm test $X'])
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it('a quick run gets no setMode suggestion and stays ask-only after "allow for session"', async () => {
     const quick = { folder: projPath, team: 'single' as const, allowEdits: true, gitRepo: false }
     const edit = (file: string) => ({
