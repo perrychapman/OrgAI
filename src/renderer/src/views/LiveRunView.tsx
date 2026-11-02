@@ -13,9 +13,14 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
-import { HARNESS_PROJECT_ID } from '@shared/types'
+import { isVirtualProjectId } from '@shared/types'
+import type { VirtualProjectId } from '@shared/types'
+import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
+import ChatStartPage from '../components/assistants/ChatStartPage'
+import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
+import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
 import McpInstallCard from '../components/McpInstallCard'
-import { Bell, CircleCheck, CircleHelp, Maximize, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
+import { Bell, CircleCheck, CircleHelp, Maximize, MessageSquare, Network, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
 import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
@@ -141,21 +146,21 @@ export default function LiveRunView({ project }: { project: Project }): ReactEle
           <ReactFlowProvider key={`${project.id}:${runId}`}>
             <RunView project={project} runId={runId} />
           </ReactFlowProvider>
-        ) : project.id === HARNESS_PROJECT_ID ? (
-          <div className="new-run">
-            <div className="new-run-inner">
-              <section className="new-run-intro">
-                <h2>No assistant run yet</h2>
-                <p>Start one from Configure with AI in the MCP library settings.</p>
-              </section>
-            </div>
-          </div>
+        ) : isVirtualProjectId(project.id) ? (
+          <AssistantStart key={`assistant:${project.id}`} id={project.id} project={project} />
         ) : (
           <NewRunPage key={`new:${project.id}`} project={project} />
         )}
       </div>
     </div>
   )
+}
+
+/** The start page of an assistant (virtual project): Chat, MCP assistant or Skill assistant. */
+function AssistantStart({ id, project }: { id: VirtualProjectId; project: Project }): ReactElement {
+  if (id === 'quick') return <ChatStartPage project={project} />
+  if (id === 'harness') return <McpAssistantStartPage project={project} />
+  return <SkillAssistantStartPage project={project} />
 }
 
 function RunView({ project, runId }: { project: Project; runId: string }): ReactElement {
@@ -174,6 +179,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const openRun = useAppStore((s) => s.openRun)
   const setSideTab = useAppStore((s) => s.setSideTab)
   const focusComposer = useAppStore((s) => s.focusComposer)
+  const chosenLayout = useAppStore((s) => s.runLayoutByRun[runId])
+  const setRunLayout = useAppStore((s) => s.setRunLayout)
   const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
   const { fitView, zoomIn, zoomOut } = useReactFlow()
@@ -226,6 +233,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   const isSetupRun = run.summary.kind === 'setup'
   const rootName = project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
+  // Single-agent runs open as a conversation (the root agent's transcript is the stage); team runs open on the canvas.
+  // Every run can switch, the choice is kept per run in the store.
+  const layout = runLayoutFor(run.summary, chosenLayout)
+  const conversation = layout === 'conversation'
+  const asAssistant = speaksAsAssistant(run.summary)
 
   const agentsById = run.agents
   const agents = useMemo(() => normalizeParents(Object.values(agentsById)), [agentsById])
@@ -293,6 +305,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topologyKey]
   )
+
+  // Switching back to the canvas mounts a fresh React Flow: fit it once it has a size.
+  const prevLayout = useRef(layout)
+  useEffect(() => {
+    if (prevLayout.current === layout) return undefined
+    prevLayout.current = layout
+    if (layout !== 'canvas') return undefined
+    const t = setTimeout(() => fitView(fitOpts({ duration: 0 })), 80)
+    return () => clearTimeout(t)
+  }, [layout, fitView])
 
   const lastTopology = useRef('')
   useEffect(() => {
@@ -422,10 +444,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const canContinue = chainCanContinue(summaries, runId)
   const successor = !sessionOpen ? continuedBy(summaries, runId) : undefined
   // What Send does. On a finished run the default is a NEW run; Continue is the explicit second choice.
-  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && finishedChoice === 'continue' ? 'continue' : 'new'
+  // An assistant (virtual project) has no "New run" choice: it continues, or it is over and a new session starts from the start page.
+  const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
+  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && (virtualId || finishedChoice === 'continue') ? 'continue' : 'new'
+  const openCardCount = (run.ruleRequests?.length ?? 0) + (run.questions?.length ?? 0) + run.proposals.length + (run.mergeReviews?.length ?? 0) + run.permissions.length + (run.mcpInstalls?.length ?? 0)
   const modeLabel =
     sendMode === 'reply'
-      ? isSetupRun
+      ? asAssistant && !isSetupRun
+        ? assistantModeLabel({ status, openCards: openCardCount })
+        : isSetupRun
         ? 'Answering the Architect'
         : `Replying to ${rootName}`
       : sendMode === 'continue'
@@ -440,7 +467,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     sendMode === 'reply'
       ? isSetupRun
         ? 'Your answer'
-        : 'Your reply'
+        : asAssistant
+          ? ASSISTANT_REPLY_LABEL
+          : 'Your reply'
       : sendMode === 'continue'
         ? run.summary.endedWithApp
           ? 'Pick up where it was cut off'
@@ -511,9 +540,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (!el || typeof ResizeObserver === 'undefined') return
     let t: ReturnType<typeof setTimeout> | undefined
     let first = true
+    const parent = el.closest('.run-body')
+    let wide = parent?.getAttribute('data-side-wide') === 'true'
     const ro = new ResizeObserver(() => {
       if (first) {
         first = false
+        return
+      }
+      // A wide/narrow panel layout switch moves the composer; it must not re-zoom the chart.
+      const nowWide = parent?.getAttribute('data-side-wide') === 'true'
+      if (nowWide !== wide) {
+        wide = nowWide
         return
       }
       clearTimeout(t)
@@ -538,6 +575,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }
 
   const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
+  const rootAgent = useMemo(() => Object.values(run.agents).find((a) => a.parentId === null), [run.agents])
+  const rootEntries = useMemo(() => (rootAgent ? run.transcript.filter((e) => e.agentId === rootAgent.id) : []), [run.transcript, rootAgent])
   const entries = useMemo(
     () => (selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
     [run, selectedAgentId]
@@ -627,8 +666,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           title={`Setup complete: ${[project.setup?.architecturePath ? 'architecture' : '', `${project.roles.length} role${project.roles.length === 1 ? '' : 's'}`, approvedKinds.includes('settings') ? 'settings applied' : ''].filter(Boolean).join(', ')}`}
           actions={
             <>
-              <Button size="sm" variant="primary" onClick={() => setView('org')}>
-                View org chart
+              <Button size="sm" variant="primary" onClick={() => setView('team')}>
+                Open Team
               </Button>
               {sessionOpen && (
                 <Button size="sm" onClick={() => void stopRun()} title="Ends the setup session.">
@@ -638,18 +677,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </>
           }
         >
-          The Architect is done. Review or adjust what it set up on the Org chart tab.
+          The Architect is done. Review or adjust what it set up on the Team tab.
         </Banner>
       )}
-      <div className="run-body" ref={bodyRef}>
+      <div className="run-body" ref={bodyRef} data-layout={layout}>
 
         <CanvasFrame frameRef={canvasRef}>
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length} />
             <div className="frame-toolbar-end">
-              {agents.length > 1 && (
+              {!conversation && agents.length > 1 && (
                 <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
-                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" />
+                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" title="Hide finished agents" />
                   <span className="fold-label" aria-hidden="true">
                     <span className="fold-long">Hide finished agents</span>
                     <span className="fold-short">Hide finished</span>
@@ -657,10 +696,22 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   </span>
                 </span>
               )}
-              <CanvasTools />
+              {!conversation && <CanvasTools />}
+              <IconButton
+                icon={conversation ? Network : MessageSquare}
+                label={conversation ? 'Show agents' : 'Show conversation'}
+                size="sm"
+                testId="run-layout-toggle"
+                onClick={() => setRunLayout(runId, conversation ? 'canvas' : 'conversation')}
+              />
             </div>
           </FrameToolbar>
           <FrameStage>
+            {conversation ? (
+              <div className="conversation-stage" data-testid="run-conversation">
+                <TranscriptPanel variant="conversation" runId={runId} agent={rootAgent} entries={rootEntries} logs={[]} />
+              </div>
+            ) : (
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -680,6 +731,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               {patternKind !== 'none' && <Background variant={PATTERN_VARIANT[patternKind as 'dots' | 'grid'] ?? BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />}
               {showMinimap && <MiniMap pannable zoomable ariaLabel="Run minimap" nodeColor={neutralRoleColor} />}
             </ReactFlow>
+            )}
           </FrameStage>
           <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
           {status === 'paused' && <PauseBanner runId={runId} />}
@@ -710,6 +762,21 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </FrameTray>
         </CanvasFrame>
 
+        {virtualId && sendMode === 'new' ? (
+          <div className="composer composer-ended" data-testid="assistant-ended">
+            <p className="composer-ended-text">{virtualId === 'quick' ? 'This chat has ended.' : 'This session has ended.'}</p>
+            <Button
+              variant="secondary"
+              size="sm"
+              testId="assistant-new-session"
+              onClick={() => {
+                useAppStore.getState().openDraft()
+              }}
+            >
+              {newSessionLabel(virtualId)}
+            </Button>
+          </div>
+        ) : (
         <Composer
           draftKey={runId}
           modeLabel={modeLabel}
@@ -717,7 +784,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           placeholder={placeholder}
           focusToken={composerFocusToken}
           modeSwitch={
-            !sessionOpen && canContinue ? (
+            !sessionOpen && canContinue && !virtualId ? (
               <SegmentedControl
                 label="What Send does"
                 value={sendMode === 'continue' ? 'continue' : 'new'}
@@ -753,7 +820,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             setSessionBlock(null)
             if (sendMode === 'reply') await sendMessage(text, images)
             else if (sendMode === 'continue') await continueRun(runId, text, images)
-            else await startRun(text, images ? { images } : undefined)
+            else if (!virtualId) await startRun(text, images ? { images } : undefined)
           }}
           onFail={(err) => {
             const message = err instanceof Error ? err.message : ''
@@ -763,10 +830,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             return true
           }}
         />
+        )}
 
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId}>
           <div className="live-panel">
-            <TranscriptPanel runId={runId} agent={selectedAgent} entries={entries} logs={run.logs ?? []} finished={finishedGroup} />
+            <TranscriptPanel runId={runId} agent={selectedAgent ?? (conversation ? rootAgent : undefined)} entries={selectedAgent || !conversation ? entries : rootEntries} logs={run.logs ?? []} finished={finishedGroup} />
           </div>
         </SidePanel>
       </div>

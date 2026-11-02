@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, openAppSettings, projectTab, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -26,7 +26,22 @@ try {
   check(!!project, 'existing-repo project created')
   check(project?.setup === undefined, 'skip AI setup leaves no setup record')
   check(project?.roles?.length === 4, 'default org chart has 4 roles', String(project?.roles?.length))
-  check((await page.locator('.editor').count()) > 0, 'lands on the org chart editor after create')
+  check((await page.locator('.editor').count()) > 0, 'lands on the Team tab after create')
+  check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'the Team tab is selected after create')
+  check((await teamPanelTab(page, 'Role').count()) === 1 && (await teamPanelTab(page, 'Catalog').count()) === 1, 'the side panel has Role and Catalog tabs')
+  check((await teamPanelTab(page, 'Catalog').getAttribute('aria-selected')) === 'true', 'Catalog is selected while no role is selected')
+  check((await page.locator('.editor .frame-tray [data-testid=team-recommend]').count()) === 1, 'the Team assistant tray opens on Recommend')
+  check((await page.locator('.role-node [data-testid=role-node-caps]').count()) === 4, 'every role node shows its capability line')
+  await page.locator('.react-flow__node').first().click()
+  await sleep(300)
+  check((await teamPanelTab(page, 'Role').getAttribute('aria-selected')) === 'true', 'selecting a role switches the panel to Role')
+  check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Role pane has the What it can use block')
+  await page.locator('[data-testid=architect-open]').click()
+  await page.locator('[data-testid=team-assistant]').waitFor({ state: 'visible', timeout: 5000 })
+  check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Architect in the tray does not replace the role inspector')
+  await shot('team-architect')
+  await page.locator('[data-testid=team-mode-recommend]').click()
+  await page.locator('.react-flow__pane').click({ position: { x: 5, y: 5 } })
   await shot('editor')
 
   await projectTab(page, 'Live').click()
@@ -180,6 +195,18 @@ try {
       check(Math.abs(shellM.brand - 48) <= 1, `brand row is 48 px high at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       check(w < 1180 ? Math.abs(shellM.side - 56) <= 1 : Math.abs(shellM.side - 232) <= 1, `sidebar is ${w < 1180 ? 'a 56 px rail' : '232 px wide'} at ${w}x${h} ${theme}`, JSON.stringify(shellM))
       if (w >= 1180) check(shellM.footer < 80, `sidebar footer is under 80 px at ${w}x${h} ${theme}`, JSON.stringify(shellM))
+      // package.json carries a -dev version on dev branches, so the badge is expected there; a release version has none.
+      const pkgVersion = JSON.parse((await import('node:fs')).readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+      const wantDev = /^\d+\.\d+\.\d+-.*dev/i.test(pkgVersion)
+      const devBadge = page.locator('[data-testid=dev-build-badge]')
+      check((await devBadge.count()) === (wantDev ? 1 : 0), `dev build badge ${wantDev ? 'shows' : 'is absent'} for version ${pkgVersion} at ${w}x${h} ${theme}`)
+      if (wantDev) {
+        const bb = await devBadge.boundingBox()
+        const sb = await page.locator('.sidebar').boundingBox()
+        const label = w < 1180 ? await page.locator('.brand-lockup-expand').getAttribute('aria-label') : await page.locator('.brand-lockup-devtag').getAttribute('aria-label')
+        check(!!bb && !!sb && bb.x >= sb.x && bb.x + bb.width <= sb.x + sb.width + 0.5, `dev badge sits inside the sidebar at ${w}x${h} ${theme}`, JSON.stringify({ bb, sb }))
+        check(String(label).includes(`Dev build ${pkgVersion}`), `dev badge label names the version at ${w}x${h} ${theme}`, String(label))
+      }
       check((await page.locator('main .topbar .badge').count()) === 0, `no status badge in the topbar on Live at ${w}x${h} ${theme}`)
       check(m.sw <= m.cw, `no horizontal scroll with runs at ${w}x${h} ${theme}`, JSON.stringify(m))
       check(inside(m.tabs), `run tabs inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.tabs))
@@ -296,7 +323,7 @@ try {
   // The side panel handle (when the live view shows the run panel).
   const spHandle = page.locator('[data-testid=side-panel-resize]').first()
   await openProject(page, NAME)
-  await projectTab(page, 'Org chart').click()
+  await projectTab(page, 'Team').click()
   await sleep(600)
   log('side panel handles:', await spHandle.count())
   if (await spHandle.count()) {

@@ -1,5 +1,6 @@
 import type {
   AdapterChoice,
+  AgentInstance,
   AppearanceSettings,
   AppSettings,
   ConnectionId,
@@ -9,24 +10,30 @@ import type {
   ModelFamily,
   ModelRef,
   ModelTier,
+  PermissionMode,
   Project,
   ProviderAuth,
   ProviderConnections,
   ProviderId,
   ProviderModel,
+  QuickRunTeam,
   Role,
   SetupKind,
+  SkillEvaluationSettings,
+  TeamReviewSettings,
+  SkillSpec,
+  TokenUsage,
   ToolName
 } from './types'
-import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES } from './types'
+import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
-/** Project.runMessaging when unset: cross-run messaging is opt-in per project. */
-export const DEFAULT_RUN_MESSAGING = false
+/** Cross-run messaging is on by default; an explicit Project.runMessaging false turns it off. */
+export const DEFAULT_RUN_MESSAGING = true
 
-/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default off). */
+/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default on; an explicit false turns it off). */
 export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
   return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
 }
@@ -54,7 +61,12 @@ const builtin = (
   list: { id: string; label: string; hint: string; tier: ModelTier }[]
 ): ProviderModel[] => list.map((m) => ({ ...m, connection, family, adapter, source: 'builtin' }))
 
-/** Anthropic's models as Claude Code aliases, one per tier. Always in the catalog for the anthropic connection. */
+/**
+ * Anthropic's models as Claude Code aliases, one per tier: the anthropic connection's cold-start catalog and its
+ * default tierModels (aliases float to the newest model of their family in the CLI). Discovery (the Claude adapter's
+ * listModels, i.e. the SDK's supportedModels) adds whatever the CLI offers, new families included; these stay in the
+ * catalog so roles saved with them remain valid.
+ */
 export const ANTHROPIC_BUILTIN_MODELS: readonly ProviderModel[] = builtin('anthropic', 'claude', 'claude', [
   { id: 'fable', label: 'Fable', hint: 'Most capable, highest cost', tier: 'top' },
   { id: 'opus', label: 'Opus', hint: 'Deep reasoning, orchestration, architecture', tier: 'deep' },
@@ -80,11 +92,79 @@ export function builtinModels(connection: ConnectionId): ProviderModel[] {
   return []
 }
 
-/** Fill a tier mapping from a catalog: the first model suggested for each tier. Tiers with none are left out. */
+/**
+ * Fill a tier mapping from a catalog: for each tier, the first model the provider marks recommended, else the first
+ * model suggested for it (catalog order: discovered lists come newest or most recommended first). Tiers with none are
+ * left out.
+ */
 export function defaultTierModels(models: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
   const out: Partial<Record<ModelTier, ModelRef>> = {}
+  for (const m of models) if (m.tier && m.recommended && !out[m.tier]) out[m.tier] = m.id
   for (const m of models) if (m.tier && !out[m.tier]) out[m.tier] = m.id
   return out
+}
+
+/** Tiers ordered by closeness to `tier`, the tier itself first (ties: the more capable one first). */
+export function nearestTiers(tier: ModelTier): ModelTier[] {
+  const i = MODEL_TIERS.indexOf(tier)
+  return [...MODEL_TIERS].sort((a, b) => Math.abs(MODEL_TIERS.indexOf(a) - i) - Math.abs(MODEL_TIERS.indexOf(b) - i))
+}
+
+/** What tier resolution needs from one connection. */
+export interface TierContext {
+  connection: ConnectionId
+  /** The connection's tier mapping (AppSettings.connections[connection].tierModels). */
+  tierModels: Partial<Record<ModelTier, ModelRef>>
+  /** The connection's catalog, when known; entries of other connections are ignored. Default: its builtin list. */
+  catalog?: readonly ProviderModel[]
+}
+
+/**
+ * The model a tier gets on a connection: its tierModels entry, else the catalog's suggestion for the tier (recommended
+ * first, then catalog order; the builtin list when no catalog is given), trying the nearest tiers in turn. undefined
+ * when nothing at all maps. `tier` is the tier actually used.
+ */
+export function modelForTier(tier: ModelTier, ctx: TierContext): { model: ModelRef; tier: ModelTier } | undefined {
+  const catalog = (ctx.catalog ?? builtinModels(ctx.connection)).filter((m) => m.connection === ctx.connection)
+  const suggested = defaultTierModels(catalog)
+  for (const t of nearestTiers(tier)) {
+    const model = ctx.tierModels[t]?.trim() || suggested[t]
+    if (model) return { model, tier: t }
+  }
+  return undefined
+}
+
+/** The tier a model setting names: a tier name, or a legacy Claude alias (fable, opus, sonnet, haiku). */
+export function settingTier(value: string | undefined): ModelTier | undefined {
+  const v = value?.trim().toLowerCase() ?? ''
+  if (isModelTier(v)) return v
+  return Object.hasOwn(CLAUDE_ALIAS_TIERS, v) ? CLAUDE_ALIAS_TIERS[v] : undefined
+}
+
+/**
+ * Resolve a ModelSetting (AppSettings.defaultRootModel and friends) on a connection. A tier name, or a legacy Claude
+ * alias standing for its tier, maps through modelForTier (the nearest mapped tier when its own is unmapped; on the
+ * anthropic connection an alias that maps nowhere stays as it is). 'inherit' stays. A concrete id is returned as it is,
+ * with its catalog tier (or tierForModel). undefined only for an empty value or a tier nothing maps.
+ */
+export function resolveModelSetting(value: string | undefined, ctx: TierContext): { model: ModelRef; tier?: ModelTier } | undefined {
+  const v = value?.trim() ?? ''
+  if (!v) return undefined
+  if (v === 'inherit') return { model: 'inherit' }
+  const tier = settingTier(v)
+  if (tier) {
+    const hit = modelForTier(tier, ctx)
+    if (hit) return hit
+    return isModelTier(v.toLowerCase()) ? undefined : { model: v, tier }
+  }
+  const entry = (ctx.catalog ?? []).find((m) => m.connection === ctx.connection && m.id === v)
+  const known = entry?.tier ?? tierForModel(v)
+  return { model: v, ...(known ? { tier: known } : {}) }
+}
+
+/** Whether a project steers deep- and top-tier spawns to the everyday tier near the plan limit (legacy field honoured). */
+export function preferEverydayNearLimit(project: Pick<Project, 'preferEverydayNearLimit' | 'preferSonnetNearLimit'> | null | undefined): boolean {
+  return (project?.preferEverydayNearLimit ?? project?.preferSonnetNearLimit) === true
 }
 
 const CLAUDE_ALIAS_TIERS: Record<string, ModelTier> = { fable: 'top', opus: 'deep', sonnet: 'everyday', haiku: 'fast' }
@@ -224,7 +304,7 @@ export type McpLinkFields = Pick<McpServerSpec, 'id' | 'enabled' | 'roles' | 'ad
  * and libraryId = entry.id. McpService calls it on every read so a library edit reaches every project.
  */
 export function linkedSpec(entry: McpLibraryEntry, own: McpLinkFields): McpServerSpec {
-  const { id: _entryId, source: _source, ...rest } = entry
+  const { id: _entryId, source: _source, connectedAt: _connectedAt, ...rest } = entry
   return {
     ...rest,
     id: own.id,
@@ -271,17 +351,62 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultMaxBudgetUsd: undefined,
   defaultKeepRuns: DEFAULT_KEEP_RUNS,
   defaultIsolateWriters: true,
-  defaultRootModel: 'opus',
-  defaultReportModel: 'sonnet',
+  defaultRootModel: 'deep',
+  defaultReportModel: 'everyday',
+  setupModel: 'deep',
+  mcpAssistModel: 'deep',
+  skillAssistModel: 'deep',
+  quickRunModel: 'everyday',
   providerAuth: { kind: 'subscription' },
   connections: defaultConnections(),
   defaultConnection: 'anthropic',
   notifications: true,
   appearance: DEFAULT_APPEARANCE,
   opusGuardThreshold: 80,
+  defaultPreferEverydayNearLimit: false,
   defaultPreferSonnetNearLimit: false,
+  communityPrices: true,
   defaultAutoContinue: true,
   defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES
+}
+
+// ---------- Quick runs (Chat) ----------
+
+/** Role slug of a quick run's single assistant (team 'single'). */
+export const QUICK_ASSISTANT_SLUG = 'assistant'
+
+/** Tools a quick run with edits off never gets. */
+export const QUICK_EDIT_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash', 'NotebookEdit']
+
+/** A role's tools on a quick run: unchanged with edits on; Edit, Write, Bash and NotebookEdit removed with edits off. */
+export function quickRoleTools(tools: readonly ToolName[], allowEdits: boolean): ToolName[] {
+  return allowEdits ? [...tools] : tools.filter((t) => !QUICK_EDIT_TOOLS.includes(t))
+}
+
+const QUICK_SINGLE_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch']
+
+/**
+ * Tools per role slug for a quick run. 'single': { assistant: Read, Glob, Grep, WebSearch, WebFetch, plus Edit,
+ * Write and Bash with edits on }. 'default': each defaultRoles() role (orchestrator, implementer, reviewer,
+ * researcher) with its tools filtered through quickRoleTools.
+ */
+export function quickRunTools(team: QuickRunTeam, allowEdits: boolean): Record<string, ToolName[]> {
+  if (team === 'single') {
+    return { [QUICK_ASSISTANT_SLUG]: allowEdits ? [...QUICK_SINGLE_TOOLS, 'Edit', 'Write', 'Bash'] : [...QUICK_SINGLE_TOOLS] }
+  }
+  const out: Record<string, ToolName[]> = {}
+  for (const role of defaultRoles()) out[role.slug] = quickRoleTools(role.tools, allowEdits)
+  return out
+}
+
+/**
+ * Permission mode of a quick run: always 'default', edits on or off. Never 'auto' (a classifier would approve calls
+ * in a folder the user never set up), 'acceptEdits' (edits would land unasked) or 'dontAsk' (a read outside the
+ * folder would be silently denied instead of raising a card the user can answer). Every edit and command asks.
+ */
+export function quickRunPermissionMode(allowEdits: boolean): PermissionMode {
+  void allowEdits
+  return 'default'
 }
 
 /** Provider label matching an auth choice. */
@@ -300,6 +425,23 @@ export function creationConnection(settings: Pick<AppSettings, 'defaultConnectio
   if (want === 'openai') return c.openai?.enabled ? 'openai' : 'anthropic'
   if (want === 'litellm') return c.litellm?.enabled && !!c.litellm.baseUrl?.trim() && c.litellm.hasApiKey ? 'litellm' : 'anthropic'
   return 'anthropic'
+}
+
+/**
+ * Whether a connection is in use: enabled (anthropic always counts as enabled, as in `creationConnection`) and
+ * either the app's default connection or the connection of at least one project (`projectConnection`; mock
+ * projects follow the same rule). Idle probes that cost a process spawn or a network call (Codex plan usage,
+ * LiteLLM key spend) run only then. Pure.
+ */
+export function connectionInUse(
+  id: ConnectionId,
+  settings: Pick<AppSettings, 'defaultConnection' | 'connections'>,
+  projects: readonly Pick<Project, 'provider'>[]
+): boolean {
+  const enabled = id === 'anthropic' || settings.connections?.[id]?.enabled === true
+  if (!enabled) return false
+  if ((settings.defaultConnection ?? 'anthropic') === id) return true
+  return projects.some((p) => projectConnection(p) === id)
 }
 
 /** Provider label for a connection. Anthropic follows the auth choice. */
@@ -329,9 +471,12 @@ const FULL: ToolName[] = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']
 
 /**
  * A sensible starting org for a coding project: one orchestrator with three
- * purpose-built reports. The AI drafter can replace or revise it.
+ * purpose-built reports. The AI drafter can replace or revise it. Each role is defined by its tier; the model is that
+ * tier's model on the given connection (modelForTier), 'inherit' when the connection maps no tier at all. Default: the
+ * anthropic connection's builtin tier mapping.
  */
-export function defaultRoles(): Role[] {
+export function defaultRoles(ctx: TierContext = { connection: 'anthropic', tierModels: {} }): Role[] {
+  const modelOf = (tier: ModelTier): { model: ModelRef; tier?: ModelTier } => modelForTier(tier, ctx) ?? { model: 'inherit' }
   const orchestrator: Role = {
     id: newId('role'),
     slug: 'orchestrator',
@@ -347,8 +492,7 @@ export function defaultRoles(): Role[] {
     prompt: `You are the lead engineer and orchestrator for this project.
 Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
     tools: FULL,
-    model: 'opus',
-    tier: 'deep',
+    ...modelOf('deep'),
     canSpawn: true,
     spawnable: [],
     reportsTo: null,
@@ -368,8 +512,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     ],
     prompt: `You are a senior software engineer. Implement exactly the task you are given. Read the surrounding code first, follow existing conventions, and run the relevant build or tests before you report. Report what you changed, file by file, and anything you could not verify.`,
     tools: FULL,
-    model: 'sonnet',
-    tier: 'everyday',
+    ...modelOf('everyday'),
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -389,8 +532,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     ],
     prompt: `You are a meticulous code reviewer. You may read anything but must not modify files. Review the described change for correctness bugs, security problems, and missed edge cases. Report findings ranked by severity with file and line references, and say explicitly when you find nothing.`,
     tools: READ_ONLY,
-    model: 'sonnet',
-    tier: 'everyday',
+    ...modelOf('everyday'),
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -410,8 +552,7 @@ Plan before acting. Delegate implementation, review and testing to your speciali
     ],
     prompt: `You are a research specialist. Find and summarize the information requested, citing file paths or URLs. Be concise and concrete. Do not modify files.`,
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
-    model: 'haiku',
-    tier: 'fast',
+    ...modelOf('fast'),
     canSpawn: false,
     spawnable: [],
     reportsTo: orchestrator.id,
@@ -424,11 +565,16 @@ Plan before acting. Delegate implementation, review and testing to your speciali
 
 export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }, settings?: AppSettings): Project {
   const now = new Date().toISOString()
-  let roles = defaultRoles()
   if (settings) {
-    roles = roles.map((r) => {
-      const model = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
-      return { ...r, model, tier: tierForModel(model) }
+    // New projects start on anthropic; ConnectionService.prepareNewProject then moves them to the default connection
+    // (a 'switched' remap re-resolves every tiered role there).
+    const ctx: TierContext = { connection: 'anthropic', tierModels: settings.connections.anthropic.tierModels }
+    const roles = defaultRoles(ctx).map((r) => {
+      const setting = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
+      const resolved = resolveModelSetting(setting, ctx)
+      if (!resolved) return r
+      const { tier: _tier, ...rest } = r
+      return { ...rest, model: resolved.model, ...(resolved.tier ? { tier: resolved.tier } : {}) }
     })
     const auth = settings.providerAuth.kind === 'apiKey' ? { kind: 'apiKey' as const, envVar: settings.providerAuth.envVar } : { kind: 'subscription' as const }
     return {
@@ -443,7 +589,9 @@ export function newProject(input: { name: string; path: string; brief: string; s
       maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
-      preferSonnetNearLimit: settings.defaultPreferSonnetNearLimit,
+      preferEverydayNearLimit: settings.defaultPreferEverydayNearLimit,
+      // Deprecated mirror for renderer code that still reads the legacy name (ProjectStore keeps the two in step).
+      preferSonnetNearLimit: settings.defaultPreferEverydayNearLimit,
       autoContinue: settings.defaultAutoContinue,
       maxAutoContinues: settings.defaultMaxAutoContinues,
       roles,
@@ -478,4 +626,102 @@ export function rootRole(project: Project): Role | undefined {
 export const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/
 export function isSafeId(x: unknown): x is string {
   return typeof x === 'string' && SAFE_ID.test(x)
+}
+
+// ---------- Usage metrics and pricing ----------
+
+/** Most entries in AppSettings.modelPrices. */
+export const MODEL_PRICE_OVERRIDES_MAX = 200
+/** Longest model id in a price override. */
+export const MODEL_PRICE_ID_MAX_CHARS = 200
+/** Highest accepted price, USD per token (0.01 = $10,000 per million tokens; a sanity bound for overrides). */
+export const MODEL_PRICE_MAX_PER_TOKEN = 0.01
+
+/** A zeroed TokenUsage (a fresh object each call). */
+export function emptyTokens(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+}
+
+/**
+ * A report (never the root orchestrator, which speaks to the user) that ended (state done or error) with no result
+ * and no final text: the "no result" signal behind AgentUsage.producedNothing and RunUsage / RoleUsage
+ * agentsWithoutResult and noResultTokens. A live agent never counts; neither does an agent with parentId null or id
+ * 'root'.
+ */
+export function agentProducedNothing(agent: Pick<AgentInstance, 'state' | 'result'> & Partial<Pick<AgentInstance, 'id' | 'parentId'>>): boolean {
+  if (agent.id === 'root' || agent.parentId === null) return false
+  return (agent.state === 'done' || agent.state === 'error') && !agent.result?.trim()
+}
+
+/** All four token kinds summed. */
+export function totalTokens(t: TokenUsage): number {
+  return t.input + t.output + t.cacheRead + t.cacheWrite
+}
+
+/** Share of prompt tokens served from the cache: cacheRead / (input + cacheRead + cacheWrite), 0-1. null without prompt tokens. */
+export function cacheHitRate(t: TokenUsage): number | null {
+  const prompt = t.input + t.cacheRead + t.cacheWrite
+  return prompt > 0 ? t.cacheRead / prompt : null
+}
+
+// ---------- Skills ----------
+
+/** Project.skillEvaluation when unset: off, with a modest budget for the model-assisted step. */
+export const DEFAULT_SKILL_EVALUATION: SkillEvaluationSettings = { enabled: false, tokenBudget: 20_000 }
+/** Bounds of SkillEvaluationSettings.tokenBudget (settings inputs, store normalization). */
+export const SKILL_EVAL_MIN_BUDGET = 1_000
+export const SKILL_EVAL_MAX_BUDGET = 500_000
+/** How many of a project's newest work runs skills:evaluate reads. */
+export const SKILL_EVALUATION_RUNS = 20
+/** Most suggestions the model-assisted step may draft. */
+export const SKILL_MAX_SUGGESTIONS = 3
+
+/** The project's evaluation settings with defaults filled in and the budget clamped. */
+export function skillEvaluationOf(project: Pick<Project, 'skillEvaluation'> | null | undefined): SkillEvaluationSettings {
+  const s = project?.skillEvaluation
+  const budget = typeof s?.tokenBudget === 'number' && Number.isFinite(s.tokenBudget) ? Math.round(s.tokenBudget) : DEFAULT_SKILL_EVALUATION.tokenBudget
+  return {
+    enabled: s?.enabled === true,
+    tokenBudget: Math.min(SKILL_EVAL_MAX_BUDGET, Math.max(SKILL_EVAL_MIN_BUDGET, budget))
+  }
+}
+
+/**
+ * Project.teamReview when unset (existing projects too): proactive AI review on, bounded by the budget and by
+ * everyRuns, and only when a check finds new evidence or new candidates.
+ */
+export const DEFAULT_TEAM_REVIEW: TeamReviewSettings = { auto: 'ai', tokenBudget: 20_000, everyRuns: 3 }
+
+/** The project's team review settings with defaults filled in and every number clamped. */
+export function teamReviewOf(project: Pick<Project, 'teamReview'> | null | undefined): TeamReviewSettings {
+  const s = project?.teamReview
+  const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : d)
+  return {
+    auto: s?.auto === 'off' || s?.auto === 'free' || s?.auto === 'ai' ? s.auto : DEFAULT_TEAM_REVIEW.auto,
+    tokenBudget: Math.min(TEAM_REVIEW_MAX_BUDGET, Math.max(TEAM_REVIEW_MIN_BUDGET, num(s?.tokenBudget, DEFAULT_TEAM_REVIEW.tokenBudget))),
+    everyRuns: Math.min(TEAM_REVIEW_MAX_EVERY_RUNS, Math.max(1, num(s?.everyRuns, DEFAULT_TEAM_REVIEW.everyRuns)))
+  }
+}
+
+/** Why a SKILL.md `name` is not acceptable, or null. Stricter than the CLIs: [a-z0-9-], no "anthropic" / "claude". */
+export function skillNameProblem(name: unknown): string | null {
+  if (typeof name !== 'string' || !name) return 'A skill needs a name.'
+  if (name.length > SKILL_NAME_MAX) return `A skill name has at most ${SKILL_NAME_MAX} characters.`
+  if (!/^[a-z0-9-]+$/.test(name)) return 'A skill name uses only lowercase letters, digits and hyphens.'
+  if (/anthropic|claude/.test(name)) return 'A skill name may not contain "anthropic" or "claude".'
+  return null
+}
+
+/** Why a SKILL.md `description` is not acceptable, or null: 1 to SKILL_DESCRIPTION_MAX characters, no < or >. */
+export function skillDescriptionProblem(description: unknown): string | null {
+  if (typeof description !== 'string' || !description.trim()) return 'A skill needs a description that says when to use it.'
+  if (description.length > SKILL_DESCRIPTION_MAX) return `A skill description has at most ${SKILL_DESCRIPTION_MAX} characters.`
+  if (/[<>]/.test(description)) return 'A skill description may not contain < or >.'
+  return null
+}
+
+/** The project skills a role is granted (Role.skills), in project order. Enabled-ness and library links are not checked here. */
+export function skillsForRole(project: Pick<Project, 'skills'>, role: Pick<Role, 'skills'>): SkillSpec[] {
+  const ids = new Set(role.skills ?? [])
+  return (project.skills ?? []).filter((s) => ids.has(s.id))
 }

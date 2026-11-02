@@ -2,22 +2,30 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, ImageAttachment, McpServerSpec, Project, Proposal, RunEvent, RunSummary } from '@shared/types'
-import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, RunEvent, RunSummary, TokenUsage } from '@shared/types'
+import { setModelTokens } from './runUsage'
+import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
+import { defaultConnections } from '@shared/defaults'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
 
 let dir: string
 let events: RunEvent[]
+/** Broadcast sink bound to the current test's array. A run left live by an earlier test can still fire its trailing
+ *  usage timer (USAGE_THROTTLE_MS) after the next test started; capturing the array keeps that event out of it. */
+const sink = (): ((e: RunEvent) => void) => {
+  const own = events
+  return (e) => void own.push(e)
+}
 
 function waitFor<T extends RunEvent>(pred: (e: RunEvent) => e is T, after = 0, timeoutMs = 3000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -60,7 +68,7 @@ function manager(p: Project, script: MockScript = {}, options: RunManagerOptions
   const setup = fakeSetup(p)
   const store = new RunStore(join(dir, 'data'))
   const adapter = new MockAdapter({ script: { delayMs: 0, ...script } })
-  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, options)
+  const m = new RunManager({ mock: adapter }, sink(), store, setup.service, () => 100, options)
   return { m, store, setup, adapter }
 }
 
@@ -127,7 +135,7 @@ describe('RunManager image attachments', () => {
       }
     }
     const p = makeProject({ path: join(dir, 'repo') })
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
     return { m, p, ctxs, sends }
   }
 
@@ -169,7 +177,408 @@ describe('RunManager image attachments', () => {
     await m.continueRun(p, run.id, 'again')
     expect(ctxs[2].images).toBeUndefined()
   })
+
+  it('keeps the Team surface on setup runs only, announces it on starting and carries it into continuations', async () => {
+    const { m, p } = fake()
+    const work = await m.start({ project: p, prompt: 'go', surface: 'team' })
+    expect(work.surface).toBeUndefined()
+    const run = await m.start({ project: p, prompt: 'Set it up', kind: 'setup', surface: 'team' })
+    expect(run.surface).toBe('team')
+    expect(events.some((e) => e.type === 'run.status' && e.runId === run.id && e.status === 'starting' && e.surface === 'team')).toBe(true)
+    expect(events.some((e) => e.type === 'run.status' && e.runId === work.id && 'surface' in e)).toBe(false)
+    const next = await m.continueRun(p, run.id, 'again')
+    expect(next.surface).toBe('team')
+    expect(m.summary(next.id)?.surface).toBe('team')
+  })
 })
+
+describe('RunManager usage and pricing', () => {
+  const tok = (input = 0, output = 0, cacheRead = 0, cacheWrite = 0): TokenUsage => ({ input, output, cacheRead, cacheWrite })
+  const agentWith = (over: Partial<AgentInstance> = {}): AgentInstance => ({
+    id: 'root', roleId: 'r-lead', roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null, state: 'thinking', activity: 'Working',
+    inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: Date.now(), ...over
+  })
+  const usageEvents = (): Extract<RunEvent, { type: 'run.usage' }>[] => events.filter((e): e is Extract<RunEvent, { type: 'run.usage' }> => e.type === 'run.usage')
+
+  function setup(options: RunManagerOptions = {}) {
+    const ctxs: RuntimeContext[] = []
+    const sends: string[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        return { send: async (t) => void sends.push(t), interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100, options)
+    return { m, p, store, ctxs, sends }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('prices an agent upsert into a copy and mirrors the cost', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith({ model: 'claude-sonnet-4-5' })
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000, 0, 1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent).not.toBe(a)
+    expect(a.usage!.costUsd).toBeNull() // the adapter's object is untouched
+    expect(a.costUsd).toBe(0)
+    expect(up.agent.usage!.costUsd).toBeCloseTo(3.3, 9)
+    expect(up.agent.usage!.costSource).toBe('computed')
+    expect(up.agent.costUsd).toBeCloseTo(3.3, 9)
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3.3, 9)
+    expect(m.summaryOf(run.id)).toMatchObject({ totalCostUsd: expect.closeTo(3.3, 9) })
+    expect(m.summaryOf(run.id)!.usage).toMatchObject({ costSource: 'computed', agents: 1 })
+  })
+
+  it('builds usage for an agent the adapter gave none and sets producedNothing from the final state', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', parentId: 'root', model: 'claude-sonnet-4-5', inputTokens: 1_000_000, state: 'done' }) })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent.usage).toMatchObject({ producedNothing: true, costSource: 'none' })
+    expect(up.agent.usage!.legacy).toBeUndefined()
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', parentId: 'root', state: 'done', result: 'fine' }) })
+    const again = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(again.agent.usage!.producedNothing).toBeUndefined()
+  })
+
+  it('does not label a live agent adapter estimate as provider cost', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'w', model: 'mystery', inputTokens: 10, costUsd: 0.5 }) })
+    const up = events.filter((e) => e.type === 'agent.upsert').at(-1) as Extract<RunEvent, { type: 'agent.upsert' }>
+    expect(up.agent.usage!.costSource).not.toBe('provider')
+    expect(up.agent.usage!.models.some((x) => x.priceSource === 'provider')).toBe(false)
+  })
+
+  it('ignores the adapter run.cost on a priced (LiteLLM) connection but keeps it elsewhere', async () => {
+    const proxy = setup({ resolveConnection: () => ({ connection: 'litellm', env: {}, pricing: { m: { inputPerToken: 0.000001, outputPerToken: 0.000002 } } }) as never })
+    const r1 = await proxy.m.start({ project: proxy.p, prompt: 'go' })
+    proxy.ctxs[0]!.emit({ type: 'run.cost', runId: r1.id, totalCostUsd: 7 })
+    expect(proxy.m.summaryOf(r1.id)!.usage!.providerCostUsd).toBeUndefined()
+    expect(proxy.m.summaryOf(r1.id)!.usage!.costSource).not.toBe('provider')
+    const plain = setup()
+    const r2 = await plain.m.start({ project: plain.p, prompt: 'go' })
+    plain.ctxs[0]!.emit({ type: 'run.cost', runId: r2.id, totalCostUsd: 7 })
+    expect(plain.m.summaryOf(r2.id)!.usage!.providerCostUsd).toBe(7)
+  })
+
+  it('caps runs:usageStats rows at the requested limit and flags truncation', async () => {
+    const { m, p, store } = setup()
+    for (let i = 0; i < 3; i++) store.upsert(runSummary({ id: `r${i}`, projectId: p.id, startedAt: 1000 + i }))
+    const stats = m.usageStats({ projectId: p.id, limit: 2 })
+    expect(stats.runs.map((r) => r.runId)).toEqual(['r2', 'r1'])
+    expect(stats.truncated).toBe(true)
+    expect(m.usageStats({ projectId: p.id }).truncated).toBeUndefined()
+  })
+
+  it('reports an unpriced model as unknown with a legacy cost of 0', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'mock-unpriced', tok(100, 50))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    const s = m.summaryOf(run.id)!
+    expect(s.totalCostUsd).toBe(0)
+    expect(s.usage).toMatchObject({ costUsd: null, costSource: 'unknown' })
+    expect(m.get(run.id)!.agents.root!.costUsd).toBe(0)
+  })
+
+  it('uses the provider total from run.cost and keeps it as the continuation base', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(10), 0.75)
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    ctxs[0]!.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 1.25 })
+    expect(m.summaryOf(run.id)).toMatchObject({ totalCostUsd: 1.25 })
+    expect(m.summaryOf(run.id)!.usage).toMatchObject({ costSource: 'provider', costUsd: 1.25, providerCostUsd: 1.25 })
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished', sessionId: 's1' })
+    await m.continueRun(p, run.id, 'more')
+    expect(ctxs[1]!.resumeBaseCostUsd).toBe(1.25)
+    // an older record without usage falls back to totalCostUsd
+    const legacy = runSummary({ id: 'old', projectId: p.id, status: 'finished', sessionId: 's9', totalCostUsd: 0.4 })
+    ;(m as unknown as { store: RunStore }).store.upsert(legacy)
+    await m.continueRun(p, 'old', 'again')
+    expect(ctxs[2]!.resumeBaseCostUsd).toBe(0.4)
+  })
+
+  it('never subtracts a computed cost from the next provider total', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000)) // computed from the table, no provider cost
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.summaryOf(run.id)!.totalCostUsd).toBeCloseTo(3, 9)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished', sessionId: 's1' })
+    await m.continueRun(p, run.id, 'more')
+    expect(ctxs[1]!.resumeBaseCostUsd).toBe(0)
+  })
+
+  it('applies a saved override to the next usage update of a live run', async () => {
+    const prices: ModelPriceOverride[] = []
+    const { m, p, ctxs } = setup({ appSettings: () => ({ ...defaultSettingsLite(), modelPrices: prices }) })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3, 9)
+    prices.push({ model: 'claude-sonnet-4-5', price: { inputPerToken: 1e-4, outputPerToken: 1e-4 } })
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(100, 9)
+    expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('override')
+  })
+
+  it('prices an unknown model from community prices, and not when the setting is off', async () => {
+    let off = false
+    const community = { 'zeta-9': { inputPerToken: 1e-5, outputPerToken: 1e-5 } }
+    const { m, p, ctxs } = setup({
+      appSettings: () => ({ ...defaultSettingsLite(), communityPrices: !off }),
+      communityPrices: () => community
+    })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'zeta-9', tok(1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(10, 9)
+    expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('community')
+    off = true
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.models[0]!.priceSource).toBe('unknown')
+  })
+
+  it('prices an alias through the connection env (LiteLLM tier remap)', async () => {
+    const { m, p, ctxs } = setup({
+      resolveConnection: () => ({ connection: 'anthropic', adapter: 'claude', env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-5' } })
+    })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'opus', tok(1_000_000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(5, 9)
+  })
+
+  it('drops a run.usage an adapter sends', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const before = usageEvents().length
+    ctxs[0]!.emit({ type: 'run.usage', runId: run.id, usage: m.summaryOf(run.id)!.usage! })
+    expect(usageEvents().length).toBe(before)
+  })
+
+  it('throttles run.usage to one per second with a trailing event, and publishes the end at once', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const { m, p, store, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    expect(usageEvents()).toHaveLength(1) // the starting status goes out at once
+    const a = agentWith({ result: 'ok' })
+    for (let i = 1; i <= 5; i++) {
+      setModelTokens(a, 'claude-sonnet-4-5', tok(i * 1000))
+      ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    }
+    expect(usageEvents()).toHaveLength(1)
+    // the summary is current even while the event is held
+    expect(m.summaryOf(run.id)!.usage!.tokens.input).toBe(5000)
+    vi.advanceTimersByTime(999)
+    expect(usageEvents()).toHaveLength(1)
+    vi.advanceTimersByTime(1)
+    expect(usageEvents()).toHaveLength(2)
+    expect(usageEvents()[1]!.usage.tokens.input).toBe(5000)
+    expect(store.get(run.id)!.usage!.tokens.input).toBe(5000)
+    vi.advanceTimersByTime(5000)
+    expect(usageEvents()).toHaveLength(2) // nothing changed, nothing sent
+
+    setModelTokens(a, 'claude-sonnet-4-5', tok(9000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    expect(usageEvents()).toHaveLength(3) // the throttle window has passed: sent at once
+    setModelTokens(a, 'claude-sonnet-4-5', tok(9000))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a }) // held
+    vi.advanceTimersByTime(10)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    expect(usageEvents()).toHaveLength(4)
+    const last = usageEvents().at(-1)!.usage
+    expect(last.tokens.input).toBe(9000)
+    expect(last.wallMs).toBeGreaterThan(0)
+    vi.advanceTimersByTime(5000)
+    expect(usageEvents()).toHaveLength(4) // the held timer was cleared
+    expect(store.get(run.id)).toMatchObject({ status: 'finished', usage: { tokens: { input: 9000 } } })
+  })
+
+  it('flushes held usage when the session finishes', async () => {
+    const ctxs: RuntimeContext[] = []
+    let end!: () => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>((r) => (end = r)) }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'claude-sonnet-4-5', tok(1))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    setModelTokens(a, 'claude-sonnet-4-5', tok(2))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    end()
+    await sleep(5)
+    expect(usageEvents().at(-1)!.usage.tokens.input).toBe(2)
+    expect(store.getRecord(run.id)!.summary.usage!.tokens.input).toBe(2)
+    expect(m.liveRunCount()).toBe(0)
+  })
+
+  it('times waiting on cards, idle and a usage-limit hold', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000_000)
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]!
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'running' })
+
+    // two overlapping cards count once
+    void ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'a' })
+    vi.advanceTimersByTime(1000)
+    void ctx.requestQuestion({ agentId: 'root', question: 'q?', options: [{ label: 'a' }, { label: 'b' }], allowMultiple: false, allowFreeText: false })
+    vi.advanceTimersByTime(1000)
+    const perm = events.find((e) => e.type === 'permission.request') as Extract<RunEvent, { type: 'permission.request' }>
+    m.decide(run.id, perm.request.id, { behavior: 'allow' })
+    vi.advanceTimersByTime(1000) // the question is still open
+    const q = events.find((e) => e.type === 'question.request') as Extract<RunEvent, { type: 'question.request' }>
+    m.answerQuestion(run.id, q.question.id, { selected: ['a'] })
+    vi.advanceTimersByTime(4000) // nothing open now
+    expect(m.summaryOf(run.id)!.usage).toBeDefined()
+
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'idle' })
+    vi.advanceTimersByTime(2500)
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'running' })
+
+    ctx.rateLimited?.({})
+    vi.advanceTimersByTime(3000)
+    await m.send(run.id, 'continue')
+    vi.advanceTimersByTime(7000)
+
+    // a card still open at the end is cancelled and stops counting
+    void ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'late' })
+    vi.advanceTimersByTime(1500)
+    ctx.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    vi.advanceTimersByTime(60_000)
+
+    const u = m.summaryOf(run.id)!.usage!
+    expect(u.waitingMs).toBe(3000 + 1500)
+    expect(u.idleMs).toBe(2500)
+    expect(u.limitHoldMs).toBe(3000)
+  })
+
+  it('closes an open usage-limit hold when the run ends', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000_000)
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.rateLimited?.({})
+    vi.advanceTimersByTime(2000)
+    ctxs[0]!.emit({ type: 'run.status', runId: run.id, status: 'finished' }) // becomes paused: the session ended on a limit
+    vi.advanceTimersByTime(10_000)
+    expect(m.summaryOf(run.id)).toMatchObject({ status: 'paused' })
+    expect(m.summaryOf(run.id)!.usage!.limitHoldMs).toBe(2000)
+  })
+
+  it('counts the plan nudges', async () => {
+    const { m, p, ctxs } = setup()
+    const run = await m.start({ project: p, prompt: 'go' })
+    ctxs[0]!.emit({ type: 'plan.updated', runId: run.id, plan: { goal: 'g', steps: [], status: 'active', autoContinues: 3, updatedAt: 1 } })
+    expect(m.summaryOf(run.id)!.usage!.nudges).toBe(3)
+  })
+
+  it('normalizes a stored record saved before usage tracking on get', () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p)
+    store.upsert(runSummary({ id: 'old', projectId: p.id, status: 'finished', totalCostUsd: 0.2 }))
+    store.saveRecord({
+      summary: runSummary({ id: 'old', projectId: p.id, status: 'finished', totalCostUsd: 0.2 }),
+      agents: { root: agentWith({ inputTokens: 500, outputTokens: 50, costUsd: 0.2 }) },
+      transcript: [],
+      logs: []
+    })
+    const rec = m.get('old')!
+    expect(rec.agents.root!.usage).toMatchObject({ legacy: true, costUsd: 0.2 })
+    expect(rec.summary.usage).toMatchObject({ legacy: true, providerCostUsd: 0.2, costUsd: 0.2 })
+    expect(store.get('old')!.usage).toBeUndefined() // get() does not write back
+  })
+})
+
+describe('RunManager.usageStats', () => {
+  const tok = (input = 0): TokenUsage => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 })
+
+  it('builds stats over legacy and current runs, writing legacy usage back once', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, {})
+    const day = (d: number): number => new Date(2026, 9, d, 12).getTime()
+    const legacyAgent: AgentInstance = { id: 'root', roleId: null, roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null, state: 'done', activity: '', inputTokens: 1000, outputTokens: 100, costUsd: 0.5, startedAt: day(1), result: 'x' }
+    store.upsert(runSummary({ id: 'l1', projectId: p.id, status: 'finished', startedAt: day(1), totalCostUsd: 0.5 }))
+    store.saveRecord({ summary: runSummary({ id: 'l1', projectId: p.id, status: 'finished', startedAt: day(1), totalCostUsd: 0.5 }), agents: { root: legacyAgent }, transcript: [], logs: [] })
+    // no record on disk at all
+    store.upsert(runSummary({ id: 'l2', projectId: p.id, status: 'finished', startedAt: day(2), totalCostUsd: 0.25 }))
+    // a current run
+    store.upsert(runSummary({ id: 'c1', projectId: p.id, status: 'finished', startedAt: day(2) + 1000, totalCostUsd: 1, usage: { ...computeEmpty(), tokens: tok(7), costUsd: 1, costSource: 'computed' } }))
+    // other kind and other project
+    store.upsert(runSummary({ id: 's1', projectId: p.id, kind: 'setup', status: 'finished', startedAt: day(3) }))
+    store.upsert(runSummary({ id: 'x1', projectId: 'other', status: 'finished', startedAt: day(3) }))
+
+    const stats = m.usageStats({ projectId: p.id })
+    expect(stats.runs.map((r) => r.runId)).toEqual(['c1', 'l2', 'l1'])
+    const l1 = stats.runs.find((r) => r.runId === 'l1')!.usage
+    expect(l1).toMatchObject({ legacy: true, costUsd: 0.5, agents: 1 })
+    expect(l1.tokens.input).toBe(1000)
+    expect(stats.runs.find((r) => r.runId === 'l2')!.usage).toMatchObject({ legacy: true, costUsd: 0.25, agents: 0 })
+    expect(stats.trend.map((t) => t.bucket)).toEqual(['2026-10-01', '2026-10-02'])
+    expect(stats.totals.costUsd).toBeCloseTo(1.75, 9)
+
+    // written back to the index once
+    expect(store.get('l1')!.usage).toMatchObject({ legacy: true })
+    expect(store.get('l2')!.usage).toMatchObject({ legacy: true })
+    const stamp = store.get('l1')!.usage!.updatedAt
+    await sleep(3)
+    m.usageStats({ projectId: p.id })
+    expect(store.get('l1')!.usage!.updatedAt).toBe(stamp)
+
+    expect(m.usageStats({ projectId: p.id, kinds: ['setup'] }).runs.map((r) => r.runId)).toEqual(['s1'])
+    // a bad query is sanitized instead of throwing
+    const odd = m.usageStats({ projectId: p.id, since: Number.NaN, until: 'x' as never, kinds: ['bogus'] as never, bucket: 'month' as never })
+    expect(odd.runs).toHaveLength(3)
+  })
+
+  it('includes a live run with fresh usage', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, adapter } = manager(p, { delayMs: 50 })
+    void adapter
+    const run = await m.start({ project: p, prompt: 'live' })
+    const stats = m.usageStats({ projectId: p.id })
+    expect(stats.runs.map((r) => r.runId)).toContain(run.id)
+    await m.stop(run.id)
+  })
+})
+
+function computeEmpty() {
+  return { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, costSource: 'none' as const, models: [], roles: [], wallMs: 0, turns: 0, toolCalls: 0, retries: 0, agents: 0, agentsWithoutResult: 0, noResultTokens: 0, nudges: 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, updatedAt: 0 }
+}
+
+function defaultSettingsLite() {
+  return { setupModel: 'opus', mcpAssistModel: 'opus', connections: defaultConnections({ kind: 'subscription' }) }
+}
 
 describe('RunManager with the mock adapter', () => {
   it('names reports by handle and turns agent messages into events and transcript lines', async () => {
@@ -711,7 +1120,7 @@ describe('RunManager adapter selection, connections and MCP', () => {
 
   function setupManager(p: Project, adapters: ConstructorParameters<typeof RunManager>[0], options: RunManagerOptions = {}) {
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager(adapters, (e) => events.push(e), store, fakeSetup(p).service, () => 100, options)
+    const m = new RunManager(adapters, sink(), store, fakeSetup(p).service, () => 100, options)
     return { m, store }
   }
 
@@ -752,6 +1161,27 @@ describe('RunManager adapter selection, connections and MCP', () => {
       await m.stopAll()
     })
 
+    it('runs the built-in roles on the App settings models, resolved against the connection', async () => {
+      const codex = recorder('codex')
+      const p = litellm('gpt-5')
+      const catalog = () => [
+        { id: 'gpt-5', label: 'g', connection: 'litellm' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'discovered' as const },
+        { id: 'gpt-5-mini', label: 'm', connection: 'litellm' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'discovered' as const }
+      ]
+      const connections = defaultConnections()
+      connections.litellm.tierModels = { deep: 'gpt-5', everyday: 'gpt-5-mini' }
+      const appSettings = () => ({ setupModel: 'gpt-5-mini', mcpAssistModel: 'claude-sonnet-4-5', connections })
+      const { m } = setupManager(p, { codex: codex.adapter }, { catalog, appSettings })
+      const setupRun = await m.start({ project: p, prompt: 'set up', kind: 'setup' })
+      const assistRun = await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
+      expect(codex.ctxs[0].roles[0]).toMatchObject({ slug: 'architect', model: 'gpt-5-mini' })
+      expect(codex.ctxs[1].roles[0]).toMatchObject({ slug: 'mcp-assistant', model: 'gpt-5', tier: 'deep' })
+      const warnings = (runId: string) => events.filter((e) => e.type === 'log' && e.runId === runId && e.level === 'warn').map((e) => (e as { message: string }).message)
+      expect(warnings(setupRun.id)).toEqual([])
+      expect(warnings(assistRun.id)).toEqual([expect.stringContaining('App setting "MCP assistant model" is claude-sonnet-4-5')])
+      await m.stopAll()
+    })
+
     it('reports a missing adapter and passes the catalog to the choice', async () => {
       const codex = recorder('codex')
       const p = litellm('gpt-5')
@@ -768,8 +1198,11 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const connection = { connection: 'litellm' as const, adapter: 'claude' as const, env: { ANTHROPIC_BASE_URL: 'http://proxy' } }
       const resolveConnection = vi.fn(() => connection)
       const { m } = setupManager(p, { claude: claude.adapter }, { resolveConnection })
-      await m.start({ project: p, prompt: 'go' })
+      const summary = await m.start({ project: p, prompt: 'go' })
       expect(claude.ctxs[0].connection).toBe(connection)
+      // The run records its connection so the UI can label its cost.
+      expect(summary.connection).toBe('litellm')
+      expect(m['store'].list(p.id).find((r) => r.id === summary.id)?.connection).toBe('litellm')
       expect(resolveConnection).toHaveBeenCalledWith(p, expect.objectContaining({ adapter: 'claude', connection: 'litellm', mismatched: [] }))
       const before = m['store'].list(p.id).length
       const failing = setupManager(p, { claude: claude.adapter }, { resolveConnection: () => { throw new Error('LiteLLM is not connected') } })
@@ -1160,7 +1593,7 @@ describe('RunManager session chains', () => {
     }
     const p = makeProject({ path: join(dir, 'repo') })
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const first = await m.start({ project: p, prompt: 'one' })
     const second = await m.continueRun(p, first.id, 'two')
     expect(ctxs[1].resumeSessionId).toBe('s-1')
@@ -1234,7 +1667,7 @@ function multiManager(script: MockScript = {}, projects?: Map<string, Project>) 
   const setup = fakeSetup(makeProject())
   const store = new RunStore(join(dir, 'data'))
   const adapter = new CapturingAdapter({ script: { delayMs: 0, ...script } })
-  const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, setup.service, () => 100, projects ? { resolveProject: (id) => projects.get(id) } : {})
+  const m = new RunManager({ mock: adapter }, sink(), store, setup.service, () => 100, projects ? { resolveProject: (id) => projects.get(id) } : {})
   const tool = (runId: string, name: string, args?: unknown): Promise<string> => {
     const t = harnessToolsFor(adapter.ctxs.get(runId)!).find((x) => x.name === name)!
     return t.call(args)
@@ -1281,7 +1714,7 @@ describe('concurrent runs', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const store = new RunStore(join(dir, 'data'))
     const failing = { start: async () => Promise.reject(new Error('no binary')) } as unknown as RuntimeAdapter
-    const m = new RunManager({ mock: failing }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: failing }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'x' })
     expect(m.liveRunCount()).toBe(0)
     expect(m.liveRuns()).toEqual([])
@@ -1426,17 +1859,18 @@ describe('cross-run messaging', () => {
     await m.stopAll()
   })
 
-  it('needs only the shared flag within one project, and defaults to off', async () => {
+  it('needs only the shared flag within one project, defaults to on, and an explicit false turns it off', async () => {
     const pa = makeProject({ id: 'pa', name: 'Alpha', path: join(dir, 'a') })
+    delete pa.runMessaging
     const projects = new Map<string, Project>([[pa.id, pa]])
     const { m, tool } = multiManager(idleScript, projects)
     const a1 = await m.start({ project: pa, prompt: 'one' })
     const a2 = await m.start({ project: pa, prompt: 'two' })
     await idle(a1.id)
     await idle(a2.id)
-    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
-    projects.set(pa.id, { ...pa, runMessaging: true })
     expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^DELIVERED/)
+    projects.set(pa.id, { ...pa, runMessaging: false })
+    expect(await tool(a1.id, 'message_run', { runId: a2.id, message: 'hi' })).toMatch(/^REFUSED: cross-run messaging is off for "Alpha"\./)
     await m.stopAll()
   })
 
@@ -1719,7 +2153,7 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     const setup = fakeSetup(p)
     const applyLibraryProposal = vi.fn()
     ;(setup.service as unknown as { applyLibraryProposal: typeof applyLibraryProposal }).applyLibraryProposal = applyLibraryProposal
-    const m = new RunManager({ mock: rec.adapter }, (e) => events.push(e), new RunStore(join(dir, 'data')), setup.service, () => 100, { mcp })
+    const m = new RunManager({ mock: rec.adapter }, sink(), new RunStore(join(dir, 'data')), setup.service, () => 100, { mcp })
     return { m, ...rec, setup, applyLibraryProposal }
   }
 
@@ -1744,6 +2178,21 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     const warns = events.filter(isType('log', (e) => e.level === 'warn' && e.runId === run.id))
     expect(warns.map((w) => w.message)).toEqual([
       'MCP server "github" needs authorization: open Settings > MCP servers and choose Authorize. It starts without credentials in this run.'
+    ])
+    await m.stopAll()
+  })
+
+  it('warns once per run for a server skipped because a secret slot is empty, even with nothing else to start', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), mcpServers: [oauthSpec('jira')] })
+    const skippedServers = vi.fn(() => [{ name: 'jira', missing: ['JIRA_TOKEN'] }])
+    const { m, ctxs } = setupMgr(p, baseMcp({ enabledServers: () => [], skippedServers, prepareForRun: vi.fn(async () => []) }))
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    expect(await ctx.resolvedMcpServers!()).toEqual([])
+    await ctx.resolvedMcpServers!()
+    const warns = events.filter(isType('log', (e) => e.level === 'warn' && e.runId === run.id))
+    expect(warns.map((w) => w.message)).toEqual([
+      'MCP server "jira" has no value for JIRA_TOKEN: open Settings > MCP servers and fill it in. It does not start in this run.'
     ])
     await m.stopAll()
   })
@@ -1776,7 +2225,7 @@ describe('MCP library, OAuth preparation and the harness project', () => {
     const req = await waitFor(isType('proposal.request'))
     m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
     expect(await pending).toEqual({ behavior: 'approve' })
-    expect(applyLibraryProposal).toHaveBeenCalledWith(expect.objectContaining({ scope: 'library' }))
+    expect(applyLibraryProposal).toHaveBeenCalledWith(expect.objectContaining({ scope: 'library' }), {})
     expect(setup.raw.applyProposal).not.toHaveBeenCalled()
     expect(events.some((e) => e.type === 'project.updated')).toBe(false)
     await m.stopAll()
@@ -1911,7 +2360,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
     release('Ship the release notes')
@@ -1952,7 +2401,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
     expect(signal?.aborted).toBe(false)
@@ -1976,7 +2425,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
     await m.removeProject('some-other-project')
@@ -1997,7 +2446,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const run = await m.start({ project: p, prompt: 'Ship the release' })
     await m.removeProject(p.id)
     release('Ship the release notes')
@@ -2023,7 +2472,7 @@ describe('run titles', () => {
       }
     }
     const store = new RunStore(join(dir, 'data'))
-    const m = new RunManager({ mock: adapter }, (e) => events.push(e), store, fakeSetup(p).service, () => 100)
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
     const first = await m.start({ project: p, prompt: 'First task' })
     await vi.waitFor(() => expect(store.get(first.id)?.title).toBe('Title 1'))
     const second = await m.continueRun(p, first.id, 'Second task')
@@ -2037,5 +2486,107 @@ describe('run titles', () => {
     await sleep(20)
     expect(prompts).toHaveLength(2)
     expect(store.get(second.id)?.title).toBe('Title 2')
+  })
+})
+
+describe('skills in runs', () => {
+  const skill = (over: Partial<RunSkill> = {}): RunSkill => ({ id: 'sk1', name: 'pdf-fill', description: 'Fill forms', dir: join(dir, 'sk'), files: [{ path: 'SKILL.md' }] as RunSkill['files'], roleIds: ['r-lead'], ...over })
+  function fakeAdapter() {
+    const ctxs: RuntimeContext[] = []
+    const completes: Parameters<RuntimeAdapter['complete']>[0][] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async (input) => {
+        completes.push(input)
+        input.onUsage?.({ tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } })
+        return input.kind === 'title' ? 'T' : 'answer'
+      },
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    return { adapter, ctxs, completes }
+  }
+  const build = (skills: RunSkill[] | undefined, options: RunManagerOptions = {}) => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const f = fakeAdapter()
+    const forRun = vi.fn(() => skills ?? [])
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: f.adapter }, sink(), store, fakeSetup(p).service, () => 100, { ...(skills ? { skills: { forRun } } : {}), ...options })
+    return { p, m, forRun, store, ...f }
+  }
+  const used = (runId: string, over: Partial<Extract<RunEvent, { type: 'skill.used' }>> = {}): RunEvent => ({ type: 'skill.used', runId, agentId: ROOT_AGENT_ID, skillId: 'sk1', name: 'x', at: 5, ...over })
+
+  it('gives work runs the skills once and setup runs none', async () => {
+    const { p, m, ctxs, forRun } = build([skill()])
+    await m.start({ project: p, prompt: 'work' })
+    await m.start({ project: p, prompt: 'setup', kind: 'setup' })
+    expect(forRun).toHaveBeenCalledTimes(1)
+    expect(ctxs[0]!.skills!().map((s) => s.id)).toEqual(['sk1'])
+    expect(ctxs[0]!.skills!()).toBe(ctxs[0]!.skills!())
+    expect(ctxs[1]!.skills!()).toEqual([])
+  })
+
+  it('counts skill.used into RunUsage.skills, writes a harness row and drops unknown skills', async () => {
+    const { p, m, ctxs } = build([skill()])
+    const run = await m.start({ project: p, prompt: 'work' })
+    const ctx = ctxs[0]!
+    ctx.emit(used(run.id))
+    ctx.emit(used(run.id))
+    ctx.emit(used(run.id, { skillId: 'ghost', name: 'ghost' }))
+    expect(events.filter(isType('skill.used'))).toHaveLength(2)
+    const rows = events.filter(isType('transcript', (e) => e.entry.block.kind === 'system' && e.entry.source === 'harness'))
+    expect(rows.filter((r) => (r.entry.block as { text: string }).text === 'Loaded skill pdf-fill')).toHaveLength(2)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.usage?.skills).toEqual([{ skillId: 'sk1', name: 'pdf-fill', loads: 2, roles: [] }]))
+  })
+
+  it('sets the loading agent activity to "Using skill <name>" and broadcasts the upsert', async () => {
+    const { p, m, ctxs } = build([skill()])
+    const run = await m.start({ project: p, prompt: 'work' })
+    const ctx = ctxs[0]!
+    const base: AgentInstance = {
+      id: ROOT_AGENT_ID, roleId: null, roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null,
+      state: 'tool', activity: 'Thinking', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1
+    }
+    ctx.emit({ type: 'agent.upsert', runId: run.id, agent: base })
+    ctx.emit({ type: 'agent.upsert', runId: run.id, agent: { ...base, id: 'a1', parentId: ROOT_AGENT_ID, state: 'done', activity: 'Reported back' } })
+    events.length = 0
+    ctx.emit(used(run.id))
+    // The run skill's own name, not the event's.
+    const upserts = events.filter(isType('agent.upsert'))
+    expect(upserts).toHaveLength(1)
+    expect(upserts[0]!.agent).toMatchObject({ id: ROOT_AGENT_ID, activity: 'Using skill pdf-fill', state: 'tool' })
+    expect(events.findIndex((e) => e.type === 'agent.upsert')).toBeLessThan(events.findIndex((e) => e.type === 'skill.used'))
+    expect(m.get(run.id)?.agents[ROOT_AGENT_ID]?.activity).toBe('Using skill pdf-fill')
+    // Same label again: no repeat upsert. A finished agent and an unknown skill keep their labels.
+    events.length = 0
+    ctx.emit(used(run.id))
+    ctx.emit(used(run.id, { agentId: 'a1' }))
+    ctx.emit(used(run.id, { skillId: 'ghost' }))
+    expect(events.filter(isType('agent.upsert'))).toHaveLength(0)
+    expect(events.filter(isType('skill.used'))).toHaveLength(2)
+  })
+
+  it('caps counted loads per run', async () => {
+    const { p, m, ctxs } = build([skill()])
+    const run = await m.start({ project: p, prompt: 'work' })
+    for (let i = 0; i < RUN_SKILL_LOAD_LIMIT + 5; i++) ctxs[0]!.emit(used(run.id))
+    expect(events.filter(isType('skill.used'))).toHaveLength(RUN_SKILL_LOAD_LIMIT)
+  })
+
+  it('completeForProject uses the project adapter, connection and tier model', async () => {
+    const connection = { connection: 'litellm' as const, adapter: 'mock' as const, env: {} }
+    const { p, m, completes } = build(undefined, { resolveConnection: () => connection, fastModel: () => 'fast-x' })
+    const signal = new AbortController().signal
+    const onUsage = vi.fn()
+    const fast = await m.completeForProject(p, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast', signal, onUsage })
+    expect(fast).toEqual({ text: 'answer', model: 'fast-x' })
+    expect(completes[0]).toMatchObject({ kind: 'skills', system: 's', prompt: 'p', model: 'fast-x', connection, cwd: p.path, signal })
+    expect(onUsage).toHaveBeenCalled()
+    await m.completeForProject(p, { system: 's', prompt: 'p', kind: 'skills', tier: 'everyday' })
+    expect(completes[1]!.kind).toBe('skills')
+    await expect(m.completeForProject({ ...p, id: 'harness' }, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast' })).rejects.toThrow(/harness/)
   })
 })

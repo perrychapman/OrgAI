@@ -1,8 +1,8 @@
 import type { ReactElement } from 'react'
 import { useId } from 'react'
-import type { PermissionMode, Project } from '@shared/types'
-import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT, runMessagingOn } from '@shared/defaults'
+import type { PermissionMode, Project, TeamReviewAuto } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET } from '@shared/types'
+import { MAX_AUTO_CONTINUES_LIMIT, runMessagingOn, teamReviewOf } from '@shared/defaults'
 import PermissionRulesPanel from '../PermissionRulesPanel'
 import { Select } from '../ui/Select'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
@@ -10,7 +10,7 @@ import { Switch } from '../ui/Switch'
 import { SETTINGS_COPY } from '../../lib/settingsCopy'
 import { ClampedNumber } from './ClampedNumber'
 import { SettingsCard } from './SettingsCard'
-import { SettingsSection } from './SettingsSection'
+import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** Short names for the select; the full wording from PERMISSION_MODE_OPTIONS is the one line shown for the selected mode. */
 const SHORT: Record<PermissionMode, string> = {
@@ -29,6 +29,7 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
   const copy = SETTINGS_COPY
   const autoOn = project.autoContinue !== false
   const isolated = project.isolateWriters !== false
+  const review = teamReviewOf(project)
   const row = (name: string): string => `${id}-${name}`
   return (
     <>
@@ -103,10 +104,63 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
             id={row('msg-row')}
             title="Let runs message each other"
             description="Orchestrators can exchange short notes."
-            more="Orchestrators of this project's runs can read each other's prompts and exchange short notes. Off by default; messages between projects need it on in both."
+            more="Orchestrators of this project's runs can read each other's prompts and exchange short notes. On by default; messages between projects need it on in both."
             control={<Switch checked={runMessagingOn(project)} label="Let runs message each other" describedBy={settingDescId(row('msg-row'))} onChange={(next) => patch({ runMessaging: next })} />}
           />
         </SettingsCard>
+        <SettingsGroup title="Team assistant: review">
+          <p className="hint">Looks now and then for tools and skills your team is missing, and suggests them on the Team tab.</p>
+          <SettingsCard>
+          <SettingRow
+            id={row('team-review-row')}
+            title="Team assistant review"
+            description="After every N finished runs, within the token budget; AI review sends the names of found tools and skills to the model."
+            width="select"
+            control={
+              <Select
+                id={row('team-review')}
+                label="Team assistant review"
+                describedBy={settingDescId(row('team-review-row'))}
+                value={review.auto}
+                options={[
+                  { value: 'off', label: 'Off' },
+                  { value: 'free', label: 'Free checks' },
+                  { value: 'ai', label: 'AI review' }
+                ]}
+                onChange={(v) => patch({ teamReview: { ...review, auto: v as TeamReviewAuto } })}
+              />
+            }
+          />
+          <SettingRow
+            title="Review every N finished runs"
+            width="number"
+            control={
+              <ClampedNumber
+                label="Review every N finished runs"
+                min={1}
+                max={TEAM_REVIEW_MAX_EVERY_RUNS}
+                disabled={review.auto === 'off'}
+                value={review.everyRuns}
+                onCommit={(n) => patch({ teamReview: { ...review, everyRuns: n } })}
+              />
+            }
+          />
+          <SettingRow
+            title="Team assistant review token budget"
+            width="number"
+            control={
+              <ClampedNumber
+                label="Team assistant review token budget"
+                min={TEAM_REVIEW_MIN_BUDGET}
+                max={TEAM_REVIEW_MAX_BUDGET}
+                disabled={review.auto !== 'ai'}
+                value={review.tokenBudget}
+                onCommit={(n) => patch({ teamReview: { ...review, tokenBudget: n } })}
+              />
+            }
+          />
+          </SettingsCard>
+        </SettingsGroup>
       </SettingsSection>
     </>
   )

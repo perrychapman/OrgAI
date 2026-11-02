@@ -46,8 +46,9 @@ export const CONNECTION_IDS: readonly ConnectionId[] = ['anthropic', 'openai', '
 
 /**
  * The intent behind a role's model, so the model can be remapped when the project's connection changes.
- * top = most capable (fable), deep = deep reasoning (opus), everyday = fast and capable (sonnet),
- * fast = cheap and quick (haiku).
+ * top = most capable, deep = deep reasoning, everyday = fast and capable, fast = cheap and quick. Each connection
+ * maps tiers to its own models (ConnectionBase.tierModels); defaults and settings are expressed as tiers, never as
+ * one vendor's model names.
  */
 export type ModelTier = 'top' | 'deep' | 'everyday' | 'fast'
 
@@ -89,6 +90,15 @@ interface ConnectionBase {
    * "no model for this tier": roles of that tier keep their current model on remap.
    */
   tierModels: Partial<Record<ModelTier, ModelRef>>
+  /**
+   * Tiers whose tierModels entry OrgAI chose (auto-fill from the catalog), not the user. Model discovery moves these
+   * forward to the catalog's current suggestion for the tier (and remaps roles still on the old model); tiers not
+   * listed are explicit user picks and are never changed while their model is still in the catalog. connections:update
+   * removes a tier from this list when the user changes its entry. Missing (settings saved before it existed): the
+   * main process derives it on the next discovery (an entry equal to the builtin default or the previous catalog's
+   * suggestion counts as auto). Main-owned: the renderer echoes it back unchanged.
+   */
+  autoTiers?: ModelTier[]
 }
 
 /** OpenAI auth: the ChatGPT login Codex keeps (connections:login), or an API key read from an env var. */
@@ -135,6 +145,13 @@ export interface ConnectionInfo {
   status: ConnectionStatus
   /** Models currently in the catalog for this connection (builtin plus discovered). */
   modelCount: number
+  /** When model discovery last succeeded for this connection (epoch ms). Missing = never (builtin list only). */
+  modelsRefreshedAt?: number
+  /**
+   * The last background (scheduled) discovery failure, cleared by the next success. A scheduled failure keeps the
+   * last good catalog and never changes `status`; a manual refresh or connect still reports errors in `status`.
+   */
+  modelsError?: string
 }
 
 /** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
@@ -189,8 +206,32 @@ export interface ProviderModel {
   contextWindow?: number
   /** One-line hint for pickers. */
   hint?: string
+  /** The provider marks this model as its default or recommended choice (Codex model/list isDefault). */
+  recommended?: boolean
   /** 'builtin' = shipped with OrgAI; 'discovered' = listed by the connection at runtime. */
   source: 'builtin' | 'discovered'
+  /**
+   * Token prices, when the connection reports them (LiteLLM /model/info `model_info.*_cost_per_token`). The
+   * 'proxy' step of run pricing (pricing.ts), via RunConnection.pricing. Absent = no proxy price; the built-in table
+   * (pricing.ts BUILTIN_PRICES) or an override may still price the model, else its cost is unknown (null).
+   */
+  price?: ModelPrice
+  /** LiteLLM: the upstream model the proxy routes this name to (litellm_params.model, e.g. "anthropic/claude-sonnet-4-5"). */
+  upstream?: string
+}
+
+/**
+ * USD per token of one model. Used for LiteLLM /model/info prices (UNVERIFIED against a live proxy), the built-in
+ * table (pricing.ts) and user overrides (AppSettings.modelPrices). inputPerToken prices uncached input. A missing cache
+ * price falls back to inputPerToken. 0 = free (local models).
+ */
+export interface ModelPrice {
+  inputPerToken: number
+  outputPerToken: number
+  /** model_info.cache_read_input_token_cost. */
+  cacheReadPerToken?: number
+  /** model_info.cache_creation_input_token_cost. */
+  cacheCreationPerToken?: number
 }
 
 /** models:list and models:refresh input. Omit `connection` for every enabled connection. */
@@ -254,14 +295,30 @@ export interface AdapterChoice {
 export type ConnectionEvent =
   | { type: 'connection.status'; connection: ConnectionId; status: ConnectionStatus }
   | { type: 'connection.login'; login: ConnectionLoginUpdate }
-  /** The catalog for a connection changed (discovery, refresh, login). Carries that connection's full list. */
-  | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[] }
+  /**
+   * A connection's catalog was (re)discovered: boot, the 24 h schedule, connect, login or models:refresh. Sent after
+   * every successful discovery, even when the list is unchanged; `changed` says whether the model ids differ.
+   * Carries that connection's full list and the discovery time (also on ConnectionInfo.modelsRefreshedAt).
+   */
+  | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[]; changed?: boolean; refreshedAt?: number }
   /** A connection change remapped role models. Only projects with at least one change are listed; reload them. */
   | { type: 'projects.remapped'; results: RemapResult[] }
 
 /** Model choices are provider-scoped aliases or full model IDs. */
 export type ModelRef = string
 
+/**
+ * A model setting (AppSettings.defaultRootModel, defaultReportModel, setupModel, mcpAssistModel): a tier name
+ * ('top' | 'deep' | 'everyday' | 'fast', resolved through the run's or project's connection tierModels; tier names
+ * win over a catalog model of the same name) or a concrete model id from a connection's catalog. Legacy Claude aliases
+ * (fable, opus, sonnet, haiku) still work and stand for their tier. Resolve with defaults.ts resolveModelSetting.
+ */
+export type ModelSetting = ModelTier | ModelRef
+
+/**
+ * @deprecated Claude-only aliases. Pickers list MODEL_TIER_OPTIONS plus the connection's catalog (models:list).
+ * Kept for labels of legacy values.
+ */
 export const CLAUDE_MODEL_OPTIONS: { value: ModelRef; label: string; hint: string }[] = [
   { value: 'inherit', label: 'Inherit from parent', hint: 'Uses whatever model spawned this agent' },
   { value: 'fable', label: 'Fable', hint: 'Most capable, highest cost' },
@@ -334,6 +391,12 @@ export interface Role {
    * list leaves it out. See mcpServersForRole. Missing = no explicit grants.
    */
   mcpServers?: string[]
+  /**
+   * Skill grants: ids of the project's skills (SkillSpec.id) this role may load. Missing = none. projects:save drops
+   * ids the project does not have. Enforced per agent by the harness (Claude: a PreToolUse gate on the Skill tool;
+   * Codex and mock: list_skills / load_skill answer only with the caller's grants).
+   */
+  skills?: string[]
 }
 
 /**
@@ -389,9 +452,12 @@ export interface Project {
    */
   maxWindowShare?: number
   /**
-   * Subscription plans: spawn new Opus reports on Sonnet while the Opus weekly window (or the
-   * seven-day window when the plan has no per-model one) is at or above the app's opusGuardThreshold.
+   * Subscription plans (Anthropic connection): spawn new deep- or top-tier reports on the connection's everyday tier
+   * while the guarding weekly window (the deep model's own weekly window, else the seven-day window) is at or above
+   * the app's opusGuardThreshold. Read through defaults.ts preferEverydayNearLimit (falls back to the legacy field).
    */
+  preferEverydayNearLimit?: boolean
+  /** @deprecated Legacy name of preferEverydayNearLimit; read only when that is unset. */
   preferSonnetNearLimit?: boolean
   /**
    * Work runs: once the orchestrator has a plan, the harness reminds it of the remaining steps whenever a
@@ -401,9 +467,9 @@ export interface Project {
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
   /**
-   * Cross-run messaging opt-in ("Let runs message each other" in Project settings). message_run is refused unless
-   * the sender's and the target's projects both have it on. Missing = DEFAULT_RUN_MESSAGING (off); read it with
-   * runMessagingOn() from defaults.ts. Saved through projects:save like other settings.
+   * Cross-run messaging ("Let runs message each other" in Project settings). On by default: missing =
+   * DEFAULT_RUN_MESSAGING (on) and an explicit false turns it off. message_run is refused unless the sender's and the
+   * target's projects both have it on; read it with runMessagingOn() from defaults.ts. Saved through projects:save.
    */
   runMessaging?: boolean
   roles: Role[]
@@ -415,6 +481,18 @@ export interface Project {
   mcpServers?: McpServerSpec[]
   /** Claude Code plugins loaded for this project's runs (Claude adapter only). Missing = none. */
   plugins?: PluginSpec[]
+  /**
+   * Skills this project's roles may be granted (Role.skills). Missing = none. Change it only through skills:* (which
+   * return the saved project); projects:save keeps the stored list.
+   */
+  skills?: SkillSpec[]
+  /** Proactive skill evaluation (skills:evaluate). Missing = DEFAULT_SKILL_EVALUATION (off). Saved through projects:save. */
+  skillEvaluation?: SkillEvaluationSettings
+  /**
+   * Proactive Team setup review (capabilities:review). Missing = DEFAULT_TEAM_REVIEW (auto 'ai', bounded by tokenBudget
+   * and everyRuns). Saved through projects:save, normalized by teamReviewOf.
+   */
+  teamReview?: TeamReviewSettings
   /** AI-driven setup state. Missing on projects created before setup existed. */
   setup?: ProjectSetup
   createdAt: string
@@ -429,8 +507,10 @@ export type McpTransport = 'stdio' | 'http' | 'sse'
 /**
  * Where an MCP server entry came from. 'agent' = approved from an agent's request_mcp_install. 'library' = a
  * project server linked to an app-wide library entry (McpServerSpec.libraryId); the entry keeps its own source.
+ * 'local' = copied by the Team assistant (capabilities:apply) from another tool's config on this computer or the
+ * repo's .mcp.json-style files: definition only, every env and header value left for the user to enter.
  */
-export type McpServerSource = 'user' | 'registry' | 'agent' | 'library'
+export type McpServerSource = 'user' | 'registry' | 'agent' | 'library' | 'local'
 
 /**
  * Non-secret OAuth state of a remote (http / sse) MCP server, written only by the main process (mcp:authorize);
@@ -545,6 +625,206 @@ export interface McpServerSpec {
   libraryId?: string
   /** Remote servers that use OAuth (see McpOAuthConfig). Written by the main process only. */
   oauth?: McpOAuthConfig
+  /**
+   * Library entries made from a connector preset (connectors:add) carry the ConnectorDef id, and a link copies it.
+   * Written by the main process only: mcp:upsert, mcpLibrary:upsert, installs and proposals never set it, and an
+   * edit that changes where the entry connects drops it.
+   */
+  connectorId?: string
+  /** With connectorId: the ConnectorVariant id the entry was built from. */
+  connectorVariant?: string
+}
+
+// ---------- Connectors (curated MCP presets, src/shared/connectors.ts) ----------
+
+export type ConnectorCategory =
+  | 'email'
+  | 'calendar'
+  | 'files'
+  | 'chat'
+  | 'docs'
+  | 'project'
+  | 'dev'
+  | 'monitoring'
+  | 'payments'
+  | 'design'
+  | 'crm'
+  | 'data'
+  | 'cloud'
+  | 'knowledge'
+  | 'automation'
+  | 'commerce'
+  | 'meetings'
+
+/** Every ConnectorCategory, in gallery order (src/shared/connectors.ts tests that each def uses one). */
+export const CONNECTOR_CATEGORIES: readonly ConnectorCategory[] = [
+  'email',
+  'calendar',
+  'files',
+  'chat',
+  'docs',
+  'project',
+  'dev',
+  'monitoring',
+  'payments',
+  'design',
+  'crm',
+  'data',
+  'cloud',
+  'knowledge',
+  'automation',
+  'commerce',
+  'meetings'
+]
+
+/**
+ * How much work connecting takes, derived from the variant's auth kind by connectorEase (src/shared/connectors.ts):
+ * 'signIn' = OAuth with dynamic client registration (one click), 'none' = no sign-in at all, 'token' = paste a key,
+ * 'ownApp' = create an OAuth app in the vendor's console first (oauthClient).
+ */
+export type ConnectorEase = 'signIn' | 'none' | 'token' | 'ownApp'
+
+/**
+ * OAuth details a preset supplies instead of (or as a fallback for) discovery. Every URL is https on a public
+ * host (checked by the catalog test and again at authorize time).
+ */
+export interface ConnectorOAuthOverrides {
+  /** Issuer recorded as McpOAuthConfig.authorizationServer. Default: the authorization endpoint's origin. */
+  issuer?: string
+  authorizationEndpoint?: string
+  tokenEndpoint?: string
+  /** 'replace' = skip discovery and use the endpoints; 'fallback' = use them only when discovery fails. */
+  endpointsMode?: 'replace' | 'fallback'
+  /**
+   * Extra authorization-URL parameters, e.g. Google's access_type=offline and prompt=consent. Reserved
+   * parameters (response_type, client_id, redirect_uri, state, code_challenge*, resource, scope) are ignored.
+   */
+  extraAuthParams?: Record<string, string>
+  /** Default true. False = never send the RFC 8707 `resource` parameter (servers that do not know it). */
+  sendResource?: boolean
+  /** 'slackUser' = also read the token from `authed_user` when the response has no top-level access_token. */
+  tokenResponse?: 'standard' | 'slackUser'
+}
+
+/** How a connector authenticates. */
+export type ConnectorAuth =
+  /**
+   * No authentication: the server is public (e.g. DeepWiki, keyless Exa). The entry has no secret slots and no
+   * OAuth config; it counts as connected once added, and mcp:authorize / connectors:setToken refuse it.
+   */
+  | { kind: 'none' }
+  /** OAuth with dynamic client registration: the user only clicks Authorize. */
+  | { kind: 'oauth'; scopes?: string[]; overrides?: ConnectorOAuthOverrides }
+  /**
+   * OAuth with the user's own app (no DCR): the user creates a client in the vendor's console, registers
+   * CONNECTOR_REDIRECT_URI there, and passes client id (and secret) to mcp:authorize. The flow listens on that
+   * fixed port and fails with a clear message when it is busy.
+   */
+  | {
+      kind: 'oauthClient'
+      scopes?: string[]
+      overrides?: ConnectorOAuthOverrides
+      /** Where the user creates the OAuth client. */
+      consoleUrl: string
+      clientSecret: 'required' | 'optional'
+    }
+  /** A pasted token sent as a secret header (connectors:setToken adds the prefix). */
+  | {
+      kind: 'token'
+      /** The secret header name, e.g. "Authorization". */
+      header: string
+      /** Prepended to the pasted token, e.g. "Bearer ". */
+      prefix?: string
+      /** Field label, e.g. "Personal access token". */
+      label: string
+      /** One-line help: which scopes or permissions the token needs. */
+      help: string
+      /** Where to create the token. */
+      link?: string
+    }
+
+/** One way to reach a connector's server, e.g. Linear's read-only endpoint versus the full one. */
+export interface ConnectorVariant {
+  /** Unique within the connector, e.g. 'readonly', 'full'. */
+  id: string
+  label: string
+  description?: string
+  transport: 'http' | 'sse'
+  /** https only. */
+  url: string
+  /** Non-secret headers sent with every request, e.g. GitHub's X-MCP-Readonly. */
+  headers?: Record<string, string>
+  /** The server exposes only read tools (or the requested scopes are read-only). */
+  readOnly: boolean
+  auth: ConnectorAuth
+}
+
+/**
+ * A curated preset for an outside service's official remote MCP server. Pure data in src/shared/connectors.ts
+ * (CONNECTORS); connectors:add turns one into an app-wide MCP library entry. Structured-clone safe.
+ */
+export interface ConnectorDef {
+  /** Kebab-case id, also the preferred library entry name (so tools surface as mcp__<id>__<tool>). */
+  id: string
+  name: string
+  /** Who runs the server, e.g. "Google". */
+  vendor: string
+  /** Every preset points at the vendor's own server. */
+  publisher: 'official'
+  category: ConnectorCategory
+  /** One line for the gallery card. */
+  description: string
+  /** The vendor's own label for the server: preview (beta, developer preview) or generally available. */
+  status: 'preview' | 'stable'
+  docsUrl: string
+  variants: ConnectorVariant[]
+  /** A variants[].id. */
+  defaultVariant: string
+  /** Short setup steps in order (console work for oauthClient; the exact redirect URI is included). */
+  setup: string[]
+  /** Caveats: admin approval, write tools, unverified behaviour. */
+  notes?: string[]
+  /**
+   * Extra search words for the gallery filter, lowercase and non-empty (e.g. Gmail: ['email', 'google mail']).
+   * Name, vendor, description and category still match on their own.
+   */
+  aliases?: string[]
+  /** False until someone authorized and listed tools against the live server. */
+  verified: boolean
+}
+
+/** A gallery card's summary state. */
+export type ConnectorState = 'available' | 'needsSetup' | 'connected' | 'error'
+
+/** connectors:list entry: the preset plus its library entry once added. */
+export interface ConnectorInfo {
+  connector: ConnectorDef
+  /** The library entry made from it (McpLibraryEntry.connectorId === connector.id), with auth, secrets and usedBy. */
+  library?: McpLibraryInfo
+  /** The variant id of the added entry. */
+  variant?: string
+  /**
+   * 'available' = not added; 'needsSetup' = added but not authorized or its token is missing; 'connected' =
+   * authorized or token stored (not a liveness check: run mcpLibrary:test); 'error' = the last authorization failed.
+   * An auth kind 'none' connector is 'connected' as soon as it is added.
+   */
+  state: ConnectorState
+  /** Epoch ms of the entry's last successful connect (McpLibraryEntry.connectedAt), for pinning recent ones. */
+  connectedAt?: number
+}
+
+/** connectors:add input. The renderer names a preset; main builds the URL, headers and auth from the catalog. */
+export interface ConnectorAddInput {
+  connectorId: string
+  /** A ConnectorVariant id; missing or unknown = the connector's defaultVariant. */
+  variant?: string
+}
+
+/** connectors:setToken input for 'token' connectors. Write-only; `null` clears it. */
+export interface ConnectorTokenInput {
+  connectorId: string
+  /** The bare token as pasted; main trims it, adds the preset's prefix and stores it as the secret header. */
+  token: string | null
 }
 
 /**
@@ -552,7 +832,23 @@ export interface McpServerSpec {
  * credentials and OAuth authorization live with it, and projects link it (McpServerSpec.libraryId). The name
  * is unique within the library.
  */
-export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'>
+export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'> & {
+  /**
+   * Connector entries only, written by the main process: epoch ms when its auth last succeeded (OAuth authorize,
+   * connectors:setToken with a token, or connectors:add for an auth kind 'none' preset). Cleared by mcp:revokeAuth,
+   * clearing the token, or an edit that stops it being a connector. Never copied into linked project specs; a
+   * renderer-sent value is ignored. Older records simply lack it.
+   */
+  connectedAt?: number
+  /**
+   * Built servers only, written by the main process: when an MCP assistant build session (allowBuild) proposed this
+   * stdio server with its command or args pointing into the session's scratch workspace, approval copies the workspace
+   * to `<data>/mcp-builds/<entryId>/`, rewrites command/args to the copy and records the copy's content digest here
+   * (sha256 hex over the sorted relative paths and file bytes). A renderer-sent value is ignored. Removing the entry
+   * deletes the build dir.
+   */
+  buildDigest?: string
+}
 
 /** Which secret slot a value fills: an entry of McpServerSpec.secretEnv or of .secretHeaders. */
 export type McpSecretKind = 'env' | 'header'
@@ -663,6 +959,345 @@ export interface PluginUpsertInput {
   projectId: string
   plugin: PluginSpec
 }
+
+// ---------- Skills ----------
+
+/** SKILL.md frontmatter `name`: at most this many characters of [a-z0-9-], never containing "anthropic" or "claude". */
+export const SKILL_NAME_MAX = 64
+/** SKILL.md frontmatter `description`: 1 to this many characters, no `<` or `>`. */
+export const SKILL_DESCRIPTION_MAX = 1024
+/** Longest SKILL.md body (the text after the frontmatter) a draft, an import or a suggestion may carry. */
+export const SKILL_BODY_MAX_CHARS = 100_000
+/** Most files one skill folder may hold (SKILL.md included). */
+export const SKILL_MAX_FILES = 50
+/** Largest single file in a skill folder, bytes. */
+export const SKILL_MAX_FILE_BYTES = 256 * 1024
+/** Largest whole skill folder, bytes. */
+export const SKILL_MAX_TOTAL_BYTES = 1024 * 1024
+/** Most skills one project (or the library) may hold. */
+export const SKILL_MAX_PER_PROJECT = 100
+
+/**
+ * Where a project skill (or library entry) came from. 'user': written in OrgAI (skills:create) or added from a folder;
+ * 'repo': imported from the project's repository (SkillSpec.repoPath); 'suggestion': created from a skill evaluation
+ * suggestion (skills:applySuggestion); 'library': a link to a library entry (SkillSpec.libraryId). 'local': a
+ * snapshot copy the Team assistant made from a skill folder on this computer (SkillSpec.sourceRef); 'github': a
+ * snapshot of a SKILL.md from CAPABILITY_GITHUB_SKILLS_REPO (sourceRef is its URL).
+ */
+export type SkillSource = 'user' | 'repo' | 'suggestion' | 'library' | 'local' | 'github'
+
+/** One file inside a skill folder. */
+export interface SkillFileInfo {
+  /** Relative to the skill folder, '/'-separated, e.g. "SKILL.md" or "scripts/fill.py". */
+  path: string
+  bytes: number
+}
+
+/**
+ * One skill of a project: a folder holding SKILL.md (frontmatter `name` and `description`, then instructions) and
+ * optional resource files. OrgAI keeps its own copy of the files under the data dir (a project skill under
+ * `<data>/project-skills/<projectId>/<skillId>/`, a library entry under `<data>/skills/<entryId>/`); a repo import is
+ * a snapshot, re-imported to pick up changes. Grants are per role (Role.skills). Structured-clone safe, no secrets.
+ * Change it only through the skills:* channels (projects:save keeps the stored list).
+ */
+export interface SkillSpec {
+  /** Stable id (newId('skill')), SAFE_ID. Role.skills and the skills:* channels refer to it. */
+  id: string
+  /** The SKILL.md frontmatter name (skillNameProblem() is null). Unique within the project. */
+  name: string
+  /** The SKILL.md frontmatter description (skillDescriptionProblem() is null): when to use the skill. */
+  description: string
+  /** Off = kept in the list but not passed to runs. */
+  enabled: boolean
+  source: SkillSource
+  /** source 'repo': the folder it was imported from, project-relative and '/'-separated, e.g. ".claude/skills/pdf". */
+  repoPath?: string
+  /** source 'local' / 'github': where the snapshot came from, for display only (home as ~, or the URL). Untrusted. */
+  sourceRef?: string
+  /** sha256 (hex) over the stored files (paths and contents); changes whenever the content changes. */
+  digest: string
+  /** The stored files, SKILL.md first. */
+  files: SkillFileInfo[]
+  /** ISO timestamps. */
+  addedAt: string
+  updatedAt: string
+  /**
+   * Set when this project skill is a link to an app-wide library entry (SkillLibraryEntry.id). Like a linked MCP
+   * server: the stored copy is a snapshot refreshed from the library on every read; the files are the entry's. A link
+   * whose entry is gone is kept (SkillInfo.libraryMissing) but never passed to runs.
+   */
+  libraryId?: string
+}
+
+/** An app-wide skill in the library (`<data>/skill-library.json`, files under `<data>/skills/<id>/`). Name unique within the library. */
+export type SkillLibraryEntry = Omit<SkillSpec, 'enabled' | 'libraryId'>
+
+/** skills:list entry. */
+export interface SkillInfo {
+  spec: SkillSpec
+  /** Ids of the roles whose Role.skills grant it. */
+  grantedTo: string[]
+  /** The linked library entry no longer exists: kept as a snapshot but excluded from runs. */
+  libraryMissing?: true
+}
+
+/** skillLibrary:list entry: the entry and the projects that link it, with the roles that hold a grant there. */
+export interface SkillLibraryInfo {
+  entry: SkillLibraryEntry
+  usedBy: { projectId: string; projectName: string; skillId: string; roleNames: string[] }[]
+}
+
+/** The text of a skill: what skills:read / skillLibrary:read return for viewing and editing. */
+export interface SkillContent {
+  /** The whole SKILL.md as stored (frontmatter included). */
+  skillMd: string
+  /** SKILL.md without its frontmatter. */
+  body: string
+  files: SkillFileInfo[]
+}
+
+/** A skill written in OrgAI: becomes `SKILL.md` = frontmatter (name, description) + body. */
+export interface SkillDraft {
+  name: string
+  description: string
+  /** Markdown instructions, at most SKILL_BODY_MAX_CHARS characters. */
+  body: string
+}
+
+/** skills:create input. */
+export interface SkillCreateInput {
+  projectId: string
+  draft: SkillDraft
+  /** Roles to grant it to right away (Role ids). Default none. */
+  roleIds?: string[]
+}
+
+/**
+ * skills:update input. On a linked skill only `enabled` and `roleIds` may be given (edit the library entry for the
+ * rest). `draft` rewrites SKILL.md and keeps the resource files. `roleIds` replaces the set of roles granted.
+ */
+export interface SkillUpdateInput {
+  projectId: string
+  skillId: string
+  draft?: SkillDraft
+  enabled?: boolean
+  roleIds?: string[]
+}
+
+/** skills:linkLibrary input: add a library entry to a project by reference. */
+export interface SkillLinkLibraryInput {
+  projectId: string
+  libraryId: string
+  /** Roles to grant it to (Role ids). Default none. */
+  roleIds?: string[]
+}
+
+/** Output of every project skill mutation. */
+export interface SkillMutationResult {
+  project: Project
+  skills: SkillInfo[]
+  /**
+   * skills:remove (and skills:update with roleIds): the roles that lost their grant, so the UI can say so. The UI
+   * asks before removing from SkillInfo.grantedTo.
+   */
+  rolesUpdated?: { roleId: string; roleName: string }[]
+}
+
+/** The repository folders the skill import reads, in this order. Each holds `<name>/SKILL.md` folders. */
+export type SkillRepoRoot = '.claude/skills' | '.agents/skills' | '.github/skills' | '.opencode/skills'
+export const SKILL_REPO_ROOTS: readonly SkillRepoRoot[] = ['.claude/skills', '.agents/skills', '.github/skills', '.opencode/skills']
+
+/** What applying an import item does. 'add': a new project skill; 'update': replace the files of the project skill that has the same repoPath (or name); 'unchanged': same digest, nothing to do; 'skip': left out. */
+export type SkillImportAction = 'add' | 'update' | 'unchanged' | 'skip'
+
+/** One valid skill folder found in the repository. */
+export interface SkillImportItem {
+  /** Stable key for choices: `<root>/<folder>`, e.g. ".claude/skills/pdf". Equal to repoPath. */
+  key: string
+  root: SkillRepoRoot
+  /** Project-relative folder, '/'-separated. */
+  repoPath: string
+  name: string
+  description: string
+  /** SKILL.md body (after the frontmatter), whole, at most SKILL_BODY_MAX_CHARS characters. Untrusted text: show it as plain text. */
+  body: string
+  files: SkillFileInfo[]
+  totalBytes: number
+  /** Files that look executable (scripts by extension or a shebang), flagged for the user. */
+  scripts: string[]
+  digest: string
+  /** The default action (or the chosen one). */
+  action: SkillImportAction
+  /** action 'update' / 'unchanged': the project skill it matches. */
+  existingSkillId?: string
+  /** Another project skill (not this repoPath) already has this name; 'add' is refused for it. */
+  nameConflict?: true
+  /** The same name appears in an earlier root (".claude/skills" wins); this one defaults to 'skip'. */
+  duplicateOf?: string
+  notes: string[]
+}
+
+/** A skill folder that could not be imported, with the reason (bad frontmatter, too large, symlink, ...). */
+export interface SkillImportInvalid {
+  repoPath: string
+  reason: string
+}
+
+/** One choice on an import item (keyed by SkillImportItem.key). */
+export interface SkillImportChoice {
+  key: string
+  include: boolean
+  /** Roles to grant the skill to on apply (Role ids). Default: an update keeps the existing grants, an add grants none. */
+  roleIds?: string[]
+}
+
+/** skills:previewImport input. Always re-scans the stored project's folder. At most AGENT_IMPORT_MAX_CHOICES choices. */
+export interface SkillImportInput {
+  projectId: string
+  choices?: SkillImportChoice[]
+}
+
+/** skills:previewImport output. Saves nothing. */
+export interface SkillImportPreview {
+  items: SkillImportItem[]
+  invalid: SkillImportInvalid[]
+  /** Scan warnings (caps hit, unreadable folders). */
+  warnings: string[]
+  /** Which roots exist in the repository. */
+  roots: SkillRepoRoot[]
+  /** sha256 of the scanned folders; skills:applyImport requires it and refuses when the folder changed since. */
+  digest: string
+}
+
+/** skills:applyImport input. */
+export interface SkillImportApplyInput extends SkillImportInput {
+  digest: string
+}
+
+/** skills:applyImport output. */
+export interface SkillImportApplyResult extends SkillMutationResult {
+  /** Project skill ids added and updated. */
+  added: string[]
+  updated: string[]
+  /**
+   * Pass to skills:undoImport to restore the skills, files and grants as they were before this apply. Main keeps
+   * one undo per project; it expires on the project's next skill mutation and when OrgAI quits.
+   */
+  undoId: string
+}
+
+/** skillLibrary:addFromFolder input: one skill folder (SKILL.md at its top) the user picked; treated as untrusted. */
+export interface SkillLibraryFolderInput {
+  /** Absolute path. */
+  path: string
+}
+
+/** Project.skillEvaluation: proactive skill evaluation. Missing = DEFAULT_SKILL_EVALUATION (off). */
+export interface SkillEvaluationSettings {
+  /** Allows the model-assisted step of skills:evaluate (the deterministic checks always run). Default false. */
+  enabled: boolean
+  /** Most tokens (input + output) one skills:evaluate may spend on the model-assisted step. */
+  tokenBudget: number
+}
+
+/**
+ * What a skill evaluation finding is about. Quality: 'neverLoaded' (granted, no loads in the last runs),
+ * 'neverGranted' (no role has it), 'overlap' (two descriptions too alike), 'vagueDescription' (short or generic),
+ * 'stale' (SKILL.md names repo paths that no longer exist), 'libraryMissing' (a link whose entry is gone). Gaps:
+ * 'repeatedToolSequence' (the same tool sequence across runs), 'repeatedCorrection' (the user repeated a correction).
+ */
+export type SkillFindingKind =
+  | 'neverLoaded'
+  | 'neverGranted'
+  | 'overlap'
+  | 'vagueDescription'
+  | 'stale'
+  | 'libraryMissing'
+  | 'repeatedToolSequence'
+  | 'repeatedCorrection'
+
+export interface SkillFinding {
+  /** Stable within one report. */
+  id: string
+  kind: SkillFindingKind
+  severity: 'info' | 'warning'
+  /** Project skill ids it concerns (empty for gap findings). */
+  skillIds: string[]
+  /** One line, plain text. */
+  title: string
+  detail: string
+  evidence?: {
+    runIds?: string[]
+    /** 'stale': the missing paths. */
+    paths?: string[]
+    /** 'overlap': token-set similarity 0..1. */
+    similarity?: number
+    /** 'repeatedToolSequence': tool names in order. */
+    sequence?: string[]
+    /** How many times it was seen. */
+    count?: number
+  }
+}
+
+/** A drafted new skill. Never applied on its own: skills:applySuggestion creates it on the user's call. */
+export interface SkillSuggestion {
+  id: string
+  draft: SkillDraft
+  /** Why, one or two sentences. */
+  rationale: string
+  /** The gap findings it answers. */
+  findingIds: string[]
+  /** Set once applied: the project skill it created. */
+  appliedSkillId?: string
+}
+
+/** skills:evaluate / skills:lastEvaluation: persisted per project (`<data>/skill-evaluations/<projectId>.json`). */
+export interface SkillEvaluationReport {
+  projectId: string
+  /** Epoch ms. */
+  at: number
+  /** Work runs read (the newest SKILL_EVALUATION_RUNS runs of the project). */
+  runsConsidered: number
+  findings: SkillFinding[]
+  suggestions: SkillSuggestion[]
+  /** Whether the model-assisted step ran. */
+  modelAssisted: boolean
+  /** Why it did not run: 'disabled', 'no-gaps', 'budget' (the estimate exceeded the budget) or 'error' (see error). */
+  skippedReason?: 'disabled' | 'no-gaps' | 'budget' | 'error'
+  /** Readable failure of the model-assisted step (the deterministic findings are still there). */
+  error?: string
+  /** The project's budget at evaluation time. */
+  tokenBudget: number
+  /** Tokens the model-assisted step spent (0 when skipped). */
+  tokensUsed: number
+  /** True when tokensUsed is an estimate (the adapter reported no usage). */
+  tokensEstimated?: true
+  /** Cost of the model-assisted step, USD; null = unknown. */
+  costUsd: number | null
+  /** The model it used. */
+  model?: string
+}
+
+/** skills:applySuggestion input. */
+export interface SkillApplySuggestionInput {
+  projectId: string
+  suggestionId: string
+  /** Roles to grant the new skill to (Role ids). Default none. */
+  roleIds?: string[]
+}
+
+/** How often a skill was loaded in one run (RunUsage.skills). */
+export interface SkillUseCount {
+  skillId: string
+  name: string
+  loads: number
+  /** Slugs of the roles whose agents loaded it. */
+  roles: string[]
+}
+
+/** Harness tools that stand in for a native Skill tool (Codex, mock): list and load the caller's granted skills. */
+export const SKILL_HARNESS_TOOLS = { list: 'list_skills', load: 'load_skill' } as const
+export type SkillHarnessToolName = (typeof SKILL_HARNESS_TOOLS)[keyof typeof SKILL_HARNESS_TOOLS]
 
 /** An environment variable (or header) a registry package needs. */
 export interface McpRegistryEnvVar {
@@ -789,6 +1424,12 @@ export interface McpAssistInput {
   scope?: 'project' | 'library'
   /** What the user wants, e.g. "connect our Postgres and GitHub". */
   instruction?: string
+  /**
+   * Default false. When true the assistant may also build a local stdio MCP server in its workspace: it gets Edit,
+   * Write and Bash under permission mode 'default' (every command and edit asks the user), then proposes the server
+   * through propose_mcp_servers like any other. Only the literal true turns it on.
+   */
+  allowBuild?: boolean
 }
 
 /**
@@ -853,8 +1494,29 @@ export interface AppSettings {
   defaultMaxBudgetUsd?: number
   defaultKeepRuns: number
   defaultIsolateWriters: boolean
-  defaultRootModel: ModelRef
-  defaultReportModel: ModelRef
+  /**
+   * Model for a new project's root role (ModelSetting: a tier name or a concrete model id). Default 'deep'. A tier
+   * maps through the new project's connection tierModels. Settings saved with the old default 'opus' load as 'deep'.
+   */
+  defaultRootModel: ModelSetting
+  /** Model for a new project's other roles (ModelSetting). Default 'everyday' (an old saved 'sonnet' loads as 'everyday'). */
+  defaultReportModel: ModelSetting
+  /**
+   * Model for setup runs (the Architect: setup, revision, retrospective). A ModelSetting: a tier name maps to the
+   * run's connection tierModels (a legacy Claude alias stands for its tier); a concrete model id must be usable on the
+   * run's connection and run on the same adapter, otherwise the run falls back to the deep tier and logs a warning.
+   * Default 'deep' (an old saved 'opus' loads as 'deep').
+   */
+  setupModel: ModelSetting
+  /** Model for MCP assistant runs; resolved like setupModel. Default 'deep'. */
+  mcpAssistModel: ModelSetting
+  /** Model for Skill assistant runs; resolved like setupModel. Default 'deep' (normalized; an old 'opus' loads as 'deep'). */
+  skillAssistModel?: ModelSetting
+  /**
+   * Model of the Chat's single assistant (quick runs with team 'single'); resolved like setupModel but falls back
+   * to the everyday tier. Default 'everyday' (normalized).
+   */
+  quickRunModel?: ModelSetting
   /**
    * Legacy Anthropic auth, kept as a mirror of connections.anthropic.auth so older code keeps working.
    * settings:set keeps the two in sync (whichever one the caller changed wins).
@@ -871,14 +1533,34 @@ export interface AppSettings {
   notifications?: boolean
   /** Theme, accent, canvas and motion. Filled with defaults for settings saved before it existed. */
   appearance: AppearanceSettings
-  /** Weekly-window utilization (percent) above which projects that prefer Sonnet steer Opus spawns to Sonnet. */
+  /**
+   * Weekly-window utilization (percent) at or above which projects with preferEverydayNearLimit spawn deep- and
+   * top-tier reports on the everyday tier. (The name predates tiers.)
+   */
   opusGuardThreshold: number
-  /** preferSonnetNearLimit for new projects. */
+  /** preferEverydayNearLimit for new projects. Default false. */
+  defaultPreferEverydayNearLimit: boolean
+  /**
+   * @deprecated Mirror of defaultPreferEverydayNearLimit for older renderer code; settings:set keeps the two in step
+   * (whichever one the caller changed wins).
+   */
   defaultPreferSonnetNearLimit: boolean
+  /**
+   * Fetch the community price list (LiteLLM's model_prices_and_context_window.json on GitHub, MIT) at most once a
+   * day and use it as the last price fallback, behind overrides, proxy prices and the built-in table. Missing = on.
+   */
+  communityPrices?: boolean
   /** autoContinue for new projects. */
   defaultAutoContinue: boolean
   /** maxAutoContinues for new projects. */
   defaultMaxAutoContinues: number
+  /**
+   * The user's per-model prices; they win over every other price (provider-reported included). Normalized on load and
+   * save (store/settings.ts): invalid entries dropped, at most MODEL_PRICE_OVERRIDES_MAX entries, prices finite,
+   * >= 0 and at most MODEL_PRICE_MAX_PER_TOKEN. Missing = none. Changes apply to agents priced after the save (live
+   * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
+   */
+  modelPrices?: ModelPriceOverride[]
 }
 
 /**
@@ -1003,7 +1685,33 @@ export interface McpServersProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers'
+/** At most this many items in one propose_skills proposal. */
+export const SKILL_PROPOSAL_MAX_ITEMS = 10
+
+/**
+ * One skill change in a Skill assistant proposal. 'create' writes a new skill; 'update' rewrites SKILL.md of an
+ * existing one (resource files kept). scope 'library' targets the skill library (libraryId names the entry on
+ * update); scope 'project' targets the session's project (libraryId unused; the skill is matched by draft.name on
+ * update). The draft follows the skill limits (name [a-z0-9-] at most 64, never "anthropic" or "claude";
+ * description 1..1024 without < or >; body at most SKILL_BODY_MAX_CHARS; no shell injection).
+ */
+export interface SkillProposalItem {
+  action: 'create' | 'update'
+  /** Library entry id; 'update' with scope 'library' only. */
+  libraryId?: string
+  draft: SkillDraft
+  /** Role slugs to grant the skill to after creating or updating it. Project scope only; ignored for the library. */
+  roles?: string[]
+  scope: 'library' | 'project'
+}
+
+/** Skill proposal (propose_skills, from the Skill assistant): at most SKILL_PROPOSAL_MAX_ITEMS items. */
+export interface SkillsProposalPayload {
+  items: SkillProposalItem[]
+  rationale: string
+}
+
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills'
 
 interface ProposalBase {
   id: string
@@ -1018,6 +1726,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'orgChart'; payload: OrgChartProposalPayload })
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
+  | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
 
 export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
 
@@ -1037,6 +1746,271 @@ export interface UserQuestion {
 export interface QuestionAnswer {
   selected: string[]
   text?: string
+}
+
+// ---------- Usage metrics and pricing ----------
+
+/**
+ * Token counts split the way providers price them. `input` is UNCACHED input only: cache reads and cache writes are
+ * separate (Claude reports them separately; Codex/OpenAI `inputTokens` include cached tokens, so the adapter
+ * subtracts `cachedInputTokens`). OpenAI reports no cache writes (always 0). Reasoning tokens count as output.
+ * Total prompt tokens = input + cacheRead + cacheWrite. Cache hit rate: cacheHitRate() in defaults.ts.
+ */
+export interface TokenUsage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+/**
+ * Where a model's cost came from. Resolution order per model (pricing.ts): 'override' (AppSettings.modelPrices) >
+ * 'provider' (the provider reported a cost > 0, e.g. the Claude SDK's costUSD) > 'proxy' (the LiteLLM proxy's
+ * /model/info price) > 'builtin' (OrgAI's price table) > 'community' (the cached community price list,
+ * AppSettings.communityPrices) > 'unknown' (tokens but no price: cost is null, never $0).
+ */
+export type PriceSource = 'override' | 'provider' | 'proxy' | 'builtin' | 'community' | 'unknown'
+
+/**
+ * How trustworthy an aggregated cost is. 'provider': every priced token was priced by the provider. 'computed': at
+ * least one model was priced by OrgAI (override, proxy or built-in table). 'unknown': tokens were spent but no model
+ * had a price (costUsd null; show "unknown", not $0). 'none': nothing spent yet (costUsd 0).
+ * When some models are priced and some are not, the source is the priced ones' and `costPartial` is true: the cost
+ * is a lower bound.
+ */
+export type CostSource = 'provider' | 'computed' | 'unknown' | 'none'
+
+/** A user's price for one model (AppSettings.modelPrices). */
+export interface ModelPriceOverride {
+  /**
+   * The model id as runs report it (e.g. 'claude-sonnet-4-5', 'anthropic/claude-sonnet-4-5', 'gpt-5'). Matched
+   * case-insensitively; a trailing date stamp (-20250929) or [1m] suffix is ignored on both sides. At most
+   * MODEL_PRICE_ID_MAX_CHARS characters.
+   */
+  model: string
+  /** Only for runs on this connection. Missing = every connection. A connection-scoped entry wins. */
+  connection?: ConnectionId
+  price: ModelPrice
+}
+
+/** One model's effective price, as listed by models:prices for a settings table. */
+export interface ModelPriceInfo {
+  model: string
+  /** Set for proxy prices and connection-scoped overrides. */
+  connection?: ConnectionId
+  price: ModelPrice
+  /** 'override' | 'proxy' | 'builtin' (never 'provider' or 'unknown'; community prices are resolved per model, never listed). */
+  source: Exclude<PriceSource, 'provider' | 'unknown' | 'community'>
+}
+
+/** models:prices input. Omit `connection` for every connection. */
+export interface ModelPricesQuery {
+  connection?: ConnectionId
+}
+
+/** One model's share of an agent's (or run's, or role's) usage. */
+export interface ModelUsageEntry {
+  /**
+   * The model id actually used, as the provider reported it (Claude: assistant message.model, which already is the
+   * tier-remapped id on LiteLLM; Codex: the thread's model). An alias ('opus') only when nothing better was reported;
+   * pricing then resolves it through the run connection's ANTHROPIC_DEFAULT_*_MODEL / tierModels.
+   */
+  model: string
+  tokens: TokenUsage
+  /**
+   * Adapter-reported cost for these tokens, when the provider gives one (> 0). Written by adapters; RunManager
+   * reads it during pricing. Absent on Codex and on LiteLLM Claude runs (the CLI reports 0 there).
+   */
+  providerCostUsd?: number
+  /** Filled by RunManager (pricing.ts): null when no price is known. */
+  costUsd: number | null
+  /** Filled by RunManager (pricing.ts). */
+  priceSource: PriceSource
+}
+
+/**
+ * Usage of one agent. Adapters write `models[].model`, `models[].tokens`, `models[].providerCostUsd`, `turns`,
+ * `toolCalls` and `retries` (putting `costUsd: null, priceSource: 'unknown'` on new model entries); RunManager prices
+ * it on every agent.upsert and fills `tokens`, `costUsd`, `costSource`, `costPartial` and the model entries' cost
+ * fields, and mirrors `costUsd ?? 0` into AgentInstance.costUsd. Persisted with the agent in the run record.
+ */
+export interface AgentUsage {
+  /** Sum over `models`. */
+  tokens: TokenUsage
+  models: ModelUsageEntry[]
+  /** null = unknown (tokens spent, no price). */
+  costUsd: number | null
+  costSource: CostSource
+  /** Some models had no price: costUsd is a lower bound. */
+  costPartial?: true
+  /**
+   * Model responses. Claude: distinct assistant message ids (one per API request). Codex: completed turns of the
+   * agent's thread (app-server reports no per-request count). Granularity therefore differs by adapter.
+   */
+  turns: number
+  /** Tool calls the agent made (tool_use blocks / Codex tool items), harness tools included. */
+  toolCalls: number
+  /** API retries the provider reported (Claude system api_retry; Codex error with willRetry). */
+  retries: number
+  /**
+   * A report (never the root) ended (state done or error) without result text: its tokens count as RunUsage.noResultTokens. Filled by
+   * RunManager on every agent.upsert (absent = false); agentProducedNothing() in defaults.ts derives the same from an
+   * AgentInstance. Drives the UI's "no result" dim.
+   */
+  producedNothing?: true
+  /**
+   * Normalized from a record saved before usage tracking: tokens.input holds the old inputTokens (cache included,
+   * cacheRead/cacheWrite 0), turns/toolCalls/retries are 0 and cost is the stored costUsd (> 0: 'provider') or
+   * unknown. Show such numbers as approximate.
+   */
+  legacy?: true
+}
+
+/** Usage of one role within a run, or across runs (UsageStats.roles). */
+export interface RoleUsage {
+  /** null for agents without a role (built-in roles, unknown subagent types). */
+  roleId: string | null
+  roleSlug: string
+  /** The role's display name as the agents carried it (AgentInstance.name of the first agent, without a -n suffix). */
+  roleName: string
+  /** Agent instances of this role. */
+  agents: number
+  tokens: TokenUsage
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+  turns: number
+  toolCalls: number
+  retries: number
+  /** Sum of the agents' wall time (endedAt or now, minus startedAt), ms. Agents overlap, so this can exceed the run's. */
+  agentWallMs: number
+  /** Agents that ended (state done or error) with no result text. */
+  agentsWithoutResult: number
+  /** Tokens (all four kinds) those agents spent. */
+  noResultTokens: number
+  /** Distinct models used. */
+  models: string[]
+}
+
+/**
+ * Usage of one run, computed by RunManager (runUsage.ts) from its agents and its own timers. Lives on
+ * RunSummary.usage (index and record), so it survives restarts and trend queries read only the index.
+ */
+export interface RunUsage {
+  tokens: TokenUsage
+  /**
+   * Best known cost of the run. 'provider': the provider's run total when it reported one (Claude total_cost_usd,
+   * resume base subtracted), else the agents' sum. Otherwise the sum of the agents' costs. null = unknown.
+   */
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+  /**
+   * The adapter's last run.cost total (the provider's own figure for this run, resume base subtracted), when it sent
+   * one. RunManager passes it as resumeBaseCostUsd when the session is continued. Informational for the UI.
+   */
+  providerCostUsd?: number
+  /** Per model across all agents. */
+  models: ModelUsageEntry[]
+  /** Per role. */
+  roles: RoleUsage[]
+  /** endedAt (or now while live) minus startedAt, ms. */
+  wallMs: number
+  turns: number
+  toolCalls: number
+  retries: number
+  /** Agent instances in the run, root included. */
+  agents: number
+  agentsWithoutResult: number
+  noResultTokens: number
+  /** Automatic continues the harness sent (RunPlan.autoContinues of this run; 0 without a plan). */
+  nudges: number
+  /** Time with at least one decision card open (permission, question, proposal, rules, merge, MCP install), ms. */
+  waitingMs: number
+  /** Time held on a usage limit (from the provider's limit report until the user's next send or the run's end), ms. */
+  limitHoldMs: number
+  /** Time the run spent in status 'idle' (the orchestrator's turn ended, waiting for the user), ms. */
+  idleMs: number
+  /** See AgentUsage.legacy: computed from a record saved before usage tracking. */
+  legacy?: true
+  /** Skills loaded in the run (skill.used events), most loaded first. Missing = none (or a run before skills existed). */
+  skills?: SkillUseCount[]
+  updatedAt: number
+}
+
+/** runs:usageStats input. */
+export interface UsageStatsQuery {
+  projectId: string
+  /** Only runs started at or after this time (epoch ms). */
+  since?: number
+  /** Only runs started before this time (epoch ms). */
+  until?: number
+  /** Run kinds to include. Default ['work']. */
+  kinds?: RunKind[]
+  /** Trend bucket size, by local calendar day or ISO week (Monday start). Default 'day'. */
+  bucket?: 'day' | 'week'
+  /**
+   * Most rows in UsageStats.runs (the newest runs win). Default USAGE_STATS_DEFAULT_LIMIT (500), clamped to
+   * 1..USAGE_STATS_MAX_LIMIT (2000). Roles, trend and totals cover only the returned rows.
+   */
+  limit?: number
+}
+
+export const USAGE_STATS_DEFAULT_LIMIT = 500
+export const USAGE_STATS_MAX_LIMIT = 2000
+
+/** One run in UsageStats.runs. */
+export interface RunUsageRow {
+  runId: string
+  kind: RunKind
+  status: RunStatus
+  /** RunSummary.title when set. */
+  title?: string
+  /** The prompt on one line, at most 120 characters. */
+  prompt: string
+  startedAt: number
+  endedAt?: number
+  resumedFrom?: string
+  usage: RunUsage
+}
+
+/** One trend bucket in UsageStats.trend. */
+export interface UsageTrendPoint {
+  /** Local date of the bucket start, YYYY-MM-DD (a Monday for 'week'). */
+  bucket: string
+  /** Epoch ms of the bucket start (local midnight). */
+  start: number
+  runs: number
+  tokens: TokenUsage
+  /** Sum of the known run costs in the bucket; null when no run in it had a known cost. */
+  costUsd: number | null
+  /** Runs in the bucket whose cost is unknown or partial. */
+  costUnknownRuns: number
+  turns: number
+  toolCalls: number
+  nudges: number
+  retries: number
+  wallMs: number
+  waitingMs: number
+  noResultTokens: number
+}
+
+/**
+ * runs:usageStats result: per-run rows (newest first), per-role rows across those runs, trend buckets (oldest
+ * first, only buckets with runs) and totals. Built from persisted summaries; summaries saved before usage tracking
+ * are normalized from their records once (RunUsage.legacy) and written back to the index.
+ */
+export interface UsageStats {
+  projectId: string
+  runs: RunUsageRow[]
+  /** RoleUsage summed across runs, keyed by roleId (else roleSlug); `agents` counts instances across runs. */
+  roles: (RoleUsage & { runs: number })[]
+  trend: UsageTrendPoint[]
+  /** Everything in `runs` summed (roles/models merged; wallMs summed). */
+  totals: RunUsage
+  generatedAt: number
+  /** More runs matched than `limit`; the oldest were left out. */
+  truncated?: true
 }
 
 // ---------- Runs ----------
@@ -1064,9 +2038,17 @@ export interface AgentInstance {
   /** One-line description of what the agent is doing right now. */
   activity: string
   model?: string
+  /** Total prompt tokens (uncached input + cache read + cache write). Kept for older readers; see `usage`. */
   inputTokens: number
   outputTokens: number
+  /** usage.costUsd, or 0 when unknown. Kept for older readers; use usage.costUsd / usage.costSource to say "unknown". */
   costUsd: number
+  /**
+   * Token, cost, turn and tool-call metrics (see AgentUsage for who fills what). Always present on agents read
+   * through runs:get and on agent.upsert events from RunManager; optional because adapters may omit it before their
+   * first usage report.
+   */
+  usage?: AgentUsage
   startedAt: number
   endedAt?: number
   /** Last text the agent produced (truncated for the node card). */
@@ -1214,9 +2196,21 @@ export type RunStatus = 'starting' | 'running' | 'idle' | 'stopping' | 'finished
 /**
  * 'work' runs the project's org chart; 'setup' runs the built-in Architect that designs it; 'mcp-assist' runs
  * a built-in MCP assistant (like setup, never the project's roles, never nudged) that proposes McpServerSpec
- * changes through the proposal mechanism (kind 'mcpServers').
+ * changes through the proposal mechanism (kind 'mcpServers'); 'skill-assist' runs the built-in Skill assistant
+ * (setup-like as well) that proposes skill library or project skill changes (proposal kind 'skills').
+ * A quick run (RunSummary.quick) is a 'work' run.
  */
-export type RunKind = 'work' | 'setup' | 'mcp-assist'
+export type RunKind = 'work' | 'setup' | 'mcp-assist' | 'skill-assist'
+
+/** Plain words for each RunKind (History kind chips and filters). Never show the raw kind. */
+export const RUN_KIND_LABELS: Record<RunKind, string> = {
+  work: 'Run',
+  setup: 'Setup',
+  'mcp-assist': 'MCP assistant',
+  'skill-assist': 'Skill assistant'
+}
+
+// ---------- Assistants: virtual projects ----------
 
 /**
  * Project id of the virtual harness project that owns harness-level runs (the library MCP assistant). It is built
@@ -1224,6 +2218,157 @@ export type RunKind = 'work' | 'setup' | 'mcp-assist'
  * projects:list; projects:get(HARNESS_PROJECT_ID) returns it so a run window can render it.
  */
 export const HARNESS_PROJECT_ID = 'harness'
+
+/**
+ * Project id of the virtual project that owns quick runs (the "Chat" assistant: project-less work runs, see
+ * QuickRunInput). Built in the main process per run (the run's folder, default chart or a single assistant).
+ */
+export const QUICK_PROJECT_ID = 'quick'
+
+/** Project id of the virtual project that owns library-scope Skill assistant runs (RunKind 'skill-assist'). */
+export const SKILLS_PROJECT_ID = 'skills'
+
+/**
+ * The virtual projects behind the sidebar "Assistants" section. None is ever stored in projects.json or listed by
+ * projects:list; projects:get(id) returns a display project for each (no stored roles); projects:save and
+ * projects:remove refuse them. The ids pass SAFE_ID; every guard compares by value (isVirtualProjectId).
+ */
+export const VIRTUAL_PROJECT_IDS = [HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID] as const
+export type VirtualProjectId = (typeof VIRTUAL_PROJECT_IDS)[number]
+
+/** True for HARNESS_PROJECT_ID, QUICK_PROJECT_ID and SKILLS_PROJECT_ID. */
+export function isVirtualProjectId(id: string): id is VirtualProjectId {
+  return (VIRTUAL_PROJECT_IDS as readonly string[]).includes(id)
+}
+
+/** Display names of the virtual projects (sidebar Assistants rows, Needs-you locations, display projects). */
+export const VIRTUAL_PROJECT_LABELS: Record<VirtualProjectId, string> = {
+  harness: 'MCP assistant',
+  quick: 'Chat',
+  skills: 'Skill assistant'
+}
+
+// ---------- Assistants: quick runs (Chat) ----------
+
+/**
+ * Who works on a quick run: 'single' = one built-in assistant (default, model AppSettings.quickRunModel);
+ * 'default' = the app's default org chart (defaultRoles), tools filtered through quickRoleTools.
+ */
+export type QuickRunTeam = 'single' | 'default'
+export const QUICK_RUN_TEAMS: readonly QuickRunTeam[] = ['single', 'default']
+/** A longer QuickRunInput.prompt is refused, never cut. */
+export const QUICK_RUN_MAX_PROMPT_CHARS = 100_000
+
+/**
+ * runs:startQuick input. A project-less work run on the virtual project QUICK_PROJECT_ID (RunSummary.kind 'work',
+ * RunSummary.quick set). Never permission mode 'auto' (see quickRunPermissionMode); read-only unless allowEdits;
+ * no project MCP servers, plugins or skills; run messaging off.
+ */
+export interface QuickRunInput {
+  prompt: string
+  /**
+   * Absolute folder to work in (must exist, a directory, not the data dir or under it, no UNC or device path).
+   * Missing = a fresh scratch dir under `<data>/quick/`.
+   */
+  folder?: string
+  /** Default 'single'. */
+  team?: QuickRunTeam
+  /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
+  allowEdits?: boolean
+  images?: ImageAttachment[]
+}
+
+/** RunSummary.quick: how a quick run was started. Kept by continuations. */
+export interface QuickRunInfo {
+  /** The real working dir, the scratch dir included. */
+  folder: string
+  /** The folder is a scratch dir OrgAI made (cannot be promoted to a project). */
+  scratch?: true
+  team: QuickRunTeam
+  allowEdits: boolean
+  /** The folder was a git repository at start. */
+  gitRepo: boolean
+}
+
+/** runs:promoteQuick input: save a quick run's session chain as a new project named `name` (default chart). */
+export interface QuickRunPromoteInput {
+  runId: string
+  name: string
+}
+
+/**
+ * runs:promoteQuick result. 'created': the project was created and the whole run chain moved into it (one
+ * run.moved event per run); `run` is the promoted run's summary with its new projectId. 'existing': the folder is
+ * already a project; nothing moved (the UI offers "Open <name>"). Refused (rejects) for a scratch run or while any
+ * run of the chain is live.
+ */
+export type QuickRunPromoteResult =
+  | { kind: 'created'; project: Project; run: RunSummary }
+  | { kind: 'existing'; projectId: string; name: string }
+
+/**
+ * Harness tools of a quick run's root (bare names). list_projects is read-only: every stored project's id, name,
+ * folder path, brief excerpt, roles (slug: name), connection and its newest run's status, title and time. Never
+ * virtual projects, never secrets. The tool answers text; ProjectPeek is its data shape.
+ */
+export const CHAT_HARNESS_TOOLS = ['list_projects'] as const
+export type ChatHarnessToolName = (typeof CHAT_HARNESS_TOOLS)[number]
+/** list_projects: at most this many characters of each project's brief. */
+export const PROJECT_PEEK_BRIEF_CHARS = 400
+
+/** One project as list_projects reports it (secret-free, structured-clone safe). */
+export interface ProjectPeek {
+  id: string
+  name: string
+  path: string
+  /** The brief on one line, at most PROJECT_PEEK_BRIEF_CHARS characters. */
+  brief: string
+  /** "slug: Name" per role. */
+  roles: string[]
+  connection: ConnectionId
+  lastRun?: { runId: string; status: RunStatus; title?: string; startedAt: number }
+}
+
+// ---------- Assistants: Skill assistant ----------
+
+/**
+ * Harness tools of the Skill assistant (bare names; adapters expose them under their harness server).
+ * list_skill_library: the library entries (and, in a project session, the project's skills with the roles that
+ * load them). read_library_skill: one entry's SKILL.md and file list. propose_skills: a 'skills' proposal that
+ * blocks until the user decides (APPROVED / REVISE).
+ */
+export const SKILL_ASSIST_HARNESS_TOOLS = {
+  list: 'list_skill_library',
+  read: 'read_library_skill',
+  propose: 'propose_skills'
+} as const
+export type SkillAssistHarnessToolName = (typeof SKILL_ASSIST_HARNESS_TOOLS)[keyof typeof SKILL_ASSIST_HARNESS_TOOLS]
+
+/**
+ * skills:startAssist input. scope 'project' (default when projectId is given) starts the Skill assistant on that
+ * project; scope 'library' (default without projectId) runs it on the virtual project SKILLS_PROJECT_ID, where it
+ * proposes library entries only.
+ */
+export interface SkillAssistInput {
+  projectId?: string
+  scope?: 'project' | 'library'
+  /** What the user wants, e.g. "review our skills" or "write a skill for our release checklist". */
+  instruction?: string
+}
+
+/**
+ * Where a run is hosted in the UI when it is not a Live-view run. 'team' = an Architect (setup) session started from
+ * the Team tab's assistant tray (setup.start with surface 'team'): the renderer keeps such runs off the Live run
+ * strip and History and shows them in the Team tray. Missing = the default surfaces.
+ */
+export type RunSurface = 'team'
+
+/** setup.start input. `surface` is accepted only as the literal 'team' (anything else is dropped). */
+export interface SetupStartInput {
+  projectId: string
+  instruction?: string
+  surface?: RunSurface
+}
 
 export interface RunSummary {
   id: string
@@ -1234,7 +2379,14 @@ export interface RunSummary {
   sessionId?: string
   startedAt: number
   endedAt?: number
+  /** usage.costUsd, or 0 when unknown. Kept for older readers; use usage.costUsd / usage.costSource. */
   totalCostUsd: number
+  /**
+   * Run usage metrics (RunUsage), kept current by RunManager while the run is live and persisted with the summary.
+   * Absent until the first computation, and on summaries saved before usage tracking until runs:get or
+   * runs:usageStats normalizes them.
+   */
+  usage?: RunUsage
   error?: string
   /** Set when this run continues an earlier run's SDK session; the earlier run's id. */
   resumedFrom?: string
@@ -1256,6 +2408,26 @@ export interface RunSummary {
    * Advisory only: the UI falls back to `prompt`.
    */
   title?: string
+  /**
+   * The connection the run reached its models through (RunConnection.connection, set at start). Lets the UI label
+   * totalCostUsd per run: on 'anthropic' it is the CLI's own estimate, on 'litellm' it is computed from the proxy's
+   * /model/info prices (0 when a model has no price), on 'openai' it is 0 (ChatGPT plan, no per-token price).
+   * Missing on runs recorded before it existed.
+   */
+  connection?: ConnectionId
+  /**
+   * Setup runs only: the UI surface that hosts the run (RunSurface). Set at start from setup.start and kept by
+   * continuations (runs:continue) and auto-resume. Missing = shown in the Live run strip and History as usual.
+   */
+  surface?: RunSurface
+  /** Quick runs only (projectId QUICK_PROJECT_ID, kind 'work'): where and how it works. Kept by continuations. */
+  quick?: QuickRunInfo
+  /**
+   * MCP assistant runs started with McpAssistInput.allowBuild only: the per-run scratch dir under `<data>/quick/`
+   * the session works in (absolute). Continuations keep it, so the session reopens in the same folder; the boot
+   * sweep keeps a scratch dir any run record points to (quick.folder or buildWorkspace).
+   */
+  buildWorkspace?: string
 }
 
 /**
@@ -1398,17 +2570,47 @@ export interface ModelRateLimitWindow extends RateLimitWindow {
   model: string
 }
 
-/** The plan limits that constrain a subscription login, as last reported by the provider. */
+/**
+ * Spend of a LiteLLM virtual key as the proxy reports it (GET {base}/key/info with the key as Bearer; UNVERIFIED
+ * against a live proxy). Only the key's own budget: a team budget that may also govern the key is not read.
+ */
+export interface UsageSpend {
+  /** USD spent so far in the current budget period (info.spend). */
+  usd: number
+  /** USD budget of the key (info.max_budget); null = no budget set. */
+  budgetUsd: number | null
+  /** When the budget resets (info.budget_reset_at), epoch ms; null = never or unknown. */
+  resetsAt: number | null
+  /** The budget period as the proxy writes it, e.g. "30d", "1h" (info.budget_duration); null = none. */
+  budgetDuration: string | null
+  /** The key's alias (info.key_alias); null when unset. Never the key itself. */
+  keyAlias: string | null
+}
+
+/**
+ * The plan limits that constrain a subscription login, or a key's spend, as last reported by the provider.
+ * Reports come per connection ('anthropic' Claude plan windows, 'openai' Codex windows, 'litellm' key spend), each
+ * as its own usage.status event with runId ''. The renderer keeps the latest report per `connection` (missing =
+ * 'anthropic'); a report never clears another connection's.
+ */
 export interface UsageStatus {
-  /** The adapter that reported it. Missing on older records = 'claude'. */
+  /**
+   * The adapter that reported it. Missing on older records = 'claude'. LiteLLM spend reports (connection 'litellm')
+   * leave it unset: the spend belongs to the key, not to an adapter.
+   */
   provider?: ProviderId
   /** The connection the limits belong to. Missing = 'anthropic'. Lets Codex (ChatGPT) limits show beside Claude's. */
   connection?: ConnectionId
   authMode: 'subscription' | 'apiKey' | 'unknown'
   /** e.g. 'pro', 'max'; null for API keys or when unknown. */
   subscriptionType: string | null
-  /** Plan windows were reported. False for API keys and before the first report. */
+  /**
+   * Plan windows (or, for 'litellm', `spend`) were reported. False for API keys and before the first report.
+   * A LiteLLM report has authMode 'apiKey', available true, windows {} and `spend` set.
+   */
   available: boolean
+  /** LiteLLM: the virtual key's spend and budget. Absent on plan-window reports. */
+  spend?: UsageSpend
   windows: {
     fiveHour?: RateLimitWindow
     sevenDay?: RateLimitWindow
@@ -1435,6 +2637,8 @@ export type RunEvent =
       runId: string
       status: RunStatus
       sessionId?: string
+      /** Only on the 'starting' status of a run with RunSummary.surface: lets the renderer route it before runs:list. */
+      surface?: RunSurface
       error?: string
       /** status 'paused' (and later updates to a paused run). */
       pausedUntil?: number
@@ -1446,6 +2650,11 @@ export type RunEvent =
    * after the run ended. The summary in runs:list / runs:get carries it from then on.
    */
   | { type: 'run.title'; runId: string; title: string }
+  /**
+   * A run moved to another project (a quick run promoted with runs:promoteQuick). One event per moved run; from now
+   * on runs:list(projectId) returns it and RunSummary.projectId is `projectId`.
+   */
+  | { type: 'run.moved'; runId: string; fromProjectId: string; projectId: string }
   | { type: 'agent.upsert'; runId: string; agent: AgentInstance }
   | { type: 'agent.remove'; runId: string; agentId: string }
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
@@ -1458,7 +2667,13 @@ export type RunEvent =
    * before the terminal run.status, so no card outlives its run.
    */
   | { type: 'permission.resolved'; runId: string; requestId: string; cancelled?: true }
+  /** Adapters report the provider's run total here; RunManager stores the priced total on the summary. Kept for older readers. */
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
+  /**
+   * The run's usage metrics changed (RunSummary.usage). Emitted by RunManager only (adapters never send it), at most
+   * about once per second while live, and once more when the run ends. Agent-level usage rides agent.upsert.
+   */
+  | { type: 'run.usage'; runId: string; usage: RunUsage }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
   | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
@@ -1495,6 +2710,12 @@ export type RunEvent =
       text: string
       at: number
     }
+  /**
+   * An agent loaded a skill (Claude: an allowed Skill tool call; Codex and mock: load_skill). Emitted by the adapter
+   * (or the load_skill harness tool); RunManager counts it into RunUsage.skills and writes a harness transcript row
+   * ("Loaded skill <name>", source 'harness') on that agent. `at` is epoch ms.
+   */
+  | { type: 'skill.used'; runId: string; agentId: string; skillId: string; name: string; at: number }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -1799,6 +3020,449 @@ export interface PendingCards {
   mcpInstalls: McpInstallRequest[]
 }
 
+// ---------- Capabilities: the Team assistant (src/main/capabilities/) ----------
+//
+// Token-free discovery of skills and MCP servers from local and outside sources, a one-shot recommendation
+// completion (never a run: nothing appears in Live or History), and least-privilege apply with one undo per
+// project. Every string that came from a file, a registry or GitHub is untrusted data: render it as plain text.
+
+/** What a candidate becomes when applied: a project skill, a project MCP server, or a connector (library entry + link). */
+export type CapabilityKind = 'skill' | 'mcp' | 'connector'
+
+/**
+ * Where a candidate was found. 'repo' = this project's folder (SKILL_REPO_ROOTS, .mcp.json, .cursor/mcp.json,
+ * .vscode/mcp.json); 'local' = another tool's config or skill folder on this computer (outside the repo); 'library' =
+ * the app-wide MCP or skill library; 'project' = already in this project; 'registry' = the official MCP Registry;
+ * 'github' = the allowlisted GitHub skills repo (CAPABILITY_GITHUB_SKILLS_REPO); 'catalog' = the curated connectors.
+ * 'registry' and 'github' are outside sources: fetched only with includeOutside, unverified.
+ */
+export type CapabilityOrigin = 'repo' | 'local' | 'library' | 'project' | 'registry' | 'github' | 'catalog'
+export const CAPABILITY_OUTSIDE_ORIGINS: readonly CapabilityOrigin[] = ['registry', 'github']
+
+/**
+ * Risk flags shown on a candidate. 'runsCode' = a stdio MCP server (runs code on this machine); 'scripts' = a skill
+ * that ships script-looking files; 'remote' = an MCP server reached over the network; 'canChange' = a connector
+ * variant or server with write tools; 'unverified' = outside origin or a connector preset not yet verified;
+ * 'partial' = a GitHub skill whose resource files were not fetched (SKILL.md only).
+ */
+export type CapabilityFlag = 'runsCode' | 'scripts' | 'remote' | 'canChange' | 'unverified' | 'partial'
+
+/** The access a recommendation grants. Connectors: picks the read-only or the full variant. Others: advisory only. */
+export type CapabilityAccess = 'read' | 'full'
+
+/**
+ * Stable source ids for progress and "What I looked at". Local ones are read-only file reads; 'registry' and
+ * 'github' are network fetches (outside only).
+ */
+export type CapabilitySourceId =
+  | 'repo-skills'
+  | 'repo-mcp'
+  | 'claude-skills'
+  | 'agents-skills'
+  | 'copilot-skills'
+  | 'claude-plugins'
+  | 'claude-code-mcp'
+  | 'claude-desktop-mcp'
+  | 'cursor-mcp'
+  | 'codex-mcp'
+  | 'library'
+  | 'project'
+  | 'catalog'
+  | 'registry'
+  | 'github'
+
+/** found = read with results; empty = read, nothing usable; missing = not present; skipped = not asked (outside off); error / rateLimited = failed. */
+export type CapabilitySourceState = 'found' | 'empty' | 'missing' | 'skipped' | 'error' | 'rateLimited'
+
+/** One row of "What I looked at". */
+export interface CapabilitySourceStatus {
+  source: CapabilitySourceId
+  /** Plain label, e.g. "Claude Code skills". */
+  label: string
+  /** Display locations (home shortened to ~, URLs without query), at most 10. */
+  locations: string[]
+  state: CapabilitySourceState
+  /** Candidates this source contributed. */
+  count: number
+  /** One readable line for error / rateLimited / skipped (e.g. "GitHub rate limit reached. Try again in about 60 s."). */
+  message?: string
+  /** rateLimited: seconds until a retry is worth it, when known. */
+  retryAfterSec?: number
+}
+
+/** A file that could not be used (bad JSON, too large, a symlink). Never an exception. */
+export interface CapabilityWarning {
+  source: CapabilitySourceId
+  /** Display path or URL. */
+  location?: string
+  message: string
+}
+
+/** The candidate is already in this project: which project skill or server, and the roles granted it. */
+export interface CapabilityInProject {
+  kind: 'skill' | 'mcp'
+  /** SkillSpec.id or McpServerSpec.id. */
+  id: string
+  /** Role ids that can use it now (MCP: spec.roles undefined counts as every role). */
+  grantedTo: string[]
+  enabled: boolean
+}
+
+/**
+ * One candidate. Secret-free and structured-clone safe: env and header VALUES are never read into it, only key names.
+ * name, description, target and notes are untrusted text (clamped, control characters removed).
+ */
+export interface CapabilityItem {
+  /** Stable across discoveries of the same thing: `cap-<24 hex>` (sha256 of origin, kind, source key and name). */
+  id: string
+  kind: CapabilityKind
+  origin: CapabilityOrigin
+  source: CapabilitySourceId
+  /** Plain label for the source badge, e.g. "Claude Code", "This repository", "MCP Registry", "anthropics/skills". */
+  sourceLabel: string
+  /** Display path (home as ~) or URL (origin and path only), e.g. "~/.claude/skills/code-review". */
+  location?: string
+  name: string
+  /** At most CAPABILITY_DESCRIPTION_MAX chars. */
+  description: string
+  /** Pinned version (registry, a pinned package in args; connectors: undefined). */
+  version?: string
+  /** Skills: sha256 of the files OrgAI would store. */
+  digest?: string
+  /** MCP: transport and a display target ("npx -y pkg@1.2.3" with key-like args removed, or the URL origin + path). */
+  transport?: McpTransport
+  target?: string
+  flags: CapabilityFlag[]
+  /** Env var and header names whose values the user must enter after applying (never values). */
+  needsSecrets: string[]
+  /** Connectors: the catalog id, its state, and whether a read-only variant exists. */
+  connectorId?: string
+  connectorState?: ConnectorState
+  readOnlyAvailable?: boolean
+  /** Set when it is already in this project. */
+  inProject?: CapabilityInProject
+  /** Set when it cannot be applied as found (unpinned package, invalid skill, deprecated). Never recommended. */
+  blockedReason?: string
+  /** Short notes: dropped keys, removed key-like args, "SKILL.md only". */
+  notes: string[]
+}
+
+/** capabilities:discover input. */
+export interface CapabilityDiscoverInput {
+  projectId: string
+  /** Also fetch outside sources (registry, GitHub). Default false: local sources only, no network. */
+  includeOutside?: boolean
+  /** Extra registry search words (at most 100 chars). Default: words derived from the roles and the repo. */
+  query?: string
+  /** Renderer-chosen id (SAFE_ID) for capabilities:progress events and capabilities:cancel. */
+  requestId?: string
+}
+
+/** capabilities:discover output. Never rejects for a missing or bad file; a bad file is a warning. */
+export interface CapabilityDiscovery {
+  projectId: string
+  items: CapabilityItem[]
+  sources: CapabilitySourceStatus[]
+  warnings: CapabilityWarning[]
+  includeOutside: boolean
+  /** sha256 binding every item (id, kind, digest/target, blockedReason). capabilities:apply requires it. */
+  digest: string
+  /** True when it was cut short (cancel, a cap reached). */
+  partial?: true
+  /** ISO timestamp. */
+  createdAt: string
+}
+
+/** Who a recommendation is for: one role, or the whole team when roleId is missing. */
+export interface CapabilityScope {
+  roleId?: string
+}
+
+/** capabilities:recommend input. */
+export interface CapabilityRecommendInput extends CapabilityDiscoverInput {
+  scope?: CapabilityScope
+}
+
+/** One recommended candidate for some roles. */
+export interface CapabilityRecommendation {
+  /** `rec-<12 hex>`, unique within its TeamRecommendations. */
+  id: string
+  /** A CapabilityItem.id of the discovery. */
+  candidateId: string
+  kind: CapabilityKind
+  /** Role ids (existing roles only; the scoped role only when scope.roleId is set). Never "every role". */
+  roleIds: string[]
+  /** One plain sentence: why (untrusted model text, at most 300 chars). */
+  reason: string
+  /** Default 'read'; 'full' only when every role in roleIds has a write tool (CAPABILITY_WRITE_TOOLS). */
+  access: CapabilityAccess
+}
+
+/** A need no candidate fits ("Implementer can run Bash but has no test skill"). No apply of its own. */
+export interface CapabilityGap {
+  roleId: string
+  /** One plain sentence, at most 300 chars. */
+  need: string
+}
+
+/** capabilities:recommend output. A one-shot completion, never a run. */
+export interface TeamRecommendations {
+  projectId: string
+  scope: CapabilityScope
+  discovery: CapabilityDiscovery
+  recommendations: CapabilityRecommendation[]
+  gaps: CapabilityGap[]
+  /** Equal to discovery.digest; pass it to capabilities:apply. */
+  digest: string
+  /** 'model' = the completion answered; 'fallback' = deterministic keyword matching (fallbackReason says why). */
+  mode: 'model' | 'fallback'
+  fallbackReason?: 'error' | 'timeout' | 'cancelled' | 'noCandidates' | 'invalidAnswer'
+  /** The model id that answered, when known. */
+  model?: string
+  /** True when cancelled: recommendations cover what was found so far. */
+  partial?: true
+  createdAt: string
+}
+
+/**
+ * capabilities:apply input. Name a recommendation (its roleIds and access are the defaults) or a candidate directly.
+ * `roleIds` and `access` are the user's edits; main re-reads the candidate from its own snapshot for `digest` (the
+ * renderer never sends paths, specs or file content) and refuses a stale or missing digest.
+ * The renderer should send `candidateId` together with `recommendationId`: recommendations from capabilities:recommend
+ * live only in main's in-memory snapshot (a persisted TeamReview's survive a restart), so after a restart or a
+ * re-discovery main falls back to the candidate. When both are sent they must name the same candidate.
+ * `access` omitted = the recommendation's own access (else 'read'); 'full' is still refused unless every chosen role
+ * has a write tool (CAPABILITY_WRITE_TOOLS).
+ */
+export interface CapabilityApplyInput {
+  projectId: string
+  digest: string
+  recommendationId?: string
+  candidateId?: string
+  /** Roles to grant (Role ids, at least one). Only these roles get access. */
+  roleIds: string[]
+  /** Default 'read'. 'full' is refused when a chosen role has no write tool. */
+  access?: CapabilityAccess
+}
+
+/** What one apply did. */
+export interface CapabilityApplied {
+  kind: 'skill' | 'mcp'
+  /** The project SkillSpec.id or McpServerSpec.id that now holds it. */
+  id: string
+  name: string
+  /** 'added' = new in the project; 'linked' = linked from the library (connectors too); 'granted' = already there, grants only. */
+  action: 'added' | 'linked' | 'granted'
+  roleIds: string[]
+  access: CapabilityAccess
+}
+
+/** capabilities:apply output. */
+export interface CapabilityApplyResult {
+  project: Project
+  applied: CapabilityApplied
+  /** Pass to capabilities:undo. Valid until the next apply in this project or the app quits. */
+  undoId: string
+  /**
+   * The server needs the user before runs get it: secret names without a value and/or a sign-in. Until then it is
+   * saved with its grants but left out of runs (McpServerInfo.missingSecrets / auth say the same). Route to sign-in.
+   */
+  needsSetup?: { secrets: string[]; signIn: boolean; connectorId?: string; libraryId?: string }
+  notes: string[]
+}
+
+/** capabilities:undo input. */
+export interface CapabilityUndoInput {
+  projectId: string
+  undoId: string
+}
+
+/** capabilities:undo output: the project with the apply reversed (added items removed, previous grants restored). */
+export interface CapabilityUndoResult {
+  project: Project
+}
+
+/** capabilities:progress push: one discovery phase or the model step changed state. */
+export interface CapabilityProgressEvent {
+  projectId: string
+  requestId: string
+  /** A source, or 'model' for the recommendation completion. */
+  phase: CapabilitySourceId | 'model'
+  state: 'running' | 'done' | CapabilitySourceState
+  count?: number
+  message?: string
+}
+
+/** The one allowlisted GitHub skills repo (unauthenticated contents API, SKILL.md only). */
+export const CAPABILITY_GITHUB_SKILLS_REPO = 'anthropics/skills'
+/** Tools that make a role able to change things; 'full' access needs one of them on every granted role. */
+export const CAPABILITY_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'NotebookEdit', 'Bash']
+export const CAPABILITY_DESCRIPTION_MAX = 300
+export const CAPABILITY_MAX_ITEMS = 500
+export const CAPABILITY_MAX_RECOMMENDATIONS = 12
+export const CAPABILITY_MAX_GAPS = 8
+export const CAPABILITY_RECOMMEND_TIMEOUT_MS = 60_000
+
+// ---------- Team setup review (phase 2): re-checked on demand and as work happens ----------
+
+/**
+ * Project.teamReview. 'off' = only the manual re-check; 'free' = proactive token-free discovery and run evidence;
+ * 'ai' (default) = also the one-shot recommend completion (everyday tier) within tokenBudget, at most once per
+ * everyRuns finished work runs and only when there is new evidence or new candidates.
+ */
+export type TeamReviewAuto = 'off' | 'free' | 'ai'
+export interface TeamReviewSettings {
+  auto: TeamReviewAuto
+  /** Most tokens (input + output) one proactive model step may spend. Clamped TEAM_REVIEW_MIN_BUDGET..MAX. */
+  tokenBudget: number
+  /** The proactive model step runs at most once per this many finished work runs (>= 1). */
+  everyRuns: number
+}
+
+/** What started a review. 'opened' = the Team tab opened (throttled); 'runEnded' = a work run reached an outcome. */
+export type TeamReviewTrigger = 'manual' | 'runEnded' | 'opened'
+
+/**
+ * Token-free signals from finished work runs (permission denials, rule requests, tools or connections a role asked
+ * for or lacked, repeated tool sequences, repeated corrections). summary is redacted and untrusted.
+ */
+export type TeamEvidenceKind = 'permissionDenied' | 'ruleRequest' | 'missingTool' | 'missingConnection' | 'repeatedSequence' | 'repeatedCorrection'
+export interface TeamEvidence {
+  /** Stable for the same signal: `ev-<16 hex>`. */
+  id: string
+  kind: TeamEvidenceKind
+  roleId?: string
+  /** Runs it was seen in, newest first, at most 5. */
+  runIds: string[]
+  /** One plain sentence, redacted (no keys, tokens or long ids), at most 300 chars. */
+  summary: string
+  count: number
+  /** ISO timestamp of the newest sighting. */
+  lastSeenAt: string
+}
+
+/** A dismissed recommendation: never offered again while the candidate's fingerprint (digest, version, target) is unchanged. */
+export interface TeamDismissal {
+  candidateId: string
+  fingerprint: string
+  /** ISO timestamp. */
+  at: string
+  /**
+   * For the "Dismissed (n)" list: the candidate's display name and kind when it was dismissed (clamped untrusted
+   * text, no targets or paths). Missing on dismissals saved before 2026-11-01 when the review no longer lists the item.
+   */
+  name?: string
+  kind?: CapabilityKind
+  /** The recommendation that was dismissed, when there was one: capabilities:restore puts it back in the pending list. */
+  recommendation?: CapabilityRecommendation
+}
+
+/** Why the review's model step did not run. */
+export type TeamReviewModelSkip = 'autoOff' | 'autoFree' | 'noChange' | 'everyRuns' | 'budget' | 'error' | 'timeout' | 'cancelled' | 'mockFree' | 'pendingFull'
+
+/**
+ * The persisted review (<data>/team-reviews/<projectId>.json). recommendations are the pending ones only: applied
+ * and dismissed ones are removed. Apply them with capabilities:apply and `digest`; main re-discovers when its
+ * in-memory snapshot is gone (after a restart) and refuses when the sources changed. A complete (not partial)
+ * capabilities:recommend result is merged in as pending too (newest first, rebinding the review to its discovery), so
+ * it survives a restart; `dismissed` is the list the UI can offer to restore (capabilities:restore).
+ */
+export interface TeamReview {
+  projectId: string
+  /** ISO timestamp. */
+  checkedAt: string
+  trigger: TeamReviewTrigger
+  /** 'model' when this check ran the recommend completion, else 'free'. */
+  mode: 'free' | 'model'
+  modelSkipped?: TeamReviewModelSkip
+  /** The discovery this review is bound to (secret-free; items capped at CAPABILITY_MAX_ITEMS). */
+  discovery: CapabilityDiscovery
+  /** Equal to discovery.digest; pass it to capabilities:apply with a recommendation id. */
+  digest: string
+  /** Items not seen at the previous review. */
+  newCandidateIds: string[]
+  recommendations: CapabilityRecommendation[]
+  gaps: CapabilityGap[]
+  evidence: TeamEvidence[]
+  dismissed: TeamDismissal[]
+  /** recommendations.length: the Team tab badge. */
+  pendingCount: number
+  /** Finished work runs since the last model step (drives everyRuns). */
+  runsSinceModel: number
+  /** Tokens the last model step spent, when known. */
+  tokensUsed?: number
+  /**
+   * What the model step of this review was sent (missing = no model step ran). 'proactive' = an automatic review
+   * (runEnded): repo, project, library and catalog items in full, but local-machine items (origin 'local') only as
+   * kind, name and redacted target, never their descriptions or paths. 'full' = the user's manual Re-check: every item.
+   */
+  modelInput?: TeamReviewModelInput
+  /**
+   * Written only to hold a dismissal made on a fresh capabilities:recommend result before any review ran: nothing
+   * was checked, so the 'opened' throttle never returns it and the next review runs in full.
+   */
+  stub?: true
+}
+
+/** TeamReview.modelInput: which data classes the review's model step was sent. */
+export type TeamReviewModelInput = 'proactive' | 'full'
+
+/** capabilities:reviewUpdated push and the badge source. */
+export interface TeamReviewSummary {
+  projectId: string
+  checkedAt: string
+  trigger: TeamReviewTrigger
+  mode: 'free' | 'model'
+  pendingCount: number
+  newCount: number
+  evidenceCount: number
+}
+
+/** capabilities:review input: the manual "Re-check setup" (trigger 'manual') or the Team tab opening ('opened', throttled). */
+export interface TeamReviewInput {
+  projectId: string
+  trigger?: 'manual' | 'opened'
+  requestId?: string
+  /** Manual only: also fetch outside sources. Proactive reviews never go outside. */
+  includeOutside?: boolean
+  /** Manual only: run the recommend completion now (the user's explicit call; not gated by auto or everyRuns). */
+  useModel?: boolean
+}
+
+/**
+ * capabilities:dismiss input: a recommendation id (from the persisted review or a fresh capabilities:recommend
+ * result still held in main) and/or a candidate id; at least one. Main fingerprints the candidate it finds there and
+ * persists the dismissal in the project's review (starting one bound to that discovery when none exists yet).
+ */
+export interface TeamDismissInput {
+  projectId: string
+  recommendationId?: string
+  candidateId?: string
+}
+
+/**
+ * capabilities:restore input: forget the dismissal of `candidateId` so it can be offered again. When the dismissal
+ * held a recommendation whose candidate is unchanged and still useful, it returns to the pending list.
+ */
+export interface TeamRestoreInput {
+  projectId: string
+  candidateId: string
+}
+
+/**
+ * Most recommendations an automatic review (runEnded, opened) adds to the pending list: it never drops pending
+ * ones, and adds new ones only while fewer than this are pending (at least one when nothing is). Manual Re-check and
+ * capabilities:recommend results are not capped by it (CAPABILITY_MAX_RECOMMENDATIONS).
+ */
+export const TEAM_REVIEW_PROACTIVE_LIMIT = 5
+export const TEAM_REVIEW_MIN_BUDGET = 1_000
+export const TEAM_REVIEW_MAX_BUDGET = 500_000
+export const TEAM_REVIEW_MAX_EVERY_RUNS = 100
+/** An 'opened' review with nothing changed is skipped when the last check is newer than this. */
+export const TEAM_REVIEW_OPEN_THROTTLE_MS = 10 * 60_000
+/** Dismissals kept per project (oldest dropped). */
+export const TEAM_REVIEW_MAX_DISMISSED = 500
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
@@ -1859,6 +3523,11 @@ export interface OrgAIApi {
     list(query?: ModelsQuery): Promise<ProviderModel[]>
     /** Re-discover models (LiteLLM /v1/models and /model/info, Codex model/list) and return the new catalog. */
     refresh(query?: ModelsQuery): Promise<ProviderModel[]>
+    /**
+     * Every price OrgAI knows, for a pricing table: user overrides, LiteLLM proxy prices from the catalog and the
+     * built-in table, each with its source. An overridden model is listed once per source.
+     */
+    prices(query?: ModelPricesQuery): Promise<ModelPriceInfo[]>
   }
   /** Connection status, login progress, catalog changes and remaps. Returns an unsubscribe function. */
   onConnectionEvent(cb: (event: ConnectionEvent) => void): () => void
@@ -1922,6 +3591,115 @@ export interface OrgAIApi {
   }
   /** The library changed (any mcpLibrary:* mutation, authorize, revoke, promote). Returns an unsubscribe function. */
   onMcpLibraryChanged(cb: (entries: McpLibraryInfo[]) => void): () => void
+  /**
+   * Connectors: curated presets (src/shared/connectors.ts) that become MCP library entries. Authorize, test,
+   * link, revoke and remove reuse mcp.authorize ({ libraryId }), mcpLibrary.test, mcp.linkLibrary, mcp.revokeAuth
+   * and mcpLibrary.remove. Changes arrive through onMcpLibraryChanged (re-read connectors.list then).
+   */
+  connectors: {
+    /** Every preset in catalog order, with its library entry and state. */
+    list(): Promise<ConnectorInfo[]>
+    /**
+     * Create the library entry from the preset (main builds url, headers and secret slots; nothing else is taken
+     * from the renderer). Idempotent: an existing entry for that connector is returned unchanged, whatever the
+     * variant (remove it first to switch). Broadcasts mcpLibrary:changed when it creates one.
+     */
+    add(input: ConnectorAddInput): Promise<McpLibraryInfo>
+    /** 'token' connectors: store (or clear) the token as the entry's secret header. Rejects before add. */
+    setToken(input: ConnectorTokenInput): Promise<McpLibraryInfo>
+  }
+  /** Project skills, repo import and skill evaluation. Every mutation returns the saved project. */
+  skills: {
+    /** The project's skills (linked ones refreshed from the library) with their role grants. */
+    list(projectId: string): Promise<SkillInfo[]>
+    /** SKILL.md and the file list of one project skill (a linked one reads the library entry's files). */
+    read(input: { projectId: string; skillId: string }): Promise<SkillContent>
+    /** Write a new project skill (source 'user'). Rejects on an invalid or duplicate name, or a too long body. */
+    create(input: SkillCreateInput): Promise<SkillMutationResult>
+    /** Rewrite SKILL.md, toggle enabled or replace the granted roles. A linked skill takes only enabled and roleIds. */
+    update(input: SkillUpdateInput): Promise<SkillMutationResult>
+    /** Remove a project skill and its files and drop it from every Role.skills. A linked skill is only unlinked. */
+    remove(input: { projectId: string; skillId: string }): Promise<SkillMutationResult>
+    /** Add a library entry to the project by reference. Rejects when the project already has a skill of that name. */
+    linkLibrary(input: SkillLinkLibraryInput): Promise<SkillMutationResult>
+    /** Copy a project-only skill into the library and relink it. Rejects when the library already has that name. */
+    promote(input: { projectId: string; skillId: string }): Promise<SkillMutationResult>
+    /**
+     * Scan the project's folder (SKILL_REPO_ROOTS, untrusted, read-only, token-free) and show what an import would do.
+     * Saves nothing. Never rejects for a missing root.
+     */
+    previewImport(input: SkillImportInput): Promise<SkillImportPreview>
+    /** Re-scan, check the preview's digest, copy the chosen skills into OrgAI and grant them. */
+    applyImport(input: SkillImportApplyInput): Promise<SkillImportApplyResult>
+    /** Restore the skills, files and grants an applyImport replaced. Rejects when the undo expired. */
+    undoImport(input: { projectId: string; undoId: string }): Promise<SkillMutationResult>
+    /**
+     * Start the Skill assistant session (RunKind 'skill-assist'); its proposals (kind 'skills') are answered with
+     * setup.decide. scope 'library' runs it on the virtual project SKILLS_PROJECT_ID.
+     */
+    startAssist(input: SkillAssistInput): Promise<RunSummary>
+    /**
+     * Run the skill evaluation now: deterministic checks over the skills and the newest runs, plus (only with
+     * Project.skillEvaluation.enabled and within its tokenBudget) a one-shot model call drafting up to 3 suggestions.
+     * Persists and returns the report. Never applies anything.
+     */
+    evaluate(projectId: string): Promise<SkillEvaluationReport>
+    /** The last persisted report, or null. */
+    lastEvaluation(projectId: string): Promise<SkillEvaluationReport | null>
+    /** Create a project skill (source 'suggestion') from a suggestion of the last report, on the user's explicit call. */
+    applySuggestion(input: SkillApplySuggestionInput): Promise<SkillMutationResult>
+  }
+  /** The app-wide skill library. Every mutation also broadcasts skillLibrary:changed. */
+  skillLibrary: {
+    list(): Promise<SkillLibraryInfo[]>
+    read(input: { libraryId: string }): Promise<SkillContent>
+    /** Write a new library entry from a draft. Name unique within the library. */
+    create(draft: SkillDraft): Promise<SkillLibraryInfo[]>
+    /**
+     * Copy one skill folder (SKILL.md at its top; untrusted, same caps and checks as the repo import) into the library.
+     * `path` must be a folder the user just chose with projects.pickDirectory() (main remembers the last 20 picks);
+     * any other path is refused, as are UNC and device paths.
+     */
+    addFromFolder(input: SkillLibraryFolderInput): Promise<SkillLibraryInfo[]>
+    /** Rewrite an entry's SKILL.md (resource files kept). Linked projects see it on their next read. */
+    update(input: { libraryId: string; draft: SkillDraft }): Promise<SkillLibraryInfo[]>
+    /** Delete an entry and its files, unlink it from every project and drop the Role.skills grants to those links. */
+    remove(input: { libraryId: string }): Promise<SkillLibraryInfo[]>
+  }
+  /** The skill library changed. Returns an unsubscribe function. */
+  onSkillLibraryChanged(cb: (entries: SkillLibraryInfo[]) => void): () => void
+  /**
+   * The Team assistant (src/main/capabilities/). discover and recommend never write; recommend is a one-shot completion
+   * (everyday tier, 60 s) and never a run. Mutations broadcast a project.updated RunEvent so every Role tab updates.
+   */
+  capabilities: {
+    /** Read-only discovery over local sources (and outside ones with includeOutside). Never rejects for a bad file. */
+    discover(input: CapabilityDiscoverInput): Promise<CapabilityDiscovery>
+    /** Discovery plus per-role recommendations and gaps. Falls back to keyword matching (mode 'fallback') on error. */
+    recommend(input: CapabilityRecommendInput): Promise<TeamRecommendations>
+    /** Stop a running discover/recommend by requestId: it resolves with what it has (partial). */
+    cancel(input: { requestId: string }): Promise<void>
+    /** Apply one recommendation or candidate to the chosen roles only. Refuses a stale or missing digest. */
+    apply(input: CapabilityApplyInput): Promise<CapabilityApplyResult>
+    /** Reverse the project's last apply. Rejects when the undo expired. */
+    undo(input: CapabilityUndoInput): Promise<CapabilityUndoResult>
+    /**
+     * Re-check the team setup and persist the review. trigger 'manual' (default) always runs; 'opened' is throttled
+     * (TEAM_REVIEW_OPEN_THROTTLE_MS when nothing changed) and returns the last review instead. Never goes outside
+     * unless includeOutside on a manual check; spends tokens only with useModel (manual) or Project.teamReview.auto 'ai'.
+     */
+    review(input: TeamReviewInput): Promise<TeamReview>
+    /** The persisted review, or null. */
+    lastReview(projectId: string): Promise<TeamReview | null>
+    /** Drop one pending recommendation and remember it so it never returns while its candidate is unchanged. */
+    dismiss(input: TeamDismissInput): Promise<TeamReview>
+    /** Undo a dismissal (TeamReview.dismissed): the candidate may be offered again; its recommendation returns when still useful. */
+    restore(input: TeamRestoreInput): Promise<TeamReview>
+  }
+  /** A review was saved (manual, proactive or after apply/dismiss). Returns an unsubscribe function. */
+  onTeamReviewUpdated(cb: (summary: TeamReviewSummary) => void): () => void
+  /** Progress of a discover/recommend started with a requestId. Returns an unsubscribe function. */
+  onCapabilityProgress(cb: (event: CapabilityProgressEvent) => void): () => void
   plugins: {
     /** Add or replace one plugin. Returns the saved project. */
     upsert(input: PluginUpsertInput): Promise<Project>
@@ -1933,7 +3711,7 @@ export interface OrgAIApi {
   }
   setup: {
     /** Profile the working directory and start an Architect session. */
-    start(input: { projectId: string; instruction?: string }): Promise<RunSummary>
+    start(input: SetupStartInput): Promise<RunSummary>
     /** Architect session that reviews a finished run and revises the org chart where roles struggled. */
     retro(input: { projectId: string; runId: string }): Promise<RunSummary>
     decide(input: { runId: string; proposalId: string; decision: ProposalDecision }): Promise<void>
@@ -1981,6 +3759,18 @@ export interface OrgAIApi {
      * Empty arrays for an unknown or ended run.
      */
     pendingCards(runId: string): Promise<PendingCards>
+    /**
+     * Usage per run, per role and as trend buckets for one project, from persisted run summaries. Rejects for an
+     * unknown project. Never spends tokens.
+     */
+    usageStats(query: UsageStatsQuery): Promise<UsageStats>
+    /**
+     * Start a quick run (the Chat assistant): a project-less work run on QUICK_PROJECT_ID (RunSummary.quick set).
+     * Rejects on an empty or too long prompt (QUICK_RUN_MAX_PROMPT_CHARS) or an invalid folder.
+     */
+    startQuick(input: QuickRunInput): Promise<RunSummary>
+    /** Save a quick run's session chain as a new project (see QuickRunPromoteResult). */
+    promoteQuick(input: QuickRunPromoteInput): Promise<QuickRunPromoteResult>
   }
   window: {
     /**
@@ -2138,9 +3928,51 @@ export const IPC = {
   mcpLibraryTest: 'mcpLibrary:test',
   /** main -> renderer push channel carrying McpLibraryInfo[] after every library or authorization change. */
   mcpLibraryChanged: 'mcpLibrary:changed',
+  connectorsList: 'connectors:list',
+  connectorsAdd: 'connectors:add',
+  connectorsSetToken: 'connectors:setToken',
   pluginsUpsert: 'plugins:upsert',
   pluginsRemove: 'plugins:remove',
   runsListLive: 'runs:listLive',
   runsPendingCards: 'runs:pendingCards',
-  windowOpenRun: 'window:openRun'
+  runsUsageStats: 'runs:usageStats',
+  runsStartQuick: 'runs:startQuick',
+  runsPromoteQuick: 'runs:promoteQuick',
+  modelsPrices: 'models:prices',
+  windowOpenRun: 'window:openRun',
+  skillsList: 'skills:list',
+  skillsRead: 'skills:read',
+  skillsCreate: 'skills:create',
+  skillsUpdate: 'skills:update',
+  skillsRemove: 'skills:remove',
+  skillsLinkLibrary: 'skills:linkLibrary',
+  skillsPromote: 'skills:promote',
+  skillsPreviewImport: 'skills:previewImport',
+  skillsApplyImport: 'skills:applyImport',
+  skillsUndoImport: 'skills:undoImport',
+  skillsEvaluate: 'skills:evaluate',
+  skillsLastEvaluation: 'skills:lastEvaluation',
+  skillsApplySuggestion: 'skills:applySuggestion',
+  skillsStartAssist: 'skills:startAssist',
+  skillLibraryList: 'skillLibrary:list',
+  skillLibraryRead: 'skillLibrary:read',
+  skillLibraryCreate: 'skillLibrary:create',
+  skillLibraryAddFromFolder: 'skillLibrary:addFromFolder',
+  skillLibraryUpdate: 'skillLibrary:update',
+  skillLibraryRemove: 'skillLibrary:remove',
+  /** main -> renderer push channel carrying SkillLibraryInfo[] after every library change. */
+  skillLibraryChanged: 'skillLibrary:changed',
+  capabilitiesDiscover: 'capabilities:discover',
+  capabilitiesRecommend: 'capabilities:recommend',
+  capabilitiesCancel: 'capabilities:cancel',
+  capabilitiesApply: 'capabilities:apply',
+  capabilitiesUndo: 'capabilities:undo',
+  /** main -> renderer push channel carrying CapabilityProgressEvent. */
+  capabilitiesProgress: 'capabilities:progress',
+  capabilitiesReview: 'capabilities:review',
+  capabilitiesLastReview: 'capabilities:lastReview',
+  capabilitiesDismiss: 'capabilities:dismiss',
+  capabilitiesRestore: 'capabilities:restore',
+  /** main -> renderer push channel carrying TeamReviewSummary. */
+  capabilitiesReviewUpdated: 'capabilities:reviewUpdated'
 } as const

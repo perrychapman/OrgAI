@@ -1,12 +1,24 @@
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { MockAdapter, type MockSession } from './mock'
-import { ROOT_AGENT_ID, type PeerMessage } from './types'
+import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
+import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 
-const png: ImageAttachment = { mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
+describe('mock listModels', () => {
+  it('lists the builtin aliases plus an unknown family', async () => {
+    const list = await new MockAdapter().listModels()
+    expect(list?.map((m) => m.id)).toEqual(['fable', 'opus', 'sonnet', 'haiku', 'mock-lyric'])
+    expect(list?.every((m) => m.label && m.description)).toBe(true)
+  })
+})
+
+const png: ImageAttachment ={ mediaType: 'image/png', data: 'AAAA', name: 'shot.png' }
 
 function userBlocks(events: RunEvent[]): Extract<TranscriptBlock, { kind: 'user' }>[] {
   const out: Extract<TranscriptBlock, { kind: 'user' }>[] = []
@@ -286,6 +298,57 @@ describe('mock adapter auth failure', () => {
   })
 })
 
+describe('mock adapter usage reporting', () => {
+  type Agent = Extract<RunEvent, { type: 'agent.upsert' }>['agent']
+  async function agentsOf(prompt: string): Promise<{ ctx: ReturnType<typeof fakeCtx>; last: Map<string, Agent> }> {
+    const ctx = fakeCtx({ prompt })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(true), { timeout: 5000 })
+    const last = new Map<string, Agent>()
+    for (const e of ctx.events) if (e.type === 'agent.upsert') last.set(e.agent.id, e.agent)
+    await session.stop()
+    await session.finished
+    return { ctx, last }
+  }
+  const lastCost = (ctx: ReturnType<typeof fakeCtx>): number => ([...ctx.events].reverse().find((e) => e.type === 'run.cost') as { totalCostUsd: number }).totalCostUsd
+
+  it('reports per-model tokens with cache, turns, tool calls and a retry; provider cost by default', async () => {
+    const { ctx, last } = await agentsOf('do it')
+    const root = last.get(ROOT_AGENT_ID)!
+    expect(root.usage?.models[0]).toMatchObject({ model: 'claude-opus-4-5' })
+    expect(root.usage?.models[0]?.providerCostUsd).toBeGreaterThan(0)
+    expect(root.usage?.tokens.cacheRead).toBeGreaterThan(0)
+    expect(root.usage?.tokens.cacheWrite).toBeGreaterThan(0)
+    expect(root.usage?.turns).toBeGreaterThan(0)
+    expect(root.usage?.toolCalls).toBeGreaterThan(0)
+    expect(root.usage?.retries).toBe(1)
+    expect(last.get('mock-report-1')?.usage?.models[0]).toMatchObject({ model: 'claude-sonnet-4-5' })
+    const providerTotal = [...last.values()].reduce((s, a) => s + (a.usage?.models.reduce((x, m) => x + (m.providerCostUsd ?? 0), 0) ?? 0), 0)
+    expect(lastCost(ctx)).toBeCloseTo(providerTotal, 10)
+  })
+
+  it('has a report that spent tokens and produced nothing, on an unpriced model', async () => {
+    const { last } = await agentsOf('do it')
+    const silent = last.get('mock-report-2')!
+    expect(silent.state).toBe('done')
+    expect(silent.result).toBeFalsy()
+    expect(silent.usage?.tokens.output).toBeGreaterThan(0)
+    expect(silent.usage?.models[0]).toMatchObject({ model: 'mock-unpriced' })
+    expect(silent.usage?.models[0]?.providerCostUsd).toBeUndefined()
+  })
+
+  it('[mock:no-price] leaves every agent unpriced with no provider cost', async () => {
+    const { last, ctx } = await agentsOf('do it [mock:no-price]')
+    for (const a of last.values()) expect(a.usage?.models.every((m) => m.model === 'mock-unpriced' && m.providerCostUsd === undefined)).toBe(true)
+    expect(lastCost(ctx)).toBe(0)
+  })
+
+  it('[mock:computed-cost] reports a priced model without provider cost', async () => {
+    const { last } = await agentsOf('do it [mock:computed-cost]')
+    for (const a of last.values()) expect(a.usage?.models.every((m) => m.model === 'claude-sonnet-4-5' && m.providerCostUsd === undefined)).toBe(true)
+  })
+})
+
 describe('mock adapter complete', () => {
   const adapter = new MockAdapter({ script: { delayMs: 0 } })
   const sys = 's'
@@ -320,5 +383,168 @@ describe('mock adapter complete', () => {
       const out = JSON.parse(await adapter.complete({ system: sys, prompt: 'x', kind }))
       expect(Array.isArray(out.roles)).toBe(true)
     }
+  })
+})
+
+describe('mock adapter skills', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-skill-'))
+  writeFileSync(join(dir, 'SKILL.md'), '---\nname: pdf-fill\ndescription: Fill forms\n---\nDo the steps.')
+  const skill = (roleIds: string[]): RunSkill => ({ id: 'sk1', name: 'pdf-fill', description: 'Fill forms', dir, files: [{ path: 'SKILL.md' }] as RunSkill['files'], roleIds })
+  const play = async (ctx: ReturnType<typeof fakeCtx>, script: object = {}) => {
+    const session = await new MockAdapter({ script: { delayMs: 0, ...script } }).start(ctx)
+    for (let i = 0; i < 200 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+  }
+  const rootOnly = { work: [{ type: 'text', text: 'Working.' }] }
+  const toolUses = (ctx: ReturnType<typeof fakeCtx>, agentId: string): string[] =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === agentId && e.entry.block.kind === 'tool_use' ? [e.entry.block.name] : []))
+
+  it('loads the first granted skill for the root and emits skill.used with transcript blocks', async () => {
+    const ctx = fakeCtx({ skills: () => [skill(['r-lead'])] })
+    await play(ctx)
+    const used = ctx.events.filter((e) => e.type === 'skill.used')
+    expect(used).toHaveLength(1)
+    expect(used[0]).toMatchObject({ agentId: ROOT_AGENT_ID, skillId: 'sk1', name: 'pdf-fill' })
+    expect(toolUses(ctx, ROOT_AGENT_ID)).toContain('load_skill')
+    const result = ctx.events.find((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && /Do the steps/.test(e.entry.block.content))
+    expect(result).toBeTruthy()
+  })
+
+  it('does not load for a role without a grant, and a spawned granted agent loads for itself', async () => {
+    const none = fakeCtx({ skills: () => [skill(['r-eng'])] })
+    await play(none, rootOnly)
+    expect(none.events.some((e) => e.type === 'skill.used')).toBe(false)
+    expect(toolUses(none, ROOT_AGENT_ID)).not.toContain('load_skill')
+    expect(toolUses(none, ROOT_AGENT_ID)).not.toContain('list_skills')
+
+    const spawned = fakeCtx({ skills: () => [skill(['r-eng'])] })
+    await play(spawned, { work: [{ type: 'spawn', id: 'a1', role: 'engineer', description: 'Do it' }] })
+    expect(spawned.events.filter((e) => e.type === 'skill.used')).toMatchObject([{ agentId: 'a1' }])
+    expect(toolUses(spawned, 'a1')).toEqual(['load_skill'])
+  })
+
+  it('[mock:skill] without a grant calls list_skills', async () => {
+    const ctx = fakeCtx({ prompt: 'go [mock:skill]', skills: () => [skill(['r-eng'])] })
+    await play(ctx, rootOnly)
+    expect(toolUses(ctx, ROOT_AGENT_ID)).toContain('list_skills')
+    expect(ctx.events.some((e) => e.type === 'skill.used')).toBe(false)
+  })
+
+  it("complete kind 'skills' returns suggestions parseSuggestions accepts and reports usage", async () => {
+    const onUsage = vi.fn()
+    const text = await new MockAdapter().complete({ system: 's', prompt: 'p', kind: 'skills', onUsage } as never)
+    const list = parseSuggestions(text, [])
+    expect(list).toHaveLength(1)
+    expect(list[0]!.draft.name).toBe('mock-suggested-skill')
+    expect(onUsage).toHaveBeenCalledWith({ tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, model: 'mock' })
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('mock adapter assistants scripts', () => {
+  const quick = { folder: '/some/folder', team: 'single' as const, allowEdits: false, gitRepo: false }
+  async function runToIdle(ctx: ReturnType<typeof fakeCtx>, follow?: string): Promise<MockSession> {
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    const idle = () => ctx.events.filter((e) => e.type === 'run.status' && e.status === 'idle').length
+    for (let i = 0; i < 300 && idle() < 1; i++) await new Promise((r) => setTimeout(r, 10))
+    if (follow) {
+      await session.send(follow)
+      for (let i = 0; i < 300 && idle() < 2; i++) await new Promise((r) => setTimeout(r, 10))
+    }
+    return session
+  }
+  const toolNames = (ctx: ReturnType<typeof fakeCtx>) =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_use' ? [e.entry.block.name] : []))
+  const texts = (ctx: ReturnType<typeof fakeCtx>) =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
+  const peek = (id: string) => ({ id, name: id, path: `/${id}`, brief: '', roles: [], connection: 'anthropic' as const })
+  const stopAll = async (s: MockSession): Promise<void> => {
+    await s.stop()
+    await s.finished
+  }
+
+  it('quick run: list_projects once, one answer naming the count, then idle; a follow-up gets a short reply', async () => {
+    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), listProjects: () => [peek('a'), peek('b')] })
+    const session = await runToIdle(ctx, 'thanks')
+    expect(toolNames(ctx)).toEqual(['list_projects'])
+    expect(texts(ctx)).toEqual(['I can see 2 OrgAI projects. Tell me what you would like to do.', 'Mock reply to: thanks'])
+    await stopAll(session)
+  })
+
+  it('quick run: singular wording for one project', async () => {
+    const ctx = fakeCtx({ run: runSummary({ projectId: 'quick', quick }), listProjects: () => [peek('a')] })
+    const session = await runToIdle(ctx)
+    expect(texts(ctx)[0]).toBe('I can see 1 OrgAI project. Tell me what you would like to do.')
+    await stopAll(session)
+  })
+
+  it('skill-assist on a project: list, propose mock-skill for the first role, final text', async () => {
+    const ctx = fakeCtx({ run: runSummary({ kind: 'skill-assist' }), skillCatalog: () => ({ library: [], project: [] }) })
+    const session = await runToIdle(ctx)
+    expect(toolNames(ctx)).toEqual(['list_skill_library', 'propose_skills'])
+    const [p] = (ctx.requestProposal as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as { kind: string; payload: any })
+    expect(p.kind).toBe('skills')
+    expect(p.payload.items).toHaveLength(1)
+    expect(p.payload.items[0]).toMatchObject({ action: 'create', scope: 'project', roles: ['lead'], draft: { name: 'mock-skill' } })
+    expect(p.payload.items[0].draft.description.length).toBeGreaterThan(10)
+    expect(texts(ctx).at(-1)).toBe('The skill is set up.')
+    await stopAll(session)
+  })
+
+  it('skill-assist on the skills project proposes a library skill and retries on REVISE', async () => {
+    const decide = vi.fn().mockResolvedValueOnce({ behavior: 'revise', feedback: 'shorter' }).mockResolvedValue({ behavior: 'approve' })
+    const ctx = fakeCtx({
+      run: runSummary({ kind: 'skill-assist', projectId: 'skills' }),
+      project: project({ id: 'skills' }),
+      skillCatalog: () => ({ library: [], project: [] }),
+      requestProposal: decide
+    })
+    const session = await runToIdle(ctx)
+    const calls = decide.mock.calls.map((c) => c[0] as { payload: any })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]!.payload.items[0]).toMatchObject({ scope: 'library', draft: { name: 'mock-skill' } })
+    expect(calls[0]!.payload.items[0].roles).toBeUndefined()
+    expect(toolNames(ctx)).toEqual(['list_skill_library', 'propose_skills', 'propose_skills'])
+    await stopAll(session)
+  })
+
+  it('mcp-assist with allowBuild tools on the harness project still finishes its script', async () => {
+    const roles = [{ ...project().roles[0]!, tools: ['Read', 'Edit', 'Write', 'Bash'] as ('Read' | 'Edit' | 'Write' | 'Bash')[] }]
+    const ctx = fakeCtx({
+      run: runSummary({ kind: 'mcp-assist', projectId: 'harness' }),
+      project: project({ id: 'harness', path: join(tmpdir(), 'quick', 'build'), roles }),
+      roles,
+      mcpLibrary: () => []
+    })
+    const session = await runToIdle(ctx)
+    expect(texts(ctx).at(-1)).toBe('The MCP servers are set up.')
+    await stopAll(session)
+  })
+})
+
+describe('mock adapter build sessions', () => {
+  it('refuses writes under <workspace>/.claude without a card and asks for other files', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'orgai-mock-build-'))
+    const ctx = fakeCtx({
+      run: runSummary({ kind: 'mcp-assist', buildWorkspace: ws }),
+      project: project({ path: ws }),
+      autoContinue: false
+    })
+    const script = {
+      delayMs: 0,
+      mcpAssist: [
+        { type: 'tool' as const, name: 'Write', input: { file_path: join(ws, '.claude', 'settings.local.json') }, ask: true },
+        { type: 'tool' as const, name: 'Write', input: { file_path: join(ws, 'server.mjs') }, ask: true }
+      ]
+    }
+    const session = await new MockAdapter({ script }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+    expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(ctx.requestPermission).mock.calls[0][0].input).toEqual({ file_path: join(ws, 'server.mjs') })
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.block.isError && /cannot write/.test(String(e.entry.block.content)))).toBe(true)
+    rmSync(ws, { recursive: true, force: true })
   })
 })

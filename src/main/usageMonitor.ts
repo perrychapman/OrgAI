@@ -4,6 +4,9 @@ import type { RuntimeAdapter } from './runtime/types'
 const BOOT_DELAY_MS = 1500
 const IDLE_INTERVAL_MS = 10 * 60_000
 
+/** An extra usage probe. The keyed form can also be run on its own (refreshProbe). */
+export type ExtraProbe = (() => Promise<UsageStatus | null>) | { key: string; probe: () => Promise<UsageStatus | null> }
+
 /**
  * Keeps the plan usage meter fresh when no run is open. Live runs report usage themselves every
  * minute, so the monitor only probes while the app is idle: once shortly after boot, then every
@@ -14,7 +17,8 @@ export class UsageMonitor {
   private inFlight: Promise<UsageStatus | null> | null = null
   private last: UsageStatus | null = null
   private extraLast: (UsageStatus | null)[] = []
-  private extraInFlight: Promise<void> | null = null
+  /** At most one call in flight per extra probe, shared by refresh() and refreshProbe(). */
+  private extraInFlight = new Map<number, Promise<void>>()
 
   constructor(
     private opts: {
@@ -23,10 +27,10 @@ export class UsageMonitor {
       broadcast: (e: RunEvent) => void
       liveRuns: () => number
       /**
-       * Additional probes (the Codex rate limits). Each runs on every refresh and is broadcast as usage.status
-       * with its own provider/connection. They never affect latest() or the return value of refresh().
+       * Additional probes (the Codex rate limits, the LiteLLM key spend). Each runs on every refresh and is broadcast
+       * as usage.status with its own provider/connection. They never affect latest() or the return value of refresh().
        */
-      extraProbes?: (() => Promise<UsageStatus | null>)[]
+      extraProbes?: ExtraProbe[]
     }
   ) {}
 
@@ -74,28 +78,39 @@ export class UsageMonitor {
     return this.inFlight
   }
 
-  /** Run the extra probes; concurrent callers share one pass. Failures are ignored. */
+  /** Run one keyed extra probe now (e.g. 'litellm' after a LiteLLM run ended). Shares a call already in flight. */
+  refreshProbe(key: string): Promise<void> {
+    const i = (this.opts.extraProbes ?? []).findIndex((p) => typeof p !== 'function' && p.key === key)
+    return i < 0 ? Promise.resolve() : this.runExtra(i)
+  }
+
+  /** Run every extra probe. Failures are ignored. */
   private refreshExtras(): Promise<void> {
-    const probes = this.opts.extraProbes
-    if (!probes?.length) return Promise.resolve()
-    if (this.extraInFlight) return this.extraInFlight
-    this.extraInFlight = Promise.all(
-      probes.map(async (probe, i) => {
-        try {
-          const usage = await probe()
-          if (usage) {
-            this.extraLast[i] = usage
-            this.opts.broadcast({ type: 'usage.status', runId: '', usage })
-          }
-        } catch {
-          // a failing probe must not break the Claude meter
+    const probes = this.opts.extraProbes ?? []
+    return Promise.all(probes.map((_, i) => this.runExtra(i))).then(() => undefined)
+  }
+
+  private runExtra(i: number): Promise<void> {
+    const running = this.extraInFlight.get(i)
+    if (running) return running
+    const entry = this.opts.extraProbes?.[i]
+    if (!entry) return Promise.resolve()
+    const probe = typeof entry === 'function' ? entry : entry.probe
+    const p = Promise.resolve()
+      .then(() => probe())
+      .then((usage) => {
+        if (usage) {
+          this.extraLast[i] = usage
+          this.opts.broadcast({ type: 'usage.status', runId: '', usage })
         }
       })
-    ).then(
-      () => {
-        this.extraInFlight = null
-      }
-    )
-    return this.extraInFlight
+      .catch(() => {
+        // a failing probe must not break the Claude meter
+      })
+      .finally(() => {
+        this.extraInFlight.delete(i)
+      })
+    this.extraInFlight.set(i, p)
+    return p
   }
 }

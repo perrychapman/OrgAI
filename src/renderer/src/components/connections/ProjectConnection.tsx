@@ -10,13 +10,15 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Switch } from '../ui/Switch'
 import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
+import { BrandMark } from '../brand/BrandMark'
+import { brandMark } from '../brand/brandMarks'
 import { Icon } from '../ui/Icon'
 import { SettingsCard } from '../settings/SettingsCard'
 import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { familyMismatches, previewRemap, roleTier, FAMILY_LABEL } from '../../lib/remap'
-import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } from '../../lib/settingsTarget'
 
 const NAME: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 const ICON = { anthropic: Sparkles, openai: Bot, litellm: Network }
@@ -151,7 +153,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
               <label key={id} className={`pconn-card ${pending === id || (!pending && current === id) ? 'on' : ''} ${current === id ? 'current' : ''}`}>
                 <input type="radio" name={`pconn-${project.id}`} checked={target === id} onChange={() => setPending(id === current ? null : id)} />
                 <span className="pconn-name">
-                  <Icon icon={ICON[id]} size="md" /> {NAME[id]}
+                  <span className="pconn-mark">{brandMark(id) ? <BrandMark id={id} /> : <Icon icon={ICON[id]} size="sm" />}</span> {NAME[id]}
                   {current === id && pending && <span className="muted"> (current)</span>}
                 </span>
                 <ConnectionStatusBadge state={info?.status.state ?? 'disconnected'} />
@@ -198,6 +200,19 @@ export default function ProjectConnection({ project }: { project: Project }): Re
             })}
           </ul>
         </details>
+        <p className="settings-card-note" data-testid="model-prices-link">
+          Model prices are set in App settings.{' '}
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              requestModelPrice()
+              setView('appSettings')
+            }}
+          >
+            Open model prices
+          </button>
+        </p>
       </SettingsCard>
 
       {target === 'litellm' && (

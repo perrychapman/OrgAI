@@ -1,6 +1,12 @@
-import { mkdirSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync } from 'node:fs'
 import type {
+  AgentInstance,
+  RunUsage,
+  UsageStats,
+  UsageStatsQuery,
+  AppSettings,
   AdapterChoice,
+  ModelPrice,
   ImageAttachment,
   McpInstallDecision,
   McpInstallOutcome,
@@ -18,6 +24,9 @@ import type {
   PermissionRuleDecision,
   PermissionRuleRequest,
   Project,
+  ProjectPeek,
+  QuickRunInfo,
+  SkillContent,
   Proposal,
   ProposalDecision,
   ProviderId,
@@ -30,24 +39,32 @@ import type {
   RunPlan,
   RunRecord,
   RunSummary,
+  RunSurface,
+  SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { adapterForProject, mcpSecretNames, modelFamily, newId, runMessagingOn } from '@shared/defaults'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS } from '@shared/types'
-import { architectRole, mcpAssistantRole } from '@shared/setup'
-import { ROOT_AGENT_ID, isSetupLikeRun, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, projectConnection, runMessagingOn, settingTier } from '@shared/defaults'
+import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
+import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
+import { isTrustRestrictedRun } from '../quick/scratch'
+import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
-import { describePlanChange, peerDeliveryBlocked } from './continuation'
-import { isLiveAgent, runOutcome, settleAgent, type RunOutcome } from './activity'
+import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
+import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
 import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
-import { assistContext } from '../mcp/assist'
+import { assistContext, buildToolsFor } from '../mcp/assist'
+import { skillAssistContext } from '../skills/assist'
 import { generateRunTitle } from '../ai/runTitle'
 
 /** The path as the file system spells it (true case on Windows). Falls back to the input when it cannot be resolved. */
@@ -60,6 +77,10 @@ export function canonicalPath(p: string): string {
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
+export const RUN_SKILL_LOAD_LIMIT = 1000
+/** run.usage events (and the index save that goes with them) are published at most this often per run. */
+export const USAGE_THROTTLE_MS = 1000
 /** When a usage limit gives no reset time, try again after this long. */
 export const DEFAULT_PAUSE_MS = 5 * 60 * 1000
 /** Sent to the orchestrator when a paused run continues. */
@@ -122,6 +143,27 @@ interface ActiveRun {
   resumeSessionId?: string
   /** The run's own emit (records, persists, logs and broadcasts); send() and stop() route through it so summary.status stays current. */
   emit: (e: RunEvent) => void
+  /** The adapter's last run.cost total (the provider's own figure; resume base already subtracted). */
+  providerTotalUsd?: number
+  /** The run's skills, read once at start (RuntimeContext.skills). skill.used events for any other id are dropped. */
+  skills: RunSkill[]
+  /** Counted skill loads by skill id (RunUsage.skills) and their total (capped at RUN_SKILL_LOAD_LIMIT). */
+  skillCounts: Map<string, SkillUseCount>
+  skillLoads: number
+  /** Time with at least one decision card open. */
+  waiting: IntervalTimer
+  /** Time held on a usage limit, until the user's next send or the run's end. */
+  limitTimer: IntervalTimer
+  /** Time in status 'idle'. */
+  idleTimer: IntervalTimer
+  /** Trailing timer for the throttled run.usage event. */
+  usageTimer?: ReturnType<typeof setTimeout>
+  /** When run.usage was last published (epoch ms; 0 = never). */
+  lastUsageAt: number
+  /** summary.usage changed since it was last published and saved. */
+  usageDirty: boolean
+  /** The last published usage without its timestamp; an identical recompute is not sent again. */
+  lastUsageKey?: string
   /** Display name of the project, for cross-run messages. */
   projectName: string
   /** Name of the root role (its orchestrator), for list_runs. */
@@ -221,6 +263,41 @@ export function sessionChain(runs: RunSummary[], from: RunSummary): RunSummary[]
   return [...byId.values()].filter((r) => ids.has(r.id))
 }
 
+/**
+ * A priced copy of an agent for agent.upsert: usage priced (a live agent the adapter gave no usage starts empty: its
+ * legacy cost field is an adapter estimate and must not read as the provider's), producedNothing set from the agent's final state and the legacy costUsd mirrored. Never mutates the input.
+ */
+function priceAgent(agent: AgentInstance, ctx: PricingContext): AgentInstance {
+  const priced = priceAgentUsage(agent.usage ?? emptyAgentUsage(), ctx)
+  if (agentProducedNothing(agent)) priced.producedNothing = true
+  else delete priced.producedNothing
+  return { ...agent, usage: priced, costUsd: priced.costUsd ?? 0 }
+}
+
+/** An allowBuild MCP assistant session (RunSummary.buildWorkspace) also gets Edit, Write and Bash; every call asks. */
+function withBuildTools(role: Role, run: Pick<RunSummary, 'kind' | 'buildWorkspace'>): Role {
+  const extra = buildToolsFor(run)
+  return extra.length ? { ...role, tools: [...new Set([...role.tools, ...extra])] } : role
+}
+
+const USAGE_KINDS: readonly RunKind[] = ['work', 'setup', 'mcp-assist', 'skill-assist']
+
+/** runs:usageStats input from the renderer: finite times, known kinds (default work), known bucket. */
+function sanitizeUsageQuery(raw: UsageStatsQuery): UsageStatsQuery & { kinds: RunKind[] } {
+  const q = (raw && typeof raw === 'object' ? raw : {}) as Partial<UsageStatsQuery>
+  const kinds = Array.isArray(q.kinds) ? [...new Set(q.kinds.filter((k): k is RunKind => (USAGE_KINDS as readonly unknown[]).includes(k)))] : []
+  const out: UsageStatsQuery & { kinds: RunKind[] } = {
+    projectId: typeof q.projectId === 'string' ? q.projectId : '',
+    kinds: kinds.length ? kinds : ['work'],
+    bucket: q.bucket === 'week' ? 'week' : 'day'
+  }
+  if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
+  if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  const limit = typeof q.limit === 'number' && Number.isFinite(q.limit) ? Math.floor(q.limit) : USAGE_STATS_DEFAULT_LIMIT
+  out.limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, limit))
+  return out
+}
+
 /** A system line in a run's root transcript. */
 function systemBlock(a: ActiveRun, at: number, text: string): void {
   a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: ROOT_AGENT_ID, at, source: 'harness', block: { kind: 'system', text } } })
@@ -237,15 +314,23 @@ export interface RunManagerOptions {
   resolveProject?: (projectId: string) => Project | null | undefined
   /** App setting passed to adapters (see RuntimeContext.opusGuardThreshold). */
   opusGuardThreshold?: () => number
+  /** Community model prices (communityPrices.ts); undefined when the setting is off or nothing is cached. */
+  communityPrices?: () => Record<string, ModelPrice> | undefined
   /** Delay between a turn ending and the automatic-continue check (RuntimeContext.continuationDelayMs). */
   continuationDelayMs?: number
   /** The model catalog used to decide which adapter a LiteLLM project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
+  /**
+   * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
+   * Missing = the built-in roles use the 'deep' tier on the run's connection.
+   */
+  appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'> &
+    Partial<Pick<AppSettings, 'modelPrices' | 'communityPrices' | 'skillAssistModel' | 'quickRunModel'>>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
   /**
-   * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = 'haiku' on the
-   * Claude adapter, the adapter's default model elsewhere.
+   * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = the adapter's
+   * default model.
    */
   fastModel?: (project: Project, choice: AdapterChoice) => string | undefined
   /** MCP servers and secrets (McpService). Missing = runs have no MCP servers and cannot install any. */
@@ -258,9 +343,41 @@ export interface RunManagerOptions {
     withLibrary?(project: Project): Project
     /** Refresh expiring OAuth tokens before servers start; resolves with the names still without a usable token. */
     prepareForRun?(projectId: string, specs: McpServerSpec[]): Promise<string[]>
+    /** Enabled servers `enabledServers` left out because a secret slot has no value (the run warns once each). */
+    skippedServers?(project: Project): { name: string; missing: string[] }[]
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
   }
+  /** Project skills for work runs (SkillService, RuntimeContext.skills). Missing = runs have no skills. */
+  skills?: SkillRunSource
+  /**
+   * The project of a quick run being resumed or continued, rebuilt from its summary.quick (QuickRunService.projectFor).
+   * Missing = a paused quick run cannot auto-resume.
+   */
+  quickProject?: (summary: RunSummary) => Project | null | undefined
+  /** The project of an MCP assistant build session being auto-resumed (workspace checked); throws when it is gone. */
+  buildProject?: (summary: RunSummary) => Project | null | undefined
+  /** list_projects for quick runs only (RuntimeContext.listProjects): stored projects, never virtual ones. */
+  listProjects?: () => ProjectPeek[]
+  /**
+   * The Skill assistant's view of the skills (RuntimeContext.skillCatalog / readSkill). `projectId` is null on the
+   * virtual SKILLS_PROJECT_ID (library scope). Missing = the skill tools report the library as unavailable.
+   */
+  skillAssist?: {
+    catalog(projectId: string | null): SkillAssistCatalog
+    read(projectId: string | null, ref: { libraryId?: string; skillId?: string }): SkillContent | null
+  }
+}
+
+/** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
+export interface ProjectCompletionInput {
+  system: string
+  prompt: string
+  kind: NonNullable<CompletionInput['kind']>
+  /** Which tier of the project's connection answers. 'fast' uses RunManagerOptions.fastModel like run titles. */
+  tier: 'fast' | 'everyday'
+  signal?: AbortSignal
+  onUsage?: CompletionInput['onUsage']
 }
 
 /** The install-card fields a user may edit before approving; everything else stays as the agent requested it. */
@@ -327,6 +444,15 @@ export interface StartInput {
   title?: string
   /** Continuations: the continued run's title (or prompt excerpt), given to the title model as context. */
   titleContext?: string
+  /** Setup runs only: the UI surface hosting the run (RunSummary.surface); ignored for other kinds. */
+  surface?: RunSurface
+  /**
+   * Quick runs (Chat): how the run was started. Required for, and accepted only with, project QUICK_PROJECT_ID and
+   * kind 'work'. Continuations carry it from the run they continue.
+   */
+  quick?: QuickRunInfo
+  /** MCP assistant runs with allowBuild: the per-run scratch dir the session works in (RunSummary.buildWorkspace). */
+  buildWorkspace?: string
 }
 
 export class RunManager {
@@ -344,7 +470,17 @@ export class RunManager {
     /** Retention per project; older finished runs are deleted when a run ends. */
     private keepRunsFor: (projectId: string) => number,
     private options: RunManagerOptions = {}
-  ) {}
+  ) {
+    // Card requests and resolutions change how long a run waits on the user (RunUsage.waitingMs).
+    const raw = broadcast
+    this.broadcast = (e) => {
+      raw(e)
+      if ('runId' in e && /\.(request|resolved)$/.test(e.type)) {
+        const a = this.runs.get(e.runId)
+        if (a) a.waiting.set(pendingCount(a) > 0, Date.now())
+      }
+    }
+  }
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
   async removeProject(projectId: string): Promise<void> {
@@ -355,6 +491,7 @@ export class RunManager {
         r.userStopped = true
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
+        if (r.usageTimer) clearTimeout(r.usageTimer)
         this.runs.delete(r.summary.id)
       }
     }
@@ -365,6 +502,38 @@ export class RunManager {
   /** The adapter a project's runs use (also used by the org chart drafter). Does not check role mismatches. */
   adapterFor(project: Project): RuntimeAdapter {
     return this.choose(project, 'setup').adapter
+  }
+
+  /**
+   * A one-shot completion (no tools) on the project's adapter and connection, with the tier's model. For helpers that
+   * are not runs (skill evaluation). Resolves with the text and the model used.
+   * Model: tier 'fast' is the run-title model (fastModel, else haiku on Claude); 'everyday' is the connection's
+   * everyday tier model (AppSettings.connections), else the model of the project's first everyday-tier role, else
+   * the adapter's default. Never for the harness project.
+   */
+  async completeForProject(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
+    if (isVirtualProjectId(project.id)) throw new Error('The harness and the built-in assistant projects have no model connection for completions.')
+    const { adapter, choice } = this.choose(project, 'setup')
+    const connection = this.options.resolveConnection?.(project, choice)
+    let model: string | undefined
+    if (input.tier === 'fast') {
+      model = this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined)
+    } else if (choice.adapter !== 'mock') {
+      const tiered = this.options.appSettings?.().connections?.[choice.connection]?.tierModels?.everyday
+      const fromRole = project.roles.find((r) => r.tier === 'everyday' && r.model !== 'inherit')?.model
+      model = (typeof tiered === 'string' && tiered.trim()) || fromRole || undefined
+    }
+    const text = await adapter.complete({
+      system: input.system,
+      prompt: input.prompt,
+      kind: input.kind,
+      cwd: project.path,
+      ...(model ? { model } : {}),
+      ...(connection ? { connection } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.onUsage ? { onUsage: input.onUsage } : {})
+    })
+    return { text, ...(model ? { model } : {}) }
   }
 
   /**
@@ -389,6 +558,72 @@ export class RunManager {
     return { adapter, choice }
   }
 
+  /**
+   * The model of a setup or MCP assistant run's built-in role, from App settings, resolved against the run's
+   * connection (builtinModel.ts). undefined for work runs or without settings (the role's default applies).
+   */
+  private builtinRoleModel(kind: RunKind, project: Project, choice: AdapterChoice): ResolvedBuiltinModel | undefined {
+    if (!isSetupLikeRun(kind)) return undefined
+    const settings = this.options.appSettings?.()
+    if (!settings) return undefined
+    const setting = kind === 'setup' ? settings.setupModel : kind === 'skill-assist' ? settings.skillAssistModel : settings.mcpAssistModel
+    const label = kind === 'setup' ? SETUP_MODEL_LABEL : kind === 'skill-assist' ? SKILL_ASSIST_MODEL_LABEL : MCP_ASSIST_MODEL_LABEL
+    return resolveBuiltinModel(setting, label, {
+      connection: choice.connection,
+      adapter: choice.adapter,
+      catalog: this.options.catalog?.() ?? [],
+      tierModels: settings.connections?.[choice.connection]?.tierModels ?? {},
+      root: project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+    })
+  }
+
+  /**
+   * A quick run with team 'single': settle the Assistant's model before the adapter is chosen. The role carries the
+   * unresolved AppSettings.quickRunModel setting; a tier name is first read through the connection's tier mapping so
+   * adapterForProject sees a real model family, then resolveBuiltinModel (fallback tier 'everyday') gives the model the
+   * run uses, with a warning when the setting could not be used. Without appSettings (tests) the setting stays as is.
+   */
+  private resolveQuickAssistant(project: Project): { project: Project; warning?: string } {
+    const role = project.roles.find((r) => r.slug === QUICK_ASSISTANT_SLUG && r.reportsTo === null)
+    if (!role) return { project }
+    const settings = this.options.appSettings?.()
+    const connection = projectConnection(project)
+    const tierModels = settings?.connections?.[connection]?.tierModels ?? {}
+    const tier = settingTier(role.model)
+    const hint = tier ? tierModels[tier]?.trim() || 'inherit' : role.model
+    const withModel = (model: string, tierName?: Role['tier']): Project => ({
+      ...project,
+      roles: project.roles.map((r) => {
+        if (r !== role) return r
+        const { tier: _drop, ...rest } = r
+        return { ...rest, model, ...(tierName ? { tier: tierName } : {}) }
+      })
+    })
+    const choice = adapterForProject(withModel(hint), this.options.catalog?.() ?? [])
+    if (!settings || choice.adapter === 'mock') return { project: choice.adapter === 'mock' ? project : withModel(hint) }
+    const resolved = resolveBuiltinModel(settings.quickRunModel, QUICK_RUN_MODEL_LABEL, {
+      connection: choice.connection,
+      adapter: choice.adapter,
+      catalog: this.options.catalog?.() ?? [],
+      tierModels,
+      fallbackTier: 'everyday'
+    })
+    return { project: withModel(resolved.model, resolved.tier), ...(resolved.warning ? { warning: resolved.warning } : {}) }
+  }
+
+  /** The session chain of a run (resumedFrom links, shared session ids), live runs with their current summaries. */
+  chain(runId: string): RunSummary[] {
+    const from = this.summary(runId)
+    return from ? this.chainOf(from) : []
+  }
+
+  /** The project a stored or live run continues in: a quick run's rebuilt project, else the current saved one. */
+  private projectOfRun(run: RunSummary): Project | null | undefined {
+    if (run.quick) return this.options.quickProject?.(run)
+    if (run.buildWorkspace) return this.options.buildProject?.(run)
+    return this.options.resolveProject?.(run.projectId)
+  }
+
   async start({
     project,
     prompt,
@@ -402,17 +637,42 @@ export class RunManager {
     images: rawImages,
     notice,
     title: carriedTitle,
-    titleContext
+    titleContext,
+    surface,
+    quick,
+    buildWorkspace
   }: StartInput): Promise<RunSummary> {
-    // The virtual harness project exists only for the library MCP assistant.
+    // Each virtual project belongs to exactly one kind of run.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
+    if (project.id === SKILLS_PROJECT_ID && kind !== 'skill-assist') throw new Error('Only the Skill assistant can run on the skills project.')
+    if (project.id === QUICK_PROJECT_ID && (kind !== 'work' || !quick)) throw new Error('Only a quick run can run on the quick project.')
+    if (quick && project.id !== QUICK_PROJECT_ID) throw new Error('Quick run details belong to the quick project only.')
+    if (buildWorkspace && kind !== 'mcp-assist') throw new Error('A build workspace belongs to an MCP assistant run.')
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
     project = this.options.mcp?.withLibrary?.(project) ?? project
+    // The Chat's single assistant settles its model before the adapter is chosen.
+    let quickWarning: string | undefined
+    if (quick?.team === 'single') {
+      const resolved = this.resolveQuickAssistant(project)
+      project = resolved.project
+      quickWarning = resolved.warning
+    }
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     const { adapter, choice } = this.choose(project, kind)
     const connection = this.options.resolveConnection?.(project, choice)
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
-    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries())
+    if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries(), buildWorkspace ? { allowBuild: true } : {})
+    // Library scope (the virtual skills project) has no stored project: the catalog and reads take null.
+    const skillScope = (): string | null => (project.id === SKILLS_PROJECT_ID ? null : project.id)
+    if (hiddenContext === undefined && kind === 'skill-assist') {
+      let catalog: SkillAssistCatalog = { library: [], project: [] }
+      try {
+        catalog = this.options.skillAssist?.catalog(skillScope()) ?? catalog
+      } catch (e) {
+        log.warn(`Skill assistant: the skill catalog is unavailable (${(e as Error).message})`)
+      }
+      hiddenContext = skillAssistContext(project, catalog)
+    }
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     const summary: RunSummary = {
       id: newId('run'),
@@ -421,10 +681,15 @@ export class RunManager {
       prompt,
       status: 'starting',
       startedAt: Date.now(),
-      totalCostUsd: 0
+      totalCostUsd: 0,
+      // Labels the run's cost in the UI (CLI estimate, LiteLLM prices, or none on a ChatGPT plan).
+      connection: connection?.connection ?? choice.connection
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
     if (carriedTitle && kind === 'work') summary.title = carriedTitle
+    if (surface === 'team' && kind === 'setup') summary.surface = surface
+    if (quick) summary.quick = { ...quick }
+    if (buildWorkspace) summary.buildWorkspace = buildWorkspace
     const active: ActiveRun = {
       summary,
       pending: new Map(),
@@ -437,6 +702,9 @@ export class RunManager {
       projectPath: project.path,
       runServers: new Map(),
       emit: () => {},
+      skills: [],
+      skillCounts: new Map(),
+      skillLoads: 0,
       projectName: project.name,
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
       messagesSent: new Map(),
@@ -444,13 +712,35 @@ export class RunManager {
       messagesReceived: 0,
       inbox: [],
       held: false,
+      waiting: new IntervalTimer(),
+      limitTimer: new IntervalTimer(),
+      idleTimer: new IntervalTimer(),
+      lastUsageAt: 0,
+      usageDirty: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {})
     }
     this.runs.set(summary.id, active)
     this.store.upsert(summary)
 
+    // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
+    const pricing = (): PricingContext => {
+      const s = this.options.appSettings?.()
+      const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
+      return {
+        connection: choice.connection,
+        overrides: s?.modelPrices ?? [],
+        ...(connection?.pricing ? { pricing: connection.pricing } : {}),
+        catalog: this.options.catalog?.() ?? [],
+        aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels),
+        ...(community ? { community } : {})
+      }
+    }
+
     const emit = (raw: RunEvent): void => {
+      // Usage is computed by the host; an adapter's run.usage is dropped.
+      if (raw.type === 'run.usage') return
+      if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
       // A session that ends after a usage-limit rejection is paused, not finished.
       if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
@@ -465,16 +755,23 @@ export class RunManager {
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
       if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
-      if (e.type === 'agent.upsert' && active.outcome) {
-        if (isLiveAgent(e.agent)) active.cutOff?.add(e.agent.id)
-        const settled = settleAgent(e.agent, !!active.cutOff?.has(e.agent.id), active.outcome, ROOT_AGENT_ID)
-        if (settled !== e.agent) e = { ...e, agent: settled }
+      if (e.type === 'agent.upsert') {
+        let agent = e.agent
+        if (active.outcome) {
+          if (isLiveAgent(agent)) active.cutOff?.add(agent.id)
+          agent = settleAgent(agent, !!active.cutOff?.has(agent.id), active.outcome, ROOT_AGENT_ID)
+        }
+        // Priced into a copy (never the adapter's object) before it is recorded or broadcast.
+        e = { ...e, agent: priceAgent(agent, pricing()) }
       }
+      const closing = e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')
       if (e.type === 'run.status') {
+        const now = Date.now()
         summary.status = e.status
         if (e.sessionId) summary.sessionId = e.sessionId
         if (e.error) summary.error = e.error
-        if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') summary.endedAt = Date.now()
+        active.idleTimer.set(e.status === 'idle', now)
+        if (closing) summary.endedAt = now
         if (e.status === 'paused') {
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
@@ -483,12 +780,17 @@ export class RunManager {
         }
         this.store.upsert(summary)
       } else if (e.type === 'run.cost') {
-        summary.totalCostUsd = e.totalCostUsd
-        this.store.upsert(summary)
+        // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
+        // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
+        if (!connection?.pricing) active.providerTotalUsd = e.totalCostUsd
       }
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      if (e.type === 'agent.upsert' || e.type === 'run.cost' || e.type === 'run.status' || e.type === 'plan.updated' || e.type === 'skill.used') {
+        if (closing) this.closeTimers(active)
+        this.refreshUsage(active, closing)
+      }
       // Root and cut-off reports read Finished / Stopped / Failed instead of "Waiting for you".
       if (outcome) {
         for (const agent of Object.values(active.record.agents)) {
@@ -499,7 +801,7 @@ export class RunManager {
     }
 
     active.emit = emit
-    emit({ type: 'run.status', runId: summary.id, status: 'starting' })
+    emit({ type: 'run.status', runId: summary.id, status: 'starting', ...(summary.surface ? { surface: summary.surface } : {}) })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
     // Advisory title from the fast model; never awaited, never fails the run.
@@ -508,7 +810,7 @@ export class RunManager {
       void this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
-        model: this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined),
+        model: this.options.fastModel?.(project, choice),
         connection,
         ...(titleContext ? { continues: titleContext } : {})
       })
@@ -527,10 +829,15 @@ export class RunManager {
     }
 
     const setupLike = isSetupLikeRun(kind)
+    // Setup-like runs and the virtual projects (harness, skills, Chat) carry no project MCP servers, plugins or skills.
+    const bare = setupLike || isVirtualProjectId(project.id)
+    const isQuick = project.id === QUICK_PROJECT_ID
+    // Quick runs and build sessions: the folder is untrusted, so its saved rules file never counts.
+    const restricted = isQuick || isTrustRestrictedRun(summary)
     const mcp = this.options.mcp
     /** The project as saved after installs this run made; the canonical path is kept. */
     let live: Project = project
-    const projectServers = (): McpServerSpec[] => (setupLike ? [] : (mcp?.enabledServers(live) ?? live.mcpServers?.filter((s) => s.enabled) ?? []))
+    const projectServers = (): McpServerSpec[] => (bare ? [] : (mcp?.enabledServers(live) ?? live.mcpServers?.filter((s) => s.enabled) ?? []))
     const runServerSpecs = (): McpServerSpec[] => [...active.runServers.values()].map((r) => r.spec)
     const allServers = (): McpServerSpec[] => {
       const base = projectServers()
@@ -551,6 +858,26 @@ export class RunManager {
     const warnedAuth = new Set<string>()
     /** Refresh expiring OAuth tokens before servers resolve; warn once per server that still has no usable token. */
     const prepareServers = async (specs: McpServerSpec[]): Promise<void> => {
+      // Servers left out because a secret slot is empty (enabledServers skips them): one warning each per run.
+      if (!bare && mcp?.skippedServers) {
+        let skipped: { name: string; missing: string[] }[] = []
+        try {
+          skipped = mcp.skippedServers(live)
+        } catch (e) {
+          log.warn(`MCP skipped-server check failed: ${(e as Error).message}`)
+        }
+        for (const s of skipped) {
+          const key = `secrets:${s.name}`
+          if (warnedAuth.has(key)) continue
+          warnedAuth.add(key)
+          emit({
+            type: 'log',
+            runId: summary.id,
+            level: 'warn',
+            message: `MCP server "${s.name}" has no value for ${s.missing.join(', ')}: open Settings > MCP servers and fill it in. It does not start in this run.`
+          })
+        }
+      }
       if (!mcp?.prepareForRun || !specs.length) return
       let names: string[] = []
       try {
@@ -570,8 +897,14 @@ export class RunManager {
       }
     }
     try {
-      // A new project's folder may not exist yet, and the provider needs a real cwd.
-      mkdirSync(project.path, { recursive: true })
+      // A quick run's folder was validated (or made as a scratch dir) before the run: a folder that has gone since is an
+      // error, never silently re-created.
+      if (isQuick) {
+        if (!existsSync(project.path)) throw new Error(`The folder ${project.path} no longer exists.`)
+      } else {
+        // A new project's folder may not exist yet, and the provider needs a real cwd.
+        mkdirSync(project.path, { recursive: true })
+      }
       // Git and Claude Code compare paths case-sensitively on Windows; a project path typed in a different
       // case than the folder on disk makes worktree isolation refuse to start. Use the on-disk spelling.
       project = { ...project, path: canonicalPath(project.path) }
@@ -580,10 +913,25 @@ export class RunManager {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
       }
+      // Work runs only; read once and kept for the session (grants do not change mid-run).
+      if (!bare && this.options.skills) {
+        try {
+          active.skills = this.options.skills.forRun(live, project.roles) ?? []
+        } catch (e) {
+          log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
+        }
+      }
+      const builtinModel = this.builtinRoleModel(kind, project, choice)
+      if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
+      if (quickWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: quickWarning })
       const ctx: RuntimeContext = {
         run: summary,
         project,
-        roles: kind === 'setup' ? [architectRole()] : kind === 'mcp-assist' ? [mcpAssistantRole()] : project.roles,
+        roles:
+          kind === 'setup' ? [architectRole(builtinModel)]
+          : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
+          : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
+          : project.roles,
         prompt,
         images: images.length ? images : undefined,
         hiddenContext,
@@ -603,7 +951,7 @@ export class RunManager {
             }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
-        ...(setupLike || project.id === HARNESS_PROJECT_ID
+        ...(bare
           ? {}
           : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
@@ -624,10 +972,20 @@ export class RunManager {
           await prepareServers(specs)
           return specs.map(resolveOne)
         },
-        plugins: () => (setupLike ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
+        plugins: () => (bare ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
+        skills: () => active.skills,
         requestQuestion: (req) => this.requestQuestion(active, req),
         requestPermissionRules: (req) => this.requestRules(active, req),
-        allowedRules: () => [...new Set([...listRules(project.path), ...active.runRules])],
+        // A quick run works in a folder the user never made a project: only this run's own grants count, never the
+        // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
+        allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
+        ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
+        ...(kind === 'skill-assist' && this.options.skillAssist
+          ? {
+              skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),
+              readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(skillScope(), ref)
+            }
+          : {}),
         noteArchitectureUpdated: async () => {
           const updated = this.setup.markArchitectureUpdated(project.id)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
@@ -636,12 +994,14 @@ export class RunManager {
         rateLimited: (info) => {
           active.limited = { ...active.limited, ...info }
           active.limitHold = true
+          active.limitTimer.set(true, Date.now())
         },
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
         pendingInteractions: () => pendingCount(active),
-        autoContinue: project.autoContinue !== false,
+        // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
+        autoContinue: project.autoContinue !== false && planNudgesApply(summary),
         maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
@@ -659,6 +1019,93 @@ export class RunManager {
     return summary
   }
 
+  /** Close the open wait / limit / idle intervals (the run ended or paused). */
+  private closeTimers(a: ActiveRun): void {
+    const now = Date.now()
+    a.waiting.set(false, now)
+    a.limitTimer.set(false, now)
+    a.idleTimer.set(false, now)
+  }
+
+  /** The run's current RunUsage from its (priced) agents and RunManager's own timers. */
+  private currentUsage(a: ActiveRun, now: number): RunUsage {
+    return computeRunUsage(a.summary, Object.values(a.record.agents), {
+      providerTotalUsd: a.providerTotalUsd,
+      nudges: a.record.plan?.autoContinues ?? 0,
+      waitingMs: a.waiting.elapsed(now),
+      limitHoldMs: a.limitTimer.elapsed(now),
+      idleMs: a.idleTimer.elapsed(now),
+      now,
+      skills: [...a.skillCounts.values()]
+    })
+  }
+
+  /**
+   * Count a skill.used event into the run. False = drop it (a skill the run does not have, or the per-run cap). A
+   * counted load also appends a harness transcript row on the loading agent. The name shown is the run skill's own.
+   */
+  private noteSkillUsed(a: ActiveRun, e: Extract<RunEvent, { type: 'skill.used' }>): boolean {
+    const skill = a.skills.find((s) => s.id === e.skillId)
+    if (!skill) {
+      log.warn(`Run ${a.summary.id}: dropped skill.used for unknown skill ${String(e.skillId).slice(0, 80)}`)
+      return false
+    }
+    if (a.skillLoads >= RUN_SKILL_LOAD_LIMIT) {
+      if (a.skillLoads === RUN_SKILL_LOAD_LIMIT) log.warn(`Run ${a.summary.id}: skill load limit (${RUN_SKILL_LOAD_LIMIT}) reached; later loads are not counted`)
+      a.skillLoads++
+      return false
+    }
+    a.skillLoads++
+    const slug = a.record.agents[e.agentId]?.roleSlug
+    const count = a.skillCounts.get(skill.id) ?? { skillId: skill.id, name: skill.name, loads: 0, roles: [] }
+    count.loads++
+    if (slug && !count.roles.includes(slug)) count.roles.push(slug)
+    a.skillCounts.set(skill.id, count)
+    a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: e.agentId, at: e.at, source: 'harness', block: { kind: 'system', text: `Loaded skill ${skill.name}` } } })
+    // The node reads "Using skill <name>" until the adapter's next activity; never after the run ended.
+    const agent = a.record.agents[e.agentId]
+    if (agent && !a.outcome) {
+      const updated = withSkillActivity(agent, skill.name)
+      if (updated !== agent) a.emit({ type: 'agent.upsert', runId: a.summary.id, agent: updated })
+    }
+    return true
+  }
+
+  /**
+   * Recompute summary.usage (and totalCostUsd) now; publish run.usage and save the index at most once per
+   * USAGE_THROTTLE_MS (trailing), or immediately when `immediate` (terminal status, teardown).
+   */
+  private refreshUsage(a: ActiveRun, immediate: boolean): void {
+    const now = Date.now()
+    a.summary.usage = this.currentUsage(a, now)
+    a.summary.totalCostUsd = a.summary.usage.costUsd ?? 0
+    a.usageDirty = true
+    if (immediate) {
+      this.publishUsage(a)
+      return
+    }
+    if (a.usageTimer) return
+    const wait = Math.max(0, a.lastUsageAt + USAGE_THROTTLE_MS - now)
+    if (wait === 0) this.publishUsage(a)
+    else a.usageTimer = setTimeout(() => this.publishUsage(a), wait)
+  }
+
+  private publishUsage(a: ActiveRun): void {
+    if (a.usageTimer) clearTimeout(a.usageTimer)
+    a.usageTimer = undefined
+    const now = Date.now()
+    a.summary.usage = this.currentUsage(a, now)
+    a.summary.totalCostUsd = a.summary.usage.costUsd ?? 0
+    a.lastUsageAt = now
+    a.usageDirty = false
+    // Nothing but the timestamp changed (e.g. a settled agent after the end): the last event and save still stand.
+    const key = JSON.stringify({ ...a.summary.usage, updatedAt: 0 })
+    if (key === a.lastUsageKey) return
+    a.lastUsageKey = key
+    this.store.upsert(a.summary)
+    this.broadcast({ type: 'run.usage', runId: a.summary.id, usage: a.summary.usage })
+  }
+
   /**
    * A run's session ended (or never started): settle every card still open, forget run-scoped servers and held
    * peer messages, persist the record and drop the run from the live set.
@@ -667,6 +1114,10 @@ export class RunManager {
     const runId = active.summary.id
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     cancelPending(active, runId, this.broadcast)
+    // The final usage goes out and is saved with the record, whatever the throttle still holds.
+    // Always recompute after the timers close so waitingMs / idleMs / limitHoldMs are final (publish skips no-op changes).
+    this.closeTimers(active)
+    this.refreshUsage(active, true)
     // A stopped run's pending title is dropped; a run that ended on its own may still get its title afterwards.
     if (active.userStopped) active.titleAbort?.abort()
     // Servers approved for this run only (and their secrets) are forgotten.
@@ -785,6 +1236,35 @@ export class RunManager {
     return active ? listPending(active) : emptyPending()
   }
 
+  /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */
+  usageStats(raw: UsageStatsQuery): UsageStats {
+    const query = sanitizeUsageQuery(raw)
+    const now = Date.now()
+    const inRange = (s: RunSummary): boolean =>
+      (query.kinds as RunKind[]).includes(s.kind) && (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until)
+    const byId = new Map<string, RunSummary>()
+    const fill: { id: string; usage: RunUsage }[] = []
+    for (const s of this.store.list(query.projectId)) {
+      if (!inRange(s) || this.runs.has(s.id)) continue
+      if (s.usage) {
+        byId.set(s.id, s)
+        continue
+      }
+      // Saved before usage tracking: normalize from the record once, then keep the result in the index.
+      const record = this.store.getRecord(s.id)
+      const usage = (record ? normalizeRunRecord(record, now).summary.usage : undefined) ?? legacySummaryUsage(s, now)
+      fill.push({ id: s.id, usage })
+      byId.set(s.id, { ...s, usage })
+    }
+    if (fill.length) this.store.setUsage(fill)
+    // Live runs read their current usage, not the last saved one.
+    for (const a of this.runs.values()) {
+      if (a.summary.projectId !== query.projectId || !inRange(a.summary)) continue
+      byId.set(a.summary.id, { ...a.summary, usage: this.currentUsage(a, now) })
+    }
+    return buildUsageStats([...byId.values()], query, now)
+  }
+
   // ---------- cross-run messaging ----------
 
   /**
@@ -793,10 +1273,10 @@ export class RunManager {
    * that did not opt in neither reads nor reveals what other runs are doing beyond project, status and orchestrator.
    */
   private listRunsFor(self: ActiveRun): RunPeer[] {
-    if (isSetupLikeRun(self.summary.kind)) return []
+    if (isSetupLikeRun(self.summary.kind) || isVirtualProjectId(self.summary.projectId)) return []
     const selfOn = this.messagingOn(self)
     return [...this.runs.values()]
-      .filter((a) => a !== self && a.summary.kind === 'work' && isOpenStatus(a.summary.status))
+      .filter((a) => a !== self && a.summary.kind === 'work' && !isVirtualProjectId(a.summary.projectId) && isOpenStatus(a.summary.status))
       .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
       .map((a) => ({
         runId: a.summary.id,
@@ -815,14 +1295,14 @@ export class RunManager {
   /** message_run: see RuntimeContext.messageRun. Both runs record the exchange through their own emit. */
   private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageOutcome> {
     const text = (typeof rawText === 'string' ? rawText : '').trim().slice(0, RUN_MESSAGE_MAX_CHARS)
-    if (isSetupLikeRun(sender.summary.kind)) return { result: 'refused', refusal: 'not-work' }
+    if (isSetupLikeRun(sender.summary.kind) || isVirtualProjectId(sender.summary.projectId)) return { result: 'refused', refusal: 'not-work' }
     if (targetId === sender.summary.id) return { result: 'refused', refusal: 'self' }
     if (!text) return { result: 'refused', refusal: 'empty' }
     const target = this.runs.get(targetId)
     const stored = target ? undefined : this.store.get(targetId)
     if (!target && !stored) return { result: 'not-found' }
     const targetSummary = target?.summary ?? stored!
-    if (isSetupLikeRun(targetSummary.kind)) return { result: 'refused', refusal: 'not-work' }
+    if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId)) return { result: 'refused', refusal: 'not-work' }
     // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
     if (!target) return { result: 'not-live' }
     // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
@@ -947,6 +1427,7 @@ export class RunManager {
 
   /** Project.runMessaging of a run's project, read from the current saved project when possible. */
   private messagingOn(a: ActiveRun): boolean {
+    if (isVirtualProjectId(a.summary.projectId)) return false
     const current = this.options.resolveProject?.(a.summary.projectId)
     return current ? runMessagingOn(current) : a.messagingAtStart
   }
@@ -957,8 +1438,10 @@ export class RunManager {
 
   get(runId: string): RunRecord | null {
     const active = this.runs.get(runId)
-    if (active) return { ...active.record, summary: { ...active.summary } }
-    const stored = this.store.getRecord(runId)
+    if (active) return normalizeRunRecord({ ...active.record, summary: { ...active.summary } })
+    const found = this.store.getRecord(runId)
+    // Records saved before usage tracking get legacy usage on read (nothing is written back here).
+    const stored = found ? normalizeRunRecord(found) : null
     if (!stored) return null
     // Records written before agentTree.resolveParent existed can hold a parent cycle; repair them on read.
     const agents = breakParentCycles(stored.agents ?? {}, ROOT_AGENT_ID)
@@ -983,12 +1466,21 @@ export class RunManager {
     })
   }
 
+  /** Quick runs and build sessions never save anything into their folder (isTrustRestrictedRun, plus the quick project). */
+  private isRestricted(summary: RunSummary): boolean {
+    return summary.projectId === QUICK_PROJECT_ID || isTrustRestrictedRun(summary)
+  }
+
   decide(runId: string, requestId: string, decision: PermissionDecision): void {
     const active = this.runs.get(runId)
     const pending = active?.pending.get(requestId)
     if (!active || !pending) return
     active.pending.delete(requestId)
-    pending.resolve(decision)
+    // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
+    // save rules into it. Narrow to the session here so every adapter is covered.
+    const narrowed: PermissionDecision =
+      decision?.behavior === 'allow' && decision.scope === 'project' && this.isRestricted(active.summary) ? { ...decision, scope: 'session' } : decision
+    pending.resolve(narrowed)
     this.broadcast({ type: 'permission.resolved', runId, requestId })
     this.cardSettled(active)
   }
@@ -1006,7 +1498,15 @@ export class RunManager {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
-              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload)
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
+            } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
+              // Library-scope Skill assistant: skill proposals change the skill library only.
+              if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
+              this.setup.applySkillsLibraryProposal(proposal)
+            } else if (isVirtualProjectId(active.summary.projectId)) {
+              throw new Error('This session has no project to change.')
+            } else if (active.summary.kind === 'skill-assist' && proposal.kind !== 'skills') {
+              throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
               const updated = this.setup.applyProposal(active.summary.projectId, proposal)
               onApplied?.(updated)
@@ -1119,7 +1619,8 @@ export class RunManager {
     const { rules } = pending.request
     let clean: PermissionRuleDecision
     if (decision?.behavior === 'grant') {
-      const scope = decision.scope === 'project' ? 'project' : 'run'
+      // A quick run's folder is not a project: a grant there stays on this run and nothing is written into the folder.
+      const scope = decision.scope === 'project' && !this.isRestricted(active.summary) ? 'project' : 'run'
       clean = { behavior: 'grant', scope }
       for (const r of rules) if (!active.runRules.includes(r)) active.runRules.push(r)
       if (scope === 'project') {
@@ -1181,7 +1682,7 @@ export class RunManager {
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
     const refuse = (why: string): McpInstallDecision => ({ approved: false, scope, note: `The harness did not install it: ${why}` })
-    if (project.id === HARNESS_PROJECT_ID) return refuse('installs are not available in a harness session; propose library entries instead.')
+    if (isVirtualProjectId(project.id)) return refuse('installs are not available in this session; propose library entries instead.')
     if (raw.spec !== undefined && (!raw.spec || typeof raw.spec !== 'object' || raw.spec.id !== request.spec.id)) return refuse('the edited server must keep the requested id.')
     const id = request.spec.id
     const taken =
@@ -1235,6 +1736,7 @@ export class RunManager {
     await active.session.send(text, images.length ? images : undefined)
     active.held = false
     active.limitHold = false
+    active.limitTimer.set(false, Date.now())
     void this.flushInbox(active)
   }
 
@@ -1324,9 +1826,16 @@ export class RunManager {
         ? { title: target.title }
         : { titleContext: target.title ?? excerpt(target.prompt, 200) }),
       hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
+      // A Team-tray Architect session stays in the Team tray when it is continued or auto-resumed.
+      ...(target.surface ? { surface: target.surface } : {}),
+      // A Chat run keeps its folder and settings; an MCP build session reopens in the same workspace.
+      ...(target.quick ? { quick: target.quick } : {}),
+      ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
       resumeSessionId: sessionId,
       resumedFrom: target.id,
-      resumeBaseCostUsd: target.totalCostUsd,
+      // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
+      // On a LiteLLM project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
+      resumeBaseCostUsd: projectConnection(project) === 'litellm' ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }
@@ -1390,7 +1899,7 @@ export class RunManager {
     const from = this.summary(runId)
     if (!from) throw new Error('Run not found')
     if (from.status !== 'paused') throw new Error('Run is not paused')
-    const current = this.options.resolveProject?.(from.projectId)
+    const current = this.projectOfRun(from)
     if (!current) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current

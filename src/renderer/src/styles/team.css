@@ -1,0 +1,683 @@
+/* ---------- Team tab: side panel (Role | Catalog), assistant tray, catalog ---------- */
+
+.team-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.team-panel-tabs {
+  flex: none;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-1);
+}
+.team-panel-tabs .tabs-list {
+  border-bottom: 0;
+}
+/* The pane scrolls as one column; the tab bar above it stays put. */
+.team-panel-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.team-panel-pane > .empty-state {
+  margin: auto;
+  padding: var(--space-4);
+}
+
+.role-capabilities {
+  padding-top: var(--space-1);
+  container-type: inline-size;
+  container-name: role-cap;
+}
+.role-cap-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.role-cap-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.role-cap-head .side-section-title {
+  margin: 0;
+}
+.role-cap-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.role-cap-summary {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.role-cap-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.role-cap-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.role-cap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.role-cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.role-cap-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.role-cap-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  flex: 1 1 var(--space-16);
+  min-width: 0;
+}
+.role-cap-sub {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.role-cap-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.role-cap-group > p,
+.role-cap-empty > p {
+  margin: 0;
+}
+.role-cap-text > .role-cap-tags {
+  margin-top: var(--space-1);
+}
+.role-tool-elevated {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--warning-text);
+}
+.role-fold > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+@container role-cap (min-width: 480px) {
+  .role-cap-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Scoped chooser (a dialog): a list of what the role does not have yet. */
+.capability-chooser-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.capability-chooser-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.capability-chooser-item:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.capability-chooser-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.capability-chooser-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.capability-chooser-name {
+  font-weight: var(--weight-semibold);
+}
+.capability-chooser-desc {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.capability-chooser-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.capability-chooser-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--attention-border, var(--border-default));
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  font-size: var(--text-small);
+}
+.capability-chooser-confirm .capability-chooser-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.capability-chooser-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.role-capabilities > .role-capabilities-title {
+  margin-top: 0;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+.role-capabilities .side-section-title {
+  margin-top: 0;
+}
+
+/* Catalog: the panel is the container, so the settings-col row layouts (stacked under 480 px, three columns from 480) apply. */
+.team-catalog {
+  container-type: inline-size;
+  container-name: settings-col;
+  min-width: 0;
+}
+.catalog-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+/* Actions sit under the heading and lead; beside them only when the catalog panel is wide enough for the lead to stay short. */
+.catalog-group-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+@container settings-col (min-width: 640px) {
+  .catalog-group-head {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--space-2) var(--space-3);
+  }
+}
+.catalog-group-heading {
+  flex: 1 1 var(--space-16);
+  min-width: 0;
+}
+.catalog-group-title {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.catalog-group-lead {
+  margin: var(--space-0h) 0 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.catalog-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.catalog-note {
+  margin: 0;
+}
+.catalog-used-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.catalog-used-by-label {
+  color: var(--text-secondary);
+}
+.catalog-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: var(--space-5);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.catalog-chip:hover {
+  background: var(--surface-3);
+}
+.catalog-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.mcp-row.is-flash,
+.cs-row.is-flash {
+  animation: skill-flash 1.8s ease-out;
+}
+/* The Evaluate button sits under the folded results. */
+.skill-eval-actions {
+  margin-top: var(--space-2);
+}
+.skill-eval-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The Architect in the tray: a header row, then the form. The tray scrolls; nothing floats over the chart. */
+.team-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.team-tray-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.team-tray-head h2 {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  min-width: 0;
+}
+.team-tray-head .grow {
+  flex: 1;
+}
+.team-tray-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.team-catalog .mcp-row-roles {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+/* Team assistant */
+.team-assistant > .team-tray-head {
+  flex-wrap: wrap;
+}
+.team-mode-pane[hidden] {
+  display: none;
+}
+.team-recommend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+}
+.team-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.team-scope,
+.team-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.team-scope {
+  flex-wrap: nowrap;
+}
+.team-scope .select {
+  width: auto;
+  min-width: 0;
+  max-width: 14rem;
+}
+.frame-tray[data-compact='true'] .team-recommend .checkbox-desc {
+  display: none;
+}
+.team-scope-label {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+.team-cost {
+  margin: 0;
+}
+.team-progress,
+.team-looked-list,
+.capability-gap-list,
+.capability-flags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.team-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.team-progress-row,
+.team-looked-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+.team-looked-list li {
+  justify-content: space-between;
+}
+.team-progress-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--success);
+  flex: none;
+}
+.team-progress-dot.state-error,
+.team-progress-dot.state-rateLimited {
+  background: var(--warning);
+}
+.team-progress-dot.state-skipped,
+.team-progress-dot.state-missing,
+.team-progress-dot.state-empty {
+  background: var(--border-strong);
+}
+.team-since {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+}
+.team-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.team-empty p {
+  margin: 0;
+}
+.team-problem {
+  margin: 0;
+}
+.capability-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+/* A wide tray (about 900 px) sets the cards in two columns; one-line rows span both. */
+@container tray (min-width: 900px) {
+  .capability-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+  .capability-list > .capability-applied {
+    grid-column: 1 / -1;
+  }
+}
+.capability-card .decision-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.capability-card p {
+  margin: 0;
+}
+.capability-location {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+}
+.capability-kind-icon {
+  display: inline-flex;
+  color: var(--text-secondary);
+}
+.capability-reason.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.capability-pin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.capability-command {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.capability-command-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.capability-target {
+  display: block;
+  max-width: 100%;
+  max-height: 7.5rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+.capability-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.capability-warn {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-small);
+}
+.capability-access-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.capability-applied {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+.capability-applied-text {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.capability-gaps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.capability-gap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1h) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.capability-gap-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Compact frame (under 480 px high): drop the explanations; the tray scrolls inside its share of the frame. */
+.frame-tray[data-compact='true'] .team-cost,
+.frame-tray[data-compact='true'] .capability-desc {
+  display: none;
+}
+@container tray (max-width: 420px) {
+  .team-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* Tray share: while results or the Architect's decisions are open the tray may take about two thirds of the frame (the chart keeps 36%). */
+.frame-grid:has(> .frame-tray .team-results-head),
+.frame-grid:has(> .frame-tray .architect-decisions) {
+  --stage-min: 36cqh;
+}
+/* One-line header: heading and mode tabs never wrap. */
+.team-assistant > .team-tray-head {
+  flex-wrap: nowrap;
+}
+.team-tray-head h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-results-head {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  scroll-margin-top: var(--space-2);
+}
+.team-results-head:focus-visible {
+  outline: 2px solid var(--focus-ring, currentColor);
+  outline-offset: 2px;
+}
+.team-results-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.team-results-row .team-results-head {
+  margin: 0;
+}
+.capability-location-full {
+  overflow-wrap: anywhere;
+  font-size: var(--text-caption);
+}
+.capability-details > summary {
+  cursor: pointer;
+  font-size: var(--text-caption);
+}
+.team-dismissed > summary {
+  cursor: pointer;
+}
+/* Design: while a session runs, the revise form is one line (field + button) so the first decision card stays in view. */
+.draft-revise-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.draft-revise-line .input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.draft-revise-line .capability-warn {
+  flex-basis: 100%;
+  margin: 0;
+}
+/* A decision card in the tray scrolls with the tray, not in a scroller of its own. */
+.architect-decisions .decision-card {
+  max-height: none;
+  overflow: visible;
+}
+.architect-decisions .decision-body {
+  max-height: none;
+  overflow: visible;
+}
+
+/* Denser card: tighter body, the command folds away when long. */
+.capability-card .decision-body {
+  gap: var(--space-1);
+}
+.capability-command-fold > summary {
+  cursor: pointer;
+  font-size: var(--text-caption);
+}
+.architect-decisions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}

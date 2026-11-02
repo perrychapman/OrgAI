@@ -88,6 +88,20 @@ export function parseLoginCompleted(params: unknown): CodexLoginResult {
   return { loginId: str(p.loginId) ?? null, success: p.success === true, error: str(p.error) ?? null }
 }
 
+export const MODEL_ID_MAX = 200
+export const MODEL_TEXT_MAX = 300
+export const MODEL_LIST_MAX = 2000
+const MODEL_ID_RE = /^[!-~]+$/
+
+/**
+ * True for a model id that is safe to pass on as options.model, an env value (ANTHROPIC_DEFAULT_*_MODEL) or a CLI
+ * argument: printable ASCII with no whitespace or control characters, 1 to 200 chars, and no leading '-' (it could
+ * read as an option). Applied to every provider's discovered ids, stored catalogs and saved tier models.
+ */
+export function validModelId(id: unknown): id is string {
+  return typeof id === 'string' && id.length <= MODEL_ID_MAX && MODEL_ID_RE.test(id) && !id.startsWith('-')
+}
+
 export function parseModelPage(raw: unknown): { models: CodexModelInfo[]; nextCursor: string | null } {
   const r = obj(raw)
   const data = Array.isArray(r.data) ? r.data : []
@@ -95,11 +109,12 @@ export function parseModelPage(raw: unknown): { models: CodexModelInfo[]; nextCu
   for (const item of data) {
     const m = obj(item)
     const id = str(m.model) ?? str(m.id)
-    if (!id) continue
+    if (!id || !validModelId(id)) continue
+    const description = str(m.description)?.slice(0, MODEL_TEXT_MAX)
     models.push({
       id,
-      label: str(m.displayName) ?? id,
-      ...(str(m.description) ? { description: str(m.description) } : {}),
+      label: (str(m.displayName) ?? id).slice(0, MODEL_TEXT_MAX),
+      ...(description ? { description } : {}),
       hidden: m.hidden === true,
       isDefault: m.isDefault === true
     })
@@ -138,8 +153,8 @@ export async function listModels(rpc: CodexRpc): Promise<CodexModelInfo[]> {
   for (let page = 0; page < 20; page++) {
     const raw: unknown = await rpc.request('model/list', cursor ? { cursor } : {})
     const parsed = parseModelPage(raw)
-    out.push(...parsed.models)
-    if (!parsed.nextCursor) break
+    for (const m of parsed.models) if (out.length < MODEL_LIST_MAX) out.push(m)
+    if (out.length >= MODEL_LIST_MAX || !parsed.nextCursor) break
     cursor = parsed.nextCursor
   }
   return out.filter((m) => !m.hidden)

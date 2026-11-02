@@ -3,7 +3,10 @@ import { memo, useEffect, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import type { AgentInstance } from '@shared/types'
-import { costLabel, formatElapsed, formatTokens, initials } from '../lib/layout'
+import { formatElapsed, formatTokens, initials } from '../lib/layout'
+import { agentProducedNothing } from '@shared/defaults'
+import { agentCostInput, costView } from '../lib/cost'
+import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
 import { activeRun, useAppStore } from '../store/useAppStore'
 
@@ -48,14 +51,21 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   // While the agent streams text, its first words stand in for the activity line.
   const partial = useAppStore((s) => activeRun(s)?.partial[agent.id])
   const streaming = partial !== undefined
-  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
-  const cost = costLabel(agent.costUsd, authMode)
+  const costInput = agentCostInput(agent)
+  const hasCost = !costView(costInput).empty
+  // Ended without result text: its tokens bought nothing. A quiet dim and a tooltip, no badge.
+  // The root is the orchestrator: it speaks the answer, so it is never flagged.
+  const noResult = !isRoot && agent.id !== 'root' && (!!agent.usage?.producedNothing || agentProducedNothing(agent))
   // An idle run is not a pending decision: the root waits for a reply, "Waiting for you" is for a card.
   const idleActivity = isRoot && agent.state === 'idle' && agent.activity === 'Waiting for you' ? 'Waiting for your reply' : agent.activity
-  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : idleActivity
+  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : noResult ? 'Ended without a result' : idleActivity
 
   return (
-    <div className={`agent-node state-${agent.state} ${selected ? 'selected' : ''}`} style={{ ['--role' as string]: color }}>
+    <div
+      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''}`}
+      style={{ ['--role' as string]: color }}
+      title={noResult ? 'Ended without a result: its tokens produced nothing' : undefined}
+    >
       {!isRoot && <Handle type="target" position={Position.Top} />}
       <div className="head">
         <div className="avatar-wrap">
@@ -89,7 +99,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
       )}
       <div className="foot">
         <span>{formatTokens(agent.inputTokens + agent.outputTokens)} tok</span>
-        <span title={agent.costUsd > 0 ? cost.title : undefined}>{agent.costUsd > 0 ? cost.text : formatElapsed(agent.startedAt, agent.endedAt)}</span>
+        {hasCost ? <Cost value={costInput} labelled /> : <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>}
       </div>
       <Handle type="source" position={Position.Bottom} />
       {/* Agent-to-agent messages attach at the sides, after the reporting-line handles so those stay the defaults. */}

@@ -1,6 +1,9 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
-import { HarnessCallerTracker, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { HarnessCallerTracker, everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer } from './types'
 
@@ -10,6 +13,57 @@ function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpS
 
 const fs = spec({ id: 'm1', name: 'fs', command: 'npx', args: ['-y', 'fs'], secretEnv: ['TOKEN'], roles: ['lead'] })
 const web = spec({ id: 'm2', name: 'web', transport: 'http', url: 'https://x.test/mcp', secretHeaders: ['Authorization'] })
+
+describe('near-limit steering helpers', () => {
+  it('detects deep and top models by tier name, alias, id or the connection mapping', () => {
+    expect(isDeepOrTopModel('opus', undefined)).toBe(true)
+    expect(isDeepOrTopModel('deep', undefined)).toBe(true)
+    expect(isDeepOrTopModel('claude-fable-1', undefined)).toBe(true)
+    expect(isDeepOrTopModel('sonnet', undefined)).toBe(false)
+    expect(isDeepOrTopModel('gpt-big', { deep: 'gpt-big' })).toBe(true)
+    expect(isDeepOrTopModel('gpt-big', { everyday: 'gpt-big' })).toBe(false)
+    expect(isDeepOrTopModel('', { deep: '' })).toBe(false)
+  })
+
+  it('replaces with the connection everyday model, else the builtin everyday entry', () => {
+    expect(everydayReplacement({ everyday: ' gpt-mid ' })).toBe('gpt-mid')
+    expect(everydayReplacement(undefined)).toBe('sonnet')
+  })
+})
+
+describe('mapSupportedModels', () => {
+  it('skips default, blanks, duplicates and non-strings, trims and caps', () => {
+    const out = mapSupportedModels([
+      { value: 'default', displayName: 'Default', description: '' },
+      { value: ' opus ', displayName: ' Opus ', description: 'd', resolvedModel: 'claude-opus-x' },
+      { value: 'opus', displayName: 'dup' },
+      { value: '  ' },
+      { value: 5 },
+      null,
+      { value: 'x'.repeat(200), displayName: 7, description: 'y'.repeat(400) }
+    ])
+    expect(out).toHaveLength(2)
+    expect(out[0]).toEqual({ id: 'opus', label: 'Opus', description: 'd', resolvedModel: 'claude-opus-x' })
+    expect(out[1].id).toHaveLength(200)
+    expect(out[1].label).toBeUndefined()
+    expect(out[1].description).toHaveLength(300)
+    expect(mapSupportedModels('nope')).toEqual([])
+    expect(mapSupportedModels(Array.from({ length: 300 }, (_, i) => ({ value: `m${i}` })))).toHaveLength(200)
+  })
+})
+
+describe('mapSupportedModels validation', () => {
+  it('drops ids with spaces, control chars, a leading dash, non-ASCII or over 200 chars', () => {
+    const bad = ['a b', 'a\u0007b', 'ab', 'a\nb', '--help', 'mödel', 'x'.repeat(201)]
+    const out = mapSupportedModels([...bad.map((value) => ({ value })), { value: 'claude-ok_1.2' }])
+    expect(out.map((m) => m.id)).toEqual(['claude-ok_1.2'])
+  })
+
+  it('drops an invalid resolvedModel but keeps the row', () => {
+    const out = mapSupportedModels([{ value: 'a', resolvedModel: 'bad model' }, { value: 'b', resolvedModel: '-x' }, { value: 'c', resolvedModel: 'good-1' }])
+    expect(out.map((m) => m.resolvedModel)).toEqual([undefined, undefined, 'good-1'])
+  })
+})
 
 describe('toClaudeMcpServers', () => {
   it('maps stdio and http specs, keyed by name, with resolved secrets', () => {
@@ -266,10 +320,118 @@ describe('linkAbortSignal', () => {
   })
 })
 
+describe('probeQueryOptions', () => {
+  it('loads no settings, tools or MCP servers', () => {
+    const o = probeQueryOptions(new AbortController(), { A: '1' })
+    expect(o.settingSources).toEqual([])
+    expect(o.tools).toEqual([])
+    expect(o.strictMcpConfig).toBe(true)
+    expect(o.mcpServers).toEqual({})
+    expect(o.env).toEqual({ A: '1' })
+    expect(o.cwd).toBe(tmpdir())
+  })
+})
+
 describe('buildCompletionOptions', () => {
   it('blocks ambient MCP servers', () => {
     const o = buildCompletionOptions({ cwd: process.cwd(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])
     expect(o.strictMcpConfig).toBe(true)
     expect(o.mcpServers).toEqual({})
+  })
+})
+
+describe('quick runs and build sessions (assistants)', () => {
+  const quick = { folder: '/some/user/folder', team: 'single' as const, allowEdits: false, gitRepo: false }
+  const quickCtx = (permissionMode: 'default' | 'auto' | 'acceptEdits' | 'bypassPermissions' = 'default') =>
+    fakeCtx({
+      run: runSummary({ projectId: 'quick', quick }),
+      project: project({ permissionMode, roles: [role({ id: 'q', slug: 'assistant', canSpawn: false })] })
+    })
+
+  it('loads no setting sources for a quick run and the project source otherwise', () => {
+    expect(claudeSettingSources(quickCtx())).toEqual([])
+    expect(claudeSettingSources(fakeCtx())).toEqual(['project'])
+  })
+
+  it('never reads saved rules from the folder for a quick run', () => {
+    expect(claudeSavedRules(quickCtx())).toEqual([])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: join(tmpdir(), 'orgai-no-such-dir') }) }))).toEqual([])
+  })
+
+  it('turns a project-scope allow into a session grant for a quick run only', () => {
+    const d = { behavior: 'allow' as const, scope: 'project' as const }
+    expect(quickSafeDecision(quickCtx(), d).scope).toBe('session')
+    expect(quickSafeDecision(fakeCtx(), d).scope).toBe('project')
+    expect(quickSafeDecision(quickCtx(), { behavior: 'allow', scope: 'once' }).scope).toBe('once')
+  })
+
+  it('keeps every call asking: no auto, acceptEdits or bypass for quick runs', () => {
+    for (const m of ['default', 'auto', 'acceptEdits', 'bypassPermissions'] as const) {
+      expect(claudePermissionMode(quickCtx(m))).toBe('default')
+      expect(claudeAllowsBypass(quickCtx(m))).toBe(false)
+    }
+    expect(claudePermissionMode(fakeCtx())).toBe('default')
+  })
+
+  it('keeps setup runs on acceptEdits, but an allowBuild assistant with write tools asks', () => {
+    const setup = fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), project: project({ roles: [role({ id: 'a', slug: 'a', tools: ['Read'] })] }) })
+    expect(claudePermissionMode(setup)).toBe('acceptEdits')
+    const build = fakeCtx({
+      run: runSummary({ kind: 'mcp-assist' }),
+      project: project({ roles: [role({ id: 'a', slug: 'a', tools: ['Read', 'Edit', 'Write', 'Bash'] })] })
+    })
+    expect(claudePermissionMode(build)).toBe('default')
+    expect(claudeAllowsBypass(build)).toBe(false)
+  })
+
+  it('passes the quick flag into the root prompt', () => {
+    const agents = buildAgents(quickCtx(), [], false)
+    expect(agents.assistant.prompt).toContain('/some/user/folder')
+    const plain = buildAgents(fakeCtx({ project: project({ roles: [role({ id: 'q', slug: 'assistant' })] }) }), [], false)
+    expect(plain.assistant.prompt).not.toContain('/some/user/folder')
+  })
+
+  it('exposes the quick, chat and skill-assist harness tools to the root', () => {
+    const q = buildAgents(quickCtx(), [{ name: 'list_projects', audience: 'root' }, { name: 'set_plan', audience: 'root' }], false)
+    expect(q.assistant.tools).toEqual(expect.arrayContaining(['mcp__orgai__list_projects', 'mcp__orgai__set_plan']))
+    const s = buildAgents(
+      fakeCtx({ run: runSummary({ kind: 'skill-assist' }), project: project({ roles: [role({ id: 'a', slug: 'a' })] }) }),
+      [{ name: 'list_skill_library', audience: 'root' }, { name: 'propose_skills', audience: 'root' }],
+      false
+    )
+    expect(s.a.tools).toEqual(expect.arrayContaining(['mcp__orgai__list_skill_library', 'mcp__orgai__propose_skills']))
+    expect(s.a.tools).not.toContain('SendMessage')
+  })
+})
+
+describe('build sessions (M1/M2 trust restriction)', () => {
+  const ws = mkdtempSync(join(tmpdir(), 'orgai-build-'))
+  mkdirSync(join(ws, '.claude'), { recursive: true })
+  writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }))
+  const buildCtx = () => fakeCtx({ run: runSummary({ kind: 'mcp-assist', buildWorkspace: ws }), project: project({ path: ws, permissionMode: 'auto' }) })
+
+  it('loads no setting sources and no saved rules', () => {
+    expect(claudeSettingSources(buildCtx())).toEqual([])
+    expect(claudeSavedRules(buildCtx())).toEqual([])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: ws }) }))).toContain('Bash')
+  })
+
+  it('downgrades project scope to session and never auto-approves', () => {
+    expect(quickSafeDecision(buildCtx(), { behavior: 'allow', scope: 'project' }).scope).toBe('session')
+    expect(claudePermissionMode(buildCtx())).toBe('default')
+    expect(claudeAllowsBypass(buildCtx())).toBe(false)
+  })
+
+  it('denies writes under <workspace>/.claude and leaves other paths to the normal card', () => {
+    const run = buildCtx().run
+    for (const tool of ['Edit', 'Write', 'MultiEdit']) {
+      expect(buildConfigWriteDenial(run, tool, { file_path: join(ws, '.claude', 'settings.local.json') })).toMatch(/cannot write/)
+      expect(buildConfigWriteDenial(run, tool, { file_path: '.claude/hooks.json' })).toMatch(/cannot write/)
+      expect(buildConfigWriteDenial(run, tool, {})).toMatch(/cannot write/)
+      expect(buildConfigWriteDenial(run, tool, { file_path: join(ws, 'server.mjs') })).toBeUndefined()
+    }
+    expect(buildConfigWriteDenial(run, 'NotebookEdit', { notebook_path: join(ws, '.claude', 'n.ipynb') })).toMatch(/cannot write/)
+    expect(buildConfigWriteDenial(run, 'Read', { file_path: join(ws, '.claude', 'x') })).toBeUndefined()
+    expect(buildConfigWriteDenial(runSummary(), 'Write', { file_path: join(ws, '.claude', 'x') })).toBeUndefined()
   })
 })

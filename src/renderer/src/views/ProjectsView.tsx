@@ -1,9 +1,9 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
-import { FolderOpen, Plus } from 'lucide-react'
+import { FolderOpen, MessageSquare, Plus } from 'lucide-react'
 import type { ProjectPathCheck, SetupKind } from '@shared/types'
 import { setupPending } from '@shared/setup'
-import { useAppStore } from '../store/useAppStore'
+import { openNewChat, useAppStore } from '../store/useAppStore'
 import { initials } from '../lib/layout'
 import { cleanIpcError } from '../lib/ipcError'
 import { examplePath } from '../lib/platform'
@@ -119,7 +119,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         ...(mockAvailable && useMock ? { mock: true } : {})
       }
       const created = await createProject(input as Parameters<typeof createProject>[0])
-      // Import never writes blind: the project starts with the default chart and the review opens on the Org chart tab.
+      // Import never writes blind: the project starts with the default chart and the review opens on the Team tab.
       if (choice === 'import') useAppStore.getState().requestImport({ projectId: created.id, fresh: true })
       if (choice === 'architect') await startSetup()
       // The form is gone: land focus on the new project's heading instead of letting it fall to the page.
@@ -319,7 +319,6 @@ export default function ProjectsView(): ReactElement {
 
   const mockAvailable = !!appInfo?.mockAdapter
   const empty = projects.length === 0
-  const showForm = empty || formOpen
 
   const remove = async (id: string, name: string): Promise<void> => {
     const ok = await confirm({
@@ -342,22 +341,42 @@ export default function ProjectsView(): ReactElement {
         )}
         <div className="spacer" />
         {!empty && !formOpen && (
-          <Button variant="primary" icon={Plus} onClick={() => setFormOpen(true)} testId="new-project">
-            New project
-          </Button>
+          <>
+            <Button variant="secondary" icon={MessageSquare} onClick={() => void openNewChat()} testId="projects-new-chat">
+              New chat
+            </Button>
+            <Button variant="primary" icon={Plus} onClick={() => setFormOpen(true)} testId="new-project">
+              New project
+            </Button>
+          </>
         )}
       </div>
       <div className="projects">
-        {empty && (
-          <div className="projects-intro">
-            <h2>Start with a project</h2>
-            <p>
-              Describe a new idea or point at an existing repository. The Architect interviews you, reads what is there, and proposes the
-              architecture, the org chart of agent roles, and the run settings. You approve each step before it is applied.
-            </p>
+        {empty ? (
+          <div className="projects-empty">
+            <div className="projects-empty-main">
+              <div className="projects-intro">
+                <h2>Start with a project</h2>
+                <p>
+                  Describe a new idea or point at an existing repository. The Architect interviews you, reads what is there, and proposes the
+                  architecture, the org chart of agent roles, and the run settings. You approve each step before it is applied.
+                </p>
+              </div>
+              <NewProjectForm mockAvailable={mockAvailable} />
+            </div>
+            <section className="card chat-now" aria-labelledby="chat-now-title">
+              <h2 id="chat-now-title" className="form-title">
+                Chat now
+              </h2>
+              <p>Ask a question or hand over a task without making a project.</p>
+              <Button variant="primary" icon={MessageSquare} testId="empty-chat-now" onClick={() => void openNewChat()}>
+                Chat now
+              </Button>
+            </section>
           </div>
+        ) : (
+          formOpen && <NewProjectForm mockAvailable={mockAvailable} onCancel={() => setFormOpen(false)} />
         )}
-        {showForm && <NewProjectForm mockAvailable={mockAvailable} onCancel={empty ? undefined : () => setFormOpen(false)} />}
         {!empty && (
           <ul className="project-list">
             {projects.map((p) => (

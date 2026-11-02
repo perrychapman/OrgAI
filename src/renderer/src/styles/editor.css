@@ -132,6 +132,36 @@
   flex-wrap: wrap;
 }
 
+.role-node .caps {
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.role-node .caps-sep {
+  color: var(--text-tertiary);
+}
+/* Icon plus number under 200 px of node width, words above. The icons only show in the compact form. */
+.role-node {
+  container-type: inline-size;
+  container-name: role-node;
+}
+.role-node .caps-part > svg {
+  display: none;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+@container role-node (max-width: 199px) {
+  .role-node .caps-part > svg {
+    display: inline;
+  }
+  .role-node .caps-word {
+    display: none;
+  }
+}
+
 /* ---------- Draft box ---------- */
 
 .draft-box {
@@ -191,6 +221,50 @@
 }
 .head-text {
   min-width: 0;
+}
+
+/* Role inspector: services the role can use */
+.role-services-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.role-service {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-primary);
+}
+.role-service-tile {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--hue) 60% 50% / 0.2);
+  color: hsl(var(--hue) 60% 45%);
+  font-size: var(--text-caption);
+  font-weight: 600;
+}
+.role-service-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-service-custom {
+  color: var(--text-secondary);
 }
 
 .swatch {

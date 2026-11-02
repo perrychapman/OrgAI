@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   APP_SETTINGS_PANES,
   APP_SETTINGS_SECTIONS,
+  PROJECT_SETTINGS_PANES,
   appPaneForSection,
+  isConnectorId,
   requestAppSettingsSection,
+  requestConnector,
+  takeConnectorTarget,
   takeAppSettingsSection
 } from './settingsTarget'
 
@@ -12,7 +16,10 @@ describe('appPaneForSection', () => {
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.usage)).toBe('defaults')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.defaults)).toBe('defaults')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.connections)).toBe('connections')
+    expect(appPaneForSection(APP_SETTINGS_SECTIONS.modelPrices)).toBe('connections')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.mcpLibrary)).toBe('mcp-library')
+    expect(appPaneForSection(APP_SETTINGS_SECTIONS.skillLibrary)).toBe('skill-library')
+    expect(appPaneForSection('skill-library')).toBe('skill-library')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.appearance)).toBe('general')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.notifications)).toBe('general')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.about)).toBe('about')
@@ -57,5 +64,38 @@ describe('section request round trip', () => {
     })
     expect(() => requestAppSettingsSection('a')).not.toThrow()
     expect(takeAppSettingsSection()).toBeNull()
+  })
+})
+
+describe('requestConnector', () => {
+  beforeEach(() => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k)
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+  it('validates kebab-case ids', () => {
+    expect(isConnectorId('github')).toBe(true)
+    expect(isConnectorId('google-drive')).toBe(true)
+    for (const bad of ['', 'GitHub', 'a b', 'a--b', '-a', 'a-', '../x', 'a'.repeat(65), 5, null]) expect(isConnectorId(bad)).toBe(false)
+  })
+  it('stores a valid id once and opens the Connectors pane', () => {
+    requestConnector('github')
+    expect(takeAppSettingsSection()).toBe('mcp-library')
+    expect(takeConnectorTarget()).toBe('github')
+    expect(takeConnectorTarget()).toBeNull()
+  })
+  it('drops a bad id', () => {
+    requestConnector('Bad Id')
+    expect(takeConnectorTarget()).toBeNull()
+  })
+})
+
+describe('project settings panes', () => {
+  it('keeps the tools pane id (stored choices and links) after its content moved to Team > Catalog', () => {
+    expect(PROJECT_SETTINGS_PANES.tools).toBe('tools')
   })
 })

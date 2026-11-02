@@ -8,9 +8,12 @@ import {
   canonicalResource,
   createPkce,
   discover,
+  discoverWithPreset,
   exchangeCode,
+  onRegistrableDomain,
   parseWwwAuthenticate,
   redactOAuth,
+  registrableHost,
   refreshTokens,
   registerClient,
   runAuthorization,
@@ -19,6 +22,7 @@ import {
   type LoopbackServer,
   type OAuthDiscovery
 } from './oauth'
+import { RESERVED_AUTH_PARAMS } from '@shared/connectors'
 
 type Handler = (url: URL, init: RequestInit | undefined) => Response | undefined | Promise<Response | undefined>
 
@@ -214,6 +218,34 @@ describe('PKCE and authorize URL', () => {
   })
 })
 
+describe('discover iss support (RFC 9207)', () => {
+  it('records the metadata issuer and the advertised flag', async () => {
+    const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: `${AS}/`, authorization_response_iss_parameter_supported: true } })).fetch)
+    // RFC 8414 section 3.3 allows only a trailing-slash difference; the metadata's own spelling is kept for the exact iss check.
+    expect(d.issuer).toBe(`${AS}/`)
+    expect(d.issParameterSupported).toBe(true)
+  })
+
+  it('records an exactly matching metadata issuer', async () => {
+    const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: AS, authorization_response_iss_parameter_supported: true } })).fetch)
+    expect(d.issuer).toBe(AS)
+    expect(d.issParameterSupported).toBe(true)
+  })
+
+  it('refuses metadata that names a different issuer', async () => {
+    const routes = discoveryRoutes({ asMeta: { ...ASMETA, issuer: 'https://iss.example.com' } })
+    await expect(discover(MCP, fakeFetch(routes).fetch)).rejects.toMatchObject({ step: 'discovery', message: expect.stringContaining('different issuer') })
+    await expect(discover(MCP, fakeFetch(routes).fetch)).rejects.toBeInstanceOf(OAuthError)
+  })
+
+  it('falls back to the authorization server URL and leaves the flag unset', async () => {
+    const { issuer: _i, ...noIssuer } = ASMETA
+    const d = await discover(MCP, fakeFetch(discoveryRoutes({ asMeta: { ...noIssuer, authorization_response_iss_parameter_supported: 'true' } })).fetch)
+    expect(d.issuer).toBe(AS)
+    expect(d.issParameterSupported).toBeUndefined()
+  })
+})
+
 describe('registerClient', () => {
   const d: OAuthDiscovery = { resource: MCP, authorizationServer: AS, authorizationEndpoint: 'x', tokenEndpoint: 'y', registrationEndpoint: `${AS}/register` }
 
@@ -224,6 +256,7 @@ describe('registerClient', () => {
     expect(JSON.parse(calls[0].body!)).toEqual({
       client_name: 'OrgAI',
       redirect_uris: ['http://127.0.0.1:5/callback'],
+      application_type: 'native',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       token_endpoint_auth_method: 'none'
@@ -293,6 +326,13 @@ describe('token endpoint', () => {
     expect(kept).toEqual({ accessToken: 'at-3', refreshToken: 'rt-1' })
   })
 
+  it('exchange works without a refresh_token', async () => {
+    const { fetch } = fakeFetch({ [`POST ${AS}/token`]: () => json({ access_token: 'at-9', expires_in: 60 }) })
+    const t = await exchangeCode(D, { clientId: 'cid', source: 'manual' }, { code: 'c', verifier: 'v', redirectUri: 'r' }, fetch, () => NOW)
+    expect(t).toEqual({ accessToken: 'at-9', expiresAt: '2026-01-01T00:01:00.000Z' })
+    expect('refreshToken' in t).toBe(false)
+  })
+
   it('refresh failures are step refresh and never echo secrets', async () => {
     const { fetch } = fakeFetch({
       [`POST ${AS}/token`]: () => new Response('{"error":"invalid_grant","refresh_token":"rt-secret-1"} refresh_token=rt-secret-1 Bearer abc.def', { status: 400 })
@@ -325,7 +365,7 @@ describe('loopback', () => {
     const p = lb.waitForCode('s1', { timeoutMs: 5000 })
     const res = await get(`${lb.redirectUri}?code=c0de&state=s1&junk=%3Cscript%3Ealert(1)%3C/script%3E`)
     const html = await res.text()
-    expect(await p).toBe('c0de')
+    expect(await p).toEqual({ code: 'c0de' })
     expect(res.status).toBe(200)
     expect(res.headers.get('content-security-policy')).toBe("default-src 'none'")
     expect(html).toContain('Authorization received. You can close this window and return to OrgAI.')
@@ -350,7 +390,7 @@ describe('loopback', () => {
     const ok = await get(`${lb.redirectUri}?code=real&state=right`)
     await ok.text()
     expect(ok.status).toBe(200)
-    expect(await p).toBe('real')
+    expect(await p).toEqual({ code: 'real' })
     lb.close()
   })
 
@@ -361,7 +401,15 @@ describe('loopback', () => {
     expect(other.status).toBe(404)
     await other.text()
     await (await get(`${lb.redirectUri}?code=ok&state=s`)).text()
-    expect(await p).toBe('ok')
+    expect(await p).toEqual({ code: 'ok' })
+    lb.close()
+  })
+
+  it('captures the iss parameter', async () => {
+    const lb = await startLoopback()
+    const p = lb.waitForCode('s', { timeoutMs: 5000 })
+    await (await get(`${lb.redirectUri}?code=ok&state=s&iss=${encodeURIComponent(AS)}`)).text()
+    expect(await p).toEqual({ code: 'ok', iss: AS })
     lb.close()
   })
 
@@ -400,9 +448,105 @@ describe('loopback', () => {
   })
 })
 
+describe('preset domain checks and reserved parameters', () => {
+  it('registrableHost / onRegistrableDomain compare on the last two labels', () => {
+    expect(registrableHost('https://slack.com/api/x')).toBe('slack.com')
+    expect(registrableHost('https://oauth2.googleapis.com/token')).toBe('googleapis.com')
+    expect(registrableHost('not a url')).toBeUndefined()
+    expect(onRegistrableDomain('https://api.slack.com/t', 'https://slack.com/x')).toBe(true)
+    expect(onRegistrableDomain('https://SLACK.com./t', 'https://slack.com/x')).toBe(true)
+    expect(onRegistrableDomain('https://evilslack.com/t', 'https://slack.com/x')).toBe(false)
+    expect(onRegistrableDomain('https://slack.com.evil.example/t', 'https://slack.com/x')).toBe(false)
+    expect(onRegistrableDomain('nope', 'https://slack.com/x')).toBe(false)
+  })
+
+  it('buildAuthorizeUrl refuses every catalog-reserved parameter from a preset', () => {
+    const extraParams = Object.fromEntries(RESERVED_AUTH_PARAMS.map((p) => [p.toUpperCase(), 'evil']))
+    const url = new URL(
+      buildAuthorizeUrl(
+        { resource: MCP, authorizationServer: AS, authorizationEndpoint: `${AS}/authorize`, tokenEndpoint: `${AS}/token` },
+        { clientId: 'cid', source: 'manual' },
+        { redirectUri: 'http://127.0.0.1:1/callback', state: 'st', challenge: 'ch', extraParams }
+      )
+    )
+    for (const p of RESERVED_AUTH_PARAMS) expect(url.searchParams.get(p.toUpperCase()), p).toBeNull()
+    expect(url.searchParams.get('client_id')).toBe('cid')
+  })
+})
+
+describe('preset issuer enforcement (issuer-only oauthClient presets)', () => {
+  it('passes when the discovered issuer matches the preset issuer', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes())
+    const d = await discoverWithPreset(MCP, fetch, { issuer: AS })
+    expect(d).toMatchObject({ authorizationServer: AS, tokenEndpoint: `${AS}/token`, registrationEndpoint: `${AS}/register` })
+  })
+
+  it('tolerates trailing slashes on either side', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, issuer: `${AS}/` } }))
+    await expect(discoverWithPreset(MCP, fetch, { issuer: AS })).resolves.toMatchObject({ tokenEndpoint: `${AS}/token` })
+    const plain = fakeFetch(discoveryRoutes())
+    await expect(discoverWithPreset(MCP, plain.fetch, { issuer: `${AS}//` })).resolves.toMatchObject({ tokenEndpoint: `${AS}/token` })
+  })
+
+  it('refuses a different issuer and names both, before any token request', async () => {
+    const { fetch, calls } = fakeFetch(discoveryRoutes())
+    const err = await discoverWithPreset(MCP, fetch, { issuer: 'https://login.example.com' }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(err.step).toBe('discovery')
+    expect(err.message).toContain(AS)
+    expect(err.message).toContain('https://login.example.com')
+    expect(calls.some((c) => c.method === 'POST')).toBe(false)
+  })
+
+  it('refuses a sibling host as issuer even on the same domain (exact match)', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes())
+    await expect(discoverWithPreset(MCP, fetch, { issuer: 'https://example.com' })).rejects.toThrow(/expects https:\/\/example\.com/)
+  })
+
+  it.each([
+    ['token endpoint', { token_endpoint: 'https://evil.test/token' }],
+    ['authorization endpoint', { authorization_endpoint: 'https://example.com.evil.test/authorize' }],
+    ['registration endpoint', { registration_endpoint: 'https://evilexample.com/register' }]
+  ])('refuses a %s on another domain', async (label, over) => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, ...over } }))
+    const err = await discoverWithPreset(MCP, fetch, { issuer: AS }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(err.message).toContain(label)
+  })
+
+  it('accepts endpoints on a subdomain of the issuer domain', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes({ asMeta: { ...ASMETA, token_endpoint: 'https://api.example.com/oauth/token' } }))
+    await expect(discoverWithPreset(MCP, fetch, { issuer: AS })).resolves.toMatchObject({ tokenEndpoint: 'https://api.example.com/oauth/token' })
+  })
+
+  it('runAuthorization refuses before the client secret is sent anywhere', async () => {
+    const { fetch, calls } = fakeFetch({
+      ...discoveryRoutes({ asMeta: { ...ASMETA, token_endpoint: 'https://evil.test/token' } }),
+      'POST https://evil.test/token': () => json({ access_token: 'x' })
+    })
+    const open = vi.fn(async () => {})
+    const err = await runAuthorization({ url: MCP, fetch, openExternal: open, clientId: 'cid', clientSecret: 'S3CRET', preset: { issuer: AS } }).catch((e) => e)
+    expect(err).toBeInstanceOf(OAuthError)
+    expect(open).not.toHaveBeenCalled()
+    expect(calls.some((c) => c.url.startsWith('https://evil.test'))).toBe(false)
+  })
+
+  it('a preset with endpoints falls back to them when the discovered issuer is off its domain', async () => {
+    const { fetch } = fakeFetch(discoveryRoutes())
+    const d = await discoverWithPreset(MCP, fetch, {
+      issuer: 'https://vendor.test',
+      authorizationEndpoint: 'https://vendor.test/authorize',
+      tokenEndpoint: 'https://vendor.test/token',
+      endpointsMode: 'fallback'
+    })
+    expect(d).toMatchObject({ authorizationServer: 'https://vendor.test', tokenEndpoint: 'https://vendor.test/token' })
+    expect(d.registrationEndpoint).toBeUndefined()
+  })
+})
+
 describe('runAuthorization', () => {
   /** The "browser": follows the authorize URL by hitting the redirect URI with a code and the state. */
-  function browser(opts: { code?: string; state?: (s: string) => string } = {}): { open: (url: string) => Promise<void>; urls: URL[] } {
+  function browser(opts: { code?: string; iss?: string; state?: (s: string) => string } = {}): { open: (url: string) => Promise<void>; urls: URL[] } {
     const urls: URL[] = []
     return {
       urls,
@@ -411,6 +555,7 @@ describe('runAuthorization', () => {
         urls.push(u)
         const redirect = new URL(u.searchParams.get('redirect_uri')!)
         redirect.searchParams.set('code', opts.code ?? 'auth-code-1')
+        if (opts.iss !== undefined) redirect.searchParams.set('iss', opts.iss)
         redirect.searchParams.set('state', opts.state ? opts.state(u.searchParams.get('state')!) : u.searchParams.get('state')!)
         await (await fetch(redirect)).text()
       }
@@ -458,6 +603,57 @@ describe('runAuthorization', () => {
     expect(form.get('code_verifier')).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(createHash('sha256').update(form.get('code_verifier')!).digest('base64url')).toBe(q.get('code_challenge'))
     expect(form.get('redirect_uri')).toBe(q.get('redirect_uri'))
+  })
+
+  describe('RFC 9207 issuer check', () => {
+    const advertised = { asMeta: { ...ASMETA, authorization_response_iss_parameter_supported: true } }
+    const run = (routes: Record<string, Handler>, iss?: string): Promise<unknown> => {
+      const f = fakeFetch(routes)
+      issCalls = f.calls
+      return runAuthorization({ url: MCP, fetch: f.fetch, openExternal: browser({ iss }).open, now: () => NOW }).catch((e) => e)
+    }
+    let issCalls: { method: string; url: string }[] = []
+    const tokenCalls = (): number => issCalls.filter((c) => c.url === `${AS}/token`).length
+
+    it('a matching iss passes and exchanges', async () => {
+      const r = (await run(flowRoutes(okToken, discoveryRoutes(advertised)), AS)) as { tokens: { accessToken: string } }
+      expect(r.tokens.accessToken).toBe('AT-secret')
+      expect(tokenCalls()).toBe(1)
+    })
+
+    it('a mismatching iss rejects at the callback step and never exchanges', async () => {
+      const err = (await run(flowRoutes(okToken, discoveryRoutes(advertised)), 'https://evil.example.com')) as OAuthError
+      expect(err).toBeInstanceOf(OAuthError)
+      expect(err.step).toBe('callback')
+      expect(err.message).toContain('different issuer')
+      expect(err.message).not.toContain('auth-code-1')
+      expect(tokenCalls()).toBe(0)
+    })
+
+    it('comparison is exact: a trailing slash differs', async () => {
+      const err = (await run(flowRoutes(okToken, discoveryRoutes(advertised)), `${AS}/`)) as OAuthError
+      expect(err.step).toBe('callback')
+      expect(tokenCalls()).toBe(0)
+    })
+
+    it('advertised but missing rejects', async () => {
+      const err = (await run(flowRoutes(okToken, discoveryRoutes(advertised)))) as OAuthError
+      expect(err.step).toBe('callback')
+      expect(err.message).toContain('iss')
+      expect(tokenCalls()).toBe(0)
+    })
+
+    it('unadvertised and missing proceeds', async () => {
+      const r = (await run(flowRoutes(okToken))) as { tokens: { accessToken: string } }
+      expect(r.tokens.accessToken).toBe('AT-secret')
+      expect(tokenCalls()).toBe(1)
+    })
+
+    it('unadvertised but present and wrong rejects', async () => {
+      const err = (await run(flowRoutes(okToken), 'https://evil.example.com')) as OAuthError
+      expect(err.step).toBe('callback')
+      expect(tokenCalls()).toBe(0)
+    })
   })
 
   it('a manual client id wins and DCR is not called; the secret is sent and returned', async () => {

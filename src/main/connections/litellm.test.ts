@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { fetchLiteLLMModels, normalizeBaseUrl, parseModelIds, parseModelInfo } from './litellm'
+import { LITELLM_MAX_BODY_BYTES, LITELLM_MAX_ID_CHARS, LITELLM_MAX_MODELS, buildLiteLLMModels, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl, parseKeyInfo, parseModelIds, parseModelInfo, parsePrice } from './litellm'
 
 const fx = (name: string): unknown => JSON.parse(readFileSync(join(__dirname, 'fixtures', name), 'utf8'))
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -36,6 +36,62 @@ describe('parsing', () => {
     expect(info.get('claude-haiku-4-5')?.contextWindow).toBe(64000)
     expect(info.get('gpt-5-mini')?.litellmProvider).toBe('openai') // from litellm_params.model prefix
     expect(parseModelInfo({})).toEqual(new Map())
+  })
+  it('reads the four price fields and the upstream model', () => {
+    const info = parseModelInfo({
+      data: [
+        { model_name: 'a', litellm_params: { model: 'anthropic/claude-x' }, model_info: { input_cost_per_token: 3e-6, output_cost_per_token: '1.5e-5', cache_read_input_token_cost: 3e-7, cache_creation_input_token_cost: 3.75e-6 } },
+        { model_name: 'b', model_info: { input_cost_per_token: null, output_cost_per_token: null } },
+        { model_name: 'c', model_info: { input_cost_per_token: 0, output_cost_per_token: 0 } },
+        { model_name: 'd', model_info: { input_cost_per_token: -1, output_cost_per_token: 'free' } },
+        { model_name: 'e', model_info: { output_cost_per_token: 2e-6 } }
+      ]
+    })
+    expect(info.get('a')).toMatchObject({
+      upstream: 'anthropic/claude-x',
+      price: { inputPerToken: 3e-6, outputPerToken: 1.5e-5, cacheReadPerToken: 3e-7, cacheCreationPerToken: 3.75e-6 }
+    })
+    expect(info.get('b')?.price).toBeUndefined()
+    expect(info.get('c')?.price).toEqual({ inputPerToken: 0, outputPerToken: 0 })
+    expect(info.get('d')?.price).toBeUndefined()
+    expect(info.get('e')?.price).toEqual({ inputPerToken: 0, outputPerToken: 2e-6 })
+    expect(parsePrice({})).toBeUndefined()
+  })
+  it('buildLiteLLMModels carries price and upstream into the catalog', () => {
+    const [m] = buildLiteLLMModels(['a'], new Map([['a', { mode: 'chat', price: { inputPerToken: 1e-6, outputPerToken: 2e-6 }, upstream: 'openai/a' }]]))
+    expect(m).toMatchObject({ id: 'a', price: { inputPerToken: 1e-6, outputPerToken: 2e-6 }, upstream: 'openai/a' })
+  })
+})
+
+describe('parseKeyInfo', () => {
+  it('reads the wrapped /key/info shape', () => {
+    expect(
+      parseKeyInfo({ key: 'sk-hash', info: { spend: 4.5, max_budget: 20, budget_duration: '30d', budget_reset_at: '2026-11-30T00:00:00Z', key_alias: 'me', models: [] } })
+    ).toEqual({ usd: 4.5, budgetUsd: 20, resetsAt: Date.parse('2026-11-30T00:00:00Z'), budgetDuration: '30d', keyAlias: 'me' })
+  })
+  it('accepts numeric strings, the bare shape, and a null or zero budget', () => {
+    expect(parseKeyInfo({ spend: '0.75', max_budget: '5' })).toMatchObject({ usd: 0.75, budgetUsd: 5 })
+    expect(parseKeyInfo({ info: { spend: 0, max_budget: null, budget_reset_at: null } })).toEqual({ usd: 0, budgetUsd: null, resetsAt: null, budgetDuration: null, keyAlias: null })
+    expect(parseKeyInfo({ info: { spend: 1, max_budget: 0 } })?.budgetUsd).toBeNull()
+    expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: 1_900_000_000 } })?.resetsAt).toBe(1_900_000_000_000)
+  })
+  it('returns null for garbage', () => {
+    for (const body of [null, undefined, 'x', 3, [], {}, { info: {} }, { info: { spend: 'NaN' } }, { info: { spend: -2 } }, { info: { spend: '1e' } }]) {
+      expect(parseKeyInfo(body)).toBeNull()
+    }
+    expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: 'not a date' } })?.resetsAt).toBeNull()
+    expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: 9e15 } })?.resetsAt).toBeNull() // beyond what a Date holds
+    expect(parseKeyInfo({ info: { spend: 1, budget_reset_at: '+275760-09-14T00:00:00.000Z' } })?.resetsAt).toBeNull()
+  })
+  it('fetchLiteLLMKeyInfo sends the key only as auth headers and refuses redirects', async () => {
+    const fetchImpl = vi.fn(async () => json({ info: { spend: 2 } }))
+    expect(await fetchLiteLLMKeyInfo('http://localhost:4000/', 'sk-secret', fetchImpl as unknown as typeof fetch)).toMatchObject({ usd: 2 })
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('http://localhost:4000/key/info')
+    expect(init).toMatchObject({ method: 'GET', redirect: 'error', headers: { Authorization: 'Bearer sk-secret' } })
+    const f404 = (async () => json({}, 404)) as unknown as typeof fetch
+    const err = await fetchLiteLLMKeyInfo('http://localhost:4000', 'sk-secret', f404).catch((e: Error) => e)
+    expect(String(err)).not.toContain('sk-secret')
   })
 })
 
@@ -81,5 +137,42 @@ describe('fetchLiteLLMModels', () => {
     const fetchImpl = vi.fn()
     await expect(fetchLiteLLMModels('http://evil.example.com', 'k', fetchImpl as unknown as typeof fetch)).rejects.toThrow()
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('discovery bounds', () => {
+  it('caps the models kept from a discovery and skips overlong ids', () => {
+    const ids = Array.from({ length: LITELLM_MAX_MODELS + 5 }, (_, i) => `m${i}`)
+    expect(buildLiteLLMModels(ids, new Map())).toHaveLength(LITELLM_MAX_MODELS)
+    expect(buildLiteLLMModels(['x'.repeat(LITELLM_MAX_ID_CHARS + 1), 'ok'], new Map()).map((m) => m.id)).toEqual(['ok'])
+  })
+
+  it('drops ids with whitespace, control chars, non-ASCII or a leading dash', () => {
+    expect(buildLiteLLMModels([...['has space', 'tab\there', 'bell\u0007', 'new\nline', '--help', '-m', 'caf\u00e9', 'x'.repeat(201), ''], 'openai/gpt-ok'], new Map()).map((m) => m.id)).toEqual(['openai/gpt-ok'])
+  })
+
+  it('runs /model/info prices through sanitizeModelPrice (ceiling applied)', () => {
+    expect(parsePrice({ input_cost_per_token: 1e9, output_cost_per_token: 1e-6 })).toBeUndefined()
+    expect(parsePrice({ input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, cache_read_input_token_cost: 1e9 })).toEqual({ inputPerToken: 1e-6, outputPerToken: 2e-6 })
+  })
+})
+
+describe('proxy output bounds', () => {
+  it('drops out-of-range prices instead of passing them on', () => {
+    expect(parsePrice({ input_cost_per_token: 1e300, output_cost_per_token: 0.000001 })).toBeUndefined()
+    expect(parsePrice({ input_cost_per_token: '1e300', output_cost_per_token: 0.000001 })).toBeUndefined()
+    expect(parsePrice({ input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 })).toEqual({ inputPerToken: 0.000001, outputPerToken: 0.000002 })
+  })
+  it('stops parsing at the model cap and ignores overlong ids', () => {
+    const data = Array.from({ length: LITELLM_MAX_MODELS + 50 }, (_, i) => ({ id: `m${i}` }))
+    expect(parseModelIds({ data })).toHaveLength(LITELLM_MAX_MODELS)
+    expect(parseModelIds({ data: [{ id: 'a' }, { id: 'a' }, { id: 'x'.repeat(LITELLM_MAX_ID_CHARS + 1) }] })).toEqual(['a'])
+    const info = parseModelInfo({ data: data.map((d) => ({ model_name: d.id })) })
+    expect(info.size).toBe(LITELLM_MAX_MODELS)
+  })
+  it('refuses a response body over the byte cap', async () => {
+    const big = (): Response => new Response('x'.repeat(LITELLM_MAX_BODY_BYTES + 10), { status: 200 })
+    const fetchImpl = (async () => big()) as unknown as typeof fetch
+    await expect(fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl)).rejects.toThrow(/too large/)
   })
 })

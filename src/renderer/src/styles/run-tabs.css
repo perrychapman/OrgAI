@@ -286,6 +286,22 @@
   flex-direction: column;
   gap: var(--space-5);
 }
+/* A short page (a 1024 x 640 window) drops the hero glyph and tightens the gaps, so the start button stays in view. */
+.new-run {
+  container: newrun / size;
+}
+@container newrun (max-height: 560px) {
+  .new-run-inner {
+    gap: var(--space-3);
+  }
+  .new-run-inner > .empty-state {
+    padding: 0;
+    gap: var(--space-1);
+  }
+  .new-run-inner > .empty-state .empty-state-glyph {
+    display: none;
+  }
+}
 .new-run-intro {
   text-align: center;
   color: var(--text-secondary);
@@ -459,9 +475,23 @@
 .history-table .run-row-actions {
   flex-wrap: nowrap;
 }
+/* The Chat folder name never squeezes the prompt column: one line, ellipsis, capped. */
+.history-table td.col-folder {
+  max-width: calc(var(--space-16) * 2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A disabled action keeps its reason reachable: the title sits on this wrapper, the Button inside is truly disabled. */
+.run-act-disabled {
+  display: inline-flex;
+}
 @container history (max-width: 900px) {
   .history-table .col-kind {
     display: none;
+  }
+  .history-table td.col-folder {
+    max-width: calc(var(--space-12) * 2);
   }
 }
 @container history (max-width: 800px) {

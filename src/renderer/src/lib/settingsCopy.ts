@@ -40,15 +40,15 @@ export const SETTINGS_COPY = {
   maxAutoContinues: {
     label: 'Max automatic continues per run'
   },
-  preferSonnet: {
-    label: 'Prefer Sonnet near the Opus limit',
-    description: 'Starts reports on Sonnet above the Opus threshold.',
-    more: 'Applies when the Opus weekly window (or the seven-day window, on plans without one) is at or above the threshold set in App settings. Agents already running are not changed.'
+  preferEveryday: {
+    label: 'Use the everyday tier near the limit',
+    description: 'Starts reports on the everyday tier when the plan window nears its limit.',
+    more: 'Applies when the plan window for the deep tier (or the seven-day window, on plans without one) is at or above the threshold set in App settings. Agents already running are not changed.'
   },
   opusThreshold: {
-    label: 'Opus weekly threshold',
+    label: 'Weekly usage threshold',
     description: 'Percent of the weekly window.',
-    more: 'Used by every project that turns on "Prefer Sonnet near the Opus limit".'
+    more: 'Used by every project that turns on "Use the everyday tier near the limit".'
   }
 } as const satisfies Record<string, SettingCopy>
 

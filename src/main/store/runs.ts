@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { ImageAttachment, ImageMediaType, RunRecord, RunSummary, TranscriptEntry } from '@shared/types'
+import { QUICK_PROJECT_ID } from '@shared/types'
+import type { ImageAttachment, ImageMediaType, RunRecord, RunSummary, RunUsage, TranscriptEntry } from '@shared/types'
 
 const MAX_TRANSCRIPT_ENTRIES = 5000
 const MAX_LOG_LINES = 400
@@ -24,6 +25,11 @@ export class RunStore {
   private runs: RunSummary[] = []
   /** Images already written, by object identity, so periodic flushes of a live record skip hashing. */
   private storedImages = new WeakMap<ImageAttachment, string>()
+  /**
+   * Called with the summaries a prune or removeProject just deleted (after the index write), so a quick run's
+   * scratch dir can be removed once no record points to it. Errors are swallowed: deletion never fails on a hook.
+   */
+  onRunsRemoved?: (removed: RunSummary[]) => void
 
   constructor(dataDir: string) {
     this.file = join(dataDir, 'runs.json')
@@ -62,6 +68,21 @@ export class RunStore {
     if (idx === -1) this.runs.push({ ...run })
     else this.runs[idx] = { ...run }
     this.persist()
+  }
+
+  /**
+   * Attach computed usage to several summaries in one index write (runUsage normalization of runs saved before
+   * usage tracking). Existing usage is kept; unknown ids are ignored. totalCostUsd is left as it was saved.
+   */
+  setUsage(updates: readonly { id: string; usage: RunUsage }[]): void {
+    let changed = false
+    for (const u of updates) {
+      const run = this.runs.find((r) => r.id === u.id)
+      if (!run || run.usage) continue
+      run.usage = u.usage
+      changed = true
+    }
+    if (changed) this.persist()
   }
 
   list(projectId: string): RunSummary[] {
@@ -194,6 +215,7 @@ export class RunStore {
     this.runs = this.runs.filter((r) => r.projectId !== projectId)
     this.persist()
     for (const r of gone) this.removeRecord(r.id)
+    this.notifyRemoved(gone)
     return gone.length
   }
 
@@ -208,10 +230,43 @@ export class RunStore {
       for (const r of sorted.slice(keep)) if (r.status === 'finished' || r.status === 'error') drop.add(r.id)
     }
     if (!drop.size) return 0
+    const removed = this.runs.filter((r) => drop.has(r.id))
     this.runs = this.runs.filter((r) => !drop.has(r.id))
     this.persist()
     for (const id of drop) this.removeRecord(id)
+    this.notifyRemoved(removed)
     return drop.size
+  }
+
+  private notifyRemoved(removed: RunSummary[]): void {
+    try {
+      this.onRunsRemoved?.(removed.map((r) => ({ ...r })))
+    } catch (e) {
+      console.warn('onRunsRemoved failed:', e)
+    }
+  }
+
+  /**
+   * Move runs to another project (a promoted quick run). Only the index entry changes (getRecord reads its summary
+   * from the index). Unknown ids are skipped. Returns the moved summaries (new projectId) in the order given.
+   */
+  moveToProject(runIds: readonly string[], projectId: string): RunSummary[] {
+    const moved: RunSummary[] = []
+    for (const id of runIds) {
+      const run = this.runs.find((r) => r.id === id)
+      if (!run) continue
+      run.projectId = projectId
+      // Out of the Chat: from now on it is a project run (continuing it uses the project's own roles).
+      if (projectId !== QUICK_PROJECT_ID) delete run.quick
+      moved.push({ ...run })
+    }
+    if (moved.length) this.persist()
+    return moved
+  }
+
+  /** Every stored summary (copies), for the scratch-dir sweep. */
+  all(): RunSummary[] {
+    return this.runs.map((r) => ({ ...r }))
   }
 
   /** Delete record files and run directories (image stores) whose run is no longer in the index. */

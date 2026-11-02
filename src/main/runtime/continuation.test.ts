@@ -12,6 +12,7 @@ import {
   nextStep,
   nudgeBlocked,
   peerDeliveryBlocked,
+  planNudgesApply,
   planProgressLabel,
   remainingSteps,
   stepActivity,
@@ -279,5 +280,67 @@ describe('ContinuationDriver', () => {
     d.dispose()
     await vi.advanceTimersByTimeAsync(2000)
     expect(host.nudges).toHaveLength(0)
+  })
+})
+
+describe('planNudgesApply (UX M5: a single-assistant Chat is a conversation)', () => {
+  const quick = (team: 'single' | 'default') => ({ folder: '/w', team, allowEdits: false, gitRepo: false })
+
+  it('applies to work runs and Chats with the default team only', () => {
+    expect(planNudgesApply({ kind: 'work' })).toBe(true)
+    expect(planNudgesApply({ kind: 'work', quick: quick('default') })).toBe(true)
+    expect(planNudgesApply({ kind: 'work', quick: quick('single') })).toBe(false)
+    expect(planNudgesApply({ kind: 'setup' })).toBe(false)
+    expect(planNudgesApply({ kind: 'mcp-assist' })).toBe(false)
+  })
+
+  function driverFor(run: Parameters<typeof planNudgesApply>[0], current: RunPlan | undefined) {
+    const nudges: string[] = []
+    const d = new ContinuationDriver({
+      kind: run.kind,
+      autoContinue: planNudgesApply(run),
+      delayMs: 10,
+      getPlan: () => current,
+      updatePlan: async () => {},
+      liveReports: () => 0,
+      pendingInteractions: () => 0,
+      rateLimited: () => false,
+      stopping: () => false,
+      orchestratorBusy: () => false,
+      nudge: (text) => nudges.push(text),
+      log: () => {},
+      tellUser: () => {}
+    })
+    return { d, nudges }
+  }
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('single: no set-plan or continue nudge at turn end, and the interrupt hold still works', async () => {
+    for (const current of [undefined, plan()]) {
+      const { d, nudges } = driverFor({ kind: 'work', quick: quick('single') }, current)
+      d.turnEnded()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(nudges).toEqual([])
+      expect((await d.evaluate()).kind).toBe('none')
+      d.hold()
+      expect(d.isHeld()).toBe(true)
+      d.userMessage()
+      expect(d.isHeld()).toBe(false)
+      d.dispose()
+    }
+  })
+
+  it('default team: unchanged (asks for a plan, then continues one)', async () => {
+    const first = driverFor({ kind: 'work', quick: quick('default') }, undefined)
+    first.d.turnEnded()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(first.nudges).toEqual([SET_PLAN_NUDGE])
+    const second = driverFor({ kind: 'work', quick: quick('default') }, plan())
+    second.d.turnEnded()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(second.nudges).toHaveLength(1)
+    expect(second.nudges[0]).toContain('Harness: plan 1 of 3 done.')
   })
 })

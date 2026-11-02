@@ -1,5 +1,7 @@
 import type {
   ConnectionId,
+  ModelRef,
+  ModelTier,
   ImageAttachment,
   McpInstallDecision,
   McpInstallRequest,
@@ -9,6 +11,7 @@ import type {
   McpServerSpec,
   MergeDecision,
   MergeReview,
+  ModelPrice,
   PermissionDecision,
   PermissionRuleDecision,
   PermissionRuleRequest,
@@ -26,6 +29,13 @@ import type {
   RunPeer,
   RunPlan,
   RunSummary,
+  ProjectPeek,
+  SkillContent,
+  SkillEvaluationReport,
+  SkillFileInfo,
+  SkillInfo,
+  SkillLibraryInfo,
+  TokenUsage,
   UsageStatus,
   UserQuestion
 } from '@shared/types'
@@ -34,11 +44,12 @@ import type {
 export const ROOT_AGENT_ID = 'root'
 
 /**
- * Setup-like runs ('setup' and 'mcp-assist') run a built-in role instead of the project's org chart, get
- * their own harness tool set and are never nudged by the ContinuationDriver.
+ * Setup-like runs ('setup', 'mcp-assist' and 'skill-assist') run a built-in role instead of the project's org
+ * chart, get their own harness tool set, are never nudged by the ContinuationDriver, never get cross-run messaging
+ * and never load skills. A quick run is a 'work' run, not setup-like.
  */
 export function isSetupLikeRun(kind: RunKind): boolean {
-  return kind === 'setup' || kind === 'mcp-assist'
+  return kind === 'setup' || kind === 'mcp-assist' || kind === 'skill-assist'
 }
 
 /**
@@ -68,6 +79,35 @@ export interface RunConnection {
   apiKey?: string
   /** Codex adapter on LiteLLM: the OpenAI-compatible base URL ("<litellm baseUrl>/v1"). */
   openaiBaseUrl?: string
+  /**
+   * LiteLLM only: token prices by model id from the catalog (ProviderModel.price, read from /model/info). Keys are
+   * the proxy's model names, plus the bare upstream model (litellm_params.model without its "provider/" prefix) when
+   * no model name already has it, since a proxy may answer with the upstream name. Look up with pricing.ts
+   * `priceFor` (date suffixes and provider prefixes are tolerated). Missing or no match = no estimate (cost 0;
+   * the Claude adapter then keeps the CLI's own rates). Not secret.
+   */
+  pricing?: Record<string, ModelPrice>
+  /**
+   * The connection's tier mapping at run start (AppSettings.connections[connection].tierModels), for tier-driven
+   * choices inside a run: steering deep/top spawns to the everyday tier near a plan limit, and mapping the tier names
+   * of proposed org chart roles. Missing on mock runs. Not secret.
+   */
+  tierModels?: Partial<Record<ModelTier, ModelRef>>
+  /** Ids of the connection's catalog at run start (ConnectionService.catalog), for validating proposed role models. */
+  models?: ModelRef[]
+}
+
+/**
+ * One model an adapter reports without a run (RuntimeAdapter.listModels). Claude: the SDK's supportedModels()
+ * (ModelInfo value / displayName / description), read after init with no prompt sent.
+ */
+export interface AdapterModelInfo {
+  /** What Role.model would hold ('opus', 'sonnet[1m]', a full id...). Never the CLI's 'default' pseudo-entry. */
+  id: ModelRef
+  label?: string
+  description?: string
+  /** The concrete model the id currently resolves to, when the provider says (ModelInfo.resolvedModel). */
+  resolvedModel?: string
 }
 
 /** An MCP server spec with its secret values filled in, ready for an adapter. Never emit, log or persist. */
@@ -77,6 +117,23 @@ export interface ResolvedMcpServer {
   env: Record<string, string>
   /** spec.headers plus secretHeaders values (http / sse). */
   headers: Record<string, string>
+}
+
+/**
+ * A project skill ready for a run (RuntimeContext.skills): enabled, its library link present, granted to at least one
+ * role of the run. `dir` is OrgAI's own stored copy (under the data dir), never the repository.
+ */
+export interface RunSkill {
+  /** SkillSpec.id (the project skill id, also for a linked skill). */
+  id: string
+  name: string
+  description: string
+  /** Absolute folder holding SKILL.md and the resource files. */
+  dir: string
+  /** The stored files, SKILL.md first (only these may be read or copied). */
+  files: SkillFileInfo[]
+  /** Ids of the run's roles granted this skill (Role.skills). */
+  roleIds: string[]
 }
 
 /** What message_run achieved (RuntimeContext.messageRun). */
@@ -170,7 +227,10 @@ export interface RuntimeContext {
    * continues automatically at `until`.
    */
   rateLimited(info: { until?: number; window?: string }): void
-  /** Weekly-window percent at or above which projects with preferSonnetNearLimit spawn Opus reports on Sonnet. */
+  /**
+   * Weekly-window percent at or above which projects with preferEverydayNearLimit (defaults.ts helper; legacy
+   * preferSonnetNearLimit honoured) spawn deep- and top-tier reports on the everyday tier (connection.tierModels).
+   */
   opusGuardThreshold?: number
   /** Work runs: the orchestrator's plan, if it set one (plan tools, continuation). */
   getPlan(): RunPlan | undefined
@@ -218,6 +278,13 @@ export interface RuntimeContext {
   resolvedMcpServers?(): Promise<ResolvedMcpServer[]>
   /** Enabled project plugins (Claude adapter only). Optional: missing = none. */
   plugins?(): PluginSpec[]
+  /**
+   * Work runs: the project skills granted to at least one role in `roles` (RunSkill.roleIds says which). Setup-like
+   * runs get none. Read once at session start (the set does not change mid-run). Missing = none.
+   * Grants are enforced per agent: Claude gates the Skill tool in PreToolUse, list_skills / load_skill filter by the
+   * caller's role (HarnessToolCaller.roleId). Adapters emit `skill.used` when a granted skill loads.
+   */
+  skills?(): RunSkill[]
   /** Model access for this run. Missing = the anthropic connection with project.provider.auth (tests, older code). */
   connection?: RunConnection
   /**
@@ -238,6 +305,31 @@ export interface RuntimeContext {
    * Missing = the tool answers NOT LIVE.
    */
   messageRun?(runId: string, text: string): Promise<RunMessageOutcome>
+  /**
+   * list_projects (quick runs only, RunSummary.quick set): every stored project as ProjectPeek data, never a virtual
+   * project, never secrets. RunManager provides it only for quick runs. Missing = the tool says it is unavailable.
+   */
+  listProjects?(): ProjectPeek[]
+  /**
+   * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with
+   * the role ids that load them (SkillInfo.grantedTo; resolve to slugs through ctx.project.roles). `project` is empty
+   * on the virtual SKILLS_PROJECT_ID. Missing = the skill tools say the library is unavailable.
+   */
+  skillCatalog?(): SkillAssistCatalog
+  /**
+   * Skill assistant runs: one skill's stored text. `libraryId` names a library entry, `skillId` a skill of the
+   * session's project (a linked skill reads its entry). null = unknown id. Never reads outside OrgAI's own copies.
+   */
+  readSkill?(ref: { libraryId?: string; skillId?: string }): SkillContent | null
+}
+
+/** RuntimeContext.skillCatalog: what list_skill_library reports. */
+export interface SkillAssistCatalog {
+  library: SkillLibraryInfo[]
+  /** Project skills (project session only). */
+  project: SkillInfo[]
+  /** The project's newest skills:evaluate report, when one exists (project session only). */
+  evaluation?: SkillEvaluationReport | null
 }
 
 export interface RuntimeSession {
@@ -269,9 +361,12 @@ export interface CompletionInput {
   /**
    * What the completion is for. 'draft' (default): the org chart drafter, answered with JSON. 'title': a run title
    * (src/main/ai/runTitle.ts), answered with one short line. Adapters only use it where they must (the mock answers
-   * deterministically per kind).
+   * deterministically per kind). 'skills': the skill evaluation's suggestion drafter (src/main/skills/), answered
+   * with JSON `{ "suggestions": [{ name, description, body, rationale, findingIds }] }`. 'recommend': the Team
+   * assistant (src/main/capabilities/recommend.ts), answered with JSON `{ "recommendations": [{ candidateId, roleIds,
+   * reason, access }], "gaps": [{ roleId, need }] }`; the prompt lists `candidate <id> | ...` and `role <id> | ...` lines.
    */
-  kind?: 'draft' | 'title'
+  kind?: 'draft' | 'title' | 'skills' | 'recommend'
   /**
    * How to reach the models, as RunManager resolved it for a run (env, API key, base URL, Codex home). Claude merges
    * `connection.env` over the process environment (and drops ANTHROPIC_API_KEY on a non-anthropic connection, like
@@ -284,6 +379,11 @@ export interface CompletionInput {
    * reject. Missing = the completion runs to its own end.
    */
   signal?: AbortSignal
+  /**
+   * Called once when the completion finished, with what it spent if the adapter knows (Claude: the result message's
+   * usage and total_cost_usd; Codex: the turn's token usage; mock: a fixed small figure). Missing = not reported.
+   */
+  onUsage?(usage: { tokens: TokenUsage; costUsd?: number; model?: string }): void
 }
 
 /**
@@ -301,4 +401,10 @@ export interface RuntimeAdapter {
    * Must not spend tokens.
    */
   probeUsage?(auth: ProviderAuth): Promise<UsageStatus | null>
+  /**
+   * The models the provider offers this login right now, without a run and without spending tokens (Claude: a query
+   * whose prompt never yields, supportedModels(), then abort; same pattern as probeUsage). null when the provider
+   * cannot say (old SDK, timeout, error). Never throws. ConnectionService turns the list into catalog entries.
+   */
+  listModels?(auth: ProviderAuth): Promise<AdapterModelInfo[] | null>
 }

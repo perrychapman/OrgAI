@@ -2,17 +2,20 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
   AppSettingsInfo,
+  CapabilityProgressEvent,
   ConnectionEvent,
   ContinueRunInput,
   DraftRequest,
   FocusRunTarget,
   McpLibraryInfo,
   OrgAIApi,
+  SkillLibraryInfo,
   PermissionDecision,
   Project,
   RunEvent,
   SendRunInput,
-  StartRunInput
+  StartRunInput,
+  TeamReviewSummary
 } from '../shared/types'
 import { IPC } from '../shared/types'
 
@@ -44,7 +47,8 @@ const api: OrgAIApi = {
   },
   models: {
     list: (query) => ipcRenderer.invoke(IPC.modelsList, query),
-    refresh: (query) => ipcRenderer.invoke(IPC.modelsRefresh, query)
+    refresh: (query) => ipcRenderer.invoke(IPC.modelsRefresh, query),
+    prices: (query) => ipcRenderer.invoke(IPC.modelsPrices, query)
   },
   onConnectionEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: ConnectionEvent): void => cb(event)
@@ -78,6 +82,61 @@ const api: OrgAIApi = {
     ipcRenderer.on(IPC.mcpLibraryChanged, listener)
     return () => ipcRenderer.removeListener(IPC.mcpLibraryChanged, listener)
   },
+  connectors: {
+    list: () => ipcRenderer.invoke(IPC.connectorsList),
+    add: (input) => ipcRenderer.invoke(IPC.connectorsAdd, input),
+    setToken: (input) => ipcRenderer.invoke(IPC.connectorsSetToken, input)
+  },
+  skills: {
+    list: (projectId) => ipcRenderer.invoke(IPC.skillsList, projectId),
+    read: (input) => ipcRenderer.invoke(IPC.skillsRead, input),
+    create: (input) => ipcRenderer.invoke(IPC.skillsCreate, input),
+    update: (input) => ipcRenderer.invoke(IPC.skillsUpdate, input),
+    remove: (input) => ipcRenderer.invoke(IPC.skillsRemove, input),
+    linkLibrary: (input) => ipcRenderer.invoke(IPC.skillsLinkLibrary, input),
+    promote: (input) => ipcRenderer.invoke(IPC.skillsPromote, input),
+    previewImport: (input) => ipcRenderer.invoke(IPC.skillsPreviewImport, input),
+    applyImport: (input) => ipcRenderer.invoke(IPC.skillsApplyImport, input),
+    undoImport: (input) => ipcRenderer.invoke(IPC.skillsUndoImport, input),
+    startAssist: (input) => ipcRenderer.invoke(IPC.skillsStartAssist, input),
+    evaluate: (projectId) => ipcRenderer.invoke(IPC.skillsEvaluate, projectId),
+    lastEvaluation: (projectId) => ipcRenderer.invoke(IPC.skillsLastEvaluation, projectId),
+    applySuggestion: (input) => ipcRenderer.invoke(IPC.skillsApplySuggestion, input)
+  },
+  skillLibrary: {
+    list: () => ipcRenderer.invoke(IPC.skillLibraryList),
+    read: (input) => ipcRenderer.invoke(IPC.skillLibraryRead, input),
+    create: (draft) => ipcRenderer.invoke(IPC.skillLibraryCreate, draft),
+    addFromFolder: (input) => ipcRenderer.invoke(IPC.skillLibraryAddFromFolder, input),
+    update: (input) => ipcRenderer.invoke(IPC.skillLibraryUpdate, input),
+    remove: (input) => ipcRenderer.invoke(IPC.skillLibraryRemove, input)
+  },
+  onSkillLibraryChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, entries: SkillLibraryInfo[]): void => cb(entries)
+    ipcRenderer.on(IPC.skillLibraryChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.skillLibraryChanged, listener)
+  },
+  capabilities: {
+    discover: (input) => ipcRenderer.invoke(IPC.capabilitiesDiscover, input),
+    recommend: (input) => ipcRenderer.invoke(IPC.capabilitiesRecommend, input),
+    cancel: (input) => ipcRenderer.invoke(IPC.capabilitiesCancel, { requestId: input?.requestId }),
+    apply: (input) => ipcRenderer.invoke(IPC.capabilitiesApply, input),
+    undo: (input) => ipcRenderer.invoke(IPC.capabilitiesUndo, input),
+    review: (input) => ipcRenderer.invoke(IPC.capabilitiesReview, input),
+    lastReview: (projectId: string) => ipcRenderer.invoke(IPC.capabilitiesLastReview, projectId),
+    dismiss: (input) => ipcRenderer.invoke(IPC.capabilitiesDismiss, input),
+    restore: (input) => ipcRenderer.invoke(IPC.capabilitiesRestore, input)
+  },
+  onTeamReviewUpdated: (cb) => {
+    const listener = (_e: IpcRendererEvent, summary: TeamReviewSummary): void => cb(summary)
+    ipcRenderer.on(IPC.capabilitiesReviewUpdated, listener)
+    return () => ipcRenderer.removeListener(IPC.capabilitiesReviewUpdated, listener)
+  },
+  onCapabilityProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: CapabilityProgressEvent): void => cb(event)
+    ipcRenderer.on(IPC.capabilitiesProgress, listener)
+    return () => ipcRenderer.removeListener(IPC.capabilitiesProgress, listener)
+  },
   plugins: {
     upsert: (input) => ipcRenderer.invoke(IPC.pluginsUpsert, input),
     remove: (input) => ipcRenderer.invoke(IPC.pluginsRemove, input)
@@ -99,7 +158,10 @@ const api: OrgAIApi = {
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
-    pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId)
+    pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
+    usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query),
+    startQuick: (input) => ipcRenderer.invoke(IPC.runsStartQuick, input),
+    promoteQuick: (input) => ipcRenderer.invoke(IPC.runsPromoteQuick, input)
   },
   window: {
     // Only the two ids cross; main validates them against the stores before opening anything.

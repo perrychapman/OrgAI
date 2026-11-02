@@ -1,8 +1,11 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useId, useRef } from 'react'
-import { Pause, RotateCcw, Square } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { FolderPlus, Pause, RotateCcw, Square } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { Button } from './ui/Button'
+import { useAssistantModelName } from '../lib/assistantModels'
+import { canPromote, offersRetro, offersSaveAsProject } from '../lib/assistants'
+import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
 
 /** Wraps one control and points its aria-describedby at a helper text; the primitives take no such prop. */
 function Described({ text, children }: { text: string; children: ReactNode }): ReactElement {
@@ -32,13 +35,17 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   const stopRun = useAppStore((s) => s.stopRun)
   const startRetro = useAppStore((s) => s.startRetro)
   const mock = useAppStore((s) => !!s.appInfo?.mockAdapter)
+  const setupModel = useAssistantModelName('setupModel')
+  const [saving, setSaving] = useState(false)
   if (!summary) return null
   const sessionOpen = summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting'
-  const canRetro = !sessionOpen && summary.kind === 'work' && (summary.status === 'finished' || summary.status === 'error')
-  if (!sessionOpen && !canRetro) return null
+  const canRetro = !sessionOpen && offersRetro(summary)
+  const canSave = !sessionOpen && offersSaveAsProject(summary)
+  const promote = canPromote(summary)
+  if (!sessionOpen && !canRetro && !canSave) return null
   const interruptHelp = 'Stops the current turn. The session stays open.'
   const endHelp = 'Ends the session and stops all of its agents.'
-  const retroHelp = `Have the Architect review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
+  const retroHelp = `Have the Architect (${setupModel}, set in App settings > Defaults) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
   return (
     <div className="run-actions" role="group" aria-label="Run actions">
       {sessionOpen && (
@@ -57,6 +64,21 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
           </span>
         </>
       )}
+      {canSave && (
+        <Described text={promote.ok ? 'Saves this chat as a project in its folder.' : (promote.reason ?? '')}>
+          {promote.ok ? (
+            <Button size="sm" icon={FolderPlus} ariaLabel="Save as project" testId="run-save-as-project" title="Save this chat as a project in its folder" onClick={() => setSaving(true)}>
+              <span className="run-act-label run-act-collapse">Save as project</span>
+            </Button>
+          ) : (
+            <span className="run-act-disabled" title={promote.reason}>
+              <Button size="sm" icon={FolderPlus} ariaLabel="Save as project" testId="run-save-as-project" disabled>
+                <span className="run-act-label run-act-collapse">Save as project</span>
+              </Button>
+            </span>
+          )}
+        </Described>
+      )}
       {canRetro && (
         <Described text={retroHelp}>
           <Button size="sm" icon={RotateCcw} ariaLabel="Org retrospective" title={retroHelp} onClick={() => void startRetro(summary.id)}>
@@ -64,6 +86,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
           </Button>
         </Described>
       )}
+      {saving && <SaveAsProjectDialog summary={summary} onClose={() => setSaving(false)} />}
     </div>
   )
 }

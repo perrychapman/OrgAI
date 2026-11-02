@@ -1,6 +1,9 @@
-import { adapterForFamily, defaultTierModels } from '@shared/defaults'
+import { adapterForFamily, builtinModels, defaultTierModels, tierForModel } from '@shared/defaults'
 import { MODEL_TIERS } from '@shared/types'
-import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel } from '@shared/types'
+import { sanitizeModelPrice } from '../runtime/pricing'
+import type { AdapterModelInfo } from '../runtime/types'
+import { validModelId } from './codexAccount'
+import type { ConnectionId, ModelFamily, ModelPrice, ModelRef, ModelTier, ProviderModel } from '@shared/types'
 
 /** Pure helpers that turn discovered model ids into catalog entries. */
 
@@ -62,9 +65,20 @@ export interface DiscoveredModelInput {
   /** Force a family (Codex model/list is always openai). */
   family?: ModelFamily
   tier?: ModelTier
+  /** The provider marks it as its default or recommended choice. */
+  recommended?: boolean
+  /** LiteLLM /model/info prices. */
+  price?: ModelPrice
+  /** LiteLLM litellm_params.model. */
+  upstream?: string
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
+  // Proxy text is untrusted: bounded here, prices must be within range or they are dropped.
+  const cap = (v: string | undefined): string | undefined => v?.slice(0, 200)
+  const price = sanitizeModelPrice(m.price)
+  const upstream = cap(m.upstream)
+  m = { ...m, label: cap(m.label), litellmProvider: cap(m.litellmProvider ?? undefined) ?? null }
   const family = m.family ?? classifyFamily(m.id, m.litellmProvider)
   const tier = m.tier ?? inferTier(m.id, family)
   return {
@@ -76,7 +90,10 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     ...(tier ? { tier } : {}),
     ...(m.contextWindow && m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
     ...(m.hint ? { hint: m.hint } : {}),
-    source: 'discovered'
+    source: 'discovered',
+    ...(m.recommended ? { recommended: true } : {}),
+    ...(price ? { price } : {}),
+    ...(upstream ? { upstream } : {})
   }
 }
 
@@ -98,4 +115,64 @@ export function autoFillTierModels(
     else if (defaults[tier]) out[tier] = defaults[tier]
   }
   return out
+}
+
+/**
+ * Heuristic tier from a provider's own description of a model, for families the id does not reveal. The strongest
+ * claim wins. undefined when the text says nothing recognisable.
+ */
+export function tierFromDescription(text: string | undefined): ModelTier | undefined {
+  const t = (text ?? '').toLowerCase()
+  if (!t) return undefined
+  if (/most (capable|intelligent|powerful|advanced)|frontier/.test(t)) return 'top'
+  if (/complex|deep reasoning|hardest|difficult/.test(t)) return 'deep'
+  if (/everyday|balanced|general[- ]purpose/.test(t)) return 'everyday'
+  if (/fastest|quick|cheap|lightweight|simple tasks|low[- ]latency/.test(t)) return 'fast'
+  return undefined
+}
+
+/**
+ * Map the Claude adapter's model list (SDK supportedModels) to anthropic catalog entries. Ids keep their tier by
+ * name (tierForModel); a context variant such as 'sonnet[1m]' gets none (listed, never suggested); an unknown family
+ * gets a tier from its description when the text says one; otherwise it is listed without a tier.
+ */
+export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): ProviderModel[] {
+  const seen = new Set<string>()
+  const out: ProviderModel[] = []
+  for (const info of list) {
+    const id = info.id?.trim()
+    if (!id || id === 'default' || seen.has(id) || !validModelId(id)) continue
+    seen.add(id)
+    const tier = id.includes('[') ? undefined : (tierForModel(id) ?? tierFromDescription(info.description))
+    const { tier: _inferred, ...entry } = makeDiscoveredModel('anthropic', {
+      id,
+      label: info.label,
+      family: 'claude',
+      hint: info.description?.slice(0, 300)
+    })
+    out.push(tier ? { ...entry, tier } : entry)
+  }
+  return out
+}
+
+/**
+ * The tier mapping a catalog suggests: defaultTierModels (recommended first, then catalog order). On anthropic a
+ * bare alias of the tier (/^[a-z]+$/, e.g. 'sonnet') is preferred over a full id so the tier keeps floating to the
+ * newest model of its family.
+ */
+export function suggestTierModels(connection: ConnectionId, catalog: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
+  const own = catalog.filter((m) => m.connection === connection)
+  const out = defaultTierModels(own)
+  if (connection === 'anthropic') {
+    for (const tier of MODEL_TIERS) {
+      const alias = own.find((m) => m.tier === tier && /^[a-z]+$/.test(m.id))
+      if (alias) out[tier] = alias.id
+    }
+  }
+  return out
+}
+
+/** The connection's builtin default mapping (what a fresh install holds). */
+export function builtinTierModels(connection: ConnectionId): Partial<Record<ModelTier, ModelRef>> {
+  return defaultTierModels(builtinModels(connection))
 }

@@ -213,6 +213,16 @@ describe('links', () => {
     expect(() => svc.upsert({ projectId: pid, spec: spec({ id: 'fresh', name: 'other', libraryId: 'mcpl_2' }) })).toThrow(/mcp:linkLibrary/)
   })
 
+  it("granting a role through upsert keeps a linked server's library link, connector id and secrets", () => {
+    library.save(stdioEntry({ connectorId: 'github' }))
+    svc.linkLibrary({ projectId: pid, libraryId: 'mcpl_2' })
+    secrets.set(mcpLibrarySecretKey('mcpl_2', 'env', 'GITHUB_TOKEN'), 'tok')
+    const l = link()
+    const r = svc.upsert({ projectId: pid, spec: { ...l, roles: ['lead', 'reviewer'] } })
+    expect(r.servers[0].spec).toMatchObject({ libraryId: 'mcpl_2', connectorId: 'github', roles: ['lead', 'reviewer'], enabled: true })
+    expect(secrets.get(mcpLibrarySecretKey('mcpl_2', 'env', 'GITHUB_TOKEN'))).toBe('tok')
+  })
+
   it('setSecret on a linked server points at the library entry', () => {
     svc.linkLibrary({ projectId: pid, libraryId: 'mcpl_2' })
     expect(() => svc.setSecret({ projectId: pid, serverId: link().id, kind: 'env', name: 'GITHUB_TOKEN', value: 'x' })).toThrow(/library/)

@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { validModelId } from '../connections/codexAccount'
 import {
   createSdkMcpServer,
   query,
@@ -23,15 +25,19 @@ import {
   type SDKUserMessage,
   type Query
 } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
+import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
-import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
-import { costOf, ratesFromModelUsage, type CostRates, type TokenMix } from './claudeCost'
+import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
+import { costFromPrice, priceFor } from './pricing'
+import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
+import { buildSkillPlugin, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
@@ -46,7 +52,7 @@ import {
   mapUsageResponse,
   mergeUsage,
   shareUsed,
-  shouldSteerToSonnet,
+  shouldSteerToEveryday,
   trackShare,
   windowShareExceeded,
   type AuthMode,
@@ -81,8 +87,40 @@ function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
   return images?.length ? { kind: 'user', text, images } : { kind: 'user', text }
 }
 
-function isOpusModel(model: string | undefined): boolean {
-  return !!model && /opus/i.test(model)
+/** Whether a model setting (tier name, alias or concrete id) is on the deep or top tier, or is one of the connection's deep/top models. */
+export function isDeepOrTopModel(model: string | undefined, tierModels: RunConnection['tierModels']): boolean {
+  const m = model?.trim()
+  if (!m) return false
+  const tier = settingTier(m) ?? tierForModel(m)
+  if (tier === 'deep' || tier === 'top') return true
+  return m === tierModels?.deep?.trim() || m === tierModels?.top?.trim()
+}
+
+/** The model a steered spawn runs on: the connection's everyday model, else the anthropic builtin everyday entry. */
+export function everydayReplacement(tierModels: RunConnection['tierModels']): string | undefined {
+  return tierModels?.everyday?.trim() || ANTHROPIC_BUILTIN_MODELS.find((m) => m.tier === 'everyday')?.id
+}
+
+/** Map a supportedModels() response (untrusted) to AdapterModelInfo rows. */
+export function mapSupportedModels(raw: unknown): AdapterModelInfo[] {
+  if (!Array.isArray(raw)) return []
+  const out: AdapterModelInfo[] = []
+  const seen = new Set<string>()
+  for (const row of raw) {
+    if (out.length >= 200) break
+    if (!row || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    if (typeof r.value !== 'string') continue
+    const id = r.value.trim()
+    if (!validModelId(id) || id.toLowerCase() === 'default' || seen.has(id)) continue
+    seen.add(id)
+    const info: AdapterModelInfo = { id }
+    if (typeof r.displayName === 'string' && r.displayName.trim()) info.label = r.displayName.trim().slice(0, 300)
+    if (typeof r.description === 'string' && r.description.trim()) info.description = r.description.trim().slice(0, 300)
+    if (typeof r.resolvedModel === 'string' && validModelId(r.resolvedModel.trim())) info.resolvedModel = r.resolvedModel.trim()
+    out.push(info)
+  }
+  return out
 }
 
 /**
@@ -252,6 +290,9 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
     // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
     CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
   }
+  // Bundled skills (and any not granted) must not be offered; set after isolation, which strips CLAUDE_CODE_DISABLE_*.
+  // The verified route is the env var (disableBundledSkills is a Settings field, not an Options field).
+  if (!isSetupLikeRun(ctx.run.kind)) env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = '1'
   if (!proxy && project.provider.auth.kind === 'apiKey') {
     const key = base[project.provider.auth.envVar]
     if (key) env.ANTHROPIC_API_KEY = key
@@ -297,7 +338,9 @@ export function buildAgents(
   ctx: RuntimeContext,
   harness: Pick<HarnessTool, 'name' | 'audience'>[],
   isolation: boolean,
-  mcpSpecs: Pick<Project, 'mcpServers'> = ctx.project
+  mcpSpecs: Pick<Project, 'mcpServers'> = ctx.project,
+  /** Run skills actually loaded in the run plugin, keyed by qualified name ("<plugin>:<name>"; empty = none). */
+  skills: Map<string, RunSkill> = new Map()
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
   const agents: Record<string, AgentDefinition> = {}
@@ -310,17 +353,80 @@ export function buildAgents(
     if (role.canSpawn && !isSetup) for (const t of [MESSAGE_TOOL, LIST_AGENTS_TOOL]) if (!tools.includes(t)) tools.push(t)
     const mcp = agentMcpServerNames(mcpSpecs, role)
     for (const name of mcp) if (!tools.includes(mcpToolRule(name))) tools.push(mcpToolRule(name))
+    // Roles with a grant get the native Skill tool; the PreToolUse gate limits it to their own orgai:<name> skills.
+    // AgentDefinition.skills is deliberately not set: it preloads full skill content on every spawn and grants nothing.
+    const granted = isSetup ? [] : [...skills.entries()].filter(([, s]) => s.roleIds.includes(role.id))
+    if (granted.length && !tools.includes('Skill')) tools.push('Skill')
     const def: AgentDefinition = {
       description: role.description,
-      prompt: buildRolePrompt(role, ctx.roles, ctx.project, { isSetup, isolation }),
+      prompt: buildRolePrompt(role, ctx.roles, ctx.project, {
+        isSetup,
+        isolation,
+        ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
+        ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
+      }),
       tools,
-      model: role.model || 'inherit'
+      model: role.model && validModelId(role.model) ? role.model : 'inherit'
     }
     if (mcp.length) def.mcpServers = mcp
     if (role.effort) def.effort = role.effort
     agents[role.slug] = def
   }
   return agents
+}
+
+/** True for a setup-like run whose root role was given write tools (allowBuild MCP assistant). */
+function setupRunCanWrite(ctx: RuntimeContext): boolean {
+  if (!isSetupLikeRun(ctx.run.kind)) return false
+  const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
+  return !!root && root.tools.some((t) => t === 'Edit' || t === 'Write' || t === 'Bash' || t === 'NotebookEdit')
+}
+
+/**
+ * Permission mode of a run. Setup-like runs normally never edit and run in acceptEdits (or auto); a setup-like run whose
+ * role holds Edit/Write/Bash (allowBuild MCP assistant) and every quick run keep the project's mode ('default'), so each
+ * call asks. Nothing here upgrades a quick or build run to auto or acceptEdits.
+ */
+export function claudePermissionMode(ctx: RuntimeContext): Options['permissionMode'] {
+  const mode = ctx.project.permissionMode
+  const askOnly = (): Options['permissionMode'] => (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode)
+  if (isTrustRestrictedRun(ctx.run)) return askOnly()
+  if (isSetupLikeRun(ctx.run.kind)) return setupRunCanWrite(ctx) ? askOnly() : mode === 'auto' ? 'auto' : 'acceptEdits'
+  return mode
+}
+
+export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
+  return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && ctx.project.permissionMode === 'bypassPermissions'
+}
+
+/** A quick run's folder and a build session's scratch dir are untrusted: .claude/settings*.json (rules, hooks) must not load. */
+export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
+  return isTrustRestrictedRun(ctx.run) ? [] : ['project']
+}
+
+/** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
+export function claudeSavedRules(ctx: RuntimeContext): string[] {
+  return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
+}
+
+/** A quick or build run's "project" scope becomes "session": nothing is ever written into the user's folder. */
+export function quickSafeDecision(
+  ctx: RuntimeContext,
+  decision: Extract<PermissionDecision, { behavior: 'allow' }>
+): Extract<PermissionDecision, { behavior: 'allow' }> {
+  return isTrustRestrictedRun(ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision
+}
+
+const BUILD_CONFIG_WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+export const BUILD_CONFIG_DENY = 'Build sessions cannot write OrgAI or Claude settings under .claude/ in the workspace.'
+
+/** Deny reason when a build session's file tool targets <workspace>/.claude (a missing path is denied too); undefined otherwise. */
+export function buildConfigWriteDenial(run: Pick<RunSummary, 'buildWorkspace'>, toolName: string, toolInput: unknown): string | undefined {
+  const ws = run.buildWorkspace
+  if (!ws || !BUILD_CONFIG_WRITE_TOOLS.has(toolName)) return undefined
+  const i = (toolInput ?? {}) as Record<string, unknown>
+  const target = toolName === 'NotebookEdit' ? (i.notebook_path ?? i.file_path) : (i.file_path ?? i.notebook_path)
+  return isWorkspaceConfigPath(ws, target) || typeof target !== 'string' || !target ? BUILD_CONFIG_DENY : undefined
 }
 
 /**
@@ -404,7 +510,7 @@ function textOf(content: unknown): string {
   return ''
 }
 
-class ClaudeSession implements RuntimeSession {
+export class ClaudeSession implements RuntimeSession {
   readonly finished: Promise<void>
   private input = new PushStream<SDKUserMessage>()
   private abort = new AbortController()
@@ -445,10 +551,13 @@ class ClaudeSession implements RuntimeSession {
   private usageByMessage = new Map<string, Map<string, { input: number; output: number; model?: string; mix: TokenMix }>>()
   /** Per-model USD rates from the latest result message; applied to new tokens until the next result. */
   private costRates: CostRates | null = null
+  private lastPricedTotal = -1
   /** Streamed text per agent, throttled into agent.partial events. */
   private partial = new PartialText((agentId, text) => this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text }))
   private seenBlocks = new Set<string>()
   private seenToolUses = new Set<string>()
+  /** `agentId:messageId` pairs already counted as a turn. */
+  private turnIds = new Set<string>()
   /** Resumed sessions only: tool results already shown, in case the SDK replays history. */
   private seenToolResults = new Set<string>()
   /** Resumed sessions only: subtracted from the SDK's cumulative cost; null until the first result. */
@@ -470,6 +579,10 @@ class ClaudeSession implements RuntimeSession {
   private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
+  /** The run-scoped orgai skills plugin (work runs with granted skills); removed at stop and teardown. */
+  private skillPlugin?: SkillPlugin
+  /** Skill tool_use ids the gate allowed, until PostToolUse confirms the call ran (then skill.used is emitted). */
+  private gatedSkillCalls = new Map<string, { agentId: string; skill: RunSkill }>()
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -559,6 +672,7 @@ class ClaudeSession implements RuntimeSession {
     this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
+    this.skillPlugin?.cleanup()
   }
 
   // ---------- internals ----------
@@ -581,7 +695,7 @@ class ClaudeSession implements RuntimeSession {
 
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
   }
 
   private ensureAgent(id: string, init?: Partial<AgentInstance>): AgentInstance {
@@ -628,11 +742,58 @@ class ClaudeSession implements RuntimeSession {
     for (const [agentId, perAgent] of this.usageByMessage) {
       const a = this.agents.get(agentId)
       if (!a) continue
-      const cost = costOf(perAgent.values(), rates)
-      if (Math.abs(cost - a.costUsd) < 1e-9) continue
+      const cost = this.agentCost(perAgent.values())
+      const before = JSON.stringify(a.usage?.models.map((m) => m.providerCostUsd))
+      this.syncModelUsage(a, perAgent)
+      if (Math.abs(cost - a.costUsd) < 1e-9 && before === JSON.stringify(a.usage?.models.map((m) => m.providerCostUsd))) continue
       a.costUsd = cost
       this.upsert(a)
     }
+  }
+
+  /**
+   * Report the agent's per-model token sums. providerCostUsd is only the CLI/SDK-derived cost (costRates); a model
+   * priced from LiteLLM's catalog gets none, RunManager prices it from RunConnection.pricing.
+   */
+  private syncModelUsage(a: AgentInstance, perAgent: Map<string, { model?: string; mix: TokenMix }>): void {
+    const pricing = this.litellmPricing()
+    for (const [model, e] of sumByModel(perAgent.values(), this.costRates, a.model)) {
+      const cost = pricing && priceFor(pricing, model) ? undefined : e.costUsd ?? undefined
+      setModelTokens(a, model, { input: e.mix.input, output: e.mix.output, cacheRead: e.mix.cacheRead, cacheWrite: e.mix.cacheCreation }, cost)
+    }
+  }
+
+  /** Per-token prices when this run goes through LiteLLM with a priced catalog, else undefined. */
+  private litellmPricing() {
+    const c = this.ctx.connection
+    return c?.connection === 'litellm' ? c.pricing : undefined
+  }
+
+  /**
+   * Cost of an agent's messages. With LiteLLM pricing each message is priced from its model's per-token price;
+   * a model without a price falls back to the CLI-derived rates, else 0. Otherwise the CLI rates apply.
+   */
+  private agentCost(messages: Iterable<{ model?: string; mix: TokenMix }>): number {
+    const pricing = this.litellmPricing()
+    if (!pricing) return this.costRates ? costOf(messages, this.costRates) : 0
+    let usd = 0
+    for (const m of messages) {
+      const price = priceFor(pricing, m.model)
+      if (price) usd += costFromPrice(m.mix, price)
+      else if (this.costRates) usd += weighted(m.mix) * rateFor(this.costRates, m.model)
+    }
+    return usd
+  }
+
+  /** LiteLLM with pricing: the run total is the sum of this run's agent costs. Emits run.cost when it moves. */
+  private emitPricedTotal(): number {
+    let total = 0
+    for (const perAgent of this.usageByMessage.values()) total += this.agentCost(perAgent.values())
+    if (Math.abs(total - this.lastPricedTotal) > 1e-12) {
+      this.lastPricedTotal = total
+      this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: total })
+    }
+    return total
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
@@ -745,13 +906,18 @@ class ClaudeSession implements RuntimeSession {
     this.ctx.rateLimited({ ...(until ? { until } : {}), ...(window ? { window } : {}) })
   }
 
-  /** Spawn a report on Sonnet instead of Opus while the Opus weekly window is near its limit? */
-  private steerToSonnet(target: Role | undefined, toolInput: Record<string, unknown>): boolean {
-    if (this.isSetup || usesProxy(this.ctx) || !this.ctx.project.preferSonnetNearLimit || this.authMode === 'apiKey') return false
-    const explicit = typeof toolInput.model === 'string' && toolInput.model ? toolInput.model : undefined
-    let model = explicit ?? target?.model ?? 'inherit'
+  /** The everyday model to spawn this report on instead of its deep/top one while the weekly window is near its limit, if any. */
+  private steerToEveryday(target: Role | undefined, toolInput: Record<string, unknown>): { from: string; to: string } | undefined {
+    if (this.isSetup || usesProxy(this.ctx) || !preferEverydayNearLimit(this.ctx.project) || this.authMode === 'apiKey') return undefined
+    const explicit = typeof toolInput.model === 'string' && validModelId(toolInput.model) ? toolInput.model : undefined
+    let model = explicit ?? (target?.model && validModelId(target.model) ? target.model : 'inherit')
     if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
-    return isOpusModel(model) && shouldSteerToSonnet(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)
+    const tierModels = this.ctx.connection?.tierModels
+    const deep = target?.tier === 'deep' || target?.tier === 'top' || isDeepOrTopModel(model, tierModels)
+    if (!deep || !shouldSteerToEveryday(this.usage, this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD)) return undefined
+    const to = everydayReplacement(tierModels)
+    if (!to || to === model) return undefined
+    return { from: model || 'its configured model', to }
   }
 
   private buildHooks(): Options['hooks'] {
@@ -761,6 +927,23 @@ class ClaudeSession implements RuntimeSession {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      // Build sessions never write their own .claude settings (hooks, rules): denied before any allow rule or hook-allow path.
+      const configDenial = buildConfigWriteDenial(this.ctx.run, input.tool_name, input.tool_input)
+      if (configDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${configDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: configDenial } }
+      }
+      // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
+      if (input.tool_name === 'Skill') {
+        const roleId = input.agent_id ? (this.agents.get(agentId)?.roleId ?? this.rolesBySlug.get(input.agent_type ?? '')?.id ?? '') : this.root.id
+        const verdict = skillGate(input.tool_input, roleId, this.skillPlugin?.names ?? new Map())
+        if (!verdict.allow) {
+          this.log('warn', `Blocked Skill call by ${this.agents.get(agentId)?.name ?? agentId}: ${verdict.reason}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }
+        }
+        // skill.used is emitted from PostToolUse for this tool_use id, i.e. only once the call actually ran.
+        this.gatedSkillCalls.set(input.tool_use_id, { agentId, skill: verdict.skill })
+      }
       this.lastToolAgent.set(input.tool_name, agentId)
       if (input.tool_name.startsWith(ORGAI_TOOL_PREFIX)) this.harnessCallers.record(input.tool_name, input.tool_use_id, input.agent_id)
       const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
@@ -796,6 +979,12 @@ class ClaudeSession implements RuntimeSession {
         const target = this.rolesBySlug.get(requested)
         const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
         const updates: Record<string, unknown> = {}
+        // A model-chosen model must be a plain model id; anything else is dropped so the role's own model applies.
+        let dropModel = false
+        if ('model' in toolInput && !(typeof toolInput.model === 'string' && validModelId(toolInput.model))) {
+          dropModel = true
+          this.log('warn', `Dropped an invalid model on a spawn of ${requested}.`)
+        }
         // Every report gets a handle so peers and its lead can reach it with SendMessage({to: handle}).
         const { handle, generated } = spawnHandle(this.handles, requested, toolInput.name)
         this.spawnHandles.set(input.tool_use_id, handle)
@@ -804,16 +993,20 @@ class ClaudeSession implements RuntimeSession {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
           updates.isolation = 'worktree'
         }
-        // Near the Opus weekly limit, new Opus reports run on Sonnet (project.preferSonnetNearLimit).
-        if (this.steerToSonnet(target, toolInput)) {
-          updates.model = 'sonnet'
-          this.log('info', `Spawning ${target?.name ?? requested} on Sonnet instead of Opus: the weekly usage window is near its limit.`)
+        // Near the weekly limit, new deep/top reports run on the everyday tier (preferEverydayNearLimit).
+        const steer = this.steerToEveryday(target, toolInput)
+        if (steer && validModelId(steer.to)) {
+          updates.model = steer.to
+          dropModel = false
+          this.log('info', `Spawning ${target?.name ?? requested} on the everyday tier (${steer.to}) instead of ${steer.from}: the weekly usage window is near its limit.`)
         }
-        if (!Object.keys(updates).length) return {}
+        if (!Object.keys(updates).length && !dropModel) return {}
+        const updated: Record<string, unknown> = { ...toolInput, ...updates }
+        if (dropModel) delete updated.model
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            updatedInput: { ...toolInput, ...updates }
+            updatedInput: updated
           }
         }
       }
@@ -842,6 +1035,11 @@ class ClaudeSession implements RuntimeSession {
     const postToolUse: HookCallback = async (raw) => {
       const input = raw as PostToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      const gated = this.gatedSkillCalls.get(input.tool_use_id)
+      if (gated) {
+        this.gatedSkillCalls.delete(input.tool_use_id)
+        this.emit({ type: 'skill.used', runId: this.ctx.run.id, agentId: gated.agentId, skillId: gated.skill.id, name: gated.skill.name, at: Date.now() })
+      }
       // Calls that never needed a permission prompt still leave an issuer queued; drop it now.
       this.takeIssuer(permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>), agentId)
       const archPath = this.ctx.project.setup?.architecturePath
@@ -953,6 +1151,19 @@ class ClaudeSession implements RuntimeSession {
     const { project } = this.ctx
     const env = buildEnv(this.ctx)
 
+    // Granted skills become a run-scoped plugin (orgai:<name>). Setup-like runs get none.
+    if (!this.isSetup) {
+      const granted = this.ctx.skills?.() ?? []
+      if (granted.length) {
+        this.skillPlugin = buildSkillPlugin(granted, this.ctx.run.id, (m) => this.log('warn', m))
+        if (!this.skillPlugin.names.size) {
+          this.skillPlugin.cleanup()
+          this.skillPlugin = undefined
+        }
+      }
+    }
+    const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
+
     // The harness tools for this kind of run (setup / mcp-assist / work); the audience decides who sees which.
     const tools = harnessToolsFor(this.ctx, {
       integratePending: (wt) => this.integrator.integratePending(wt),
@@ -966,7 +1177,7 @@ class ClaudeSession implements RuntimeSession {
         if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
       },
       addMcpServer: (spec) => this.addMcpServer(spec)
-    })
+    }, { nativeSkills: true })
     this.harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
@@ -975,13 +1186,13 @@ class ClaudeSession implements RuntimeSession {
 
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }, this.skillPlugin?.names),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
-      permissionMode: this.isSetup ? (project.permissionMode === 'auto' ? 'auto' : 'acceptEdits') : project.permissionMode,
-      allowDangerouslySkipPermissions: !this.isSetup && project.permissionMode === 'bypassPermissions',
-      settingSources: ['project'],
+      permissionMode: claudePermissionMode(this.ctx),
+      allowDangerouslySkipPermissions: claudeAllowsBypass(this.ctx),
+      settingSources: claudeSettingSources(this.ctx),
       hooks: this.buildHooks(),
       // stream_event messages drive the live "agent.partial" text; transcripts still come from complete messages.
       includePartialMessages: true,
@@ -1022,11 +1233,24 @@ class ClaudeSession implements RuntimeSession {
     options.mcpServers = this.mcpRecord(resolved)
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
+    if (this.skillPlugin) {
+      plugins.push({ type: 'local', path: this.skillPlugin.path, skipMcpDiscovery: true })
+      // Options.skills only adds Skill(<name>) allow rules (verified in sdk.mjs); the PreToolUse gate is the filter.
+      options.skills = skillNames
+      options.settings = { disableBundledSkills: true }
+    }
+    // Repo skills load under settingSources ['project']; never run their inline !`cmd` shell injection
+    // (Settings.disableSkillShellExecution, present in sdk.d.ts and the bundled claude.exe).
+    options.settings = { ...(options.settings as object | undefined), disableSkillShellExecution: true }
     if (plugins.length) options.plugins = plugins
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
-    const savedRules = listRules(project.path)
+    // A quick run never reads the user's folder for rules: its grants arrive through allowedRules() (the PreToolUse hook).
+    const savedRules = claudeSavedRules(this.ctx)
     if (savedRules.length) options.allowedTools = savedRules
-    if (this.root.model && this.root.model !== 'inherit') options.model = this.root.model
+    if (this.root.model && this.root.model !== 'inherit') {
+      if (validModelId(this.root.model)) options.model = this.root.model
+      else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
+    }
     if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
     if (this.ctx.resumeSessionId) options.resume = this.ctx.resumeSessionId
     return options
@@ -1038,7 +1262,7 @@ class ClaudeSession implements RuntimeSession {
     suggestions: PermissionSuggestion[],
     input: Record<string, unknown>
   ): PermissionResult {
-    const granted = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+    const granted = applyAllowScope(this.ctx.project.path, quickSafeDecision(this.ctx, decision), suggestions, (level, message) => this.log(level, message))
     if (!granted) return { behavior: 'allow', updatedInput: input }
     return {
       behavior: 'allow',
@@ -1091,6 +1315,7 @@ class ClaudeSession implements RuntimeSession {
       this.ending = true
       this.continuation.dispose()
       this.stopUsagePolling()
+      this.skillPlugin?.cleanup()
       this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
@@ -1179,6 +1404,11 @@ class ClaudeSession implements RuntimeSession {
             ...(worktree ? { worktree } : {}),
             ...(handle ? { handle } : {})
           })
+        } else if (msg.subtype === 'api_retry') {
+          // SDKAPIRetryMessage carries no agent fields, so a retry counts against the root.
+          const root = this.ensureAgent(ROOT_ID)
+          countUsage(root, 'retries')
+          this.upsert(root)
         } else if (msg.subtype === 'task_notification') {
           const a = this.agents.get(msg.task_id)
           if (a) {
@@ -1202,6 +1432,10 @@ class ClaudeSession implements RuntimeSession {
         const a = this.ensureAgent(agentId)
         const usage = msg.message.usage
         const messageId = msg.message.id || msg.uuid
+        if (!this.turnIds.has(`${agentId}:${messageId}`)) {
+          this.turnIds.add(`${agentId}:${messageId}`)
+          countUsage(a, 'turns')
+        }
         if (usage) {
           // Streaming emits one message per content block and the CLI may re-send a message after a
           // permission answer, all sharing message.id. Count each message id once, using its latest usage.
@@ -1227,8 +1461,12 @@ class ClaudeSession implements RuntimeSession {
           }
           a.inputTokens = input
           a.outputTokens = output
+          this.syncModelUsage(a, perAgent)
           // Live estimate at the last known per-model rates; the next result message reconciles it.
-          if (this.costRates) a.costUsd = costOf(perAgent.values(), this.costRates)
+          if (this.litellmPricing()) {
+            a.costUsd = this.agentCost(perAgent.values())
+            this.emitPricedTotal()
+          } else if (this.costRates) a.costUsd = costOf(perAgent.values(), this.costRates)
         }
         if (msg.message.model) a.model = msg.message.model
         // A background report can wake an idle orchestrator into a new turn.
@@ -1251,6 +1489,7 @@ class ClaudeSession implements RuntimeSession {
           } else if (block.type === 'tool_use') {
             if (this.seenToolUses.has(block.id)) continue
             this.seenToolUses.add(block.id)
+            countUsage(a, 'toolCalls')
             this.seenBlocks.add(blockKey)
             this.toolUseIssuer.set(block.id, agentId)
             this.transcript(agentId, { kind: 'tool_use', id: block.id, name: block.name, input: block.input })
@@ -1294,9 +1533,19 @@ class ClaudeSession implements RuntimeSession {
         break
       }
       case 'result': {
-        const totalCostUsd = this.runCost(msg.total_cost_usd)
-        this.emit({ type: 'run.cost', runId, totalCostUsd })
-        this.apportionCost(msg.modelUsage)
+        const cliCost = this.runCost(msg.total_cost_usd)
+        if (this.litellmPricing()) {
+          // Pricing-derived total; the CLI total only stands in when pricing priced nothing.
+          this.apportionCost(msg.modelUsage)
+          const priced = this.emitPricedTotal()
+          if (!(priced > 0) && cliCost > 0) {
+            this.lastPricedTotal = cliCost
+            this.emit({ type: 'run.cost', runId, totalCostUsd: cliCost })
+          }
+        } else {
+          this.emit({ type: 'run.cost', runId, totalCostUsd: cliCost })
+          this.apportionCost(msg.modelUsage)
+        }
         this.partial.clear(ROOT_ID, true)
         const authRaw = authFailureFrom(msg)
         if (authRaw !== null) {
@@ -1368,8 +1617,9 @@ export class ClaudeAdapter implements RuntimeAdapter {
       abort.abort()
       release?.({ value: undefined as never, done: true })
     }
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      const q = query({ prompt: never, options: { cwd: process.cwd(), model: 'haiku', settingSources: [], abortController: abort, tools: [], env: isolateClaudeEnv(process.env), ...EXECUTABLE_OPTION } })
+      const q = query({ prompt: never, options: probeQueryOptions(abort, isolateClaudeEnv(process.env)) })
       // Drain the stream in the background so the process keeps running until we abort it.
       const drain = (async () => {
         try {
@@ -1386,12 +1636,68 @@ export class ClaudeAdapter implements RuntimeAdapter {
       }
       const resp = (await Promise.race([
         (fn as (o: { skipBehaviors: boolean }) => Promise<unknown>).call(q, { skipBehaviors: true }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('usage probe timed out')), 10_000))
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('usage probe timed out')), 10_000)
+        })
       ])) as UsageResponseLike
       finish()
       await drain
       return mapUsageResponse(resp, 'subscription')
     } catch {
+      finish()
+      return null
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * The models the CLI offers, without a run. supportedModels() returns the initialize response, so like
+   * probeUsage it answers with no prompt and no model call. Null on any error or timeout; never throws.
+   */
+  async listModels(auth: ProviderAuth): Promise<AdapterModelInfo[] | null> {
+    const abort = new AbortController()
+    let release: ((r: IteratorResult<SDKUserMessage>) => void) | undefined
+    const never: AsyncIterable<SDKUserMessage> = {
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<SDKUserMessage>>((r) => (release = r)) })
+    }
+    const finish = (): void => {
+      abort.abort()
+      release?.({ value: undefined as never, done: true })
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const env: Record<string, string | undefined> = isolateClaudeEnv(process.env)
+      if (auth.kind === 'apiKey') {
+        const key = process.env[auth.envVar]
+        if (key) env.ANTHROPIC_API_KEY = key
+      }
+      const q = query({ prompt: never, options: probeQueryOptions(abort, env) })
+      const drain = (async () => {
+        try {
+          for await (const _ of q as AsyncIterable<unknown>) void _
+        } catch {
+          /* aborted */
+        }
+      })()
+      const fn = (q as unknown as Record<string, unknown>).supportedModels
+      if (typeof fn !== 'function') {
+        finish()
+        await drain
+        return null
+      }
+      const resp = await Promise.race([
+        (fn as () => Promise<unknown>).call(q),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('model list timed out')), 10_000)
+        })
+      ])
+      clearTimeout(timer)
+      finish()
+      await drain
+      return mapSupportedModels(resp)
+    } catch {
+      clearTimeout(timer)
       finish()
       return null
     }
@@ -1402,8 +1708,18 @@ export class ClaudeAdapter implements RuntimeAdapter {
     const link = input.signal ? linkAbortSignal(input.signal) : undefined
     if (link) options.abortController = link.controller
     let text = ''
+    let reported = false
     try {
       for await (const msg of query({ prompt: input.prompt, options })) {
+        if (msg.type === 'result' && !reported && input.onUsage) {
+          reported = true
+          const u = msg.usage
+          input.onUsage({
+            tokens: { input: u?.input_tokens ?? 0, output: u?.output_tokens ?? 0, cacheRead: u?.cache_read_input_tokens ?? 0, cacheWrite: u?.cache_creation_input_tokens ?? 0 },
+            costUsd: msg.total_cost_usd,
+            model: input.model
+          })
+        }
         if (msg.type === 'assistant') {
           for (const block of msg.message.content) if (block.type === 'text') text += block.text
         } else if (msg.type === 'result' && msg.subtype !== 'success') {
@@ -1423,6 +1739,11 @@ export class ClaudeAdapter implements RuntimeAdapter {
   }
 }
 
+/** Options for the token-free discovery and usage probes. strictMcpConfig + empty mcpServers keep repo and user-scope MCP servers from starting. */
+export function probeQueryOptions(abort: AbortController, env: Record<string, string | undefined>): Options {
+  return { cwd: tmpdir(), settingSources: [], abortController: abort, tools: [], strictMcpConfig: true, mcpServers: {}, env, ...EXECUTABLE_OPTION }
+}
+
 /** Query options for one-shot completions. strictMcpConfig + empty mcpServers keep a cloned repo's .mcp.json from loading. */
 export function buildCompletionOptions(input: CompletionInput): Options {
   const options: Options = {
@@ -1436,7 +1757,7 @@ export function buildCompletionOptions(input: CompletionInput): Options {
     mcpServers: {},
     ...EXECUTABLE_OPTION
   }
-  if (input.model) options.model = input.model
+  if (input.model && validModelId(input.model)) options.model = input.model
   options.env = completionEnv(input.connection)
   return options
 }

@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, LayoutGrid, Plus, Undo2, Upload } from 'lucide-react'
+import { Download, LayoutGrid, MousePointerClick, Plus, Undo2, Upload } from 'lucide-react'
 import {
   ReactFlow,
   Background,
@@ -14,18 +14,22 @@ import {
   type NodeMouseHandler
 } from '@xyflow/react'
 import type { AgentImportScan, Project, Role } from '@shared/types'
-import { ROLE_COLORS, newId, slugify } from '@shared/defaults'
+import { ROLE_COLORS, modelForTier, newId, projectConnection, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
-import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar } from '../components/layout/CanvasFrame'
+import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
 import { SidePanel } from '../components/layout/SidePanel'
 import { Banner } from '../components/ui/Banner'
 import { Button } from '../components/ui/Button'
+import { EmptyState } from '../components/ui/EmptyState'
+import { Tabs, panelDomId, tabDomId } from '../components/ui/Tabs'
+import TeamAssistantTray, { type TeamAssistantMode } from '../components/team/TeamAssistantTray'
+import TeamCatalog from '../components/team/TeamCatalog'
+import { capabilityCounts, capabilityLabel } from '../lib/teamView'
 import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
 import { importBannerVisible, notImportedLine, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
 import { useConfirm } from '../components/ui/ConfirmDialog'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
-import DraftPanel from '../components/DraftPanel'
 import { treeLayout } from '../lib/layout'
 import { nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
 import { cleanIpcError } from '../lib/ipcError'
@@ -33,10 +37,16 @@ import { useCssVar } from '../lib/useCssVar'
 
 const nodeTypes = { role: RoleNode }
 
+type PanelTab = 'role' | 'catalog'
+const PANEL_TABS = [
+  { id: 'role', label: 'Role', testId: 'team-panel-tab-role' },
+  { id: 'catalog', label: 'Catalog', testId: 'team-panel-tab-catalog' }
+]
+
 /** How long the "Role removed. Undo" row stays in the toolbar. */
 const UNDO_MS = 12_000
 
-export default function OrgChartView({ project }: { project: Project }): ReactElement {
+export default function TeamView({ project }: { project: Project }): ReactElement {
   // Re-fit when the frame changes size (window, sidebar or side panel resize), as the live view does.
   const frameRef = useRef<HTMLDivElement>(null)
   const flowRef = useRef<{ fitView: (o?: { padding?: number; maxZoom?: number; duration?: number }) => unknown } | null>(null)
@@ -62,9 +72,38 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
       ro.disconnect()
     }
   }, [])
+  // The tray opening, closing or changing phase resizes the stage without resizing the frame: refit when the stage
+  // height moves by more than 24 px, so a user's own pan and zoom survive small layout shifts.
+  useEffect(() => {
+    const stage = frameRef.current?.querySelector<HTMLElement>('.frame-stage')
+    if (!stage || typeof ResizeObserver === 'undefined') return undefined
+    let t: ReturnType<typeof setTimeout> | undefined
+    let last = -1
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height ?? stage.clientHeight
+      if (last < 0) {
+        last = h
+        return
+      }
+      if (Math.abs(h - last) <= 24) return
+      clearTimeout(t)
+      t = setTimeout(() => {
+        last = stage.clientHeight
+        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+      }, 150)
+    })
+    ro.observe(stage)
+    return () => {
+      clearTimeout(t)
+      ro.disconnect()
+    }
+  }, [])
   const selectedRoleId = useAppStore((s) => s.selectedRoleId)
   const selectRole = useAppStore((s) => s.selectRole)
   const updateRoles = useAppStore((s) => s.updateRoles)
+  const connectionInfos = useAppStore((s) => s.connections)
+  const modelCatalogs = useAppStore((s) => s.models)
   const { confirm, dialog } = useConfirm()
   const patternColor = useCssVar('--canvas-pattern')
   const faintColor = useCssVar('--text-tertiary')
@@ -75,6 +114,21 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const [undo, setUndo] = useState<{ removed: RemovedRole; name: string } | null>(null)
   const [focusTick, setFocusTick] = useState(0)
   const [panelOpen, setPanelOpen] = useState(true)
+  // Role | Catalog. A role gets selected -> Role; the user's explicit choice sticks until the selection goes from nothing to something.
+  const [panelTab, setPanelTab] = useState<PanelTab>(() => (useAppStore.getState().selectedRoleId ? 'role' : 'catalog'))
+  const [assistant, setAssistant] = useState<TeamAssistantMode>('recommend')
+  const hadSelection = useRef(!!selectedRoleId)
+  useEffect(() => {
+    if (selectedRoleId && !hadSelection.current) setPanelTab('role')
+    hadSelection.current = !!selectedRoleId
+  }, [selectedRoleId])
+  // A deep link to a connection (openProjectMcp) opens the Catalog tab; the connections section then scrolls to and focuses its row.
+  const mcpFocus = useAppStore((s) => s.mcpFocus)
+  useEffect(() => {
+    if (mcpFocus?.kind !== 'server' || mcpFocus.projectId !== project.id) return
+    setPanelTab('catalog')
+    setPanelOpen(true)
+  }, [mcpFocus, project.id])
   const [importDialog, setImportDialog] = useState<{ fresh: boolean } | null>(null)
   const [scan, setScan] = useState<AgentImportScan | null>(null)
   const [memory, setMemory] = useState<BannerMemory | null>(() => readBannerMemory(window.localStorage, project.id))
@@ -152,16 +206,19 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
 
   const nodes: RoleFlowNode[] = useMemo(
     () =>
-      project.roles.map((role) => ({
-        id: role.id,
-        type: 'role',
-        position: role.position,
-        selected: role.id === selectedRoleId,
-        deletable: role.reportsTo !== null,
-        ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
-        data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length }
-      })),
-    [project.roles, selectedRoleId]
+      project.roles.map((role) => {
+        const capabilities = capabilityCounts(project, role)
+        return {
+          id: role.id,
+          type: 'role',
+          position: role.position,
+          selected: role.id === selectedRoleId,
+          deletable: role.reportsTo !== null,
+          ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
+          data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities }
+        }
+      }),
+    [project, selectedRoleId]
   )
 
   const edges: Edge[] = useMemo(
@@ -292,6 +349,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     (_e, node) => {
       setSelectedEdgeId(null)
       setPanelOpen(true)
+      setPanelTab('role')
       selectRole(node.id)
     },
     [selectRole]
@@ -302,6 +360,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('react-flow__node')) {
       focusWanted.current = true
       setPanelOpen(true)
+      setPanelTab('role')
       setFocusTick((t) => t + 1)
     }
   }
@@ -313,6 +372,12 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
   const addRole = (): void => {
     const manager = addParent
     const name = nextRoleName(project.roles)
+    const conn = projectConnection(project)
+    const everyday = modelForTier('everyday', {
+      connection: conn,
+      tierModels: connectionInfos?.find((c) => c.connection.id === conn)?.connection.tierModels ?? {},
+      catalog: modelCatalogs[conn]
+    })
     const role: Role = {
       id: newId('role'),
       slug: slugify(name),
@@ -321,7 +386,8 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
       responsibilities: [],
       prompt: 'You are a specialist. Complete the assigned task and report back concisely.',
       tools: ['Read', 'Glob', 'Grep'],
-      model: 'sonnet',
+      model: everyday?.model ?? 'inherit',
+      tier: everyday ? everyday.tier : undefined,
       canSpawn: false,
       spawnable: [],
       reportsTo: manager?.id ?? null,
@@ -337,6 +403,7 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     setSelectedEdgeId(null)
     focusWanted.current = true
     setPanelOpen(true)
+    setPanelTab('role')
     setFocusTick((t) => t + 1)
     selectRole(role.id)
   }
@@ -356,6 +423,13 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
     }
   }
 
+  // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
+  // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.
+  const openAssistant = (): void => {
+    setAssistant('recommend')
+    window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus())
+  }
+
   const autoLayout = (): void => {
     const pos = treeLayout(
       project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: 220, height: 96 })),
@@ -366,9 +440,32 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
 
   return (
     <div className="editor" ref={rootRef} onKeyDownCapture={onRootKeyDownCapture}>
+      <a
+        href="#team-panel"
+        className="skip-link"
+        data-testid="skip-to-role-panel"
+        onClick={(e) => {
+          e.preventDefault()
+          setPanelOpen(true)
+          window.requestAnimationFrame(() => {
+            const tab = rootRef.current?.querySelector<HTMLElement>('.team-panel-tabs [role=tab][aria-selected=true]')
+            // Railed or collapsed (no room at this width): the tabs are hidden, so land on the panel itself.
+            if (tab && tab.getClientRects().length > 0) {
+              tab.focus()
+              return
+            }
+            const panel = rootRef.current?.querySelector<HTMLElement>('aside.side-panel')
+            if (!panel) return
+            panel.tabIndex = -1
+            panel.focus()
+          })
+        }}
+      >
+        Skip to role panel
+      </a>
       <CanvasFrame frameRef={frameRef}>
         <div className="frame-top">
-          <FrameToolbar label="Org chart actions">
+          <FrameToolbar label="Team actions">
             <Button size="sm" icon={Plus} onClick={addRole}>
               Add role
             </Button>
@@ -470,34 +567,71 @@ export default function OrgChartView({ project }: { project: Project }): ReactEl
             onInit={(inst) => {
               flowRef.current = inst
             }}
+            aria-label="Org chart"
             fitView
             fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
             proOptions={{ hideAttribution: true }}
             deleteKeyCode={['Delete', 'Backspace']}
             elementsSelectable
-            edgesFocusable
+            edgesFocusable={false}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />
             <Controls showInteractive={false} />
           </ReactFlow>
         </FrameStage>
+        <FrameTray label="Team assistant">
+          <TeamAssistantTray
+            project={project}
+            scope={selectedRole ? { kind: 'role', roleId: selectedRole.id } : { kind: 'team' }}
+            mode={assistant}
+            onModeChange={setAssistant}
+          />
+        </FrameTray>
         <FrameFooter>
           <span>Drag from a node's bottom handle to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</span>
         </FrameFooter>
       </CanvasFrame>
-      <SidePanel label={selectedRole ? 'role inspector' : 'AI draft panel'} open={panelOpen} onOpenChange={setPanelOpen}>
-        {selectedRole ? (
-          <RoleInspector
-            project={project}
-            role={selectedRole}
-            notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
-            onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
-            onRemove={() => void requestRemove(selectedRole.id)}
-            onEscape={() => returnToNode(selectedRole.id)}
-          />
-        ) : (
-          <DraftPanel project={project} />
-        )}
+      <SidePanel label="team panel" open={panelOpen} onOpenChange={setPanelOpen}>
+        <div className="team-panel">
+          <div className="team-panel-tabs" data-testid="team-panel-tabs">
+            <Tabs
+              tabs={PANEL_TABS}
+              value={panelTab}
+              onChange={(id) => setPanelTab(id as PanelTab)}
+              label="Team panel"
+              idPrefix="team-panel"
+              compact
+            />
+          </div>
+          <div
+            className="team-panel-pane"
+            role="tabpanel"
+            id={panelDomId('team-panel', panelTab)}
+            aria-labelledby={tabDomId('team-panel', panelTab)}
+          >
+            {panelTab === 'catalog' ? (
+              <TeamCatalog
+                project={project}
+                onSelectRole={(id) => {
+                  selectRole(id)
+                  setPanelTab('role')
+                }}
+              />
+            ) : selectedRole ? (
+              <RoleInspector
+                project={project}
+                role={selectedRole}
+                notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
+                onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
+                onRemove={() => void requestRemove(selectedRole.id)}
+                onEscape={() => returnToNode(selectedRole.id)}
+                onAskAssistant={() => openAssistant()}
+              />
+            ) : (
+              <EmptyState compact icon={MousePointerClick} title="No role selected" description="Select a role on the chart to edit what it can use." testId="team-no-role" />
+            )}
+          </div>
+        </div>
       </SidePanel>
       {importDialog && (
         <ImportAgentsDialog project={project} defaultMode={importDialog.fresh ? 'replace' : 'merge'} fresh={importDialog.fresh} onClose={closeImport} />

@@ -29,7 +29,7 @@
   flex: none;
   border-radius: var(--radius-md);
   background: var(--surface-3);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 .conn-title {
   flex: 1;
@@ -507,4 +507,16 @@
 }
 .accent-custom .input {
   width: 96px;
+}
+
+.pconn-mark {
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-6);
+  height: var(--space-6);
+  flex: none;
+  vertical-align: middle;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-primary);
 }

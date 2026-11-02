@@ -1,7 +1,9 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
 import { newId } from '@shared/defaults'
+import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { CodexAppServer, CodexRpcError, type CodexAppServerOptions } from './codexAppServer'
+import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
 import {
   METHOD,
   SERVER_REQUEST,
@@ -9,6 +11,7 @@ import {
   codexToolName,
   dynamicToolSpec,
   harnessToolName,
+  lockNativeSkills,
   matchesBashRule,
   mcpToolPrefix,
   parseCommandApproval,
@@ -26,7 +29,9 @@ import {
   type LaunchConfig,
   type PolicyChoice
 } from './codexProtocol'
+import { countUsage, setModelTokens } from './runUsage'
 import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChanges, type CodexUpdate } from './codexEvents'
+import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
   CodexAgentNetwork,
   callNetworkTool,
@@ -46,6 +51,8 @@ import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
 import { isGitRepo } from './worktrees'
+import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { tmpdir } from 'node:os'
 
 /**
  * The Codex adapter: drives `codex app-server` (JSON-RPC over stdio, codexAppServer.ts) and maps its threads,
@@ -74,6 +81,8 @@ export interface CodexServerLike {
   onExit(handler: (code: number | null, error?: Error) => void): () => void
   close(): void
   readonly exited: Promise<void>
+  /** The app-server's last stderr lines, secrets redacted, for exit errors. Optional for test fakes. */
+  stderrTail?(): string
 }
 
 export interface CodexAdapterOptions {
@@ -96,11 +105,14 @@ const CLAUDE_ALIASES = new Set(['fable', 'opus', 'sonnet', 'haiku'])
 /** How long a restart waits for the old process to exit. */
 const EXIT_WAIT_MS = 3000
 
-/** A model id for Codex from a role's model: undefined for 'inherit' and for bare Claude aliases. */
+/**
+ * A model id for Codex from a role's model: undefined for 'inherit', tier names, bare Claude aliases and any id that
+ * fails validModelId (it would reach the app-server's thread params; a hand-edited project could hold '--flag').
+ */
 export function codexModelFor(model: string | undefined): string | undefined {
-  const m = model?.trim()
-  if (!m || m === 'inherit' || CLAUDE_ALIASES.has(m.toLowerCase())) return undefined
-  return m
+  const m = typeof model === 'string' ? model.trim() : undefined
+  if (!m || m === 'inherit' || isModelTier(m.toLowerCase()) || CLAUDE_ALIASES.has(m.toLowerCase())) return undefined
+  return validModelId(m) ? m : undefined
 }
 
 function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
@@ -266,9 +278,27 @@ class CodexSession implements RuntimeSession {
     this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
   }
 
+  /**
+   * LiteLLM only: the agent's cost from the thread's cumulative token totals at its model's /model/info price
+   * (RunConnection.pricing). undefined = no estimate (other connections, no pricing, or an unpriced model), so the
+   * cost stays 0 as on a ChatGPT plan.
+   */
+  private estimateCost(agent: AgentInstance, u: { input: number; output: number; cachedInput: number }): number | undefined {
+    const conn = this.ctx.connection
+    if (conn?.connection !== 'litellm' || !conn.pricing) return undefined
+    const price = priceFor(conn.pricing, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model)
+    return price ? costFromPrice(openAiMix(u.input, u.cachedInput, u.output), price) : undefined
+  }
+
+  private totalCost(): number {
+    let usd = 0
+    for (const a of this.agents.values()) usd += a.costUsd
+    return usd
+  }
+
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
   }
 
   private setState(id: string, state: AgentInstance['state'], activity?: string): void {
@@ -370,7 +400,7 @@ class CodexSession implements RuntimeSession {
   // ---------- start ----------
 
   private policyFor(role: Role): PolicyChoice {
-    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike })
+    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' })
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
@@ -384,7 +414,9 @@ class CodexSession implements RuntimeSession {
 
   private instructionsFor(role: Role, isRoot: boolean): string {
     const isSetup = this.setupLike
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation })
+    const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
+    const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -395,7 +427,11 @@ class CodexSession implements RuntimeSession {
 
   private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string): Record<string, unknown> {
     const policy = this.policyFor(role)
-    const model = codexModelFor(role.model) ?? parentModel
+    const own = codexModelFor(role.model)
+    if (!own && typeof role.model === 'string' && role.model.trim() && !validModelId(role.model.trim())) {
+      this.log('warn', `Ignoring the invalid model of ${String(role.name).replace(/[^ -~]/g, "?").slice(0, 80)}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
+    }
+    const model = own ?? (validModelId(parentModel) ? parentModel : undefined)
     return {
       cwd,
       ...(model ? { model } : {}),
@@ -411,6 +447,14 @@ class CodexSession implements RuntimeSession {
   /** thread/start; when the server rejects the unstable approvalsReviewer field, retry without it. */
   private async startThread(params: Record<string, unknown>, method: string = METHOD.threadStart): Promise<{ threadId: string; model?: string }> {
     let res: unknown
+    // Codex discovers skills itself (repo .agents/skills, the user's and the admin folders); OrgAI hands out only the
+    // granted ones through load_skill, so every thread's native skills are switched off first (best effort, warned).
+    if (typeof params.cwd === 'string') {
+      const lock = await lockNativeSkills((m, p) => this.server.request(m, p), params.cwd)
+      if (lock.error || lock.failed || lock.skipped) {
+        this.log('warn', `Codex native skills could not all be disabled (${lock.error ?? `${lock.failed} failed, ${lock.skipped} over the limit`}); the agent may see skills the role was not granted.`)
+      }
+    }
     try {
       res = await this.server.request(method, params)
     } catch (e) {
@@ -449,7 +493,7 @@ class CodexSession implements RuntimeSession {
     this.unsubscribers.push(
       server.onExit((code, error) => {
         if (this.restarting || this.ending) return
-        const message = error?.message ?? `codex app-server exited (code ${code ?? 'unknown'})`
+        const message = error?.message ?? codexExitMessage(code, server.stderrTail?.())
         this.fail(message)
       })
     )
@@ -499,7 +543,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
-      this.launch = buildLaunchConfig(ctx.connection, servers)
+      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       this.server = this.createServer(this.launch)
@@ -567,6 +611,7 @@ class CodexSession implements RuntimeSession {
         return
       case 'toolUse':
         this.transcript(agentId, { kind: 'tool_use', id: u.id, name: u.name, input: u.input })
+        if (agent) countUsage(agent, 'toolCalls')
         this.setState(agentId, u.state, u.activity)
         return
       case 'toolResult': {
@@ -582,7 +627,17 @@ class CodexSession implements RuntimeSession {
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
+          setModelTokens(agent, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown', {
+            input: Math.max(0, u.input - u.cachedInput),
+            output: u.output,
+            cacheRead: Math.min(u.cachedInput, u.input),
+            cacheWrite: 0
+          })
+          const cost = this.estimateCost(agent, u)
+          const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
+          if (moved) agent.costUsd = cost
           this.upsert(agent)
+          if (moved) this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: this.totalCost() })
         }
         return
       case 'turnStarted':
@@ -596,12 +651,17 @@ class CodexSession implements RuntimeSession {
         if (u.turnId) this.completedTurns.add(u.turnId)
         if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
         this.partial.clear(agentId)
+        if (agent) countUsage(agent, 'turns')
         if (agentId === ROOT_AGENT_ID) this.rootTurnCompleted(u)
         else this.childTurnCompleted(agentId, u)
         void this.maybeRestartForMcp()
         return
       case 'error':
         this.log(u.willRetry ? 'info' : 'warn', `Codex: ${u.message}${u.willRetry ? ' (retrying)' : ''}`)
+        if (u.willRetry && agent) {
+          countUsage(agent, 'retries')
+          this.upsert(agent)
+        }
         if (u.usageLimit && !u.willRetry) void this.onUsageLimit()
         return
     }
@@ -738,7 +798,9 @@ class CodexSession implements RuntimeSession {
     if (!tool || !(agentId === ROOT_AGENT_ID || tool.audience === 'all' || (role.canSpawn && tool.audience === 'spawners'))) return toolResponse(`Unknown tool ${call.tool}.`, false)
     if (isBlockingHarnessTool(tool.name)) this.setState(agentId, 'waiting', describeTool(tool.name, call.arguments, { harness: true }))
     try {
-      const text = await tool.call(call.arguments, { agentId })
+      // The role id is passed only when the thread resolves to a role (or is the root): skills never fall back to the root's.
+      const resolved = agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(agentId)
+      const text = await tool.call(call.arguments, resolved ? { agentId, roleId: resolved.id } : { agentId })
       return toolResponse(text, true)
     } catch (e) {
       return toolResponse(`${tool.name} failed: ${(e as Error).message}`, false)
@@ -762,7 +824,9 @@ class CodexSession implements RuntimeSession {
       })
       let granted = false
       if (decision.behavior === 'allow') {
-        const scoped = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+        // Never write rules into an untrusted folder: a 'project' grant becomes a run grant (RunManager downgrades first).
+        const safe = isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' as const } : decision
+        const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message))
         if (scoped) {
           granted = true
           this.sessionRules.push(...allowRuleStrings(scoped))
@@ -785,7 +849,7 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
-    const rules = [...(this.ctx.allowedRules?.() ?? listRules(this.ctx.project.path)), ...this.sessionRules]
+    const rules = [...(this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))), ...this.sessionRules]
     if (req.command && matchesBashRule(req.command, rules)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
     const { decision, granted } = await this.ask(agentId, 'Bash', input)
@@ -800,9 +864,16 @@ class CodexSession implements RuntimeSession {
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { decision: 'decline' }
     if (policy?.autoAcceptEdits) return { decision: 'accept' }
-    if (listRules(this.ctx.project.path).some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    const buildWorkspace = this.ctx.run.buildWorkspace
+    if (buildWorkspace && (changes.length ? changes.some((c) => isWorkspaceConfigPath(buildWorkspace, c.path)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
+      this.log('warn', 'Declined a change under .claude/ in the build workspace.')
+      this.transcript(agentId, { kind: 'system', text: 'Build sessions cannot write settings under .claude/ in the workspace.' }, { source: 'harness' })
+      return { decision: 'decline' }
+    }
+    const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
+    if ([...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     const input: Record<string, unknown> = {
       file_path: changes[0]?.path ?? req.grantRoot ?? '',
       ...(changes.length ? { changes } : {}),
@@ -929,7 +1000,7 @@ class CodexSession implements RuntimeSession {
     this.mcpRestartPending = false
     try {
       const servers = await this.ctx.resolvedMcpServers!()
-      const launch = buildLaunchConfig(this.ctx.connection, servers)
+      const launch = buildLaunchConfig(this.ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(this.ctx.run) })
       const old = this.server
       this.unwire()
       old.close()
@@ -980,17 +1051,23 @@ export class CodexAdapter implements RuntimeAdapter {
    */
   async complete(input: CompletionInput): Promise<string> {
     const connection = input.connection ?? (await this.options.completionConnection?.())
-    const launch = buildLaunchConfig(connection, [])
-    const options: CodexAppServerOptions = { cwd: input.cwd, env: launch.env, config: launch.config }
+    // One-shot completions never run in the project folder: its AGENTS.md must not reach the model (project docs off,
+    // empty temp dir as cwd). Nothing in a tool-less read-only thread needs the folder.
+    const launch = buildLaunchConfig(connection, [], { noProjectDocs: true })
+    const scratchCwd = tmpdir()
+    const options: CodexAppServerOptions = { cwd: scratchCwd, env: launch.env, config: launch.config }
     const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
     let text = ''
     let final = ''
     let failure: string | undefined
+    let tokens: { input: number; output: number; cachedInput: number } | undefined
     let done!: () => void
     const completed = new Promise<void>((resolve) => (done = resolve))
     const mapper = new CodexEventMapper()
     server.onNotification((method, params) => {
       for (const u of mapper.handle(method, params)) {
+        // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
+        if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
         if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
         if (u.type === 'turnCompleted') {
           final = u.result ?? ''
@@ -1006,7 +1083,7 @@ export class CodexAdapter implements RuntimeAdapter {
       return { decision: 'decline' }
     })
     server.onExit((code, error) => {
-      failure ??= error?.message ?? `codex app-server exited (code ${code ?? 'unknown'})`
+      failure ??= error?.message ?? codexExitMessage(code, server.stderrTail?.())
       done()
     })
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -1033,7 +1110,7 @@ export class CodexAdapter implements RuntimeAdapter {
         approvalPolicy: 'never',
         sandbox: 'read-only',
         developerInstructions: input.system,
-        ...(input.cwd ? { cwd: input.cwd } : {}),
+        cwd: scratchCwd,
         ...(model ? { model } : {}),
         serviceName: ORGAI_SERVICE
       }))
@@ -1042,6 +1119,17 @@ export class CodexAdapter implements RuntimeAdapter {
       await step(server.request(METHOD.turnStart, { threadId: thread.threadId, input: userInput(input.prompt) }))
       await Promise.race([completed, new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error('Completion timed out')), this.options.completionTimeoutMs ?? 180_000)))])
       if (failure) throw new Error(`Completion failed: ${failure}`)
+      if (tokens && input.onUsage) {
+        // Codex's input count includes cached tokens (same split as a run's agents).
+        try {
+          input.onUsage({
+            tokens: { input: Math.max(0, tokens.input - tokens.cachedInput), output: tokens.output, cacheRead: Math.min(tokens.cachedInput, tokens.input), cacheWrite: 0 },
+            ...(model ? { model } : {})
+          })
+        } catch {
+          // A reporting failure never fails the completion.
+        }
+      }
       return final || text
     } finally {
       clearTimeout(timer)

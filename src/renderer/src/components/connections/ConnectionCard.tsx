@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Copy, ExternalLink, Network, RefreshCw, Sparkles } from 'lucide-react'
 import type { ConnectionId, ConnectionInfo, ConnectionLoginStart, OpenAIConnection, AnthropicConnection, LiteLLMConnection, ProviderConnection } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
+import { BrandMark } from '../brand/BrandMark'
+import { brandMark } from '../brand/brandMarks'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -17,6 +19,8 @@ import { SegmentedControl } from '../ui/SegmentedControl'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { relativeTime } from '../../lib/remap'
 import ModelList from './ModelList'
+import { spendText } from '../../lib/usage'
+import { formatUntil } from '../../lib/layout'
 import TierEditor from './TierEditor'
 
 const META: Record<ConnectionId, { name: string; icon: typeof Bot; hint: string }> = {
@@ -144,26 +148,28 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
     }
   }
 
+  const spend = useAppStore((s) => (id === 'litellm' && info.connection.enabled ? s.usageByConnection.litellm?.spend : undefined))
+  const spendLine = spend ? `Key spend ${spendText(spend)}${spend.resetsAt && spend.resetsAt > Date.now() ? ` · resets in ${formatUntil(spend.resetsAt)}` : ''}` : ''
   const detail = useMemo(() => {
     if (state === 'connected') {
       // One-line summary: auth kind, model count, freshness.
       const conn = info.connection as AnthropicConnection | OpenAIConnection | LiteLLMConnection
       const auth = id === 'litellm' ? 'Proxy key' : (conn as AnthropicConnection).auth.kind === 'apiKey' ? 'API key' : id === 'anthropic' ? 'Claude Code login' : 'ChatGPT sign-in'
       const when = relativeTime(info.status.checkedAt)
-      return [info.status.account, auth, models ? `${models.length} models` : '', when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
+      return [info.status.account, auth, models ? `${models.length} models` : '', spendLine, when ? `updated ${when}` : ''].filter(Boolean).join(' · ')
     }
     if (state === 'connecting') return info.status.detail ?? (id === 'litellm' ? 'Testing the proxy' : 'Waiting for the browser sign-in')
     if (state === 'error') return info.status.detail ?? 'Something went wrong.'
     const usesKey = (info.connection as AnthropicConnection | OpenAIConnection).auth?.kind === 'apiKey'
     if (usesKey && info.status.detail) return `Not connected: ${info.status.detail}`
     return info.status.detail ?? meta.hint
-  }, [state, info.status, info.connection, id, meta.hint, models])
+  }, [state, info.status, info.connection, id, meta.hint, models, spendLine])
 
   return (
     <section ref={card} className="card-block conn-card" data-testid="connection-card" data-provider={id} aria-label={meta.name}>
       <header className="card-sec conn-head">
         <span className="conn-mark">
-          <Icon icon={meta.icon} size="lg" />
+          {brandMark(id) ? <BrandMark id={id} /> : <Icon icon={meta.icon} size="lg" />}
         </span>
         <div className="conn-title">
           <h3 tabIndex={-1}>{meta.name}</h3>
@@ -249,6 +255,13 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           {connected && (
             <>
               <div className="card-sec">
+                {(info.modelsRefreshedAt || info.modelsError) && (
+                  <p className={`field-msg${info.modelsError ? ' warn' : ''}`} data-testid="models-refreshed">
+                    {info.modelsRefreshedAt ? `Models updated ${relativeTime(info.modelsRefreshedAt)}` : ''}
+                    {info.modelsRefreshedAt && info.modelsError ? '. ' : ''}
+                    {info.modelsError ? `Last refresh failed: ${info.modelsError}` : ''}
+                  </p>
+                )}
                 <ModelList id={id} models={models} error={modelsError} onRetry={() => void loadModels(id, true)} tierModels={info.connection.tierModels} />
               </div>
               <div className="card-sec">

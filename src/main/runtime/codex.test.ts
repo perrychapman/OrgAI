@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
 import { CodexAdapter, codexModelFor, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
-import { fakeCtx, project, role } from './testHelpers'
+import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
 
 /** A scripted app-server: records requests, answers them, and lets the test push notifications and server requests. */
@@ -352,6 +352,63 @@ describe('CodexAdapter session', () => {
       expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'Edit', summary: 'Editing a.ts', input: expect.objectContaining({ file_path: '/r/src/a.ts' }) }))
     })
 
+    describe('restricted runs', () => {
+      const edit = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 }
+      const change = (s: FakeServer, path: string, id = 'f1') =>
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path, kind: { type: 'update', move_path: null }, diff: '' }] } })
+      const quickCtx = (rules: string[]) => {
+        mkdirSync(join(dir, '.claude'), { recursive: true })
+        writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: rules } }))
+        return { run: runSummary({ quick: { folder: dir } as never }) }
+      }
+
+      it('does not auto-accept a file change from the folder own saved rules (H1)', async () => {
+        const { ctx, s } = await started('default', { ...quickCtx(['Edit']), allowedRules: () => [] })
+        change(s, join(dir, 'a.ts'))
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'Edit' }))
+      })
+
+      it('does not read folder rules for a quick run without allowedRules either', async () => {
+        const { ctx, s } = await started('default', quickCtx(['Edit', 'Bash(ls:*)']))
+        change(s, join(dir, 'a.ts'))
+        await s.ask('item/fileChange/requestApproval', edit)
+        await s.ask('item/commandExecution/requestApproval', cmd('ls'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('never writes a project-scope grant into the folder (M1)', async () => {
+        const { ctx, s } = await started('default', quickCtx([]))
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'project' })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'acceptForSession' })
+        expect(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')).not.toContain('npm')
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+      })
+
+      it('declines a build-session change under .claude/ without a card, but still asks about commands (M2)', async () => {
+        const { ctx, s } = await started('default', { run: runSummary({ kind: 'mcp-assist', buildWorkspace: dir }) })
+        change(s, join(dir, '.claude', 'settings.json'))
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        await s.ask('item/commandExecution/requestApproval', cmd('echo hi'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        change(s, join(dir, 'ok.ts'), 'f2')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('launches a restricted run with project docs off (M4)', async () => {
+        const { s } = await started('default', quickCtx([]))
+        expect(s.options.config).toContain('project_doc_max_bytes=0')
+      })
+
+      it('keeps project docs for an ordinary run', async () => {
+        const { s } = await started('default')
+        expect(s.options.config).not.toContain('project_doc_max_bytes=0')
+      })
+    })
+
     it('answers unknown server requests with an error and declines MCP elicitations', async () => {
       const { s } = await started('default')
       await expect(s.ask('attestation/generate', {})).rejects.toThrow(/does not handle/)
@@ -374,6 +431,52 @@ describe('CodexAdapter session', () => {
     expect(blocks).toContainEqual({ kind: 'tool_use', id: 'c1', name: 'Bash', input: { command: 'ls', cwd: '/r' } })
     expect(blocks).toContainEqual({ kind: 'tool_result', toolUseId: 'c1', content: 'a\n', isError: false })
     expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(false)
+  })
+
+  it('on LiteLLM with pricing, prices cumulative tokens and emits run.cost', async () => {
+    const { adapter, servers } = setup()
+    const price = { inputPerToken: 1e-6, outputPerToken: 1e-5, cacheReadPerToken: 1e-7 }
+    const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'k', openaiBaseUrl: 'http://localhost:4000/v1', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test': price } } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 200 }, last: {}, modelContextWindow: null } })
+    const expected = 1000 * 1e-6 + 300 * 1e-5 + 200 * 1e-7
+    expect(lastAgent(ctx, 'root')?.costUsd).toBeCloseTo(expected, 12)
+    const costs = ctx.events.flatMap((e) => (e.type === 'run.cost' ? [e.totalCostUsd] : []))
+    expect(costs).toHaveLength(1)
+    expect(costs[0]).toBeCloseTo(expected, 12)
+    // The same totals again: no new run.cost.
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 200 }, last: {}, modelContextWindow: null } })
+    expect(ctx.events.filter((e) => e.type === 'run.cost')).toHaveLength(1)
+  })
+
+  it('on LiteLLM without a price for the model, cost stays 0', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ connection: { connection: 'litellm', adapter: 'codex', codexAuth: 'apiKey', apiKey: 'k', env: { CODEX_HOME: '/data/codex' }, pricing: { 'gpt-test-mini': { inputPerToken: 1, outputPerToken: 1 } } } })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1200, outputTokens: 300, cachedInputTokens: 0 }, last: {}, modelContextWindow: null } })
+    expect(lastAgent(ctx, 'root')).toMatchObject({ inputTokens: 1200, costUsd: 0 })
+    expect(ctx.events.some((e) => e.type === 'run.cost')).toBe(false)
+  })
+
+  it('reports uncached/cached token split, turns, tool calls and retries as usage', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 200, cachedInputTokens: 600 }, last: {}, modelContextWindow: null } })
+    s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'commandExecution', id: 'c1', command: 'ls', cwd: '/r', status: 'inProgress' } })
+    s.push('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: true, error: { message: 'slow down' } })
+    s.push('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed', items: [] } })
+    const usage = lastAgent(ctx, 'root').usage!
+    expect(usage.tokens).toEqual({ input: 400, output: 200, cacheRead: 600, cacheWrite: 0 })
+    expect(usage.models).toHaveLength(1)
+    expect(usage.models[0]?.providerCostUsd).toBeUndefined()
+    expect(usage).toMatchObject({ turns: 1, toolCalls: 1, retries: 1 })
   })
 
   it('pauses on a usage limit and ends the session after the failed turn', async () => {
@@ -545,7 +648,119 @@ describe('CodexAdapter session', () => {
   })
 })
 
+describe('CodexAdapter skills', () => {
+  let dir = ''
+  let session: RuntimeSession | undefined
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-codex-skills-'))
+    mkdirSync(join(dir, 'sk'))
+    writeFileSync(join(dir, 'sk', 'SKILL.md'), '---\nname: pdf-fill\n---\nStep one.')
+  })
+  afterEach(async () => {
+    await session?.stop()
+    session = undefined
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const runSkill = (roleIds: string[]) => ({ id: 'sk1', name: 'pdf-fill', description: 'Fill <b>forms</b>', dir: join(dir, 'sk'), files: [{ path: 'SKILL.md' }] as never, roleIds })
+
+  it('gives the root the granted skills in its prompt and load_skill with its role, and counts the load', async () => {
+    const { adapter, servers } = setup()
+    const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, skills: () => [runSkill(['r-lead'])] })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const start = s.of('thread/start')[0].params
+    expect(start.developerInstructions).toContain('Skills available to you')
+    expect(start.developerInstructions).toContain('- pdf-fill: Fill ‹b›forms‹/b›')
+    expect(start.developerInstructions).toContain('Call load_skill')
+    expect(start.dynamicTools.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-skill', namespace: null, tool: 'load_skill', arguments: { name: 'orgai:pdf-fill' } })
+    expect(out.success).toBe(true)
+    expect(JSON.stringify(out)).toContain('Step one.')
+    expect(ctx.events).toContainEqual(expect.objectContaining({ type: 'skill.used', skillId: 'sk1', name: 'pdf-fill', agentId: 'root' }))
+  })
+
+  it('refuses a skill granted to another role', async () => {
+    const { adapter, servers } = setup()
+    const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, skills: () => [runSkill(['r-eng'])] })
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(s.of('thread/start')[0].params.developerInstructions).not.toContain('Skills available to you')
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-skill', namespace: null, tool: 'load_skill', arguments: { name: 'pdf-fill' } })
+    expect(JSON.stringify(out)).toContain('REFUSED')
+    expect(ctx.events.some((e) => e.type === 'skill.used')).toBe(false)
+  })
+
+  it('has no skill tools without skills', async () => {
+    const { adapter, servers } = setup()
+    session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(s.of('thread/start')[0].params.dynamicTools.map((t: { name: string }) => t.name)).not.toContain('load_skill')
+  })
+
+  it('switches off Codex native skills for the thread cwd before it starts, and launches with bundled skills off', async () => {
+    const { adapter, servers } = setup()
+    session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
+    const s = servers[0]
+    expect(s.options.config).toEqual(expect.arrayContaining(['skills.bundled.enabled=false', 'skills.include_instructions=false']))
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const order = s.requests.map((r) => r.method)
+    expect(order.indexOf('skills/list')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('skills/list')).toBeLessThan(order.indexOf('thread/start'))
+    expect(s.of('skills/list')[0].params).toMatchObject({ forceReload: true })
+  })
+
+  it('writes a disable entry for each native skill found', async () => {
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = new FakeServer(o)
+        s.overrides['skills/list'] = () => ({ data: [{ cwd: dir, errors: [], skills: [{ name: 'x', path: join(dir, '.agents', 'skills', 'x', 'SKILL.md'), enabled: true, scope: 'repo' }] }] })
+        servers.push(s)
+        return s
+      }
+    })
+    session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(s.of('skills/config/write').map((r) => r.params)).toEqual([{ path: join(dir, '.agents', 'skills', 'x', 'SKILL.md'), enabled: false }])
+  })
+
+  it('a failing skills/list only warns and the thread still starts', async () => {
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = new FakeServer(o)
+        s.overrides['skills/list'] = () => {
+          throw new Error('unknown method')
+        }
+        servers.push(s)
+        return s
+      }
+    })
+    const ctx = fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 })
+    session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers[0].turnStarts('th-1')).toHaveLength(1))
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && /native skills/.test(e.message))).toBe(true)
+  })
+})
+
 describe('CodexAdapter.complete', () => {
+  it('reports the turn token usage through onUsage', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)), completionConnection: () => ({ connection: 'chatgpt' as never, adapter: 'codex', env: {} }) })
+    const onUsage = vi.fn()
+    const promise = adapter.complete({ system: 's', prompt: 'p', onUsage })
+    await vi.waitFor(() => expect(server?.of('turn/start')).toHaveLength(1))
+    server.push('thread/tokenUsage/updated', { threadId: 'th-1', turnId: 'tu-1', tokenUsage: { total: { inputTokens: 1000, outputTokens: 50, cachedInputTokens: 400 }, last: {}, modelContextWindow: null } })
+    server.push('item/completed', agentMessage('th-1', 'm', 'ok'))
+    server.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await expect(promise).resolves.toBe('ok')
+    expect(onUsage).toHaveBeenCalledWith({ tokens: { input: 600, output: 50, cacheRead: 400, cacheWrite: 0 } })
+  })
+
   it('runs one tool-less ephemeral turn and returns the final message', async () => {
     let server!: FakeServer
     const adapter = new CodexAdapter({
@@ -559,6 +774,10 @@ describe('CodexAdapter.complete', () => {
     expect(start).not.toHaveProperty('model') // a bare Claude alias is not a Codex model
     expect(start).not.toHaveProperty('dynamicTools')
     expect(server.options.env).toMatchObject({ CODEX_HOME: '/h' })
+    // never the project folder: no AGENTS.md reaches a one-shot, and the launch turns project docs off
+    expect(start.cwd).toBe(tmpdir())
+    expect(server.options.cwd).toBe(tmpdir())
+    expect(server.options.config).toContain('project_doc_max_bytes=0')
     server.push('item/completed', agentMessage('th-1', 'm', 'Blue'))
     server.push('turn/completed', turnDone('th-1', 'tu-1'))
     await expect(promise).resolves.toBe('Blue')
@@ -640,7 +859,42 @@ describe('codexModelFor', () => {
   it('drops inherit and bare Claude aliases, keeps real model ids', () => {
     expect(codexModelFor('inherit')).toBeUndefined()
     expect(codexModelFor('opus')).toBeUndefined()
+    expect(codexModelFor('deep')).toBeUndefined()
+    expect(codexModelFor('Everyday')).toBeUndefined()
     expect(codexModelFor(undefined)).toBeUndefined()
     expect(codexModelFor('gpt-5.1-codex')).toBe('gpt-5.1-codex')
+  })
+
+  it('drops ids that fail validModelId (option-like, whitespace, control chars, too long, non-strings)', () => {
+    for (const bad of ['--some-cli-flag', '-m', 'a b', 'new\nline', 'bell\u0007', 'caf\u00e9', 'x'.repeat(201)]) expect(codexModelFor(bad), JSON.stringify(bad)).toBeUndefined()
+    expect(codexModelFor(42 as unknown as string)).toBeUndefined()
+    expect(codexModelFor(' gpt-5.1 ')).toBe('gpt-5.1')
+  })
+
+  it('never sends an invalid role model in thread/start, and logs it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-model-'))
+    const { adapter, servers } = setup()
+    const p = project({ path: dir, isolateWriters: false })
+    p.roles = p.roles.map((r) => (r.reportsTo === null ? { ...r, model: '--config=evil' } : r))
+    const ctx = fakeCtx({ project: p, roles: p.roles, continuationDelayMs: 5 })
+    const session = await adapter.start(ctx)
+    try {
+      await vi.waitFor(() => expect(servers[0].of('thread/start')).toHaveLength(1))
+      expect(servers[0].of('thread/start')[0].params).not.toHaveProperty('model')
+      expect(JSON.stringify(ctx.events)).toContain('Ignoring the invalid model')
+    } finally {
+      await session.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('drops an invalid completion model', async () => {
+    let server!: FakeServer
+    const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)), completionConnection: () => ({ connection: 'openai' as const, adapter: 'codex' as const, env: { CODEX_HOME: '/h' } }) })
+    const promise = adapter.complete({ system: 's', prompt: 'p', model: '--profile=x' })
+    await vi.waitFor(() => expect(server?.of('turn/start')).toHaveLength(1))
+    expect(server.of('thread/start')[0].params).not.toHaveProperty('model')
+    server.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await promise
   })
 })

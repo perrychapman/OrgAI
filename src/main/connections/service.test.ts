@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -95,6 +95,29 @@ describe('ConnectionService litellm', () => {
     expect(again.service.catalog().some((m) => m.id === 'gpt-5' && m.connection === 'litellm')).toBe(true)
   })
 
+  it('keeps proxy prices across a restart, drops a stored bad price, and lists them in prices()', async () => {
+    const priceFetch = (async (url: string | URL | Request) =>
+      String(url).endsWith('/v1/models')
+        ? json({ data: [{ id: 'claude-opus-4-5' }, { id: 'gpt-5' }] })
+        : json({ data: [{ model_name: 'claude-opus-4-5', model_info: { input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5 } }] })) as unknown as typeof fetch
+    const ctx = setup({ fetch: priceFetch })
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const again = setup({}, ctx.dataDir)
+    expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')?.price).toEqual({ inputPerToken: 5e-6, outputPerToken: 2.5e-5 })
+    expect(again.service.models({ connection: 'litellm' }).find((m) => m.id === 'gpt-5')).not.toHaveProperty('price')
+    expect(again.service.prices({ connection: 'litellm' }).filter((r) => r.source === 'proxy')).toEqual([
+      { model: 'claude-opus-4-5', connection: 'litellm', price: { inputPerToken: 5e-6, outputPerToken: 2.5e-5 }, source: 'proxy' }
+    ])
+
+    const file = join(ctx.dataDir, 'models.json')
+    const stored = JSON.parse(readFileSync(file, 'utf8'))
+    stored.models.litellm[0].price = { inputPerToken: -4, outputPerToken: 1e9 }
+    writeFileSync(file, JSON.stringify(stored))
+    const bad = setup({}, ctx.dataDir)
+    expect(bad.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-opus-4-5')).not.toHaveProperty('price')
+  })
+
   it('updating tierModels remaps that connection\'s projects, keeping explicit picks', async () => {
     const ctx = setup()
     await configureLiteLLM(ctx)
@@ -154,8 +177,8 @@ describe('fastModel', () => {
     expect(ctx.service.fastModel({ adapter: 'claude', connection: 'anthropic' })).toBe('haiku')
     expect(ctx.service.fastModel({ adapter: 'codex', connection: 'openai' })).toBe('gpt-5-nano')
     expect(ctx.service.fastModel({ adapter: 'mock', connection: 'anthropic' })).toBeUndefined()
-    // LiteLLM without a fast tier: the Claude adapter falls back to the haiku alias, Codex to its default.
-    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBe('haiku')
+    // LiteLLM without any catalog or mapping: the adapter's default model.
+    expect(ctx.service.fastModel({ adapter: 'claude', connection: 'litellm' })).toBeUndefined()
     expect(ctx.service.fastModel({ adapter: 'codex', connection: 'litellm' })).toBeUndefined()
     const s = ctx.settings.get()
     ctx.settings.set({ ...s, connections: { ...s.connections, litellm: { ...s.connections.litellm, tierModels: { fast: 'claude-haiku-4-5' } } } })
@@ -190,7 +213,7 @@ describe('runConnection', () => {
     const p = litellmProject([['gpt-5', 'deep']])
     ctx.settings.set({ ...ctx.settings.get(), connections: { ...ctx.settings.get().connections, litellm: { ...ctx.settings.get().connections.litellm, baseUrl: 'http://localhost:4000' } } })
     expect(() => ctx.service.runConnection(p, { adapter: 'codex', connection: 'litellm', mismatched: [] })).toThrow('LiteLLM has no API key. Set it in Settings > Connections.')
-    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] })).toEqual({ connection: 'anthropic', adapter: 'claude', env: {} })
+    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] })).toMatchObject({ connection: 'anthropic', adapter: 'claude', env: {}, tierModels: { fast: 'haiku' }, models: ['fable', 'opus', 'sonnet', 'haiku'] })
   })
 
   it('openai: chatgpt uses CODEX_HOME, apiKey reads the env var', () => {
@@ -336,7 +359,7 @@ describe('anthropic connect', () => {
 })
 
 describe('openai ChatGPT login', () => {
-  function codexSetup(): { ctx: ReturnType<typeof setup>; rpc: FakeRpc } {
+  function codexSetup(): { ctx: ReturnType<typeof setup>; rpc: FakeRpc; factory: ReturnType<typeof vi.fn> } {
     let account: unknown = { account: null, requiresOpenaiAuth: true }
     const rpc = fakeRpc({
       'account/read': () => account,
@@ -356,7 +379,8 @@ describe('openai ChatGPT login', () => {
       account = { account: { type: 'chatgpt', email: 'me@x.io', planType: 'plus' }, requiresOpenaiAuth: true }
     }
     ;(rpc as FakeRpc & { signIn: () => void }).signIn = signIn
-    return { ctx: setup({ codexFactory: () => asCodexServer(rpc) }), rpc }
+    const factory = vi.fn(() => asCodexServer(rpc))
+    return { ctx: setup({ codexFactory: factory }), rpc, factory }
   }
 
   it('test() reports signed out, then connect after login discovers models and keeps the server until done', async () => {
@@ -400,7 +424,7 @@ describe('openai ChatGPT login', () => {
     const { ctx, rpc } = codexSetup()
     expect(await ctx.service.probeCodexUsage()).toBeNull() // openai not enabled
     const s = ctx.settings.get()
-    ctx.settings.set({ ...s, connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true } } })
+    ctx.settings.set({ ...s, defaultConnection: 'openai', connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true } } })
     expect(await ctx.service.probeCodexUsage()).toBeNull() // signed out
     rpc.closed = false
     ;(rpc as unknown as { signIn: () => void }).signIn()
@@ -409,10 +433,112 @@ describe('openai ChatGPT login', () => {
     expect(usage?.windows.fiveHour?.utilization).toBe(10)
   })
 
+  it('probeCodexUsage never spawns Codex while openai is not in use', async () => {
+    const { ctx, rpc, factory } = codexSetup()
+    ;(rpc as unknown as { signIn: () => void }).signIn()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, defaultConnection: 'anthropic', connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true, auth: { kind: 'chatgpt' } } } })
+    ctx.projects.save(project({ id: 'a1', provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' }, connection: 'anthropic' } }))
+    expect(await ctx.service.probeCodexUsage()).toBeNull()
+    expect(factory).not.toHaveBeenCalled()
+
+    ctx.projects.save(project({ id: 'o1', provider: { id: 'codex', label: 'Codex', auth: { kind: 'subscription' }, connection: 'openai' } }))
+    expect(await ctx.service.probeCodexUsage()).toMatchObject({ provider: 'codex', connection: 'openai' })
+    expect(factory).toHaveBeenCalledTimes(1)
+
+    ctx.projects.remove('o1')
+    rpc.closed = false
+    expect(await ctx.service.probeCodexUsage()).toBeNull()
+    expect(factory).toHaveBeenCalledTimes(1)
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'openai' })
+    expect(await ctx.service.probeCodexUsage()).toMatchObject({ provider: 'codex', connection: 'openai' })
+    expect(factory).toHaveBeenCalledTimes(2)
+  })
+
   it('logout signs out of ChatGPT', async () => {
     const { ctx, rpc } = codexSetup()
     const info = await ctx.service.logout('openai')
     expect(rpc.calls.some(([m]) => m === 'account/logout')).toBe(true)
     expect(info.status).toMatchObject({ state: 'disconnected', detail: 'Signed out' })
+  })
+})
+
+describe('LiteLLM spend and pricing', () => {
+  const pricedFetch = (keyInfo: () => Response) =>
+    (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.endsWith('/v1/models')) return json({ data: [{ id: 'claude-sonnet-4-5' }, { id: 'gpt-5' }] })
+      if (u.endsWith('/model/info'))
+        return json({
+          data: [
+            { model_name: 'claude-sonnet-4-5', litellm_params: { model: 'anthropic/claude-sonnet-4-5-20250929' }, model_info: { mode: 'chat', input_cost_per_token: 3e-6, output_cost_per_token: 1.5e-5, cache_read_input_token_cost: 3e-7 } },
+            { model_name: 'gpt-5', litellm_params: { model: 'openai/gpt-5' }, model_info: { mode: 'chat' } }
+          ]
+        })
+      if (u.endsWith('/key/info')) return keyInfo()
+      return json({}, 404)
+    }) as unknown as typeof fetch
+
+  it('probeLiteLLMUsage is gated on enabled, base URL and key, and maps /key/info', async () => {
+    const fetchImpl = vi.fn(pricedFetch(() => json({ key: 'hashed', info: { spend: 1.25, max_budget: 10, budget_duration: '30d', budget_reset_at: '2026-11-01T00:00:00Z', key_alias: 'team-a' } })))
+    const ctx = setup({ fetch: fetchImpl })
+    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // nothing configured
+    await configureLiteLLM(ctx)
+    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not enabled
+    expect(fetchImpl).not.toHaveBeenCalled()
+    await ctx.service.connect('litellm')
+    const keyInfoCalls = (): number => fetchImpl.mock.calls.filter(([u]) => String(u).endsWith('/key/info')).length
+    expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not in use: no default, no project
+    expect(keyInfoCalls()).toBe(0)
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'litellm' })
+    expect(await ctx.service.probeLiteLLMUsage()).not.toBeNull() // in use as the default connection
+    ctx.settings.set({ ...ctx.settings.get(), defaultConnection: 'anthropic' })
+    ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
+    const usage = await ctx.service.probeLiteLLMUsage() // in use by a project
+    expect(usage).toEqual({
+      connection: 'litellm',
+      authMode: 'apiKey',
+      subscriptionType: null,
+      available: true,
+      windows: {},
+      spend: { usd: 1.25, budgetUsd: 10, resetsAt: Date.parse('2026-11-01T00:00:00Z'), budgetDuration: '30d', keyAlias: 'team-a' },
+      updatedAt: 1000
+    })
+    expect(JSON.stringify(usage)).not.toContain(KEY)
+    expect(structuredClone(usage)).toEqual(usage)
+    const call = fetchImpl.mock.calls.find(([u]) => String(u).endsWith('/key/info'))!
+    expect(String(call[0])).toBe('http://localhost:4000/key/info') // no key in the URL
+  })
+
+  it('probeLiteLLMUsage returns null on 500 (no DB), 403, junk and network errors', async () => {
+    const answers: (() => Response)[] = [
+      () => json({ error: 'no db' }, 500),
+      () => json({}, 403),
+      () => json({ info: { spend: 'lots' } }),
+      () => {
+        throw new TypeError(`down ${KEY}`)
+      }
+    ]
+    for (const answer of answers) {
+      const ctx = setup({ fetch: pricedFetch(answer) })
+      await configureLiteLLM(ctx)
+      await ctx.service.connect('litellm')
+      ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
+      expect(await ctx.service.probeLiteLLMUsage()).toBeNull()
+    }
+  })
+
+  it('persists /model/info prices and passes them on litellm run connections only', async () => {
+    const ctx = setup({ fetch: pricedFetch(() => json({}, 404)) })
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    const again = setup({}, ctx.dataDir)
+    const sonnet = again.service.models({ connection: 'litellm' }).find((m) => m.id === 'claude-sonnet-4-5')
+    const price = { inputPerToken: 3e-6, outputPerToken: 1.5e-5, cacheReadPerToken: 3e-7 }
+    expect(sonnet).toMatchObject({ price, upstream: 'anthropic/claude-sonnet-4-5-20250929' })
+    const p = litellmProject([['claude-sonnet-4-5', 'everyday']])
+    const rc = ctx.service.runConnection(p, adapterForProject(p, ctx.service.catalog()))
+    expect(rc.pricing).toEqual({ 'claude-sonnet-4-5': price, 'claude-sonnet-4-5-20250929': price })
+    expect(ctx.service.runConnection(p, { adapter: 'claude', connection: 'anthropic', mismatched: [] }).pricing).toBeUndefined()
   })
 })

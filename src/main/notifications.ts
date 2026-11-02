@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Notification } from 'electron'
 import type { FocusRunTarget, RunEvent, RunKind, RunPlan } from '@shared/types'
-import { DEFAULT_MAX_AUTO_CONTINUES, IPC } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, IPC, QUICK_PROJECT_ID } from '@shared/types'
 import { pickFocusWindow } from './windowScope'
 
 /** What the notifier knows about a run. */
@@ -129,15 +129,24 @@ export class Notifier {
   /** Notification body for events that need the user, or null for everything else. */
   private describe(event: RunEvent, run: NotifierRun | undefined): string | null {
     const kind = run?.kind
-    const label = kind === 'setup' ? 'Setup session' : kind === 'mcp-assist' ? 'MCP assistant session' : 'Run'
+    const label =
+      kind === 'setup' ? 'Setup session'
+      : kind === 'mcp-assist' ? 'MCP assistant session'
+      : kind === 'skill-assist' ? 'Skill assistant session'
+      : run?.projectId === QUICK_PROJECT_ID ? 'Chat'
+      : 'Run'
     switch (event.type) {
       case 'permission.request':
         return `${this.agentName(event.runId, event.request.agentId)} needs approval: ${event.request.summary}`.slice(0, 240)
       case 'proposal.request': {
         const what =
-          event.proposal.kind === 'architecture' ? 'Architecture' : event.proposal.kind === 'orgChart' ? 'Org chart' : event.proposal.kind === 'mcpServers' ? 'MCP servers' : 'Settings'
+          event.proposal.kind === 'architecture' ? 'Architecture'
+          : event.proposal.kind === 'orgChart' ? 'Org chart'
+          : event.proposal.kind === 'mcpServers' ? 'MCP servers'
+          : event.proposal.kind === 'skills' ? 'Skills'
+          : 'Settings'
         const title = event.proposal.title?.trim()
-        return `${kind === 'mcp-assist' ? 'MCP' : 'Setup'} proposal: ${what}${title && title.toLowerCase() !== what.toLowerCase() ? ` - ${title}` : ''}`.slice(0, 240)
+        return `${kind === 'mcp-assist' ? 'MCP' : kind === 'skill-assist' ? 'Skill' : 'Setup'} proposal: ${what}${title && title.toLowerCase() !== what.toLowerCase() ? ` - ${title}` : ''}`.slice(0, 240)
       }
       case 'run.status':
         if (event.status === 'idle') {

@@ -8,7 +8,9 @@ import {
   CircleDot,
   FileText,
   HelpCircle,
+  BookOpen,
   Info,
+  ArrowDown,
   ListChecks,
   MessageSquare,
   MinusCircle,
@@ -25,15 +27,22 @@ import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
-import { COST_ESTIMATE_HINT, formatCost, formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { Cost } from './ui/Cost'
+import { agentCostInput } from '../lib/cost'
+import UsagePanel from './UsagePanel'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 import { Badge } from './ui/Badge'
+import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
-import { autoContinueLine, humanizeToolResult, humanizeToolUse, type ToolKind } from '../lib/transcriptRows'
+import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, type ToolKind } from '../lib/transcriptRows'
+
+/** Distance from the end of the conversation under which it still counts as scrolled to the end. */
+const STICK_PX = 48
 
 interface Props {
   /** The run this panel shows. */
@@ -43,6 +52,8 @@ interface Props {
   logs: LogLine[]
   /** When a folded "done" group is selected on the chart, list its reports instead of a transcript. */
   finished?: FinishedGroup
+  /** 'conversation' renders only the entry list as the Live view's stage (no header or tabs, stick to the bottom). */
+  variant?: 'panel' | 'conversation'
 }
 
 const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
@@ -186,7 +197,33 @@ function ToolResultRow({ toolName, content, isError }: { toolName?: string; cont
   )
 }
 
-export default function TranscriptPanel({ runId, agent, entries, logs, finished }: Props): ReactElement {
+/** Pairs each `load_skill` call (no file) with the harness "Loaded skill" row it caused. */
+export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<string>; body: Map<string, string> } {
+  const hidden = new Set<string>()
+  const body = new Map<string, string>()
+  const results = new Map<string, TranscriptEntry>()
+  for (const e of entries) if (e.block.kind === 'tool_result') results.set(e.block.toolUseId, e)
+  const claimed = new Set<string>()
+  entries.forEach((e, idx) => {
+    const b = e.block
+    if (b.kind !== 'tool_use' || bareToolName(b.name) !== 'load_skill') return
+    const input = (b.input ?? {}) as { name?: unknown; file?: unknown }
+    if (typeof input.name !== 'string' || (typeof input.file === 'string' && input.file.trim())) return
+    const want = input.name.trim().replace(/^orgai:/i, '').toLowerCase()
+    const row = entries.slice(idx + 1).find((x) => !claimed.has(x.id) && x.source === 'harness' && x.block.kind === 'system' && x.block.text.toLowerCase() === `loaded skill ${want}`)
+    if (!row) return
+    claimed.add(row.id)
+    hidden.add(e.id)
+    const res = results.get(b.id)
+    if (res && res.block.kind === 'tool_result') {
+      hidden.add(res.id)
+      body.set(row.id, res.block.content.trim())
+    }
+  })
+  return { hidden, body }
+}
+
+export default function TranscriptPanel({ runId, agent, entries, logs, finished, variant = 'panel' }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -196,10 +233,13 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
   const index = useRunIndexes().get(runId)
   // Setup runs have no plan tab; fall back to the transcript there.
-  const tab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
+  const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
+  const tab: SideTab = planTab
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' })
+    // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
+    const body = bottom.current?.parentElement
+    if (body) body.scrollTop = body.scrollHeight
   }, [entries.length, logs.length, tab, partial])
 
   const toolNames = useMemo(() => {
@@ -207,7 +247,116 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
     for (const e of entries) if (e.block.kind === 'tool_use') m.set(e.block.id, e.block.name)
     return m
   }, [entries])
-  const visible = showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')
+  // One skill load is one row: the harness "Loaded skill <name>" row stands for the load_skill call and its result, and
+  // carries SKILL.md under "Show instructions". Calls without a matching row (refused, resource files) stay visible.
+  const skillLoads = useMemo(() => collapseSkillLoads(entries), [entries])
+  const visible = (showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')).filter((e) => !skillLoads.hidden.has(e.id))
+
+  const rows = visible.map((e) => {
+    const b = e.block
+    switch (b.kind) {
+      case 'user':
+        return (
+          <div key={e.id} className="entry user">
+            <div className="tag">
+              <span>You</span>
+              <span>{new Date(e.at).toLocaleTimeString()}</span>
+            </div>
+            {b.text.trim() && <Markdown text={b.text} />}
+            {b.images && b.images.length > 0 && <TranscriptImages images={b.images} />}
+          </div>
+        )
+      case 'text':
+        return (
+          <div key={e.id} className="entry text">
+            <Markdown text={b.text} />
+          </div>
+        )
+      case 'thinking':
+        return (
+          <div key={e.id} className="entry thinking">
+            {b.text}
+          </div>
+        )
+      case 'tool_use':
+        return <ToolUseRow key={e.id} name={b.name} input={b.input} />
+      case 'tool_result':
+        return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
+      case 'system': {
+        const peer = parsePeerNote(b.text)
+        if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
+        const harness = e.source === 'harness'
+        const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
+        const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
+        // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
+        return (
+          <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
+            <Icon icon={skillName ? BookOpen : harness ? Info : MessageSquare} size="sm" />
+            <div className="tool-main">
+              {skillName ? <span className="entry-plain">{b.text}</span> : <Markdown text={b.text} />}
+              {(b.detail || skillBody) && (
+                <details className="entry-detail">
+                  <summary>{skillBody ? 'Show instructions' : 'Show instruction'}</summary>
+                  <pre>{skillBody ?? b.detail}</pre>
+                </details>
+              )}
+            </div>
+          </div>
+        )
+      }
+    }
+  })
+
+  // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
+  const listRef = useRef<HTMLDivElement>(null)
+  const stuck = useRef(true)
+  const [away, setAway] = useState(false)
+  useEffect(() => {
+    const el = listRef.current
+    if (variant === 'conversation' && el && stuck.current) el.scrollTop = el.scrollHeight
+  }, [variant, entries.length, partial, showThinking])
+
+  if (variant === 'conversation') {
+    const toEnd = (): void => {
+      const el = listRef.current
+      if (!el) return
+      stuck.current = true
+      setAway(false)
+      el.scrollTop = el.scrollHeight
+    }
+    return (
+      <div className="conversation-body" data-testid="conversation-transcript">
+        <div
+          ref={listRef}
+          className="transcript conversation-list"
+          role="log"
+          aria-label="Conversation"
+          tabIndex={0}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
+            stuck.current = atEnd
+            setAway(!atEnd)
+          }}
+        >
+          {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+          {rows}
+          {partial && (
+            <div className="entry text streaming">
+              <Markdown text={partial} />
+            </div>
+          )}
+        </div>
+        {away && (
+          <div className="conversation-jump">
+            <Button size="sm" variant="secondary" onClick={toEnd} testId="conversation-jump">
+              <Icon icon={ArrowDown} size="sm" /> Jump to latest
+            </Button>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
   const errorCount = logs.filter((l) => l.level === 'error').length
@@ -215,11 +364,12 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
   const tabs: TabItem[] = [
     { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
     ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
+    { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
     { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   ]
   const idPrefix = `side-${runId}`
   return (
-    <>
+    <div className="side-run">
       <div className="side-header side-header-col">
         <div className="side-title">
           <span className="run-index" title="The run this panel belongs to">
@@ -239,6 +389,11 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <PlanView plan={plan} />
         </TabPanel>
       )}
+      {tab === 'usage' && (
+        <TabPanel idPrefix={idPrefix} id="usage" value={tab}>
+          <UsagePanel runId={runId} agent={agent} />
+        </TabPanel>
+      )}
       {tab === 'transcript' && finished && !agent && (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab}>
           <FinishedList group={finished} />
@@ -250,7 +405,7 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>
-          {agent.costUsd > 0 && <span title={COST_ESTIMATE_HINT}>{formatCost(agent.costUsd)} est.</span>}
+          <Cost value={agentCostInput(agent)} hideEmpty labelled />
           <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>
           <span>{agent.state}</span>
           {agent.worktree && (
@@ -265,62 +420,11 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
         </div>
       )}
-      {tab === 'plan' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'plan' || tab === 'usage' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
-          {visible.map((e) => {
-            const b = e.block
-            switch (b.kind) {
-              case 'user':
-                return (
-                  <div key={e.id} className="entry user">
-                    <div className="tag">
-                      <span>You</span>
-                      <span>{new Date(e.at).toLocaleTimeString()}</span>
-                    </div>
-                    {b.text.trim() && <Markdown text={b.text} />}
-                    {b.images && b.images.length > 0 && <TranscriptImages images={b.images} />}
-                  </div>
-                )
-              case 'text':
-                return (
-                  <div key={e.id} className="entry text">
-                    <Markdown text={b.text} />
-                  </div>
-                )
-              case 'thinking':
-                return (
-                  <div key={e.id} className="entry thinking">
-                    {b.text}
-                  </div>
-                )
-              case 'tool_use':
-                return <ToolUseRow key={e.id} name={b.name} input={b.input} />
-              case 'tool_result':
-                return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
-              case 'system': {
-                const peer = parsePeerNote(b.text)
-                if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
-                const harness = e.source === 'harness'
-                // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
-                return (
-                  <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
-                    <Icon icon={harness ? Info : MessageSquare} size="sm" />
-                    <div className="tool-main">
-                      <Markdown text={b.text} />
-                      {b.detail && (
-                        <details className="entry-detail">
-                          <summary>Show instruction</summary>
-                          <pre>{b.detail}</pre>
-                        </details>
-                      )}
-                    </div>
-                  </div>
-                )
-              }
-            }
-          })}
+          {rows}
           {agent && partial && (
             <div className="entry text streaming">
               <Markdown text={partial} />
@@ -340,6 +444,6 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished 
           <div ref={bottom} />
         </TabPanel>
       )}
-    </>
+    </div>
   )
 }

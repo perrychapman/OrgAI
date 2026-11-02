@@ -1,9 +1,10 @@
 import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
-import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, PermissionMode, ThemeMode } from '@shared/types'
+import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import type { ConnectionId } from '@shared/types'
-import { CLAUDE_MODEL_OPTIONS, CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
@@ -23,10 +24,15 @@ import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
 import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/settingsCopy'
+import { modelSettingDescription, modelSettingGroups, modelSources } from '../lib/assistantModels'
+import { ModelSelect } from '../components/ui/ModelSelect'
 import { connectionUsable } from '../lib/projectsForm'
-import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection } from '../lib/settingsTarget'
+import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
+import { ModelPricesSection } from '../components/settings/ModelPricesSection'
+import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
+import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -73,7 +79,8 @@ const ACCENT_SWATCHES: { name: string; hex: string }[] = [
 const PANES: SettingsNavItem[] = [
   { id: APP_SETTINGS_PANES.general, label: 'General' },
   { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
-  { id: APP_SETTINGS_PANES.mcpLibrary, label: 'MCP library' },
+  { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
+  { id: APP_SETTINGS_PANES.skillLibrary, label: 'Skill library' },
   { id: APP_SETTINGS_PANES.defaults, label: 'Defaults' },
   { id: APP_SETTINGS_PANES.about, label: 'About' }
 ]
@@ -91,20 +98,36 @@ export default function AppSettingsView(): ReactElement {
   const focusHex = useRef(false)
   const [highlightUsage, setHighlightUsage] = useState(false)
   // Set by a deep link; the first render that has the page loaded moves focus to the pane heading.
-  const pendingFocus = useRef<{ usage: boolean } | null>(null)
+  const pendingFocus = useRef<{ usage: boolean; section?: string } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
   const appInfo = useAppStore((s) => s.appInfo)
   const mcpFocus = useAppStore((st) => st.mcpFocus)
   const [pane, setPane] = useState<string>(() => (useAppStore.getState().mcpFocus?.kind === 'library' ? APP_SETTINGS_PANES.mcpLibrary : APP_SETTINGS_PANES.general))
+  // Leaving App settings for good drops the "Back to Team" way back.
+  // Deferred and checked against the view so StrictMode's simulated remount (dev) keeps it.
+  useEffect(
+    () => () => {
+      setTimeout(() => {
+        if (useAppStore.getState().view !== 'appSettings') clearTeamOrigin()
+      }, 0)
+    },
+    []
+  )
   // A jump from elsewhere ("App settings > Connections") opens the pane that holds its section.
   useEffect(() => {
-    const target = takeAppSettingsSection()
-    const next = target ? appPaneForSection(target) : undefined
-    if (next) {
-      setPane(next)
-      pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage }
+    const take = (): void => {
+      const target = takeAppSettingsSection()
+      const next = target ? appPaneForSection(target) : undefined
+      if (next) {
+        setPane(next)
+        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage, section: target === APP_SETTINGS_SECTIONS.modelPrices ? target : undefined }
+      }
     }
+    take()
+    // A jump requested while this page is already open (the MCP assistant dialog's model link).
+    window.addEventListener('orgai:settings-section', take)
+    return () => window.removeEventListener('orgai:settings-section', take)
   }, [])
   // "Open in library" lands on the MCP library pane; the section there then scrolls to the entry.
   useEffect(() => {
@@ -115,7 +138,18 @@ export default function AppSettingsView(): ReactElement {
     const pf = pendingFocus.current
     if (!pf || !ready) return
     pendingFocus.current = null
-    focusPaneHeading({ preventScroll: pf.usage })
+    focusPaneHeading({ preventScroll: pf.usage || !!pf.section })
+    if (pf.section) {
+      // Land on the section itself: scroll its title to the top and focus it (an add form pre-filled by a deep link then takes focus).
+      // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
+      const land = (): void => document.getElementById(pf.section!)?.scrollIntoView({ block: 'start' })
+      land()
+      setTimeout(land, 350)
+      setTimeout(land, 900)
+      const title = document.getElementById(pf.section)?.querySelector<HTMLElement>('.settings-section-title')
+      title?.setAttribute('tabindex', '-1')
+      title?.focus({ preventScroll: true })
+    }
     if (pf.usage) {
       document.getElementById(APP_SETTINGS_SECTIONS.usage)?.scrollIntoView({ block: 'center' })
       setHighlightUsage(true)
@@ -136,10 +170,26 @@ export default function AppSettingsView(): ReactElement {
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const connections = useAppStore((s) => s.connections)
   const loadConnections = useAppStore((s) => s.loadConnections)
+  const loadModels = useAppStore((s) => s.loadModels)
+  const defaultConn: ConnectionId = info?.defaultConnection ?? 'anthropic'
+  const defaultCatalog = useAppStore((s) => s.models[defaultConn])
   useEffect(() => {
     void loadAppInfo()
     void loadConnections()
   }, [loadAppInfo, loadConnections])
+  useEffect(() => {
+    if (!defaultCatalog) void loadModels(defaultConn)
+  }, [defaultCatalog, defaultConn, loadModels])
+  // Every enabled connection's catalog feeds the model pickers.
+  const allModels = useAppStore((s) => s.models)
+  const enabledKey = (connections ?? []).map((c) => `${c.connection.id}:${c.connection.enabled}`).join()
+  useEffect(() => {
+    for (const c of connections ?? []) {
+      if (c.connection.enabled && !useAppStore.getState().models[c.connection.id]) void loadModels(c.connection.id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledKey, loadModels])
+  const sources = modelSources(connections, allModels)
 
   useEffect(() => {
     window.orgai.settings
@@ -204,6 +254,17 @@ export default function AppSettingsView(): ReactElement {
     else timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
   }
 
+  /** Save the price overrides now (with any queued edit); rejects with the save error so the Model prices form shows it. */
+  const saveModelPrices = async (modelPrices: ModelPriceOverride[]): Promise<void> => {
+    const base = pending.current ?? stripInfo(info)
+    pending.current = null
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+    const result = await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...base, modelPrices }))
+    setInfo(result)
+    setError(null)
+  }
+
   const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
   const patchAppearance = (p: Partial<AppearanceSettings>, canvas?: Partial<AppearanceSettings['canvas']>): void => {
     const next: AppearanceSettings = { ...appearance, ...p, canvas: { ...appearance.canvas, ...canvas } }
@@ -234,12 +295,23 @@ export default function AppSettingsView(): ReactElement {
     patchAppearance({ accent: hex })
   }
 
-  const modelOptions = (value: string, allowInherit: boolean): { value: string; label: string }[] => {
-    const list = CLAUDE_MODEL_OPTIONS.filter((m) => allowInherit || m.value !== 'inherit').map((m) => ({ value: m.value, label: m.label }))
-    return CLAUDE_MODEL_OPTIONS.some((m) => m.value === value) ? list : [...list, { value, label: value }]
-  }
+  /** Tiers first, then the default connection's discovered models. Never a hard-coded vendor name. */
+  const modelSelect = (label: string, rowId: string, value: string, allowInherit: boolean, onChange: (v: string) => void): ReactElement => (
+    <ModelSelect
+      label={label}
+      hideLabel
+      value={value}
+      groups={modelSettingGroups(value, sources, allowInherit)}
+      onChange={onChange}
+      testId={`${rowId}-select`}
+    />
+  )
 
-  const modelHint = (value: string): string | undefined => CLAUDE_MODEL_OPTIONS.find((m) => m.value === value)?.hint
+  /** Row description: what the row does, then what its tier or model resolves to per connection. */
+  const describe = (what: string, value: string): string => {
+    const d = modelSettingDescription(value, sources)
+    return d ? `${what} ${d}` : what
+  }
 
   return (
     <>
@@ -376,10 +448,38 @@ export default function AppSettingsView(): ReactElement {
             </SettingsSection>
           </>
         )}
-        {pane === 'connections' && <ConnectionsPanel />}
-        {pane === 'mcp-library' && <McpLibrarySection />}
+        {pane === 'connections' && (
+          <>
+            <ConnectionsPanel />
+            <SettingsSection id="appsettings-section-price-sources" title="Price sources" description="Where cost estimates come from for models without a built-in price.">
+              <SettingsCard>
+                <SettingRow
+                  id="community-prices-row"
+                  title="Community price list"
+                  description="Fetches a cached public price list (LiteLLM, MIT) for models without a built-in price. Your overrides below always win."
+                  control={
+                    <Switch
+                      checked={info.communityPrices !== false}
+                      label="Community price list"
+                      describedBy={settingDescId('community-prices-row')}
+                      onChange={(communityPrices) => patch({ communityPrices }, true)}
+                    />
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
+            <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
+          </>
+        )}
+        {pane === 'mcp-library' && (
+          <>
+            <ConnectorGallery />
+            <McpLibrarySection />
+          </>
+        )}
+        {pane === 'skill-library' && <SkillLibrarySection />}
         {pane === 'defaults' && (
-          <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="For new projects. Existing ones keep their own.">
+          <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="Starting values for new projects, plus the assistants that work across all projects.">
             <SettingsGroup title="Connection">
               <SettingsCard>
                 <SettingRow
@@ -413,16 +513,53 @@ export default function AppSettingsView(): ReactElement {
             <SettingsGroup title="Models">
               <SettingsCard>
                 <SettingRow
+                  id="default-root-model-row"
                   title="Orchestrator model"
+                  description={describe("Leads each new project's runs.", info.defaultRootModel)}
                   width="select"
-                  control={<Select label="Orchestrator model" value={info.defaultRootModel} options={modelOptions(info.defaultRootModel, false)} onChange={(defaultRootModel) => patch({ defaultRootModel })} />}
+                  control={modelSelect('Orchestrator model', 'default-root-model-row', info.defaultRootModel, false, (defaultRootModel) => patch({ defaultRootModel }))}
                 />
                 <SettingRow
+                  id="default-report-model-row"
                   title="Report model"
+                  description={describe('Used by the roles that report to the orchestrator.', info.defaultReportModel)}
                   width="select"
-                  control={<Select label="Report model" value={info.defaultReportModel} options={modelOptions(info.defaultReportModel, true)} onChange={(defaultReportModel) => patch({ defaultReportModel })} />}
+                  control={modelSelect('Report model', 'default-report-model-row', info.defaultReportModel, true, (defaultReportModel) => patch({ defaultReportModel }))}
                 />
               </SettingsCard>
+            </SettingsGroup>
+            <SettingsGroup title="Assistants">
+              <SettingsCard>
+                <SettingRow
+                  id="setup-model-row"
+                  title="Setup model"
+                  description={describe('Plans and revises org charts and reviews finished runs.', info.setupModel)}
+                  width="select"
+                  control={modelSelect('Setup model', 'setup-model-row', info.setupModel, false, (setupModel) => patch({ setupModel }))}
+                />
+                <SettingRow
+                  id="mcp-assist-model-row"
+                  title="MCP assistant model"
+                  description={describe('Used by the MCP assistant.', info.mcpAssistModel)}
+                  width="select"
+                  control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
+                />
+                <SettingRow
+                  id="skill-assist-model-row"
+                  title="Skill assistant model"
+                  description={describe('Used by the Skill assistant to write and revise skills.', info.skillAssistModel ?? 'deep')}
+                  width="select"
+                  control={modelSelect('Skill assistant model', 'skill-assist-model-row', info.skillAssistModel ?? 'deep', false, (skillAssistModel) => patch({ skillAssistModel }))}
+                />
+                <SettingRow
+                  id="quick-run-model-row"
+                  title="Chat model"
+                  description={describe("Used by Chat's single assistant.", info.quickRunModel ?? 'everyday')}
+                  width="select"
+                  control={modelSelect('Chat model', 'quick-run-model-row', info.quickRunModel ?? 'everyday', false, (quickRunModel) => patch({ quickRunModel }))}
+                />
+              </SettingsCard>
+              <p className="muted">A tier resolves through each project's connection. A specific model applies only where that connection offers it. If a project's connection can't run it, the run uses the deep tier and says so in its log.</p>
             </SettingsGroup>
             <SettingsGroup title="Safety">
               <SettingsCard>
@@ -508,15 +645,15 @@ export default function AppSettingsView(): ReactElement {
                   }
                 />
                 <SettingRow
-                  id="default-sonnet-row"
-                  title={SETTINGS_COPY.preferSonnet.label}
-                  description={SETTINGS_COPY.preferSonnet.description}
+                  id="default-everyday-row"
+                  title={SETTINGS_COPY.preferEveryday.label}
+                  description={SETTINGS_COPY.preferEveryday.description}
                   control={
                     <Switch
-                      checked={info.defaultPreferSonnetNearLimit}
-                      label={SETTINGS_COPY.preferSonnet.label}
-                      describedBy={settingDescId('default-sonnet-row')}
-                      onChange={(defaultPreferSonnetNearLimit) => patch({ defaultPreferSonnetNearLimit })}
+                      checked={info.defaultPreferEverydayNearLimit}
+                      label={SETTINGS_COPY.preferEveryday.label}
+                      describedBy={settingDescId('default-everyday-row')}
+                      onChange={(defaultPreferEverydayNearLimit) => patch({ defaultPreferEverydayNearLimit })}
                     />
                   }
                 />
@@ -554,6 +691,12 @@ export default function AppSettingsView(): ReactElement {
                 <dt>Version</dt>
                 <dd>
                   {appInfo.version}
+                  {isDevBuild(appInfo.version) && (
+                    <span title={devBuildLabel(appInfo.version)}>
+                      {' '}
+                      <Badge tone="info">Dev build</Badge>
+                    </span>
+                  )}
                   {appInfo.mockAdapter && (
                     <span title="This build can run scripted projects without a connection.">
                       {' '}

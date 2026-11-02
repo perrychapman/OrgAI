@@ -1,0 +1,642 @@
+/* ---------- Connectors gallery and connect dialog (App settings > Connectors) ---------- */
+.connectors-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.connector-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.connector-search .input {
+  width: 100%;
+  padding-left: var(--space-8);
+}
+.connector-search-icon {
+  position: absolute;
+  left: var(--space-3);
+  display: inline-flex;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.connector-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* The Connectors pane uses the width it has: the settings column stops at 720 px elsewhere, which would leave a 1600 px
+   window two columns wide. The grid itself steps 1 / 2 / 3 columns on the column's own width. */
+.settings-col:has(.connectors-body) {
+  max-width: 1120px;
+}
+@container settings-col (min-width: 560px) {
+  .connector-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container settings-col (min-width: 900px) {
+  .connector-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.connector-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.connector-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.connector-group-title {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.connector-group-n {
+  font-weight: var(--weight-regular, 400);
+}
+.connector-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+.connector-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  flex: 1 1 320px;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.connector-chip {
+  flex: none;
+  white-space: nowrap;
+}
+.connector-chip {
+  padding: 0 var(--space-3);
+  height: var(--control-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.connector-chip:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.connector-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+  color: var(--text-primary);
+}
+.connector-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.connector-chip-n {
+  color: var(--text-tertiary);
+}
+.connector-count {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.connector-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+/* A tile is one row: logo, name + method badge + one line, and one button. About 80 px tall. */
+.connector-tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
+}
+/* Brief highlight of the tile a deep link (requestConnector) scrolled to; the attribute is removed after ~2 s. */
+.connector-tile[data-highlight] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent-soft-border);
+}
+.connector-tile[data-state='connected'] {
+  border-color: var(--success-border);
+}
+.connector-tile-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.connector-tile-act {
+  display: flex;
+  align-items: center;
+}
+.connector-name {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.connector-desc {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.connector-lead {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+.connector-setup > summary {
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.connector-setup > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.connector-setup[open] > summary {
+  margin-bottom: var(--space-2);
+}
+.connector-have {
+  align-self: flex-start;
+}
+.connector-state {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.connector-account {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.connector-sk {
+  height: var(--space-16);
+}
+.connector-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+.connector-empty p {
+  margin: 0;
+}
+
+/* Logo: an initial on a tile tinted from a per-connector hue. */
+.connector-logo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--radius-md);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  background: hsl(var(--connector-hue) 55% 50% / 0.16);
+  color: hsl(var(--connector-hue) 55% 32%);
+}
+:root[data-theme='dark'] .connector-logo {
+  color: hsl(var(--connector-hue) 70% 76%);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .connector-logo {
+    color: hsl(var(--connector-hue) 70% 76%);
+  }
+}
+/* Brand marks: a neutral tile, the mark in its brand colour (or the theme text colour for black brands). */
+.connector-logo.has-mark,
+:root[data-theme] .connector-logo.has-mark {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+.connector-logo .brand-mark,
+.conn-mark .brand-mark,
+.pconn-mark .brand-mark {
+  width: 60%;
+  height: 60%;
+  display: block;
+}
+/* Dark tiles: marks with a lighter brand tint use it (>= 3:1). */
+:root[data-theme='dark'] .brand-mark[data-dark] {
+  fill: var(--brand-dark);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .brand-mark[data-dark] {
+    fill: var(--brand-dark);
+  }
+}
+.connector-logo.size-lg {
+  width: var(--space-12);
+  height: var(--space-12);
+  font-size: var(--text-title-sm);
+}
+
+/* ---------- Dialog ---------- */
+.connector-dlg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.connector-dlg-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.connector-dlg-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1 1 12ch;
+  min-width: 0;
+}
+.connector-dlg-vendor {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.connector-honesty {
+  font-size: var(--text-caption);
+}
+.connector-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--accent-text);
+  font-size: var(--text-small);
+  border-radius: var(--radius-xs);
+}
+.connector-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.connector-variants {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.connector-variants legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.connector-variant {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.connector-variants:disabled .connector-variant {
+  cursor: default;
+}
+.connector-variant.on {
+  border-color: var(--accent-soft-border);
+  background: var(--accent-soft);
+}
+.connector-variant:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.connector-variant input {
+  margin-top: var(--space-1);
+  accent-color: var(--accent);
+}
+.connector-variant-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.connector-locked,
+.connector-access {
+  margin: 0;
+  font-size: var(--text-small);
+}
+.connector-access {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.connector-notes {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.connector-connect,
+.connector-connected {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.connector-connect .field {
+  margin-bottom: 0;
+}
+.connector-step-title {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.connector-steps {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.connector-uri {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+  font-size: var(--text-small);
+}
+.connector-uri-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  background: var(--code-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+.connector-uri-row code {
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  overflow-wrap: anywhere;
+}
+.connector-error,
+.connector-missing {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.connector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.connector-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--success-text);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+.connector-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.connector-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connector-tools li {
+  padding: 0 var(--space-2);
+  background: var(--surface-3);
+  border-radius: var(--radius-sm);
+}
+.connector-danger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.connector-danger-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+.connector-danger-row p {
+  margin: 0;
+  flex: 1 1 24ch;
+  font-size: var(--text-small);
+}
+
+.connector-foot-status {
+  margin-right: auto;
+  align-self: center;
+}
+
+/* Small logo for the role inspector. */
+.connector-logo.size-sm {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+}
+.role-service-more {
+  border-style: dashed;
+  padding: 0 var(--space-2);
+}
+
+/* ---------- Add a service (project picker) ---------- */
+.addsvc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.addsvc-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.addsvc-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.addsvc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.addsvc-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  cursor: pointer;
+}
+.addsvc-opt:hover {
+  background: var(--surface-2);
+  border-color: var(--border-default);
+}
+.addsvc-opt[aria-selected='true'] {
+  border-color: var(--accent-soft-border);
+}
+.addsvc-opt:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.addsvc-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.addsvc-desc {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.addsvc-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.addsvc-access {
+  font-size: var(--text-caption);
+}
+.addsvc-act {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
+}
+.addsvc-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+.addsvc-foot .addsvc-close {
+  margin-left: auto;
+}
+.addsvc-more {
+  max-width: 340px;
+}
+.addsvc-more-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+.addsvc-more-note {
+  margin: 0;
+  font-size: var(--text-small);
+}
+@container dialog-lg (max-width: 600px) {
+  .addsvc-opt {
+    flex-wrap: wrap;
+  }
+}
+
+/* Back to Team: in flow at the top of the Connectors pane after a deep link from the Team tab. */
+.connectors-back {
+  display: flex;
+  position: sticky;
+  /* The settings scroller pads its top by --space-5; stick to its real top edge so tiles never show above the bar. */
+  top: calc(-1 * var(--space-5));
+  z-index: var(--z-sticky);
+  padding-block: var(--space-2);
+  margin-block: calc(-1 * var(--space-2)) calc(-1 * var(--space-1));
+  box-shadow: 0 calc(-1 * var(--space-5)) 0 var(--bg);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* Elevated tools named in a Tools summary. */
+.role-tool-elevated-text {
+  color: var(--warning-text);
+}
+/* Role node: marks a role that can run commands or change files. */
+.role-node .caps-elevated {
+  display: inline-flex;
+  vertical-align: -0.15em;
+  margin-left: var(--space-1);
+  color: var(--warning-text);
+}

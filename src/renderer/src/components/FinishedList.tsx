@@ -2,7 +2,9 @@ import type { ReactElement } from 'react'
 import type { AgentInstance } from '@shared/types'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
-import { formatCost, formatElapsed, initials } from '../lib/layout'
+import { formatElapsed, initials } from '../lib/layout'
+import { Cost } from './ui/Cost'
+import { agentCostInput } from '../lib/cost'
 
 export interface FinishedGroup {
   parentName: string
@@ -47,7 +49,7 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
             <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
           </span>
           <span className="finished-meta">
-            {a.costUsd > 0 ? formatCost(a.costUsd) : ''}
+            <Cost value={agentCostInput(a)} hideEmpty />
             <br />
             {formatElapsed(a.startedAt, a.endedAt)}
           </span>

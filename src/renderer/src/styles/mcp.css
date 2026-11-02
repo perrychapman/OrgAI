@@ -52,6 +52,7 @@
   grid-template-areas:
     'sw id'
     '. meta'
+    '. roles'
     '. act';
   column-gap: var(--space-3);
   row-gap: var(--space-2);
@@ -74,6 +75,10 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+.mcp-row-roles {
+  grid-area: roles;
+  min-width: 0;
 }
 .mcp-row-actions {
   grid-area: act;
@@ -137,7 +142,8 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-areas:
       'sw id act'
-      '. meta act';
+      '. meta act'
+      '. roles roles';
   }
   .mcp-row-actions {
     align-self: start;
@@ -145,8 +151,11 @@
 }
 @container settings-col (min-width: 720px) {
   .mcp-row-main {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-    grid-template-areas: 'sw id meta act';
+    /* The id column keeps a floor so a long meta cell can never crush the name to a letter per line. */
+    grid-template-columns: auto minmax(calc(var(--space-16) * 2), 1fr) auto auto;
+    grid-template-areas:
+      'sw id meta act'
+      '. roles roles roles';
     align-items: center;
   }
   .mcp-row-main > .switch {
@@ -168,6 +177,8 @@
 
 /* Role access disclosure */
 .mcp-role-access {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -185,6 +196,15 @@
   font: inherit;
   font-size: var(--text-small);
   cursor: pointer;
+}
+.mcp-link {
+  max-width: 100%;
+}
+.mcp-link-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mcp-link:hover:not(:disabled) {
   text-decoration: underline;
@@ -204,6 +224,7 @@
   outline-offset: 0;
 }
 .mcp-role-panel {
+  align-self: stretch;
   padding: var(--space-2);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -505,4 +526,309 @@
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* ---------- Skills (project settings > Tools) ---------- */
+.skill-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.skill-row-roles {
+  padding-left: var(--space-8);
+  min-width: 0;
+}
+.skill-eval {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.skill-eval > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.skill-eval > summary::-webkit-details-marker {
+  display: none;
+}
+.skill-eval > summary:hover {
+  background: var(--surface-3);
+}
+.skill-eval > summary > svg {
+  flex: none;
+  color: var(--text-secondary);
+  transition: transform var(--dur-fast) ease;
+}
+.skill-eval[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.skill-eval-when {
+  min-width: 0;
+}
+.skill-eval-toggle {
+  margin-left: auto;
+  color: var(--accent-text);
+  font-weight: var(--weight-semibold);
+}
+.skill-eval > summary:hover .skill-eval-toggle {
+  text-decoration: underline;
+}
+.skill-eval > summary:focus-visible,
+.skill-body-preview > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.skill-eval-title {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.skill-eval-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
+  min-width: 0;
+}
+.skill-eval-body p {
+  margin: 0;
+}
+.skill-findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.skill-finding {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  min-width: 0;
+}
+.skill-finding-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+.skill-text {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.skill-pre {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  max-height: calc(var(--space-16) * 3);
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.skill-body-preview > summary {
+  cursor: pointer;
+  font-size: var(--text-small);
+  color: var(--accent-text);
+}
+.skill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+@container settings-col (min-width: 480px) {
+  .skill-finding {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+}
+/* ---------- end Skills ---------- */
+/* ---------- Connected services and Add a service ---------- */
+.cs-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'logo id'
+    '. state'
+    '. act'
+    '. use';
+  column-gap: var(--space-3);
+  row-gap: var(--space-2);
+  align-items: center;
+}
+.cs-main > .connector-logo {
+  grid-area: logo;
+}
+.cs-id {
+  grid-area: id;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+}
+.cs-access {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.cs-state {
+  grid-area: state;
+  min-width: 0;
+}
+.cs-actions {
+  grid-area: act;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cs-use {
+  grid-area: use;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  min-width: 0;
+}
+.cs-avail {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.cs-avail-hint {
+  font-size: var(--text-small);
+}
+.cs-menu {
+  padding-left: calc(var(--space-8) + var(--space-3));
+}
+@container settings-col (min-width: 600px) {
+  .cs-main {
+    grid-template-columns: auto minmax(calc(var(--space-16) * 2), 1fr) auto auto;
+    grid-template-areas:
+      'logo id state act'
+      '. use use use';
+  }
+}
+
+.mcp-other-menu {
+  min-width: calc(var(--space-16) * 4);
+}
+.mcp-other-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+}
+.mcp-other-list .btn {
+  justify-content: flex-start;
+}
+
+.svc-pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.svc-pick {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.svc-pick:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--border-default);
+}
+.svc-pick:disabled {
+  cursor: default;
+  color: var(--text-secondary);
+}
+.svc-pick:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.svc-pick-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.svc-pick-desc {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.svc-pick-meta {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+}
+.svc-other {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.svc-other-title {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.svc-other-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.svc-other p {
+  margin: 0;
+}
+@container dialog-lg (max-width: 600px) {
+  .svc-pick {
+    flex-wrap: wrap;
+  }
+  .svc-pick-meta {
+    justify-content: flex-start;
+  }
 }

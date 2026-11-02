@@ -1,9 +1,10 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent } from '@shared/types'
-import { HARNESS_PROJECT_ID, IPC, runWindowHash } from '@shared/types'
+import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
+import { HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
 import { SettingsStore } from './store/settings'
@@ -15,15 +16,25 @@ import { CodexAdapter } from './runtime/codex'
 import type { RunConnection } from './runtime/types'
 import { SecretStore } from './store/secrets'
 import { ConnectionService } from './connections/service'
+import { CommunityPrices } from './connections/communityPrices'
+import type { RuntimeAdapter } from './runtime/types'
 import { McpService } from './mcp/service'
 import { harnessProject } from './mcp/assist'
+import { skillsProject } from './skills/assist'
+import { QuickRunService, projectPeeks } from './quick/quickRuns'
+import { sweepScratchDirs } from './quick/scratch'
 import { McpLibraryStore } from './store/mcpLibrary'
+import { SkillService } from './skills/service'
+import { SkillEvaluationService } from './skills/evaluation'
+import { CapabilityService } from './capabilities/service'
+import { seedMockHome } from './capabilities/mockHome'
 import { applyShellPath } from './shellEnv'
 import { installAppMenu } from './appMenu'
 import { MockAdapter } from './runtime/mock'
+import { sweepStaleSkillDirs } from './runtime/claudeSkills'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
-import { registerIpc } from './ipc'
+import { registerIpc, harnessProjectFor } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
@@ -64,6 +75,9 @@ function broadcastSettings(s: AppSettings): void {
   }
 }
 
+/** How long after a LiteLLM run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
+const LITELLM_SPEND_DELAY_MS = 15_000
+
 function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.runEvent, event)
@@ -78,6 +92,24 @@ function broadcast(event: RunEvent): void {
 function broadcastMcpLibrary(entries: McpLibraryInfo[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.mcpLibraryChanged, entries)
+  }
+}
+
+function broadcastCapabilityProgress(event: CapabilityProgressEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesProgress, event)
+  }
+}
+
+function broadcastTeamReview(summary: TeamReviewSummary): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesReviewUpdated, summary)
+  }
+}
+
+function broadcastSkillLibrary(entries: SkillLibraryInfo[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.skillLibraryChanged, entries)
   }
 }
 
@@ -206,19 +238,43 @@ app.whenReady().then(() => {
     projects,
     secrets,
     broadcast: broadcastConnection,
-    openExternal: (url) => shell.openExternal(url)
+    openExternal: (url) => shell.openExternal(url),
+    // Models the Claude login offers (SDK supportedModels); the scripted mock answers its own list. `adapters` is
+    // declared below and only read when discovery runs.
+    anthropicModels: (auth) => {
+      const adapter = process.env.ORGAI_MOCK === '1' ? (adapters as { mock?: RuntimeAdapter }).mock : (adapters.claude as RuntimeAdapter)
+      return adapter?.listModels?.(auth) ?? Promise.resolve(null)
+    }
   })
+  // Community model prices (LiteLLM's public list): a cached fallback after the builtin table; AppSettings.communityPrices turns it off.
+  const communityPrices = new CommunityPrices({ dataDir, enabled: () => settings.get().communityPrices !== false })
   const mockAdapter = process.env.ORGAI_MOCK === '1'
   /** The virtual project of harness-level runs (library MCP assistant), from the current settings. */
   const harness = () => harnessProject(settings.get(), dataDir, { mock: mockAdapter })
-  const projectOrHarness = (projectId: string) => (projectId === HARNESS_PROJECT_ID ? harness() : projects.get(projectId))
+  // Set once RunManager exists (below); only read when a run or a window asks for a project.
+  let quickRuns: QuickRunService | undefined
+  let skillEvaluationService: SkillEvaluationService | undefined
+  /** A stored project, or the display project of a virtual id (harness, quick, skills). */
+  const projectOrHarness = (projectId: string) =>
+    projectId === HARNESS_PROJECT_ID ? harness()
+    : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
+    : projectId === SKILLS_PROJECT_ID ? skillsProject(settings.get(), dataDir, { mock: mockAdapter })
+    : projects.get(projectId)
   const mcp = new McpService({
     projects,
     secrets,
     library: new McpLibraryStore(dataDir),
     openExternal: (url) => shell.openExternal(url),
+    // ORGAI_MOCK=1 only: connector entries authorize and test without network (walkthroughs, e2e).
+    mock: mockAdapter,
     onLibraryChanged: broadcastMcpLibrary,
     // Library changes that save a project (unlink on remove, promote) reach every window like a run's project update.
+    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
+  })
+  const skills = new SkillService({
+    dataDir,
+    projects,
+    onLibraryChanged: broadcastSkillLibrary,
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
   })
   const setup = new SetupService(projects, {
@@ -226,8 +282,9 @@ app.whenReady().then(() => {
     mcp: {
       libraryEntries: () => mcp.libraryEntries(),
       applyProposal: (projectId, payload) => mcp.applyProposal(projectId, payload),
-      applyLibraryProposal: (payload) => mcp.applyLibraryProposal(payload)
-    }
+      applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
+    },
+    skills: { applyProposal: (projectId, payload) => skills.applyProposal(projectId, payload) }
   })
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
@@ -248,10 +305,34 @@ app.whenReady().then(() => {
     codex: new CodexAdapter({ completionConnection: codexCompletion }),
     ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
-  runManager = new RunManager(adapters, broadcast, runStore, setup, keepRunsFor, {
+  // A LiteLLM run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
+  // writes); each end restarts the one timer, so the last run's spend is read. Set once the usage monitor exists.
+  let refreshLiteLLMSpend: (() => void) | undefined
+  let spendTimer: ReturnType<typeof setTimeout> | undefined
+  // Set once RunManager exists; work-run ends feed the proactive Team review (never setup-like or harness runs).
+  let capabilities: CapabilityService | undefined
+  const runBroadcast = (event: RunEvent): void => {
+    broadcast(event)
+    if (event.type !== 'run.status' || !['finished', 'error', 'paused'].includes(event.status)) return
+    if (event.status !== 'paused') {
+      const summary = runManager?.summaryOf(event.runId)
+      if (summary?.kind === 'work' && !isVirtualProjectId(summary.projectId)) capabilities?.runEnded(summary.projectId, event.runId)
+    }
+    if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
+    clearTimeout(spendTimer)
+    spendTimer = setTimeout(() => {
+      spendTimer = undefined
+      refreshLiteLLMSpend?.()
+    }, LITELLM_SPEND_DELAY_MS)
+  }
+  runManager = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     resolveProject: (projectId) => projectOrHarness(projectId),
+    // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
+    buildProject: (summary) => harnessProjectFor(summary, settings.get(), dataDir, mockAdapter),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
+    appSettings: () => settings.get(),
+    communityPrices: () => communityPrices.get(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),
     fastModel: (_project, choice) => connections.fastModel(choice),
     mcp: {
@@ -260,10 +341,82 @@ app.whenReady().then(() => {
       persistInstall: (projectId, spec, values, scope) => mcp.persistInstall(projectId, spec, values, scope),
       withLibrary: (project) => mcp.withLibrary(project),
       prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
+      skippedServers: (project) => mcp.skippedServers(project),
       libraryEntries: () => mcp.libraryEntries(),
       searchRegistry: (input) => mcp.registrySearch(input)
+    },
+    skills,
+    // Chat: a continued or resumed quick run rebuilds its project from summary.quick.
+    quickProject: (summary) => quickRuns?.projectFor(summary),
+    // list_projects (quick runs only): stored projects with their newest run; never virtual ids, never secrets.
+    listProjects: () => projectPeeks(projects.list(), (projectId) => runStore.list(projectId)[0]),
+    // Skill assistant: the library plus (in a project session) the project's skills; reads never throw.
+    skillAssist: {
+      catalog: (projectId) => {
+        try {
+          return {
+            library: skills.libraryList(),
+            project: projectId ? skills.list(projectId) : [],
+            ...(projectId ? { evaluation: skillEvaluationService?.last(projectId) ?? null } : {})
+          }
+        } catch (e) {
+          console.warn(`Skill catalog unavailable: ${(e as Error).message}`)
+          return { library: [], project: [] }
+        }
+      },
+      read: (projectId, ref) => {
+        try {
+          if (typeof ref?.libraryId === 'string') return skills.libraryRead({ libraryId: ref.libraryId })
+          if (typeof ref?.skillId === 'string' && projectId) return skills.read({ projectId, skillId: ref.skillId })
+        } catch {
+          /* unknown id: the tool reports it */
+        }
+        return null
+      }
     }
   })
+  const rm = runManager
+  quickRuns = new QuickRunService({
+    dataDir,
+    settings: () => settings.get(),
+    runs: rm,
+    store: runStore,
+    projects,
+    prepare: (p) => connections.prepareNewProject(p),
+    broadcast,
+    mock: mockAdapter
+  })
+  const quick = quickRuns
+  // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
+  runStore.onRunsRemoved = (removed) => quick.runsRemoved(removed)
+  const skillEvaluation = new SkillEvaluationService({
+    dataDir,
+    project: (projectId) => projects.get(projectId),
+    listRuns: (projectId) => rm.list(projectId),
+    getRun: (runId) => rm.get(runId),
+    skills,
+    complete: (project, input) => rm.completeForProject(project, input)
+  })
+  skillEvaluationService = skillEvaluation
+  if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
+  capabilities = new CapabilityService({
+    projects,
+    skills,
+    mcp,
+    dataDir,
+    complete: (project, input) => rm.completeForProject(project, input),
+    listRuns: (projectId) => rm.list(projectId),
+    getRun: (runId) => rm.get(runId),
+    progress: broadcastCapabilityProgress,
+    reviewUpdated: broadcastTeamReview,
+    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project }),
+    // ORGAI_MOCK=1 only: local discovery reads seeded fixtures under the data dir, never the real home.
+    homeDir: mockAdapter ? join(dataDir, 'mock-home') : homedir(),
+    env: mockAdapter ? {} : process.env,
+    platform: process.platform,
+    mock: mockAdapter
+  })
+  const caps = capabilities
   registerIpc({
     projects,
     runs: runManager,
@@ -280,10 +433,20 @@ app.whenReady().then(() => {
       modelContext: (id) => connections.importModelContext(id),
       withAdapter: (project) => connections.withAdapter(project),
       onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
-    })
+    }),
+    skills,
+    skillEvaluation,
+    capabilities: caps,
+    quick
   })
   connections.init()
-  app.on('before-quit', () => connections.dispose())
+  connections.startDiscovery()
+  if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
+  app.on('before-quit', () => {
+    caps.dispose()
+    connections.dispose()
+    communityPrices.dispose()
+  })
   notifier = new Notifier({
     projectOfRun: (runId) => {
       const summary = runManager?.summaryOf(runId)
@@ -303,18 +466,24 @@ app.whenReady().then(() => {
     auth: () => settings.get().providerAuth,
     broadcast,
     liveRuns: () => runManager?.liveRunCount() ?? 0,
-    extraProbes: [() => connections.probeCodexUsage()]
+    extraProbes: [() => connections.probeCodexUsage(), { key: 'litellm', probe: () => connections.probeLiteLLMUsage() }]
   })
+  refreshLiteLLMSpend = () => void usageMonitor.refreshProbe('litellm')
+  app.on('before-quit', () => clearTimeout(spendTimer))
   ipcMain.handle(IPC.usageRefresh, () => usageMonitor.refresh())
   usageMonitor.start()
   app.on('before-quit', () => usageMonitor.stop())
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
-  const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID])
+  // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
+  const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID])
   let dropped = 0
   for (const projectId of new Set(runStore.allProjectIds())) if (!knownProjects.has(projectId)) dropped += runStore.removeProject(projectId)
   dropped += runStore.prune(keepRunsFor)
   dropped += runStore.sweepOrphans()
+  // Scratch dirs (Chat without a folder, MCP build workspaces) that no remaining run record points to.
+  dropped += sweepScratchDirs(dataDir, runStore.all())
+  sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
   installAppMenu()
   createWindow()

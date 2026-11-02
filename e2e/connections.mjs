@@ -3,7 +3,7 @@
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, openAppSettings, openProject, projectTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, openAppSettings, openProject, openTeam, projectTab, teamPanelTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -43,7 +43,51 @@ try {
       const defConn = page.getByRole('combobox', { name: 'Default connection', exact: true })
       await defConn.waitFor({ timeout: 10_000 })
       check((await defConn.count()) === 1, `default connection row on the Defaults pane at ${w}x${h} ${theme}`)
+      for (const name of ['Setup model', 'MCP assistant model']) {
+        check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select on the Defaults pane at ${w}x${h} ${theme}`)
+      }
+      const note = page.getByText("A tier resolves through each project", { exact: false })
+      check((await note.count()) === 1, `Assistants note present at ${w}x${h} ${theme}`)
+      await note.scrollIntoViewIfNeeded()
+      const defOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+      check(defOv.sw <= defOv.cw, `no horizontal scroll on Defaults at ${w}x${h} ${theme}`, JSON.stringify(defOv))
+      const nb = await note.boundingBox()
+      check(!!nb && nb.x >= 0 && nb.x + nb.width <= w + 0.5, `Assistants note inside the viewport at ${w}x${h} ${theme}`, JSON.stringify(nb))
+      await shot(`defaults-${w}x${h}-${theme}`)
+      const rawTiers = await page.locator('select option').evaluateAll((os) => os.map((o) => (o.textContent ?? '').trim()).filter((t) => /^(deep|everyday|fast|top)$/i.test(t)))
+      check(rawTiers.length === 0, `Defaults selects show tier labels, not raw tier ids at ${w}x${h} ${theme}`, rawTiers.join(', '))
+      // The selected tier label must fit its select (no ellipsis on the label itself).
+      const clipped = await page.evaluate(() => {
+        const c = document.createElement('canvas').getContext('2d')
+        return [...document.querySelectorAll('.model-select select, select.mono-select')].flatMap((el) => {
+          const cs = getComputedStyle(el)
+          c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+          const label = (el.selectedOptions[0]?.textContent ?? '').trim()
+          const avail = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 20
+          return /tier$/i.test(label) && c.measureText(label).width > avail ? [`${label} ${Math.round(c.measureText(label).width)}>${Math.round(avail)}`] : []
+        })
+      })
+      check(clipped.length === 0, `tier labels are not clipped in Defaults selects at ${w}x${h} ${theme}`, clipped.join(', '))
       if (w === 1024 && theme === 'dark') {
+        // Setup model persists across reopening App settings
+        const sm = () => page.getByRole('combobox', { name: 'Setup model', exact: true })
+        const smOpts = await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))
+        const smBefore = await sm().inputValue()
+        const smWant = smOpts.find((v) => v !== smBefore)
+        if (smWant) {
+          await sm().selectOption(smWant)
+          await sleep(600)
+          await page.reload()
+          await page.waitForSelector('.nav-item', { timeout: 15_000 })
+          await openAppSettings(page)
+          await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+          check((await sm().inputValue()) === smWant, 'Setup model persists after reopening App settings', smWant)
+          // The default is 'deep', which is not a listed model: the UI shows it only while it is the saved value, so it
+          // cannot be selected again. Restore only a listed value (temp data dir; the leftover is harmless).
+          if ((await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))).includes(smBefore)) await sm().selectOption(smBefore)
+          await sleep(600)
+          await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+        }
         // A connection that is not set up is a disabled option; persistence is checked on a usable one.
         const opts = await defConn.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, d: o.disabled, t: o.textContent })))
         const pick = opts.find((o) => o.v !== 'anthropic' && !o.d)
@@ -79,18 +123,21 @@ try {
 
       // Project settings
       await openProject(page, NAME)
-      await projectTab(page, 'Org chart').click()
-      await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'Tools', exact: true }).click()
-      await page.waitForSelector('#settings-section-mcp', { timeout: 10_000 })
+      await openTeam(page)
+      await teamPanelTab(page, 'Catalog').click()
+      await page.waitForSelector('[data-testid=catalog-connections]', { timeout: 10_000 })
       await sleep(600)
-      check((await page.locator('#settings-section-mcp').count()) === 1, `MCP section present at ${w}x${h} ${theme}`)
-      check((await page.locator('#settings-section-plugins').count()) === 1, `plugins section present at ${w}x${h} ${theme}`)
-      check((await page.getByRole('button', { name: 'Add from registry' }).count()) === 1, 'Add from registry button present')
+      check((await page.locator('[data-testid=catalog-connections]').count()) === 1, `Connections section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=catalog-plugins]').count()) === 1, `Plugins section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=catalog-skills]').count()) === 1, `Skills section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=mcp-add-service]').count()) === 1 && (await page.locator('[data-testid=mcp-add-other]').count()) === 0, 'exactly one Add a connection button, no second add menu')
       const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
-      check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on project tools at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
-      await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
-      await shot(`project-mcp-${w}x${h}-${theme}`)
+      check(toolsOv.sw <= toolsOv.cw, `no horizontal scroll on the Catalog at ${w}x${h} ${theme}`, JSON.stringify(toolsOv))
+      await page.locator('[data-testid=catalog-connections]').scrollIntoViewIfNeeded()
+      await shot(`catalog-connections-${w}x${h}-${theme}`)
+      await page.locator('[data-testid=catalog-skills]').scrollIntoViewIfNeeded()
+      await shot(`catalog-skills-${w}x${h}-${theme}`)
+      await projectTab(page, 'Settings').click()
       await page.getByRole('tab', { name: 'Connection', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
@@ -116,8 +163,11 @@ try {
       await shot(`project-connection-${w}x${h}-${theme}`)
 
       // Role inspector model picker
-      await projectTab(page, 'Org chart').click()
+      await projectTab(page, 'Team').click()
       await page.locator('.react-flow__node').first().click()
+      // The Model fold is closed when the inspector is not roomy; open it first.
+      await page.waitForSelector('[data-testid=role-model-fold]', { timeout: 5000 })
+      await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-fold]'); if (d) d.open = true })
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
       await shot(`role-model-${w}x${h}-${theme}`)
@@ -127,7 +177,7 @@ try {
   // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
   try {
     await openAppSettings(page)
-    await page.getByRole('tab', { name: 'MCP library', exact: true }).click()
+    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
     const libSec = page.locator('[data-testid=mcp-library-section]')
     await libSec.waitFor({ timeout: 10_000 })
     await libSec.scrollIntoViewIfNeeded()
@@ -146,24 +196,53 @@ try {
     check(/Secrets: \d+ of 1 set/.test((await row.textContent()) ?? ''), 'library row shows the secrets summary')
     await shot('mcp-library-row')
     await openProject(page, NAME)
-    await projectTab(page, 'Org chart').click()
-    await projectTab(page, 'Settings').click()
-    await page.getByRole('tab', { name: 'Tools', exact: true }).click()
-    await page.locator('#settings-section-mcp').scrollIntoViewIfNeeded()
-    await page.locator('[data-testid=mcp-add-library]').click()
+    await openTeam(page)
+    await teamPanelTab(page, 'Catalog').click()
+    await page.locator('[data-testid=catalog-connections]').scrollIntoViewIfNeeded()
+    await page.locator('[data-testid=mcp-add-service]').click()
+    await page.locator('[data-testid=add-service-more]').click()
+    await page.locator('[data-testid=add-service-link]').click()
     const dlg = page.locator('[data-testid=mcp-link-dialog]')
     await dlg.getByText('e2e-lib-server').first().click()
     const roleBoxes = dlg.getByRole('checkbox')
     if (await roleBoxes.count()) await roleBoxes.first().check()
     await dlg.locator('[data-testid=mcp-link-confirm]').click()
     await dlg.waitFor({ state: 'detached', timeout: 10_000 })
-    const linked = page.locator('#settings-section-mcp [data-testid=mcp-row-library-badge]')
+    const linked = page.locator('[data-testid=catalog-connections] [data-testid=mcp-row-library-badge]')
     await linked.first().waitFor({ timeout: 10_000 })
     check((await linked.count()) >= 1, 'linked library server shows the library badge in project settings')
     await shot('mcp-linked-row')
   } catch (e) {
     check(false, 'MCP library add and link flow', String(e.message ?? e).split('\n')[0])
     await shot('mcp-library-error').catch(() => {})
+  }
+
+  // Connectors gallery: connect Notion (mock sign-in), check it, disconnect, remove.
+  try {
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    const gal = page.locator('[data-testid=connectors-section]')
+    await gal.waitFor({ timeout: 10_000 })
+    const tile = gal.locator('[data-testid=connector-tile][data-connector=notion]')
+    await tile.waitFor({ timeout: 10_000 })
+    check((await tile.getAttribute('data-state')) === 'available', 'Notion tile starts available')
+    await shot('connectors-gallery')
+    await tile.locator('[data-testid=connector-action]').click()
+    const cd = page.locator('[data-testid=connector-dialog]')
+    await cd.locator('[data-testid=connector-connect]').click()
+    await cd.locator('[data-testid=connector-status]').waitFor({ timeout: 15_000 })
+    await shot('connectors-dialog-connected')
+    await cd.locator('[data-testid=connector-test]').click()
+    await cd.locator('[data-testid=connector-tools]').waitFor({ timeout: 15_000 })
+    check(true, 'connector dialog connects and lists tools')
+    await cd.locator('[data-testid=connector-remove]').click()
+    await page.getByRole('button', { name: 'Remove service', exact: true }).last().click()
+    await cd.waitFor({ state: 'detached', timeout: 10_000 })
+    await tile.and(page.locator('[data-state=available]')).waitFor({ timeout: 10_000 })
+    check(true, 'removing a connector returns its tile to available')
+  } catch (e) {
+    check(false, 'Connectors gallery connect flow', String(e.message ?? e).split('\n')[0])
+    await shot('connectors-error').catch(() => {})
   }
 
   // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
@@ -173,6 +252,7 @@ try {
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
   const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
   if ((await lite.count()) === 1) {
+    check((await lite.locator('.conn-mark svg').count()) >= 1, 'LiteLLM card renders its fallback icon svg in .conn-mark')
     if ((await lite.locator('#litellm-url').count()) === 0) await lite.getByRole('button', { name: /^Expand/ }).click()
     const stored = await page.evaluate((k) => window.orgai.connections.setSecret({ id: 'litellm', apiKey: k }).then(() => true, () => false), CANARY)
     console.log('canary key stored:', stored)

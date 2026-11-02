@@ -1,16 +1,18 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TranscriptBlock } from '@shared/types'
-import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { matchingRule } from './ruleMatch'
+import { countUsage, setModelTokens, usageOf } from './runUsage'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -48,6 +50,8 @@ export type MockStep =
   | { type: 'planUpdate'; steps: { id: string; status: 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'; note?: string }[] }
   /** The orchestrator completes the plan (complete_plan). */
   | { type: 'planComplete'; summary: string }
+  /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
+  | { type: 'retry'; agent?: string }
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -58,6 +62,8 @@ export interface MockScript {
   setup?: MockStep[]
   /** Steps for MCP assistant runs ('mcp-assist'). */
   mcpAssist?: MockStep[]
+  /** Steps for Skill assistant runs ('skill-assist'). The default is built per run (propose 'mock-skill'). */
+  skillAssist?: MockStep[]
   /** Reply to follow-up messages; "{text}" is replaced with the user's message. */
   reply?: string
   /**
@@ -67,15 +73,28 @@ export interface MockScript {
   continue?: MockStep[][]
 }
 
+/** The default script's silent, unpriced report. */
+export const UNPRICED_REPORT_ID = 'mock-report-2'
+/** Model ids the mock reports. 'mock-unpriced' is in no price table. */
+export const MOCK_UNPRICED_MODEL = 'mock-unpriced'
+/** Prompt markers: every agent unpriced (unknown cost), or priced from the built-in table (no provider cost). */
+export const NO_PRICE_TOKEN = '[mock:no-price]'
+export const COMPUTED_COST_TOKEN = '[mock:computed-cost]'
+
 const DEFAULT_WORK: MockStep[] = [
   { type: 'thinking', text: 'The request is small; one report can do it while I review.' },
   { type: 'text', text: 'Planning the work: I will read the project, delegate the change and review the result.' },
   { type: 'tool', name: 'Read', input: { file_path: 'README.md' }, result: '# Mock project\n' },
+  { type: 'retry' },
   { type: 'spawn', id: 'mock-report-1', description: 'Implement the requested change' },
   { type: 'tool', agent: 'mock-report-1', name: 'Read', input: { file_path: 'src/example.ts' }, result: 'export const x = 1\n' },
   { type: 'tool', agent: 'mock-report-1', name: 'Edit', input: { file_path: 'src/example.ts', old_string: 'x = 1', new_string: 'x = 2' }, ask: true, result: 'File updated.' },
   { type: 'text', agent: 'mock-report-1', text: 'Done. Changed src/example.ts.' },
   { type: 'finish', id: 'mock-report-1', result: 'Changed src/example.ts (x is now 2). Files touched: src/example.ts' },
+  // Spends tokens, reports nothing (the "produced nothing" case), and runs on a model with no known price.
+  { type: 'spawn', id: UNPRICED_REPORT_ID, description: 'Look for related tests' },
+  { type: 'tool', agent: UNPRICED_REPORT_ID, name: 'Glob', input: { pattern: '**/*.test.ts' }, result: '' },
+  { type: 'finish', id: UNPRICED_REPORT_ID, result: '' },
   { type: 'text', text: 'The report finished: src/example.ts was updated. Anything else?' }
 ]
 
@@ -109,7 +128,7 @@ const DEFAULT_SETUP: MockStep[] = [
           responsibilities: ['Plan', 'Delegate', 'Review'],
           prompt: 'You are the lead. Break the request into briefs, delegate them, and review what comes back.',
           tools: ['Read', 'Glob', 'Grep'],
-          model: 'opus',
+          model: 'deep',
           canSpawn: true,
           spawnable: ['Engineer'],
           reportsTo: null
@@ -120,7 +139,7 @@ const DEFAULT_SETUP: MockStep[] = [
           responsibilities: ['Implement', 'Report the files changed'],
           prompt: 'You are an engineer. Implement the brief, stay within its files, and list every file you touched.',
           tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'],
-          model: 'sonnet',
+          model: 'everyday',
           canSpawn: false,
           spawnable: [],
           reportsTo: 'Lead'
@@ -159,11 +178,22 @@ const DEFAULT_MCP_ASSIST: MockStep[] = [
   { type: 'text', text: 'The MCP servers are set up.' }
 ]
 
+/** The skill the default skill-assist script proposes. */
+export const MOCK_SKILL_DRAFT = {
+  name: 'mock-skill',
+  description: 'Use when the user asks for a quick checklist review of a change. Gives a short, repeatable checklist.',
+  body: '# Mock skill\n\n1. Read the change.\n2. Check it against the project conventions.\n3. Report what you found in three bullet points.\n'
+}
+
+/** Marker: the default skill-assist script is built per run from the project (see defaultSkillAssistSteps). */
+const DEFAULT_SKILL_ASSIST: MockStep[] = []
+
 export const DEFAULT_MOCK_SCRIPT: Required<MockScript> = {
   delayMs: 400,
   work: DEFAULT_WORK,
   setup: DEFAULT_SETUP,
   mcpAssist: DEFAULT_MCP_ASSIST,
+  skillAssist: DEFAULT_SKILL_ASSIST,
   reply: 'Mock reply to: {text}',
   continue: []
 }
@@ -186,6 +216,9 @@ const USD_PER_TOKEN = 0.000003
 
 /** Trigger token: the mock behaves as if the provider refused the credentials. */
 const AUTH_FAIL_TOKEN = '[mock:auth-fail]'
+
+/** Trigger token: the root calls list_skills (or loads its first granted skill). */
+const SKILL_TOKEN = '[mock:skill]'
 
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
@@ -324,7 +357,7 @@ export class MockSession implements RuntimeSession {
 
   private upsert(agent: AgentInstance): void {
     this.agents.set(agent.id, agent)
-    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent } })
+    this.emit({ type: 'agent.upsert', runId: this.ctx.run.id, agent: { ...agent, ...(agent.usage ? { usage: structuredClone(agent.usage) } : {}) } })
   }
 
   private ensureAgent(id: string, init?: Partial<AgentInstance>): AgentInstance {
@@ -340,7 +373,7 @@ export class MockSession implements RuntimeSession {
         spawnToolUseId: null,
         state: 'starting',
         activity: 'Starting…',
-        model: 'mock',
+        model: this.usageModel(id),
         inputTokens: 0,
         outputTokens: 0,
         costUsd: 0,
@@ -363,14 +396,39 @@ export class MockSession implements RuntimeSession {
   /** Synthetic usage: every step costs a little, so tokens and cost move like a real run. */
   private charge(agentId: string, text: string): void {
     const a = this.ensureAgent(agentId)
-    a.inputTokens += 800
-    a.outputTokens += Math.max(20, Math.ceil(text.length / 4))
-    a.costUsd = (a.inputTokens + 5 * a.outputTokens) * USD_PER_TOKEN
+    const model = this.usageModel(agentId)
+    const before = usageOf(a).models.find((m) => m.model === model)
+    const prev: TokenUsage = before ? before.tokens : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    // 800 input-side tokens per response, split like a real cached session.
+    const next: TokenUsage = {
+      input: prev.input + 200,
+      output: prev.output + Math.max(20, Math.ceil(text.length / 4)),
+      cacheRead: prev.cacheRead + 500,
+      cacheWrite: prev.cacheWrite + 100
+    }
+    const unit = next.input + next.cacheRead * 0.1 + next.cacheWrite * 1.25 + 5 * next.output
+    setModelTokens(a, model, next, this.providerCosted(agentId) ? unit * USD_PER_TOKEN : undefined)
+    countUsage(a, 'turns')
+    a.costUsd = this.providerCosted(agentId) ? (a.inputTokens + 5 * a.outputTokens) * USD_PER_TOKEN : 0
   }
 
+  /** The model id this agent reports, by default Opus for the root and Sonnet for reports. */
+  private usageModel(agentId: string): string {
+    const prompt = this.ctx.prompt
+    if (prompt.includes(NO_PRICE_TOKEN) || (agentId === UNPRICED_REPORT_ID && !prompt.includes(COMPUTED_COST_TOKEN))) return MOCK_UNPRICED_MODEL
+    if (prompt.includes(COMPUTED_COST_TOKEN)) return 'claude-sonnet-4-5'
+    return agentId === ROOT_AGENT_ID ? 'claude-opus-4-5' : 'claude-sonnet-4-5'
+  }
+
+  /** Whether the mock "provider" reports a cost for this agent (like Anthropic does; LiteLLM and Codex do not). */
+  private providerCosted(agentId: string): boolean {
+    return this.usageModel(agentId) !== MOCK_UNPRICED_MODEL && !this.ctx.prompt.includes(COMPUTED_COST_TOKEN)
+  }
+
+  /** Provider-reported cost only: agents without one are priced by RunManager. */
   private totalCost(): number {
     let usd = 0
-    for (const a of this.agents.values()) usd += a.costUsd
+    for (const a of this.agents.values()) for (const m of a.usage?.models ?? []) usd += m.providerCostUsd ?? 0
     return usd
   }
 
@@ -446,6 +504,7 @@ export class MockSession implements RuntimeSession {
       const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
+      await this.skillStep(ROOT_AGENT_ID, this.root)
       await this.turn(this.firstTurnSteps())
       while (!this.stopped) {
         const next = await this.nextMessage()
@@ -499,6 +558,17 @@ export class MockSession implements RuntimeSession {
         return { ...st, args: { ...st.args, upsert } }
       })
     }
+    if (this.ctx.run.kind === 'skill-assist') {
+      if (this.script.skillAssist !== DEFAULT_SKILL_ASSIST) return this.script.skillAssist
+      return this.defaultSkillAssistSteps()
+    }
+    if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
+      const n = this.ctx.listProjects?.().length ?? 0
+      return [
+        { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
+        { type: 'text', text: `I can see ${n} OrgAI project${n === 1 ? '' : 's'}. Tell me what you would like to do.` }
+      ]
+    }
     if (this.isSetup && this.script.setup === DEFAULT_SETUP && library[0]) {
       const at = DEFAULT_SETUP.findIndex((st) => st.type === 'harness' && st.name === 'complete_setup')
       const item: Record<string, unknown> = { libraryId: library[0].id, ...(this.root ? { roles: [this.root.slug] } : {}) }
@@ -511,6 +581,26 @@ export class MockSession implements RuntimeSession {
       return at < 0 ? [...DEFAULT_SETUP, step] : [...DEFAULT_SETUP.slice(0, at), step, ...DEFAULT_SETUP.slice(at)]
     }
     return this.isSetup ? this.script.setup : this.script.work
+  }
+
+  /**
+   * Skill assistant default: list the library, then propose one 'mock-skill' (library scope on the skills project;
+   * project scope granted to the project's first role, or library scope when the project has no roles).
+   */
+  private defaultSkillAssistSteps(): MockStep[] {
+    const roleSlug = this.ctx.project.id === SKILLS_PROJECT_ID ? undefined : this.ctx.project.roles[0]?.slug
+    const item = {
+      action: 'create',
+      scope: roleSlug ? 'project' : 'library',
+      draft: { name: MOCK_SKILL_DRAFT.name, description: MOCK_SKILL_DRAFT.description, body: MOCK_SKILL_DRAFT.body },
+      ...(roleSlug ? { roles: [roleSlug] } : {})
+    }
+    return [
+      { type: 'text', text: 'I will look at the skill library first, then propose a skill.' },
+      { type: 'harness', name: SKILL_ASSIST_HARNESS_TOOLS.list, args: {} },
+      { type: 'harness', name: SKILL_ASSIST_HARNESS_TOOLS.propose, args: { title: 'Mock skill', rationale: 'A short checklist skill exercises the proposal flow without spending tokens.', items: [item] } },
+      { type: 'text', text: 'The skill is set up.' }
+    ]
   }
 
   private async turn(steps: MockStep[]): Promise<void> {
@@ -568,6 +658,13 @@ export class MockSession implements RuntimeSession {
       }
       case 'harness':
         return this.harnessStep(step)
+      case 'retry': {
+        const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
+        countUsage(a, 'retries')
+        this.log('info', `API request retried (attempt 1 of 3) for ${a.name}`)
+        this.upsert(a)
+        return
+      }
       case 'plan':
         return this.harnessStep({
           type: 'harness',
@@ -621,7 +718,18 @@ export class MockSession implements RuntimeSession {
     const id = newId('tu')
     this.transcript(agentId, { kind: 'tool_use', id, name: step.name, input })
     this.charge(agentId, JSON.stringify(input))
+    countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
+    // Same refusal as the Claude adapter's PreToolUse deny: build sessions never write <workspace>/.claude (no card, no allow rule).
+    const ws = this.ctx.run.buildWorkspace
+    if (ws && MOCK_CONFIG_WRITE_TOOLS.has(step.name)) {
+      const target = step.name === 'NotebookEdit' ? (input.notebook_path ?? input.file_path) : (input.file_path ?? input.notebook_path)
+      if (isWorkspaceConfigPath(ws, target)) {
+        this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: 'Build sessions cannot write OrgAI or Claude settings under .claude/ in the workspace.', isError: true })
+        this.setState(agentId, 'thinking', 'Thinking…')
+        return
+      }
+    }
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
@@ -637,7 +745,8 @@ export class MockSession implements RuntimeSession {
     if (step.ask) {
       const suggestions = chooseSuggestions(step.name, input, undefined)
       const rules = allowRuleStrings(suggestions)
-      const saved = new Set([...listRules(this.ctx.project.path), ...this.sessionRules])
+      // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
+      const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       const live = this.ctx.allowedRules?.() ?? []
       const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
@@ -660,7 +769,7 @@ export class MockSession implements RuntimeSession {
           this.setState(agentId, 'thinking', 'Thinking…')
           return
         }
-        const granted = applyAllowScope(this.ctx.project.path, decision, suggestions, (level, message) => this.log(level, message))
+        const granted = applyAllowScope(this.ctx.project.path, isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision, suggestions, (level, message) => this.log(level, message))
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
       }
     }
@@ -678,6 +787,7 @@ export class MockSession implements RuntimeSession {
     const input = { subagent_type: slug, description: step.description, prompt: step.description, name: handle }
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
+    countUsage(parent, 'toolCalls')
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
     const role = this.rolesBySlug.get(slug)
@@ -694,6 +804,45 @@ export class MockSession implements RuntimeSession {
       activity: step.description.slice(0, 90) || 'Reading the brief…'
     })
     this.transcript(step.id, { kind: 'user', text: step.description })
+    if (role) await this.skillStep(step.id, role)
+  }
+
+  /** Skill ids already loaded by an agent (once per agent). */
+  private skillLoaded = new Set<string>()
+
+  /**
+   * Skills: an agent whose role has a granted run skill loads the first one through the bound load_skill tool (which
+   * emits skill.used). With [mock:skill] and no grant the root calls list_skills instead. Work runs only.
+   */
+  private async skillStep(agentId: string, role: Role): Promise<void> {
+    if (this.isSetup || this.skillLoaded.has(agentId)) return
+    const granted = (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id))
+    let name: string
+    let args: Record<string, unknown>
+    if (granted.length) {
+      name = SKILL_HARNESS_TOOLS.load
+      args = { name: granted[0]!.name }
+    } else if (agentId === ROOT_AGENT_ID && this.ctx.prompt.includes(SKILL_TOKEN)) {
+      name = SKILL_HARNESS_TOOLS.list
+      args = {}
+    } else return
+    this.skillLoaded.add(agentId)
+    const t = this.tools.find((x) => x.name === name)
+    if (!t) return
+    const id = newId('tu')
+    this.transcript(agentId, { kind: 'tool_use', id, name, input: args })
+    countUsage(this.ensureAgent(agentId), 'toolCalls')
+    let text: string
+    let isError = false
+    try {
+      const res = await this.untilStopped(t.call(args, { agentId, roleId: role.id }))
+      if (res === STOPPED) return
+      text = res
+    } catch (e) {
+      text = (e as Error).message
+      isError = true
+    }
+    this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: text, isError })
   }
 
   private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<void> {
@@ -705,11 +854,12 @@ export class MockSession implements RuntimeSession {
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = newId('tu')
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_use', id, name: step.name, input: step.args ?? {} })
+      countUsage(this.ensureAgent(ROOT_AGENT_ID), 'toolCalls')
       this.setState(ROOT_AGENT_ID, isBlockingHarnessTool(step.name) ? 'waiting' : 'tool', harnessToolActivity(step.name))
       let text: string
       let isError = false
       try {
-        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID }))
+        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID, roleId: this.root.id }))
         if (res === STOPPED) return
         text = res
       } catch (e) {
@@ -730,6 +880,8 @@ export interface MockAdapterOptions {
   script?: MockScript
 }
 
+const MOCK_CONFIG_WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
 export class MockAdapter implements RuntimeAdapter {
   readonly id = 'mock' as const
   /** Every session this adapter started, oldest first. For tests. */
@@ -743,6 +895,21 @@ export class MockAdapter implements RuntimeAdapter {
     const session = new MockSession(ctx, loaded.script, 'error' in loaded ? loaded.error : undefined)
     this.sessions.push(session)
     return session
+  }
+
+  private usage(input: CompletionInput): void {
+    input.onUsage?.({ tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, model: input.model ?? 'mock' })
+  }
+
+  /** A fixed model list: the four builtin aliases plus one id outside any known family, so discovering a new family is testable. */
+  async listModels(): Promise<AdapterModelInfo[] | null> {
+    return [
+      { id: 'fable', label: 'Fable', description: 'Most capable model for the hardest work' },
+      { id: 'opus', label: 'Opus', description: 'Deep reasoning for complex tasks' },
+      { id: 'sonnet', label: 'Sonnet', description: 'Balanced model for everyday work' },
+      { id: 'haiku', label: 'Haiku', description: 'Fast model for simple tasks' },
+      { id: 'mock-lyric', label: 'Lyric', description: 'Fastest model for quick lookups' }
+    ]
   }
 
   /** A fixed org chart draft, in the JSON shape the drafter expects. */
@@ -759,12 +926,67 @@ export class MockAdapter implements RuntimeAdapter {
         .filter(Boolean)
         .slice(0, 4)
       const title = words.join(' ')
+      this.usage(input)
       return title.charAt(0).toUpperCase() + title.slice(1)
+    }
+    if (input.kind === 'recommend' && input.prompt.includes('[mock:recommend-fail]')) throw new Error('Mock recommend failure')
+    this.usage(input)
+    if (input.kind === 'recommend') return mockRecommend(input.prompt)
+    if (input.kind === 'skills') {
+      return JSON.stringify({
+        suggestions: [
+          {
+            name: 'mock-suggested-skill',
+            description: 'Use when the mock run repeats the same steps; a deterministic suggestion from the mock adapter.',
+            body: '# Mock skill\n\nSteps the mock suggests.',
+            rationale: 'Deterministic mock suggestion.',
+            findingIds: []
+          }
+        ]
+      })
     }
     const setupStep = DEFAULT_SETUP.find((s): s is Extract<MockStep, { type: 'harness' }> => s.type === 'harness' && s.name === 'propose_org_chart')
     const args = setupStep?.args ?? { rationale: '', roles: [] }
     return JSON.stringify({ rationale: args.rationale, roles: args.roles })
   }
+}
+
+function dataFields(rest: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const part of rest.split(' | ')) {
+    const i = part.indexOf('=')
+    if (i > 0 && !(part.slice(0, i).trim() in out)) out[part.slice(0, i).trim()] = part.slice(i + 1).trim()
+  }
+  return out
+}
+
+/** Deterministic answer to the Team recommend prompt; parses its line-anchored data lines. */
+function mockRecommend(prompt: string): string {
+  const scope = /^scope (\S+)\s*$/m.exec(prompt)?.[1]
+  const roles = [...prompt.matchAll(/^role (\S+) \|(.*)$/gm)].map((m) => ({ id: m[1]!, f: dataFields(m[2]!.replace(/^\s*/, '')) }))
+  const candidates = [...prompt.matchAll(/^candidate (\S+) \|(.*)$/gm)].map((m) => ({ id: m[1]!, f: dataFields(m[2]!.replace(/^\s*/, '')) }))
+  if (roles.length === 0) return JSON.stringify({ recommendations: [], gaps: [] })
+  const target = scope ?? (roles.find((r) => r.f.root === 'no') ?? roles[0]!).id
+  const picks: { id: string; reason: string }[] = []
+  const add = (c: { id: string } | undefined, reason: string): void => {
+    if (c && !picks.some((p) => p.id === c.id)) picks.push({ id: c.id, reason })
+  }
+  add(candidates.find((c) => c.f.kind === 'skill' && c.f.origin === 'repo'), 'Mock: this repo skill fits the role.')
+  add(
+    candidates.find((c) => c.f.kind === 'skill' && c.f.origin === 'local' && /code[- ]review/i.test(c.f.name ?? '')),
+    'Mock: this code-review skill fits the role.'
+  )
+  add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'local'),'Mock: this local MCP server fits the role.')
+  add(candidates.find((c) => c.f.kind === 'mcp' && c.f.origin === 'registry'), 'Mock: this registry MCP server fits the role.')
+  add(
+    candidates.find((c) => c.f.kind === 'connector' && (c.f.name ?? '').toLowerCase().includes('github')) ?? candidates.find((c) => c.f.kind === 'connector'),
+    'Mock: this connector fits the role.'
+  )
+  if (picks.length === 0) for (const c of candidates.slice(0, 3)) add(c, `Mock: this ${c.f.kind ?? 'capability'} fits the role.`)
+  return JSON.stringify({
+    recommendations: picks.map((p) => ({ candidateId: p.id, roleIds: [target], reason: p.reason, access: 'read' })),
+    gaps: [{ roleId: target, need: 'No skill covers writing tests for this role (mock gap).' }]
+  })
 }
 
 /** A timer that rejects with 'Completion cancelled' when the signal aborts first. */

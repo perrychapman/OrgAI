@@ -47,7 +47,7 @@ const startOnPage = async (text) => {
 try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
-  check(project?.runMessaging !== true, 'run messaging is off by default')
+  check(project?.runMessaging !== false, 'run messaging is on by default')
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.locator('.new-run').waitFor({ timeout: 10_000 })
 
@@ -181,6 +181,24 @@ try {
       const sel = await page.locator('[data-testid=side-tab-plan]').getAttribute('aria-selected')
       check(sel === 'true', 'ArrowRight on the Transcript tab selects Plan', String(sel))
       await tTab.click()
+      await sleep(200)
+      // The side header stays pinned: overflow the transcript body, scroll it, and the tab must not move.
+      const pin = await page.evaluate(async () => {
+        const tab = document.querySelector('[data-testid=side-tab-transcript]')
+        const body = document.querySelector('.side-run > [role=tabpanel]')
+        if (!tab || !body) return null
+        for (let i = 0; i < 80; i++) {
+          const p = document.createElement('p')
+          p.textContent = 'filler line ' + i
+          body.insertBefore(p, body.lastElementChild)
+        }
+        const y0 = tab.getBoundingClientRect().top
+        body.scrollTop = body.scrollHeight
+        await new Promise((r) => setTimeout(r, 100))
+        const aside = body.closest('aside')
+        return { y0, y1: tab.getBoundingClientRect().top, scrolled: body.scrollTop > 0, asideScroll: aside ? aside.scrollTop : 0 }
+      })
+      check(!!pin && pin.scrolled && Math.abs(pin.y1 - pin.y0) < 0.5 && pin.asideScroll === 0, 'the side panel header stays fixed while the transcript body scrolls', JSON.stringify(pin))
     } else {
       check(false, 'the side panel tabs are reachable on the Live view')
     }
@@ -325,16 +343,32 @@ try {
   check(ts.radiosInside && ts.submitInside, 'the question options and Submit stay visible with the side panel open at 1024x640', JSON.stringify(ts))
   check(ts.endLabelW > 20, 'End session keeps its text label with the side panel open at 1024', String(ts.endLabelW))
   await shot('three-decisions-1024-panel')
+  {
+    const hint = await page.evaluate(() => {
+      const h = document.querySelector('.composer .composer-hint')
+      const l = document.querySelector('.composer .composer-mode-label')
+      const c = document.querySelector('.composer')
+      const cs = c ? getComputedStyle(c) : null
+      const inner = c ? Math.round(c.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) : 0
+      return { inner, hintShown: !!h && getComputedStyle(h).display !== 'none' && h.getBoundingClientRect().width > 0, label: l?.textContent ?? '', labelW: l ? Math.round(l.getBoundingClientRect().width) : 0, scroll: l ? l.scrollWidth - l.clientWidth : 0 }
+    })
+    // The composer container query hides the hint at 560 px and under; at 1024 with the panel open the composer is ~584 px.
+    check(hint.hintShown === (hint.inner > 560), 'the composer hint is hidden exactly when the composer is 560 px or narrower (1024x640, panel open)', JSON.stringify(hint))
+    check(/^Replying to /.test(hint.label.trim()) && hint.scroll <= 1, '"Replying to" is shown whole next to the hidden hint', JSON.stringify(hint))
+  }
   // Side panel resize on a live run at 1024 (sidebar is a rail here): pointer drag to the max keeps the canvas >= 360 px.
   {
     const handle = page.locator('[data-testid=side-panel-resize]').first()
     const geo = () => page.evaluate(() => ({
       panel: Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0),
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
+      gap: Math.round((document.querySelector('.side-panel')?.getBoundingClientRect().left ?? 0) - (document.querySelector('.run-body .react-flow')?.getBoundingClientRect().right ?? 0)),
+      composerInPanel: (() => { const c = document.querySelector('.run-body > .composer')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
     const g0 = await geo()
+    check(Math.abs(g0.gap) <= 2, 'the canvas pane meets the side panel (no blank strip) at the default width', JSON.stringify(g0))
     await handle.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     const hb = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
     check(!!hb, 'the run view side panel has a resize handle with a live run', JSON.stringify({ ...(await geo()), ...(await envDiag()) }))
@@ -346,6 +380,7 @@ try {
       await page.mouse.up()
       await sleep(200)
       const g1 = await geo()
+      check(Math.abs(g1.gap) <= 2, 'the canvas pane meets the side panel after a drag', JSON.stringify(g1))
       check(g1.panel - g0.panel >= 30, 'dragging the run side panel handle left widens the panel', `${g0.panel} -> ${g1.panel}`)
       const hb2 = (await handle.boundingBox({ timeout: 3000 }).catch(() => null)) ?? hb
       await page.mouse.move(hb2.x + hb2.width / 2, y)
@@ -354,9 +389,55 @@ try {
       await page.mouse.up()
       await sleep(250)
       const g2 = await geo()
-      check(g2.stage >= 359, 'dragged to max at 1024 the canvas stage keeps at least 360 px', JSON.stringify(g2))
-      check(g2.panel <= 640 && g2.panel >= g1.panel, 'the panel stays within 280-640 px', JSON.stringify(g2))
+      check(g2.stage >= 279, 'dragged to max at 1024 the canvas stage keeps at least 280 px', JSON.stringify(g2))
+      check(g2.panel >= g1.panel && Math.abs(g2.gap) <= 2, 'dragged to max the panel only grows and the canvas still meets it', JSON.stringify(g2))
+      check(g2.panel < 480 || g2.composerInPanel, 'a panel of 480 px or more holds the composer below its content', JSON.stringify(g2))
       await shot('side-panel-max-1024')
+      // A large window: no 640 px cap, the composer moves into the panel column, the toolbar does not overflow.
+      await setSize(1800, 1000)
+      await sleep(300)
+      const hb3 = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
+      if (hb3) {
+        const y3 = hb3.y + hb3.height / 2
+        await page.mouse.move(hb3.x + hb3.width / 2, y3)
+        await page.mouse.down()
+        await page.mouse.move(hb3.x + hb3.width / 2 - 900, y3, { steps: 8 })
+        await page.mouse.up()
+        await sleep(300)
+        const g3 = await geo()
+        check(g3.panel > 640, 'the panel can be dragged wider than 640 px in a large window', JSON.stringify(g3))
+        check(Math.abs(g3.gap) <= 2 && g3.stage >= 279 && g3.composerInPanel, 'a wide panel: canvas meets it, keeps 280 px, composer sits under the panel content', JSON.stringify(g3))
+        const tb = await page.evaluate(() => { const t = document.querySelector('.frame-toolbar'); return t ? t.scrollWidth - t.clientWidth : 0 })
+        check(tb <= 1, 'the canvas toolbar does not overflow at a narrow canvas width', String(tb))
+        await shot('side-panel-wide-1800')
+        await handle.dblclick()
+        await sleep(200)
+        check(!(await geo()).composerInPanel, 'back at the default width the composer sits under the canvas')
+        // Crossing 480 px by one arrow step moves the composer into the panel column without re-zooming the canvas.
+        const scaleOf = () => page.evaluate(() => { const m = /scale\(([\d.]+)\)/.exec(document.querySelector('.react-flow__viewport')?.style.transform ?? ''); return m ? Number(m[1]) : 0 })
+        await handle.focus()
+        let gx = await geo()
+        for (let n = 0; n < 40 && !(gx.panel < 480 && gx.panel + 16 >= 480); n++) {
+          await page.keyboard.press('ArrowLeft')
+          await sleep(60)
+          gx = await geo()
+        }
+        await sleep(600)
+        gx = await geo()
+        const z0 = await scaleOf()
+        if (gx.panel < 480 && gx.panel + 16 >= 480) {
+          await page.keyboard.press('ArrowLeft')
+          await sleep(700)
+          const gy = await geo()
+          const z1 = await scaleOf()
+          check(!gx.composerInPanel && gy.composerInPanel, 'one arrow step across 480 px moves the composer into the panel column', JSON.stringify({ gx, gy }))
+          check(z0 > 0 && Math.abs(z1 - z0) < 0.005, 'the canvas keeps the same zoom (no refit) when the composer moves into the panel', `${z0} -> ${z1}`)
+        } else check(false, 'could not stop the panel just under 480 px with arrow keys', JSON.stringify(gx))
+        await handle.dblclick()
+        await sleep(200)
+      }
+      await setSize(1024, 640)
+      await sleep(300)
       await handle.dblclick()
       await sleep(200)
       check(Math.abs((await geo()).panel - g0.panel) <= 1, 'double-click restores the run side panel default width', JSON.stringify(await geo()))
@@ -414,9 +495,37 @@ try {
   ts = await trayState()
   check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
   await shot('three-decisions-2400')
+  // Docked tray: the canvas pane meets the tray (no blank strip between them).
+  const dockGap = await page.evaluate(() => {
+    const pane = document.querySelector('.frame-stage .react-flow')?.getBoundingClientRect()
+    const tray = document.querySelector('section.frame-tray')?.getBoundingClientRect()
+    return pane && tray ? Math.round(tray.left - pane.right) : null
+  })
+  check(dockGap !== null && Math.abs(dockGap) <= 2, 'with an open decision at 2400 the canvas pane meets the docked tray', String(dockGap))
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
   await sleep(400)
   await endSession(page)
+  // Regression: a frame of 1500 x 560 or more with no open decision must not reserve a blank tray column. The pane
+  // meets the side panel (or the frame edge) and no frame-tray takes width.
+  await setSize(2400, 1000)
+  await setPanel(true)
+  await sleep(300)
+  const emptyTray = await page.evaluate(() => {
+    const pane = document.querySelector('.frame-stage .react-flow')?.getBoundingClientRect()
+    const panel = document.querySelector('.side-panel')?.getBoundingClientRect()
+    const frame = document.querySelector('.frame-grid')?.getBoundingClientRect()
+    const tray = document.querySelector('section.frame-tray')
+    const trayW = tray ? tray.getBoundingClientRect().width : 0
+    return {
+      frameW: frame ? Math.round(frame.width) : 0,
+      trayW: Math.round(trayW),
+      gap: pane && panel ? Math.round(panel.left - pane.right) : null
+    }
+  })
+  check(emptyTray.frameW >= 1500, 'the frame is 1500 px wide or more for the empty-tray check', JSON.stringify(emptyTray))
+  check(emptyTray.trayW === 0 && emptyTray.gap !== null && Math.abs(emptyTray.gap) <= 2, 'with no open decision at 2400 no blank tray column is reserved: the canvas pane meets the side panel', JSON.stringify(emptyTray))
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
+  await sleep(400)
 
   // AI run titles (mock adapter: the title is the first 4 words of the prompt, capitalised).
   fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
@@ -522,10 +631,10 @@ try {
   await page.getByRole('tab', { name: 'Agents', exact: true }).click()
   const sw =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw.waitFor({ timeout: 10_000 })
-  check((await sw.getAttribute('aria-checked')) === 'false', 'run messaging switch starts off')
+  check((await sw.getAttribute('aria-checked')) === 'true', 'run messaging switch starts on')
   await sw.click()
   await sleep(1500)
-  check((await findProject(page, NAME)).runMessaging === true, 'switch saved runMessaging=true')
+  check((await findProject(page, NAME)).runMessaging === false, 'switch saved runMessaging=false')
   log('sidebar choice writes this run:', JSON.stringify(await page.evaluate(() => window.__sidebarSets)))
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
@@ -534,7 +643,7 @@ try {
   await page.getByRole('tab', { name: 'Agents', exact: true }).click()
   const sw2 =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw2.waitFor({ timeout: 10_000 })
-  check((await sw2.getAttribute('aria-checked')) === 'true', 'switch is still on after reload')
+  check((await sw2.getAttribute('aria-checked')) === 'false', 'switch is still off after reload')
   await shot('settings-messaging')
 } catch (e) {
   check(false, 'runs e2e ran without throwing', e.stack ?? String(e))

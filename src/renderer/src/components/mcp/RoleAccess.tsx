@@ -4,6 +4,7 @@ import { ChevronDown } from 'lucide-react'
 import type { Role } from '@shared/types'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
+import { roleAccessSummary } from '../../lib/connectors'
 
 /** Checkbox list of roles with an All roles toggle on top. `value` is a slug list (undefined = every role). */
 export function RoleChecklist({
@@ -38,24 +39,28 @@ export function RoleChecklist({
   )
 }
 
-/** "Roles: n of m" button that discloses the checklist in flow. Esc closes and returns focus to the button. */
+/** "Can use: Reviewer, Researcher" button that discloses the checklist in flow. Esc closes and returns focus to the button. */
 export function RoleAccess({
   serverName,
   roles,
   value,
   onChange,
-  disabled
+  disabled,
+  quiet
 }: {
   serverName: string
   roles: Role[]
   value: string[] | undefined
   onChange: (next: string[]) => void
   disabled?: boolean
+  /** The row already shows who uses it ("Used by" chips): offer only a quiet "Change roles" button for the editor. */
+  quiet?: boolean
 }): ReactElement {
   const [open, setOpen] = useState(false)
   const btn = useRef<HTMLButtonElement>(null)
   const panel = useId()
-  const n = value === undefined ? roles.length : roles.filter((r) => value.includes(r.slug)).length
+  const summary = roleAccessSummary(roles, value)
+  const full = quiet ? `${open ? 'Hide' : 'Change'} roles for ${serverName}` : `Can use: ${summary}. ${open ? 'Hide' : 'Change'} role access for ${serverName}`
   useEffect(() => {
     if (!open) return undefined
     const onKey = (e: KeyboardEvent): void => {
@@ -74,13 +79,15 @@ export function RoleAccess({
         ref={btn}
         type="button"
         className="mcp-link"
+        title={quiet ? undefined : `Can use: ${summary}`}
+        aria-label={full}
         aria-expanded={open}
         aria-controls={open ? panel : undefined}
         disabled={disabled}
         aria-disabled={disabled || undefined}
         onClick={() => setOpen((o) => !o)}
       >
-        Roles: {n} of {roles.length}
+        <span className="mcp-link-text">{quiet ? 'Change roles' : `Can use: ${summary}`}</span>
         <Icon icon={ChevronDown} size="xs" />
       </button>
       {open && (

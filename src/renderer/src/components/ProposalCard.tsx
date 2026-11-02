@@ -5,6 +5,7 @@ import type { Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
+import { proposalNextFor } from '../lib/proposalNext'
 import { CopyButton } from './ui/CopyButton'
 import { clampLabel } from '../lib/clampLabel'
 import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
@@ -14,6 +15,7 @@ import { oneLine, proposalTitle } from '../lib/decisionTitle'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
+import { Markdown } from './Markdown'
 
 interface Props {
   proposal: Proposal
@@ -30,14 +32,24 @@ const KIND_LABEL: Record<Proposal['kind'], string> = {
   architecture: 'Architecture',
   orgChart: 'Org chart',
   settings: 'Run settings',
-  mcpServers: 'MCP servers'
+  mcpServers: 'MCP servers',
+  skills: 'Skills'
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
   settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.',
-  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.'
+  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.',
+  // The skills card picks its own note by scope (skillsApplyNote).
+  skills: 'Approving writes these skills to this project and grants them to the listed roles.'
+}
+
+/** Helper line of the skills card: library-only proposals write to the library, any project item writes to the project. */
+export function skillsApplyNote(payload: Extract<Proposal, { kind: 'skills' }>['payload']): string {
+  return payload.items.every((i) => i.scope === 'library')
+    ? 'Approving writes these skills to your library.'
+    : 'Approving writes these skills to this project and grants them to the listed roles.'
 }
 
 export default function ProposalCard({ proposal, runId, currentRoles, who, onDecide }: Props): ReactElement {
@@ -52,7 +64,12 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
   }
 
   const approve = (): void => {
-    void submit(() => onDecide({ behavior: 'approve' }))
+    void submit(async () => {
+      await onDecide({ behavior: 'approve' })
+      // The card disappears once resolved; the run's metadata line keeps the pointer to where the result went.
+      const home = useAppStore.getState().runs[runId]?.summary.projectId
+      useAppStore.getState().noteProposalNext(runId, home ? proposalNextFor(proposal, home) : null)
+    })
   }
   const revise = (): void => {
     if (!feedback.trim()) return
@@ -67,7 +84,13 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       runId={runId}
       who={who}
       title={proposalTitle(KIND_LABEL[proposal.kind])}
-      helper={proposal.kind === 'mcpServers' ? mcpApplyNote(proposalScope(proposal.payload)) : APPLY_NOTE[proposal.kind]}
+      helper={
+        proposal.kind === 'mcpServers'
+          ? mcpApplyNote(proposalScope(proposal.payload))
+          : proposal.kind === 'skills'
+            ? skillsApplyNote(proposal.payload)
+            : APPLY_NOTE[proposal.kind]
+      }
       primary={
         !revising ? (
           <Button variant="primary" onClick={approve} disabled={busy}>
@@ -103,6 +126,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
       {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} roleSlugs={currentRoles.map((r) => r.slug)} />}
+      {proposal.kind === 'skills' && <SkillsBody payload={proposal.payload} />}
       {revising && (
         <div className="proposal-feedback">
           <Textarea
@@ -421,6 +445,34 @@ function McpServersBody({ payload, roleSlugs }: { payload: Extract<Proposal, { k
           </ul>
         </Section>
       )}
+    </div>
+  )
+}
+
+function SkillsBody({ payload }: { payload: Extract<Proposal, { kind: 'skills' }>['payload'] }): ReactElement {
+  return (
+    <div className="skill-prop">
+      <p className="proposal-rationale">{payload.rationale}</p>
+      <ul className="skill-prop-list" aria-label="Skills in this proposal">
+        {payload.items.map((item, i) => (
+          <li key={`${item.draft.name}-${i}`} className="skill-prop-item" data-testid="proposal-skill-item" data-skill={clampLabel(item.draft.name)}>
+            <div className="skill-prop-head">
+              <Badge tone={item.action === 'create' ? 'success' : 'warning'}>{item.action === 'create' ? 'New' : 'Update'}</Badge>
+              <Badge tone="info">{item.scope === 'library' ? 'Library' : 'This project'}</Badge>
+              <span className="skill-prop-name mono">{item.draft.name}</span>
+            </div>
+            {item.draft.description && <ClampText text={item.draft.description} />}
+            {item.scope === 'project' && item.roles && item.roles.length > 0 && <div className="skill-prop-roles muted">Roles: {item.roles.join(', ')}</div>}
+            {item.scope === 'project' && (!item.roles || item.roles.length === 0) && <div className="skill-prop-roles muted">No roles</div>}
+            <details className="skill-prop-body">
+              <summary>Show instructions</summary>
+              <div className="skill-prop-md">
+                <Markdown text={item.draft.body} />
+              </div>
+            </details>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

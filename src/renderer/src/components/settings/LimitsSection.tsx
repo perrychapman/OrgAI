@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
 import type { Project } from '@shared/types'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, preferEverydayNearLimit } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { SETTINGS_COPY } from '../../lib/settingsCopy'
@@ -15,7 +15,7 @@ import { SettingsSection } from './SettingsSection'
 
 const SHARE_LABEL = 'Stop at a share of the five-hour window (%)'
 
-/** Limits pane: cost cap, retention, subagent caps, the five-hour window cap and the Sonnet fallback. */
+/** Limits pane: cost cap, retention, subagent caps, the five-hour window cap and the everyday-tier fallback. */
 export function LimitsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const uid = useId()
   const setView = useAppStore((s) => s.setView)
@@ -127,10 +127,10 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           }
         />
         <SettingRow
-          id={row('sonnet')}
-          title={copy.preferSonnet.label}
-          description={copy.preferSonnet.description}
-          more={copy.preferSonnet.more}
+          id={row('everyday')}
+          title={copy.preferEveryday.label}
+          description={copy.preferEveryday.description}
+          more={copy.preferEveryday.more}
           hint={
             <>
               Threshold: {opusGuard ?? 80}% ·{' '}
@@ -146,7 +146,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
               </button>
             </>
           }
-          control={<Switch checked={!!project.preferSonnetNearLimit} label={copy.preferSonnet.label} describedBy={desc('sonnet')} onChange={(v) => patch({ preferSonnetNearLimit: v })} />}
+          control={<Switch checked={preferEverydayNearLimit(project)} label={copy.preferEveryday.label} describedBy={desc('everyday')} onChange={(v) => patch({ preferEverydayNearLimit: v })} />}
         />
       </SettingsCard>
     </SettingsSection>

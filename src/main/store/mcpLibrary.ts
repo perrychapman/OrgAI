@@ -7,6 +7,20 @@ import type { McpLibraryEntry } from '@shared/types'
  * reference (McpServerSpec.libraryId). Free of secrets like projects.json: secret values and OAuth tokens live in
  * the SecretStore under mcplib:<entryId>:... keys. Validation (names, pinned versions) is McpService's job.
  */
+/** Older records lack connectedAt; a malformed one (not a positive finite number, or on a non-connector) is dropped. */
+function normalizeEntry(e: McpLibraryEntry): McpLibraryEntry {
+  // buildDigest is main-written: a malformed value (not 64 hex chars) is dropped.
+  if ('buildDigest' in e && !(typeof e.buildDigest === 'string' && /^[0-9a-f]{64}$/.test(e.buildDigest))) {
+    const { buildDigest: _bd, ...r } = e
+    e = r
+  }
+  if (!('connectedAt' in e)) return e
+  const ok = typeof e.connectedAt === 'number' && Number.isFinite(e.connectedAt) && e.connectedAt > 0 && typeof e.connectorId === 'string'
+  if (ok) return e
+  const { connectedAt: _drop, ...rest } = e
+  return rest
+}
+
 export class McpLibraryStore {
   private file: string
   private entries: McpLibraryEntry[] = []
@@ -21,7 +35,9 @@ export class McpLibraryStore {
       if (!existsSync(this.file)) return
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { entries?: unknown }
       this.entries = Array.isArray(parsed.entries)
-        ? parsed.entries.filter((e): e is McpLibraryEntry => !!e && typeof e === 'object' && typeof (e as McpLibraryEntry).id === 'string' && typeof (e as McpLibraryEntry).name === 'string')
+        ? parsed.entries
+            .filter((e): e is McpLibraryEntry => !!e && typeof e === 'object' && typeof (e as McpLibraryEntry).id === 'string' && typeof (e as McpLibraryEntry).name === 'string')
+            .map(normalizeEntry)
         : []
     } catch (e) {
       console.error('Failed to read mcp-library.json, starting empty:', (e as Error).message)

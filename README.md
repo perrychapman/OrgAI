@@ -44,7 +44,7 @@ flows). `ORGAI_MOCK=1 npm run dev` starts the app with the scripted mock adapter
 
 - `dev` is the integration branch: pull requests and OrgAI agent runs land there (keep `dev` checked out for agent work).
 - `main` is stable and protected; it changes only by pull request from `dev`.
-- To release, bump the `package.json` version on `dev`, merge `dev` into `main`, then tag the main commit: `git tag v<version> && git push origin v<version>`.
+- To release, bump the `package.json` version on `dev`, merge `dev` into `main`, then tag the main commit: `git tag v<version> && git push origin v<version>`. Afterwards bump `dev` to `<next patch>-dev1` (e.g. `0.1.6-dev1`) and count the dev number up per dev build.
 - `release.yml` refuses tags that are not on `main`, builds the installers and drafts the release; publish it by hand.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.

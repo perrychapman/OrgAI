@@ -1,5 +1,73 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily } from './defaults'
+import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG } from './defaults'
+import type { ProviderModel } from './types'
+import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
+import { isSafeId } from './defaults'
+
+describe('virtual projects (Assistants)', () => {
+  it('recognises exactly the three virtual ids, which still pass SAFE_ID', () => {
+    expect([...VIRTUAL_PROJECT_IDS]).toEqual(['harness', 'quick', 'skills'])
+    for (const id of VIRTUAL_PROJECT_IDS) {
+      expect(isVirtualProjectId(id)).toBe(true)
+      expect(isSafeId(id)).toBe(true)
+      expect(VIRTUAL_PROJECT_LABELS[id]).toBeTruthy()
+    }
+    for (const id of ['', 'Quick', 'harness ', 'project-1', 'skill']) expect(isVirtualProjectId(id)).toBe(false)
+    expect(VIRTUAL_PROJECT_LABELS).toEqual({ harness: 'MCP assistant', quick: 'Chat', skills: 'Skill assistant' })
+  })
+
+  it('labels every run kind in plain words', () => {
+    expect(RUN_KIND_LABELS).toEqual({ work: 'Run', setup: 'Setup', 'mcp-assist': 'MCP assistant', 'skill-assist': 'Skill assistant' })
+  })
+})
+
+describe('tier-based model defaults', () => {
+  const catalog: ProviderModel[] = [
+    { id: 'gpt-x-mini', label: 'm', connection: 'openai', family: 'openai', adapter: 'codex', tier: 'everyday', source: 'discovered' },
+    { id: 'gpt-x-old', label: 'o', connection: 'openai', family: 'openai', adapter: 'codex', tier: 'deep', source: 'discovered' },
+    { id: 'gpt-x', label: 'x', connection: 'openai', family: 'openai', adapter: 'codex', tier: 'deep', source: 'discovered', recommended: true }
+  ]
+
+  it('maps a tier through the connection, then its catalog suggestion (recommended first), then the nearest tier', () => {
+    expect(modelForTier('deep', { connection: 'openai', tierModels: { deep: 'chosen' }, catalog })).toEqual({ model: 'chosen', tier: 'deep' })
+    expect(modelForTier('deep', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x', tier: 'deep' })
+    expect(modelForTier('fast', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x-mini', tier: 'everyday' })
+    expect(modelForTier('deep', { connection: 'litellm', tierModels: {}, catalog: [] })).toBeUndefined()
+    expect(modelForTier('deep', { connection: 'anthropic', tierModels: {} })).toEqual({ model: 'opus', tier: 'deep' })
+  })
+
+  it('resolves model settings: tiers, legacy aliases as tiers, concrete ids kept', () => {
+    expect(settingTier('Deep')).toBe('deep')
+    expect(settingTier('opus')).toBe('deep')
+    expect(settingTier('gpt-5')).toBeUndefined()
+    expect(resolveModelSetting('deep', { connection: 'litellm', tierModels: { deep: 'my-big' } })).toEqual({ model: 'my-big', tier: 'deep' })
+    expect(resolveModelSetting('opus', { connection: 'litellm', tierModels: { deep: 'my-big' } })).toEqual({ model: 'my-big', tier: 'deep' })
+    expect(resolveModelSetting('deep', { connection: 'litellm', tierModels: {} })).toBeUndefined()
+    expect(resolveModelSetting('gpt-x', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x', tier: 'deep' })
+    expect(resolveModelSetting('inherit', { connection: 'openai', tierModels: {} })).toEqual({ model: 'inherit' })
+  })
+
+  it('builds the default chart from tiers on the given connection', () => {
+    const roles = defaultRoles({ connection: 'litellm', tierModels: { deep: 'big', everyday: 'mid', fast: 'small' } })
+    expect(roles.map((r) => [r.model, r.tier])).toEqual([['big', 'deep'], ['mid', 'everyday'], ['mid', 'everyday'], ['small', 'fast']])
+    expect(defaultRoles({ connection: 'litellm', tierModels: {} }).every((r) => r.model === 'inherit' && !r.tier)).toBe(true)
+  })
+
+  it('new projects take tier settings through the anthropic tier mapping', () => {
+    const anthropic = { ...DEFAULT_APP_SETTINGS.connections.anthropic, tierModels: { deep: 'claude-opus-9', everyday: 'sonnet' } }
+    const settings = { ...DEFAULT_APP_SETTINGS, connections: { ...DEFAULT_APP_SETTINGS.connections, anthropic } }
+    const p = newProject({ name: 'x', path: '/x', brief: '' }, settings)
+    expect(p.roles[0]).toMatchObject({ model: 'claude-opus-9', tier: 'deep' })
+    expect(p.roles[1]).toMatchObject({ model: 'sonnet', tier: 'everyday' })
+    expect(p.preferEverydayNearLimit).toBe(false)
+  })
+
+  it('reads the near-limit flag with the legacy field as fallback', () => {
+    expect(preferEverydayNearLimit({ preferSonnetNearLimit: true })).toBe(true)
+    expect(preferEverydayNearLimit({ preferEverydayNearLimit: false, preferSonnetNearLimit: true })).toBe(false)
+    expect(preferEverydayNearLimit(undefined)).toBe(false)
+  })
+})
 import type { McpLibraryEntry } from './types'
 import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
 
@@ -25,6 +93,40 @@ describe('creationConnection', () => {
     expect(creationConnection(withConn('litellm', { litellm: { ...ready, enabled: false } }))).toBe('anthropic')
     expect(creationConnection(withConn('litellm', { litellm: { ...ready, baseUrl: ' ' } }))).toBe('anthropic')
     expect(creationConnection(withConn('litellm', { litellm: { ...ready, hasApiKey: false } }))).toBe('anthropic')
+  })
+})
+
+describe('connectionInUse', () => {
+  const settings = (defaultConnection: 'anthropic' | 'openai' | 'litellm', enabled: { openai?: boolean; litellm?: boolean } = {}) => {
+    const c = structuredClone(DEFAULT_APP_SETTINGS.connections)
+    c.openai.enabled = enabled.openai ?? false
+    c.litellm.enabled = enabled.litellm ?? false
+    return { defaultConnection, connections: c }
+  }
+  const on = (connection: 'anthropic' | 'openai' | 'litellm') => ({ provider: { id: 'claude' as const, label: 'x', auth: { kind: 'subscription' as const }, connection } })
+  const mock = { provider: { id: 'mock' as const, label: 'Mock', auth: { kind: 'subscription' as const } } }
+  const legacyCodex = { provider: { id: 'codex' as const, label: 'Codex', auth: { kind: 'subscription' as const } } }
+
+  it('an enabled connection is in use as the default or through a project', () => {
+    expect(connectionInUse('openai', settings('openai', { openai: true }), [])).toBe(true)
+    expect(connectionInUse('openai', settings('anthropic', { openai: true }), [on('anthropic'), on('openai')])).toBe(true)
+    expect(connectionInUse('litellm', settings('anthropic', { litellm: true }), [on('litellm')])).toBe(true)
+    expect(connectionInUse('openai', settings('anthropic', { openai: true }), [legacyCodex])).toBe(true) // saved before connections
+  })
+  it('an enabled connection nothing uses is not in use', () => {
+    expect(connectionInUse('openai', settings('anthropic', { openai: true }), [on('anthropic'), mock])).toBe(false)
+    expect(connectionInUse('litellm', settings('openai', { openai: true, litellm: true }), [on('openai')])).toBe(false)
+  })
+  it('a disabled connection is never in use', () => {
+    expect(connectionInUse('openai', settings('openai'), [on('openai')])).toBe(false)
+    expect(connectionInUse('litellm', settings('litellm'), [on('litellm')])).toBe(false)
+  })
+  it('anthropic counts as enabled; mock projects are on anthropic', () => {
+    const s = settings('openai', { openai: true })
+    s.connections.anthropic.enabled = false
+    expect(connectionInUse('anthropic', s, [])).toBe(false)
+    expect(connectionInUse('anthropic', s, [mock])).toBe(true)
+    expect(connectionInUse('anthropic', settings('anthropic'), [])).toBe(true)
   })
 })
 
@@ -210,5 +312,42 @@ describe('importTierForModel', () => {
     expect(tierForModel('gpt-5')).toBeUndefined()
     expect(tierForModel('best')).toBeUndefined()
     expect(modelFamily('sonnet[1m]')).toBe('claude')
+  })
+})
+
+describe('quick run tools and permissions', () => {
+  it('removes Edit, Write, Bash and NotebookEdit only with edits off', () => {
+    const tools = ['Read', 'Edit', 'Write', 'Bash', 'NotebookEdit', 'Grep', 'WebFetch'] as const
+    expect(quickRoleTools(tools, false)).toEqual(['Read', 'Grep', 'WebFetch'])
+    expect(quickRoleTools(tools, true)).toEqual([...tools])
+    const input = ['Read', 'Bash'] as ('Read' | 'Bash')[]
+    quickRoleTools(input, false)
+    expect(input).toEqual(['Read', 'Bash'])
+  })
+
+  it('gives the single assistant read and web tools, plus Edit, Write and Bash with edits on', () => {
+    expect(quickRunTools('single', false)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'] })
+    expect(quickRunTools('single', true)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash'] })
+  })
+
+  it('filters the default chart for the default team', () => {
+    const off = quickRunTools('default', false)
+    expect(Object.keys(off).sort()).toEqual(['implementer', 'orchestrator', 'researcher', 'reviewer'])
+    for (const tools of Object.values(off)) {
+      for (const t of ['Edit', 'Write', 'Bash', 'NotebookEdit']) expect(tools).not.toContain(t)
+    }
+    expect(off.researcher).toEqual(['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'])
+    const on = quickRunTools('default', true)
+    for (const role of defaultRoles()) expect(on[role.slug]).toEqual(role.tools)
+  })
+
+  it('always uses permission mode default', () => {
+    expect(quickRunPermissionMode(false)).toBe('default')
+    expect(quickRunPermissionMode(true)).toBe('default')
+  })
+
+  it('defaults the assistant models', () => {
+    expect(DEFAULT_APP_SETTINGS.skillAssistModel).toBe('deep')
+    expect(DEFAULT_APP_SETTINGS.quickRunModel).toBe('everyday')
   })
 })

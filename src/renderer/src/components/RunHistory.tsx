@@ -1,9 +1,12 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
+import { FolderPlus } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
+import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
-import { costLabel } from '../lib/layout'
+import { Cost } from './ui/Cost'
+import { runCostInput } from '../lib/cost'
 import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
@@ -11,8 +14,12 @@ import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
+import UsageTrends from './UsageTrends'
+import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
+import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
 
 type Filter = 'all' | 'work' | 'setup'
+type HistoryView = 'runs' | 'trends'
 
 /** History is the one place status is content: the shared status words in the Badge status tones. */
 const STATUS_BADGE: Record<RunTone, BadgeTone> = {
@@ -36,9 +43,12 @@ export default function RunHistory(): ReactElement {
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
   const startRetro = useAppStore((s) => s.startRetro)
   const current = useAppStore(activeRun)
-  const authMode = useAppStore((s) => s.usage?.authMode ?? 'unknown')
   const indexes = useRunIndexes()
   const [filter, setFilter] = useState<Filter>('all')
+  const [view, setView] = useState<HistoryView>('runs')
+  const project = useAppStore(selectedProject)
+  const isChat = project?.id === QUICK_PROJECT_ID
+  const [saving, setSaving] = useState<RunSummary | null>(null)
 
   const shown = summaries.filter((r) => filter === 'all' || (filter === 'work' ? r.kind === 'work' : r.kind === 'setup'))
 
@@ -46,25 +56,42 @@ export default function RunHistory(): ReactElement {
     <div className="history">
       <div className="history-bar">
         <h2>History</h2>
-        <SegmentedControl<Filter>
-          label="Show runs of kind"
-          value={filter}
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'work', label: 'Work' },
-            { value: 'setup', label: 'Setup' }
-          ]}
-          onChange={setFilter}
-        />
+        <div className="history-bar-controls">
+          <SegmentedControl<HistoryView>
+            label="History view"
+            value={view}
+            options={[
+              { value: 'runs', label: 'Runs' },
+              { value: 'trends', label: 'Trends' }
+            ]}
+            onChange={setView}
+          />
+          {view === 'runs' && !(project && isVirtualProjectId(project.id)) && (
+            <SegmentedControl<Filter>
+              label="Show runs of kind"
+              value={filter}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'work', label: RUN_KIND_LABELS.work },
+                { value: 'setup', label: RUN_KIND_LABELS.setup }
+              ]}
+              onChange={setFilter}
+            />
+          )}
+        </div>
       </div>
-      {summaries.length === 0 ? (
+      {view === 'trends' ? (
+        project ? (
+          <UsageTrends projectId={project.id} />
+        ) : null
+      ) : summaries.length === 0 ? (
         <div className="history-empty">
           <Icon icon={HistoryIcon} size="lg" />
           <p>No runs yet. Give the team a goal on the Live tab; every run you start is kept here.</p>
         </div>
       ) : shown.length === 0 ? (
         <div className="history-empty">
-          <p>No {filter} runs in this project.</p>
+          <p>No {filter === 'work' ? RUN_KIND_LABELS.work.toLowerCase() : filter} runs in this project.</p>
         </div>
       ) : (
         <div className="history-scroll">
@@ -84,6 +111,11 @@ export default function RunHistory(): ReactElement {
                 <th scope="col" className="col-kind">
                   Kind
                 </th>
+                {isChat && (
+                  <th scope="col" className="col-folder">
+                    Folder
+                  </th>
+                )}
                 <th scope="col">
                   <span className="sr-only">Actions</span>
                 </th>
@@ -98,17 +130,19 @@ export default function RunHistory(): ReactElement {
                   waiting={!!runs[r.id] && needsYou(runs[r.id])}
                   viewed={current?.summary.id === r.id}
                   summaries={summaries}
-                  cost={costLabel(r.totalCostUsd, authMode)}
                   indexes={indexes}
                   onOpen={() => void openRun(r.id)}
                   onContinue={() => void continueFromHistory(r.id)}
                   onRetro={() => void startRetro(r.id)}
+                  chat={isChat}
+                  onSave={() => setSaving(r)}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+      {saving && <SaveAsProjectDialog summary={saving} onClose={() => setSaving(null)} />}
     </div>
   )
 }
@@ -119,22 +153,24 @@ function HistoryRow({
   waiting,
   viewed,
   summaries,
-  cost,
   indexes,
   onOpen,
   onContinue,
-  onRetro
+  onRetro,
+  chat,
+  onSave
 }: {
   r: RunSummary
   index: number | undefined
   waiting: boolean
   viewed: boolean
   summaries: RunSummary[]
-  cost: { text: string; title: string }
   indexes: Map<string, number>
   onOpen: () => void
   onContinue: () => void
   onRetro: () => void
+  chat: boolean
+  onSave: () => void
 }): ReactElement {
   const live = useAppStore((s) => s.runs[r.id])
   const proj = useAppStore(selectedProject)
@@ -193,15 +229,20 @@ function HistoryRow({
           {statusText(status)}
         </Badge>
       </td>
-      <td className="col-cost" title={cost.title}>
-        {cost.text}
+      <td className="col-cost">
+        <Cost value={runCostInput(r)} />
       </td>
       <td className="col-started" title={started.toLocaleString()}>
         {relativeTime(r.startedAt)}
       </td>
       <td className="col-kind">
-        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{r.kind}</Badge>
+        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(r)}</Badge>
       </td>
+      {chat && (
+        <td className="col-folder" data-testid="history-folder" title={r.quick?.scratch ? 'A private scratch folder' : r.quick?.folder}>
+          {quickFolderLabel(r.quick)}
+        </td>
+      )}
       <td>
         <div className="run-row-actions">
           <Button size="sm" className="run-open" onClick={onOpen} title={open ? 'Open this live run' : 'Open this run'}>
@@ -217,7 +258,20 @@ function HistoryRow({
               Continue
             </Button>
           )}
-          {r.kind === 'work' && (r.status === 'finished' || r.status === 'error') && (
+          {chat && offersSaveAsProject(r) && !open && (
+            canPromote(r).ok ? (
+              <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" title="Save this chat as a project in its folder" onClick={onSave}>
+                Save as project
+              </Button>
+            ) : (
+              <span className="run-act-disabled" title={SCRATCH_PROMOTE_REASON}>
+                <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" disabled>
+                  Save as project
+                </Button>
+              </span>
+            )
+          )}
+          {offersRetro(r) && (
             <Button size="sm" className="run-retro" title="Have the Architect review this run and revise the org chart where roles struggled" onClick={onRetro}>
               Retrospective
             </Button>

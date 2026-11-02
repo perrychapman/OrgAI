@@ -98,6 +98,23 @@ export function describeTool(name: string, input: unknown, opts: { harness?: boo
   }
 }
 
+// ---------- Skills ----------
+
+/** Activity line while an agent loads a skill (`skill.used`). The name is single-lined and length-capped. */
+export function skillActivity(name: string): string {
+  return `Using skill ${snippet(name, 60) ?? 'a skill'}`
+}
+
+/**
+ * The agent with its activity set to `skillActivity(name)`, for a counted `skill.used` event. Only a live agent is
+ * relabelled (a finished or failed agent keeps its label); returns the same object when nothing changes.
+ */
+export function withSkillActivity(agent: AgentInstance, name: string): AgentInstance {
+  if (!isLiveAgent(agent)) return agent
+  const activity = skillActivity(name)
+  return activity === agent.activity ? agent : { ...agent, activity }
+}
+
 // ---------- Terminal labels ----------
 
 /** How a run ended, for agent labels: one vocabulary with the run strip (Finished, Stopped, Failed). */

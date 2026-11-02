@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { cancelLogin, expiryOf, listModels, logoutAccount, onLoginCompleted, parseLoginStart, parseModelPage, readAccount, startLogin } from './codexAccount'
+import { cancelLogin, validModelId, expiryOf, listModels, logoutAccount, onLoginCompleted, parseLoginStart, parseModelPage, readAccount, startLogin } from './codexAccount'
 import { fakeRpc } from './testHelpers'
+
+describe('validModelId', () => {
+  it('accepts printable ids up to 200 chars and rejects whitespace, control chars, non-ASCII and a leading dash', () => {
+    for (const ok of ['opus', 'claude-sonnet-4-5', 'sonnet[1m]', 'openai/gpt-5.1', 'a-', 'x'.repeat(200)]) expect(validModelId(ok), ok).toBe(true)
+    for (const bad of ['has space', 'tab\there', 'bell\u0007', 'new\nline', '--help', '-m', 'caf\u00e9', 'x'.repeat(201), '']) expect(validModelId(bad), JSON.stringify(bad)).toBe(false)
+    expect(validModelId(42)).toBe(false)
+    expect(validModelId(undefined)).toBe(false)
+  })
+
+  it('model/list drops ids with a leading dash', () => {
+    expect(parseModelPage({ data: [{ model: '--config=x' }, { model: 'gpt-ok' }] }).models.map((m) => m.id)).toEqual(['gpt-ok'])
+  })
+})
 
 describe('codexAccount', () => {
   it('reads a signed-out, chatgpt and api-key account', async () => {
@@ -63,5 +76,27 @@ describe('codexAccount', () => {
     expect(models[0]).toMatchObject({ label: 'GPT-5', isDefault: true, description: 'd' })
     expect(rpc.calls).toHaveLength(2)
     expect(parseModelPage(null)).toEqual({ models: [], nextCursor: null })
+  })
+
+  it('drops bad ids, caps text and caps the total', async () => {
+    const page = parseModelPage({
+      data: [
+        { model: 'ok', displayName: 'N'.repeat(500), description: 'd'.repeat(500) },
+        { model: 'a'.repeat(201) },
+        { model: 'has space' },
+        { model: 'café' }
+      ]
+    })
+    expect(page.models.map((m) => m.id)).toEqual(['ok'])
+    expect(page.models[0].label).toHaveLength(300)
+    expect(page.models[0].description).toHaveLength(300)
+    const rpc = fakeRpc({
+      'model/list': (p: unknown) => {
+        const n = Number((p as { cursor?: string }).cursor ?? 0)
+        return { data: Array.from({ length: 1000 }, (_, i) => ({ model: `m${n}-${i}` })), nextCursor: String(n + 1) }
+      }
+    })
+    expect(await listModels(rpc)).toHaveLength(2000)
+    expect(rpc.calls).toHaveLength(2)
   })
 })

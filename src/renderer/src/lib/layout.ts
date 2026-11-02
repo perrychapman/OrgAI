@@ -82,25 +82,6 @@ export function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
-export function formatCost(usd: number): string {
-  if (usd === 0) return '$0.00'
-  if (usd < 0.01) return `$${usd.toFixed(4)}`
-  return `$${usd.toFixed(2)}`
-}
-
-export type CostAuthMode = 'subscription' | 'apiKey' | 'unknown'
-
-export const COST_ESTIMATE_HINT = 'API-equivalent estimate; not billed on a subscription'
-
-/**
- * A cost figure labelled for how the user pays. On a subscription (or when unknown) the SDK's cost is
- * only an estimate at API prices, so it reads "≈$0.09"; with an API key it is real spend.
- */
-export function costLabel(usd: number, authMode: CostAuthMode): { text: string; title: string } {
-  if (authMode === 'apiKey') return { text: formatCost(usd), title: 'API spend' }
-  return { text: `≈${formatCost(usd)}`, title: COST_ESTIMATE_HINT }
-}
-
 /** "3h 12m", "12m", "<1m" until `at` (epoch ms). */
 /** Plan progress: steps done or skipped, out of all steps. */
 export function planProgress(plan: { steps: { status: string }[] }): { done: number; total: number } {

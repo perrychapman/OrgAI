@@ -1,6 +1,11 @@
+import { normalizeView } from '../lib/teamView'
+import { isTeamSurfaceRun } from '../lib/runSurface'
+import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
+import { assistantRunToOpen } from '../lib/assistantNav'
+import type { ProposalNext } from '../lib/proposalNext'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
@@ -42,9 +47,11 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
-import { HARNESS_PROJECT_ID, parseRunWindowHash } from '@shared/types'
+import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
+import type { QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
+import { displayProject, type RunLayout } from '../lib/assistants'
 
-/** Project tabs: run (Live), history, org (Org chart), settings. projects and appSettings are app-level. */
+/** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
 export interface ImportNotice {
   count: number
@@ -56,9 +63,9 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'org' | 'settings' | 'run' | 'history' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'logs'
+export type SideTab = 'transcript' | 'plan' | 'usage' | 'logs'
 
 /** A half-typed message. Kept per run (and per project for the New run page) so it survives tab switches. */
 export interface ComposerDraft {
@@ -130,12 +137,26 @@ function emptyRun(summary: RunSummary): RunState {
 }
 
 /** Where an MCP deep link should land after the view switches (cleared by the receiving section). */
-export type McpFocus = { kind: 'library'; libraryId?: string } | { kind: 'server'; projectId: string; serverId?: string }
+export type McpFocus = { kind: 'library'; libraryId?: string } | { kind: 'server'; projectId: string; serverId?: string; /** Open the server's edit form with its first missing secret focused. */ edit?: boolean }
 
 interface AppState {
   projects: Project[]
-  /** The virtual project that hosts library assistant runs. It is never in `projects`. */
-  harnessProject: Project | null
+  /** The virtual projects behind the Assistants rows (Chat, MCP assistant, Skill assistant), loaded on first use. Never in `projects`. */
+  virtualProjects: Partial<Record<VirtualProjectId, Project>>
+  /** Load a virtual project (projects.get; a null or failed answer becomes a display project). */
+  loadVirtualProject(id: VirtualProjectId): Promise<Project>
+  /** An instruction a start page should prefill (e.g. "Configure with AI"), per assistant. */
+  assistantSeed: Partial<Record<VirtualProjectId, string>>
+  clearAssistantSeed(id: VirtualProjectId): void
+  /** Select an assistant: the run that needs you, else the last viewed, else the start page. `instruction` seeds the start page. */
+  /** `fresh` (or an instruction) shows the start page; a plain open shows a live run, else the start page. */
+  openAssistant(id: VirtualProjectId, opts?: { instruction?: string; fresh?: boolean }): Promise<void>
+  /** Start a Chat (quick run) and show it. */
+  startQuick(input: QuickRunInput): Promise<RunSummary>
+  /** Start the Skill assistant: library scope shows it on the Skill assistant row, project scope on that project's Live tab. */
+  startSkillAssist(input: SkillAssistInput): Promise<RunSummary>
+  /** Save a quick run's chain as a project. On 'created' the project is selected and the run opened. */
+  promoteQuick(runId: string, name: string): Promise<QuickRunPromoteResult>
   mcpFocus: McpFocus | null
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
@@ -143,10 +164,10 @@ interface AppState {
   /** Show the app settings MCP library, optionally on one entry. */
   openMcpLibrary(libraryId?: string): void
   /** Show a project's settings on its MCP servers section, optionally on one server. */
-  openProjectMcp(projectId: string, serverId?: string): void
+  openProjectMcp(projectId: string, serverId?: string, opts?: { edit?: boolean }): void
   clearMcpFocus(): void
-  /** Start the library-level MCP assistant (a harness run); resolves with its summary. */
-  startLibraryAssist(instruction?: string): Promise<RunSummary>
+  /** Start the library-level MCP assistant (a harness run), select the MCP assistant row and show the run; resolves with its summary. */
+  startLibraryAssist(instruction?: string, allowBuild?: boolean): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
   saveStatus: SaveStatus
@@ -167,6 +188,11 @@ interface AppState {
   setComposerDraft(key: string, draft: ComposerDraft): void
   /** Side panel tab per run. */
   sideTabByRun: Record<string, SideTab>
+  /** Live view layout the user picked per run (conversation or canvas); absent means `runLayoutFor`'s default. */
+  runLayoutByRun: Record<string, RunLayout>
+  /** After the user approves a skills or MCP proposal: the pointer shown in the run's metadata line. */
+  noteProposalNext(runId: string, next: ProposalNext | null): void
+  setRunLayout(runId: string, layout: RunLayout): void
   /** Select the side tab of the viewed run. */
   setSideTab(tab: SideTab): void
   /** Short inline message next to the run tabs (e.g. after hiding a tab). */
@@ -197,6 +223,8 @@ interface AppState {
   jumpToDecision(projectId: string, runId: string, requestId?: string): Promise<void>
   /** Latest plan usage reported by any live session. */
   usage: UsageStatus | null
+  /** Latest report per connection (missing connection = anthropic). `usage` is the anthropic entry. */
+  usageByConnection: Partial<Record<ConnectionId, UsageStatus>>
   /** Ask the main process to read plan usage now (no run needed). */
   refreshUsage(): Promise<void>
 
@@ -223,9 +251,10 @@ interface AppState {
   /** Show a notice for results. `before` holds the pre-change copies of the projects, for Undo. */
   pushRemapNotice(cause: string, results: RemapResult[], before: Project[]): void
   dismissRemapNotice(id: string): void
-  /** Agent import: a pending request to open the review dialog on the Org chart tab, and the notice after an apply. */
+  /** Agent import: a pending request to open the review dialog on the Team tab, and the notice after an apply. */
   importRequest: { projectId: string; fresh: boolean } | null
   importNotices: Record<string, ImportNotice>
+  proposalNextByRun: Record<string, ProposalNext>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
   recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
   undoImport(projectId: string): Promise<void>
@@ -312,8 +341,13 @@ function debouncedSave(project: Project): void {
   )
 }
 
-export const selectedProject = (s: AppState): Project | undefined =>
-  s.selectedProjectId === HARNESS_PROJECT_ID && s.harnessProject ? s.harnessProject : s.projects.find((p) => p.id === s.selectedProjectId)
+/** Open the Chat assistant on its start page (a new chat), whatever it showed before. */
+export async function openNewChat(): Promise<void> {
+  await useAppStore.getState().openAssistant('quick', { fresh: true })
+}
+
+export const selectedProject =(s: AppState): Project | undefined =>
+  s.selectedProjectId && isVirtualProjectId(s.selectedProjectId) ? s.virtualProjects[s.selectedProjectId] : s.projects.find((p) => p.id === s.selectedProjectId)
 
 /** The run the workspace shows. Undefined on the New run page. */
 export const activeRun = (s: AppState): RunState | undefined => {
@@ -329,7 +363,7 @@ export const isRunLive = (run: RunState): boolean => LIVE_RUN_STATUSES.has(run.s
 /** Every run of a project known to the renderer: live runs first, then newest first. */
 export const runsOfProject = (s: AppState, projectId: string): RunState[] =>
   Object.values(s.runs)
-    .filter((r) => r.summary.projectId === projectId)
+    .filter((r) => r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary))
     .sort((a, b) => Number(isRunLive(b)) - Number(isRunLive(a)) || b.summary.startedAt - a.summary.startedAt)
 
 /** Runs of the selected project. Returns a fresh array: use with `useShallow`. */
@@ -345,7 +379,7 @@ export function useProjectSummaries(): RunSummary[] {
   const projectId = useAppStore((s) => s.selectedProjectId)
   return useMemo(() => {
     const byId = new Map<string, RunSummary>(history.map((h) => [h.id, h]))
-    for (const r of Object.values(runs)) if (r.summary.projectId === projectId) byId.set(r.summary.id, r.summary)
+    for (const r of Object.values(runs)) if (r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary)) byId.set(r.summary.id, r.summary)
     return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt)
   }, [history, runs, projectId])
 }
@@ -400,9 +434,12 @@ async function settleWorkspace(projectId: string): Promise<void> {
     if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
     return
   }
-  const target = defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed)
+  // An assistant opens a live run or its start page, never an ended run.
+  const target = isVirtualProjectId(projectId)
+    ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
+    : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed)
   if (target) await getState().openRun(target)
-  else setState((cur) => ({ draftPage: { ...cur.draftPage, [projectId]: true as const } }))
+  else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
 }
 
 /** Show a run that continues an earlier one (Continue, Resume now). */
@@ -417,11 +454,34 @@ function showContinuation(summary: RunSummary): void {
   void getState().loadHistory()
 }
 
+/**
+ * A run started from an assistant start page: take its summary (events may have landed first), select the project
+ * it lives in (a virtual one is loaded first) and show it on the Live tab.
+ */
+async function showStartedAssistant(summary: RunSummary, home: string): Promise<void> {
+  const { getState, setState } = useAppStore
+  if (isVirtualProjectId(home)) await getState().loadVirtualProject(home)
+  getState().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
+  setState((s) => ({
+    runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, quick: summary.quick } } }
+  }))
+  if (getState().selectedProjectId !== home) getState().selectProject(home)
+  setState((s) => showRunPatch(s, summary.projectId || home, summary.id))
+  void getState().loadHistory()
+}
+
+/** Store a usage report under its connection, so one provider's probe never replaces another's. */
+function putUsage(st: { usageByConnection: Partial<Record<ConnectionId, UsageStatus>>; usage: UsageStatus | null }, u: UsageStatus): { usageByConnection: Partial<Record<ConnectionId, UsageStatus>>; usage: UsageStatus | null } {
+  const key: ConnectionId = u.connection ?? 'anthropic'
+  return { usageByConnection: { ...st.usageByConnection, [key]: u }, usage: key === 'anthropic' ? u : st.usage }
+}
+
 let defaultConnectionWatch: (() => void) | null = null
 
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
-  harnessProject: null,
+  virtualProjects: {},
+  assistantSeed: {},
   mcpFocus: null,
   projectSettingsPane: {},
   selectedProjectId: null,
@@ -439,6 +499,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftPage: {},
   composerDrafts: {},
   sideTabByRun: {},
+  runLayoutByRun: {},
   tabNotice: null,
   unreadByRun: {},
   pendingDecisionFocus: null,
@@ -446,6 +507,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   continueIntent: null,
   historyByProject: {},
   usage: null,
+  usageByConnection: {},
   appInfo: null,
   connections: null,
   connectionsError: null,
@@ -455,6 +517,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   remapNotices: [],
   importRequest: null,
   importNotices: {},
+  proposalNextByRun: {},
 
   defaultConnection: null,
   async loadDefaultConnection() {
@@ -603,6 +666,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ projects: s.projects.map((p) => (p.id === project.id ? project : p)) }))
   },
 
+  noteProposalNext(runId, next) {
+    set((s) => {
+      if (!next) {
+        if (!(runId in s.proposalNextByRun)) return {}
+        const { [runId]: _gone, ...rest } = s.proposalNextByRun
+        return { proposalNextByRun: rest }
+      }
+      return { proposalNextByRun: { ...s.proposalNextByRun, [runId]: next } }
+    })
+  },
+
+  setRunLayout(runId, layout) {
+    set((s) => ({ runLayoutByRun: { ...s.runLayoutByRun, [runId]: layout } }))
+  },
+
   setSideTab(tab) {
     const runId = activeRun(get())?.summary.id
     if (runId) set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: tab } }))
@@ -651,6 +729,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (id) await settleWorkspace(id)
   },
 
+  async loadVirtualProject(id) {
+    const known = get().virtualProjects[id]
+    if (known) return known
+    const loaded = await window.orgai.projects.get(id).catch(() => null)
+    // An older main process answers null: render a display project (label, no folder, no roles).
+    const project: Project = loaded ?? displayProject(id)
+    set((s) => ({ virtualProjects: { ...s.virtualProjects, [id]: s.virtualProjects[id] ?? project } }))
+    return get().virtualProjects[id] ?? project
+  },
+
+  clearAssistantSeed(id) {
+    set((s) => {
+      if (!(id in s.assistantSeed)) return {}
+      const { [id]: _seed, ...assistantSeed } = s.assistantSeed
+      return { assistantSeed }
+    })
+  },
+
+  async openAssistant(id, opts) {
+    await get().loadVirtualProject(id)
+    const instruction = opts?.instruction
+    if (instruction) set((s) => ({ assistantSeed: { ...s.assistantSeed, [id]: instruction } }))
+    // A seeded instruction or a fresh entry belongs on the start page, not behind a run. Set it before selecting, so
+    // the workspace settling that selectProject starts cannot open a run over it.
+    const fresh = Boolean(instruction || opts?.fresh)
+    if (fresh) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
+    if (get().selectedProjectId !== id) get().selectProject(id)
+    set({ view: 'run' })
+    await get().loadHistory()
+    if (fresh) {
+      if (!get().draftPage[id]) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
+      return
+    }
+    const s = get()
+    const target = assistantRunToOpen(runsOfProject(s, id), s.activeRunByProject[id])
+    if (target) await get().openRun(target)
+    else get().openDraft()
+  },
+
   async openProject(projectId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     await get().loadHistory()
@@ -662,13 +779,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
+    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
+      // A Team-tab Architect session: the Team tray switches to Design and focuses that card.
+      useTeamAssistantStore.getState().requestDesign(projectId, runId, requestId ?? null)
+      return
+    }
     set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
   },
 
   async refreshUsage() {
     try {
       const usage = await window.orgai.usage.refresh()
-      if (usage) set({ usage })
+      if (usage) set((st) => putUsage(st, usage))
     } catch {
       /* provider could not report usage */
     }
@@ -714,7 +836,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (id) void settleWorkspace(id)
   },
 
-  setView(view) {
+  setView(requested) {
+    // A remembered or stale 'org' (the tab's old id) opens Team.
+    const view = normalizeView<View>(requested)
     set((s) => {
       const id = view === 'run' ? activeRun(s)?.summary.id : undefined
       if (!id || !s.unreadByRun[id]) return { view }
@@ -750,7 +874,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async createProject(input) {
     const project = await window.orgai.projects.create(input)
-    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'org' }))
+    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'team' }))
     return project
   },
 
@@ -791,13 +915,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ history: [] })
       return
     }
-    const history = await window.orgai.runs.list(project.id)
+    const history = (await window.orgai.runs.list(project.id)).filter((h) => !isTeamSurfaceRun(h))
     // The selection may have moved while the list was loading.
     set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history }, ...(s.selectedProjectId === project.id ? { history } : {}) }))
   },
 
   async loadAllHistory() {
-    const entries = await Promise.all(get().projects.map(async (p) => [p.id, await window.orgai.runs.list(p.id).catch(() => [] as RunSummary[])] as const))
+    const ids = [...get().projects.map((p) => p.id), ...VIRTUAL_PROJECT_IDS]
+    const entries = await Promise.all(ids.map(async (id) => [id, (await window.orgai.runs.list(id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
     set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) } }))
   },
 
@@ -836,7 +961,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async startRun(prompt, opts) {
     const project = selectedProject(get())
-    if (!project) return
+    // Assistants never start work runs through here (Chat has startQuick, the others their own start calls).
+    if (!project || isVirtualProjectId(project.id)) return
     const summary = await window.orgai.runs.start({ projectId: project.id, prompt, scaffold: opts?.scaffold, images: opts?.images })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
@@ -861,9 +987,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ view: 'appSettings', mcpFocus: { kind: 'library', libraryId } })
   },
 
-  openProjectMcp(projectId, serverId) {
+  openProjectMcp(projectId, serverId, opts) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
-    set((s) => ({ view: 'settings', mcpFocus: { kind: 'server', projectId, serverId }, projectSettingsPane: { ...s.projectSettingsPane, [projectId]: 'tools' } }))
+    // Connections live in Team > Catalog; TeamView opens that tab and the connections section focuses the row.
+    set({ view: 'team', mcpFocus: { kind: 'server', projectId, serverId, ...(opts?.edit ? { edit: true } : {}) } })
   },
 
   setProjectSettingsPane(projectId, pane) {
@@ -874,12 +1001,41 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ mcpFocus: null })
   },
 
-  async startLibraryAssist(instruction) {
-    const summary = await window.orgai.mcp.startAssist({ scope: 'library', instruction })
-    set((s) => ({
-      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } }
-    }))
+  async startLibraryAssist(instruction, allowBuild) {
+    const summary = await window.orgai.mcp.startAssist({ scope: 'library', instruction, ...(allowBuild ? { allowBuild: true } : {}) })
+    await showStartedAssistant(summary, HARNESS_PROJECT_ID)
     return summary
+  },
+
+  async startQuick(input) {
+    const summary = await window.orgai.runs.startQuick(input)
+    await showStartedAssistant(summary, QUICK_PROJECT_ID)
+    return summary
+  },
+
+  async startSkillAssist(input) {
+    const summary = await window.orgai.skills.startAssist(input)
+    // Library scope runs on the Skill assistant row; project scope belongs to the project it was started on.
+    const home = input.scope === 'library' || !input.projectId ? SKILLS_PROJECT_ID : summary.projectId || input.projectId
+    await showStartedAssistant(summary, home)
+    return summary
+  },
+
+  async promoteQuick(runId, name) {
+    const result = await window.orgai.runs.promoteQuick({ runId, name })
+    if (result.kind === 'existing') return result
+    const { project, run } = result
+    set((s) => ({
+      projects: s.projects.some((p) => p.id === project.id) ? s.projects.map((p) => (p.id === project.id ? project : p)) : [...s.projects, project],
+      // The run.moved events may not have landed yet: take the new home from the result.
+      ...(s.runs[run.id] ? { runs: { ...s.runs, [run.id]: { ...s.runs[run.id], summary: { ...s.runs[run.id].summary, ...run } } } } : {})
+    }))
+    const history = await window.orgai.runs.list(project.id).catch(() => [run])
+    set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history.filter((h) => !isTeamSurfaceRun(h)) } }))
+    get().selectProject(project.id)
+    set({ view: 'run' })
+    await get().openRun(run.id)
+    return result
   },
 
   async startMcpAssist(instruction) {
@@ -977,7 +1133,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ login: e.login })
         return
       case 'models.updated':
-        set((s) => ({ models: { ...s.models, [e.connection]: e.models } }))
+        // `changed === false`: same model ids as before, so keep the existing list (no re-render); only the
+        // refresh time moves. (Remap notices come from projects.remapped, which main sends only on a real change.)
+        set((s) => ({
+          ...(e.changed === false && s.models[e.connection] ? {} : { models: { ...s.models, [e.connection]: e.models } }),
+          modelsError: { ...s.modelsError, [e.connection]: undefined },
+          connections:
+            e.refreshedAt && s.connections
+              ? s.connections.map((c) => (c.connection.id === e.connection ? { ...c, modelsRefreshedAt: e.refreshedAt, modelsError: undefined } : c))
+              : s.connections
+        }))
         return
       case 'projects.remapped': {
         // Snapshot the renderer copies before reloading, so Undo can restore them.
@@ -1009,7 +1174,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     // Plan usage is account-wide: keep the latest, whichever run reported it.
     if (e.type === 'usage.status') {
-      set({ usage: e.usage })
+      set((st) => putUsage(st, e.usage))
       return
     }
     // A note from another run: the transcript already carries it (a persisted system row); here it only marks the tab unread.
@@ -1022,6 +1187,29 @@ export const useAppStore = create<AppState>((set, get) => ({
           return looking || !known || !isRunLive(known) ? {} : { unreadByRun: { ...s.unreadByRun, [e.runId]: (s.unreadByRun[e.runId] ?? 0) + 1 } }
         })
       }
+      return
+    }
+    // A promoted quick run: the run (and its history row) now belongs to the new project.
+    if (e.type === 'run.moved') {
+      set((s) => {
+        const move = (list: RunSummary[] | undefined): RunSummary[] | undefined => list?.map((h) => (h.id === e.runId ? { ...h, projectId: e.projectId } : h))
+        const row = (s.historyByProject[e.fromProjectId] ?? []).find((h) => h.id === e.runId) ?? s.runs[e.runId]?.summary
+        const historyByProject = { ...s.historyByProject }
+        if (historyByProject[e.fromProjectId]) historyByProject[e.fromProjectId] = historyByProject[e.fromProjectId].filter((h) => h.id !== e.runId)
+        if (row) {
+          const target = move(historyByProject[e.projectId]) ?? []
+          historyByProject[e.projectId] = target.some((h) => h.id === e.runId) ? target : [{ ...row, projectId: e.projectId }, ...target].sort((a, b) => b.startedAt - a.startedAt)
+        }
+        const run = s.runs[e.runId]
+        const activeRunByProject = { ...s.activeRunByProject }
+        if (activeRunByProject[e.fromProjectId] === e.runId) delete activeRunByProject[e.fromProjectId]
+        return {
+          historyByProject,
+          activeRunByProject,
+          ...(run ? { runs: { ...s.runs, [e.runId]: { ...run, summary: { ...run.summary, projectId: e.projectId } } } } : {}),
+          ...(s.selectedProjectId ? { history: historyByProject[s.selectedProjectId] ?? s.history } : {})
+        }
+      })
       return
     }
     set((s) => {
@@ -1044,6 +1232,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           run.summary = {
             ...run.summary,
             status: e.status,
+            surface: e.surface ?? run.summary.surface,
             sessionId: e.sessionId ?? run.summary.sessionId,
             error: e.error ?? run.summary.error,
             endedAt: e.status === 'finished' || e.status === 'error' || e.status === 'paused' ? Date.now() : run.summary.endedAt,
@@ -1114,6 +1303,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'run.cost':
           run.summary = { ...run.summary, totalCostUsd: e.totalCostUsd }
+          break
+        case 'run.usage':
+          // The host's usage is the truth for the run; totalCostUsd mirrors it (null = unknown keeps the last figure).
+          run.summary = { ...run.summary, usage: e.usage, totalCostUsd: e.usage.costUsd ?? run.summary.totalCostUsd }
           break
         case 'run.title':
           run.summary = { ...run.summary, title: e.title }
@@ -1193,15 +1386,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async focusRun(projectId, runId) {
-    if (projectId === HARNESS_PROJECT_ID) {
-      // The harness project is virtual: it is not in projects:list, so load it on demand.
-      if (!get().harnessProject) {
-        const harness = await window.orgai.projects.get(HARNESS_PROJECT_ID).catch(() => null)
-        if (!harness) return
-        set({ harnessProject: harness })
-      }
+    if (isVirtualProjectId(projectId)) {
+      // A virtual project is not in projects:list, so load it on demand.
+      await get().loadVirtualProject(projectId)
     } else if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    if (!get().runs[runId]) {
+      const record = await window.orgai.runs.get(runId).catch(() => null)
+      if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
+    }
+    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
+      // A Team-tab Architect session lives in the Team tray, not on the Live strip: land on the Team tab.
+      set({ view: 'team' })
+      await seedPendingCards(runId)
+      return
+    }
     await get().openRun(runId)
     await seedPendingCards(runId)
   },
@@ -1215,10 +1414,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => {
         const run = s.runs[runId]
         if (!run) return {}
-        const { projectId, kind, prompt, startedAt, resumedFrom } = record.summary
+        const { projectId, kind, prompt, startedAt, resumedFrom, surface } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
         const title = run.summary.title ?? record.summary.title
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(title ? { title } : {}) }
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]
@@ -1268,7 +1467,7 @@ export function useRunIndexes(): Map<string, number> {
   const key = useAppStore((s) => {
     const seen = new Map<string, string>()
     for (const [projectId, list] of Object.entries(s.historyByProject)) for (const h of list) seen.set(h.id, `${projectId}/${h.id}@${h.startedAt}`)
-    for (const r of Object.values(s.runs)) if (r.summary.projectId) seen.set(r.summary.id, `${r.summary.projectId}/${r.summary.id}@${r.summary.startedAt}`)
+    for (const r of Object.values(s.runs)) if (r.summary.projectId && !isTeamSurfaceRun(r.summary)) seen.set(r.summary.id, `${r.summary.projectId}/${r.summary.id}@${r.summary.startedAt}`)
     return [...seen.values()].sort().join('|')
   })
   return useMemo(() => {

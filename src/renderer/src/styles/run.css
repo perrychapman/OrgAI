@@ -23,6 +23,14 @@
 .agent-node.state-error {
   border-color: var(--danger);
 }
+/* Ended without a result: quiet dim, the tooltip says why. Selection restores full strength. */
+.agent-node.no-result:not(.selected) {
+  opacity: var(--dim-opacity);
+}
+/* A non-colour cue that survives selection: dashed outline, and the activity line says why. */
+.agent-node.no-result {
+  border-style: dashed;
+}
 .agent-node.state-waiting {
   border-color: var(--warning);
   box-shadow: var(--halo-warning), var(--elev-1);
@@ -243,6 +251,18 @@
   grid-row: 1 / span 2;
   grid-column: 2;
 }
+/* Wide panel (SidePanel sets data-side-wide from 480 px): the composer moves under the transcript, in the panel column.
+   Same element, so the draft and attachments survive; the canvas frame takes both rows. */
+.run-body[data-side-wide='true'] > .canvas-frame {
+  grid-row: 1 / span 2;
+}
+.run-body[data-side-wide='true'] > .side-panel {
+  grid-row: 1;
+}
+.run-body[data-side-wide='true'] > .composer {
+  grid-column: 2;
+  border-left: 1px solid var(--border-default);
+}
 .live-panel {
   flex: 1;
   min-height: 0;
@@ -286,6 +306,7 @@
   padding: var(--space-1h) var(--space-3);
   display: flex;
   min-width: 0;
+  container: composer / inline-size;
 }
 .composer.drag {
   outline: 2px dashed var(--accent);
@@ -328,6 +349,12 @@
 }
 .composer-hint svg {
   flex: none;
+}
+/* A narrow composer drops the hint so "Replying to <agent>" stays whole. */
+@container composer (max-width: 560px) {
+  .composer-hint {
+    display: none;
+  }
 }
 .composer-hint-text {
   min-width: 0;

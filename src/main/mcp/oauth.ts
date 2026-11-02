@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { McpAuthStatus, McpOAuthConfig } from '@shared/types'
+import { RESERVED_AUTH_PARAMS } from '@shared/connectors'
 
 /**
  * OAuth 2.1 authorization for remote MCP servers (MCP authorization spec 2025-06-18 / 2025-11-25): protected
@@ -54,6 +55,10 @@ export interface OAuthDiscovery {
   scopes?: string[]
   /** code_challenge_methods_supported as advertised; runAuthorization refuses when S256 is not in it. */
   codeChallengeMethods?: string[]
+  /** The issuer the callback's `iss` must equal (RFC 9207): the AS metadata's `issuer`, else `authorizationServer`. */
+  issuer?: string
+  /** Set when the AS metadata has authorization_response_iss_parameter_supported === true (RFC 9207); then `iss` is required. */
+  issParameterSupported?: true
 }
 
 export interface OAuthClient {
@@ -70,6 +75,41 @@ export interface OAuthTokens {
   /** ISO timestamp from expires_in; missing when the server gave none. */
   expiresAt?: string
   scope?: string
+}
+
+/**
+ * What a connector preset (src/shared/connectors.ts) changes about the flow. McpService builds it from the
+ * library entry's connectorId; generic servers pass none and keep the plain MCP authorization behaviour.
+ */
+export interface OAuthPreset {
+  /**
+   * Recorded as authorizationServer; default the authorization endpoint's origin. Enforced against discovery
+   * (`presetIssuerFailure`): without endpoints a mismatch refuses the sign-in, with endpoints it falls back to them.
+   */
+  issuer?: string
+  authorizationEndpoint?: string
+  tokenEndpoint?: string
+  /** 'replace' skips discovery; 'fallback' (default) uses the endpoints only when discovery fails. */
+  endpointsMode?: 'replace' | 'fallback'
+  /** Requested instead of the discovered scopes. */
+  scopes?: string[]
+  /** Extra authorization-URL parameters; reserved ones are ignored. */
+  extraAuthParams?: Record<string, string>
+  /** Default true. False = no `resource` parameter on the authorization, token and refresh requests. */
+  sendResource?: boolean
+  /** 'slackUser': read the token from `authed_user` when the response has no top-level access_token. */
+  tokenResponse?: 'standard' | 'slackUser'
+  /** A fixed loopback port for a user-registered redirect URI; the flow fails when it is busy (no fallback). */
+  redirectPort?: number
+}
+
+/** Authorization-URL parameters a preset can never set (the catalog's list, compared case-insensitively). */
+const RESERVED_PARAMS: ReadonlySet<string> = new Set(RESERVED_AUTH_PARAMS.map((p) => p.toLowerCase()))
+
+/** Per-request options shared by the token and refresh calls. */
+export interface TokenRequestOptions {
+  sendResource?: boolean
+  tokenResponse?: 'standard' | 'slackUser'
 }
 
 const HTTP_TIMEOUT_MS = 15_000
@@ -352,7 +392,15 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
   const registrationEndpoint = meta.registration_endpoint === undefined ? undefined : requireSecure(meta.registration_endpoint, 'registration_endpoint', loopback)
   const scopes = challengeScopes?.length ? challengeScopes : (stringList(prm.scopes_supported) ?? stringList(meta.scopes_supported))
   const codeChallengeMethods = stringList(meta.code_challenge_methods_supported)
+  const metaIssuer = typeof meta.issuer === 'string' && meta.issuer ? meta.issuer : undefined
+  // RFC 8414 section 3.3: the metadata's issuer must be the issuer it was fetched for (trailing slashes aside), so a
+  // document cannot name another issuer for the RFC 9207 iss check. The iss comparison itself stays exact.
+  if (metaIssuer && metaIssuer.replace(/\/+$/, '') !== issuer.replace(/\/+$/, '')) {
+    throw new OAuthError('discovery', `Discovery failed: the authorization server metadata names a different issuer (${excerpt(metaIssuer)}).`)
+  }
   return {
+    issuer: metaIssuer ?? issuer,
+    ...(meta.authorization_response_iss_parameter_supported === true ? { issParameterSupported: true as const } : {}),
     resource,
     authorizationServer: issuer,
     authorizationEndpoint,
@@ -361,6 +409,123 @@ export async function discover(resourceUrl: string, fetchImpl: FetchLike): Promi
     ...(scopes ? { scopes } : {}),
     ...(codeChallengeMethods ? { codeChallengeMethods } : {})
   }
+}
+
+/**
+ * Discovery with a connector preset: 'replace' builds the discovery from the preset's endpoints (https, public
+ * hosts only); 'fallback' tries discovery first. The preset's scopes replace the discovered ones.
+ */
+export async function discoverWithPreset(resourceUrl: string, fetchImpl: FetchLike, preset?: OAuthPreset): Promise<OAuthDiscovery> {
+  const scoped = (d: OAuthDiscovery): OAuthDiscovery => (preset?.scopes?.length ? { ...d, scopes: [...preset.scopes] } : d)
+  const fromPreset = (): OAuthDiscovery => {
+    let resource: string
+    try {
+      resource = canonicalResource(resourceUrl)
+    } catch {
+      throw new OAuthError('discovery', 'Discovery failed: the server URL is not valid.')
+    }
+    // Preset endpoints are never local, whatever the server URL is.
+    const authorizationEndpoint = requireSecure(preset?.authorizationEndpoint, 'the preset authorization endpoint', false)
+    const tokenEndpoint = requireSecure(preset?.tokenEndpoint, 'the preset token endpoint', false)
+    const issuer = preset?.issuer ? requireSecure(preset.issuer, 'the preset issuer', false) : new URL(authorizationEndpoint).origin
+    return { resource, authorizationServer: issuer, authorizationEndpoint, tokenEndpoint }
+  }
+  const hasEndpoints = !!preset?.authorizationEndpoint && !!preset?.tokenEndpoint
+  if (hasEndpoints && preset?.endpointsMode === 'replace') return scoped(fromPreset())
+  let found: OAuthDiscovery
+  try {
+    found = await discover(resourceUrl, fetchImpl)
+  } catch (e) {
+    if (hasEndpoints && e instanceof OAuthError) return scoped(fromPreset())
+    throw e
+  }
+  if (preset?.issuer) {
+    const issuerFailure = presetIssuerFailure(found, preset.issuer, hasEndpoints)
+    if (issuerFailure) {
+      // With endpoints of its own the preset falls back to them (curated, never a discovered host); without them
+      // there is nothing safe to fall back to, so the sign-in is refused before any request carries a secret.
+      if (hasEndpoints) return scoped(fromPreset())
+      throw new OAuthError('discovery', issuerFailure)
+    }
+    // A discovered registration endpoint off the issuer's domain is never used.
+    if (found.registrationEndpoint && !onRegistrableDomain(found.registrationEndpoint, preset.issuer)) {
+      found = { ...found }
+      delete found.registrationEndpoint
+    }
+  }
+  // 'fallback': the client secret goes to the token endpoint, so discovered endpoints must stay on the preset's
+  // registrable domain (the same host or a subdomain); otherwise the preset's endpoints are used.
+  if (
+    hasEndpoints &&
+    (!onRegistrableDomain(found.tokenEndpoint, preset!.tokenEndpoint!) || !onRegistrableDomain(found.authorizationEndpoint, preset!.authorizationEndpoint!))
+  ) {
+    return scoped(fromPreset())
+  }
+  return scoped(found)
+}
+
+const trimSlash = (u: string): string => u.replace(/\/+$/, '')
+
+/**
+ * Why a discovery does not fit a preset's issuer, or undefined when it does.
+ * - A preset without endpoints (the oauthClient presets that name only the issuer) needs the discovered issuer to
+ *   equal it exactly, trailing slashes aside, and every discovered endpoint (authorization, token, registration) on
+ *   the issuer's registrable domain, so the user's client secret can only reach the vendor's own token endpoint.
+ * - A preset with endpoints ('fallback') needs the discovered issuer only on the preset issuer's registrable domain,
+ *   since a server's AS can be a sibling host (Slack's metadata names https://mcp.slack.com for the slack.com
+ *   preset); its endpoints are checked against the preset's endpoints separately.
+ * The registrable domain is approximated as the last two DNS labels (`registrableHost`), so a preset must name a
+ * simple vendor host (app.asana.com, zoom.us), never one under a multi-label public suffix (vendor.co.uk would
+ * accept any *.co.uk host).
+ */
+export function presetIssuerFailure(found: OAuthDiscovery, presetIssuer: string, hasEndpoints: boolean): string | undefined {
+  const discovered = found.issuer ?? found.authorizationServer
+  if (hasEndpoints) {
+    return onRegistrableDomain(discovered, presetIssuer) && onRegistrableDomain(found.authorizationServer, presetIssuer)
+      ? undefined
+      : `Discovery failed: the server's authorization server (${excerpt(discovered)}) is not on the connector's issuer domain (${excerpt(presetIssuer)}).`
+  }
+  const want = trimSlash(presetIssuer)
+  if (trimSlash(discovered) !== want || trimSlash(found.authorizationServer) !== want) {
+    return `Sign-in refused: the server names the authorization server ${excerpt(discovered)}, but this connector expects ${excerpt(presetIssuer)}. Your client secret was not sent.`
+  }
+  const endpoints: Array<[string, string | undefined]> = [
+    ['authorization endpoint', found.authorizationEndpoint],
+    ['token endpoint', found.tokenEndpoint],
+    ['registration endpoint', found.registrationEndpoint]
+  ]
+  for (const [label, url] of endpoints) {
+    if (url !== undefined && !onRegistrableDomain(url, presetIssuer)) {
+      return `Sign-in refused: the ${label} (${excerpt(url)}) is not on the domain of the connector's issuer ${excerpt(presetIssuer)}. Your client secret was not sent.`
+    }
+  }
+  return undefined
+}
+
+/**
+ * The registrable host of a preset URL, approximated as its last two DNS labels (slack.com,
+ * googleapis.com). Presets are curated public hosts, so no public-suffix list is needed.
+ */
+export function registrableHost(url: string): string | undefined {
+  try {
+    const labels = new URL(url).hostname.toLowerCase().replace(/\.$/, '').split('.')
+    return labels.length >= 2 ? labels.slice(-2).join('.') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** True when `url`'s host equals, or is a subdomain of, the registrable host of `presetUrl`. */
+export function onRegistrableDomain(url: string, presetUrl: string): boolean {
+  const base = registrableHost(presetUrl)
+  if (!base) return false
+  let host: string
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '')
+  } catch {
+    return false
+  }
+  return host === base || host.endsWith(`.${base}`)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -380,6 +545,7 @@ export async function registerClient(d: OAuthDiscovery, redirectUri: string, fet
       body: JSON.stringify({
         client_name: 'OrgAI',
         redirect_uris: [redirectUri],
+        application_type: 'native',
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none'
@@ -422,16 +588,19 @@ export function createPkce(): { verifier: string; challenge: string } {
 export function buildAuthorizeUrl(
   d: OAuthDiscovery,
   client: OAuthClient,
-  p: { redirectUri: string; state: string; challenge: string; scopes?: string[] }
+  p: { redirectUri: string; state: string; challenge: string; scopes?: string[]; extraParams?: Record<string, string>; sendResource?: boolean }
 ): string {
   const u = new URL(d.authorizationEndpoint)
+  for (const [k, v] of Object.entries(p.extraParams ?? {})) {
+    if (typeof v === 'string' && !RESERVED_PARAMS.has(k.toLowerCase())) u.searchParams.set(k, v)
+  }
   u.searchParams.set('response_type', 'code')
   u.searchParams.set('client_id', client.clientId)
   u.searchParams.set('redirect_uri', p.redirectUri)
   u.searchParams.set('state', p.state)
   u.searchParams.set('code_challenge', p.challenge)
   u.searchParams.set('code_challenge_method', 'S256')
-  u.searchParams.set('resource', d.resource)
+  if (p.sendResource !== false) u.searchParams.set('resource', d.resource)
   if (p.scopes?.length) u.searchParams.set('scope', p.scopes.join(' '))
   return u.toString()
 }
@@ -440,6 +609,12 @@ export function buildAuthorizeUrl(
 // Loopback
 
 /** A one-shot loopback redirect listener on 127.0.0.1. */
+/** The accepted callback: the code and the RFC 9207 `iss` parameter when the server sent one. */
+export interface LoopbackCallback {
+  code: string
+  iss?: string
+}
+
 export interface LoopbackServer {
   /** http://127.0.0.1:<port>/callback */
   redirectUri: string
@@ -450,9 +625,11 @@ export interface LoopbackServer {
    * cancel the flow by probing the port. The page served is plain static HTML without scripts and never echoes
    * query parameters.
    */
-  waitForCode(state: string, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<string>
+  waitForCode(state: string, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<LoopbackCallback>
   close(): void
 }
+
+const STRICT_PORT_RETRY_MS = 200
 
 const PAGE_OK = 'Authorization received. You can close this window and return to OrgAI.'
 const PAGE_ERR = 'Authorization failed. You can close this window and return to OrgAI.'
@@ -467,11 +644,15 @@ function sameString(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y)
 }
 
-/** Listen on 127.0.0.1 (the given port when free, else an ephemeral one). */
-export async function startLoopback(opts: { port?: number } = {}): Promise<LoopbackServer> {
+/**
+ * Listen on 127.0.0.1 (the given port when free, else an ephemeral one). `strict`: the given port or an
+ * OAuthError('authorization'), for redirect URIs the user registered with a vendor.
+ */
+export async function startLoopback(opts: { port?: number; strict?: boolean } = {}): Promise<LoopbackServer> {
   interface Callback {
     code?: string
     state?: string
+    iss?: string
     error?: string
     description?: string
   }
@@ -494,6 +675,7 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
     const cb: Callback = {
       code: url.searchParams.get('code') ?? undefined,
       state: url.searchParams.get('state') ?? undefined,
+      iss: url.searchParams.get('iss') ?? undefined,
       error: url.searchParams.get('error') ?? undefined,
       description: url.searchParams.get('error_description') ?? undefined
     }
@@ -534,7 +716,18 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
     try {
       await listen(opts.port)
     } catch {
-      await listen(0)
+      if (!opts.strict) await listen(0)
+      else {
+        // A superseded flow of our own may have closed this port a moment ago: retry once before giving up.
+        await new Promise((r) => setTimeout(r, STRICT_PORT_RETRY_MS))
+        const port = opts.port
+        await listen(port).catch(() => {
+          throw new OAuthError(
+            'authorization',
+            `OrgAI could not listen on 127.0.0.1:${port} for the sign-in redirect; another program is using that port. Close it and authorize again.`
+          )
+        })
+      }
     }
   } else await listen(0)
   const port = (server.address() as AddressInfo).port
@@ -551,7 +744,7 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
     redirectUri: `http://127.0.0.1:${port}/callback`,
     close,
     waitForCode(state, { timeoutMs, signal }) {
-      return new Promise<string>((resolve, reject) => {
+      return new Promise<LoopbackCallback>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined
         let done = false
         const finish = (fn: () => void): void => {
@@ -571,7 +764,7 @@ export async function startLoopback(opts: { port?: number } = {}): Promise<Loopb
               reject(new OAuthError('callback', `Authorization was denied (${cb.error.replace(/[^\w.-]/g, '').slice(0, 40)}${desc}).`))
             } else if (!cb.code || !cb.state || !sameString(cb.state, state)) {
               reject(new OAuthError('callback', 'Authorization response did not match this request (state mismatch).'))
-            } else resolve(cb.code)
+            } else resolve({ code: cb.code, ...(cb.iss !== undefined ? { iss: cb.iss } : {}) })
           })
         if (signal?.aborted) return onAbort()
         signal?.addEventListener('abort', onAbort, { once: true })
@@ -594,7 +787,8 @@ async function postToken(
   secrets: string[],
   fetchImpl: FetchLike,
   now: () => number,
-  allowLocal: boolean
+  allowLocal: boolean,
+  tokenResponse: TokenRequestOptions['tokenResponse'] = 'standard'
 ): Promise<OAuthTokens> {
   const body = new URLSearchParams()
   for (const [k, v] of Object.entries(form)) if (v) body.set(k, v)
@@ -625,6 +819,11 @@ async function postToken(
   } catch {
     parsed = Object.fromEntries(new URLSearchParams(text))
   }
+  // Slack puts a user token under authed_user (oauth.v2.access); the user-token endpoint's shape is unverified.
+  if (tokenResponse === 'slackUser' && typeof parsed.access_token !== 'string') {
+    const nested = parsed.authed_user
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) parsed = { ...parsed, ...(nested as Record<string, unknown>) }
+  }
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
   const access = str(parsed.access_token)
   if (!res.ok || parsed.error || !access) {
@@ -647,7 +846,8 @@ export async function exchangeCode(
   client: OAuthClient,
   p: { code: string; verifier: string; redirectUri: string },
   fetchImpl: FetchLike,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  opts: TokenRequestOptions = {}
 ): Promise<OAuthTokens> {
   return postToken(
     'token',
@@ -658,13 +858,14 @@ export async function exchangeCode(
       code_verifier: p.verifier,
       redirect_uri: p.redirectUri,
       client_id: client.clientId,
-      resource: d.resource,
+      resource: opts.sendResource === false ? undefined : d.resource,
       client_secret: client.clientSecret
     },
     [p.code, p.verifier, client.clientSecret ?? ''],
     fetchImpl,
     now,
-    isLoopbackUrl(d.resource)
+    isLoopbackUrl(d.resource),
+    opts.tokenResponse
   )
 }
 
@@ -674,7 +875,7 @@ export async function exchangeCode(
  */
 export async function refreshTokens(
   config: Pick<McpOAuthConfig, 'tokenEndpoint' | 'resource' | 'clientId'>,
-  p: { refreshToken: string; clientSecret?: string },
+  p: { refreshToken: string; clientSecret?: string } & TokenRequestOptions,
   fetchImpl: FetchLike,
   now: () => number = Date.now
 ): Promise<OAuthTokens> {
@@ -686,13 +887,14 @@ export async function refreshTokens(
       grant_type: 'refresh_token',
       refresh_token: p.refreshToken,
       client_id: config.clientId,
-      resource: config.resource,
+      resource: p.sendResource === false ? undefined : config.resource,
       client_secret: p.clientSecret
     },
     [p.refreshToken, p.clientSecret ?? ''],
     fetchImpl,
     now,
-    isLoopbackUrl(config.resource)
+    isLoopbackUrl(config.resource),
+    p.tokenResponse
   )
   return { ...t, refreshToken: t.refreshToken ?? p.refreshToken }
 }
@@ -723,7 +925,9 @@ export interface AuthorizeFlowInput {
   timeoutMs?: number
   now?: () => number
   /** Tests inject a fake listener. Default startLoopback. */
-  listen?: (opts: { port?: number }) => Promise<LoopbackServer>
+  listen?: (opts: { port?: number; strict?: boolean }) => Promise<LoopbackServer>
+  /** A connector preset's endpoints, scopes, extra parameters and fixed redirect port. */
+  preset?: OAuthPreset
 }
 
 export interface AuthorizeFlowResult {
@@ -741,7 +945,8 @@ export interface AuthorizeFlowResult {
 export async function runAuthorization(input: AuthorizeFlowInput): Promise<AuthorizeFlowResult> {
   const now = input.now ?? Date.now
   const listen = input.listen ?? startLoopback
-  const d = await discover(input.url, input.fetch)
+  const preset = input.preset
+  const d = await discoverWithPreset(input.url, input.fetch, preset)
   if (d.codeChallengeMethods && !d.codeChallengeMethods.includes('S256')) {
     throw new OAuthError('authorization', 'Authorization failed: the authorization server does not support PKCE S256.')
   }
@@ -755,13 +960,15 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
     let client: OAuthClient
     let secretToStore: string | undefined
     let hasClientSecret = false
+    // A fixed redirect for user-registered clients (connectors); DCR always registers the port it got.
+    const manualListen = (): Promise<LoopbackServer> => listen(preset?.redirectPort ? { port: preset.redirectPort, strict: true } : {})
     if (entered) {
-      listener = await listen({})
+      listener = await manualListen()
       client = { clientId: entered, ...(input.clientSecret ? { clientSecret: input.clientSecret } : {}), source: 'manual' }
       secretToStore = input.clientSecret || undefined
       hasClientSecret = !!input.clientSecret
     } else if (stored && stored.clientSource !== 'dcr') {
-      listener = await listen({})
+      listener = await manualListen()
       client = { clientId: stored.clientId!, ...(storedSecret ? { clientSecret: storedSecret } : {}), source: 'manual' }
       hasClientSecret = !!storedSecret || !!stored.hasClientSecret
     } else if (stored && stored.redirectUri) {
@@ -792,7 +999,14 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
     const redirectUri = listener.redirectUri
     const { verifier, challenge } = createPkce()
     const state = b64url(randomBytes(16))
-    const url = buildAuthorizeUrl(d, client, { redirectUri, state, challenge, scopes: d.scopes })
+    const url = buildAuthorizeUrl(d, client, {
+      redirectUri,
+      state,
+      challenge,
+      scopes: d.scopes,
+      ...(preset?.extraAuthParams ? { extraParams: preset.extraAuthParams } : {}),
+      ...(preset?.sendResource === false ? { sendResource: false } : {})
+    })
     const codeP = listener.waitForCode(state, { timeoutMs: input.timeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS, signal: input.signal })
     codeP.catch(() => {})
     try {
@@ -801,8 +1015,20 @@ export async function runAuthorization(input: AuthorizeFlowInput): Promise<Autho
       listener.close()
       throw new OAuthError('authorization', `Could not open the browser: ${excerpt((e as Error).message)}`)
     }
-    const code = await codeP
-    const tokens = await exchangeCode(d, client, { code, verifier, redirectUri }, input.fetch, now)
+    const { code, iss } = await codeP
+    // RFC 9207: check the issuer before the code goes anywhere. Exact string comparison, no normalisation.
+    const expectedIssuer = d.issuer ?? d.authorizationServer
+    if (iss === undefined) {
+      if (d.issParameterSupported) {
+        throw new OAuthError('callback', 'Authorization response did not identify its issuer (iss), which this authorization server promises to send. The code was not used.')
+      }
+    } else if (iss !== expectedIssuer) {
+      throw new OAuthError('callback', `Authorization response came from a different issuer (${excerpt(iss)}) than the one this sign-in started with. The code was not used.`)
+    }
+    const tokens = await exchangeCode(d, client, { code, verifier, redirectUri }, input.fetch, now, {
+      ...(preset?.sendResource === false ? { sendResource: false } : {}),
+      ...(preset?.tokenResponse ? { tokenResponse: preset.tokenResponse } : {})
+    })
     const config: McpOAuthConfig = {
       resource: d.resource,
       authorizationServer: d.authorizationServer,

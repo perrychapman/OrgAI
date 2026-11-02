@@ -1,7 +1,7 @@
 {
   "name": "orgai",
   "productName": "OrgAI",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A provider-agnostic harness that runs a project's org chart of AI agents and visualizes the work live.",
   "main": "./out/main/index.js",
   "private": true,
@@ -14,6 +14,7 @@
     "test": "vitest run",
     "start": "electron-vite preview",
     "icon": "node scripts/make-icon.mjs",
+    "probe:connectors": "node scripts/probe-connectors.mjs",
     "dist": "npm run build && electron-builder --win",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
@@ -23,7 +24,7 @@
     "dist:dir": "npm run build && electron-builder --dir",
     "pack": "npm run build && electron-builder --dir --publish never",
     "test:watch": "vitest",
-    "e2e:free": "node e2e/layout.mjs && node e2e/runs.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs && node e2e/import.mjs",
+    "e2e:free": "node e2e/layout.mjs && node e2e/runs.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs && node e2e/connectors.mjs && node e2e/import.mjs && node e2e/skills.mjs && node e2e/usage.mjs && node e2e/team.mjs && node e2e/assistants.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run e2e:free"
   },
   "engines": {
