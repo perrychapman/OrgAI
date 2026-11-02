@@ -99,7 +99,7 @@ export function removeRule(projectPath: string, rule: string): string[] {
 }
 
 /** Shell rules that must never be saved as a blanket allow: destructive or privilege-raising commands. */
-const DESTRUCTIVE_SHELL = /^(rm|rmdir|del|rd|sudo|su|chmod|chown|mkfs|dd|shutdown|reboot|git\s+push|git\s+reset|git\s+clean|git\s+checkout|git\s+rebase|git\s+branch\s+-D|Remove-Item)(?![\w-])/i
+const DESTRUCTIVE_SHELL = /^(rm|rmdir|del|rd|ri|erase|sudo|su|chmod|chown|mkfs|dd|shutdown|reboot|git\s+push|git\s+reset|git\s+clean|git\s+checkout|git\s+rebase|git\s+branch\s+-D|Remove-Item|Clear-Content)(?![\w-])/i
 
 /**
  * True for a rule the harness refuses to save from a proposal: a bare shell tool (every command), a
@@ -129,16 +129,31 @@ export const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiE
 export const EXEC_WRAPPERS: ReadonlySet<string> = new Set([
   'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd', 'env', 'xargs', 'eval', 'exec', 'source', '.',
   'nohup', 'timeout', 'time', 'nice', 'find', 'perl', 'ruby', 'php', 'awk', 'osascript', 'start', 'invoke-expression', 'iex',
-  'start-process', 'invoke-command', 'wsl'
+  'start-process', 'invoke-command', 'wsl',
+  // Unix exec helpers.
+  'command', 'builtin', 'setsid', 'stdbuf', 'taskset', 'ionice', 'flock', 'watch', 'busybox', 'parallel', 'doas',
+  // PowerShell aliases and jobs.
+  'icm', 'saps', 'start-job', 'sajb', 'invoke-item', 'ii',
+  // Windows script hosts and launchers.
+  'forfiles', 'mshta', 'rundll32', 'wscript', 'cscript', 'regsvr32', 'msiexec', 'schtasks'
 ])
+
+/** A command word's program name: base name, lowercase, `.exe` / `.cmd` / `.bat` / `.ps1` dropped. */
+function programName(word: string): string {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '')
+}
 
 /**
  * Programs that run code they are handed (scripts, eval strings, packages): a launcher or runner whose target is one
- * (`npx tsx`, `uv run python`, `pnpm dlx tsx`, `bunx node`) is treated like an exec wrapper.
+ * (`npx tsx`, `uv run python`, `pnpm dlx tsx`, `bunx node`) is treated like an exec wrapper, and a one-word rule on
+ * one (`python.exe:*`) is never derived.
  */
 const CODE_RUNNERS: ReadonlySet<string> = new Set([
   ...EXEC_WRAPPERS, 'tsx', 'ts-node', 'node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'py', 'pythonw', 'ipython', 'lua', 'r', 'rscript'
 ])
+
+/** Whole-package runners: their second word is the program they run. */
+const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(['npx', 'bunx', 'pnpx', 'uvx', 'pipx'])
 
 /**
  * Prefixes the harness never derives as a prefix rule (review re-check M2): the rule would grant far more than the
@@ -146,21 +161,27 @@ const CODE_RUNNERS: ReadonlySet<string> = new Set([
  * `scp`, `rsync`) and pairs whose next words can run code or change tool config (`git config` with core.fsmonitor,
  * `npm pkg` / `npm config`, `gh api`, `deno eval`...). Such a command gets "allow once" (or the provider's exact rule).
  */
-const NEVER_DERIVE_FIRST: ReadonlySet<string> = new Set(['cp', 'mv', 'curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'ftp', 'nc', 'netcat', 'socat', 'telnet'])
+const NEVER_DERIVE_FIRST: ReadonlySet<string> = new Set([
+  'cp', 'mv', 'curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'ftp', 'nc', 'netcat', 'socat', 'telnet',
+  'copy-item', 'copy', 'cpi', 'move-item', 'move', 'mi', 'set-content', 'add-content', 'out-file', 'invoke-webrequest', 'iwr',
+  'invoke-restmethod', 'irm'
+])
 const NEVER_DERIVE_PAIRS: ReadonlySet<string> = new Set([
-  'git config', 'npm pkg', 'npm config', 'npm set', 'pnpm config', 'pnpm pkg', 'yarn config',
-  'gh api', 'gh extension', 'gh alias', 'deno eval'
+  'git config', 'git submodule', 'git bisect', 'git difftool', 'git filter-branch', 'npm pkg', 'npm config', 'npm set',
+  'pnpm config', 'pnpm pkg', 'yarn config', 'yarn node', 'gh api', 'gh extension', 'gh alias', 'deno eval', 'docker run'
 ])
 
 /** True when a shell prefix (`npm test`, `npx tsx`) must never be derived or kept as a prefix rule. */
 export function isTooBroadPrefix(prefix: string): boolean {
-  const words = prefix.trim().toLowerCase().split(/\s+/).map((w) => (w.split(/[\\/]/).pop() ?? w).replace(/\.exe$/, ''))
+  const words = prefix.trim().split(/\s+/).map(programName)
   const [first = '', second = '', third = ''] = words
   if (!first) return true
   if (NEVER_DERIVE_FIRST.has(first) || EXEC_WRAPPERS.has(first)) return true
+  // A one-word rule on an interpreter (`python.exe:*`, `/usr/bin/node:*`) runs anything.
+  if (words.length === 1 && CODE_RUNNERS.has(first)) return true
   if (second && NEVER_DERIVE_PAIRS.has(`${first} ${second}`)) return true
-  // npx / bunx / pnpx run a package: an interpreter as the package runs anything.
-  if ((first === 'npx' || first === 'bunx' || first === 'pnpx') && CODE_RUNNERS.has(second)) return true
+  // npx / bunx / pnpx / uvx / pipx run a package: an interpreter as the package runs anything.
+  if (PACKAGE_RUNNERS.has(first) && CODE_RUNNERS.has(second)) return true
   // A runner word's target (`uv run python`, `pnpm dlx tsx`, `npm exec node`).
   if (RUNNER_WORDS.has(second) && CODE_RUNNERS.has(third)) return true
   return false
@@ -169,7 +190,7 @@ export function isTooBroadPrefix(prefix: string): boolean {
 /** The exec wrapper a shell rule's command starts with (base name, `.exe` dropped), else null. */
 function execWrapperOf(command: string): string | null {
   const first = command.trim().split(/\s+/)[0] ?? ''
-  const base = (first.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.exe$/, '')
+  const base = programName(first)
   return EXEC_WRAPPERS.has(base) ? base : null
 }
 
@@ -261,7 +282,7 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 /** Commands whose first word alone says little: their rule is the first two words (`npm test`, `git status`). */
 export const LAUNCHERS: ReadonlySet<string> = new Set([
   'npm', 'npx', 'pnpm', 'yarn', 'bun', 'git', 'go', 'cargo', 'dotnet', 'python', 'python3', 'pip', 'uv', 'node', 'deno', 'make', 'docker', 'gh',
-  'py', 'pythonw', 'bunx', 'pnpx'
+  'py', 'pythonw', 'bunx', 'pnpx', 'uvx', 'pipx', 'poetry', 'pdm', 'hatch', 'pipenv', 'conda', 'rye', 'nix'
 ])
 
 /** A launcher's second words that only say "run something": the rule takes the third word too. */
@@ -280,7 +301,7 @@ export function segmentRulePrefix(toolName: string, segment: string): string | n
   const first = words[0] ?? ''
   if (!first || !PLAIN_WORD.test(first)) return null
   let prefix = first
-  if (LAUNCHERS.has(first.toLowerCase())) {
+  if (LAUNCHERS.has(programName(first))) {
     const second = words[1] ?? ''
     if (!second || second.startsWith('-') || !PLAIN_WORD.test(second)) return null
     prefix = `${first} ${second}`
@@ -348,7 +369,10 @@ const HOME_CONFIG_DIRS = [
   '.ssh', '.aws', '.gnupg', '.claude', '.codex', '.config', '.kube', '.docker', '.azure', '.npmrc', '.git-credentials',
   'AppData/Roaming', 'Library/Application Support', 'Library/Keychains',
   // On PATH or run at login: a file written there runs later outside any sandbox.
-  '.local/bin', '.cargo/bin', '.bun', 'go/bin', '.deno', '.npm-global', 'AppData/Local/Microsoft/WindowsApps', 'Library/LaunchAgents'
+  '.local/bin', '.cargo/bin', '.bun', 'go/bin', '.deno', '.npm-global', 'AppData/Local/Microsoft/WindowsApps', 'Library/LaunchAgents',
+  // PowerShell profiles (run at every start), editor extensions (run code), browser profiles and credential stores.
+  'Documents/PowerShell', 'Documents/WindowsPowerShell', '.vscode', '.cursor', 'AppData/Local/Google/Chrome', 'AppData/Local/Microsoft/Edge',
+  'AppData/Local/Mozilla', '.cargo/credentials', '.cargo/credentials.toml', '.password-store', '.local/share/keyrings', 'Library/Cookies'
 ]
 
 /** True when `child` is `parent` or inside it (lexical; win32 case-insensitive). */

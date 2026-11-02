@@ -220,6 +220,26 @@ describe('free cd segments', () => {
     expect(matchesBashRule(`pwsh -Command 'npm test (calc)'`, ['Bash(npm test:*)'], winOpts)).toBe(false)
   })
 
+  it('second re-check H1: typographic quotes and dashes never match (PowerShell pairs them with ASCII quotes)', () => {
+    for (const tool of ['Bash', 'PowerShell']) {
+      const rules = [`${tool}(npm test:*)`]
+      for (const c of ["npm test ‘x' ; calc ; 'y’", "npm test ‘x' (calc) 'y’", 'npm test “x" ; calc ; "y”', 'npm test –watch']) {
+        expect(matchingRule(tool, { command: c }, rules, winOpts), `${tool} ${c}`).toBeUndefined()
+      }
+      expect(matchingRule(tool, { command: 'cd ‘..\\..\\x’' }, [], winOpts)).toBeUndefined()
+    }
+  })
+
+  it('second re-check M2 / L2: git options that run a program, and @ after , or =', () => {
+    const rules = ['Bash(git fetch:*)', 'Bash(git grep:*)', 'Bash(git difftool:*)', 'Bash(git log:*)', 'Bash(git clone:*)', 'Bash(npm test:*)']
+    for (const c of ['git fetch --upload-pack=evil origin', 'git fetch "--upload-pack=evil"', 'git grep -O evil x', 'git grep --open-files-in-pager=evil x', 'git difftool -x evil', 'git difftool --extcmd=evil', 'git clone -u evil url', 'git -c core.pager=evil log', 'git log --exec=x']) {
+      expect(matchesBashRule(c, rules), c).toBe(false)
+    }
+    expect(matchesBashRule('git fetch origin', rules)).toBe(true)
+    expect(matchesBashRule('git grep -n foo', rules)).toBe(true)
+    for (const c of ['npm test a,@b', 'npm test x=@b', 'npm test ;@b']) expect(matchesBashRule(c, rules), c).toBe(false)
+  })
+
   it('review re-check L7: win32 trailing dot or space names are never free; MSYS paths only for bash', () => {
     for (const c of ['cd "sub\\.. "', 'cd sub.', 'cd "sub "']) expect(matchesBashRule(c, [], winOpts), c).toBe(false)
     expect(matchesBashRule('cd sub', [], winOpts)).toBe(true)

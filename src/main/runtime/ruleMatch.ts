@@ -30,7 +30,7 @@ const UNSAFE_SEGMENT = /[|&`<>\n\r]|\$\(/
  * expansion; PowerShell argument-mode expressions such as `cd (Stop-Computer)`, `npm test (calc)`, script blocks) and
  * PowerShell splatting / array and hash literals (`@x`, `@(...)`, `@{...}`). A mid-word `@` (`pkg@1.2.3`) stays.
  */
-const UNSAFE_UNQUOTED = /[(){}]|(?:^|\s)@|@[({]/
+const UNSAFE_UNQUOTED = /[(){}]|(?:^|[\s,;=])@|@[({]/
 
 /** The segment with quoted text removed (quotes included); an unclosed quote drops the rest. */
 function unquotedPart(segment: string): string {
@@ -51,9 +51,31 @@ function unquotedPart(segment: string): string {
   return out
 }
 
+/**
+ * git options that run another program (review re-check M2): a saved `git fetch:*` or `git grep:*` must not cover
+ * `git fetch --upload-pack=evil`, `git grep -O evil`, `git difftool -x evil`, `git clone -u evil` or `git -c
+ * core.pager=evil log`.
+ */
+function gitRunsProgram(segment: string): boolean {
+  const words = segment.trim().split(/\s+/)
+  const bin = (words[0] ?? '').split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '')
+  if (bin !== 'git') return false
+  const sub = (words[1] ?? '').toLowerCase()
+  if (sub === '-c' || sub.startsWith('--config-env') || sub.startsWith('--exec-path')) return true
+  return words.slice(1).some((w) => {
+    const o = w.replace(/^["']|["']$/g, '')
+    if (/^--(?:upload-pack|receive-pack|exec|open-files-in-pager|extcmd|config-env|tool)(?:=|$)/i.test(o)) return true
+    if (sub === 'grep' && /^-O/.test(o)) return true
+    if (sub === 'difftool' && /^-[a-zA-Z]*[xt]/.test(o)) return true
+    if (sub === 'mergetool' && /^-[a-zA-Z]*t/.test(o)) return true
+    if ((sub === 'clone' || sub === 'fetch' || sub === 'pull' || sub === 'ls-remote' || sub === 'archive') && /^-u/.test(o)) return true
+    return false
+  })
+}
+
 /** True when a segment holds syntax no rule may cover (UNSAFE_SEGMENT anywhere, UNSAFE_UNQUOTED outside quotes). */
 export function isUnsafeSegment(segment: string): boolean {
-  return UNSAFE_SEGMENT.test(segment) || UNSAFE_UNQUOTED.test(unquotedPart(segment))
+  return UNSAFE_SEGMENT.test(segment) || UNSAFE_UNQUOTED.test(unquotedPart(segment)) || gitRunsProgram(segment)
 }
 
 /** The harness's own MCP server: its tools are never granted wholesale through a saved rule. */
@@ -95,9 +117,11 @@ const SHELL_BINARY = /^(?:bash|sh|zsh|dash|pwsh|powershell)(?:\.exe)?$/i
 
 /**
  * Quote handling bash and PowerShell disagree on, or the splitter does not model: a backslash next to a quote
- * (`"a\" ; b"`) and ANSI-C quoting (`$'...'`). A command containing either is never covered by a rule.
+ * (`"a\" ; b"`), ANSI-C quoting (`$'...'`), and PowerShell's typographic quotes (U+2018-U+201E, which pair with
+ * ASCII quotes there) and dashes (U+2013-U+2015, read as `-`). A command containing any of them is never covered by
+ * a rule.
  */
-const AMBIGUOUS_QUOTING = /\\["']|\$'/
+const AMBIGUOUS_QUOTING = /\\["']|\$'|[–-―‘-„]/
 
 /**
  * The server name of a server-level MCP rule, else null. Two forms: `mcp__<server>` and `mcp__<server>__*`.

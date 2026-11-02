@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
@@ -128,7 +129,19 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
       continue
     }
     // The static rules (allowedDirectories.ts, shared with ProjectStore's save-time clean), on the canonical path.
-    const risk = allowedDirectoryRisk(canon, { projectPath: opts.projectPath, deniedDirs: denied, ...(opts.home ? { home: opts.home } : {}) })
+    // Both spellings of home and the project (a junction or symlink in either must not hide a containing folder).
+    const home = opts.home ?? homedir()
+    const both = (p: string): string[] => {
+      try {
+        return [...new Set([p, canonicalDeep(p)])]
+      } catch {
+        return [p]
+      }
+    }
+    const homes = both(home)
+    const projects = both(opts.projectPath)
+    const risks = homes.flatMap((h) => projects.map((projectPath) => allowedDirectoryRisk(canon, { projectPath, deniedDirs: denied, home: h })))
+    const risk = risks.includes('project') ? 'project' : risks.find((r) => r !== null) ?? null
     if (risk === 'project') {
       out.dropped.push(given)
       continue

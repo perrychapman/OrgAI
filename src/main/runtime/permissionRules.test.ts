@@ -209,6 +209,30 @@ describe('review re-check M2 / L6: rules that grant more than the command, provi
     expect(segmentRulePrefix('Bash', 'git status')).toBe('git status')
   })
 
+  it('second re-check M1 / M2: interpreter spellings, package runners, git / docker pairs, PowerShell writers', () => {
+    for (const c of [
+      'python.exe -c 1', '/usr/bin/python3 -c 1', 'node.exe -e 1', 'npx.cmd tsx x.ts', 'npm.cmd exec node x.js', 'poetry run python x.py',
+      'uvx python x', 'pipx run python', 'yarn node x.js', 'docker run img', 'git submodule foreach x', 'git bisect run x',
+      'Copy-Item a b', 'iwr https://x', 'Invoke-RestMethod https://x', 'Set-Content a b', 'command ls', 'forfiles /c x', 'icm -s x'
+    ]) {
+      expect(shellRuleContents('Bash', c), c).toEqual([])
+    }
+    expect(segmentRulePrefix('Bash', 'poetry run pytest')).toBe('poetry run pytest')
+    expect(segmentRulePrefix('Bash', 'npm.cmd test')).toBe('npm.cmd test')
+    expect(isUnsafeAllowRule('PowerShell(ri:*)')).toBe(true)
+    expect(isUnsafeAllowRule('PowerShell(Clear-Content:*)')).toBe(true)
+    expect(isBlanketAllowRule('Bash(forfiles:*)')).toBe(true)
+  })
+
+  it('second re-check M3: PowerShell profiles, editor extensions, browser profiles and credential stores are never offered', () => {
+    const o = { home: '/home/u', platform: 'linux' as const }
+    for (const d of ['/home/u/Documents/PowerShell', '/home/u/Documents/WindowsPowerShell/x', '/home/u/.vscode/extensions', '/home/u/.cursor', '/home/u/.password-store', '/home/u/.local/share/keyrings', '/home/u/Library/Cookies']) {
+      expect(isOfferableDirectory(d, o), d).toBe(false)
+    }
+    expect(isOfferableDirectory('C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data', { home: 'C:\\Users\\me', platform: 'win32' })).toBe(false)
+    expect(isOfferableDirectory('/home/u/Documents/notes', o)).toBe(true)
+  })
+
   it('drops a provider prefix rule that is too broad, keeps exact rules', () => {
     const provided: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm pkg:*' }, { toolName: 'Bash', ruleContent: 'curl *' }], behavior: 'allow', destination: 'localSettings' }]
     expect(chooseSuggestions('Bash', { command: 'npm pkg get name' }, provided).filter((s) => s.type === 'addRules')).toEqual([])
