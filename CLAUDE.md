@@ -277,8 +277,14 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `--node-options` / `--prefix` / `-C`..., go `-exec` / `-toolexec`, cargo `--config` / `-Z`, make `-f` / `SHELL=`,
     dotnet `-p:*Event=`, node `--import` / `-r` / `-e`, git global `-c` / `--git-dir`, `--config`, `--template`,
     `--output`, clone `-c`, branch `-D`, stash drop, and `PROGRAM_ENV` assignments (NODE_OPTIONS, GIT_*...); any `$`
-    outside single quotes refuses the segment. `ruleCoversButRefused` says when the Claude hook must answer ask (the CLI
-    would approve by its own prefix match); claude.ts does not call it yet (open, reviewer-4 H-A). Only bare
+    outside single quotes refuses the segment. Bash / PowerShell allow rules never reach the CLI (not in
+    `options.allowedTools`, not in canUseTool `updatedPermissions`): the Claude PreToolUse hook is their only allow
+    path, through `matchingRule` (reviewer-4 H-A, reviewer-5 H1). The one shell allow source the CLI reads itself is
+    `<project>/.claude/settings.json` (`cliProjectSettings`: lstat, regular file, 256 KB, BOM, fail closed): any shell
+    call the hook did not allow while that file holds a rule for the tool gets 'ask' naming the rule ("OrgAI:
+    Bash(npm test:*) does not cover this command (it can run another program); asking"). Unit-tested; that a hook
+    'ask' beats a settings.json allow rule is UNVERIFIED live (`scripts/smoke-permission-hook.mjs`, needs consent). Request cards flag, and project grants and Architect
+    proposals never save, a prefix `isTooBroadPrefix` rejects (a quoted or `VAR=x` first word counts as too broad) (`tooBroadRuleRefusal`, the permissions:add wording). Only bare
     shells or shells in the exact `SYSTEM_SHELL_DIRS` are unwrapped.
   - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words
     (podman, nerdctl, kubectl, terraform, helm too), runner words and gh / aws / az / gcloud three; `isTooBroadPrefix`

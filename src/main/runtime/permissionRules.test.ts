@@ -15,6 +15,8 @@ import {
   addRulesReport,
   isOfferableDirectory,
   isTooBroadPrefix,
+  allowRuleRefusal,
+  tooBroadRuleRefusal,
   isWithinDir,
   listRules,
   pathRuleRefusal,
@@ -581,5 +583,30 @@ describe('reviewer-3: derive lists', () => {
     expect(isOfferableDirectory('/home/u/.SSH', { home: '/home/u', platform: 'linux' })).toBe(true)
     expect(isWithinDir('/Users/u/.ssh', '/Users/u/.SSH/x', 'darwin')).toBe(true)
     expect(isWithinDir('/home/u/.ssh', '/home/u/.SSH/x', 'linux')).toBe(false)
+  })
+})
+
+describe('tooBroadRuleRefusal / allowRuleRefusal (reviewer-4 M-2, shared wording)', () => {
+  it('names a too-broad shell prefix and suggests the exact rule', () => {
+    expect(tooBroadRuleRefusal('Bash(curl:*)')).toBe('"Bash(curl:*)" would allow far more than one command (it writes, fetches, runs code or controls containers). Use an exact rule such as Bash(curl) instead.')
+    expect(tooBroadRuleRefusal('Bash(npx tsx *)')).toMatch(/Use an exact rule such as Bash\(npx tsx\) instead/)
+    expect(tooBroadRuleRefusal('PowerShell(docker:*)')).toMatch(/far more than one command/)
+  })
+
+  it('passes exact shell rules, narrow prefixes and other tools', () => {
+    for (const r of ['Bash(npm test:*)', 'Bash(curl https://example.com)', 'Bash(gh pr list:*)', 'Read', 'WebSearch', 'mcp__github__*', 'Edit(src/**)']) expect(tooBroadRuleRefusal(r), r).toBeNull()
+  })
+
+  it('refuses a prefix with a disguised first word (reviewer-5 L2)', () => {
+    for (const p of ['FOO=1 curl', '"curl"', "'docker' run", 'NODE_ENV=test npm test', 'docker "run"', "kubectl 'exec'"]) expect(isTooBroadPrefix(p), p).toBe(true)
+    expect(tooBroadRuleRefusal('Bash(FOO=1 curl:*)')).toMatch(/far more than one command/)
+    expect(tooBroadRuleRefusal('Bash("curl":*)')).toMatch(/far more than one command/)
+  })
+
+  it('allowRuleRefusal: destructive first, then too broad, else null', () => {
+    expect(allowRuleRefusal('Bash(rm -rf:*)')).toMatch(/destructive or unbounded/)
+    expect(allowRuleRefusal('Bash(*)')).toMatch(/destructive or unbounded/)
+    expect(allowRuleRefusal('Bash(docker compose:*)')).toMatch(/far more than one command/)
+    expect(allowRuleRefusal('Bash(git status:*)')).toBeNull()
   })
 })

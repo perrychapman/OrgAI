@@ -189,7 +189,11 @@ const THREE_WORD_LAUNCHERS: ReadonlySet<string> = new Set(['gh', 'aws', 'az', 'g
 
 /** True when a shell prefix (`npm test`, `npx tsx`) must never be derived or kept as a prefix rule. */
 export function isTooBroadPrefix(prefix: string): boolean {
-  const words = prefix.trim().split(/\s+/).map(programName)
+  const raw = prefix.trim().split(/\s+/)
+  // A disguised first word (`FOO=1 curl`, `"curl"`, `'docker' run`) cannot be checked against the lists below, and
+  // the matcher reads it as the plain program, so it counts as too broad (reviewer-5 L2).
+  if (!PLAIN_WORD.test(raw[0] ?? '') || raw.slice(1, 3).some((w) => /["'`\\]/.test(w))) return true
+  const words = raw.map(programName)
   const [first = '', second = '', third = ''] = words
   if (!first) return true
   if (NEVER_DERIVE_FIRST.has(first) || EXEC_WRAPPERS.has(first)) return true
@@ -204,6 +208,24 @@ export function isTooBroadPrefix(prefix: string): boolean {
   // A runner word's target (`uv run python`, `pnpm dlx tsx`, `npm exec node`).
   if (RUNNER_WORDS.has(second) && CODE_RUNNERS.has(third)) return true
   return false
+}
+
+/**
+ * Why a shell prefix rule grants far more than one command (its prefix isTooBroadPrefix: `curl:*`,
+ * `docker compose:*`, `npx tsx *`), else null. Exact shell rules and other tools pass. Shared by permissions:add,
+ * request_permission_rules cards and Architect proposals so all three use one wording (reviewer-4 M-2).
+ */
+export function tooBroadRuleRefusal(rule: string): string | null {
+  const m = /^(?:Bash|PowerShell)\((.*)\)$/.exec(rule.trim())
+  const prefix = m ? rulePrefix(m[1]) : null
+  if (prefix === null || !isTooBroadPrefix(prefix)) return null
+  return `"${rule}" would allow far more than one command (it writes, fetches, runs code or controls containers). Use an exact rule such as ${rule.trim().replace(/(?::\*| \*)\)$/, ')')} instead.`
+}
+
+/** Why an allow rule must not be saved: destructive or unbounded (isUnsafeAllowRule) or too broad (tooBroadRuleRefusal). */
+export function allowRuleRefusal(rule: string): string | null {
+  if (isUnsafeAllowRule(rule)) return `"${rule}" would allow a destructive or unbounded command. Allow the command once from its card instead.`
+  return tooBroadRuleRefusal(rule)
 }
 
 /** The exec wrapper a shell rule's command starts with (base name, `.exe` dropped), else null. */

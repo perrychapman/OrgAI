@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -88,7 +88,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 
-import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
@@ -1228,8 +1228,156 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(await bash(q, `cd ${join(dir, 'sub')} && npm test`)).toEqual({})
     rules = ['Bash(npm test:*)']
     expect((await bash(q, `cd ${join(dir, 'sub')} && npm test`)).hookSpecificOutput?.permissionDecision).toBe('allow')
+    // A run grant covers the npm test segment but not the cd elsewhere. The CLI holds no shell rule (review M2), so the
+    // call goes to its normal flow.
     expect(await bash(q, `cd ${join(tmpdir(), 'orgai-elsewhere-x')} && npm test`)).toEqual({})
   })
+
+  it('H-A / M2: a saved settings.local shell rule allows through the hook only; a refused command goes to the CLI flow', async () => {
+    const { dir } = start()
+    addRules(dir, ['Bash(npm test:*)', 'Bash(git status)', 'Read', 'mcp__github__*'])
+    const q = await firstQuery()
+    // Shell rules never reach the CLI's own prefix match; other rules still do.
+    expect(q.options.allowedTools).toEqual(['Read', 'mcp__github__*'])
+    expect((q.options.allowedTools as string[]).some((r) => /^(Bash|PowerShell)\b/.test(r))).toBe(false)
+    // No allowedRules on this context: the saved rules are the fallback allow source (review L4).
+    expect((await bash(q, 'npm test')).hookSpecificOutput).toMatchObject({ permissionDecision: 'allow', permissionDecisionReason: 'OrgAI: allowed by saved rule Bash(npm test:*)' })
+    // The CLI holds no shell rule, so a refused command is not asked by the hook: mode, classifier and canUseTool decide.
+    expect(await bash(q, 'npm test --script-shell=calc')).toEqual({})
+    expect(await bash(q, 'npm test $X')).toEqual({})
+    expect(await bash(q, 'curl https://example.com')).toEqual({})
+  })
+
+  it('L4: with allowedRules present the hook does not read saved rules itself', async () => {
+    const { dir } = start({ allowedRules: () => [] })
+    addRules(dir, ['Bash(npm test:*)'])
+    const q = await firstQuery()
+    expect(await bash(q, 'npm test')).toEqual({})
+  })
+
+  it('M2: run and session grants never make the hook ask; a settings.json rule does, naming it', async () => {
+    const { dir } = start({ allowedRules: () => ['Bash(git clone:*)'] })
+    const q = await firstQuery()
+    expect(await bash(q, 'git clone -c core.sshCommand=calc https://example.com/x.git')).toEqual({})
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(make test:*)'] } }))
+    const make = (await bash(q, 'make test SHELL=calc')).hookSpecificOutput
+    expect(make?.permissionDecision).toBe('ask')
+    expect(make?.permissionDecisionReason).toBe('OrgAI: Bash(make test:*) does not cover this command (it can run another program); asking')
+    // M1: any settings.json Bash rule makes every Bash call the hook did not allow ask.
+    const clone = (await bash(q, 'git clone -c core.sshCommand=calc https://example.com/x.git')).hookSpecificOutput
+    expect(clone?.permissionDecision).toBe('ask')
+    expect(clone?.permissionDecisionReason).toBe("OrgAI: this project's .claude/settings.json allows Bash(make test:*), which OrgAI cannot check for this command; asking")
+    // A command OrgAI's own matcher accepts under the settings.json rule goes on to the CLI, which allows it.
+    expect(await bash(q, 'make test')).toEqual({})
+    // A run grant still allows through the hook.
+    expect((await bash(q, 'git clone https://example.com/x.git')).hookSpecificOutput?.permissionDecision).toBe('allow')
+  })
+
+  it('M1: wrapper, env and no-space forms the CLI honours from settings.json are asked', async () => {
+    const { dir } = start()
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const settings = join(dir, '.claude', 'settings.json')
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    const q = await firstQuery()
+    for (const command of ['timeout 5 npm test --script-shell=x', 'NODE_ENV=test npm test --script-shell=x', 'timeout 5 npm test']) {
+      expect((await bash(q, command)).hookSpecificOutput?.permissionDecision, command).toBe('ask')
+    }
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Read', 'Bash(npm test*)'] } }))
+    const nospace = (await bash(q, 'npm test --script-shell=x')).hookSpecificOutput
+    expect(nospace?.permissionDecision).toBe('ask')
+    expect(nospace?.permissionDecisionReason).toContain('Bash(npm test*)')
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Bash'] } }))
+    expect((await bash(q, 'echo hi')).hookSpecificOutput?.permissionDecisionReason).toBe("OrgAI: this project's .claude/settings.json allows Bash, which OrgAI cannot check for this command; asking")
+    // Rules for other tools only: nothing to ask about.
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: ['Read', 'PowerShell(Get-Date)'] } }))
+    expect(await bash(q, 'timeout 5 npm test --script-shell=x')).toEqual({})
+  })
+
+  it('M3: settings.json with a BOM is read; oversized, malformed, non-object or not a regular file asks for every call', async () => {
+    const { dir } = start()
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    const settings = join(dir, '.claude', 'settings.json')
+    const q = await firstQuery()
+    writeFileSync(settings, '\uFEFF' + JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir }) })).toEqual({ rules: ['Bash(npm test:*)'], failed: false })
+    expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).toBe('ask')
+    const unreadable = async () => (await bash(q, 'curl https://example.com')).hookSpecificOutput
+    writeFileSync(settings, JSON.stringify({ permissions: { allow: [] }, pad: 'x'.repeat(CLI_SETTINGS_MAX_BYTES) }))
+    expect(await unreadable()).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: CLI_SETTINGS_UNREADABLE_REASON })
+    writeFileSync(settings, '{ "permissions": { "allow": [ "Bash(npm')
+    expect(await unreadable()).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: CLI_SETTINGS_UNREADABLE_REASON })
+    writeFileSync(settings, 'null')
+    expect(await unreadable()).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: CLI_SETTINGS_UNREADABLE_REASON })
+    rmSync(settings)
+    mkdirSync(settings)
+    expect(await unreadable()).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: CLI_SETTINGS_UNREADABLE_REASON })
+    rmSync(settings, { recursive: true })
+    // No file: nothing to ask about. A non-shell call is never asked.
+    expect(await unreadable()).toBeUndefined()
+    expect(await hook(q, 'Read', { file_path: join(dir, 'a') })).toEqual({})
+  })
+
+  it('M3: a trust-restricted run never reads settings.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-restricted-'))
+    mkdirSync(join(dir, '.claude', 'settings.json'), { recursive: true })
+    const quick = runSummary({ projectId: 'quick', quick: { folder: dir, team: 'single', allowEdits: false, gitRepo: false } })
+    expect(cliProjectSettings({ run: quick, project: project({ path: dir }) })).toEqual({ rules: [], failed: false })
+    expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir }) }).failed).toBe(true)
+  })
+
+  it('L1: settings.json rule text is bounded and quoted in the reason; a rule with a hidden character is never named', () => {
+    const long = `Bash(<b> ${'a'.repeat(300)}:*)`
+    const reason = cliShellAskReason('Bash', { command: 'curl x' }, { rules: [long], failed: false })!
+    expect(reason).toContain('‹b›')
+    expect(reason.length).toBeLessThan(260)
+    const hidden = cliShellAskReason('Bash', { command: 'curl x' }, { rules: ['Bash(curl\u202E:*)'], failed: false })
+    expect(hidden).toBe("OrgAI: this project's .claude/settings.json has a Bash rule OrgAI cannot check for this command; asking")
+    expect(cliShellAskReason('Read', { file_path: 'x' }, { rules: ['Bash'], failed: true })).toBeUndefined()
+  })
+
+  it('H1: toSdkSessionUpdates drops shell allow rules and empty rule updates, keeps everything else', () => {
+    expect(
+      toSdkSessionUpdates([
+        { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' },
+        { type: 'replaceRules', rules: [{ toolName: 'PowerShell' }, { toolName: 'WebFetch', ruleContent: 'domain:x.com' }], behavior: 'allow', destination: 'session' },
+        { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'rm:*' }], behavior: 'deny', destination: 'session' },
+        { type: 'addDirectories', directories: ['/x'], destination: 'session' }
+      ])
+    ).toEqual([
+      { type: 'replaceRules', rules: [{ toolName: 'WebFetch', ruleContent: 'domain:x.com' }], behavior: 'allow', destination: 'session' },
+      { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'rm:*' }], behavior: 'deny', destination: 'session' },
+      { type: 'addDirectories', directories: ['/x'], destination: 'session' }
+    ])
+  })
+
+  it('H1: a session grant of Bash(npm test:*) reaches the hook only; wrapper forms are not allowed, and it survives a restart', async () => {
+    const servers: McpServerSpec[] = []
+    const { ctx } = start({ mcpServers: () => servers, resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} })) })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const q1 = await firstQuery()
+    const out = await canUseTool(q1)('Bash', { command: 'npm test' }, {
+      signal: new AbortController().signal,
+      suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }]
+    })
+    expect(out.behavior).toBe('allow')
+    expect(out.updatedPermissions).toBeUndefined()
+    expect((await bash(q1, 'npm test')).hookSpecificOutput?.permissionDecision).toBe('allow')
+    for (const command of ['timeout 5 npm test --script-shell=x', 'NODE_ENV=test npm test --script-shell=x']) expect(await bash(q1, command), command).toEqual({})
+    expect(((q1.options.allowedTools as string[] | undefined) ?? []).some((r) => /^(Bash|PowerShell)\b/.test(r))).toBe(false)
+    // A restarted query (mid-run MCP install) keeps the session grant in the hook and still passes no shell rule.
+    q1.emit({ type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] })
+    await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+    servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['lead'], secretEnv: [] }))
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await (sessions[sessions.length - 1] as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(servers[0]!)
+    q1.emit({ type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+    const q2 = sdk.queries[1]!
+    expect((await bash(q2, 'npm test')).hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect(await bash(q2, 'timeout 5 npm test --script-shell=x')).toEqual({})
+    expect(((q2.options.allowedTools as string[] | undefined) ?? []).some((r) => /^(Bash|PowerShell)\b/.test(r))).toBe(false)
+  }, 10_000)
 
   it('canUseTool replaces a compound provider rule with per-segment rules on the card and grants them for the session', async () => {
     const { ctx, dir } = start()
@@ -1241,7 +1389,9 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
       suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: `${command} *` }], behavior: 'allow', destination: 'localSettings' }]
     })
     expect(vi.mocked(ctx.requestPermission).mock.calls[0]![0].ruleLabels).toEqual(['Bash(npm test:*)'])
-    expect(out.updatedPermissions).toEqual([{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'session' }])
+    // The shell rule is kept for the hook and never handed to the CLI (review H1).
+    expect(out.updatedPermissions).toBeUndefined()
+    expect((await bash(q, command)).hookSpecificOutput?.permissionDecision).toBe('allow')
   })
 
   it('a project-scope allow of an edit card persists the folder and acceptEdits through the ctx hooks', async () => {

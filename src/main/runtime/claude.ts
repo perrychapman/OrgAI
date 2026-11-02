@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -31,6 +31,7 @@ import { SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { hiddenCharIn } from '../capabilities/sanitize'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist, type SuggestOptions } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
@@ -40,7 +41,7 @@ import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
-import { matchOptionsFor, matchingRule } from './ruleMatch'
+import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -612,6 +613,161 @@ export function claudeSavedRules(ctx: RuntimeContext): string[] {
 }
 
 /**
+ * The saved rules handed to the CLI as `options.allowedTools`: every shell rule (`Bash`, `Bash(...)`, `PowerShell`,
+ * `PowerShell(...)`) is left out, because the PreToolUse hook evaluates those itself through ruleMatch.ts and the CLI's
+ * own prefix match would approve commands the harness refuses (`npm test --script-shell=calc` under
+ * `Bash(npm test:*)`, reviewer-4 H-A). Rules the harness cannot evaluate (other tools, content rules) are kept. Pure.
+ */
+export function cliAllowedTools(rules: readonly string[]): string[] {
+  return rules.filter((r) => !isShellRule(r))
+}
+
+function isShellRule(rule: string): boolean {
+  const r = rule.trim()
+  for (const tool of SHELL_TOOLS) if (r === tool || r.startsWith(`${tool}(`)) return true
+  return false
+}
+
+/** Largest `<project>/.claude/settings.json` the PreToolUse hook reads (review M3); a bigger file counts as unreadable. */
+export const CLI_SETTINGS_MAX_BYTES = 256 * 1024
+
+/**
+ * `permissions.allow` of `<project>/.claude/settings.json`, which settingSources ['project'] makes the CLI load and
+ * match on its own (wrapper and env stripping, mid wildcards, no-space prefixes: shapes ruleMatch.ts does not model).
+ * `failed` means the file exists but OrgAI could not read it (not a regular file, a symlink or FIFO, over
+ * CLI_SETTINGS_MAX_BYTES, unreadable, not a JSON object): the hook then treats it as holding unknown shell rules.
+ */
+export interface CliProjectSettings {
+  rules: string[]
+  failed: boolean
+}
+
+const NO_CLI_SETTINGS: CliProjectSettings = { rules: [], failed: false }
+const CLI_SETTINGS_FAILED: CliProjectSettings = { rules: [], failed: true }
+const cliSettingsCache = new Map<string, { mtimeMs: number; size: number; result: CliProjectSettings }>()
+
+/**
+ * Reads `<project>/.claude/settings.json` for the PreToolUse ask check, never as an allow source. The file is untrusted
+ * and read synchronously on the main process: lstat first (a symlink, FIFO or directory is refused without opening it),
+ * at most CLI_SETTINGS_MAX_BYTES, a leading BOM stripped, cached by path + mtimeMs + size. A missing file (or project
+ * path) is no rules; a trust-restricted run (settingSources []) is no rules.
+ */
+export function cliProjectSettings(ctx: Pick<RuntimeContext, 'run' | 'project'>): CliProjectSettings {
+  if (isTrustRestrictedRun(ctx.run) || !ctx.project.path) return NO_CLI_SETTINGS
+  const file = join(ctx.project.path, '.claude', 'settings.json')
+  let st
+  try {
+    st = lstatSync(file)
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? NO_CLI_SETTINGS : CLI_SETTINGS_FAILED
+  }
+  if (!st.isFile() || st.size > CLI_SETTINGS_MAX_BYTES) return CLI_SETTINGS_FAILED
+  const cached = cliSettingsCache.get(file)
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.result
+  const result = readCliSettings(file, st)
+  if (cliSettingsCache.size >= 200) cliSettingsCache.clear()
+  cliSettingsCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, result })
+  return result
+}
+
+function readCliSettings(file: string, st: { ino: number; dev: number }): CliProjectSettings {
+  let fd: number | undefined
+  try {
+    fd = openSync(file, 'r')
+    // The path may have been swapped between lstat and open: the opened file must be the same regular file.
+    const fst = fstatSync(fd)
+    if (!fst.isFile() || fst.size > CLI_SETTINGS_MAX_BYTES || fst.ino !== st.ino || fst.dev !== st.dev) return CLI_SETTINGS_FAILED
+    const buf = Buffer.alloc(CLI_SETTINGS_MAX_BYTES + 1)
+    let len = 0
+    for (;;) {
+      const n = readSync(fd, buf, len, buf.length - len, null)
+      if (n <= 0) break
+      len += n
+      if (len > CLI_SETTINGS_MAX_BYTES) return CLI_SETTINGS_FAILED
+    }
+    const text = buf.subarray(0, len).toString('utf8').replace(/^\uFEFF/, '')
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return CLI_SETTINGS_FAILED
+    const allow = (parsed as { permissions?: { allow?: unknown } }).permissions?.allow
+    return { rules: Array.isArray(allow) ? allow.filter((r): r is string => typeof r === 'string') : [], failed: false }
+  } catch {
+    return CLI_SETTINGS_FAILED
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+/** The settings.json allow rules only (none when unreadable); see cliProjectSettings. */
+export function cliProjectSettingsRules(ctx: Pick<RuntimeContext, 'run' | 'project'>): string[] {
+  return cliProjectSettings(ctx).rules
+}
+
+/** A rule for this shell tool: bare `Bash` / `PowerShell` or `Tool(...)`. */
+function isRuleForTool(rule: string, toolName: string): boolean {
+  const r = rule.trim()
+  return r === toolName || r.startsWith(`${toolName}(`)
+}
+
+/** A rule as it may appear in a reason or a log line: bounded and quoting-safe (review L1). */
+function ruleForDisplay(rule: string): string {
+  return datum(rule.trim(), 120)
+}
+
+/**
+ * The PreToolUse 'ask' reason for a shell call that no rule allowed but whose command (or one of its segments) a rule's
+ * text appears to cover (ruleMatch.ts `ruleCoversButRefused`): "OrgAI: <rule> does not cover this command (<why>);
+ * asking", naming the first such rule. Undefined when no rule covers it. Callers pass rules without hidden characters.
+ * Pure.
+ */
+export function refusedShellReason(toolName: string, input: unknown, rules: readonly string[], opts?: MatchOptions): string | undefined {
+  if (!SHELL_TOOLS.has(toolName) || !ruleCoversButRefused(toolName, input, rules, opts)) return undefined
+  const rule = rules.find((r) => ruleCoversButRefused(toolName, input, [r], opts)) ?? rules.find((r) => r.trim().startsWith(`${toolName}(`)) ?? toolName
+  const command = String((input as { command?: unknown }).command ?? '')
+  // The why comes from the segments the rule covers but refuses on their own; none means the rule's segment is fine
+  // and some other segment has no rule.
+  const shell = toolName === 'PowerShell' ? 'powershell' : 'bash'
+  const segments = splitCommand(unwrapShellCommand(command))
+    .map((s) => s.trim())
+    .filter((s) => s && ruleCoversButRefused(toolName, { command: s }, [rule], opts))
+  const why = segments.some((s) => programRunsProgram(s))
+    ? 'it can run another program'
+    : segments.some((s) => isUnsafeSegment(s, shell))
+      ? 'it uses shell syntax or an expansion OrgAI does not approve'
+      : 'another part of the command is not covered'
+  return `OrgAI: ${ruleForDisplay(rule)} does not cover this command (${why}); asking`
+}
+
+/** Reason when settings.json exists but could not be read: every shell call the hook did not allow is asked (M3). */
+export const CLI_SETTINGS_UNREADABLE_REASON = "OrgAI could not read this project's .claude/settings.json; asking"
+
+/**
+ * The PreToolUse 'ask' reason for a shell call the hook did not allow, from the rules the CLI itself holds: only
+ * `<project>/.claude/settings.json` (review M2; settings.local.json is not loaded under settingSources ['project'], and
+ * run and session grants never reach the CLI as shell rules). Review M1: the CLI's matcher honours shapes ruleMatch.ts
+ * does not model (wrapper and env stripping, `Bash(npm test*)`, `Bash(git * main)`, bare `Bash`), so any rule for the
+ * called tool makes every such call ask, unless ruleMatch itself accepts the command under one of those `Tool(...)`
+ * rules (the CLI's approval is then one OrgAI would give too, so undefined: the call goes on). An unreadable file asks
+ * for every call (M3). Undefined when the file holds no rule for the tool. A rule with a hidden character counts but is
+ * never named or matched (L1). Pure apart from its input.
+ */
+export function cliShellAskReason(toolName: string, input: unknown, settings: CliProjectSettings, opts?: MatchOptions): string | undefined {
+  if (!SHELL_TOOLS.has(toolName)) return undefined
+  if (settings.failed) return CLI_SETTINGS_UNREADABLE_REASON
+  const forTool = settings.rules.filter((r) => isRuleForTool(r, toolName))
+  if (!forTool.length) return undefined
+  const clean = forTool.filter((r) => !hiddenCharIn(r))
+  const scoped = clean.filter((r) => r.trim().startsWith(`${toolName}(`))
+  if (scoped.length && matchingRule(toolName, input, scoped, opts) !== undefined) return undefined
+  const specific = refusedShellReason(toolName, input, scoped, opts)
+  if (specific) return specific
+  const named = clean[0]
+  return named
+    ? `OrgAI: this project's .claude/settings.json allows ${ruleForDisplay(named)}, which OrgAI cannot check for this command; asking`
+    : `OrgAI: this project's .claude/settings.json has a ${toolName} rule OrgAI cannot check for this command; asking`
+}
+
+/**
  * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() read now (absent on trust-restricted
  * runs = none). The CLI treats them like the cwd for read-only `cd` and acceptEdits (docs; unverified live).
  */
@@ -877,8 +1033,8 @@ export class ClaudeSession implements RuntimeSession {
   /** Every server attached mid-run through addMcpServer (agent installs): server-level rules never approve them. */
   private attachedMcp = new Set<string>()
   /**
-   * Allow rules granted from a card for the rest of this session (session and project scope). They also go to the CLI
-   * as updatedPermissions, but the PreToolUse hook matches them itself (ruleMatch.ts), so a per-segment shell grant or
+   * Allow rules granted from a card for the rest of this session (session and project scope). Non-shell ones also go to
+   * the CLI as updatedPermissions (shell rules never do, review H1), but the PreToolUse hook matches them itself (ruleMatch.ts), so a per-segment shell grant or
    * a server-level `mcp__<server>` grant holds whatever the CLI's own matcher does, and survives a restarted query.
    */
   private sessionRules = new Set<string>()
@@ -1383,12 +1539,30 @@ export class ClaudeSession implements RuntimeSession {
       if (harness) return hookAllow('OrgAI harness tool')
       // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
       // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
-      const rules = [...new Set([...(this.ctx.allowedRules?.() ?? []), ...this.sessionRules])]
+      // Allow sources: RunManager's allowedRules (saved settings.local.json rules plus run grants; the run's grants only
+      // on a trust-restricted run) and this session's card grants. Saved rules are read directly only when a context has
+      // no allowedRules (review L4). Shell rules never reach the CLI (cliAllowedTools, toSdkSessionUpdates), so this is
+      // their only allow path.
+      const rules = [...new Set([...(this.ctx.allowedRules ? this.ctx.allowedRules() : claudeSavedRules(this.ctx)), ...this.sessionRules])]
       // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
       // ask per call unless an exact tool rule covers them.
       const usable = rules.length && input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
       const hit = matchingRule(input.tool_name, toolInput, usable, matchOptionsFor(this.ctx))
       if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
+      // Reviewer-4 H-A and its follow-up review (H1, M1-M3): the only shell allow rules the CLI still holds are those of
+      // <project>/.claude/settings.json, and its matcher approves shapes ruleMatch refuses (`timeout 5 npm test
+      // --script-shell=calc` under `Bash(npm test:*)`). When that file has a rule for this tool (or cannot be read), a
+      // call the hook did not allow is asked, never left to the CLI's own match. A refused command under a saved, run or
+      // session rule gets {}: the mode, the classifier and canUseTool decide, since the CLI holds none of those.
+      // Per the Claude Code hooks docs, PreToolUse 'ask' prompts the user; that 'ask' beats a settings allow rule is
+      // UNVERIFIED live (scripts/smoke-permission-hook.mjs could check it; it spends tokens and needs the user's consent).
+      if (SHELL_TOOLS.has(input.tool_name)) {
+        const reason = cliShellAskReason(input.tool_name, toolInput, cliProjectSettings(this.ctx), matchOptionsFor(this.ctx))
+        if (reason) {
+          this.log('info', reason)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
+        }
+      }
       return {}
     }
 
@@ -2309,7 +2483,8 @@ export class ClaudeSession implements RuntimeSession {
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     // A quick run never reads the user's folder for rules: its grants arrive through allowedRules() (the PreToolUse hook).
     // A server an agent installed this run is never approved wholesale by a saved server-level rule (review M3).
-    const savedRules = withoutServerRules(claudeSavedRules(this.ctx), this.agentInstalledMcp())
+    // Shell rules stay with the PreToolUse hook (ruleMatch.ts), never the CLI's prefix match (reviewer-4 H-A).
+    const savedRules = cliAllowedTools(withoutServerRules(claudeSavedRules(this.ctx), this.agentInstalledMcp()))
     if (savedRules.length) options.allowedTools = savedRules
     if (this.root.model && this.root.model !== 'inherit') {
       if (validModelId(this.root.model)) options.model = this.root.model
@@ -2340,10 +2515,12 @@ export class ClaudeSession implements RuntimeSession {
     )
     if (!granted) return { behavior: 'allow', updatedInput: input }
     for (const r of allowRuleStrings(granted)) this.sessionRules.add(r)
+    // Shell rules stay in sessionRules (the hook's allow path, kept across a restarted query) and never reach the CLI (H1).
+    const updates = toSdkSessionUpdates(granted)
     return {
       behavior: 'allow',
       updatedInput: input,
-      updatedPermissions: toSdkSessionUpdates(granted),
+      ...(updates.length ? { updatedPermissions: updates } : {}),
       decisionClassification: 'user_permanent'
     }
   }
@@ -2932,13 +3109,30 @@ function fromSdkSuggestions(updates: PermissionUpdate[]): PermissionSuggestion[]
   })
 }
 
-/** Shared suggestions back to SDK updates, all scoped to this session (persistence is the harness's job). */
-function toSdkSessionUpdates(suggestions: PermissionSuggestion[]): PermissionUpdate[] {
-  return suggestions.map((s): PermissionUpdate => {
-    if (s.type === 'setMode') return { type: 'setMode', mode: s.mode as SdkPermissionMode, destination: 'session' }
-    if ('directories' in s) return { type: s.type, directories: [...s.directories], destination: 'session' }
-    return { type: s.type, rules: s.rules.map((r) => ({ ...r })), behavior: s.behavior, destination: 'session' }
-  })
+/**
+ * Shared suggestions back to SDK updates, all scoped to this session (persistence is the harness's job). Allow rules for
+ * Bash / PowerShell are left out of addRules / replaceRules (review H1): the CLI's matcher strips wrappers (timeout,
+ * nice, nohup, ...) and leading env assignments, so a session `Bash(npm test:*)` would approve `timeout 5 npm test
+ * --script-shell=calc`, which the PreToolUse hook (the only shell allow path, through sessionRules) refuses. A rules
+ * update left empty is dropped. Pure.
+ */
+export function toSdkSessionUpdates(suggestions: PermissionSuggestion[]): PermissionUpdate[] {
+  const out: PermissionUpdate[] = []
+  for (const s of suggestions) {
+    if (s.type === 'setMode') out.push({ type: 'setMode', mode: s.mode as SdkPermissionMode, destination: 'session' })
+    else if ('directories' in s) out.push({ type: s.type, directories: [...s.directories], destination: 'session' })
+    else {
+      const dropShell = s.behavior === 'allow' && s.type !== 'removeRules'
+      const rules = dropShell ? s.rules.filter((r) => cliAllowedTools([ruleText(r)]).length > 0) : s.rules
+      if (dropShell && !rules.length) continue
+      out.push({ type: s.type, rules: rules.map((r) => ({ ...r })), behavior: s.behavior, destination: 'session' })
+    }
+  }
+  return out
+}
+
+function ruleText(r: { toolName: string; ruleContent?: string }): string {
+  return r.ruleContent === undefined ? r.toolName : `${r.toolName}(${r.ruleContent})`
 }
 
 type SdkPermissionMode = Extract<PermissionUpdate, { type: 'setMode' }>['mode']
