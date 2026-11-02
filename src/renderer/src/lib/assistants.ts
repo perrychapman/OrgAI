@@ -129,8 +129,10 @@ export function isSingleAgentRun(summary: Pick<RunSummary, 'kind' | 'quick'>): b
 }
 
 /** The layout a run gets: the user's choice for that run, else conversation for single-agent runs, else canvas. */
-export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'>, chosen?: RunLayout): RunLayout {
-  return chosen ?? (isSingleAgentRun(summary) ? 'conversation' : 'canvas')
+export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'>, chosen?: RunLayout, opts?: { endedNarrow?: boolean }): RunLayout {
+  // `endedNarrow` (M6): an ended, continuable work run opened in a window under 1100 px reads as a conversation, so the
+  // composer and the feed fit; the user's own choice always wins.
+  return chosen ?? (isSingleAgentRun(summary) || opts?.endedNarrow ? 'conversation' : 'canvas')
 }
 
 /**

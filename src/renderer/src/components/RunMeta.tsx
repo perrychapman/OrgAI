@@ -6,12 +6,12 @@ import { isVirtualProjectId } from '@shared/types'
 import { folderName } from '../lib/paths'
 import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
-import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
+import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
 import { agentCostInput, formatDuration, runCostInput, sumCosts, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
-import { predecessorOf, relativeTime } from '../lib/runChains'
-import { runName, runTag, shortPrompt } from '../lib/runLabels'
+import { chainOf, relativeTime } from '../lib/runChains'
+import { shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
@@ -22,10 +22,8 @@ import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
  * (container queries in run.css); the status is not here, the active tab carries it.
  */
 export default function RunMeta({ run, project, agentCount }: { run: RunState; project: Project; agentCount: number }): ReactElement {
-  const indexes = useRunIndexes()
   const summaries = useProjectSummaries()
   const setSideTab = useAppStore((s) => s.setSideTab)
-  const openRun = useAppStore((s) => s.openRun)
   const { summary } = run
   // Wall time ticks each second while the run is live; "Started" refreshes every 30 s either way.
   const live = !summary.endedAt
@@ -37,10 +35,14 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const wallMs = (summary.endedAt ?? now) - summary.startedAt
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
-  const cost =
+  const own =
     summary.usage ?? (agentCosts.costUsd !== null && agentCosts.costUsd > summary.totalCostUsd ? agentCosts : runCostInput(summary))
+  // One conversation per session chain: the figure covers every session, like the root node on the canvas.
+  const chain = chainOf(summaries, summary.id)
+  const earlier = chain.filter((m) => m.id !== summary.id && m.startedAt <= summary.startedAt)
+  const cost = earlier.length > 0 ? sumCosts([...earlier.map(runCostInput), own]) : own
   const showCost = !costView(cost).empty
-  const before = summary.resumedFrom ? predecessorOf(summaries, summary.id) : undefined
+  const sessions = chain.length
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -80,18 +82,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           </button>
         </span>
       )}
-      {summary.resumedFrom && (
-        <span className="run-meta-item run-meta-chain">
-          Continues{' '}
-          {before ? (
-            <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={shortPrompt(before.prompt, 300)}>
-              {runTag(indexes.get(before.id))}: {runName(before)}
-            </button>
-          ) : (
-            'an earlier run'
-          )}
-        </span>
-      )}
       {summary.kind === 'setup' && <span className="run-meta-item">Setup session</span>}
       {summary.quick && (
         <>
@@ -112,6 +102,11 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
+      {sessions > 1 && (
+        <span className="run-meta-item run-meta-sessions" data-testid="run-meta-sessions" title="This conversation has been continued; the figures cover every session.">
+          {sessions} sessions
+        </span>
+      )}
       {run.plan && progress && (
         <button
           type="button"

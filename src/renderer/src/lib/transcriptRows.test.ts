@@ -1,5 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, resultSummary } from './transcriptRows'
+import type { TranscriptEntry } from '@shared/types'
+import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, mergeChainFeed, resultSummary } from './transcriptRows'
+
+describe('mergeChainFeed', () => {
+  const entry = (id: string, block: TranscriptEntry['block'], source?: 'harness'): TranscriptEntry => ({ id, agentId: 'root', at: 1, block, ...(source ? { source } : {}) }) as TranscriptEntry
+  const note = (id: string): TranscriptEntry => entry(id, { kind: 'system', text: 'Continued from run run_1' }, 'harness')
+  const m = (id: string, startedAt: number, resumedFrom: string | undefined, entries: TranscriptEntry[]) => ({
+    summary: { id, startedAt, status: 'finished' as const, ...(resumedFrom ? { resumedFrom } : {}), endedAt: startedAt + 1000 },
+    entries
+  })
+
+  it('puts one divider before each continuation and prefixes older entry ids', () => {
+    const feed = mergeChainFeed([
+      m('run_1', 0, undefined, [entry('e1', { kind: 'text', text: 'first' })]),
+      m('run_2', 60_000 * 5, 'run_1', [note('n1'), entry('e1', { kind: 'text', text: 'second' })])
+    ])
+    expect(feed.map((f) => f.kind)).toEqual(['entry', 'divider', 'entry'])
+    const ids = feed.flatMap((f) => (f.kind === 'entry' ? [f.entry.id] : []))
+    expect(ids).toEqual(['run_1:e1', 'e1'])
+    const div = feed[1]
+    expect(div.kind === 'divider' && div.divider.label).toMatch(/^Continued /)
+    expect(div.kind === 'divider' && div.divider.runId).toBe('run_2')
+  })
+
+  it('drops the continuation notice only at a resumed member start and only for the harness system shape', () => {
+    const feed = mergeChainFeed([
+      m('run_1', 0, undefined, [note('keep-first-member')]),
+      m('run_2', 10, 'run_1', [
+        entry('a', { kind: 'text', text: 'a' }),
+        entry('b', { kind: 'text', text: 'b' }),
+        entry('c', { kind: 'text', text: 'c' }),
+        note('late'),
+        entry('x', { kind: 'system', text: 'Continued from run run_9' })
+      ])
+    ])
+    const ids = feed.flatMap((f) => (f.kind === 'entry' ? [f.entry.id] : []))
+    expect(ids).toContain('run_1:keep-first-member')
+    expect(ids).toContain('late')
+    expect(ids).toContain('x')
+    const early = mergeChainFeed([m('run_1', 0, undefined, []), m('run_2', 10, 'run_1', [note('n'), entry('x', { kind: 'system', text: 'Continued from run run_1' })])])
+    expect(early.flatMap((f) => (f.kind === 'entry' ? [f.entry.id] : []))).toEqual(['x'])
+  })
+
+  it('says Continued after OrgAI closed when the earlier session was cut', () => {
+    const cut = { summary: { id: 'run_1', startedAt: 0, status: 'finished' as const, endedBy: 'app' as const }, entries: [] }
+    const feed = mergeChainFeed([cut, m('run_2', 5, 'run_1', [])])
+    const d = feed[0]
+    expect(d.kind === 'divider' && d.divider.label).toBe('Continued after OrgAI closed')
+  })
+})
 
 describe('humanizeToolUse', () => {
   it('names the harness tools in plain words', () => {
