@@ -680,7 +680,8 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return Object.assign(restore, { discard: () => rmSync(tmp, { recursive: true, force: true }) })
   }
 
-  applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null {
+  /** opts.projectOnly (work runs, review L3): scope 'library' items are refused here too, not only by propose_skills. */
+  applyProposal(projectId: string | null, payload: SkillsProposalPayload, opts: { projectOnly?: boolean } = {}): Project | null {
     const items = payload?.items
     const project = projectId === null ? null : this.project(projectId)
     const lib = this.library.list()
@@ -689,7 +690,8 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
       projectSession: project !== null,
       roleSlugs: project ? project.roles.map((r) => r.slug) : [],
       library: lib.map((e) => ({ id: e.id, name: e.name })),
-      projectSkills: (view?.skills ?? []).map((s) => ({ id: s.id, name: s.name, ...(s.libraryId ? { libraryId: s.libraryId } : {}) }))
+      projectSkills: (view?.skills ?? []).map((s) => ({ id: s.id, name: s.name, ...(s.libraryId ? { libraryId: s.libraryId } : {}) })),
+      ...(opts.projectOnly ? { allowLibrary: false } : {})
     })
     if (problem) throw new Error(problem)
     const libCreates = items.filter((i) => i.scope === 'library' && i.action === 'create').length

@@ -464,4 +464,8 @@ describe('cleanAllowRules', () => {
     expect(cleanAllowRules(undefined)).toEqual([])
     expect(cleanAllowRules(['Bash(node:*)', 3, '', '  ', 'WebSearch', 'Bash(*)', 'Bash(git log:*)'])).toEqual(['Bash(node:*)', 'WebSearch', 'Bash(git log:*)'])
   })
+
+  it('drops rules with a bidi or zero-width character', () => {
+    expect(cleanAllowRules(['Bash(npm:*)', 'Bash(git ‮status:*)', 'Bash(n​pm test:*)', 'Bash(ls\u0007:*)'])).toEqual(['Bash(npm:*)'])
+  })
 })

@@ -130,6 +130,15 @@ function sameTarget(a: McpServerSpec | McpLibraryEntry, b: McpServerSpec | McpLi
   return (a.url ?? '').trim() === (b.url ?? '').trim()
 }
 
+/**
+ * sameTarget plus the same plain env and header names and values: NODE_OPTIONS=--require, NPM_CONFIG_REGISTRY or a
+ * *_PROXY change what runs or where it connects, so an approved change to them retargets the stored secrets too.
+ */
+function sameLaunch(a: McpServerSpec | McpLibraryEntry, b: McpServerSpec | McpLibraryEntry): boolean {
+  const pairs = (r: Record<string, string> | undefined): string => JSON.stringify(Object.entries(r ?? {}).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)))
+  return sameTarget(a, b) && pairs(a.env) === pairs(b.env) && pairs(a.headers) === pairs(b.headers)
+}
+
 const isSecretKind = (k: unknown): k is 'env' | 'header' => k === 'env' || k === 'header'
 
 /** The abort reason of a fixed-port sign-in that a newer one replaced. */
@@ -319,7 +328,8 @@ export class McpService {
 
   /**
    * An existing definition is replaced. A changed endpoint aborts the owner's in-flight authorization and drops its
-   * OAuth tokens. When an approved proposal (not the user's own edit) changes where it connects, the stored env and
+   * OAuth tokens. When an approved proposal (not the user's own edit) changes where it connects or its plain env or
+   * header names or values (sameLaunch), the stored env and
    * header values are dropped too: the user re-enters them for the new target. Returns whether values were dropped.
    */
   private retarget(owner: McpSecretOwner, before: McpServerSpec | McpLibraryEntry, after: McpServerSpec | McpLibraryEntry, applied: boolean): boolean {
@@ -331,7 +341,7 @@ export class McpService {
       }
       if (before.oauth || this.secrets.keys(`${key}oauth:`).length) this.secrets.deletePrefix(`${key}oauth:`)
     }
-    if (!applied || sameTarget(before, after)) return false
+    if (!applied || sameLaunch(before, after)) return false
     const had = this.secrets.keys(`${key}env:`).length + this.secrets.keys(`${key}header:`).length > 0
     this.secrets.deletePrefix(`${key}env:`)
     this.secrets.deletePrefix(`${key}header:`)
@@ -1105,8 +1115,15 @@ export class McpService {
       return entry ? { ...entry, enabled: true } : undefined
     }
     const ownerFor = (spec: McpServerSpec): McpSecretOwner => (project ? this.ownerOf(project.id, spec) : { libraryId: spec.id })
+    // Only the servers this proposal adds or changes take a value: a slot naming any other stored server is dropped.
+    const upserted = new Set((Array.isArray(p.upsert) ? p.upsert : []).map((u) => u?.id).filter((id): id is string => typeof id === 'string'))
     for (const slot of Array.isArray(p.secrets) ? p.secrets : []) {
       if (!values || !isSecretKind(slot?.kind) || typeof slot.serverId !== 'string' || typeof slot.name !== 'string') continue
+      if (!upserted.has(slot.serverId)) {
+        // installLogging routes console.warn into main.log. Names and values stay out of the line.
+        console.warn('A proposal secret slot names a server the proposal does not add or change; its value was dropped.')
+        continue
+      }
       const key = proposalSecretKey(slot)
       const v = Object.hasOwn(values, key) ? values[key] : undefined
       if (typeof v !== 'string' || !v || (slot.kind === 'header' && /[\r\n]/.test(v))) continue
@@ -1234,6 +1251,20 @@ export class McpService {
         continue
       }
       const current = servers.find((s) => s.id === raw.id)
+      if (Array.isArray(raw.configOnly)) {
+        // A toggle or re-grant (review L1): only the listed fields go onto the server as stored now, so an edit the
+        // user made in Settings while the card was open survives approval.
+        if (!current) {
+          fail('that server is no longer in this project.')
+          continue
+        }
+        put({
+          ...current,
+          ...(raw.configOnly.includes('enabled') ? { enabled } : {}),
+          ...(raw.configOnly.includes('roles') && roles ? { roles } : {})
+        })
+        continue
+      }
       if (current?.libraryId) {
         // A linked server: the definition belongs to the library entry, only the project-owned fields change.
         put({ ...current, enabled, ...(roles ? { roles } : {}) })

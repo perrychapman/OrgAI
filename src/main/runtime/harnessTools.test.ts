@@ -6,7 +6,7 @@ import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Propos
 import { ROOT_AGENT_ID, type RunMessageOutcome, type RunSkill } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
-import { INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor, isBlockingHarnessTool, isInsideDir, safeMcpToolNames, setupTools, workTools, type HarnessTool } from './harnessTools'
+import { DECLINED_PER_KIND_MAX, INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor, isBlockingHarnessTool, isInsideDir, safeMcpToolNames, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
 import { pendingWorktrees } from './worktrees'
@@ -87,6 +87,27 @@ describe('setupTools', () => {
     const ctx = fakeCtx()
     await expect(byName(setupTools(ctx), PROPOSAL_TOOLS.architecture).call({ title: 'x' })).rejects.toThrow()
     await expect(byName(setupTools(ctx), PROPOSAL_TOOLS.settings).call({ title: 'S', rationale: 'r', brief: 'b', maxSubagentDepth: 9 })).rejects.toThrow()
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it(`after ${DECLINED_PER_KIND_MAX} declined proposals of one kind, further ones of that kind get DECLINED without a card (review L6)`, async () => {
+    const ctx = fakeCtx({ requestProposal: vi.fn(async () => ({ behavior: 'decline' as const })) })
+    const settings = byName(setupTools(ctx), PROPOSAL_TOOLS.settings)
+    for (let i = 0; i < DECLINED_PER_KIND_MAX; i++) {
+      expect(await settings.call({ title: 'S', rationale: 'r', brief: `brief ${i}` })).toMatch(/^DECLINED\. The user declined this proposal\./)
+    }
+    expect(await settings.call({ title: 'S', rationale: 'r', brief: 'yet another' })).toMatch(/^DECLINED\. The user already declined 3 proposals of this kind in this run, so no card was shown\./)
+    expect(ctx.requestProposal).toHaveBeenCalledTimes(DECLINED_PER_KIND_MAX)
+    // Another kind still reaches the user.
+    await byName(setupTools(ctx), PROPOSAL_TOOLS.architecture).call(archArgs)
+    expect(ctx.requestProposal).toHaveBeenCalledTimes(DECLINED_PER_KIND_MAX + 1)
+  })
+
+  it('propose_settings refuses an allow rule with a bidi or zero-width character before asking', async () => {
+    const ctx = fakeCtx()
+    const tool = byName(setupTools(ctx), PROPOSAL_TOOLS.settings)
+    expect(await tool.call({ title: 'S', rationale: 'r', brief: 'b', allowRules: ['Bash(npm:*)', 'Bash(git ‮status:*)'] })).toMatch(/^REVISE\. .*allowRules item 2 contains a hidden character \(U\+202E/)
+    expect(await tool.call({ title: 'S', rationale: 'r', brief: 'b', allowRules: ['Bash(np​m:*)'] })).toMatch(/allowRules item 1 contains a hidden character \(U\+200B/)
     expect(ctx.requestProposal).not.toHaveBeenCalled()
   })
 
@@ -599,10 +620,13 @@ describe('MCP tools', () => {
       const ctx = assistCtx({ project: project({ mcpServers: existing }) })
       const t = byName(harnessToolsFor(ctx), 'propose_mcp_servers')
       const same = await t.call({ title: 't', rationale: 'r', upsert: [pinned] })
-      expect(same).not.toMatch(/re-enter/)
+      expect(same).not.toMatch(/set them again/)
       const moved = await t.call({ title: 't', rationale: 'r', upsert: [{ ...pinned, args: ['-y', 'other-pkg@2.0.0'] }] })
       expect(moved).toMatch(/^APPROVED\./)
-      expect(moved).toContain('Changed address or command (github): their stored secret values were cleared, so the user must re-enter them')
+      expect(moved).toContain('Changed address, command, env or headers of github (GITHUB_TOKEN): those stored secret values were cleared, so the user must set them again')
+      // Review M2: same command and args, but a new plain env value (NODE_OPTIONS=--require ...) is a retarget too.
+      const env = await t.call({ title: 't', rationale: 'r', upsert: [{ ...pinned, env: { NODE_OPTIONS: '--require ./evil.js' } }] })
+      expect(env).toContain('Changed address, command, env or headers of github (GITHUB_TOKEN)')
     })
 
     it('list_mcp_servers in setup and mcp-assist shows the library and the project servers, inside the data block', async () => {
@@ -660,6 +684,8 @@ describe('request_permission_rules', () => {
   it('rejects malformed rules before asking, and answers DENIED when the run cannot grant rules', async () => {
     const ctx = fakeCtx({ requestPermissionRules: vi.fn(async () => ({ behavior: 'grant' as const, scope: 'run' as const })) })
     expect(await tool(ctx).call({ rules: ['gh repo create', 'Bash(gh:*)'], reason: 'r' })).toMatch(/^Invalid rule: gh repo create\./)
+    expect(await tool(ctx).call({ rules: ['Bash(gh:*)', 'Bash(git push‮:*)'], reason: 'r' })).toMatch(/^Invalid request: Rule 2 contains a hidden character \(U\+202E/)
+    expect(await tool(ctx).call({ rules: ['Bash(g​h:*)'], reason: 'r' })).toMatch(/^Invalid request: Rule 1 contains a hidden character \(U\+200B/)
     expect(ctx.requestPermissionRules).not.toHaveBeenCalled()
     await expect(tool(ctx).call({ rules: [], reason: 'r' })).rejects.toThrow()
     const none = fakeCtx()
@@ -1100,6 +1126,16 @@ describe('work run: propose_mcp_servers', () => {
     expect(await call(ctx3, { upsert: [{ name: 'github', enabled: false }] })).toContain('Disabled github.')
     expect(payloadOf(ctx3).upsert[0]).toMatchObject({ enabled: false })
     expect(payloadOf(ctx3).upsert[0].roles).toBeUndefined()
+    // Review L1: the item says which fields it sets, so approval applies only those onto the stored server.
+    expect(payloadOf(ctx).upsert[0].configOnly).toEqual(['enabled'])
+    expect(payloadOf(ctx2).upsert[0].configOnly).toEqual(['roles'])
+    expect(payloadOf(ctx3).upsert[0].configOnly).toEqual(['enabled'])
+  })
+
+  it('a redefinition carries no configOnly', async () => {
+    const ctx = workCtx({}, [mcpSpec()])
+    await call(ctx, { upsert: [{ name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'pkg@2.0.0'], secretEnv: ['GITHUB_TOKEN'] }] })
+    expect(payloadOf(ctx).upsert[0].configOnly).toBeUndefined()
   })
 
   it('keeps the roles of an existing server when it is redefined without roles', async () => {

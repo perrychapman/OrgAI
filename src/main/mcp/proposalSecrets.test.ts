@@ -64,6 +64,32 @@ describe('McpService.storeProposalSecrets', () => {
     expect(mcp.enabledServers(saved).map((s) => s.name)).toEqual(['gh'])
   })
 
+  it('never stores a value for a server the proposal does not add or change', () => {
+    const p = store.create({ name: 'X', path: join(dir, 'repo'), brief: '' })
+    const old = spec({ id: 'mcp-old', name: 'old', args: ['-y', 'old-mcp@1.0.0'], secretEnv: ['OLD_TOKEN'] })
+    mcp.applyProposal(p.id, { scope: 'project', upsert: [{ ...old, projectOnly: true }], rationale: 'r' })
+    const gh = spec({ secretEnv: ['GH_TOKEN'] })
+    const payload: McpServersProposalPayload = {
+      scope: 'project',
+      upsert: [{ ...gh, projectOnly: true }],
+      secrets: [
+        { serverId: 'mcp-1', kind: 'env', name: 'GH_TOKEN' },
+        // An existing server outside the proposal: a slot naming it must not overwrite its stored secret.
+        { serverId: 'mcp-old', kind: 'env', name: 'OLD_TOKEN' }
+      ],
+      rationale: 'r'
+    }
+    mcp.applyProposal(p.id, payload)
+    const waiting = mcp.storeProposalSecrets(p.id, payload, {
+      [proposalSecretKey({ serverId: 'mcp-1', kind: 'env', name: 'GH_TOKEN' })]: 't',
+      [proposalSecretKey({ serverId: 'mcp-old', kind: 'env', name: 'OLD_TOKEN' })]: 'attacker'
+    })
+    expect(waiting).toEqual([])
+    const saved = store.get(p.id)!
+    expect(mcp.resolve(p.id, saved.mcpServers!.find((s) => s.id === 'mcp-1')!).env).toEqual({ GH_TOKEN: 't' })
+    expect(mcp.resolve(p.id, saved.mcpServers!.find((s) => s.id === 'mcp-old')!).env ?? {}).toEqual({})
+  })
+
   it('in a library session stores on the library entry', () => {
     const payload: McpServersProposalPayload = {
       scope: 'library',

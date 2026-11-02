@@ -7,6 +7,7 @@ import { setupKindLabel } from '@shared/setup'
 import { isPermissionMode } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { addRules, isUnsafeAllowRule } from '../runtime/permissionRules'
+import { hiddenCharIn } from '../capabilities/sanitize'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
 import { mergeOrgChart } from './orgMerge'
@@ -81,7 +82,7 @@ export class SetupService {
        * Returns the saved project for a project session, null for the library.
        */
       skills?: {
-        applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null
+        applyProposal(projectId: string | null, payload: SkillsProposalPayload, opts?: { projectOnly?: boolean }): Project | null
       }
     } = {}
   ) {}
@@ -193,7 +194,7 @@ export class SetupService {
   }
 
   /** Apply an approved proposal. Returns the saved project. */
-  /** opts.projectOnly (work runs): an MCP proposal never writes the MCP library (review M3). */
+  /** opts.projectOnly (work runs): an MCP proposal never writes the MCP library (review M3) and a skills proposal never changes the skill library (review L3). */
   applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean } = {}): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
@@ -232,7 +233,7 @@ export class SetupService {
         return this.hooks.mcp ? this.hooks.mcp.applyProposal(project.id, proposal.payload, opts) : this.applyMcpServers(project, proposal.payload)
       case 'skills':
         if (!this.hooks.skills) throw new Error('The skill library is not available.')
-        return this.hooks.skills.applyProposal(project.id, proposal.payload) ?? project
+        return this.hooks.skills.applyProposal(project.id, proposal.payload, opts.projectOnly ? { projectOnly: true } : {}) ?? project
     }
   }
 
@@ -246,10 +247,26 @@ export class SetupService {
     const now = new Date().toISOString()
     const problems: string[] = []
     for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
-      const { oauth: _o, libraryId: _l, projectOnly: _p, ...clean } = raw as McpServerSpec & { projectOnly?: boolean }
+      if (Array.isArray(raw.configOnly)) {
+        // A toggle or re-grant: only the listed fields go onto the server as stored now (review L1).
+        const current = next.find((s) => s.id === raw.id)
+        if (!current) {
+          problems.push(`${typeof raw.name === 'string' ? raw.name : 'server'}: that server is no longer in this project.`)
+          continue
+        }
+        const updated: McpServerSpec = {
+          ...current,
+          ...(raw.configOnly.includes('enabled') ? { enabled: raw.enabled !== false } : {}),
+          ...(raw.configOnly.includes('roles') && Array.isArray(raw.roles) ? { roles: raw.roles } : {})
+        }
+        next = next.map((s) => (s.id === current.id ? updated : s))
+        continue
+      }
+      const { oauth: _o, libraryId: _l, projectOnly: _p, configOnly: _c, ...clean } = raw
       void _o
       void _l
       void _p
+      void _c
       const spec: McpServerSpec = { ...clean, enabled: raw.enabled !== false, source: raw.source ?? 'user', addedAt: raw.addedAt || now }
       const others = next.filter((s) => s.id !== spec.id)
       const errors = validateSpec(spec, others)
@@ -297,12 +314,13 @@ export class SetupService {
 
 /**
  * Trimmed, non-empty, de-duplicated rule strings. Non-strings and rules the harness never saves from a
- * proposal (bare shell access, destructive commands such as rm, git push or sudo) are dropped.
+ * proposal (bare shell access, destructive commands such as rm, git push or sudo) are dropped, and so is any rule
+ * holding a control, zero-width, bidi or other invisible character (propose_settings already refuses those).
  */
 export function cleanAllowRules(rules: unknown): string[] {
   if (!Array.isArray(rules)) return []
   const strings = rules.filter((r): r is string => typeof r === 'string').map((r) => r.trim())
-  return [...new Set(strings.filter((r) => r && !isUnsafeAllowRule(r)))]
+  return [...new Set(strings.filter((r) => r && !hiddenCharIn(r) && !isUnsafeAllowRule(r)))]
 }
 
 function clamp(n: number, lo: number, hi: number): number {
