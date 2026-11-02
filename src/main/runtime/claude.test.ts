@@ -92,6 +92,7 @@ import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAtt
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
+import { refreshRoleGrants } from './runManager'
 
 function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpServerSpec {
   return { transport: 'stdio', enabled: true, source: 'user', addedAt: '2026-01-01T00:00:00.000Z', ...over }
@@ -641,6 +642,46 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     expect((await decision(q, 'mcp__orgai__set_plan', { id: 'a1', type: 'reviewer' }))?.permissionDecision).toBe('deny')
     expect((await decision(q, 'mcp__orgai__set_plan'))?.permissionDecision).toBe('allow')
   })
+
+  it('an ungrant approved mid-run (refreshRoleGrants) is denied on the next MCP call (review M1)', async () => {
+    // github is limited to the lead; the engineer holds it through an explicit Role.mcpServers grant.
+    const servers = [mcpSpec({ id: 'mcp-gh', name: 'github', roles: ['lead'], secretEnv: [] })]
+    const roles = orgChart().map((r) => (r.slug === 'engineer' ? { ...r, mcpServers: ['mcp-gh'] } : r))
+    const { ctx } = start(servers, {}, { roles })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+    expect(q1.options.agents.engineer.tools).toContain('mcp__github')
+    expect((await decision(q1, 'mcp__github__list', { id: 'a1', type: 'engineer' }))?.permissionDecision).not.toBe('deny')
+    // RunManager's setLive after the user approves the ungrant: the session's role objects take the saved grants.
+    refreshRoleGrants(ctx.roles, roles.map((r) => (r.slug === 'engineer' ? { ...r, mcpServers: [] } : r)))
+    const denied = await decision(q1, 'mcp__github__list', { id: 'a1', type: 'engineer' })
+    expect(denied?.permissionDecision).toBe('deny')
+    expect(denied?.permissionDecisionReason).toContain('does not grant the MCP server "github" to the Engineer role (engineer)')
+  })
+
+  it('a restart after a mid-run ungrant builds the agent definitions from the live roles (review M1)', async () => {
+    const servers = [mcpSpec({ id: 'mcp-gh', name: 'github', roles: ['lead'], secretEnv: [] })]
+    const roles = orgChart().map((r) => (r.slug === 'engineer' ? { ...r, mcpServers: ['mcp-gh'] } : r))
+    const { ctx, session } = start(servers, {}, { roles })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+    expect(q1.options.agents.engineer.tools).toContain('mcp__github')
+    refreshRoleGrants(ctx.roles, roles.map((r) => (r.slug === 'engineer' ? { ...r, mcpServers: [] } : r)))
+    // A restart (here for a new server) builds the agent definitions from the live roles.
+    servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['engineer'], secretEnv: [] }))
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await attach(session, servers[1]!)
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+    const q2 = sdk.queries[1]!
+    expect(q2.options.agents.engineer.tools).toContain('mcp__pg')
+    expect(q2.options.agents.engineer.tools).not.toContain('mcp__github')
+    expect((await decision(q2, 'mcp__github__list', { id: 'a2', type: 'engineer' }))?.permissionDecision).toBe('deny')
+  }, 10_000)
 
   it('attaches with setMcpServers, reports after-idle, and resumes with widened definitions once the turn ends', async () => {
     const servers: McpServerSpec[] = []

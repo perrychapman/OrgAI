@@ -6,7 +6,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride,
 import { setModelTokens } from './runUsage'
 import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, refreshRoleGrants, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
@@ -2657,6 +2657,36 @@ describe('skills in runs', () => {
     await m.completeForProject(p, { system: 's', prompt: 'p', kind: 'skills', tier: 'everyday' })
     expect(completes[1]!.kind).toBe('skills')
     await expect(m.completeForProject({ ...p, id: 'harness' }, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast' })).rejects.toThrow(/harness/)
+  })
+})
+
+describe('refreshRoleGrants (review M1)', () => {
+  it('copies only the grant fields onto the running roles by id, in place, and never adds or drops a role', () => {
+    const running = makeProject().roles.map((r) => ({ ...r }))
+    const [lead, eng, rev] = running
+    eng!.mcpServers = ['m1']
+    eng!.skills = ['s1']
+    const held = running[1]
+    const revBefore = structuredClone(rev)
+    const saved = [
+      { ...lead!, prompt: 'changed', mcpServers: ['m2'] },
+      { ...eng!, name: 'Renamed', mcpServers: undefined, skills: [] },
+      { ...rev!, id: 'r-new', skills: ['s9'] }
+    ]
+    refreshRoleGrants(running, saved)
+    expect(running).toHaveLength(3)
+    expect(running[1]).toBe(held)
+    expect(running[0]!.mcpServers).toEqual(['m2'])
+    expect(running[0]!.prompt).not.toBe('changed')
+    expect('mcpServers' in running[1]!).toBe(false)
+    expect(running[1]!.skills).toEqual([])
+    expect(running[1]!.name).not.toBe('Renamed')
+    // A role the saved chart no longer has keeps its start-time definition; a new one does not join.
+    expect(running[2]).toEqual(revBefore)
+    expect(running.some((r) => r.id === 'r-new')).toBe(false)
+    // The saved arrays are copied, not shared.
+    saved[0]!.mcpServers!.push('m3')
+    expect(running[0]!.mcpServers).toEqual(['m2'])
   })
 })
 

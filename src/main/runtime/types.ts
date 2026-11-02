@@ -181,7 +181,12 @@ export interface PeerMessage {
 export interface RuntimeContext {
   run: RunSummary
   project: Project
-  /** The org chart to run. For setup runs this is the built-in Architect, not the project's roles. */
+  /**
+   * The org chart to run. For setup runs this is the built-in Architect, not the project's roles. A work run gets its own
+   * copies of the roles: RunManager rewrites their grant fields (mcpServers, skills) in place when the user approves a
+   * grant change mid-run (refreshRoleGrants), so hold these objects and read the grants at call time. Ids and every
+   * other field stay as the run started (an org change applies from the next run).
+   */
   roles: Role[]
   /** The first user message. May be empty when `images` is set. */
   prompt: string
