@@ -613,6 +613,8 @@ One vocabulary:
 | MCP install | `MCP install` (warning) | `Approve install` | `Approve for this run only` where supported | `Deny` |
 | Merge review | `Merge` (info) | `Merge into main checkout` | `View diff` (toggles body diff) | `Discard` (confirm via `ConfirmDialog`) |
 
+Proposal cards (MCP servers, skills, org chart) in a work run's tray: see `docs/design/proposal-cards.md` (compact sizing, kind labels, bodies, test ids).
+
 Button names relied on by e2e (`Approve`, `Request changes`, `Send feedback`, `Merge into main checkout`, `Discard`) stay verbatim as the accessible names; `Approve install` is matched by prefix `Approve`. Question copy uses the asking agent's name: "Lead is waiting for your answer" (M2). Terminal runs clear every pending card from the tray (H4); a card whose run ended is never rendered.
 
 ### 12.2 Project tab model (M11, M12, L3, L4, L10, H8)

@@ -1,0 +1,90 @@
+/* ---------- Proposal card bodies (MCP servers, skills, org chart diff rows). The card shell and tray are cards.css. ---------- */
+
+.proposal-summary {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.proposal-effect {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+/* Rows of an MCP proposal take the diff tone of their change. */
+.mcp-prop-server[data-change='new'] {
+  background: var(--success-soft);
+}
+.mcp-prop-server[data-change='link'] {
+  background: var(--info-soft);
+}
+.mcp-prop-server[data-change='access'],
+.mcp-prop-server[data-change='update'] {
+  background: var(--warning-soft);
+}
+.mcp-prop-server[data-change='remove'] {
+  background: var(--danger-soft);
+}
+
+.mcp-prop-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.mcp-prop-secret-label {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.mcp-prop-secret-hint {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Skills rows: the extra lines and the before / after view. */
+.skill-prop-line,
+.skill-prop-note {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.skill-prop-item[data-action='remove'] {
+  background: var(--danger-soft);
+}
+.skill-prop-item[data-action='create'] {
+  background: var(--success-soft);
+}
+.skill-prop-item[data-action='update'],
+.skill-prop-item[data-action='grant'] {
+  background: var(--warning-soft);
+}
+.skill-prop-item[data-action='link'] {
+  background: var(--info-soft);
+}
+.skill-prop-diff {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.skill-prop-diff-title {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.skill-prop-pre {
+  margin: 0;
+  padding: var(--space-2);
+  max-height: var(--scroll-region-max);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
