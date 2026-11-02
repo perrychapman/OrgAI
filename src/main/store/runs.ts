@@ -44,12 +44,15 @@ export class RunStore {
     }
     // Anything still marked live from a previous app session is actually dead. Paused runs lose their
     // auto-resume (timers die with the process) but keep pausedUntil, so the Runs tab can offer Continue.
-    // endedWithApp tells the UI the session was cut by the app quitting, not closed by the run itself.
+    // endedWithApp / endedBy 'app' tell the UI the session was cut by the app quitting, not closed by the run itself.
+    // endedBy comes from an untrusted file: anything but 'user' | 'app' is dropped.
     for (const r of this.runs) {
+      if (r.endedBy !== undefined && r.endedBy !== 'user' && r.endedBy !== 'app') delete r.endedBy
       if (r.status !== 'finished' && r.status !== 'error') {
         r.status = 'finished'
         r.endedAt = r.endedAt ?? Date.now()
         r.endedWithApp = true
+        r.endedBy = 'app'
       }
       if (r.autoResume) delete r.autoResume
       if (!r.kind) r.kind = 'work'

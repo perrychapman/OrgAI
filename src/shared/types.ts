@@ -2475,6 +2475,8 @@ export interface RunSummary {
    * It stays continuable.
    */
   endedWithApp?: true
+  /** Who ended the run. 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while it was live (stopAll on quit, or the store's boot normalization). Absent: the run ended on its own (finished, error, paused). Structured-clone safe. */
+  endedBy?: 'user' | 'app'
   /**
    * Work runs: a short AI summary of the run's first message (one line, at most RUN_TITLE_MAX_CHARS characters),
    * written by the connection's fast model shortly after the run starts (a run.title event announces it). Absent
