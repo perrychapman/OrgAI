@@ -245,12 +245,14 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   // One list for both shapes: the merged feed, or this run's entries as feed items.
   const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
   const entries = useMemo(() => items.flatMap((i) => (i.kind === 'entry' ? [i.entry] : [])), [items])
+  const lastEntryId = entries[entries.length - 1]?.id
 
   useEffect(() => {
     // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
     const body = bottom.current?.parentElement
     if (body) body.scrollTop = body.scrollHeight
-  }, [entries.length, logs.length, tab, partial])
+    // Keyed by the last entry, not the count: entries prepended by "Load earlier sessions" must not jump to the end.
+  }, [lastEntryId, logs.length, tab, partial])
 
   const toolNames = useMemo(() => {
     const m = new Map<string, string>()
@@ -337,7 +339,8 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
 
   // The newest member's items are the live region; everything before its divider is history and must not be re-announced when a chain load inserts it.
   const newestAt = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
-  const splitAt = newestAt < 0 ? 0 : newestAt
+  // The "N earlier entries not shown" row never sits in the live log, so its changing count is not re-announced.
+  const splitAt = Math.max(newestAt < 0 ? 0 : newestAt, items[0]?.kind === 'omitted' ? 1 : 0)
   const earlierRows = rows.slice(0, splitAt)
   const newestRows = rows.slice(splitAt)
 
@@ -363,7 +366,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   useEffect(() => {
     const el = listRef.current
     if (variant === 'conversation' && el && stuck.current) el.scrollTop = el.scrollHeight
-  }, [variant, entries.length, partial, showThinking])
+  }, [variant, lastEntryId, partial, showThinking])
 
   if (variant === 'conversation') {
     const toEnd = (): void => {

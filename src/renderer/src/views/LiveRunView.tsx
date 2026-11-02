@@ -226,7 +226,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const loadEarlierSessions = useAppStore((s) => s.loadEarlierSessions)
   // M2: only the newest members load at first; the rest wait behind "Load earlier sessions" at the top of the feed.
   const chainLimit = useAppStore((s) => s.chainLoadLimit[chainIds[chainIds.length - 1]] ?? CHAIN_EAGER_MEMBERS)
-  const earlierToLoad = useMemo(() => earlierMembersToLoad(chainSummaries, (id) => !!allRuns[id], chainLimit), [chainSummaries, allRuns, chainLimit])
+  const earlierToLoad = useMemo(() => {
+    // Count only members before the viewed run (the feed shows the chain up to it); the window counts from the newest.
+    const at = chainSummaries.findIndex((m) => m.id === runId)
+    const uptoViewed = at >= 0 ? chainSummaries.slice(0, at + 1) : chainSummaries
+    return earlierMembersToLoad(uptoViewed, (id) => !!allRuns[id], Math.max(0, chainLimit - (chainSummaries.length - uptoViewed.length)))
+  }, [chainSummaries, allRuns, chainLimit, runId])
+  const loadEarlierRef = useRef<HTMLDivElement>(null)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
@@ -695,9 +701,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return run.transcript.filter((e) => e.agentId === selectedAgentId)
   }, [run.transcript, upto, chain.origin, selectedAgentId])
   const rootSelected = !!selectedAgent && selectedAgent.parentId === null
+  // M-3: a feed already at its cap would cut what an earlier load adds, so the button is not offered then.
   const loadEarlierRow =
-    earlierToLoad > 0 ? (
-      <div className="chain-load-earlier">
+    earlierToLoad > 0 && feed[0]?.kind !== 'omitted' ? (
+      <div className="chain-load-earlier" ref={loadEarlierRef}>
         <Button
           variant="ghost"
           size="sm"
@@ -706,7 +713,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             // Never disabled while loading: a disabled button would drop keyboard focus.
             if (loadingEarlier) return
             setLoadingEarlier(true)
-            void loadEarlierSessions(runId).finally(() => setLoadingEarlier(false))
+            // The feed's scroll area: focus lands there when the button goes away (everything loaded).
+            const host = loadEarlierRef.current?.closest<HTMLElement>('.conversation-list, .transcript')
+            void loadEarlierSessions(runId).finally(() => {
+              setLoadingEarlier(false)
+              requestAnimationFrame(() => {
+                if (!host?.isConnected || host.contains(document.activeElement)) return
+                if (host.tabIndex < 0) host.tabIndex = -1
+                host.focus({ preventScroll: true })
+              })
+            })
           }}
         >
           {loadingEarlier ? 'Loading earlier sessions…' : `Load earlier sessions (${earlierToLoad})`}
@@ -992,7 +1008,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
               entries={selectedAgent && !rootSelected ? entries : []}
               feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}
-              lead={loadEarlierRow}
+              lead={conversation ? undefined : loadEarlierRow}
               logs={run.logs ?? []}
               finished={finishedGroup}
             />

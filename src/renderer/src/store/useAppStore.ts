@@ -566,7 +566,7 @@ function watchOpenTabs(): void {
   const written = new Map<string, string>()
   const signatures = new Map<string, string>()
   tabsWatch = useAppStore.subscribe((s, prev) => {
-    const othersSame = s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject
+    const othersSame = s.history === prev.history && s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject
     if (othersSame && (s.runs === prev.runs || sameRunSummaries(s.runs, prev.runs))) return
     for (const [projectId, state] of restoreDone) {
       if (!state || isVirtualProjectId(projectId)) continue

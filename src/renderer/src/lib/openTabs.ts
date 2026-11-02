@@ -76,7 +76,7 @@ export function tabsSignature(runs: readonly TabsRunFacts[], dismissed: readonly
 
 /**
  * True when two `runs` maps hold the same runs with the same summary objects: only transcripts, partial text, agents
- * or cards changed (L13), which never changes the tab set.
+ * or cards changed (L13), which never changes the tab set. Summaries must be replaced, never mutated in place.
  */
 export function sameRunSummaries(a: Record<string, { summary: unknown }>, b: Record<string, { summary: unknown }>): boolean {
   const keys = Object.keys(a)
