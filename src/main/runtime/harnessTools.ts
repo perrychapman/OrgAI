@@ -487,6 +487,12 @@ const asked = new WeakMap<RuntimeContext, Map<string, AskedState>>()
 const MCP_PERMISSION_NOTE = "Calls to its tools may still ask the user for permission under the project's permission mode; that is expected."
 const MCP_TOOL_LIST_CAP = 20
 const MCP_ROLE_LIST_CAP = 12
+// Twin of claude.ts MCP_TOOL_NAME / safeMcpToolNames (keep the two in sync): tool names come from an untrusted server.
+const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
+/** Keeps only plain tool identifiers (1-64 of A-Za-z0-9_-). Twin of claude.ts `safeMcpToolNames`; keep them in sync. */
+export function safeMcpToolNames(names: readonly unknown[]): string[] {
+  return names.filter((t): t is string => typeof t === 'string' && MCP_TOOL_NAME.test(t))
+}
 
 /** One sentence naming the roles an install is limited to, or '' when it is open to every role. */
 function mcpRoleSentence(ctx: RuntimeContext, roles: string[] | undefined): string {
@@ -719,9 +725,9 @@ export const requestMcpInstall = defineTool({
       const attach: McpAttachResult = typeof res === 'string' ? { prefix: res, availability: 'now' } : res
       const prefix = attach.prefix || `mcp__${final.name}__`
       const tail = `${MCP_PERMISSION_NOTE}${mcpRoleSentence(ctx, final.roles)}`
-      const tools = (attach.tools ?? []).filter((t) => typeof t === 'string' && t.trim())
+      const tools = safeMcpToolNames(attach.tools ?? [])
       const listed = tools.length
-        ? tools.slice(0, MCP_TOOL_LIST_CAP).map((t) => `${prefix}${datum(t, 60)}`).join(', ') + (tools.length > MCP_TOOL_LIST_CAP ? `, and ${tools.length - MCP_TOOL_LIST_CAP} more` : '')
+        ? tools.slice(0, MCP_TOOL_LIST_CAP).map((t) => `${prefix}${datum(t, 64)}`).join(', ') + (tools.length > MCP_TOOL_LIST_CAP ? `, and ${tools.length - MCP_TOOL_LIST_CAP} more` : '')
         : `${prefix}<tool>`
       if (attach.availability === 'after-idle') {
         state.set(spec.name, 'approved-after-idle')
