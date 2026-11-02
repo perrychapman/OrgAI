@@ -1228,7 +1228,43 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(await bash(q, `cd ${join(dir, 'sub')} && npm test`)).toEqual({})
     rules = ['Bash(npm test:*)']
     expect((await bash(q, `cd ${join(dir, 'sub')} && npm test`)).hookSpecificOutput?.permissionDecision).toBe('allow')
-    expect(await bash(q, `cd ${join(tmpdir(), 'orgai-elsewhere-x')} && npm test`)).toEqual({})
+    // A rule covers the npm test segment but not the cd elsewhere: asked, never left to the CLI's prefix match (H-A).
+    const elsewhere = await bash(q, `cd ${join(tmpdir(), 'orgai-elsewhere-x')} && npm test`)
+    expect(elsewhere.hookSpecificOutput?.permissionDecision).toBe('ask')
+    expect(elsewhere.hookSpecificOutput?.permissionDecisionReason).toBe('OrgAI: Bash(npm test:*) does not cover this command (another part of the command is not covered); asking')
+  })
+
+  it('H-A: a command a saved shell rule seems to cover but the matcher refuses is asked, naming the rule', async () => {
+    const { dir } = start()
+    addRules(dir, ['Bash(npm test:*)', 'Bash(git status)', 'Read', 'mcp__github__*'])
+    const q = await firstQuery()
+    // Shell rules never reach the CLI's own prefix match; other rules still do.
+    expect(q.options.allowedTools).toEqual(['Read', 'mcp__github__*'])
+    expect((q.options.allowedTools as string[]).some((r) => /^(Bash|PowerShell)\b/.test(r))).toBe(false)
+    expect((await bash(q, 'npm test')).hookSpecificOutput).toMatchObject({ permissionDecision: 'allow', permissionDecisionReason: 'OrgAI: allowed by saved rule Bash(npm test:*)' })
+    const refused = (await bash(q, 'npm test --script-shell=calc')).hookSpecificOutput
+    expect(refused?.permissionDecision).toBe('ask')
+    expect(refused?.permissionDecisionReason).toBe('OrgAI: Bash(npm test:*) does not cover this command (it can run another program); asking')
+    const expansion = (await bash(q, 'npm test $X')).hookSpecificOutput
+    expect(expansion?.permissionDecision).toBe('ask')
+    expect(expansion?.permissionDecisionReason).toBe('OrgAI: Bash(npm test:*) does not cover this command (it uses shell syntax or an expansion OrgAI does not approve); asking')
+    // No rule's text covers it: left to the CLI's normal flow.
+    expect(await bash(q, 'curl https://example.com')).toEqual({})
+  })
+
+  it('H-A: a session rule and a .claude/settings.json rule also make a refused command ask', async () => {
+    const { dir } = start({ allowedRules: () => ['Bash(git clone:*)'] })
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(make test:*)'] } }))
+    const q = await firstQuery()
+    const clone = (await bash(q, 'git clone -c core.sshCommand=calc https://example.com/x.git')).hookSpecificOutput
+    expect(clone?.permissionDecision).toBe('ask')
+    expect(clone?.permissionDecisionReason).toContain('OrgAI: Bash(git clone:*) does not cover this command')
+    const make = (await bash(q, 'make test SHELL=calc')).hookSpecificOutput
+    expect(make?.permissionDecision).toBe('ask')
+    expect(make?.permissionDecisionReason).toBe('OrgAI: Bash(make test:*) does not cover this command (it can run another program); asking')
+    // The settings.json rule is never an allow source for the hook.
+    expect(await bash(q, 'make test')).toEqual({})
   })
 
   it('canUseTool replaces a compound provider rule with per-segment rules on the card and grants them for the session', async () => {
