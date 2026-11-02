@@ -119,6 +119,10 @@ describe('quick runs', () => {
     expect(ctx.skills?.()).toEqual([])
     expect(skills.forRun).not.toHaveBeenCalled()
     expect(ctx.requestMcpInstall).toBeUndefined()
+    // Quick runs never get the library or the skill catalog (work runs of a real project do).
+    expect(ctx.mcpLibrary).toBeUndefined()
+    expect(ctx.skillCatalog).toBeUndefined()
+    expect(ctx.readSkill).toBeUndefined()
     expect(ctx.listRuns?.()).toEqual([])
     expect(await ctx.messageRun?.('run-x', 'hi')).toMatchObject({ result: 'refused', refusal: 'not-work' })
     expect(ctx.listProjects).toBeTypeOf('function')
@@ -282,7 +286,7 @@ describe('skill assistant runs', () => {
     const req2 = events.find((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request' && e.runId === proj.id)!
     m.decideProposal(proj.id, req2.proposal.id, { behavior: 'approve' })
     expect(await pending2).toEqual({ behavior: 'approve' })
-    expect(setup.raw.applyProposal).toHaveBeenCalledWith('real', expect.objectContaining({ kind: 'skills' }))
+    expect(setup.raw.applyProposal).toHaveBeenCalledWith('real', expect.objectContaining({ kind: 'skills' }), { projectOnly: false })
     expect(events.some((e) => e.type === 'project.updated' && e.runId === proj.id)).toBe(true)
   })
 

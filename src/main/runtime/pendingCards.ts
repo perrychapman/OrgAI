@@ -10,10 +10,16 @@ import type {
   PermissionRuleRequest,
   Proposal,
   ProposalDecision,
+  ProposalEffect,
+  ProposalKind,
+  ProposalOutcome,
+  ProviderId,
+  RunSummary,
   QuestionAnswer,
   RunEvent,
   UserQuestion
 } from '@shared/types'
+import { PROPOSAL_NOTE_MAX_CHARS, isVirtualProjectId } from '@shared/types'
 
 /**
  * The cards a live run holds open for the user, keyed by request id (RunManager's ActiveRun has these maps). Each
@@ -21,7 +27,7 @@ import type {
  */
 export interface PendingCardMaps {
   pending: Map<string, { request: PermissionRequest; resolve: (d: PermissionDecision) => void }>
-  pendingProposals: Map<string, { proposal: Proposal; resolve: (d: ProposalDecision) => void }>
+  pendingProposals: Map<string, { proposal: Proposal; resolve: (d: ProposalDecision) => ProposalOutcome | void }>
   pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
   pendingMerges: Map<string, { review: MergeReview; resolve: (d: MergeDecision) => void }>
   /** The install's own resolve broadcasts mcpInstall.resolved; `cancelled` adds the flag. */
@@ -98,4 +104,49 @@ export function cancelPending(cards: PendingCardMaps, runId: string, broadcast: 
     count++
   }
   return count
+}
+
+/**
+ * When an approved proposal takes effect (Proposal.effect): a work run's own 'mcpServers' / 'skills' change reaches
+ * the live session, at once on the mock and after the current turn on Claude and Codex (both answer configChanged;
+ * Claude sometimes sooner, so 'after-turn' is the upper bound); everything else, and every setup-like, assistant or
+ * quick run, changes only later runs.
+ */
+export function proposalEffect(kind: ProposalKind, summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick'>, adapter: ProviderId | undefined): ProposalEffect {
+  if (summary.kind !== 'work' || summary.quick || isVirtualProjectId(summary.projectId)) return 'next-run'
+  if (kind !== 'mcpServers' && kind !== 'skills') return 'next-run'
+  return adapter === 'mock' ? 'now' : 'after-turn'
+}
+
+const SECRET_VALUE_MAX = 4000
+const PROPOSAL_SECRET_KEYS_MAX = 100
+
+function clip(text: unknown): string {
+  return typeof text === 'string' ? text.slice(0, PROPOSAL_NOTE_MAX_CHARS) : ''
+}
+
+/**
+ * A proposal decision rebuilt field by field (RunManager's last line of defence; ipc.ts refuses bad shapes first):
+ * approve keeps only string secrets (at most 100, values at most 4,000 chars), revise its feedback, decline its note;
+ * anything else declines (nothing is applied).
+ */
+export function cleanProposalDecision(raw: unknown): ProposalDecision {
+  const d = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  if (d.behavior === 'approve') {
+    const src = d.secrets && typeof d.secrets === 'object' && !Array.isArray(d.secrets) ? (d.secrets as Record<string, unknown>) : undefined
+    const secrets: Record<string, string> = Object.create(null) as Record<string, string>
+    for (const [k, v] of Object.entries(src ?? {}).slice(0, PROPOSAL_SECRET_KEYS_MAX)) {
+      if (typeof v === 'string' && v && v.length <= SECRET_VALUE_MAX && k.length <= 300) secrets[k] = v
+    }
+    return Object.keys(secrets).length ? { behavior: 'approve', secrets } : { behavior: 'approve' }
+  }
+  if (d.behavior === 'revise') return { behavior: 'revise', feedback: clip(d.feedback) }
+  const note = clip(d.note).trim()
+  return { behavior: 'decline', ...(note ? { note } : {}) }
+}
+
+/** The secret-free outcome of a decision (approve drops its secrets). */
+export function proposalOutcome(d: ProposalDecision): ProposalOutcome {
+  if (d.behavior === 'approve') return { behavior: 'approve' }
+  return d.behavior === 'revise' ? { behavior: 'revise', feedback: d.feedback } : { behavior: 'decline', ...(d.note ? { note: d.note } : {}) }
 }

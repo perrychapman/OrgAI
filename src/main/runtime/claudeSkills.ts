@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto'
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { SKILL_MAX_FILE_BYTES } from '@shared/types'
@@ -22,6 +22,43 @@ export interface SkillPlugin {
   cleanup(): void
   /** Qualified name ("<plugin>:<name>") -> skill, for the skills that were copied. */
   names: Map<string, RunSkill>
+  /** Skill id -> skillDigest of the source as it was copied (a config change compares the live skill against it). */
+  digests: Map<string, string>
+  /** Skill id -> skillDigest of a skill left out of the plugin (unchanged since, it is not retried). Missing = none. */
+  refused?: Map<string, string>
+}
+
+/** Hash state for skillDigest: name, description, then every listed file's path, size and bytes, in list order. */
+function digestStart(skill: Pick<RunSkill, 'name' | 'description'>) {
+  const h = createHash('sha256')
+  h.update(JSON.stringify([skill.name, skill.description]))
+  return h
+}
+function digestFile(h: ReturnType<typeof createHash>, path: string, bytes: Buffer): void {
+  h.update(JSON.stringify([path, bytes.length]))
+  h.update(bytes)
+}
+
+/**
+ * A digest of a skill's source (name, description and the listed files' bytes), or null when a listed file cannot be
+ * read safely. The Claude adapter compares it with SkillPlugin.digests to tell whether the run plugin's copy is stale
+ * after a config change (an 'update' rewrites the files in place, so sizes alone are not enough).
+ */
+export function skillDigest(skill: RunSkill): string | null {
+  try {
+    const h = digestStart(skill)
+    for (const file of skill.files) {
+      const parts = safeRelative(file.path)
+      if (!parts) return null
+      const source = join(skill.dir, ...parts)
+      const st = lstatSync(source)
+      if (!st.isFile() || st.isSymbolicLink() || st.size > SKILL_MAX_FILE_BYTES) return null
+      digestFile(h, file.path, readFileSync(source))
+    }
+    return h.digest('hex')
+  } catch {
+    return null
+  }
 }
 
 export const qualifiedSkillName = (pluginName: string, name: string): string => `${pluginName}:${name}`
@@ -47,20 +84,21 @@ function safeRelative(path: string): string[] | null {
   return parts
 }
 
-/** Copy one skill; returns false (after calling `warn`) when any listed file is unsafe, leaving the skill out. */
-function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): boolean {
+/** Copy one skill; returns its skillDigest, or null (after calling `warn`) when any listed file is unsafe, leaving the skill out. */
+function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): string | null {
   let root: string
   try {
     root = realpathSync(skill.dir)
   } catch {
     warn(`Skill "${skill.name}" left out: its folder is missing.`)
-    return false
+    return null
   }
   if (!safeRelative(skill.name) || skill.name.includes('/')) {
     warn(`Skill "${skill.name}" left out: unsafe name.`)
-    return false
+    return null
   }
   const skillRoot = join(target, 'skills', skill.name)
+  const h = digestStart(skill)
   try {
     for (const file of skill.files) {
       const parts = safeRelative(file.path)
@@ -76,18 +114,20 @@ function copySkill(skill: RunSkill, target: string, warn: (m: string) => void): 
       const back = relative(skillRoot, resolve(dest))
       if (back.startsWith('..') || isAbsolute(back) || back.split(sep).includes('..')) throw new Error(`${file.path} escapes`)
       mkdirSync(dirname(dest), { recursive: true })
+      const bytes = readFileSync(source)
+      digestFile(h, file.path, bytes)
       if (file.path === 'SKILL.md') {
-        const text = readFileSync(source, 'utf8')
+        const text = bytes.toString('utf8')
         if (shellInjectionProblem(skillBody(text))) throw new Error('SKILL.md uses shell injection (!`command`), which OrgAI does not run')
         writeFileSync(dest, sanitizedSkillMd(skill, text))
-      } else copyFileSync(source, dest)
+      } else writeFileSync(dest, bytes)
     }
     if (!skill.files.some((f) => f.path === 'SKILL.md')) throw new Error('SKILL.md is not listed')
-    return true
+    return h.digest('hex')
   } catch (e) {
     rmSync(skillRoot, { recursive: true, force: true })
     warn(`Skill "${skill.name}" left out: ${(e as Error).message}`)
-    return false
+    return null
   }
 }
 
@@ -128,6 +168,8 @@ export function buildSkillPlugin(skills: RunSkill[], runId: string, warn: (messa
   const path = mkdtempSync(join(tmpdir(), SKILL_TEMP_PREFIX))
   const pluginName = `orgai-${randomBytes(4).toString('hex')}`
   const names = new Map<string, RunSkill>()
+  const digests = new Map<string, string>()
+  const refused = new Map<string, string>()
   let removed = false
   const cleanup = (): void => {
     if (removed) return
@@ -146,13 +188,20 @@ export function buildSkillPlugin(skills: RunSkill[], runId: string, warn: (messa
     )
     for (const skill of skills) {
       if (names.has(qualifiedSkillName(pluginName, skill.name))) continue
-      if (copySkill(skill, path, (m) => warn(`${m} (run ${runId})`))) names.set(qualifiedSkillName(pluginName, skill.name), skill)
+      const digest = copySkill(skill, path, (m) => warn(`${m} (run ${runId})`))
+      if (digest === null) {
+        const d = skillDigest(skill)
+        if (d) refused.set(skill.id, d)
+        continue
+      }
+      names.set(qualifiedSkillName(pluginName, skill.name), skill)
+      digests.set(skill.id, digest)
     }
   } catch (e) {
     cleanup()
     throw e
   }
-  return { path, pluginName, cleanup, names }
+  return { path, pluginName, cleanup, names, digests, refused }
 }
 
 export type SkillGateResult = { allow: true; skill: RunSkill } | { allow: false; reason: string }
@@ -175,4 +224,48 @@ export function skillGate(skillInput: unknown, roleId: string, names: Map<string
     allow: false,
     reason: `Skill "${shown}" is not available to this role. Granted skills: ${mine.map((q) => `"${q}"`).join(', ')}. Use Skill with skill: "${mine[0]}" (always the full name, including the prefix).`
   }
+}
+
+/**
+ * The plugin's skills with the LIVE grants: each copied skill that is still among `live` (same id and name) carries the
+ * live RunSkill.roleIds; a skill removed from the project (or renamed) is left out. The copied content stays the
+ * plugin's, so the Skill gate follows a grant, ungrant or removal at the next call without a restart. Pure.
+ */
+export function livePluginNames(plugin: Pick<SkillPlugin, 'names'> | undefined, live: readonly RunSkill[]): Map<string, RunSkill> {
+  const out = new Map<string, RunSkill>()
+  if (!plugin) return out
+  const byId = new Map(live.map((s) => [s.id, s]))
+  for (const [qualified, copied] of plugin.names) {
+    const now = byId.get(copied.id)
+    if (now && now.name === copied.name) out.set(qualified, { ...copied, roleIds: [...now.roleIds] })
+  }
+  return out
+}
+
+/**
+ * True when the run plugin no longer covers the live skills: some skill granted to a role is not in the plugin (new,
+ * renamed or left out earlier), or its source changed since it was copied (digest differs or cannot be read). Skills
+ * granted to no role and skills removed from the project never make it stale (the gate denies them).
+ */
+export function pluginStale(
+  plugin: Pick<SkillPlugin, 'names' | 'digests' | 'refused'> | undefined,
+  live: readonly RunSkill[],
+  digest: (s: RunSkill) => string | null = skillDigest
+): boolean {
+  const copied = new Map([...(plugin?.names.values() ?? [])].map((s) => [s.id, s]))
+  for (const s of live) {
+    if (!s.roleIds.length) continue
+    const old = copied.get(s.id)
+    const now = digest(s)
+    if (!old) {
+      // Left out of this plugin before and unchanged since: a rebuild would leave it out again.
+      const refused = plugin?.refused?.get(s.id)
+      if (refused && now && refused === now) continue
+      return true
+    }
+    if (old.name !== s.name) return true
+    const was = plugin?.digests.get(s.id)
+    if (!was || !now || was !== now) return true
+  }
+  return false
 }

@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX } = await import('./ipc')
 
 describe('connectorArgs', () => {
   it('rebuilds connectors:add with only the id and variant', () => {
@@ -62,5 +62,31 @@ describe('PickedFolders', () => {
     p.remember(3, '/x')
     p.forget(3)
     expect(p.take(3, '/x')).toBe(false)
+  })
+})
+
+describe('proposalDecideArgs (setup:decide)', () => {
+  const head = { runId: 'r1', proposalId: 'p1' }
+  it('rebuilds each decision and drops extra fields', () => {
+    expect(proposalDecideArgs({ ...head, extra: 1, decision: { behavior: 'approve', spec: {} } })).toEqual({ ...head, decision: { behavior: 'approve' } })
+    expect(proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: { 'mcp-1:env:TOKEN': 'v', 'mcp-1:env:EMPTY': '' } } })).toEqual({
+      ...head,
+      decision: { behavior: 'approve', secrets: { 'mcp-1:env:TOKEN': 'v' } }
+    })
+    expect(proposalDecideArgs({ ...head, decision: { behavior: 'revise', feedback: 'f', secrets: { a: 'b' } } })).toEqual({ ...head, decision: { behavior: 'revise', feedback: 'f' } })
+    expect(proposalDecideArgs({ ...head, decision: { behavior: 'decline', note: ' no ' } })).toEqual({ ...head, decision: { behavior: 'decline', note: 'no' } })
+    expect(proposalDecideArgs({ ...head, decision: { behavior: 'decline' } })).toEqual({ ...head, decision: { behavior: 'decline' } })
+  })
+  it('refuses wrong shapes', () => {
+    for (const bad of [null, 'x', [], { ...head }, { ...head, decision: 'approve' }, { ...head, decision: { behavior: 'allow' } }, { runId: 1, proposalId: 'p', decision: { behavior: 'approve' } }]) {
+      expect(() => proposalDecideArgs(bad)).toThrow()
+    }
+    expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'revise' } })).toThrow('must be text')
+    expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'revise', feedback: 'x'.repeat(5000) } })).toThrow('too long')
+    expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: ['a'] } })).toThrow()
+    expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: { a: 1 } } })).toThrow('must be text')
+    expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: { a: 'x'.repeat(4001) } } })).toThrow('too long')
+    const many = Object.fromEntries(Array.from({ length: PROPOSAL_SECRETS_MAX + 1 }, (_, i) => ['k' + i, 'v']))
+    expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: many } })).toThrow('At most')
   })
 })

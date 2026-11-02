@@ -694,7 +694,7 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     if (problem) throw new Error(problem)
     const libCreates = items.filter((i) => i.scope === 'library' && i.action === 'create').length
     if (lib.length + libCreates > SKILL_MAX_PER_PROJECT) throw new Error(`The skill library holds at most ${SKILL_MAX_PER_PROJECT} skills.`)
-    const projCreates = items.filter((i) => i.scope === 'project' && i.action === 'create').length
+    const projCreates = items.filter((i) => i.scope === 'project' && (i.action === 'create' || i.action === 'link')).length
     if ((view?.skills?.length ?? 0) + projCreates > SKILL_MAX_PER_PROJECT) throw new Error(`A project has at most ${SKILL_MAX_PER_PROJECT} skills.`)
     for (const it of items) {
       if (it.scope !== 'library' || it.action !== 'update') continue
@@ -719,7 +719,21 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
           continue
         }
         const ids = roleIds(it)
-        if (it.action === 'create') {
+        if (it.action === 'link') {
+          this.linkLibrary({ projectId: project!.id, libraryId: it.libraryId as string, ...(ids ? { roleIds: ids } : {}) })
+        } else if (it.action === 'grant' || it.action === 'remove') {
+          const name = it.draft.name.trim()
+          const skill = (this.refreshed(this.project(project!.id)).project.skills ?? []).find((s) => s.name === name)
+          if (!skill) throw new Error(`This project has no skill named "${name}".`)
+          if (it.action === 'remove') this.remove({ projectId: project!.id, skillId: skill.id })
+          else
+            this.update({
+              projectId: project!.id,
+              skillId: skill.id,
+              ...(ids ? { roleIds: ids } : {}),
+              ...(typeof it.enabled === 'boolean' ? { enabled: it.enabled } : {})
+            })
+        } else if (it.action === 'create') {
           this.create({ projectId: project!.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) }, 'user')
         } else {
           const name = it.draft.name.trim()
