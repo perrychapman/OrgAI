@@ -823,10 +823,18 @@ class CodexSession implements RuntimeSession {
     }
   }
 
-  /** MatchOptions right now: the project, the allowed folders (live) and the folders granted for this session. */
+  /**
+   * MatchOptions right now: the project, the allowed folders (live) and the folders granted for this session. On
+   * win32 Codex runs commands through PowerShell, so MSYS `/c/...` cd targets are never free (review re-check L7).
+   */
   private matchOpts(cwd?: string): MatchOptions {
     const base = matchOptionsFor(this.ctx)
-    return { ...base, ...(cwd && isAbsolute(cwd) ? { cwd } : {}), freeDirs: [...(base.freeDirs ?? []), ...this.sessionDirs] }
+    return {
+      ...base,
+      ...(cwd && isAbsolute(cwd) ? { cwd } : {}),
+      freeDirs: [...(base.freeDirs ?? []), ...this.sessionDirs],
+      ...(process.platform === 'win32' ? { shell: 'powershell' as const } : {})
+    }
   }
 
   /** Free to edit without a card: every path is concrete, has no protected segment, and sits in a free dir lexically and by real path. */

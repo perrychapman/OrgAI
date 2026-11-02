@@ -25,6 +25,37 @@ export const SHELL_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell'])
 /** Shell syntax a segment may not contain for a rule to apply. */
 const UNSAFE_SEGMENT = /[|&`<>\n\r]|\$\(/
 
+/**
+ * Syntax refused outside quotes (review re-check High 1): parentheses and braces (bash subshells and brace
+ * expansion; PowerShell argument-mode expressions such as `cd (Stop-Computer)`, `npm test (calc)`, script blocks) and
+ * PowerShell splatting / array and hash literals (`@x`, `@(...)`, `@{...}`). A mid-word `@` (`pkg@1.2.3`) stays.
+ */
+const UNSAFE_UNQUOTED = /[(){}]|(?:^|\s)@|@[({]/
+
+/** The segment with quoted text removed (quotes included); an unclosed quote drops the rest. */
+function unquotedPart(segment: string): string {
+  let out = ''
+  let quote: string | null = null
+  for (const ch of segment) {
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      out += ' '
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+/** True when a segment holds syntax no rule may cover (UNSAFE_SEGMENT anywhere, UNSAFE_UNQUOTED outside quotes). */
+export function isUnsafeSegment(segment: string): boolean {
+  return UNSAFE_SEGMENT.test(segment) || UNSAFE_UNQUOTED.test(unquotedPart(segment))
+}
+
 /** The harness's own MCP server: its tools are never granted wholesale through a saved rule. */
 const HARNESS_SERVER = 'orgai'
 
@@ -38,6 +69,12 @@ export interface MatchOptions {
   platform?: NodeJS.Platform
   /** Folders never offered as extra directories (RuntimeContext.protectedDirectories: OrgAI's data folder). */
   deniedDirs?: readonly string[]
+  /**
+   * The shell reading the command. On win32 the MSYS spelling `/c/x` means `C:\x` only in bash (Git Bash); PowerShell
+   * reads it as `<current drive>:\c\x`, so with 'powershell' it is never free. Missing = bash (matchingRule sets it
+   * from the tool name; Codex on win32 passes 'powershell').
+   */
+  shell?: 'bash' | 'powershell'
 }
 
 /** The label a command made only of free `cd` segments is allowed by. */
@@ -183,8 +220,11 @@ function shellRuleFor(segment: string, rules: readonly string[]): string | undef
   return undefined
 }
 
-/** Characters that make a `cd` target depend on the shell: variables, home, globs, braces, history. */
-const CD_UNSAFE = /[$~*?[\]{}%!`]/
+/**
+ * Characters that make a `cd` target depend on the shell: variables, home, globs, braces, history, and PowerShell
+ * expressions, splatting and arrays (`(`, `)`, `@`, `,`), even inside quotes.
+ */
+const CD_UNSAFE = /[$~*?[\]{}%!`(),@]/
 
 /**
  * The target of a `cd <dir>` segment, quotes stripped; null for `cd` alone, `cd -`, flags, several words, variables,
@@ -206,6 +246,8 @@ export function cdTarget(segment: string, platform: NodeJS.Platform = process.pl
   }
   // `cd -` / `cd +` walk the location history (bash, PowerShell 7).
   if (!dir || dir.startsWith('-') || dir.startsWith('+') || CD_UNSAFE.test(dir)) return null
+  // win32 drops a trailing dot or space from a name (`proj.` and `proj ` open `proj`): never compared lexically.
+  if (platform === 'win32' && dir.split(/[\\/]/).some((part) => part !== '.' && part !== '..' && /[. ]$/.test(part))) return null
   return dir
 }
 
@@ -218,7 +260,7 @@ export function isFreeCdTarget(dir: string, opts: MatchOptions): boolean {
   let target = dir
   if (platform === 'win32') {
     // MSYS / Git Bash spelling of a drive path: /c/Users/x -> C:\Users\x.
-    const msys = /^\/([a-zA-Z])(?:\/(.*))?$/.exec(target)
+    const msys = opts.shell === 'powershell' ? null : /^\/([a-zA-Z])(?:\/(.*))?$/.exec(target)
     if (msys) target = `${msys[1].toUpperCase()}:\\${(msys[2] ?? '').replace(/\//g, '\\')}`
     // UNC and device paths are never free.
     if (/^[\\/]{2}/.test(target)) return false
@@ -256,7 +298,7 @@ export function shellRulesFor(command: string, rules: readonly string[], opts?: 
   if (!cmd) return null
   const hits: string[] = []
   for (const segment of splitCommand(cmd)) {
-    if (!segment || UNSAFE_SEGMENT.test(segment)) return null
+    if (!segment || isUnsafeSegment(segment)) return null
     if (isFreeCd(segment, opts)) continue
     const rule = shellRuleFor(segment, rules)
     if (!rule) return null
@@ -289,6 +331,6 @@ export function matchingRule(toolName: string, input: unknown, rules: readonly s
   const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined
   if (typeof command !== 'string') return undefined
   const scoped = rules.filter((r) => r.trim().startsWith(`${toolName}(`))
-  const hits = shellRulesFor(command, scoped, opts)
+  const hits = shellRulesFor(command, scoped, opts && { ...opts, shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
   return hits ? hits.join(', ') : undefined
 }

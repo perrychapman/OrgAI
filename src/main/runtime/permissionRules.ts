@@ -5,7 +5,7 @@ import { isWholeToolRule } from '@shared/types'
 import { hiddenCharProblem } from '../capabilities/sanitize'
 import { posix, win32 } from 'node:path'
 import { homedir } from 'node:os'
-import { isFreeCd, isFreeCdTarget, mcpServerOfRule, shellRulesFor, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
+import { isFreeCd, isFreeCdTarget, mcpServerOfRule, rulePrefix, shellRulesFor, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import type { RuntimeContext } from './types'
 
 /**
@@ -129,8 +129,42 @@ export const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiE
 export const EXEC_WRAPPERS: ReadonlySet<string> = new Set([
   'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd', 'env', 'xargs', 'eval', 'exec', 'source', '.',
   'nohup', 'timeout', 'time', 'nice', 'find', 'perl', 'ruby', 'php', 'awk', 'osascript', 'start', 'invoke-expression', 'iex',
-  'start-process', 'invoke-command'
+  'start-process', 'invoke-command', 'wsl'
 ])
+
+/**
+ * Programs that run code they are handed (scripts, eval strings, packages): a launcher or runner whose target is one
+ * (`npx tsx`, `uv run python`, `pnpm dlx tsx`, `bunx node`) is treated like an exec wrapper.
+ */
+const CODE_RUNNERS: ReadonlySet<string> = new Set([
+  ...EXEC_WRAPPERS, 'tsx', 'ts-node', 'node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'py', 'pythonw', 'ipython', 'lua', 'r', 'rscript'
+])
+
+/**
+ * Prefixes the harness never derives as a prefix rule (review re-check M2): the rule would grant far more than the
+ * approved command. First words that write or move files or talk to the network (`cp`, `mv`, `curl`, `wget`, `ssh`,
+ * `scp`, `rsync`) and pairs whose next words can run code or change tool config (`git config` with core.fsmonitor,
+ * `npm pkg` / `npm config`, `gh api`, `deno eval`...). Such a command gets "allow once" (or the provider's exact rule).
+ */
+const NEVER_DERIVE_FIRST: ReadonlySet<string> = new Set(['cp', 'mv', 'curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'ftp', 'nc', 'netcat', 'socat', 'telnet'])
+const NEVER_DERIVE_PAIRS: ReadonlySet<string> = new Set([
+  'git config', 'npm pkg', 'npm config', 'npm set', 'pnpm config', 'pnpm pkg', 'yarn config',
+  'gh api', 'gh extension', 'gh alias', 'deno eval'
+])
+
+/** True when a shell prefix (`npm test`, `npx tsx`) must never be derived or kept as a prefix rule. */
+export function isTooBroadPrefix(prefix: string): boolean {
+  const words = prefix.trim().toLowerCase().split(/\s+/).map((w) => (w.split(/[\\/]/).pop() ?? w).replace(/\.exe$/, ''))
+  const [first = '', second = '', third = ''] = words
+  if (!first) return true
+  if (NEVER_DERIVE_FIRST.has(first) || EXEC_WRAPPERS.has(first)) return true
+  if (second && NEVER_DERIVE_PAIRS.has(`${first} ${second}`)) return true
+  // npx / bunx / pnpx run a package: an interpreter as the package runs anything.
+  if ((first === 'npx' || first === 'bunx' || first === 'pnpx') && CODE_RUNNERS.has(second)) return true
+  // A runner word's target (`uv run python`, `pnpm dlx tsx`, `npm exec node`).
+  if (RUNNER_WORDS.has(second) && CODE_RUNNERS.has(third)) return true
+  return false
+}
 
 /** The exec wrapper a shell rule's command starts with (base name, `.exe` dropped), else null. */
 function execWrapperOf(command: string): string | null {
@@ -226,7 +260,8 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 
 /** Commands whose first word alone says little: their rule is the first two words (`npm test`, `git status`). */
 export const LAUNCHERS: ReadonlySet<string> = new Set([
-  'npm', 'npx', 'pnpm', 'yarn', 'bun', 'git', 'go', 'cargo', 'dotnet', 'python', 'python3', 'pip', 'uv', 'node', 'deno', 'make', 'docker', 'gh'
+  'npm', 'npx', 'pnpm', 'yarn', 'bun', 'git', 'go', 'cargo', 'dotnet', 'python', 'python3', 'pip', 'uv', 'node', 'deno', 'make', 'docker', 'gh',
+  'py', 'pythonw', 'bunx', 'pnpx'
 ])
 
 /** A launcher's second words that only say "run something": the rule takes the third word too. */
@@ -256,7 +291,7 @@ export function segmentRulePrefix(toolName: string, segment: string): string | n
       prefix = `${prefix} ${third}`
     }
   }
-  if (isUnsafeAllowRule(`${toolName}(${prefix}:*)`)) return null
+  if (isUnsafeAllowRule(`${toolName}(${prefix}:*)`) || isTooBroadPrefix(prefix)) return null
   return prefix
 }
 
@@ -426,10 +461,13 @@ export function chooseSuggestions(
   if (!provided?.length) return deriveSuggestions(toolName, input, opts).map((s) => offerableDirs(s, opts)).filter((s): s is PermissionSuggestion => !!s)
   // A provider's blanket rule (bare Bash / Edit / Write, an exec wrapper) is never offered: a session grant of it would
   // become a PreToolUse bypass (review re-check L-d).
+  // Only acceptEdits may come from a provider's setMode (never bypassPermissions, auto or dontAsk; review re-check L6),
+  // and a provider's shell prefix rule that is too broad (isTooBroadPrefix, M2) is dropped like a blanket one.
   let out: PermissionSuggestion[] = provided
+    .filter((s) => s.type !== 'setMode' || s.mode === 'acceptEdits')
     .map((s) => offerableDirs(s, opts))
     .filter((s): s is PermissionSuggestion => !!s)
-    .map((s) => (isAllowRules(s) ? { ...s, rules: s.rules.filter((r) => !isBlanketAllowRule(ruleToString(r))) } : s))
+    .map((s) => (isAllowRules(s) ? { ...s, rules: s.rules.filter((r) => !isBlanketAllowRule(ruleToString(r)) && !isTooBroadShellRule(r)) } : s))
     .filter((s) => !isAllowRules(s) || s.rules.length > 0)
   if (SHELL_TOOLS.has(toolName)) {
     const command = commandOf(input) ?? ''
@@ -445,6 +483,13 @@ export function chooseSuggestions(
     return out
   }
   return out.map((s) => (isAllowRules(s) ? { ...s, rules: dedupeRules(s.rules.map((r) => widenMcpRule(r, opts))) } : s))
+}
+
+/** A shell prefix rule (`npm pkg:*`, `curl *`) whose prefix isTooBroadPrefix; exact shell rules and other tools pass. */
+function isTooBroadShellRule(rule: PermissionRuleSpec): boolean {
+  if (!SHELL_TOOLS.has(rule.toolName) || !rule.ruleContent) return false
+  const prefix = rulePrefix(rule.ruleContent)
+  return prefix !== null && isTooBroadPrefix(prefix)
 }
 
 function dedupeRules(rules: PermissionRuleSpec[]): PermissionRuleSpec[] {
