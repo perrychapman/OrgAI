@@ -314,16 +314,6 @@ html[data-resizing] * {
   align-items: center;
   gap: var(--space-1);
 }
-.run-meta-chain {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-secondary);
-}
-.run-meta-chain .link-btn {
-  font-size: inherit;
-}
 button.run-meta-item {
   padding: 0;
   border: 0;
@@ -365,6 +355,7 @@ button.run-meta-item:focus-visible {
 @container frame (max-width: 420px) {
   .run-meta-cost,
   .run-meta-wall,
+  .run-meta-sessions,
   .run-meta-agents {
     display: none;
   }
@@ -588,6 +579,16 @@ button.run-meta-item:focus-visible {
   max-width: 90ch;
   margin-inline: auto;
   flex: none;
+}
+/* Earlier sessions (a plain container) and the newest session (the live log) lay out like one list. */
+.conversation-earlier,
+.conversation-newest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.conversation-earlier {
+  margin-bottom: var(--space-3);
 }
 .conversation-jump {
   flex: none;

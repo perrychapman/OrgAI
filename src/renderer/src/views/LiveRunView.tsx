@@ -16,6 +16,9 @@ import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Prop
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
+import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
+import { mergeChainFeed } from '../lib/transcriptRows'
+import { runName } from '../lib/runLabels'
 import ChatStartPage from '../components/assistants/ChatStartPage'
 import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
 import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
@@ -33,10 +36,9 @@ import { Switch } from '../components/ui/Switch'
 import RunActions from '../components/RunActions'
 import RunMeta from '../components/RunMeta'
 import { useCssVar } from '../lib/useCssVar'
-import { activeRun, isRunLive, useAppStore, useProjectSummaries } from '../store/useAppStore'
-import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
-import { canContinue as chainCanContinue, continuedBy, relativeTime, sessionOpenRunId } from '../lib/runChains'
+import { canContinueIn, chainKeyOf, chainOf, continuedByIn, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
 import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
@@ -122,13 +124,16 @@ function readCollapsePref(): boolean {
 
 /**
  * The project's run workspace: the run strip on top (tabs and the viewed run's actions), then either one run (canvas
- * toolbar, decisions, canvas, composer, side panel) or the blank New run page. Each run is keyed, so its local state (images, folded groups, picked installs,
- * the session block) never leaks into another run.
+ * toolbar, decisions, canvas, composer, side panel) or the blank New run page. The view is keyed by the run's session chain, so
+ * a continue keeps it mounted; per-run local state (picked decision, the session block, approved kinds) resets when the viewed run changes.
  */
 export default function LiveRunView({ project }: { project: Project }): ReactElement {
   const runId = useAppStore((s) => activeRun(s)?.summary.id)
   const hasWorkspace = useAppStore((s) => !!s.draftPage[project.id] || !!s.activeRunByProject[project.id])
   const ensureWorkspace = useAppStore((s) => s.ensureWorkspace)
+  const summaries = useProjectSummaries()
+  // One view per session chain: a continue keeps the same view mounted (layout, panel, focus).
+  const chainKey = runId ? chainKeyOf(summaries, runId) : 'new'
 
   // A project opened without a workspace (e.g. straight after creation) picks its newest run or the New run page.
   useEffect(() => {
@@ -143,7 +148,7 @@ export default function LiveRunView({ project }: { project: Project }): ReactEle
       </div>
       <div className="run-panel" id="run-panel" role="tabpanel" aria-labelledby={`run-tab-${runId ?? 'new'}`}>
         {runId ? (
-          <ReactFlowProvider key={`${project.id}:${runId}`}>
+          <ReactFlowProvider key={`${project.id}:${chainKey}`}>
             <RunView project={project} runId={runId} />
           </ReactFlowProvider>
         ) : isVirtualProjectId(project.id) ? (
@@ -179,7 +184,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const openRun = useAppStore((s) => s.openRun)
   const setSideTab = useAppStore((s) => s.setSideTab)
   const focusComposer = useAppStore((s) => s.focusComposer)
-  const chosenLayout = useAppStore((s) => s.runLayoutByRun[runId])
+  const summaries = useProjectSummaries()
+  // The pick is kept for the conversation: the newest member's own choice, else an earlier member's.
+  // The chain is worked out once per render; newest / canContinue / successor / key all derive from it.
+  const chainSummaries = useMemo(() => chainOf(summaries, runId), [summaries, runId])
+  const chainIds = useMemo(() => {
+    const ids = chainSummaries.map((r) => r.id).reverse()
+    return ids.length > 0 ? ids : [runId]
+  }, [chainSummaries, runId])
+  const chosenLayout = useAppStore((s) => {
+    for (const id of chainIds) if (s.runLayoutByRun[id]) return s.runLayoutByRun[id]
+    return undefined
+  })
   const setRunLayout = useAppStore((s) => s.setRunLayout)
   const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
@@ -201,17 +217,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
-  /** What Send does on a finished run: a new run (default) or the explicit Continue. */
-  const continueIntent = useAppStore((s) => s.continueIntent === runId)
-  const [finishedChoice, setFinishedChoice] = useState<'new' | 'continue'>(continueIntent ? 'continue' : 'new')
-  useEffect(() => {
-    // History's Continue sets the intent just before the view mounts; it is consumed once.
-    if (!continueIntent) return
-    setFinishedChoice('continue')
-    useAppStore.setState({ continueIntent: null })
-  }, [continueIntent])
-  const summaries = useProjectSummaries()
-  const otherOpenRuns = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === project.id && r.summary.id !== runId && isRunLive(r)).length)
+  const allRuns = useAppStore((s) => s.runs)
+  // Loaded members, oldest first (members whose records are not loaded yet are missing until loadChain fetches them).
+  const members = useMemo(() => [...chainIds].reverse().map((id) => allRuns[id]).filter((r): r is RunState => !!r), [chainIds, allRuns])
+  const historyLoaded = useAppStore((s) => s.historyByProject[project.id] !== undefined)
+  const continueIntent = useAppStore((s) => s.continueIntent === chainIds[0])
+  const loadChain = useAppStore((s) => s.loadChain)
+  const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(() => Date.now())
@@ -233,16 +245,68 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }
   const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
 
+  // Earlier sessions of this conversation load lazily; the view stays mounted when a continue changes the viewed run.
+  // It re-runs when the set of known members changes or the history arrives: a run opened before history loaded gets its earlier members then.
+  const chainMemberKey = chainIds.join(',')
+  useEffect(() => {
+    void loadChain(runId)
+  }, [runId, chainMemberKey, historyLoaded, loadChain])
+  // History's Continue asks for the composer: it takes focus once (the Composer sees autoFocus on mount), then the request is cleared.
+  useEffect(() => {
+    if (continueIntent) useAppStore.setState({ continueIntent: null })
+  }, [continueIntent])
+  const prevRunId = useRef(runId)
+  useEffect(() => {
+    const prev = prevRunId.current
+    if (prev === runId) return
+    prevRunId.current = runId
+    // Per-run local state starts clean; the collapse preference, folded groups and the side panel tab carry over.
+    setSessionBlock(null)
+    setPickedDecision(null)
+    setDismissedInstalls({})
+    setApprovedKinds([])
+    const st = useAppStore.getState()
+    const tab = st.sideTabByRun[prev]
+    if (tab && !st.sideTabByRun[runId]) useAppStore.setState({ sideTabByRun: { ...st.sideTabByRun, [runId]: tab } })
+  }, [runId])
+
   const isSetupRun = run.summary.kind === 'setup'
   const rootName = project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
+  const status = run.summary.status
+  const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
+  // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
+  // session chain: an older member points to the newest.
+  const canContinue = canContinueIn(chainSummaries, runId)
+  const newestRun = chainSummaries[chainSummaries.length - 1]
+  const successor = !sessionOpen ? continuedByIn(chainSummaries, runId) : undefined
+  const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
+  // M6: an ended, continuable work run opened in a window under 1100 px starts as the conversation (decided once, at
+  // open, so a live run that ends or a continue never flips the layout under the user). A saved choice always wins.
+  const [endedNarrow] = useState(
+    () => !sessionOpen && canContinue && run.summary.kind === 'work' && !virtualId && window.matchMedia('(max-width: 1099px)').matches
+  )
   // Single-agent runs open as a conversation (the root agent's transcript is the stage); team runs open on the canvas.
-  // Every run can switch, the choice is kept per run in the store.
-  const layout = runLayoutFor(run.summary, chosenLayout)
+  // Every run can switch, the choice is kept per conversation in the store.
+  const layout = runLayoutFor(run.summary, chosenLayout, { endedNarrow })
   const conversation = layout === 'conversation'
   const asAssistant = speaksAsAssistant(run.summary)
 
+  // The chain up to the viewed run, oldest first (the viewed run is the newest in practice).
+  const upto = useMemo(() => {
+    const at = members.findIndex((m) => m.summary.id === runId)
+    return at >= 0 ? members.slice(0, at + 1) : [run]
+    // Earlier members are ended records: they change only when loaded; the viewed run changes with every event.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [members.map((m) => `${m.summary.id}:${m.transcript.length}:${Object.keys(m.agents).length}`).join('|'), run.agents, run.transcript, run.summary])
+  const chain = useMemo(() => chainCanvas(upto), [upto])
   const agentsById = run.agents
-  const agents = useMemo(() => normalizeParents(Object.values(agentsById)), [agentsById])
+  const agents = useMemo(() => normalizeParents(chain.agents), [chain.agents])
+  const agentLookup = useMemo(() => {
+    const m = new Map<string, AgentInstance>()
+    for (const a of agents) m.set(a.id, a)
+    for (const g of chain.earlier) for (const a of g.agents) m.set(a.id, a)
+    return m
+  }, [agents, chain.earlier])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
       project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? neutralRoleColor,
@@ -272,11 +336,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return () => clearInterval(t)
   }, [messages])
 
+  // Earlier sessions: one dashed "Earlier: N agents" group each while finished agents are hidden, else their agents
+  // are on the chart (settled, under the root). Expanding a group is the same toggle as a folded report group.
   const { visibleAgents, groups } = useMemo(() => {
-    if (!collapseFinished) return { visibleAgents: agents, groups: new Map<string, AgentInstance[]>() }
+    const groups = new Map<string, AgentInstance[]>()
+    const earlierShown: AgentInstance[] = []
+    for (const g of chain.earlier) {
+      if (collapseFinished && !expandedGroups[g.key]) groups.set(g.key, g.agents)
+      else earlierShown.push(...g.agents)
+    }
+    if (!collapseFinished) return { visibleAgents: [...agents, ...earlierShown], groups }
     const byId = new Map(agents.map((a) => [a.id, a]))
     const settledNow = (c: AgentInstance): boolean => isSettled(c, now)
-    const groups = new Map<string, AgentInstance[]>()
     const visibleAgents: AgentInstance[] = []
     for (const a of agents) {
       const parentVisible = !a.parentId || byId.has(a.parentId)
@@ -288,8 +359,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     // Hide the subtree under a folded report too; the list in the side panel still reaches them.
     const folded = new Set([...groups.values()].flat().map((a) => a.id))
     const hiddenUnder = (a: AgentInstance): boolean => ancestorsOf(byId, a.id).some((p) => folded.has(p))
-    return { visibleAgents: visibleAgents.filter((a) => !hiddenUnder(a)), groups }
-  }, [agents, collapseFinished, expandedGroups, now])
+    return { visibleAgents: [...visibleAgents.filter((a) => !hiddenUnder(a)), ...earlierShown], groups }
+  }, [agents, chain.earlier, collapseFinished, expandedGroups, now])
+
+  /** The agent a group node hangs under: the folded report's parent, or the root for an earlier session. */
+  const groupParent = useCallback((key: string): string | null => (isEarlierKey(key) ? (chain.rootId ?? null) : key), [chain.rootId])
 
   // Recompute the tree layout only when the set of shown nodes or their parent links change.
   const topologyKey = [
@@ -302,7 +376,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     () =>
       treeLayout([
         ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: NODE_W, height: NODE_H })),
-        ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: p, width: GROUP_W, height: GROUP_H }))
+        ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: groupParent(p), width: GROUP_W, height: GROUP_H }))
       ]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topologyKey]
@@ -344,18 +418,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
     }))
     const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
-      const parent = run.agents[parentId]
+      const parent = agentLookup.get(groupParent(parentId) ?? '')
+      const earlier = isEarlierKey(parentId)
       return {
         id: groupId(parentId),
         type: 'done-group' as const,
         position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
         selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
-        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: toggleGroup }
+        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: toggleGroup, ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, run, toggleGroup, neutralRoleColor])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, toggleGroup, neutralRoleColor])
 
   const edges: Edge[] = useMemo(() => {
     const shown = new Set(visibleAgents.map((a) => a.id))
@@ -375,10 +450,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         }
       })
     const groupEdges: Edge[] = [...groups.keys()]
-      .filter((p) => shown.has(p))
+      .filter((p) => shown.has(groupParent(p) ?? ''))
       .map((p) => ({
         id: `e-${p}-${groupId(p)}`,
-        source: p,
+        source: groupParent(p) as string,
         target: groupId(p),
         type: edgeType,
         style: { stroke: borderStrong, strokeWidth: 1.2, strokeDasharray: '4 4' }
@@ -426,7 +501,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       })
     }
     return [...agentEdges, ...groupEdges, ...messageEdges.values()]
-  }, [visibleAgents, groups, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, borderStrong, messageColor, surfaceColor])
+  }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, borderStrong, messageColor, surfaceColor])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
 
@@ -437,7 +512,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     const members = groups.get(parentId)
     if (!members) return undefined
     return {
-      parentName: run.agents[parentId]?.name ?? 'its parent',
+      parentName: isEarlierKey(parentId) ? 'an earlier session' : (run.agents[parentId]?.name ?? 'its parent'),
       agents: members,
       onPick: (id) => selectAgent(id),
       onExpand: () => toggleGroup(parentId)
@@ -445,16 +520,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }, [run, selectedAgentId, groups, selectAgent, toggleGroup])
   const finishedCount = [...groups.values()].reduce((n, g) => n + g.length, 0)
 
-  const status = run.summary.status
-  const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
-  // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
-  // session chain: an older member says who continued it.
-  const canContinue = chainCanContinue(summaries, runId)
-  const successor = !sessionOpen ? continuedBy(summaries, runId) : undefined
-  // What Send does. On a finished run the default is a NEW run; Continue is the explicit second choice.
-  // An assistant (virtual project) has no "New run" choice: it continues, or it is over and a new session starts from the start page.
-  const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
-  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && (virtualId || finishedChoice === 'continue') ? 'continue' : 'new'
+  // What Send does (model 3): reply while the session is open; on the chain's newest ended run it continues the
+  // conversation; a run with no saved session can only start a new run. An assistant (virtual project) that cannot
+  // continue is over and a new session starts from the start page.
+  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue ? 'continue' : 'new'
+  const endedCopy = sendMode === 'reply' ? undefined : endedComposerCopy(run.summary, { continuable: canContinue, cutWhile: run.cutWhile })
   const openCardCount = (run.ruleRequests?.length ?? 0) + (run.questions?.length ?? 0) + run.proposals.length + (run.mergeReviews?.length ?? 0) + run.permissions.length + (run.mcpInstalls?.length ?? 0)
   const modeLabel =
     sendMode === 'reply'
@@ -463,14 +533,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         : isSetupRun
         ? 'Answering the Architect'
         : `Replying to ${rootName}`
-      : sendMode === 'continue'
-        ? run.summary.endedWithApp
-          ? 'Continuing this run (it ended when OrgAI closed)'
-          : `Continuing this run (from ${relativeTime(run.summary.startedAt)})`
-        : otherOpenRuns > 0
-          ? `New run: ${otherOpenRuns} other run${otherOpenRuns === 1 ? '' : 's'} keep${otherOpenRuns === 1 ? 's' : ''} going`
-          : 'New run'
-  const primaryLabel = sendMode === 'reply' ? 'Send' : sendMode === 'continue' ? 'Continue' : 'Start'
+      : status === 'paused' && sendMode === 'continue'
+        ? 'Paused at a usage limit. Send to continue with its memory.'
+        : (endedCopy?.modeLabel ?? '')
+  const primaryLabel = sendMode === 'new' ? 'Start' : 'Send'
   const placeholder =
     sendMode === 'reply'
       ? isSetupRun
@@ -478,11 +544,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         : asAssistant
           ? ASSISTANT_REPLY_LABEL
           : 'Your reply'
-      : sendMode === 'continue'
-        ? run.summary.endedWithApp
-          ? 'Pick up where it was cut off'
-          : 'What next?'
-        : 'Describe the task'
+      : (endedCopy?.placeholder ?? '')
 
   // Install approval cards: open ones first (one expanded, the rest collapsed), answered ones until dismissed.
   const openInstalls = run.mcpInstalls ?? []
@@ -606,13 +668,33 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     else if (e.key === '0' && !stageHidden()) void fitView(fitOpts({ duration: reducedMotion ? 0 : 150 }))
   }
 
-  const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
-  const rootAgent = useMemo(() => Object.values(run.agents).find((a) => a.parentId === null), [run.agents])
-  const rootEntries = useMemo(() => (rootAgent ? run.transcript.filter((e) => e.agentId === rootAgent.id) : []), [run.transcript, rootAgent])
-  const entries = useMemo(
-    () => (selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
-    [run, selectedAgentId]
+  const selectedAgent = selectedAgentId ? agentLookup.get(selectedAgentId) : undefined
+  const rootAgent = useMemo(() => agents.find((a) => a.parentId === null), [agents])
+  // The root's transcript is the whole conversation: every session's root entries with a divider where each
+  // continuation starts (model 2). Another agent's transcript is that one session's entries.
+  const feed = useMemo(
+    () =>
+      mergeChainFeed(
+        upto.map((m) => ({
+          summary: m.summary,
+          entries: m.transcript.filter((e) => e.agentId === (Object.values(m.agents).find((a) => a.parentId === null)?.id ?? 'root'))
+        }))
+      ),
+    [upto]
   )
+  const entries = useMemo(() => {
+    if (!selectedAgentId) return []
+    const from = chain.origin.get(selectedAgentId)
+    if (from) return (upto.find((m) => m.summary.id === from.runId)?.transcript ?? []).filter((e) => e.agentId === from.agentId)
+    return run.transcript.filter((e) => e.agentId === selectedAgentId)
+  }, [run.transcript, upto, chain.origin, selectedAgentId])
+  const rootSelected = !!selectedAgent && selectedAgent.parentId === null
+  // A new chain member to show (after Send, End session, History): clear the request when it has no divider to scroll to.
+  useEffect(() => {
+    if (!chainFocusRun) return undefined
+    const t = setTimeout(() => useAppStore.setState((st) => (st.chainFocusRun === chainFocusRun ? { chainFocusRun: null } : {})), 2500)
+    return () => clearTimeout(t)
+  }, [chainFocusRun])
 
   // Every open decision as one card; the tray lists them all and shows one at a time. The newest is selected.
   const who = (agentId: string): string => run.agents[agentId]?.name ?? 'An agent'
@@ -738,7 +820,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length} />
             <div className="frame-toolbar-end">
-              {!conversation && agents.length > 1 && (
+              {!conversation && (agents.length > 1 || chain.earlier.length > 0) && (
                 <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
                   <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" title="Hide finished agents" />
                   <span className="fold-label" aria-hidden="true">
@@ -761,7 +843,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className="conversation-stage" data-testid="run-conversation">
-                <TranscriptPanel variant="conversation" runId={runId} agent={rootAgent} entries={rootEntries} logs={[]} />
+                <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} logs={[]} />
               </div>
             ) : (
             <ReactFlow
@@ -814,7 +896,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </FrameTray>
         </CanvasFrame>
 
-        {virtualId && sendMode === 'new' ? (
+        {successor && newestRun && newestRun.id !== runId ? (
+          <div className="composer composer-ended" data-testid="composer-superseded">
+            <div className="composer-notice info">
+              This conversation continues in {runName(newestRun)}.
+            </div>
+            <Button variant="primary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id).then(() => focusComposer())}>
+              Go to latest
+            </Button>
+          </div>
+        ) : virtualId && sendMode === 'new' ? (
           <div className="composer composer-ended" data-testid="assistant-ended">
             <p className="composer-ended-text">{virtualId === 'quick' ? 'This chat has ended.' : 'This session has ended.'}</p>
             <Button
@@ -835,27 +926,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           primaryLabel={primaryLabel}
           placeholder={placeholder}
           focusToken={composerFocusToken}
-          modeSwitch={
-            !sessionOpen && canContinue && !virtualId ? (
-              <SegmentedControl
-                label="What Send does"
-                value={sendMode === 'continue' ? 'continue' : 'new'}
-                options={[
-                  { value: 'new', label: 'New run', title: 'Start a fresh run of this project' },
-                  { value: 'continue', label: 'Continue this run', title: 'Resume this run’s session with its memory' }
-                ]}
-                onChange={(v) => setFinishedChoice(v)}
-              />
-            ) : undefined
-          }
+          autoFocus={continueIntent}
           notices={
             <>
-              {successor && (
-                <div className="composer-notice info" role="status">
-                  This run was continued by a later run.
-                  <button type="button" className="link-btn" onClick={() => void openRun(successor.id)}>
-                    Open it
-                  </button>
+              {endedCopy?.notice && (
+                <div className="composer-notice cut" data-testid="composer-cut-notice">
+                  {endedCopy.notice}
                 </div>
               )}
               {sessionBlock && (
@@ -886,7 +962,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId}>
           <div className="live-panel">
-            <TranscriptPanel runId={runId} agent={selectedAgent ?? (conversation ? rootAgent : undefined)} entries={selectedAgent || !conversation ? entries : rootEntries} logs={run.logs ?? []} finished={finishedGroup} />
+            <TranscriptPanel
+              runId={runId}
+              tagRunId={chainIds[chainIds.length - 1]}
+              agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
+              entries={selectedAgent && !rootSelected ? entries : []}
+              feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}
+              logs={run.logs ?? []}
+              finished={finishedGroup}
+            />
           </div>
         </SidePanel>
       </div>

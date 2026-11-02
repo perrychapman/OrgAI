@@ -75,6 +75,24 @@
   border-left: 2px solid var(--border-default);
   padding-left: var(--space-3);
 }
+/* Where a continuation starts in the merged feed: one quiet centred line. */
+.chain-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  text-align: center;
+  margin: var(--space-2) 0;
+}
+.chain-divider::before,
+.chain-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
 /* Compact one-line rows: tool calls, tool results and harness lines. */
 .entry.tool_use,
 .entry.tool_result,

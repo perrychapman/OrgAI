@@ -1,10 +1,10 @@
 // Token-free. Mock adapter, temp ORGAI_DATA_DIR. Concurrent runs: two run tabs (R1/R2), the run header names the
-// viewed run, the New run page is blank, a finished run defaults to New run with Continue as the second choice, the
+// viewed run, the New run page is blank, a finished run's composer continues the same conversation (Send, one tab per chain, merged feed with a divider, focus stays in the composer; relaunch shows the cut notice), the
 // sidebar lists open runs, the History tab lists runs, the run-messaging Switch persists, and "Open in new window"
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, makeFixtureRepo, openProject, projectTab, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, projectTab, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -17,7 +17,7 @@ const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-runs-'))
 const repo = path.join(base, 'repo')
 makeFixtureRepo('runs', { at: repo })
 
-const { app, page, shot } = await launch({ shotPrefix: 'runs' })
+let { app, page, shot } = await launch({ shotPrefix: 'runs' })
 // Start from a defined window size so the flow is the same on every runner. E2E_RUNS_START=1000x700 first shrinks the
 // window (the sidebar becomes a rail, as on a small CI screen) and then widens it to the working size again.
 const resizeTo = async (cw, ch, want) => {
@@ -104,7 +104,7 @@ try {
   const bad = await page.evaluate(() => window.orgai.window.openRun({ projectId: '../x', runId: 'nope' }).then(() => 'ok', (e) => String(e.message ?? e)))
   check(bad !== 'ok', 'window:openRun refuses a malformed target', bad)
 
-  // Finish R1: the default action is a New run, Continue this run is the second choice.
+  // Finish R1: the composer continues the same conversation.
   await page.locator('.run-tablist [role="tab"]', { hasText: 'R1' }).click()
   await sleep(300)
   // H4: a pending permission card must go away when its session ends.
@@ -208,9 +208,10 @@ try {
   const permAfter = await permCards.count()
   check(permAfter < permBefore, 'the permission card disappears after End session (H4)', `${permBefore} -> ${permAfter}`)
   const mode = (await page.locator('.composer').innerText()).replace(/\s+/g, ' ')
-  check(/New run/.test(mode) && !/Continuing this run/.test(mode), 'a finished run defaults to New run', mode.slice(0, 120))
-  check((await page.locator('.composer .btn.primary').innerText()).trim() === 'Start', 'finished run primary action is Start')
-  check((await page.locator('.composer').getByText('Continue this run', { exact: true }).count()) === 1, 'Continue this run is offered as the second choice')
+  check(/Session ended/.test(mode) && !/Continuing this run/.test(mode), 'a finished run says Session ended', mode.slice(0, 120))
+  check((await page.locator('.composer .btn.primary').innerText()).trim() === 'Send', 'finished run primary action is Send')
+  check((await page.locator('.composer').getByText('Continue this run', { exact: true }).count()) === 0, 'there is no "Continue this run" segment')
+  check(((await page.locator('.composer textarea').getAttribute('placeholder')) ?? '').startsWith('Message the orchestrator'), 'the placeholder reads Message the orchestrator')
   await shot('finished-run')
 
   // History tab lists both runs.
@@ -614,6 +615,32 @@ try {
   await shot('run-auth-fail')
   await endSession(page)
 
+  // One conversation per chain: Send on an ended run continues it in the same tab, the feed shows both turns with a divider.
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Chain first turn')
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await sleep(1500)
+  await endSession(page)
+  const tabCount = () => page.locator('.run-tablist [role="tab"]').count()
+  const chainOf = () => page.locator('.run-tablist [role="tab"][aria-selected=true]').first().getAttribute('data-chain')
+  const tabsBefore = await tabCount()
+  const chainBefore = await chainOf()
+  const ta = page.locator('.composer textarea')
+  await ta.fill('Chain second turn')
+  await ta.press('Enter')
+  await sleep(2500)
+  check((await tabCount()) === tabsBefore, 'Send on an ended run keeps one tab for the chain', `${tabsBefore} -> ${await tabCount()}`)
+  check((await chainOf()) === chainBefore, 'the same chain tab stays selected after Send')
+  const divider = page.locator('[data-testid=chain-divider]').first()
+  await divider.waitFor({ timeout: 10_000 }).catch(() => {})
+  check(/Continued/.test((await divider.innerText().catch(() => '')) || ''), 'the feed shows a Continued divider')
+  check((await page.getByText('Chain first turn').count()) > 0, 'the feed still shows the earlier turn')
+  check((await page.getByText('Continued from run').count()) === 0, 'no "Continued from run" harness row is shown')
+  check(await page.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && !!document.activeElement.closest('.composer')), 'focus stays in the composer after Send')
+  await shot('chain-continued')
+  await endSession(page)
+
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
@@ -645,6 +672,31 @@ try {
   await sw2.waitFor({ timeout: 10_000 })
   check((await sw2.getAttribute('aria-checked')) === 'false', 'switch is still off after reload')
   await shot('settings-messaging')
+
+  // Closing OrgAI while a run is live: after relaunch the run reads Ended when OrgAI closed and Send continues it in the same tab.
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Cut by quitting')
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await sleep(1500)
+  ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'runs-relaunch' }))
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await openProject(page, NAME)
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
+  const cut = page.locator('.run-tablist [role="tab"]', { hasText: 'Cut by quitting' }).first()
+  await cut.waitFor({ timeout: 15_000 }).catch(() => {})
+  await cut.click().catch(() => {})
+  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await page.locator('[data-testid=composer-cut-notice]').count()) === 1, 'a run cut by closing OrgAI shows the cut notice in its composer')
+  check(/Ended when OrgAI closed/.test((await cut.getAttribute('aria-label').catch(() => '')) + (await cut.innerText().catch(() => '')) + (await cut.getAttribute('title').catch(() => ''))), 'the tab reads Ended when OrgAI closed')
+  const cutTabs = await page.locator('.run-tablist [role="tab"]').count()
+  await page.locator('.composer textarea').fill('Pick it up')
+  await page.locator('.composer textarea').press('Enter')
+  await sleep(2500)
+  check((await page.locator('.run-tablist [role="tab"]').count()) === cutTabs, 'Send after relaunch continues in the same tab')
+  await shot('relaunch-continued')
+  await endSession(page)
 } catch (e) {
   check(false, 'runs e2e ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})

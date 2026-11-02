@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { BellRing, Folder } from 'lucide-react'
 import { isVirtualProjectId } from '@shared/types'
-import { activeRun, openNewChat, selectedProject, useAppStore, useRunIndexes } from './store/useAppStore'
+import { activeRun, openNewChat, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from './store/useAppStore'
 import ProjectsView from './views/ProjectsView'
 import SettingsView from './views/SettingsView'
 import TeamView from './views/TeamView'
@@ -20,7 +20,7 @@ import { useRunTabShortcuts } from './components/RunTabs'
 import { Badge } from './components/ui/Badge'
 import { Icon } from './components/ui/Icon'
 import { Tabs, type TabItem } from './components/ui/Tabs'
-import { needsYou } from './lib/runChains'
+import { chainOf, needsYou } from './lib/runChains'
 import { waitingItems } from './lib/needsYou'
 import { runName, runTag } from './lib/runLabels'
 import { folderName } from './lib/paths'
@@ -51,6 +51,7 @@ export default function App(): ReactElement {
     return { count: list.reduce((n, r) => n + Math.max(1, waitingItems(r).length), 0), first: list[0]?.summary.id }
   }, [runsById, selectedId])
   const indexes = useRunIndexes()
+  const summaries = useProjectSummaries()
   const { collapsed } = useSidebarCollapsed()
   useRunTabShortcuts()
   // Drag-resizable sidebar: saved width (px) or the 232 px default, clamped so the main area keeps room.
@@ -102,14 +103,16 @@ export default function App(): ReactElement {
 
   // The window title names the project and the viewed run first, so the OS task switcher and notifications show
   // which run is on screen. "OrgAI" never leads.
-  const runIndex = run ? indexes.get(run.summary.id) : undefined
+  // The title names the viewed chain by its first member (the conversation keeps one name across continues).
+  const first = run ? (chainOf(summaries, run.summary.id)[0] ?? run.summary) : undefined
+  const runIndex = first ? indexes.get(first.id) : undefined
   useEffect(() => {
     const where = selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project?.name
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
-    else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${runName(run.summary)} · OrgAI`
+    else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${runName(first)} · OrgAI`
     else document.title = `${where} · OrgAI`
-  }, [run, runIndex, view, project, isVirtual])
+  }, [run, first, runIndex, view, project, isVirtual])
 
   const teamPending = teamSummary?.pendingCount ?? 0
   const sections: TabItem[] = [

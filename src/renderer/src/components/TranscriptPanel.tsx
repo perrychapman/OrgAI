@@ -39,7 +39,7 @@ import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
-import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, type ToolKind } from '../lib/transcriptRows'
+import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, type FeedItem, type ToolKind } from '../lib/transcriptRows'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -49,11 +49,15 @@ interface Props {
   runId: string
   agent: AgentInstance | undefined
   entries: TranscriptEntry[]
+  /** The chain's merged feed (entries of every member with dividers); replaces `entries` for the root agent. */
+  feed?: FeedItem[]
   logs: LogLine[]
   /** When a folded "done" group is selected on the chart, list its reports instead of a transcript. */
   finished?: FinishedGroup
   /** 'conversation' renders only the entry list as the Live view's stage (no header or tabs, stick to the bottom). */
   variant?: 'panel' | 'conversation'
+  /** The chain's first member: its index is the header tag (the conversation keeps one name). Defaults to `runId`. */
+  tagRunId?: string
 }
 
 const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
@@ -223,7 +227,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
   return { hidden, body }
 }
 
-export default function TranscriptPanel({ runId, agent, entries, logs, finished, variant = 'panel' }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -231,10 +235,14 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished,
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => s.runs[runId]?.plan)
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
-  const index = useRunIndexes().get(runId)
+  const index = useRunIndexes().get(tagRunId ?? runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
   const tab: SideTab = planTab
+
+  // One list for both shapes: the merged feed, or this run's entries as feed items.
+  const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
+  const entries = useMemo(() => items.flatMap((i) => (i.kind === 'entry' ? [i.entry] : [])), [items])
 
   useEffect(() => {
     // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
@@ -250,9 +258,20 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished,
   // One skill load is one row: the harness "Loaded skill <name>" row stands for the load_skill call and its result, and
   // carries SKILL.md under "Show instructions". Calls without a matching row (refused, resource files) stay visible.
   const skillLoads = useMemo(() => collapseSkillLoads(entries), [entries])
-  const visible = (showThinking ? entries : entries.filter((e) => e.block.kind !== 'thinking')).filter((e) => !skillLoads.hidden.has(e.id))
+  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id)
+  const visible = entries.filter(shown)
 
-  const rows = visible.map((e) => {
+  const rows = items.map((item) => {
+    if (item.kind === 'divider') {
+      return (
+        <div key={`divider-${item.divider.runId}`} className="chain-divider" data-testid="chain-divider" data-run={item.divider.runId} title={item.divider.title}>
+          <span>{item.divider.label}</span>
+          <span className="sr-only"> ({item.divider.title})</span>
+        </div>
+      )
+    }
+    const e = item.entry
+    if (!shown(e)) return null
     const b = e.block
     switch (b.kind) {
       case 'user':
@@ -307,9 +326,30 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished,
     }
   })
 
+  // The newest member's items are the live region; everything before its divider is history and must not be re-announced when a chain load inserts it.
+  const newestAt = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
+  const splitAt = newestAt < 0 ? 0 : newestAt
+  const earlierRows = rows.slice(0, splitAt)
+  const newestRows = rows.slice(splitAt)
+
   // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
   const listRef = useRef<HTMLDivElement>(null)
   const stuck = useRef(true)
+  // The user asked to see a chain member (History, a link, after Send): put its divider at the top once, then let go.
+  const focusRun = useAppStore((s) => s.chainFocusRun)
+  useEffect(() => {
+    if (!focusRun) return
+    const body = variant === 'conversation' ? listRef.current : bottom.current?.parentElement
+    if (!body) return
+    const target = body.querySelector<HTMLElement>(`.chain-divider[data-run="${CSS.escape(focusRun)}"]`)
+    // The chain's first member has no divider: its start is the top of the feed.
+    const first = items[0]
+    const startsWithFocus = first?.kind === 'entry' && first.runId === focusRun
+    if (!target && !startsWithFocus) return
+    stuck.current = false
+    body.scrollTop = target ? target.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop : 0
+    useAppStore.setState({ chainFocusRun: null })
+  }, [focusRun, items, variant, tab])
   const [away, setAway] = useState(false)
   useEffect(() => {
     const el = listRef.current
@@ -329,9 +369,9 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished,
         <div
           ref={listRef}
           className="transcript conversation-list"
-          role="log"
-          aria-label="Conversation"
+          role="region"
           tabIndex={0}
+          aria-label="Conversation scroll area"
           onScroll={(e) => {
             const el = e.currentTarget
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
@@ -339,13 +379,16 @@ export default function TranscriptPanel({ runId, agent, entries, logs, finished,
             setAway(!atEnd)
           }}
         >
-          {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
-          {rows}
-          {partial && (
-            <div className="entry text streaming">
-              <Markdown text={partial} />
-            </div>
-          )}
+          {splitAt > 0 && <div className="conversation-earlier">{earlierRows}</div>}
+          <div className="conversation-newest" role="log" aria-label="Conversation">
+            {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+            {newestRows}
+            {partial && (
+              <div className="entry text streaming">
+                <Markdown text={partial} />
+              </div>
+            )}
+          </div>
         </div>
         {away && (
           <div className="conversation-jump">
