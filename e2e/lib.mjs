@@ -1,7 +1,8 @@
 // Shared helpers for the OrgAI end-to-end scripts. Each script launches the BUILT app (run `npm run build` first)
 // with playwright-core's Electron driver, works against a throwaway fixture repository under os.tmpdir(), and
 // removes its OrgAI project at the end. The app runs against a fresh temp data dir per script (ORGAI_DATA_DIR, which
-// replaces userData and holds the logs too), or against ORGAI_DATA_DIR if you set it yourself.
+// replaces userData and holds the logs too), or against E2E_DATA_DIR if you set it yourself. A plain ORGAI_DATA_DIR in the environment (CI sets one to keep strays off
+// the runner's profile) is ignored: scripts leave library entries and settings behind that would change the next script.
 import { _electron as electron } from 'playwright-core'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -22,8 +23,8 @@ export const TMP = fs.realpathSync.native(os.tmpdir())
 
 // One data dir per script run, shared by every launch() in it (history.mjs restarts the app). A dir we created is
 // removed when the script passes and kept (path printed) when it fails, so its logs/main.log can be read.
-const ownDataDir = !process.env.ORGAI_DATA_DIR?.trim()
-export const DATA_DIR = ownDataDir ? fs.mkdtempSync(path.join(TMP, 'orgai-e2e-data-')) : path.resolve(process.env.ORGAI_DATA_DIR.trim())
+const ownDataDir = !process.env.E2E_DATA_DIR?.trim()
+export const DATA_DIR = ownDataDir ? fs.mkdtempSync(path.join(TMP, 'orgai-e2e-data-')) : path.resolve(process.env.E2E_DATA_DIR.trim())
 process.on('exit', (code) => {
   if (!ownDataDir) return
   let used = true
