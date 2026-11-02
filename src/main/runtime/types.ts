@@ -20,6 +20,7 @@ import type {
   Project,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   ProviderAuth,
   ProviderId,
   QuestionAnswer,
@@ -201,8 +202,11 @@ export interface RuntimeContext {
   emit(event: RunEvent): void
   /** Ask the user to approve a tool call. Resolves with their decision. */
   requestPermission(req: Omit<PermissionRequest, 'id' | 'runId'>): Promise<PermissionDecision>
-  /** Setup runs only: put a proposal in front of the user. Resolves when they approve or ask for changes. */
-  requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>): Promise<ProposalDecision>
+  /**
+   * Put a proposal in front of the user. Resolves with the secret-free outcome (approve, revise or decline) once it
+   * is applied or refused. RunManager sets Proposal.effect.
+   */
+  requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>): Promise<ProposalOutcome>
   /** Work runs with reviewMerges: show a finished report's diff and wait for merge, discard or hold. */
   requestMergeReview(req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>): Promise<MergeDecision>
   /** Setup runs only: the Architect declares setup finished. */
@@ -280,7 +284,7 @@ export interface RuntimeContext {
   plugins?(): PluginSpec[]
   /**
    * Work runs: the project skills granted to at least one role in `roles` (RunSkill.roleIds says which). Setup-like
-   * runs get none. Read once at session start (the set does not change mid-run). Missing = none.
+   * runs get none. Recomputed when an approved proposal or install changes the project (RunManager setLive), so read it at call time. Missing = none.
    * Grants are enforced per agent: Claude gates the Skill tool in PreToolUse, list_skills / load_skill filter by the
    * caller's role (HarnessToolCaller.roleId). Adapters emit `skill.used` when a granted skill loads.
    */

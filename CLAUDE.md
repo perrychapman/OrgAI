@@ -223,6 +223,17 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     project's concurrent edits. Unverified live: settingSources [] on resume, PreToolUse deny precedence,
     `project_doc_max_bytes=0`, the Codex decline text reaching the agent, workspace-write enforcement on Windows.
 
+- Work-run configuration changes (2026-11-02; see ARCHITECTURE.md Conventions): the work-run root has propose_mcp_servers
+  (project-only, enforced in main), list_skill_library, read_library_skill and propose_skills (create / update / link /
+  grant / remove, project scope). Approved changes reach the live run through RunManager `setLive` and
+  `HarnessToolHooks.configChanged` (Claude: setMcpServers now, restart at idle for new whitelists or a stale skill
+  plugin, live gates deny ungrants at once; Codex: app-server restart at idle for MCP, skills 'now'; mock 'now',
+  `[mock:config-change]`). Org changes never grant (no grant fields on drafts) and keep ids and grants through
+  `setup/orgMerge.ts` mergeOrgChart. Proposal decisions add 'decline' and card-typed MCP `secrets`
+  (`proposalSecretKey`), stored in main and never in events (`ProposalOutcome`), and `Proposal.effect`.
+  Verified by unit tests, fake query() / fake Codex server tests and the mock (runManagerConfig.test.ts end to end);
+  nothing live. The renderer does not yet render decline, card secrets, effect or the link/grant/remove badges.
+
 ## Renderer
 
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.

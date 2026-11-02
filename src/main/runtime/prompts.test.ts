@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, peerMessageText } from './prompts'
+import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, mcpInstallText, peerMessageText, skillsConfigText } from './prompts'
 import { orgChart, project } from './testHelpers'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -41,12 +41,38 @@ describe('buildRolePrompt', () => {
   it('tells the root and canSpawn leads to reach for MCP servers, never reports, never setup runs', () => {
     const text = buildRolePrompt(lead, roles, project(), { isSetup: false, isolation: false })
     expect(text).toContain('call list_mcp_servers')
-    expect(text).toContain('search_mcp_registry, then request_mcp_install')
+    expect(text).toContain('search_mcp_registry first')
     expect(text).toContain('never ask for the same server twice in a run')
     const mid = { ...eng, canSpawn: true, spawnable: [rev.id] }
-    expect(buildRolePrompt(mid, roles, project(), { isSetup: false, isolation: false })).toContain('request_mcp_install')
+    const midText = buildRolePrompt(mid, roles, project(), { isSetup: false, isolation: false })
+    expect(midText).toContain('search_mcp_registry, then request_mcp_install')
+    expect(midText).not.toContain('propose_mcp_servers')
+    expect(midText).not.toContain('propose_skills')
     expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).not.toContain('request_mcp_install')
     expect(buildRolePrompt(lead, roles, project(), { isSetup: true, isolation: false })).not.toContain('request_mcp_install')
+  })
+
+  it('gives the root the MCP and skills configuration paragraphs, and nobody else', () => {
+    const flags = { isSetup: false, isolation: false }
+    const root = buildRolePrompt(lead, roles, project(), flags)
+    expect(root).toContain('propose_mcp_servers')
+    expect(root).toContain('request_mcp_install instead for a server this task needs right now')
+    expect(root).toContain('nothing you add is saved to the shared MCP library')
+    expect(root).toContain('list_skill_library')
+    expect(root).toContain('read_library_skill')
+    expect(root).toContain('propose_skills')
+    expect(root).toContain('link a library skill')
+    expect(root).toContain('project scope only')
+    expect(root).toContain('current slug')
+    for (const r of [eng, rev]) {
+      const t = buildRolePrompt(r, roles, project(), flags)
+      expect(t).not.toContain('propose_mcp_servers')
+      expect(t).not.toContain('propose_skills')
+    }
+    const setup = buildRolePrompt(lead, roles, project(), { isSetup: true, isolation: false })
+    expect(setup).not.toContain('propose_skills')
+    expect(skillsConfigText()).toContain('approval card')
+    expect(mcpInstallText('lead')).not.toContain('propose_mcp_servers')
   })
 
   it('adds the orchestrator isolation paragraph only with isolation', () => {
@@ -97,8 +123,8 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, permission requests, brief
-    expect(parts).toHaveLength(12)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, brief
+    expect(parts).toHaveLength(13)
   })
 
   it('tells only the work-run orchestrator about other runs', () => {
@@ -192,7 +218,7 @@ describe('quick run (Chat) prompts', () => {
     expect(text).toContain("only with the user's permission")
     expect(text).toContain('request_permission_rules')
     expect(text).toContain('set_plan')
-    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'SECRET BRIEF', 'ARCHITECTURE.md', 'About this project']) expect(text).not.toContain(gone)
+    for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'propose_mcp_servers', 'propose_skills', 'SECRET BRIEF', 'ARCHITECTURE.md', 'About this project']) expect(text).not.toContain(gone)
   })
 
   it('names a chosen folder as neutralized data and the edit mode', () => {

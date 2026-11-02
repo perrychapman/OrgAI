@@ -91,7 +91,7 @@ import type {
   TeamReviewInput
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
-import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
+import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
 import { skillAssistPrompt, skillsProject } from './skills/assist'
@@ -355,8 +355,10 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   })
   ipcMain.handle(
     IPC.setupDecide,
-    (_e, input: { runId: string; proposalId: string; decision: ProposalDecision }) =>
-      runs.decideProposal(input.runId, input.proposalId, input.decision)
+    (_e, input: unknown) => {
+      const i = proposalDecideArgs(input)
+      runs.decideProposal(i.runId, i.proposalId, i.decision)
+    }
   )
   ipcMain.handle(IPC.runsContinue, async (_e, input: ContinueRunInput) => {
     const from = runs.summary(input.runId)
@@ -830,4 +832,52 @@ export const connectorArgs = {
     if (i.token.length > CONNECTOR_TOKEN_MAX_CHARS) throw new Error(`The token is too long (at most ${CONNECTOR_TOKEN_MAX_CHARS} characters).`)
     return { connectorId: i.connectorId, token: i.token }
   }
+}
+
+/** Most secret values one proposal decision may carry, and the longest key / value. */
+export const PROPOSAL_SECRETS_MAX = 100
+const PROPOSAL_SECRET_KEY_MAX = 300
+const PROPOSAL_SECRET_VALUE_MAX = 4000
+
+/**
+ * setup:decide input rebuilt field by field: runId and proposalId strings, and a decision of exactly one known
+ * behavior. approve: optional `secrets`, a plain object of at most PROPOSAL_SECRETS_MAX non-empty string values
+ * (keys at most 300 chars, values at most 4,000); revise: `feedback` text; decline: optional `note` text (both at
+ * most PROPOSAL_NOTE_MAX_CHARS). Every other field is dropped and a wrong shape is refused. Exported for tests.
+ */
+export function proposalDecideArgs(input: unknown): { runId: string; proposalId: string; decision: ProposalDecision } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Unknown proposal decision.')
+  const i = input as Record<string, unknown>
+  if (typeof i.runId !== 'string' || !i.runId || i.runId.length > 200) throw new Error('Unknown run.')
+  if (typeof i.proposalId !== 'string' || !i.proposalId || i.proposalId.length > 200) throw new Error('Unknown proposal.')
+  const d = i.decision
+  if (!d || typeof d !== 'object' || Array.isArray(d)) throw new Error('Unknown proposal decision.')
+  const dec = d as Record<string, unknown>
+  const text = (v: unknown, what: string): string => {
+    if (typeof v !== 'string') throw new Error(`The ${what} must be text.`)
+    if (v.length > PROPOSAL_NOTE_MAX_CHARS) throw new Error(`The ${what} is too long (at most ${PROPOSAL_NOTE_MAX_CHARS} characters).`)
+    return v
+  }
+  const head = { runId: i.runId, proposalId: i.proposalId }
+  if (dec.behavior === 'approve') {
+    if (dec.secrets === undefined) return { ...head, decision: { behavior: 'approve' } }
+    if (!dec.secrets || typeof dec.secrets !== 'object' || Array.isArray(dec.secrets)) throw new Error('Secrets must be name-value pairs.')
+    const entries = Object.entries(dec.secrets as Record<string, unknown>)
+    if (entries.length > PROPOSAL_SECRETS_MAX) throw new Error(`At most ${PROPOSAL_SECRETS_MAX} secret values.`)
+    const secrets: Record<string, string> = Object.create(null) as Record<string, string>
+    for (const [k, v] of entries) {
+      if (!k || k.length > PROPOSAL_SECRET_KEY_MAX) throw new Error('Unknown secret slot.')
+      if (typeof v !== 'string') throw new Error('A secret value must be text.')
+      if (v.length > PROPOSAL_SECRET_VALUE_MAX) throw new Error(`A secret value is too long (at most ${PROPOSAL_SECRET_VALUE_MAX} characters).`)
+      if (v) secrets[k] = v
+    }
+    return { ...head, decision: Object.keys(secrets).length ? { behavior: 'approve', secrets } : { behavior: 'approve' } }
+  }
+  if (dec.behavior === 'revise') return { ...head, decision: { behavior: 'revise', feedback: text(dec.feedback, 'feedback') } }
+  if (dec.behavior === 'decline') {
+    if (dec.note === undefined) return { ...head, decision: { behavior: 'decline' } }
+    const note = text(dec.note, 'note').trim()
+    return { ...head, decision: note ? { behavior: 'decline', note } : { behavior: 'decline' } }
+  }
+  throw new Error('Unknown proposal decision.')
 }

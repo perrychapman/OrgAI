@@ -1689,21 +1689,38 @@ export interface McpServersProposalPayload {
 export const SKILL_PROPOSAL_MAX_ITEMS = 10
 
 /**
- * One skill change in a Skill assistant proposal. 'create' writes a new skill; 'update' rewrites SKILL.md of an
- * existing one (resource files kept). scope 'library' targets the skill library (libraryId names the entry on
- * update); scope 'project' targets the session's project (libraryId unused; the skill is matched by draft.name on
- * update). The draft follows the skill limits (name [a-z0-9-] at most 64, never "anthropic" or "claude";
- * description 1..1024 without < or >; body at most SKILL_BODY_MAX_CHARS; no shell injection).
+ * One skill change in a skills proposal (propose_skills: the Skill assistant, and a work run's orchestrator for its
+ * own project). 'create' writes a new skill; 'update' rewrites SKILL.md of an existing one (resource files kept).
+ * scope 'library' targets the skill library (libraryId names the entry on update); scope 'project' targets the
+ * session's project (libraryId unused; the skill is matched by draft.name on update). The draft follows the skill
+ * limits (name [a-z0-9-] at most 64, never "anthropic" or "claude"; description 1..1024 without < or >; body at most
+ * SKILL_BODY_MAX_CHARS; no shell injection).
+ *
+ * Configuration actions, scope 'project' only, never write a SKILL.md: draft.body is '' and the harness fills
+ * draft.name / draft.description with the target skill's (a library entry's for 'link'), so a card can name it.
+ * - 'link': link the library entry `libraryId` into the project; `roles` are the slugs that load it.
+ * - 'grant': change which roles load the project skill named draft.name and/or whether it is enabled. `roles` is
+ *   the complete slug list after the change ([] = no role); omitted keeps the grants. `enabled` omitted keeps the
+ *   state. At least one of the two is set.
+ * - 'remove': remove the project skill named draft.name (a link is unlinked; the library entry stays) and its grants.
  */
 export interface SkillProposalItem {
-  action: 'create' | 'update'
-  /** Library entry id; 'update' with scope 'library' only. */
+  action: 'create' | 'update' | 'link' | 'grant' | 'remove'
+  /** Library entry id: 'update' with scope 'library', and 'link'. */
   libraryId?: string
   draft: SkillDraft
-  /** Role slugs to grant the skill to after creating or updating it. Project scope only; ignored for the library. */
+  /**
+   * Role slugs to grant the skill to after the change. Project scope only; ignored for the library. On 'grant' it is
+   * the complete list after the change.
+   */
   roles?: string[]
+  /** 'grant' only: enable (true) or disable (false) the project skill; omitted keeps the state. */
+  enabled?: boolean
   scope: 'library' | 'project'
 }
+
+/** Actions of SkillProposalItem that change configuration only (no SKILL.md is written; draft.body is ''). */
+export const SKILL_CONFIG_ACTIONS = ['link', 'grant', 'remove'] as const
 
 /** Skill proposal (propose_skills, from the Skill assistant): at most SKILL_PROPOSAL_MAX_ITEMS items. */
 export interface SkillsProposalPayload {
@@ -1719,7 +1736,17 @@ interface ProposalBase {
   agentId: string
   title: string
   createdAt: number
+  /**
+   * When an approved proposal takes effect, set by the harness (runManager.ts proposalEffect) so the card can say so:
+   * 'now' (the live run sees it from the next tool call), 'after-turn' (once the current turn ends and the session is
+   * re-attached), 'next-run' (this run keeps its configuration). Work-run 'mcpServers' / 'skills' proposals:
+   * 'after-turn' on Claude and Codex, 'now' on the mock; everything else 'next-run'. Missing on older events.
+   */
+  effect?: ProposalEffect
 }
+
+/** When an approved proposal takes effect (Proposal.effect). */
+export type ProposalEffect = 'now' | 'after-turn' | 'next-run'
 
 export type Proposal =
   | (ProposalBase & { kind: 'architecture'; payload: ArchitectureSpec })
@@ -1728,7 +1755,36 @@ export type Proposal =
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
 
-export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
+/**
+ * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
+ * propose again; 'decline' applies nothing and tells the agent not to propose the same change again in this run.
+ * `secrets` (kind 'mcpServers' approvals only, like McpInstallDecision.secrets): values for the payload's secret
+ * slots, keyed by proposalSecretKey(slot) = '<serverId>:<env|header>:<name>'; a key that names no slot of the payload
+ * is ignored. Stored in SecretStore on apply under the server's owner (the project server, or its library entry when
+ * linked; the library entry in a library session) and never put in any event or tool result.
+ */
+export type ProposalDecision =
+  | { behavior: 'approve'; secrets?: Record<string, string> }
+  | { behavior: 'revise'; feedback: string }
+  | { behavior: 'decline'; note?: string }
+
+/**
+ * The secret-free outcome of a proposal, carried by the proposal.resolved event and returned to the harness tool.
+ * `waitingForSecrets` (approved 'mcpServers' only): names of servers that still have an empty secret slot and do
+ * not start until the user sets it in Settings.
+ */
+export type ProposalOutcome =
+  | { behavior: 'approve'; waitingForSecrets?: string[] }
+  | { behavior: 'revise'; feedback: string }
+  | { behavior: 'decline'; note?: string }
+
+/** At most this many characters in a proposal decision's feedback or note (longer text is cut in main). */
+export const PROPOSAL_NOTE_MAX_CHARS = 4000
+
+/** The key of one secret slot of an MCP proposal in ProposalDecision.secrets. */
+export function proposalSecretKey(slot: { serverId: string; kind: McpSecretKind; name: string }): string {
+  return `${slot.serverId}:${slot.kind}:${slot.name}`
+}
 
 /** A multiple-choice question the Architect (setup) or the orchestrator (work runs) puts to the user (ask_user tool). */
 export interface UserQuestion {
@@ -2676,7 +2732,7 @@ export type RunEvent =
   | { type: 'run.usage'; runId: string; usage: RunUsage }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
-  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
+  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalOutcome; cancelled?: true }
   | { type: 'question.request'; runId: string; question: UserQuestion }
   | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true }
   /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */

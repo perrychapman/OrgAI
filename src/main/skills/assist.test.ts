@@ -53,6 +53,35 @@ describe('skillProposalProblem', () => {
     expect(skillProposalProblem([item({ action: 'update', scope: 'project', draft: draft('review-code'), roles: ['engineer'] })], env())).toBeNull()
   })
 
+  it('accepts and checks the configuration actions link, grant and remove', () => {
+    const cfg = (over: Partial<SkillProposalItem>): SkillProposalItem => item({ scope: 'project', draft: { name: 'review-code', description: '', body: '' }, ...over })
+    const lib2 = env({ library: [{ id: 'lib1', name: 'release-notes' }, { id: 'lib2', name: 'triage' }] })
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'lib2', draft: { name: 'triage', description: '', body: '' }, roles: ['lead'] })], lib2)).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'grant', roles: [] })], env())).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'grant', enabled: false })], env())).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'remove' })], env())).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'remove', draft: { name: 'release-notes', description: '', body: '' } })], env())).toBeNull()
+    // link: the entry must exist and not be linked or shadowed already
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'nope' })], env())).toContain('not a library skill')
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'lib1' })], env())).toContain('already linked')
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'lib2' })], env({ library: [{ id: 'lib2', name: 'review-code' }] }))).toContain('already has a skill named')
+    // grant / remove: the skill must exist; grant must change something; roles must exist
+    expect(skillProposalProblem([cfg({ action: 'grant', draft: { name: 'ghost', description: '', body: '' }, roles: [] })], env())).toContain('no skill named')
+    expect(skillProposalProblem([cfg({ action: 'grant' })], env())).toContain('sets roles')
+    expect(skillProposalProblem([cfg({ action: 'grant', roles: ['nobody'] })], env())).toContain('no role')
+    expect(skillProposalProblem([cfg({ action: 'remove', draft: { name: 'ghost', description: '', body: '' } })], env())).toContain('no skill named')
+    // project scope only, project sessions only, no duplicates
+    expect(skillProposalProblem([cfg({ action: 'remove', scope: 'library' })], env())).toContain('scope must be "project"')
+    expect(skillProposalProblem([cfg({ action: 'remove' })], env({ projectSession: false }))).toContain('needs a project')
+    expect(skillProposalProblem([cfg({ action: 'remove' }), cfg({ action: 'grant', roles: [] })], env())).toContain('twice')
+    expect(skillProposalProblem([cfg({ action: 'update', draft: draft('review-code') }), cfg({ action: 'grant', roles: [] })], env())).toContain('twice')
+  })
+
+  it('refuses library items when allowLibrary is false (work runs)', () => {
+    expect(skillProposalProblem([item()], env({ allowLibrary: false }))).toContain('scope "library" is not available')
+    expect(skillProposalProblem([item({ scope: 'project', draft: draft('fresh') })], env({ allowLibrary: false }))).toBeNull()
+  })
+
   it('refuses empty, oversized and malformed proposals', () => {
     expect(skillProposalProblem([], env())).toContain('no items')
     expect(skillProposalProblem(Array.from({ length: SKILL_PROPOSAL_MAX_ITEMS + 1 }, (_, i) => item({ draft: draft(`s-${i}`) })), env())).toContain('at most')

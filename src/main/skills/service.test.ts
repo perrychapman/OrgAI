@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SKILL_MAX_PER_PROJECT } from '@shared/types'
 import type { Project, SkillLibraryInfo, SkillProposalItem, SkillsProposalPayload } from '@shared/types'
 import { project } from '../runtime/testHelpers'
 import { ProjectStore } from '../store/projects'
@@ -455,6 +456,73 @@ describe('applyProposal', () => {
     // roles omitted: grants stay
     const kept = svc.applyProposal('p1', payload(item({ action: 'update', scope: 'project', draft: draft('review-code', 'v3') })))
     expect(kept?.roles.find((r) => r.slug === 'reviewer')?.skills).toEqual([id])
+  })
+
+  describe('configuration actions', () => {
+    const cfg = (over: Partial<SkillProposalItem>): SkillProposalItem => ({ action: 'grant', scope: 'project', draft: draft('ignored', ''), ...over })
+    const skillNamed = (name: string) => store.get('p1')?.skills?.find((s) => s.name === name)
+    const grantsOf = (slug: string) => store.get('p1')?.roles.find((r) => r.slug === slug)?.skills ?? []
+
+    it('link: links a library entry and grants the named roles', () => {
+      svc.libraryCreate(draft('shared'))
+      const entry = svc.libraryList()[0].entry
+      const saved = svc.applyProposal('p1', payload(cfg({ action: 'link', libraryId: entry.id, draft: draft('shared', ''), roles: ['engineer'] })))
+      const s = saved!.skills!.find((x) => x.libraryId === entry.id)!
+      expect(s.name).toBe('shared')
+      expect(grantsOf('engineer')).toEqual([s.id])
+      expect(svc.libraryList()).toHaveLength(1)
+    })
+
+    it('grant: roles is the complete list (empty ungrants everyone, omitted keeps), enabled toggles', () => {
+      svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('review-code'), roles: ['engineer', 'reviewer'] })))
+      const id = skillNamed('review-code')!.id
+      svc.applyProposal('p1', payload(cfg({ draft: draft('review-code', ''), roles: ['reviewer'] })))
+      expect(grantsOf('engineer')).toEqual([])
+      expect(grantsOf('reviewer')).toEqual([id])
+      svc.applyProposal('p1', payload(cfg({ draft: draft('review-code', ''), enabled: false })))
+      expect(skillNamed('review-code')!.enabled).toBe(false)
+      expect(grantsOf('reviewer')).toEqual([id])
+      svc.applyProposal('p1', payload(cfg({ draft: draft('review-code', ''), enabled: true, roles: [] })))
+      expect(skillNamed('review-code')!.enabled).toBe(true)
+      expect(grantsOf('reviewer')).toEqual([])
+      expect(svc.read({ projectId: 'p1', skillId: id }).body).toBe('Do the thing.')
+    })
+
+    it('remove: drops the project skill and its grants, never the library entry', () => {
+      svc.libraryCreate(draft('shared'))
+      const entry = svc.libraryList()[0].entry
+      svc.linkLibrary({ projectId: 'p1', libraryId: entry.id, roleIds: ['r-eng'] })
+      svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('own'), roles: ['engineer'] })))
+      svc.applyProposal('p1', payload(cfg({ action: 'remove', draft: draft('shared', '') }), cfg({ action: 'remove', draft: draft('own', '') })))
+      expect(store.get('p1')?.skills ?? []).toEqual([])
+      expect(grantsOf('engineer')).toEqual([])
+      expect(svc.libraryList().map((l) => l.entry.name)).toEqual(['shared'])
+    })
+
+    it('a link counts toward the per-project limit', () => {
+      svc.libraryCreate(draft('shared'))
+      const entry = svc.libraryList()[0].entry
+      for (let i = 0; i < SKILL_MAX_PER_PROJECT; i++) svc.create({ projectId: 'p1', draft: draft(`s-${i}`) })
+      expect(() => svc.applyProposal('p1', payload(cfg({ action: 'link', libraryId: entry.id, draft: draft('shared', '') })))).toThrow(/at most/)
+    })
+
+    it('a failure midway rolls back every config action', () => {
+      svc.libraryCreate(draft('shared'))
+      const entry = svc.libraryList()[0].entry
+      svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('own'), roles: ['engineer'] })))
+      const snap = () => JSON.stringify({ ...store.get('p1'), updatedAt: 0 })
+      const before = snap()
+      const real = svc.remove.bind(svc)
+      vi.spyOn(svc, 'remove').mockImplementation((i) => {
+        real(i)
+        throw new Error('disk full')
+      })
+      expect(() =>
+        svc.applyProposal('p1', payload(cfg({ action: 'link', libraryId: entry.id, draft: draft('shared', ''), roles: ['reviewer'] }), cfg({ action: 'remove', draft: draft('own', '') })))
+      ).toThrow(/disk full/)
+      expect(snap()).toBe(before)
+      expect(svc.libraryList().map((l) => l.entry.name)).toEqual(['shared'])
+    })
   })
 
   it('rolls everything back when a later item fails midway (L7)', () => {
