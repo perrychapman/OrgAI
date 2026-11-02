@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { McpInstallRequest, MergeReview, PermissionRequest, PermissionRuleRequest, Proposal, RunEvent, UserQuestion } from '@shared/types'
-import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
+import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 
 function cards(): { c: PendingCardMaps; resolves: Record<string, ReturnType<typeof vi.fn>> } {
   const resolves = { perm: vi.fn(), prop: vi.fn(), q: vi.fn(), merge: vi.fn(), install: vi.fn(), rules: vi.fn() }
@@ -67,5 +67,39 @@ describe('cancelPending', () => {
     broadcast.mockClear()
     expect(cancelPending(c, 'run-1', broadcast)).toBe(0)
     expect(broadcast).not.toHaveBeenCalled()
+  })
+})
+
+describe('proposalEffect', () => {
+  const work = { kind: 'work' as const, projectId: 'p1' }
+  it('work-run MCP and skills changes reach the live run: now on the mock, after the turn elsewhere', () => {
+    expect(proposalEffect('mcpServers', work, 'mock')).toBe('now')
+    expect(proposalEffect('skills', work, 'mock')).toBe('now')
+    expect(proposalEffect('mcpServers', work, 'claude')).toBe('after-turn')
+    expect(proposalEffect('skills', work, 'codex')).toBe('after-turn')
+  })
+  it('everything else applies from the next run', () => {
+    expect(proposalEffect('orgChart', work, 'mock')).toBe('next-run')
+    expect(proposalEffect('mcpServers', { kind: 'setup', projectId: 'p1' }, 'claude')).toBe('next-run')
+    expect(proposalEffect('mcpServers', { kind: 'mcp-assist', projectId: 'harness' }, 'mock')).toBe('next-run')
+    expect(proposalEffect('skills', { kind: 'skill-assist', projectId: 'p1' }, 'claude')).toBe('next-run')
+    expect(proposalEffect('skills', { kind: 'work', projectId: 'quick', quick: {} as never }, 'claude')).toBe('next-run')
+  })
+})
+
+describe('cleanProposalDecision / proposalOutcome', () => {
+  it('keeps only known fields and string secrets', () => {
+    expect(cleanProposalDecision({ behavior: 'approve', extra: 1 })).toEqual({ behavior: 'approve' })
+    expect(cleanProposalDecision({ behavior: 'approve', secrets: { a: 'x', b: 2, c: '' } })).toEqual({ behavior: 'approve', secrets: { a: 'x' } })
+    expect(cleanProposalDecision({ behavior: 'revise', feedback: 'more', x: 1 })).toEqual({ behavior: 'revise', feedback: 'more' })
+    expect(cleanProposalDecision({ behavior: 'decline', note: '  why  ' })).toEqual({ behavior: 'decline', note: 'why' })
+  })
+  it('anything unknown declines, so nothing is applied', () => {
+    expect(cleanProposalDecision(null)).toEqual({ behavior: 'decline' })
+    expect(cleanProposalDecision({ behavior: 'allow' })).toEqual({ behavior: 'decline' })
+  })
+  it('the outcome never carries secrets', () => {
+    expect(proposalOutcome({ behavior: 'approve', secrets: { a: 'x' } })).toEqual({ behavior: 'approve' })
+    expect(proposalOutcome({ behavior: 'decline' })).toEqual({ behavior: 'decline' })
   })
 })

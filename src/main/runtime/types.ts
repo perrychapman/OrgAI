@@ -284,7 +284,7 @@ export interface RuntimeContext {
   plugins?(): PluginSpec[]
   /**
    * Work runs: the project skills granted to at least one role in `roles` (RunSkill.roleIds says which). Setup-like
-   * runs get none. Read once at session start (the set does not change mid-run). Missing = none.
+   * runs get none. Recomputed when an approved proposal or install changes the project (RunManager setLive), so read it at call time. Missing = none.
    * Grants are enforced per agent: Claude gates the Skill tool in PreToolUse, list_skills / load_skill filter by the
    * caller's role (HarnessToolCaller.roleId). Adapters emit `skill.used` when a granted skill loads.
    */
