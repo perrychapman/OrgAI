@@ -147,6 +147,49 @@ describe('diffOrgChart', () => {
     expect(d.added.map((r) => r.slug)).toEqual(['dev-b'])
   })
 
+  it('lands a responsibilities-only change in changed, compared in order (review M-a)', () => {
+    const cur = [role('a', { responsibilities: ['Write code', 'Run tests'] }), role('b', { responsibilities: ['x', 'y'] }), role('c', { responsibilities: ['k'] })]
+    const prop = [
+      role('a', { responsibilities: ['Write code', 'Run tests', 'Approve every change'] }),
+      role('b', { responsibilities: ['y', 'x'] }),
+      { ...role('c'), responsibilities: undefined }
+    ]
+    const d = diffOrgChart(cur, prop)
+    expect(d.changed.map((c) => c.role.slug)).toEqual(['a', 'b'])
+    expect(d.changed[0].changes).toEqual([{ field: 'responsibilities', label: 'responsibilities', from: '', to: 'responsibilities changed' }])
+    expect(d.changed[0].responsibilities).toEqual({ before: ['Write code', 'Run tests'], after: ['Write code', 'Run tests', 'Approve every change'] })
+    expect(d.changed[0].prompt).toBeUndefined()
+    // A field the proposal leaves out is not a change.
+    expect(d.unchanged.map((r) => r.slug)).toEqual(['c'])
+    expect(d.summary).toBe('2 changed')
+  })
+
+  it('shows a tier change the model line does not (review M-a)', () => {
+    // An explicit model pick on the deep tier proposed back with its own tier: the model reads the same, remaps differ.
+    const cur = [role('a', { model: 'claude-sonnet-4-5', tier: 'deep' }), role('b', { model: 'gpt-5', tier: 'deep' }), role('c', { model: 'sonnet', tier: 'everyday' })]
+    const prop = [
+      role('a', { model: 'claude-sonnet-4-5', tier: 'everyday' }),
+      role('b', { model: 'gpt-5', tier: undefined }),
+      role('c', { model: 'opus', tier: 'deep' })
+    ]
+    const d = diffOrgChart(cur, prop)
+    const by = (slug: string) => d.changed.find((c) => c.role.slug === slug)?.changes
+    expect(by('a')).toEqual([{ field: 'tier', label: 'tier', from: 'Deep', to: 'Everyday' }])
+    expect(by('b')).toEqual([{ field: 'tier', label: 'tier', from: 'Deep', to: 'none' }])
+    // The model line already says Everyday -> Deep, so the tier is not repeated.
+    expect(by('c')).toEqual([{ field: 'model', label: 'model', from: 'Everyday', to: 'Deep' }])
+  })
+
+  it('shows the ids when a model change keeps its tier label (review M1)', () => {
+    const d = diffOrgChart([role('a', { model: 'claude-sonnet-4-5' })], [role('a', { model: 'claude-sonnet-4-6' })])
+    expect(d.changed[0].changes).toEqual([{ field: 'model', label: 'model', from: 'Everyday (claude-sonnet-4-5)', to: 'Everyday (claude-sonnet-4-6)' }])
+  })
+
+  it('treats a legacy role without a tier as the tier its model stands for', () => {
+    const d = diffOrgChart([role('a', { model: 'sonnet' })], [role('a', { model: 'sonnet', tier: 'everyday' })])
+    expect(d.unchanged).toHaveLength(1)
+  })
+
   it('scores name similarity', () => {
     expect(nameSimilarity('Lead', 'lead')).toBe(1)
     expect(nameSimilarity('Backend Dev', 'Backend Developer')).toBeGreaterThanOrEqual(0.7)

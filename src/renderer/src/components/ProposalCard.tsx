@@ -191,8 +191,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
-      {proposal.kind === 'mcpServers' && <McpProposalBody payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
-      {proposal.kind === 'skills' && <SkillsProposalBody payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
+      {proposal.kind === 'mcpServers' && <McpProposalBody proposalId={proposal.id} payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
+      {proposal.kind === 'skills' && <SkillsProposalBody proposalId={proposal.id} payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
       {mode !== 'idle' && (
         <div className="proposal-feedback" ref={feedbackRef}>
           <label className="proposal-note-label" htmlFor={`${noteId}-${mode}`}>
@@ -324,6 +324,53 @@ function PromptDisclosure({ prompt, roleName, label }: { prompt: string; roleNam
   )
 }
 
+/** A changed role's new responsibilities behind a disclosure (review M-a): they go into its system prompt, so they are shown like the prompt. */
+function ResponsibilitiesDisclosure({ before, items, roleName }: { before: readonly string[]; items: readonly string[]; roleName: string }): ReactElement {
+  const name = clampLabel(showHidden(roleName), 60)
+  // A dropped line (a constraint) matters as much as a new one; a reorder alone would otherwise look like no change.
+  const removed = before.filter((x) => !items.includes(x))
+  const added = new Set(items.filter((x) => !before.includes(x)))
+  const reorderOnly = removed.length === 0 && added.size === 0
+  return (
+    <details className="org-diff-prompt" data-testid="org-diff-responsibilities">
+      <summary>
+        Show new responsibilities
+        <span className="sr-only"> for {name}</span>
+      </summary>
+      <div className="org-diff-prompt-body">
+        {items.some(hasHidden) && (
+          <Badge tone="danger" icon={TriangleAlert} testId="org-diff-responsibilities-hidden">
+            Contains hidden characters
+          </Badge>
+        )}
+        {items.length > 0 ? (
+          <ul className="proposal-list org-diff-resp">
+            {items.map((x, i) => (
+              <li key={i}>
+                {added.has(x) && <span className="org-diff-resp-tag">New: </span>}
+                {showHidden(x)}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="org-diff-prompt-empty">No responsibilities.</p>
+        )}
+        {reorderOnly && <p className="org-diff-prompt-empty">Same responsibilities in a new order.</p>}
+        {removed.length > 0 && (
+          <>
+            <p className="org-diff-resp-head">Removed</p>
+            <ul className="proposal-list org-diff-resp is-removed" data-testid="org-diff-responsibilities-removed">
+              {removed.map((x, i) => (
+                <li key={i}>{showHidden(x)}</li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </details>
+  )
+}
+
 function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
   const hidden = hasHidden(role.name) || hasHidden(role.description) || hasHidden(role.prompt) || role.tools.some(hasHidden) || role.responsibilities.some(hasHidden)
   return (
@@ -360,10 +407,16 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
   )
 }
 
+/** Fields whose change line is a fixed summary ("prompt changed"); the new text sits behind a disclosure. */
+const SUMMARY_FIELDS: ReadonlySet<string> = new Set(['prompt', 'responsibilities'])
+
 function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement {
   // The row badge shows without opening anything, so it also covers the new prompt.
   const hidden =
-    hasHidden(item.role.name) || hasHidden(item.prompt?.after) || item.changes.some((c) => c.field !== 'prompt' && (hasHidden(c.from) || hasHidden(c.to)))
+    hasHidden(item.role.name) ||
+    hasHidden(item.prompt?.after) ||
+    !!item.responsibilities?.after.some(hasHidden) ||
+    item.changes.some((c) => !SUMMARY_FIELDS.has(c.field) && (hasHidden(c.from) || hasHidden(c.to)))
   return (
     <div className="org-diff-row is-changed" data-testid="org-diff-row" data-change="changed" data-role={clampLabel(item.role.name, 64)}>
       <div className="org-diff-line">
@@ -380,9 +433,10 @@ function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement 
       </div>
       <ul className="org-diff-fields">
         {item.changes.map((c) => (
-          <li key={c.field}>{c.field === 'prompt' ? 'prompt changed' : `${c.label}: ${showHidden(c.from)} -> ${showHidden(c.to)}`}</li>
+          <li key={c.field}>{SUMMARY_FIELDS.has(c.field) ? c.to : `${c.label}: ${showHidden(c.from)} -> ${showHidden(c.to)}`}</li>
         ))}
       </ul>
+      {item.responsibilities && <ResponsibilitiesDisclosure before={item.responsibilities.before} items={item.responsibilities.after} roleName={item.role.name} />}
       {item.prompt && <PromptDisclosure prompt={item.prompt.after} roleName={item.role.name} label="Show new prompt" />}
     </div>
   )
@@ -393,7 +447,7 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
   return (
     <div className="org-diff">
       <p className="org-diff-summary">{diff.summary}</p>
-      <p className="proposal-rationale">{payload.rationale}</p>
+      <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
       {diff.added.length > 0 && (
         <div className="org-diff-group" role="group" aria-label="Added roles">
           {diff.added.map((r) => (
@@ -416,8 +470,8 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
                 <Badge tone="danger" icon={Minus}>
                   Removed
                 </Badge>
-                <span className="org-diff-name">{r.name}</span>
-                <span className="org-diff-meta">was reporting to {parentLabel(r, currentRoles)}</span>
+                <span className="org-diff-name">{showHidden(r.name)}</span>
+                <span className="org-diff-meta">was reporting to {showHidden(parentLabel(r, currentRoles))}</span>
               </div>
             </div>
           ))}
@@ -430,7 +484,7 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
           </summary>
           <ul className="proposal-list">
             {diff.unchanged.map((r) => (
-              <li key={r.id}>{r.name}</li>
+              <li key={r.id}>{showHidden(r.name)}</li>
             ))}
           </ul>
         </details>
@@ -453,7 +507,7 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
   if (payload.maxAutoContinues !== undefined) rows.push(['Max automatic continues per run', String(payload.maxAutoContinues)])
   return (
     <>
-      <p className="proposal-rationale">{payload.rationale}</p>
+      <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
       {rows.length > 0 && (
         <div className="proposal-kv">
           {rows.map(([k, v]) => (
@@ -482,7 +536,12 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
       )}
       {payload.brief && (
         <Section title="Project brief">
-          <div className="proposal-prompt">{payload.brief}</div>
+          {hasHidden(payload.brief) && (
+            <Badge tone="danger" icon={TriangleAlert}>
+              Contains hidden characters
+            </Badge>
+          )}
+          <div className="proposal-prompt">{showHidden(payload.brief)}</div>
         </Section>
       )}
     </>
