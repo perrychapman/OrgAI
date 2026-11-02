@@ -184,6 +184,25 @@ export function pauseReasonText(window: string | undefined, error?: string): str
   )
 }
 
+/** Any decision card open on the run (the user's turn). */
+function hasOpenCard(r: PendingCardMaps): boolean {
+  return (
+    r.pending.size > 0 ||
+    r.pendingProposals.size > 0 ||
+    r.pendingQuestions.size > 0 ||
+    r.pendingMerges.size > 0 ||
+    r.pendingInstalls.size > 0 ||
+    r.pendingRules.size > 0
+  )
+}
+
+/** RunSummary.endedWhile for a run cut by the app: idle or an open card is 'waiting', live work 'working', paused none. */
+export function quitEndedWhile(status: RunSummary['status'], openCard: boolean): 'working' | 'waiting' | undefined {
+  if (status === 'paused' || status === 'finished' || status === 'error') return undefined
+  if (status === 'idle' || openCard) return 'waiting'
+  return 'working'
+}
+
 interface ActiveRun {
   summary: RunSummary
   session?: RuntimeSession
@@ -216,6 +235,10 @@ interface ActiveRun {
   userStopped?: boolean
   /** Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }). The first one wins. */
   endedBy?: 'user' | 'app'
+  /** With endedBy 'app': what the run was doing when the quit began (RunSummary.endedWhile). Read before stopping. */
+  endedWhile?: 'working' | 'waiting'
+  /** The session.stop() call in flight (stopSession), so End session, quit and a late start share one stop. */
+  stopCall?: Promise<void>
   /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
   titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
@@ -578,6 +601,10 @@ export class RunManager {
   /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
   private titleAborts = new Map<AbortController, string>()
   private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
+  /** Set by stopAll({ reason: 'quit' }) and markQuit: no run starts, continues, resumes or takes a message after it. */
+  private quitting = false
+  /** adapter.start() calls not yet settled; stopAll waits for them so a session that opens during a quit is stopped. */
+  private startsInFlight = new Set<Promise<unknown>>()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -759,6 +786,7 @@ export class RunManager {
     quick,
     buildWorkspace
   }: StartInput): Promise<RunSummary> {
+    this.refuseWhileQuitting()
     // Each virtual project belongs to exactly one kind of run.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
     if (project.id === SKILLS_PROJECT_ID && kind !== 'skill-assist') throw new Error('Only the Skill assistant can run on the skills project.')
@@ -893,7 +921,10 @@ export class RunManager {
         // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
         if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
           summary.endedBy = active.endedBy
-          if (active.endedBy === 'app') summary.endedWithApp = true
+          if (active.endedBy === 'app') {
+            summary.endedWithApp = true
+            if (active.endedWhile) summary.endedWhile = active.endedWhile
+          }
         }
         if (e.status === 'paused') {
           summary.pausedUntil = e.pausedUntil
@@ -1208,8 +1239,18 @@ export class RunManager {
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
       }
-      active.session = await adapter.start(ctx)
+      const opening = adapter.start(ctx)
+      this.startsInFlight.add(opening)
+      try {
+        active.session = await opening
+      } finally {
+        this.startsInFlight.delete(opening)
+      }
       void active.session.finished.finally(() => this.teardown(active))
+      // The run was ended (End session or the app quitting) while its session was still opening: stop it at once.
+      if (active.userStopped) {
+        this.stopSession(active)?.catch((err: unknown) => log.warn(`Run ${summary.id}: stopping a session that opened after its end failed: ${(err as Error)?.message ?? err}`))
+      }
     } catch (e) {
       emit({ type: 'run.status', runId: summary.id, status: 'error', error: (e as Error).message })
       // No session will ever finish this run; it must not count as live.
@@ -1954,6 +1995,7 @@ export class RunManager {
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
+    this.refuseWhileQuitting()
     const active = this.runs.get(runId)
     if (!active?.session) throw new Error('Run is not active')
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
@@ -1979,12 +2021,94 @@ export class RunManager {
 
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
-    if (!active?.session) return
+    if (!active) return
+    const st = active.summary.status
+    if (st === 'finished' || st === 'error') return
     active.userStopped = true
     active.endedBy ??= 'user'
+    // Saved with the 'stopping' status, so a quit or crash before the session ends still reads as the user's end.
+    if (active.endedBy === 'user') active.summary.endedBy = 'user'
     active.titleAbort?.abort()
     active.emit({ type: 'run.status', runId, status: 'stopping' })
-    await active.session.stop()
+    this.flush(active)
+    // A session still opening is stopped by start() as soon as adapter.start resolves (userStopped is set).
+    await this.stopSession(active)
+  }
+
+  /** The run's session.stop(), one call at a time (End session, quit and a late start share it; a failed stop can be retried). */
+  private stopSession(r: ActiveRun): Promise<void> | undefined {
+    if (!r.session) return undefined
+    if (r.stopCall) return r.stopCall
+    const call = r.session.stop()
+    r.stopCall = call
+    call.catch(() => {
+      if (r.stopCall === call) r.stopCall = undefined
+    })
+    return call
+  }
+
+  private refuseWhileQuitting(): void {
+    if (this.quitting) throw new Error('OrgAI is quitting; runs cannot start, continue or take messages now.')
+  }
+
+  /**
+   * In memory: the run is being cut by `by` (the first cut wins). endedWhile is read before anything stops. A run
+   * that already ended (finished or error, teardown pending) is left alone.
+   */
+  private markCut(r: ActiveRun, by: 'user' | 'app'): void {
+    const st = r.summary.status
+    if (st === 'finished' || st === 'error') return
+    if (by === 'app' && !r.endedBy) {
+      const w = quitEndedWhile(st, hasOpenCard(r))
+      if (w) r.endedWhile = w
+    }
+    r.userStopped = true
+    r.endedBy ??= by
+  }
+
+  /**
+   * Write a run's summary and record now (synchronous). On a quit, a cut run that has not reported its end is written
+   * finished; a paused run keeps its pause (the store's boot normalization ends it next start). A cut run's endedBy
+   * goes on the summary, with endedWithApp and endedWhile only when it is 'app'. A run that ended on its own keeps
+   * no endedBy.
+   */
+  private writeCut(r: ActiveRun, quit: boolean): void {
+    const s = r.summary
+    if (quit && r.endedBy && s.status !== 'finished' && s.status !== 'error' && s.status !== 'paused') {
+      s.status = 'finished'
+      s.endedAt ??= Date.now()
+      if (s.autoResume) delete s.autoResume
+    }
+    if ((s.status === 'finished' || s.status === 'error') && r.endedBy) {
+      s.endedBy ??= r.endedBy
+      if (s.endedBy === 'app') {
+        s.endedWithApp = true
+        if (r.endedWhile) s.endedWhile = r.endedWhile
+      }
+    }
+    try {
+      this.store.upsert(s)
+    } catch (e) {
+      console.error('Failed to persist run summary:', e)
+    }
+    this.flush(r)
+  }
+
+  /**
+   * The app is quitting and will not wait any longer (index.ts quitGate: the deadline passed, stopAll failed, or a
+   * forced second quit). Synchronously refuses new work, cancels resumes and titles, marks every live run cut by the
+   * app (an End session already under way keeps 'user') and writes each summary and record. Safe to call again.
+   */
+  markQuit(): void {
+    this.quitting = true
+    for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
+    for (const a of this.titleAborts.keys()) a.abort()
+    for (const r of this.runs.values()) this.markCut(r, 'app')
+    for (const r of this.runs.values()) this.writeCut(r, true)
+    // Ask every open session to stop before the process goes (nothing waits for it).
+    for (const r of this.runs.values()) {
+      this.stopSession(r)?.catch((err: unknown) => log.warn(`Run ${r.summary.id}: stop on quit failed: ${(err as Error)?.message ?? err}`))
+    }
   }
 
   /**
@@ -1993,36 +2117,21 @@ export class RunManager {
    * or auto-resumes, pending titles are aborted, and every summary and record is on disk before this resolves.
    */
   async stopAll(opts: { reason?: 'quit' } = {}): Promise<void> {
-    const by = opts.reason === 'quit' ? 'app' : 'user'
+    const quit = opts.reason === 'quit'
+    // From here on start, continueRun, send and resumeNow refuse ("OrgAI is quitting").
+    if (quit) this.quitting = true
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
-    for (const r of this.runs.values()) {
-      r.userStopped = true
-      r.endedBy ??= by
-    }
+    for (const r of this.runs.values()) this.markCut(r, quit ? 'app' : 'user')
     // Titles still pending for runs that already ended are cancelled too (app quit).
     for (const a of this.titleAborts.keys()) a.abort()
-    await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
-    for (const r of this.runs.values()) {
-      // A session that never reported its end (still opening, or its stop failed) is written as ended here, so
-      // the index does not depend on the store's boot normalization.
-      // A paused run keeps its pause (the store's boot normalization ends it next start, as before).
-      const s = r.summary
-      if (by === 'app' && s.status !== 'finished' && s.status !== 'error' && s.status !== 'paused') {
-        s.status = 'finished'
-        s.endedAt ??= Date.now()
-        if (s.autoResume) delete s.autoResume
-      }
-      if ((s.status === 'finished' || s.status === 'error') && r.endedBy && !s.endedBy) {
-        s.endedBy = r.endedBy
-        if (r.endedBy === 'app') s.endedWithApp = true
-      }
-      try {
-        this.store.upsert(s)
-      } catch (e) {
-        console.error('Failed to persist run summary:', e)
-      }
-      this.flush(r)
-    }
+    // Open sessions are stopped at once, while sessions still opening are waited for (start() stops each one as soon
+    // as adapter.start resolves, userStopped being set), so one hung start does not hold back the others' stops.
+    // The second pass picks up sessions that opened meanwhile; stopSession shares one call per run.
+    await Promise.allSettled([...[...this.runs.values()].map((r) => this.stopSession(r)), ...this.startsInFlight])
+    await Promise.allSettled([...this.runs.values()].map((r) => this.stopSession(r)))
+    // A session that never reported its end (its stop failed) is written as ended here, so the index does not depend
+    // on the store's boot normalization.
+    for (const r of this.runs.values()) this.writeCut(r, quit)
   }
 
   list(projectId: string): RunSummary[] {
@@ -2041,6 +2150,7 @@ export class RunManager {
    * context), work runs use the project's roles. `project` must be the old run's project.
    */
   async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[]): Promise<RunSummary> {
+    this.refuseWhileQuitting()
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')
     if (from.projectId !== project.id) throw new Error('Run belongs to another project')
@@ -2114,6 +2224,8 @@ export class RunManager {
 
   private scheduleResume(runId: string, at: number): void {
     this.clearResume(runId)
+    // No auto-resume is armed while the app quits (resumeNow would refuse); the boot normalization ends the pause.
+    if (this.quitting) return
     const delay = Math.max(0, at - Date.now())
     const timer = setTimeout(() => {
       this.resumeTimers.delete(runId)
@@ -2156,6 +2268,7 @@ export class RunManager {
   /** Continue a paused run now, with the harness's resume message. */
   async resumeNow(runId: string): Promise<RunSummary> {
     this.clearResume(runId)
+    this.refuseWhileQuitting()
     const from = this.summary(runId)
     if (!from) throw new Error('Run not found')
     if (from.status !== 'paused') throw new Error('Run is not paused')

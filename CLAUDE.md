@@ -31,11 +31,15 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
-  - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`), 'app' when OrgAI quit
-    (`stopAll({ reason: 'quit' })`, awaited by index.ts `before-quit` for at most 3 s) or crashed (RunStore boot
-    normalization), always next to `endedWithApp: true`, and absent when the run ended on its own; junk values are
-    dropped on read. The status word comes from the summary alone (ux-review-continue.md M1). Unit-tested; the real
-    Electron quit path is not.
+  - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`, saved with the 'stopping'
+    status so a quit or crash keeps it), 'app' when OrgAI quit (`stopAll({ reason: 'quit' })` through
+    `quitGate.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot
+    normalization, `endedBy ??= 'app'`), always next to `endedWithApp: true` (only then), and absent when the run
+    ended on its own; junk values are dropped on read, a legacy lone `endedWithApp` gets 'app'. With 'app',
+    `endedWhile` says what it was doing: 'waiting' (idle or a card open), 'working' (starting, running, stopping),
+    absent for a paused run. Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
+    session still opening is stopped when it opens. The renderer's adoption of endedBy lands with the
+    one-conversation UI change. Unit-tested; the real Electron quit path is not.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls
@@ -267,12 +271,20 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `sandbox_workspace_write.writable_roots`; never on trust-restricted runs.
   - Matching (ruleMatch.ts): `prefix:*` = `prefix *`; a `cd` into the project, a worktree or an allowed folder is
     free (lexical; MSYS `/c/` only for bash; win32 names ending in dot or space refused). Refused: pipes, redirects,
-    `$(`, backtick, `&`, newline, unquoted `( ) { }` and word-initial `@` (PowerShell), git options that run a program,
-    typographic quotes and dashes, hidden characters in a rule. Only bare shells or shells in the exact
-    `SYSTEM_SHELL_DIRS` are unwrapped.
-  - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words,
-    runner words three; `isTooBroadPrefix` (writers, fetchers, config/eval pairs, interpreters) and blanket or
-    destructive rules are never offered or saved; a provider setMode survives only as acceptEdits. User-configured
+    `$(`, backtick, `&`, newline, unquoted `( ) { }` / `@(` / `@{`, a word-initial `@` only on PowerShell, typographic
+    quotes and dashes, hidden characters in a rule or command. `programRunsProgram` (curated table in ARCHITECTURE.md)
+    refuses, for every rule, options that run another program or read other config: npm-family `--script-shell` /
+    `--node-options` / `--prefix` / `-C`..., go `-exec` / `-toolexec`, cargo `--config` / `-Z`, make `-f` / `SHELL=`,
+    dotnet `-p:*Event=`, node `--import` / `-r` / `-e`, git global `-c` / `--git-dir`, `--config`, `--template`,
+    `--output`, clone `-c`, branch `-D`, stash drop, and `PROGRAM_ENV` assignments (NODE_OPTIONS, GIT_*...); any `$`
+    outside single quotes refuses the segment. `ruleCoversButRefused` says when the Claude hook must answer ask (the CLI
+    would approve by its own prefix match); claude.ts does not call it yet (open, reviewer-4 H-A). Only bare
+    shells or shells in the exact `SYSTEM_SHELL_DIRS` are unwrapped.
+  - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words
+    (podman, nerdctl, kubectl, terraform, helm too), runner words and gh / aws / az / gcloud three; `isTooBroadPrefix`
+    (writers, fetchers, config/eval pairs, container run / exec / compose / buildx / container, gh auth / secret,
+    npm init / create, uv tool, interpreters) and blanket or destructive rules (git restore too) are never offered or
+    saved, and permissions:add refuses them (`permissionAddRefusal`); folder checks fold case on darwin; a provider setMode survives only as acceptEdits. User-configured
     MCP servers get `mcp__<server>`, agent-installed ones exact tool rules. "Always allow for project" saves rules,
     the folders (ctx.allowDirectories) and acceptEdits only from 'default'. Codex file approvals in accept-edits modes
     accept only paths inside the free folders (lexical and real), never `.git` / `.codex` / `.agents` / `.claude`.

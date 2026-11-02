@@ -40,6 +40,7 @@ import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging } from './log'
 import { buildSettingsInfo, windowBackground } from './appInfo'
+import { quitGate } from './quitGate'
 
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
@@ -505,34 +506,20 @@ app.whenReady().then(() => {
 
 /** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
 const QUIT_STOP_DEADLINE_MS = 3000
-let quitStopsDone = false
-app.on('before-quit', (event) => {
-  // Live runs are cut by the app, not the user (RunSummary.endedBy 'app'); hold the quit once until their
-  // summaries are on disk, or the deadline passes. The flag makes the second app.quit() go through.
-  if (quitStopsDone || !runManager || runManager.liveRunCount() === 0) {
-    quitStopsDone = true
-    void runManager?.stopAll({ reason: 'quit' })
-    return
-  }
-  event.preventDefault()
-  quitStopsDone = true
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), QUIT_STOP_DEADLINE_MS)
+// Live runs are cut by the app, not the user (RunSummary.endedBy 'app'): the first quit is held until stopAll has
+// written them, or the deadline passes (then markQuit writes them synchronously). A re-entrant quit while stopAll is
+// pending is held too and never calls stopAll again; one after the deadline is forced through. See quitGate.ts.
+app.on(
+  'before-quit',
+  quitGate({
+    liveCount: () => runManager?.liveRunCount() ?? 0,
+    stopAll: () => runManager?.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
+    markQuit: () => runManager?.markQuit(),
+    deadlineMs: QUIT_STOP_DEADLINE_MS,
+    quit: () => app.quit(),
+    warn: (m) => console.warn(m)
   })
-  const stopped = runManager.stopAll({ reason: 'quit' }).then(
-    () => 'done' as const,
-    (e: unknown) => {
-      console.warn(`Stopping runs on quit failed: ${(e as Error)?.message ?? e}`)
-      return 'done' as const
-    }
-  )
-  void Promise.race([stopped, deadline]).then((result) => {
-    clearTimeout(timer)
-    if (result === 'timeout') console.warn(`Live runs did not stop within ${QUIT_STOP_DEADLINE_MS} ms; quitting anyway.`)
-    app.quit()
-  })
-})
+)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
