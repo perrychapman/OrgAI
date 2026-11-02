@@ -116,6 +116,16 @@ As `spec.md` 12.3, with one change: a role's model shows the tier name ("Fast", 
 role's model is a tier, not the vendor alias. "reports to Orchestrator · Fast", "model Everyday -> Deep". A concrete
 model id is shown as written.
 
+Prompts (review M3, so a work-run orchestrator cannot rewrite a role's instructions unseen): a Changed or Renamed row
+whose prompt changed keeps its "prompt changed" line and adds a "Show new prompt" disclosure (`org-diff-prompt`) with
+the whole new text; an Added row shows its prompt behind "Show prompt" the same way. The text is untrusted: plain text
+through `ClampText` (hidden characters escaped by `showHidden`, clamped at 4 lines with Show more), with the
+"Contains hidden characters" badge inside the disclosure (`org-diff-prompt-hidden`) and on the row itself, visible
+without opening anything (`org-diff-hidden` on a Changed row). Role names, field values and tools go through
+`showHidden` too. Rows are `org-diff-row[data-change=added|changed][data-role]`. The diff helper carries both texts as
+`ChangedRole.prompt` (`lib/orgDiff.ts` `promptChange`). A read error in an MCP or skills body is said once through the
+frame's announcer (`tray-announce`, `useFrameAnnounce`); the line itself is a live region only outside a canvas frame.
+
 ## 7. Second pass (contract pending)
 
 Slots are prepared in this pass and not wired until the runtime contract lands. Do not ship them visible before then.

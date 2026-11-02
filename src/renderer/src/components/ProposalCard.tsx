@@ -18,6 +18,8 @@ import { Textarea } from './ui/Textarea'
 import { McpProposalBody, type SecretValues } from './proposals/McpProposalBody'
 import { SkillsProposalBody } from './proposals/SkillsProposalBody'
 import { useMcpCurrent } from './proposals/useCurrent'
+import { ClampText } from './proposals/ClampText'
+import { clampLabel } from '../lib/clampLabel'
 
 interface Props {
   proposal: Proposal
@@ -298,9 +300,34 @@ function RoleAvatar({ role }: { role: PayloadRole }): ReactElement {
   )
 }
 
-function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
+/**
+ * A role's prompt behind a disclosure (review M3): untrusted agent text, shown through ClampText (showHidden, clamped,
+ * never Markdown), with the hidden-characters badge when it holds any.
+ */
+function PromptDisclosure({ prompt, roleName, label }: { prompt: string; roleName: string; label: string }): ReactElement {
+  const name = clampLabel(showHidden(roleName), 60)
   return (
-    <details className="org-diff-row is-added">
+    <details className="org-diff-prompt" data-testid="org-diff-prompt">
+      <summary>
+        {label}
+        <span className="sr-only"> for {name}</span>
+      </summary>
+      <div className="org-diff-prompt-body">
+        {hasHidden(prompt) && (
+          <Badge tone="danger" icon={TriangleAlert} testId="org-diff-prompt-hidden">
+            Contains hidden characters
+          </Badge>
+        )}
+        {prompt ? <ClampText text={prompt} label={`${name} prompt`} /> : <p className="org-diff-prompt-empty">Empty prompt.</p>}
+      </div>
+    </details>
+  )
+}
+
+function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
+  const hidden = hasHidden(role.name) || hasHidden(role.description) || hasHidden(role.prompt) || role.tools.some(hasHidden) || role.responsibilities.some(hasHidden)
+  return (
+    <details className="org-diff-row is-added" data-testid="org-diff-row" data-change="added" data-role={clampLabel(role.name, 64)}>
       <summary>
         <Badge tone="success" icon={Plus}>
           Added
@@ -308,46 +335,55 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
         <RoleAvatar role={role} />
         <span className="org-diff-name">{showHidden(role.name)}</span>
         <span className="org-diff-meta">
-          reports to {parentLabel(role, all)} · {modelDisplay(role.model)}
+          reports to {showHidden(parentLabel(role, all))} · {showHidden(modelDisplay(role.model))}
           {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
         </span>
       </summary>
       <div className="proposal-role-body">
-        <div>{role.description}</div>
+        <div>{showHidden(role.description)}</div>
         <div className="mono-dim">tools: {showHidden(role.tools.join(', ')) || 'none'}</div>
         {role.responsibilities.length > 0 && (
           <ul className="proposal-list">
             {role.responsibilities.map((x, i) => (
-              <li key={i}>{x}</li>
+              <li key={i}>{showHidden(x)}</li>
             ))}
           </ul>
         )}
-        {(hasHidden(role.name) || hasHidden(role.prompt) || role.tools.some(hasHidden)) && (
+        {hidden && (
           <Badge tone="danger" icon={TriangleAlert}>
             Contains hidden characters
           </Badge>
         )}
-        <div className="proposal-prompt">{showHidden(role.prompt)}</div>
+        <PromptDisclosure prompt={role.prompt} roleName={role.name} label="Show prompt" />
       </div>
     </details>
   )
 }
 
 function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement {
+  // The row badge shows without opening anything, so it also covers the new prompt.
+  const hidden =
+    hasHidden(item.role.name) || hasHidden(item.prompt?.after) || item.changes.some((c) => c.field !== 'prompt' && (hasHidden(c.from) || hasHidden(c.to)))
   return (
-    <div className="org-diff-row is-changed">
+    <div className="org-diff-row is-changed" data-testid="org-diff-row" data-change="changed" data-role={clampLabel(item.role.name, 64)}>
       <div className="org-diff-line">
         <Badge tone="warning" icon={Pencil}>
           {item.renamed ? 'Renamed' : 'Changed'}
         </Badge>
         <RoleAvatar role={item.role} />
-        <span className="org-diff-name">{item.role.name}</span>
+        <span className="org-diff-name">{showHidden(item.role.name)}</span>
+        {hidden && (
+          <Badge tone="danger" icon={TriangleAlert} testId="org-diff-hidden">
+            Contains hidden characters
+          </Badge>
+        )}
       </div>
       <ul className="org-diff-fields">
         {item.changes.map((c) => (
-          <li key={c.field}>{c.field === 'prompt' ? 'prompt changed' : `${c.label}: ${c.from} -> ${c.to}`}</li>
+          <li key={c.field}>{c.field === 'prompt' ? 'prompt changed' : `${c.label}: ${showHidden(c.from)} -> ${showHidden(c.to)}`}</li>
         ))}
       </ul>
+      {item.prompt && <PromptDisclosure prompt={item.prompt.after} roleName={item.role.name} label="Show new prompt" />}
     </div>
   )
 }

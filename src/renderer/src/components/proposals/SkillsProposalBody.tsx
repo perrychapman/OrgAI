@@ -7,6 +7,7 @@ import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import { diffSkillsProposal, type SkillCurrent, type SkillGroup, type SkillRowItem, type SkillRowView } from '../../lib/skillProposal'
 import { Badge } from '../ui/Badge'
 import { ClampText } from './ClampText'
+import { useFrameAnnounce } from '../layout/CanvasFrame'
 
 const ICONS: Record<SkillGroup, typeof Plus | undefined> = { create: Plus, link: Plus, grant: Pencil, update: Pencil, remove: Minus }
 
@@ -39,6 +40,12 @@ function SkillItemRow({ item, view, projectId, current }: { item: SkillProposalI
   const before = read.body
   const after = item.draft.body ?? ''
   const changed = before !== null && before !== after
+  const announce = useFrameAnnounce()
+  const readFailed = view.showChanges && read.status === 'error'
+  useEffect(() => {
+    // The frame's one polite announcer says it; the line itself is not a live region (review L5).
+    if (readFailed && announce) announce(`Current instructions of ${clampLabel(showHidden(item.draft.name), 64)} could not be read.`)
+  }, [readFailed, announce, item.draft.name])
   const name = clampLabel(item.draft.name, 64)
   return (
     <li className="skill-prop-item" data-testid="proposal-skill-item" data-skill={clampLabel(item.draft.name)} data-action={item.action}>
@@ -48,7 +55,7 @@ function SkillItemRow({ item, view, projectId, current }: { item: SkillProposalI
         </Badge>
         <Badge tone="info">{item.scope === 'library' ? 'Library' : 'This project'}</Badge>
         <span className="skill-prop-name mono">{name}</span>
-        {(hasHidden(item.draft.name) || hasHidden(item.draft.description)) && (
+        {(hasHidden(item.draft.name) || hasHidden(item.draft.description) || hasHidden(item.draft.body)) && (
           <Badge tone="danger" icon={TriangleAlert} testId="proposal-skill-hidden">
             Contains hidden characters
           </Badge>
@@ -63,8 +70,8 @@ function SkillItemRow({ item, view, projectId, current }: { item: SkillProposalI
         </div>
       )}
       {view.note && <div className="skill-prop-note muted">{view.note}</div>}
-      {view.showChanges && read.status === 'error' && (
-        <div className="proposal-read-error" role="status" data-testid="proposal-read-error">
+      {readFailed && (
+        <div className="proposal-read-error" role={announce ? undefined : 'status'} data-testid="proposal-read-error">
           <TriangleAlert size={14} aria-hidden="true" /> Current instructions could not be read.
         </div>
       )}

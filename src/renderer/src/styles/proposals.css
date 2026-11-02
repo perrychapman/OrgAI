@@ -130,3 +130,45 @@
   align-items: center;
   gap: var(--space-2);
 }
+
+/* Org chart card: a role's prompt behind a disclosure (review M3). The added row's own summary rules
+   (.org-diff-row.is-added summary in cards.css) would reach this nested summary, so it is reset here. */
+.org-diff-row .org-diff-prompt {
+  margin-top: var(--space-1);
+}
+.org-diff-row .org-diff-prompt > summary {
+  display: list-item;
+  list-style: revert;
+  padding: 0;
+  cursor: pointer;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.org-diff-row .org-diff-prompt > summary::-webkit-details-marker {
+  display: revert;
+}
+.org-diff-row .org-diff-prompt > summary:hover {
+  color: var(--text-primary);
+}
+.org-diff-row .org-diff-prompt > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.org-diff-prompt-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--code-bg);
+  font-size: var(--text-caption);
+}
+.org-diff-prompt-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+}
