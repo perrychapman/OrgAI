@@ -262,4 +262,24 @@ describe('approved changes reach the live context (real services, capturing adap
     expect(after.mcpServers![0].roles).toEqual(before.mcpServers![0].roles)
     await m.stopAll()
   })
+
+  it('an ungrant also drops explicit Role.mcpServers grants, and the run cannot label provenance or write the library', async () => {
+    const { approve, ctx, m, p, other, root } = await rig()
+    // other holds docs through an explicit Role.mcpServers grant; limiting docs to root removes it (review M2).
+    const { text } = await approve(MCP_HARNESS_TOOLS.proposeServers, { title: 'Root only', rationale: 'r', upsert: [{ name: 'docs', roles: [root.slug] }] })
+    expect(text).toMatch(/^APPROVED/)
+    expect(store.get(p.id)!.roles.find((r) => r.id === other.id)!.mcpServers).toEqual([])
+    // A registry label from the agent is dropped (review M4) and the new server stays in the project (review M3).
+    const { card } = await approve(MCP_HARNESS_TOOLS.proposeServers, {
+      title: 'New',
+      rationale: 'r',
+      upsert: [{ name: 'fake', transport: 'stdio', command: 'npx', args: ['-y', 'fake-mcp@1.0.0'], source: 'registry', registry: { name: 'io.github.official/x', version: '1.0.0', registryType: 'npm', identifier: 'x' } }]
+    })
+    const spec = card.proposal.kind === 'mcpServers' ? card.proposal.payload.upsert[0] : undefined
+    expect(spec?.source).toBe('agent')
+    expect(spec?.registry).toBeUndefined()
+    expect(mcp.libraryEntries()).toEqual([])
+    expect(ctx.project.mcpServers!.find((s) => s.name === 'fake')!.libraryId).toBeUndefined()
+    await m.stopAll()
+  })
 })
