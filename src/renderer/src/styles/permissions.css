@@ -72,6 +72,7 @@
   align-items: center;
   gap: var(--space-1);
   max-width: 100%;
+  /* 1px vertical, as the existing .decision-rule-chips code chips in cards.css. */
   padding: 1px var(--space-2);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -85,7 +86,13 @@
   white-space: nowrap;
   font-size: var(--text-mono);
 }
-.perm-rule-chip[data-whole-tool='true'] {
+.perm-no-rule {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.perm-rule-chip[data-broad='true'] {
   border-color: var(--warning);
   background: var(--warning-soft);
   color: var(--warning-text);
@@ -189,6 +196,9 @@
   padding: 0;
   list-style: none;
 }
+.allowed-folder-notices[hidden] {
+  display: none;
+}
 .allowed-folder-notice {
   display: flex;
   align-items: flex-start;
@@ -232,6 +242,12 @@
 .rule-main-line > code {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.rule-draft-warning {
+  display: block;
+  margin-top: var(--space-0h);
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
 }
 .rule-draft-kind {
   display: block;

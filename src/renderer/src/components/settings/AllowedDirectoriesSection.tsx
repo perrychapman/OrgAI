@@ -160,16 +160,15 @@ export function AllowedDirectoriesSection({ project }: { project: Project }): Re
               {error}
             </span>
           )}
-          {notices.length > 0 && (
-            <ul className="allowed-folder-notices" role="status">
+          {/* Always mounted, so screen readers announce the first notice too. */}
+          <ul className="allowed-folder-notices" role="status" hidden={notices.length === 0}>
               {notices.map((n) => (
                 <li key={n} className="allowed-folder-notice" data-testid="allowed-folder-notice">
                   <span>{droppedFolderNotice(n)}</span>
                   <IconButton icon={X} size="sm" label="Dismiss notice" onClick={() => setNotices((all) => all.filter((x) => x !== n))} />
                 </li>
               ))}
-            </ul>
-          )}
+          </ul>
         </div>
       </SettingsCard>
     </SettingsSection>

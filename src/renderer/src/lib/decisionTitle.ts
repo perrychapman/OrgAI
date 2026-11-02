@@ -9,7 +9,7 @@ import type { ProposalKind } from '@shared/types'
 const MAX_TITLE = 120
 
 // eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u061c\ufeff\u202a-\u202e\u2066-\u2069]+/g
+const CONTROL = /(?:[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u115f\u1160\u180e\u200b-\u200f\u061c\u2060-\u2064\u3164\ufe00-\ufe0f\uffa0\ufeff\u202a-\u202e\u2066-\u2069]|[\u{e0000}-\u{e007f}])+/gu
 
 /** One line, no control or bidi override characters, clipped to `max` with an ellipsis. */
 export function oneLine(s: unknown, max = MAX_TITLE): string {
@@ -72,9 +72,9 @@ export function shellSegments(command: string): string[] {
   return parts.map((p) => p.trim()).filter(Boolean)
 }
 
-const CD_STEP = /^(?:cd|chdir|pushd|set-location|sl)(?:\s|$)/i
+const CD_STEP = /^(?:cd|chdir|pushd|popd|set-location|sl)(?=$|[\s\\/.])/i
 
-/** True for a step that only changes folder (`cd x`, `pushd x`, `Set-Location x`). */
+/** True for a step that only changes folder (`cd x`, `cd..`, `cd/d x`, `pushd x`, `popd`, `Set-Location x`). */
 export function isCdSegment(segment: string): boolean {
   return CD_STEP.test(segment.trim())
 }

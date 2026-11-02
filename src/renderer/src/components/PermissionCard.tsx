@@ -8,7 +8,7 @@ import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import { isHiddenCommand, permissionTitle, shellSegments } from '../lib/decisionTitle'
-import { permissionLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
+import { noRuleLine, permissionLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
 import { PROJECT_SETTINGS_PANES, PROJECT_SETTINGS_SECTIONS, requestProjectSettingsSection } from '../lib/settingsTarget'
 import { useAppStore } from '../store/useAppStore'
 
@@ -23,12 +23,15 @@ interface Props {
 }
 
 /** Bidi, zero-width and control characters (other than tab and newline) that can disguise a command. */
-const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u061c\ufeff\u202a-\u202e\u2066-\u2069]/
-const HIDDEN_ALL = new RegExp(HIDDEN_CHARS.source, 'g')
+const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u034f\u115f\u1160\u180e\u200b-\u200f\u061c\u2060-\u2064\u3164\ufe00-\ufe0f\uffa0\ufeff\u202a-\u202e\u2066-\u2069]|[\u{e0000}-\u{e007f}]/u
+const HIDDEN_ALL = new RegExp(HIDDEN_CHARS.source, 'gu')
 
-/** Replaces hidden characters with visible \\uXXXX escapes. */
+/** Replaces hidden characters with visible \\uXXXX (or \\u{XXXXX}) escapes. */
 function showHidden(s: string): string {
-  return s.replace(HIDDEN_ALL, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return s.replace(HIDDEN_ALL, (c) => {
+    const cp = c.codePointAt(0) ?? 0
+    return cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, '0')}`
+  })
 }
 
 const MAX_LINES = 8
@@ -53,7 +56,7 @@ function linesOf(text: string, prefix: string, kind?: 'add' | 'del', clipLines =
 
 /** The shell command exactly as sent, or undefined for any other tool. Never clipped: it is what the user approves. */
 function bashCommand(toolName: string, input: unknown): string | undefined {
-  if (toolName !== 'Bash' || !input || typeof input !== 'object') return undefined
+  if ((toolName !== 'Bash' && toolName !== 'PowerShell') || !input || typeof input !== 'object') return undefined
   return str((input as Record<string, unknown>).command)
 }
 
@@ -79,7 +82,7 @@ export function previewLines(toolName: string, input: unknown): PreviewLine[] {
         }
         return cap(out)
       }
-      if (toolName === 'Bash' && str(o.command) !== undefined) return linesOf(str(o.command) as string, '', undefined, false)
+      if ((toolName === 'Bash' || toolName === 'PowerShell') && str(o.command) !== undefined) return linesOf(str(o.command) as string, '', undefined, false)
       if (toolName === 'Write' && str(o.file_path)) {
         return cap([{ text: clip(str(o.file_path) as string) }, ...linesOf(str(o.content) ?? '', '')])
       }
@@ -142,6 +145,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const copy = useMemo(() => scopeCopy(request.suggestions, project?.permissionMode), [request.suggestions, project?.permissionMode])
   const chips = canScope ? [...new Set(request.ruleLabels ?? [])].map(ruleChip).filter((c) => c.text) : []
   const showEffect = canScope && !!copy.project
+  const noRule = noRuleLine(request.toolName, canScope)
   return (
     <DecisionCard
       kind="permission"
@@ -196,7 +200,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         </Button>
       }
     >
-      {(location || showEffect) && (
+      {(location || showEffect || noRule) && (
       <div className="perm-glance">
         {location && (
           <p className="perm-location" data-testid="perm-location" data-kind={location.kind} data-attention={location.attention ? 'true' : undefined} title={location.full}>
@@ -213,7 +217,14 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
             {chips.length > 0 && (
               <ul className="perm-rule-chips" aria-label="What Allow for session and Always allow approve">
                 {chips.map((c) => (
-                  <li key={c.text} className="perm-rule-chip" data-testid="perm-rule-chip" data-whole-tool={c.wholeTool ? 'true' : undefined} title={c.wholeTool ? `Approves every ${c.text} call, whatever its input` : undefined}>
+                  <li
+                    key={c.text}
+                    className="perm-rule-chip"
+                    data-testid="perm-rule-chip"
+                    data-whole-tool={c.wholeTool ? 'true' : undefined}
+                    data-broad={c.broad ? 'true' : undefined}
+                    title={c.wholeTool ? `Approves every ${c.text} call, whatever its input` : c.broad ? 'Approves every tool of this server, including tools it adds later' : undefined}
+                  >
                     <code>{c.text}</code>
                     {c.wholeTool && <span className="perm-rule-whole">whole tool</span>}
                   </li>
@@ -221,6 +232,11 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
               </ul>
             )}
           </div>
+        )}
+        {noRule && (
+          <p className="perm-no-rule" data-testid="perm-no-rule">
+            {noRule}
+          </p>
         )}
       </div>
       )}

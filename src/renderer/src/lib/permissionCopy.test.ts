@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { PermissionSuggestion } from '@shared/types'
 import {
   PERMISSION_MODE_TRADEOFF,
+  SINGLE_SLASH_REASON,
   allowedFolderDraftProblem,
   checkRuleDraft,
+  collapseRules,
+  noRuleLine,
   droppedFolderNotice,
   droppedFolders,
   isAbsolutePath,
@@ -53,29 +56,71 @@ describe('permissionLocation', () => {
   })
   it('names a worktree', () => {
     const loc = permissionLocation('Bash', { command: 'cd C:\\Users\\me\\notes-app\\.claude\\worktrees\\agent-a1b2 && npm test' }, WIN)
-    expect(loc).toMatchObject({ kind: 'worktree', label: 'In worktree agent-a1b2 (inside the project)', attention: false })
+    expect(loc).toMatchObject({ kind: 'worktree', label: 'Starts in worktree agent-a1b2 (inside the project)', attention: false })
     // A report working in its worktree, relative file path.
     const agentCwd = 'C:\\Users\\me\\notes-app\\.claude\\worktrees\\agent-x'
-    expect(permissionLocation('Edit', { file_path: 'src/a.ts' }, { ...WIN, agentCwd })).toMatchObject({ kind: 'worktree', detail: 'src/a.ts' })
-    expect(permissionLocation('Bash', { command: 'npm test' }, { ...WIN, agentCwd })).toMatchObject({ kind: 'worktree', label: 'In worktree agent-x (inside the project)' })
+    expect(permissionLocation('Edit', { file_path: 'src/a.ts' }, { ...WIN, agentCwd })).toMatchObject({ kind: 'worktree', label: 'In worktree agent-x (inside the project)', detail: 'src/a.ts' })
+    expect(permissionLocation('Bash', { command: 'npm test' }, { ...WIN, agentCwd })).toMatchObject({ kind: 'worktree', label: 'Starts in worktree agent-x (inside the project)' })
   })
   it('flags a folder outside the project', () => {
     const loc = permissionLocation('Edit', { file_path: 'C:\\Users\\me\\shared-lib\\index.js' }, WIN)
     expect(loc).toMatchObject({ kind: 'outside', attention: true, detail: 'index.js' })
     expect(loc?.label).toBe('Outside the project: C:\\Users\\me\\shared-lib')
     expect(permissionLocation('Edit', { file_path: '../shared-lib/index.js' }, POSIX)?.label).toBe('Outside the project: /home/me/shared-lib')
-    expect(permissionLocation('Bash', { command: 'cd .. && ls' }, POSIX)).toMatchObject({ kind: 'outside', label: 'Outside the project: /home/me' })
+    expect(permissionLocation('Bash', { command: 'cd .. && ls' }, POSIX)).toMatchObject({ kind: 'outside', label: 'Starts outside the project: /home/me' })
+  })
+  it('fails closed on commands it cannot follow (review H1)', () => {
+    const unknown = (cmd: string, ctx = POSIX): void => {
+      const loc = permissionLocation('Bash', { command: cmd }, ctx)
+      expect(loc?.kind, cmd).toBe('unknown')
+      expect(loc?.attention, cmd).toBe(true)
+    }
+    unknown('cd -- ~/.ssh && cat id_rsa')
+    unknown('cd -P /etc && cat passwd')
+    unknown("cd ''/etc && cat passwd")
+    unknown('cd "/etc" x && ls')
+    unknown('cd $HOME && ls')
+    unknown('cd *.d && ls')
+    unknown('cd && ls')
+    unknown('cd - && ls')
+    unknown('(cd / && rm -rf x)')
+    unknown('bash -c "cd / && rm -rf x"')
+    unknown('sh -lc "cd /; ls"')
+    unknown('eval "cd /" && ls')
+    unknown('npm test\ncd / && rm -rf x')
+    unknown('cd a\\b && ls')
+    unknown('pushd /x && popd && ls')
+    unknown('cd D: && dir', WIN)
+    unknown('cd C:..\\..\\Windows && dir', WIN)
+    unknown('cd \\Windows && dir', WIN)
+    unknown('cd\\ ; dir', WIN)
+    unknown('Set-Location -Path $env:TEMP; ls', WIN)
+  })
+  it('understands the cd forms it can follow exactly', () => {
+    expect(permissionLocation('PowerShell', { command: 'cd..; ls' }, WIN)).toMatchObject({ kind: 'outside', label: 'Starts outside the project: C:\\Users\\me' })
+    expect(permissionLocation('Bash', { command: 'cd/d C:\\Users\\me\\notes-app\\src && dir' }, WIN)).toMatchObject({ kind: 'project', detail: 'src' })
+    expect(permissionLocation('PowerShell', { command: 'Set-Location -Path C:\\Windows; ls' }, WIN)).toMatchObject({ kind: 'outside' })
+    expect(permissionLocation('Bash', { command: 'cd "/home/me/notes-app/my dir" && ls' }, POSIX)).toMatchObject({ kind: 'project', detail: 'my dir' })
+  })
+  it('treats drive-relative and odd file paths as unclear', () => {
+    expect(permissionLocation('Edit', { file_path: 'C:..\\..\\Windows\\x' }, WIN)?.kind).toBe('unknown')
+    expect(permissionLocation('Edit', { file_path: '\\Windows\\x' }, WIN)?.kind).toBe('unknown')
+    expect(permissionLocation('Edit', { file_path: '/home/me/notes-app\\x' }, POSIX)?.kind).toBe('unknown')
+    expect(permissionLocation('Bash', { command: 'ls', cwd: 'D:x' }, WIN)?.kind).toBe('unknown')
+  })
+  it('replaces invisible characters in the tooltip path', () => {
+    expect(permissionLocation('Edit', { file_path: '/home/me/notes-app/a\u202Eb.js' }, POSIX)?.full).not.toMatch(/\u202E/)
   })
   it('names an allowed folder', () => {
     const loc = permissionLocation('Edit', { file_path: '/home/me/shared-lib/x/y.js' }, { ...POSIX, allowedDirectories: ['/home/me/shared-lib'] })
     expect(loc).toMatchObject({ kind: 'allowed', label: 'In an allowed folder: /home/me/shared-lib', detail: 'x/y.js', attention: false })
   })
   it('follows relative cd steps and cwd, and stops at an unknown target', () => {
-    expect(permissionLocation('Bash', { command: 'cd packages/api && npm test' }, POSIX)).toMatchObject({ kind: 'project', detail: 'packages/api' })
+    expect(permissionLocation('Bash', { command: 'cd packages/api && npm test' }, POSIX)).toMatchObject({ kind: 'project', label: 'Starts in the project', detail: 'packages/api' })
     expect(permissionLocation('Bash', { command: 'npm test', cwd: '/tmp' }, POSIX)).toMatchObject({ kind: 'outside' })
     expect(permissionLocation('Bash', { command: 'cd "$HOME" && rm x' }, POSIX)).toMatchObject({ kind: 'unknown', attention: true })
     expect(permissionLocation('Bash', { command: 'cd ~ && ls' }, POSIX)?.kind).toBe('unknown')
-    expect(permissionLocation('Bash', { command: 'cd /d D:\\work && dir' }, WIN)).toMatchObject({ kind: 'outside', label: 'Outside the project: D:\\work' })
+    expect(permissionLocation('Bash', { command: 'cd /d D:\\work && dir' }, WIN)).toMatchObject({ kind: 'outside', label: 'Starts outside the project: D:\\work' })
     expect(permissionLocation('Bash', { command: "cd '/home/me/notes-app/src' && ls" }, POSIX)).toMatchObject({ kind: 'project', detail: 'src' })
     // A trailing cd does not move the real step.
     expect(permissionLocation('Bash', { command: 'npm test && cd /tmp' }, POSIX)?.kind).toBe('project')
@@ -117,10 +162,13 @@ describe('scopeCopy', () => {
       [rules('Bash(git status)', 'WebSearch'), { type: 'addDirectories', directories: ['/home/me/shared-lib'], destination: 'session' }, { type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
       'default'
     )
-    expect(c.session).toBe('Allow for session: stops asking for the command "git status" and every WebSearch call, allows edits and reads in /home/me/shared-lib and auto-accepts file edits until you end this session.')
+    expect(c.session).toBe('Allow for session: auto-accepts file edits, allows edits and reads in /home/me/shared-lib and stops asking for the command "git status" and every WebSearch call until you end this session.')
     expect(c.project).toBe(
-      "Always allow for project: stops asking for the command \"git status\" and every WebSearch call in this project, adds /home/me/shared-lib to this project's allowed folders and switches this project to Auto-accept file edits."
+      "Always allow for project: switches this project to Auto-accept file edits, adds /home/me/shared-lib to this project's allowed folders and stops asking for the command \"git status\" and every WebSearch call in this project."
     )
+  })
+  it('names a server-level MCP rule as every tool of the server', () => {
+    expect(scopeCopy([rules('mcp__github')], 'auto').project).toBe('Always allow for project: stops asking for every github tool in this project.')
   })
   it('switches the mode only from Ask for everything risky', () => {
     const mode: PermissionSuggestion = { type: 'setMode', mode: 'acceptEdits', destination: 'session' }
@@ -136,16 +184,28 @@ describe('scopeCopy', () => {
 describe('rule words', () => {
   it('says what a rule covers', () => {
     expect(ruleSubject('Bash(npm test *)')).toBe('"npm test" commands')
-    expect(ruleSubject('mcp__github')).toBe('all tools of github')
-    expect(ruleSubject('mcp__github__*')).toBe('all tools of github')
+    expect(ruleSubject('mcp__github')).toBe('every github tool')
+    expect(ruleSubject('mcp__github__*')).toBe('every github tool')
     expect(ruleSubject('Bash')).toBe('every shell command')
     expect(ruleSubject('Read(src/**)')).toBe('Read calls matching src/**')
   })
-  it('marks whole-tool chips', () => {
-    expect(ruleChip('Edit')).toEqual({ text: 'Edit', wholeTool: true })
-    expect(ruleChip('Bash(npm test:*)').wholeTool).toBe(false)
-    expect(ruleChip('mcp__github').wholeTool).toBe(false)
-    expect(ruleChip('Edits and reads in /x').wholeTool).toBe(false)
+  it('marks whole-tool and broad chips', () => {
+    expect(ruleChip('Edit')).toEqual({ text: 'Edit', wholeTool: true, broad: true })
+    expect(ruleChip('Bash(npm test:*)')).toMatchObject({ wholeTool: false, broad: false })
+    expect(ruleChip('mcp__github')).toMatchObject({ wholeTool: false, broad: true })
+    expect(ruleChip('All tools of github')).toMatchObject({ wholeTool: false, broad: true })
+    expect(ruleChip('Edits and reads in /x')).toMatchObject({ wholeTool: false, broad: false })
+  })
+  it('explains a card without rules, for shell commands only', () => {
+    expect(noRuleLine('Bash', false)).toBe('No rule can cover this command (pipes, redirects and $(…) always ask).')
+    expect(noRuleLine('Bash', true)).toBeNull()
+    expect(noRuleLine('Edit', false)).toBeNull()
+  })
+  it('collapses duplicate saved rules with a count', () => {
+    expect(collapseRules(['Bash(cd:*)', 'WebSearch', 'Bash(cd:*)', 'Bash(cd:*)'])).toEqual([
+      { rule: 'Bash(cd:*)', count: 3 },
+      { rule: 'WebSearch', count: 1 }
+    ])
   })
   it('names the kind of a saved rule', () => {
     expect(ruleInfo('Bash(npm test:*)')).toMatchObject({ kind: 'prefix', label: 'command prefix', live: true })
@@ -187,6 +247,25 @@ describe('checkRuleDraft', () => {
     expect(checkRuleDraft('Bash(').ok).toBe(false)
     expect(checkRuleDraft('1abc').ok).toBe(false)
     expect(checkRuleDraft(`Bash(${'x'.repeat(600)})`).ok).toBe(false)
+    for (const r of ['Bash(*:*)', 'Bash(* *)', 'Bash( )', 'Bash(:*)']) expect(checkRuleDraft(r).ok, r).toBe(false)
+  })
+  it('refuses a single leading slash on file rules', () => {
+    const c = checkRuleDraft('Edit(/Users/me/docs/**)')
+    expect(c.ok).toBe(false)
+    if (!c.ok) expect(c.reason).toBe(SINGLE_SLASH_REASON)
+    expect(checkRuleDraft('Read(/etc/hosts)').ok).toBe(false)
+    expect(checkRuleDraft('Edit(//Users/me/docs/**)').ok).toBe(true)
+    expect(checkRuleDraft('Edit(src/**)').ok).toBe(true)
+  })
+  it('warns on destructive prefixes and server-wide rules', () => {
+    const rm = checkRuleDraft('Bash(rm -rf:*)')
+    expect(rm.ok && rm.warning).toMatch(/Careful/)
+    const push = checkRuleDraft('Bash(git push:*)')
+    expect(push.ok && push.warning).toMatch(/Careful/)
+    const srv = checkRuleDraft('mcp__github')
+    expect(srv.ok && srv.warning).toMatch(/every tool of github/)
+    const ok = checkRuleDraft('Bash(npm test:*)')
+    expect(ok.ok && ok.warning).toBeFalsy()
   })
 })
 
@@ -212,6 +291,6 @@ describe('allowed folders', () => {
     expect(droppedFolders(['/a', 'rel', 'C:\\X\\'], ['/a', 'C:\\X'])).toEqual(['rel'])
     expect(droppedFolders(['/a', '/a'], ['/a'])).toEqual([])
     expect(droppedFolders(['rel'], undefined)).toEqual(['rel'])
-    expect(droppedFolderNotice('rel')).toBe("rel was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder.")
+    expect(droppedFolderNotice('rel')).toBe("rel was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, and not the same folder as one already listed.")
   })
 })

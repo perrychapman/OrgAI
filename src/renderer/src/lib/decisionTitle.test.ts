@@ -57,6 +57,10 @@ describe('decisionTitle', () => {
     expect(isCdSegment('cd /x')).toBe(true)
     expect(isCdSegment('pushd x')).toBe(true)
     expect(isCdSegment('cdk deploy')).toBe(false)
+    expect(isCdSegment('cd..')).toBe(true)
+    expect(isCdSegment('cd/d D:\\x')).toBe(true)
+    expect(isCdSegment('popd')).toBe(true)
+    expect(oneLine('a\u00adb\u2060c\u{e0041}d')).toBe('a b c d')
     expect(shellAction('npm test')).toEqual({ action: 'npm test', more: 0 })
   })
   it('flags a compound command as more than its title', () => {

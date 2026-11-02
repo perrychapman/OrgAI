@@ -125,7 +125,7 @@ try {
     check(l1 === 'Permission: Run git status --short', `the first card asks to run git status ${tag}`, l1)
     if (l1) {
       const loc = page.locator(`${CARD} [data-testid=perm-location]`)
-      check((await loc.getAttribute('data-kind')) === 'project' && /In the project/.test(await loc.innerText()), `the location line says In the project ${tag}`, await loc.innerText().catch(() => ''))
+      check((await loc.getAttribute('data-kind')) === 'project' && /Starts in the project/.test(await loc.innerText()), `the location line says Starts in the project ${tag}`, await loc.innerText().catch(() => ''))
       for (const theme of ['dark', 'light']) {
         await setTheme(theme)
         check(await reallyVisible(`${CARD} [data-testid=perm-location]`), `the location line is visible without Details ${tag} ${theme}`)
@@ -154,7 +154,7 @@ try {
     if (l2) {
       const loc = page.locator(`${CARD} [data-testid=perm-location]`)
       const text = await loc.innerText()
-      check((await loc.getAttribute('data-kind')) === 'worktree' && text.includes('In worktree agent-e2e1 (inside the project)'), `the compound card is placed in its worktree ${tag}`, text)
+      check((await loc.getAttribute('data-kind')) === 'worktree' && text.includes('Starts in worktree agent-e2e1 (inside the project)'), `the compound card is placed in its worktree ${tag}`, text)
       const badge = await page.locator(`${CARD} .decision-meta .badge`).allInnerTexts()
       check(badge.some((b) => /3 steps/.test(b)), `the compound card is badged with its step count ${tag}`, badge.join(','))
       await shot(`card-compound-${tag}`)
@@ -242,6 +242,12 @@ try {
   await page.locator('[data-testid=rule-add]').click()
   const refusal = await page.locator('[data-testid=rule-draft-error]').innerText().catch(() => '')
   check(/whole-tool Edit rule/.test(refusal), 'the rules panel refuses a whole-tool Edit rule with a reason', refusal)
+  await ruleInput.fill('Edit(/Users/me/docs/**)')
+  await page.locator('[data-testid=rule-add]').click()
+  const slash = await page.locator('[data-testid=rule-draft-error]').innerText().catch(() => '')
+  check(/write \/\/ for an absolute path/.test(slash), 'a single leading / on a file rule is refused with the // hint', slash)
+  await ruleInput.fill('Bash(rm -rf:*)')
+  check(/Careful/.test(await page.locator('[data-testid=rule-draft-warning]').innerText().catch(() => '')), 'a destructive prefix shows a warning before Add')
   for (const rule of ['Bash(npm test:*)', 'Bash(npm test *)']) {
     await ruleInput.fill(rule)
     const kind = await page.locator('[data-testid=rule-draft-kind]').innerText().catch(() => '')

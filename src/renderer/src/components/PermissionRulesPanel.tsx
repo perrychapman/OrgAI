@@ -7,7 +7,7 @@ import { IconButton } from './ui/IconButton'
 import { Input } from './ui/Input'
 import { SettingsCard } from './settings/SettingsCard'
 import { SettingsSection } from './settings/SettingsSection'
-import { checkRuleDraft, ruleInfo } from '../lib/permissionCopy'
+import { checkRuleDraft, collapseRules, ruleInfo } from '../lib/permissionCopy'
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 
 const EXAMPLES = ['Bash(npm test:*)', 'Bash(npm test *)', 'Bash(git status)', 'WebSearch', 'mcp__github']
@@ -88,7 +88,7 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
           <p className="settings-card-note">No saved rules yet.</p>
         ) : (
           <ul className="settings-card-list" aria-label="Saved permission rules">
-            {rules.map((rule) => {
+            {collapseRules(rules).map(({ rule, count }) => {
               const info = ruleInfo(rule)
               return (
                 <li key={rule} className="settings-card-item" data-testid="rule-row" data-rule={rule}>
@@ -98,6 +98,11 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
                       <span className="chip rule-kind" data-testid="rule-kind" data-kind={info.kind}>
                         {info.label}
                       </span>
+                      {count > 1 && (
+                        <span className="chip" data-testid="rule-count" title={`Saved ${count} times in the rules file`}>
+                          saved {count} times
+                        </span>
+                      )}
                     </div>
                     <span className="rule-explain">{info.explain}</span>
                   </div>
@@ -150,8 +155,13 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
             </span>
           )}
           {!error && check?.ok && (
-            <span className="rule-draft-kind" id={kindId} aria-live="polite" data-testid="rule-draft-kind">
+            <span className="rule-draft-kind" id={kindId} data-testid="rule-draft-kind">
               {check.info.live ? `${capitalize(check.info.label)}: ${check.info.explain} Takes effect in open runs too.` : `Pattern: ${check.info.explain}`}
+              {check.warning && (
+                <span className="rule-draft-warning" data-testid="rule-draft-warning">
+                  {check.warning}
+                </span>
+              )}
             </span>
           )}
           <details className="rule-examples">

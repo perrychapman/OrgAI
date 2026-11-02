@@ -120,24 +120,70 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined
 }
 
-function unquote(s: string): string {
-  const t = s.trim()
-  return t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0] ? t.slice(1, -1) : t
+/** Invisible characters a path tooltip must not carry (controls, bidi, zero-width, joiners, variation selectors, tags). */
+// eslint-disable-next-line no-control-regex
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f­͏؜ᅟᅠ᠎​-‏‪-‮⁠-⁤⁦-⁩ㅤ︀-️﻿ﾠ]|[\u{e0000}-\u{e007f}]/gu
+
+function visible(s: string): string {
+  return s.replace(INVISIBLE, '�')
 }
 
-/** The folder a `cd`-like step moves to, or null when it cannot be worked out (`cd`, `cd ~`, `cd $X`, `cd -`). */
-function cdTarget(segment: string): string | null {
-  const m = /^\S+\s+(?:\/d\s+)?(.+)$/i.exec(segment.trim())
-  if (!m) return null
-  const target = unquote(m[1])
-  if (!target || target === '-' || /^~|[$%`]/.test(target)) return null
+/**
+ * A path OrgAI must not place by text alone, given the project's path style: a drive-relative Windows path (`C:x`,
+ * `C:..\\..`), a rooted-on-current-drive path (`\\x` or `/x`) under a Windows project, or a backslash under a POSIX
+ * project (a file name there, not a separator).
+ */
+function unplaceable(p: string, project: string): boolean {
+  if (/^[A-Za-z]:(?![\\/])/.test(p)) return true
+  if (isWindowsStyle(project)) return /^[\\/](?![\\/])/.test(p)
+  return p.includes('\\') || WIN_ABS.test(p)
+}
+
+/** A bare shell word OrgAI accepts as a folder: no options, quotes, expansions, globs, grouping or redirections. */
+const BARE_WORD = /^[^\s'"$%~()<>|`;&*?[\]{}!#-][^\s'"$%~()<>|`;&*?[\]{}!#]*$/
+const CD_VERB = /^(?:cd|chdir|pushd|set-location|sl)(?=$|[\s\\/.])/i
+
+/**
+ * The folder a `cd`-like step moves to, or null when it cannot be worked out exactly: no argument, `-`, `~`, options
+ * (`--`, `-P`), variables, globs, more than one word, odd quoting. `cd /d X` (cmd), `cd..` / `cd\` (PowerShell) and
+ * `Set-Location -Path X` are understood. Fails closed: anything unusual is "unclear".
+ */
+function cdTarget(segment: string, project: string): string | null {
+  const s = segment.trim()
+  const verb = CD_VERB.exec(s)?.[0]
+  if (!verb) return null
+  let rest = s.slice(verb.length)
+  if (/^[\\.]/.test(rest)) {
+    // PowerShell's `cd..` / `cd\` functions: the rest is the whole target.
+    rest = rest.trim()
+  } else {
+    rest = rest.replace(/^\s*\/d(?=\s)/i, '').trim()
+    if (/^set-location$|^sl$/i.test(verb)) rest = rest.replace(/^-(?:Literal)?Path\s+/i, '')
+  }
+  if (!rest) return null
+  let target: string
+  const q = rest[0]
+  if (q === '"' || q === "'") {
+    if (rest.length < 2 || rest[rest.length - 1] !== q) return null
+    target = rest.slice(1, -1)
+    if (!target || target.includes(q) || /[$`]/.test(target) || target.startsWith('-') || target.startsWith('~')) return null
+  } else {
+    if (!BARE_WORD.test(rest)) return null
+    target = rest
+  }
+  if (target === '\\' || unplaceable(target, project)) return null
   return target
 }
 
+/** Steps whose folder change OrgAI cannot follow: a subshell or group, or a nested shell (`bash -c "..."`). */
+const NESTED = /^[({]|(?:^|[\s/\\])(?:(?:ba|z|da|k)?sh|pwsh|powershell|cmd)(?:\.exe)?\s+(?:-\w+\s+)*(?:-l?c|-Command|-EncodedCommand|\/c|\/k)(?:\s|$)|(?:^|\s)eval\s/i
+
 /** Name of the folder an absolute path is in, relative to the project: worktree, project, allowed folder or outside. */
-function classify(target: string, isFile: boolean, ctx: LocationContext): PermissionLocation {
+function classify(target: string, isFile: boolean, ctx: LocationContext, shell = false): PermissionLocation {
   const project = ctx.projectPath
-  const full = display(normalizePath(target), project)
+  const full = visible(display(normalizePath(target), project))
+  // A command can still act on other paths, so a shell location names only where it starts.
+  const where = shell ? 'Starts in' : 'In'
   if (isInsidePath(target, project)) {
     const rel = relativePath(target, project)
     if (rel.toLowerCase().startsWith(WORKTREES) || rel.toLowerCase() === WORKTREES.slice(0, -1)) {
@@ -145,23 +191,27 @@ function classify(target: string, isFile: boolean, ctx: LocationContext): Permis
       const slash = rest.indexOf('/')
       const name = slash < 0 ? rest : rest.slice(0, slash)
       const inner = slash < 0 ? '' : rest.slice(slash + 1)
-      if (name) return { kind: 'worktree', label: oneLine(`In worktree ${name} (inside the project)`), detail: inner ? oneLine(inner, 200) : undefined, full, attention: false }
+      if (name) return { kind: 'worktree', label: oneLine(`${where} worktree ${name} (inside the project)`), detail: inner ? oneLine(inner, 200) : undefined, full, attention: false }
     }
-    return { kind: 'project', label: 'In the project', detail: rel ? oneLine(rel, 200) : undefined, full, attention: false }
+    return { kind: 'project', label: `${where} the project`, detail: rel ? oneLine(rel, 200) : undefined, full, attention: false }
   }
   for (const dir of ctx.allowedDirectories ?? []) {
     if (typeof dir !== 'string' || !dir.trim() || !isInsidePath(target, dir)) continue
     const rel = relativePath(target, dir)
-    return { kind: 'allowed', label: oneLine(`In an allowed folder: ${abbreviatePath(display(normalizePath(dir), dir), 48)}`), detail: rel ? oneLine(rel, 200) : undefined, full, attention: false }
+    return { kind: 'allowed', label: oneLine(`${where} an allowed folder: ${abbreviatePath(display(normalizePath(dir), dir), 48)}`), detail: rel ? oneLine(rel, 200) : undefined, full, attention: false }
   }
   const folder = isFile ? parentPath(target) : normalizePath(target)
   return {
     kind: 'outside',
-    label: oneLine(`Outside the project: ${abbreviatePath(display(folder, project), 48)}`),
+    label: oneLine(`${shell ? 'Starts outside' : 'Outside'} the project: ${abbreviatePath(display(folder, project), 48)}`),
     detail: isFile ? oneLine(target.split(/[\\/]/).pop() ?? '', 120) : undefined,
     full,
     attention: true
   }
+}
+
+function unclear(why: string): PermissionLocation {
+  return { kind: 'unknown', label: oneLine(`Working folder unclear: ${why}`, 160), attention: true }
 }
 
 /**
@@ -172,33 +222,35 @@ function classify(target: string, isFile: boolean, ctx: LocationContext): Permis
 export function permissionLocation(toolName: string, input: unknown, ctx: LocationContext): PermissionLocation | null {
   if (!ctx.projectPath || !isAbsolutePath(ctx.projectPath)) return null
   const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
-  const base = ctx.agentCwd && isAbsolutePath(ctx.agentCwd) ? ctx.agentCwd : ctx.projectPath
+  const project = ctx.projectPath
+  const base = ctx.agentCwd && isAbsolutePath(ctx.agentCwd) ? ctx.agentCwd : project
   const cwdInput = str(o.cwd)
+  if (cwdInput && unplaceable(cwdInput, project)) return unclear(cwdInput)
   const start = cwdInput ? resolvePath(base, cwdInput) : base
   if (FILE_TOOLS.has(toolName)) {
     const file = str(o.file_path) ?? str(o.notebook_path) ?? str(o.path)
     if (!file) return null
+    if (unplaceable(file, project)) return unclear(file)
     return classify(resolvePath(start, file), true, ctx)
   }
   if (SHELL_TOOLS.has(toolName)) {
     const command = str(o.command)
     let cwd = start
     if (command) {
-      const firstLine = command.split(/\r?\n/)[0] ?? ''
-      const steps = shellSegments(firstLine)
-      // The folder the last real step runs in: follow every cd before it.
+      if (command.split(/\r?\n/).filter((l) => l.trim()).length > 1) return unclear('several lines')
+      const steps = shellSegments(command.trim())
+      // The folder the last real step runs in: follow every cd before it. Anything OrgAI cannot follow is unclear.
       let lastAction = steps.length - 1
       while (lastAction > 0 && isCdSegment(steps[lastAction])) lastAction--
-      for (let i = 0; i < lastAction; i++) {
-        if (!isCdSegment(steps[i])) continue
-        const target = cdTarget(steps[i])
-        if (target === null) {
-          return { kind: 'unknown', label: oneLine(`Working folder unclear: ${steps[i]}`), attention: true }
-        }
+      for (let i = 0; i <= lastAction; i++) {
+        if (NESTED.test(steps[i])) return unclear('nested shell')
+        if (i === lastAction || !isCdSegment(steps[i])) continue
+        const target = cdTarget(steps[i], project)
+        if (target === null) return unclear(steps[i])
         cwd = resolvePath(cwd, target)
       }
     }
-    return classify(cwd, false, ctx)
+    return classify(cwd, false, ctx, true)
   }
   return cwdInput ? classify(start, false, ctx) : null
 }
@@ -211,7 +263,7 @@ const SHELL_RULE = /^(Bash|PowerShell)\((.*)\)$/s
 export function ruleSubject(rule: string): string {
   const r = rule.trim()
   const server = mcpServerOf(r)
-  if (server) return oneLine(`all tools of ${server}`)
+  if (server) return oneLine(`every ${server} tool`)
   const shell = SHELL_RULE.exec(r)
   if (shell) {
     const body = shell[2].trim()
@@ -270,14 +322,7 @@ export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefin
   }
   const session: string[] = []
   const project: string[] = []
-  if (rules.length) {
-    session.push(`stops asking for ${joinList(rules)}`)
-    project.push(`stops asking for ${joinList(rules)} in this project`)
-  }
-  if (dirs.length) {
-    session.push(`allows edits and reads in ${joinList(dirs)}`)
-    project.push(`adds ${joinList(dirs)} to this project's allowed folders`)
-  }
+  // The mode change first: it is the broadest effect and must survive the clamp in compact mode.
   for (const mode of modes) {
     if (mode === 'acceptEdits') {
       session.push('auto-accepts file edits')
@@ -287,6 +332,14 @@ export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefin
       session.push(oneLine(`uses permission mode ${mode}`, 60))
     }
   }
+  if (dirs.length) {
+    session.push(`allows edits and reads in ${joinList(dirs)}`)
+    project.push(`adds ${joinList(dirs)} to this project's allowed folders`)
+  }
+  if (rules.length) {
+    session.push(`stops asking for ${joinList(rules)}`)
+    project.push(`stops asking for ${joinList(rules)} in this project`)
+  }
   if (!session.length) return { once }
   return {
     once,
@@ -295,10 +348,28 @@ export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefin
   }
 }
 
-/** A card's rule chip: the label from main plus whether it approves a whole tool (warned on the card). */
-export function ruleChip(label: string): { text: string; wholeTool: boolean } {
+/**
+ * A card's rule chip: the label from main, whether it approves a whole tool, and whether it is broad (a whole tool or
+ * every tool of an MCP server, "All tools of <server>"); broad chips get the attention tone.
+ */
+export function ruleChip(label: string): { text: string; wholeTool: boolean; broad: boolean } {
   const text = oneLine(label, 200)
-  return { text, wholeTool: isWholeTool(text) && !mcpServerOf(text) }
+  const server = !!mcpServerOf(text) || /^All tools of \S/.test(text)
+  const wholeTool = isWholeTool(text) && !server
+  return { text, wholeTool, broad: wholeTool || server }
+}
+
+/** The line a card without scope buttons shows: why no rule is offered (shell commands only), else null. */
+export function noRuleLine(toolName: string, hasSuggestions: boolean): string | null {
+  if (hasSuggestions || !SHELL_TOOLS.has(toolName)) return null
+  return 'No rule can cover this command (pipes, redirects and $(…) always ask).'
+}
+
+/** Saved rules with duplicates collapsed, first-seen order, and how often each appeared. */
+export function collapseRules(rules: readonly string[]): { rule: string; count: number }[] {
+  const out = new Map<string, number>()
+  for (const r of rules) if (typeof r === 'string') out.set(r, (out.get(r) ?? 0) + 1)
+  return [...out].map(([rule, count]) => ({ rule, count }))
 }
 
 // ---------- Rule grammar (mirror of main's ruleMatch.ts isValidRule) ----------
@@ -365,8 +436,18 @@ const REFUSED_WHOLE: Record<string, string> = {
 
 export const RULE_FORMAT_HINT = 'A rule looks like Tool, Tool(prefix:*), Tool(prefix *), Tool(exact command) or mcp__server.'
 
-/** Check a typed rule before it is sent. Main checks again (ipc.ts isValidRule). */
-export function checkRuleDraft(draft: string): { ok: true; rule: string; info: RuleInfo } | { ok: false; reason: string } {
+/** Shell verbs main's permissionRules.ts treats as destructive: a prefix rule for them gets a warning (not a refusal). */
+const DESTRUCTIVE = /^(?:sudo|rm|rmdir|del|erase|rd|format|mkfs|dd|shutdown|reboot|chmod|chown|kill|pkill|killall|curl|wget|git\s+push|git\s+reset|git\s+clean|Remove-Item)(?:\s|$)/i
+
+const FILE_RULE_TOOLS = /^(Edit|Write|Read|MultiEdit|NotebookEdit)\(\/(?!\/)/
+
+export const SINGLE_SLASH_REASON = 'Claude Code reads a single leading / as relative to the project; write // for an absolute path (e.g. Edit(//Users/me/docs/**)).'
+
+/**
+ * Check a typed rule before it is sent. Main checks again (ipc.ts). `warning` flags an accepted rule that is broad or
+ * destructive.
+ */
+export function checkRuleDraft(draft: string): { ok: true; rule: string; info: RuleInfo; warning?: string } | { ok: false; reason: string } {
   const r = draft.trim()
   if (!r) return { ok: false, reason: 'Enter a rule first, for example Bash(npm test:*).' }
   if (/[\n\r]/.test(r)) return { ok: false, reason: 'A rule is one line.' }
@@ -378,9 +459,20 @@ export function checkRuleDraft(draft: string): { ok: true; rule: string; info: R
   }
   if (!/^[A-Za-z_][\w-]*(?:\(.+\))?$/s.test(r)) return { ok: false, reason: RULE_FORMAT_HINT }
   if (REFUSED_WHOLE[r]) return { ok: false, reason: REFUSED_WHOLE[r] }
+  if (FILE_RULE_TOOLS.test(r)) return { ok: false, reason: SINGLE_SLASH_REASON }
   const shell = SHELL_RULE.exec(r)
-  if (shell && shellPrefix(shell[2].trim()) === '') return { ok: false, reason: `${shell[1]}(*) would approve every command. Use a prefix such as ${shell[1]}(npm test:*).` }
-  return { ok: true, rule: r, info: ruleInfo(r) }
+  if (shell) {
+    const body = shell[2].trim()
+    const prefix = shellPrefix(body)
+    if (!body || prefix === '' || (prefix !== null && /^[*:\s]*$/.test(prefix))) {
+      return { ok: false, reason: `${shell[1]}(*) would approve every command. Use a prefix such as ${shell[1]}(npm test:*).` }
+    }
+    const command = prefix ?? body
+    if (DESTRUCTIVE.test(command)) return { ok: true, rule: r, info: ruleInfo(r), warning: `Careful: this approves ${oneLine(command, 60)} without asking, which can delete or publish work.` }
+  }
+  const info = ruleInfo(r)
+  if (info.kind === 'server') return { ok: true, rule: r, info, warning: `This approves every tool of ${mcpServerOf(r)}, including any it adds later.` }
+  return { ok: true, rule: r, info }
 }
 
 // ---------- Permission modes ----------
@@ -425,5 +517,5 @@ export function droppedFolders(sent: readonly string[], saved: readonly string[]
 
 /** The notice for a folder main did not save. */
 export function droppedFolderNotice(path: string): string {
-  return `${oneLine(path, 200)} was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder.`
+  return `${oneLine(path, 200)} was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, and not the same folder as one already listed.`
 }
