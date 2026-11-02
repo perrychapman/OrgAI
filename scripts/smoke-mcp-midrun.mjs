@@ -10,7 +10,30 @@
 // SPENDS TOKENS (fractions of a cent on haiku). Run only with the user's consent, once: node scripts/smoke-mcp-midrun.mjs
 // Uses the Claude login or API key from the environment, settingSources [], a temp cwd (removed at the end).
 //
-// RESULTS: see the block at the end of this header once the script has been run.
+// RESULTS (run once on 2026-11-02, SDK 0.3.312, haiku, Max login, about $0.014). Transcribed from the run's log by the
+// Adapter Engineer's report; the raw log was not kept.
+//  a. Main-thread agent whitelist:
+//     - tools ['mcp__alpha__*'] (session A1): init tools ["mcp__alpha__ping"]; the call returned PONG-ALPHA.
+//     - tools ['mcp__alpha'] (session B1): init tools ["mcp__alpha__ping"]; the call returned PONG-ALPHA.
+//     - tools ['mcp__*'] (session B2): init tools []; the model answered "NO-TOOL No mcp__ tools available."
+//       A subagent with tools ['mcp__*'] is refused at spawn: "Agent 'helper-star' would be spawned with zero tools —
+//       refusing. Its tools list resolved to nothing: unrecognized [mcp__*]."
+//     => 'mcp__<server>' and 'mcp__<server>__*' admit that server's tools; 'mcp__*' admits nothing.
+//  b. setMcpServers mid-session returned {"added":["beta"],"removed":[],"errors":{}}; mcpServerStatus right after showed
+//     beta "pending" with tools [].
+//     (i) whitelist ['mcp__alpha']: the next turn's init listed beta "connected" in mcp_servers but tools stayed
+//         ["mcp__alpha__ping"]; the model answered "NO-TOOL mcp__alpha__ping"; no PreToolUse and no canUseTool fired
+//         (the tool is never offered to the model).
+//     (ii) 'mcp__*': nothing admitted (as in a).
+//     (iii) tools omitted: the next init listed tools [... "mcp__beta__ping"]; the model called ToolSearch
+//         {select:mcp__beta__ping}, then mcp__beta__ping; PreToolUse fired with agent_type main, then canUseTool
+//         {agentID: root, mcpServer: beta}; the call returned PONG-BETA.
+//     => AgentDefinition.tools whitelists are exact and fixed for the life of a query: a server added later never
+//        reaches a whitelisted agent in that query.
+//  c. Subagents spawned after gamma was added (tools omitted): helper-all got PONG-GAMMA and PONG-ALPHA;
+//     helper-alpha (mcpServers ['alpha']) also got PONG-GAMMA. => def.mcpServers does NOT restrict a subagent to the
+//     named servers. canUseTool input options carry agentID and mcpServer.
+//  d. Skipped (reloadSkills / Options.skills not exercised).
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
