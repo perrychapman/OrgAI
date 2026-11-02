@@ -78,6 +78,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       runId={runId}
       who={who}
       agentId={agentId}
+      focusDetails
       title={proposalTitle(proposal.kind)}
       helper={
         proposal.kind === 'mcpServers'
