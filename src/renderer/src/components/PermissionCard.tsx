@@ -1,10 +1,16 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { FolderOpen, TriangleAlert } from 'lucide-react'
 import type { PermissionRequest } from '@shared/types'
+import { isVirtualProjectId } from '@shared/types'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
-import { isHiddenCommand, permissionTitle } from '../lib/decisionTitle'
+import { Icon } from './ui/Icon'
+import { isHiddenCommand, permissionTitle, shellSegments } from '../lib/decisionTitle'
+import { permissionLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
+import { PROJECT_SETTINGS_PANES, PROJECT_SETTINGS_SECTIONS, requestProjectSettingsSection } from '../lib/settingsTarget'
+import { useAppStore } from '../store/useAppStore'
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
 
@@ -85,22 +91,57 @@ export function previewLines(toolName: string, input: unknown): PreviewLine[] {
   }
 }
 
-/** A tool call the policy did not pre-approve. One click allows it once; scope buttons appear when rules can be saved. */
+/** Files whose preview opens by default, like a shell command (ux-review-permissions L2). */
+const OPEN_PREVIEW = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+/** The header badge for a shell command: steps, lines, a clipped line, or just "Command". */
+function commandBadge(command: string, hidden: boolean): string {
+  const lines = command.split(/\r?\n/).filter((l) => l.trim())
+  if (lines.length > 1) return `${lines.length} lines`
+  const steps = shellSegments(lines[0] ?? '').length
+  if (steps > 1) return `${steps} steps`
+  return hidden ? 'Long command' : 'Command'
+}
+
+/** Open project Settings > Agents with the Permissions section focused. */
+function openPermissionSettings(projectId: string): void {
+  const st = useAppStore.getState()
+  if (st.selectedProjectId !== projectId) st.selectProject(projectId)
+  st.setProjectSettingsPane(projectId, PROJECT_SETTINGS_PANES.agents)
+  st.setView('settings')
+  requestProjectSettingsSection(PROJECT_SETTINGS_SECTIONS.permissions)
+}
+
+/**
+ * A tool call the policy did not pre-approve (docs/design/permissions.md). The glance block (where the agent works,
+ * what Always allow stops asking for, the rules it saves) stays visible in compact mode; the command and the scope
+ * list sit behind Details there. One click allows it once; scope buttons appear when rules can be saved.
+ */
 export default function PermissionCard({ runId, request, who, onDecide }: Props): ReactElement {
   const { busy, error, submit } = useDecisionAnswer()
   const send = (d: PermissionChoice): void => {
     if (busy) return
     void submit(() => onDecide(d))
   }
+  const projectId = useAppStore((st) => st.runs[runId]?.summary.projectId)
+  const project = useAppStore((st) => (projectId && !isVirtualProjectId(projectId) ? st.projects.find((p) => p.id === projectId) : undefined))
+  const agentCwd = useAppStore((st) => st.runs[runId]?.agents[request.agentId]?.worktree?.path)
   const canScope = (request.suggestions?.length ?? 0) > 0
   const lines = previewLines(request.toolName, request.input)
   const command = bashCommand(request.toolName, request.input)
   const hidden = isHiddenCommand(request.toolName, request.input)
   const commandLines = command ? command.split(/\r?\n/).filter((l) => l.trim()).length : 0
   const longCommand = !!command && (commandLines > 6 || command.length > 400)
-  const isBash = request.toolName === 'Bash'
+  const isShell = request.toolName === 'Bash' || request.toolName === 'PowerShell'
   const hasHidden = command !== undefined && HIDDEN_CHARS.test(command)
   const [full, setFull] = useState(false)
+  const location = useMemo(
+    () => (project ? permissionLocation(request.toolName, request.input, { projectPath: project.path, allowedDirectories: project.allowedDirectories, agentCwd }) : null),
+    [project, request.toolName, request.input, agentCwd]
+  )
+  const copy = useMemo(() => scopeCopy(request.suggestions, project?.permissionMode), [request.suggestions, project?.permissionMode])
+  const chips = canScope ? [...new Set(request.ruleLabels ?? [])].map(ruleChip).filter((c) => c.text) : []
+  const showEffect = canScope && !!copy.project
   return (
     <DecisionCard
       kind="permission"
@@ -109,32 +150,26 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
       who={who}
       agentId={request.agentId}
       title={permissionTitle(request.toolName, request.input)}
-      focusDetails={isBash && command !== undefined}
+      focusDetails={isShell && command !== undefined}
       headerExtra={
-        hidden || hasHidden || isBash ? (
+        hasHidden || isShell ? (
           <>
-            {hidden ? (
-              <Badge tone="attention">{commandLines > 1 ? `${commandLines} lines` : 'Long command'}</Badge>
-            ) : isBash ? (
-              <Badge tone="attention">{command !== undefined ? 'Command' : 'Bash'}</Badge>
-            ) : null}
+            {isShell && <Badge tone="attention">{command !== undefined ? commandBadge(command, hidden) : request.toolName}</Badge>}
             {hasHidden && <Badge tone="attention">Hidden characters</Badge>}
           </>
         ) : undefined
       }
       helper={
         <>
-          <ul className="decision-scopes">
-            <li>Allow once: this call only.</li>
-            {canScope && <li>Allow for session: until the run ends.</li>}
-            {canScope && <li>Always allow for project: saved to the project rules.</li>}
+          <ul className="decision-scopes" data-testid="perm-scopes">
+            <li>{copy.once}</li>
+            {canScope && copy.session && <li>{copy.session}</li>}
+            {canScope && copy.project && <li>{copy.project}</li>}
           </ul>
-          {canScope && request.ruleLabels && request.ruleLabels.length > 0 && (
-            <div className="decision-rule-chips" aria-label="Rules the session and project options approve">
-              {request.ruleLabels.map((r) => (
-                <code key={r}>{r}</code>
-              ))}
-            </div>
+          {project && (
+            <button type="button" className="link-btn perm-settings-link" data-testid="perm-settings-link" onClick={() => openPermissionSettings(project.id)}>
+              Fewer prompts: permission settings
+            </button>
           )}
         </>
       }
@@ -161,23 +196,54 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         </Button>
       }
     >
-      <p className="perm-summary">{request.summary}</p>
-      <details className="perm-preview" open={command !== undefined || undefined}>
-        <summary>{command !== undefined ? 'Command' : 'Tool input'}</summary>
-        <pre className={`perm-input${command !== undefined ? ' perm-command' : ''}${full ? ' full' : ''}`} tabIndex={command !== undefined ? 0 : undefined}>
-          {lines.map((l, i) => (
-            <span key={i} className={l.kind === 'add' ? 'diff-add' : l.kind === 'del' ? 'diff-del' : l.kind === 'more' ? 'perm-more' : undefined}>
-              {command !== undefined ? showHidden(l.text) : l.text}
-              {'\n'}
-            </span>
-          ))}
-        </pre>
-        {longCommand && (
-          <button type="button" className="perm-expand" aria-expanded={full} onClick={() => setFull((v) => !v)}>
-            {full ? 'Show less' : 'Show full command'}
-          </button>
+      {(location || showEffect) && (
+      <div className="perm-glance">
+        {location && (
+          <p className="perm-location" data-testid="perm-location" data-kind={location.kind} data-attention={location.attention ? 'true' : undefined} title={location.full}>
+            <Icon icon={location.attention ? TriangleAlert : FolderOpen} size="xs" />
+            <span className="perm-location-label">{location.label}</span>
+            {location.detail && <span className="perm-location-detail">{location.detail}</span>}
+          </p>
         )}
-      </details>
+        {showEffect && (
+          <div className="perm-effect">
+            <p className="perm-effect-text" data-testid="perm-scope-project" title={copy.project}>
+              {copy.project}
+            </p>
+            {chips.length > 0 && (
+              <ul className="perm-rule-chips" aria-label="What Allow for session and Always allow approve">
+                {chips.map((c) => (
+                  <li key={c.text} className="perm-rule-chip" data-testid="perm-rule-chip" data-whole-tool={c.wholeTool ? 'true' : undefined} title={c.wholeTool ? `Approves every ${c.text} call, whatever its input` : undefined}>
+                    <code>{c.text}</code>
+                    {c.wholeTool && <span className="perm-rule-whole">whole tool</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+      )}
+      <div className="perm-detail">
+        {/* The command block shows the command itself; the summary would repeat it (L1). */}
+        {command === undefined && <p className="perm-summary">{request.summary}</p>}
+        <details className="perm-preview" open={command !== undefined || OPEN_PREVIEW.has(request.toolName) || undefined}>
+          <summary>{command !== undefined ? 'Command' : 'Tool input'}</summary>
+          <pre className={`perm-input${command !== undefined ? ' perm-command' : ''}${full ? ' full' : ''}`} tabIndex={command !== undefined ? 0 : undefined}>
+            {lines.map((l, i) => (
+              <span key={i} className={l.kind === 'add' ? 'diff-add' : l.kind === 'del' ? 'diff-del' : l.kind === 'more' ? 'perm-more' : undefined}>
+                {command !== undefined ? showHidden(l.text) : l.text}
+                {'\n'}
+              </span>
+            ))}
+          </pre>
+          {longCommand && (
+            <button type="button" className="perm-expand" aria-expanded={full} onClick={() => setFull((v) => !v)}>
+              {full ? 'Show less' : 'Show full command'}
+            </button>
+          )}
+        </details>
+      </div>
     </DecisionCard>
   )
 }

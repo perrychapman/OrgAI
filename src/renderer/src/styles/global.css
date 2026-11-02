@@ -24,6 +24,7 @@
 @import './model-prices.css';
 @import './skill-library.css';
 @import './team.css';
+@import './permissions.css';
 
 * {
   box-sizing: border-box;

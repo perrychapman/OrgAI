@@ -35,20 +35,80 @@ function hostOf(url: string): string {
   }
 }
 
+/**
+ * Split a shell command line into its steps on `&&`, `||` and `;` outside quotes (the same split the harness's rule
+ * matcher uses). Steps are trimmed; empty ones are dropped.
+ */
+export function shellSegments(command: string): string[] {
+  const parts: string[] = []
+  let cur = ''
+  let quote: string | null = null
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    if (quote) {
+      cur += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      cur += ch
+      continue
+    }
+    if (ch === ';') {
+      parts.push(cur)
+      cur = ''
+      continue
+    }
+    if ((ch === '&' || ch === '|') && command[i + 1] === ch) {
+      parts.push(cur)
+      cur = ''
+      i++
+      continue
+    }
+    cur += ch
+  }
+  parts.push(cur)
+  return parts.map((p) => p.trim()).filter(Boolean)
+}
+
+const CD_STEP = /^(?:cd|chdir|pushd|set-location|sl)(?:\s|$)/i
+
+/** True for a step that only changes folder (`cd x`, `pushd x`, `Set-Location x`). */
+export function isCdSegment(segment: string): boolean {
+  return CD_STEP.test(segment.trim())
+}
+
+/**
+ * The step of a command line the user is really asked about: the last step that is not a change of folder, plus how
+ * many other such steps there are. A line of only `cd` steps names its last step.
+ */
+export function shellAction(line: string): { action: string; more: number } {
+  const steps = shellSegments(line)
+  if (steps.length <= 1) return { action: line.trim(), more: 0 }
+  const actions = steps.filter((s) => !isCdSegment(s))
+  if (actions.length === 0) return { action: steps[steps.length - 1], more: 0 }
+  return { action: actions[actions.length - 1], more: actions.length - 1 }
+}
+
 /** "Run npm test", "Edit server.js", "Write notes.md", "Read a.ts", "Use <tool>". */
 export function permissionTitle(toolName: string, input: unknown): string {
   const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const file = str(o.file_path) ?? str(o.notebook_path) ?? str(o.path)
   switch (toolName) {
-    case 'Bash': {
+    case 'Bash':
+    case 'PowerShell': {
       const cmd = str(o.command)
       const lines = cmd?.split(/\r?\n/).filter((l) => l.trim()) ?? []
       const first = lines[0] ?? ''
       if (!first) return 'Run a shell command'
-      const base = oneLine(`Run ${first}`)
+      // A compound first line names its real action: the last step that is not a change of folder.
+      const { action, more } = shellAction(first)
+      const head = more > 0 ? `Run ${action} (+${more} more)` : `Run ${action}`
+      const base = oneLine(head)
       const extra = lines.length - 1
-      if (extra > 0) return `${oneLine(`Run ${first}`, MAX_TITLE - 16)} (+${extra} ${extra === 1 ? 'line' : 'lines'})`
-      return base.endsWith('…') ? `${oneLine(`Run ${first}`, MAX_TITLE - 20)} (long command)` : base
+      if (extra > 0) return `${oneLine(head, MAX_TITLE - 16)} (+${extra} ${extra === 1 ? 'line' : 'lines'})`
+      return base.endsWith('…') ? `${oneLine(head, MAX_TITLE - 20)} (long command)` : base
     }
     case 'Edit':
     case 'MultiEdit':
@@ -112,9 +172,15 @@ export function installTitle(serverName: string): string {
   return oneLine(`Install ${serverName}`)
 }
 
-/** True when a Bash command is more than its title shows: several non-empty lines, or a first line clipped for the title. */
+/**
+ * True when a shell command is more than its title shows: several non-empty lines, a first line clipped for the title,
+ * or several steps (the title names one; a `cd` or an earlier step is in the body only).
+ */
 export function isHiddenCommand(toolName: string, input: unknown): boolean {
-  if (toolName !== 'Bash') return false
+  if (toolName !== 'Bash' && toolName !== 'PowerShell') return false
   const t = permissionTitle(toolName, input)
-  return t.endsWith(' lines)') || t.endsWith(' line)') || t.endsWith('(long command)')
+  if (t.endsWith(' lines)') || t.endsWith(' line)') || t.endsWith('(long command)')) return true
+  const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  const cmd = str(o.command)
+  return !!cmd && shellSegments(cmd.split(/\r?\n/)[0] ?? '').length > 1
 }

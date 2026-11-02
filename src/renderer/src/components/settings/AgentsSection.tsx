@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useId } from 'react'
+import { useEffect, useId } from 'react'
 import type { PermissionMode, Project, TeamReviewAuto } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, runMessagingOn, teamReviewOf } from '@shared/defaults'
@@ -8,6 +8,9 @@ import { Select } from '../ui/Select'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Switch } from '../ui/Switch'
 import { SETTINGS_COPY } from '../../lib/settingsCopy'
+import { PERMISSION_MODE_TRADEOFF, rulesApplyInMode } from '../../lib/permissionCopy'
+import { PROJECT_SECTION_EVENT, PROJECT_SETTINGS_PANES, PROJECT_SETTINGS_SECTIONS, takeProjectSettingsSection } from '../../lib/settingsTarget'
+import { AllowedDirectoriesSection } from './AllowedDirectoriesSection'
 import { ClampedNumber } from './ClampedNumber'
 import { SettingsCard } from './SettingsCard'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
@@ -16,14 +19,41 @@ import { SettingsGroup, SettingsSection } from './SettingsSection'
 const SHORT: Record<PermissionMode, string> = {
   auto: 'Unattended',
   acceptEdits: 'Auto-accept edits',
-  default: 'Ask for risky actions',
+  default: 'Ask for everything risky',
   dontAsk: 'Never ask',
   plan: 'Plan only',
   bypassPermissions: 'Bypass all prompts'
 }
 
-/** Agents pane: what agents may do unasked, the saved rules, and how unattended runs behave. */
+/** Learn more under the mode: what still asks in each mode (renderer copy; fixes ux-review-permissions M3). */
+const MODE_MORE =
+  'Every mode except Never ask and Bypass can show approval cards in the live view. Unattended asks least without turning checks off; Auto-accept edits still asks for commands and for files outside the project and its allowed folders. A card\'s "Always allow for project" saves its rules below, adds its folders to Allowed folders, and for an edit on "Ask for everything risky" switches the project to Auto-accept edits.'
+
+/** Scroll to and focus a section a deep link asked for (a permission card's "Fewer prompts" link). */
+function useSectionTarget(): void {
+  useEffect(() => {
+    const take = (): void => {
+      const id = takeProjectSettingsSection(PROJECT_SETTINGS_PANES.agents)
+      if (!id) return
+      requestAnimationFrame(() => {
+        const section = document.getElementById(id)
+        const heading = section?.querySelector<HTMLElement>('h3')
+        section?.scrollIntoView({ block: 'start' })
+        if (heading) {
+          heading.setAttribute('tabindex', '-1')
+          heading.focus({ preventScroll: true })
+        }
+      })
+    }
+    take()
+    window.addEventListener(PROJECT_SECTION_EVENT, take)
+    return () => window.removeEventListener(PROJECT_SECTION_EVENT, take)
+  }, [])
+}
+
+/** Agents pane: what agents may do unasked, the allowed folders, the saved rules, and how unattended runs behave. */
 export function AgentsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
+  useSectionTarget()
   const id = useId()
   const current = PERMISSION_MODE_OPTIONS.find((o) => o.value === project.permissionMode)
   const copy = SETTINGS_COPY
@@ -33,14 +63,18 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
   const row = (name: string): string => `${id}-${name}`
   return (
     <>
-      <SettingsSection id="settings-section-permissions" title="Permissions">
+      <SettingsSection id={PROJECT_SETTINGS_SECTIONS.permissions} title="Permissions">
         <SettingsCard>
           <SettingRow
             id={row('mode-row')}
             title={copy.permissionMode.label}
-            description={current?.label.replace(/^[^:]*: /, '')}
+            description={
+              <span className="perm-mode-tradeoff" data-testid="permission-mode-tradeoff">
+                {PERMISSION_MODE_TRADEOFF[project.permissionMode] ?? current?.label}
+              </span>
+            }
             width="select"
-            more={copy.permissionMode.more}
+            more={MODE_MORE}
             control={
               <Select
                 id={row('mode')}
@@ -52,8 +86,15 @@ export function AgentsSection({ project, patch }: { project: Project; patch: (p:
               />
             }
           />
+          <p className="perm-mode-note" data-testid="permission-mode-note">
+            {rulesApplyInMode(project.permissionMode)
+              ? 'Saved rules and allowed folders apply in every mode except Plan only and Bypass.'
+              : 'Saved rules and allowed folders are not used in this mode.'}
+          </p>
         </SettingsCard>
       </SettingsSection>
+
+      <AllowedDirectoriesSection project={project} />
 
       <PermissionRulesPanel project={project} />
 
