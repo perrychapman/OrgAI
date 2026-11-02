@@ -67,7 +67,7 @@ describe('runStatus', () => {
   })
   it('lets waiting win and keeps the app-exit detail in the note', () => {
     expect(runStatus('running', { waiting: true })).toEqual({ word: 'Needs you', tone: 'warn' })
-    expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Finished', note: 'Ended when OrgAI closed' })
+    expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Stopped', note: 'Ended when OrgAI closed' })
   })
   it('maps words to tones', () => {
     expect(runStatus('running').tone).toBe('is-running')

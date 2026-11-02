@@ -34,7 +34,7 @@ describe('runStatus', () => {
     expect(runStatus('finished', { stopped: true })).toMatchObject({ word: 'Stopped', tone: 'stopped' })
     expect(runStatus('idle').tone).toBe('idle')
     // A run cut off when the app closed is an abnormal end: neutral, never the success tone.
-    expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Finished', tone: 'stopped', note: 'Ended when OrgAI closed' })
+    expect(runStatus('finished', { endedWithApp: true })).toMatchObject({ word: 'Stopped', tone: 'stopped', note: 'Ended when OrgAI closed' })
     expect(runStatus('finished').tone).toBe('ok')
   })
 

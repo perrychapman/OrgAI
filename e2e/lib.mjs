@@ -208,7 +208,7 @@ export function removeFixture(root) {
  * Launch the built app and wait until the renderer is up. Returns { app, page, shot }.
  * Dialogs (confirm()) are accepted automatically; renderer console errors are logged.
  */
-export async function launch({ shotPrefix = 'shot' } = {}) {
+export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
@@ -226,7 +226,7 @@ export async function launch({ shotPrefix = 'shot' } = {}) {
   // A shared ORGAI_DATA_DIR (CI) keeps the renderer's localStorage between scripts, so an earlier script's UI choices
   // (orgai.sidebar, orgai.sidePanel.*, widths) would leak into this one. Start every script from auto state; projects
   // and runs live in the main process data and are untouched.
-  const cleared = await page.evaluate(() => {
+  const cleared = !clearPrefs ? [] : await page.evaluate(() => {
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('orgai.'))
     keys.forEach((k) => localStorage.removeItem(k))
     return keys
@@ -236,10 +236,21 @@ export async function launch({ shotPrefix = 'shot' } = {}) {
     await page.reload()
     await page.waitForSelector('.sidebar', { timeout: 60_000 })
   }
-  await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
+  // A relaunch on existing data may open on a project list or a run, not the new-project form.
+  if (clearPrefs) await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
+}
+
+/**
+ * Quit the running app and start it again on the SAME data dir (runs, projects and the renderer's localStorage stay,
+ * so open tabs and widths are restored). Returns { app, page, shot } like launch(). Runs that were live when the app
+ * quit come back as 'Ended when OrgAI closed'.
+ */
+export async function relaunch(app, { shotPrefix = 'shot' } = {}) {
+  await app.close().catch(() => {})
+  return launch({ shotPrefix, clearPrefs: false })
 }
 
 export async function screenshot(page, name) {

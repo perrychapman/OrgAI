@@ -160,12 +160,48 @@ export interface ChainGroup<T extends ChainSummary> {
  * first (History order); members inside a group oldest first.
  */
 export function chainGroups<T extends ChainSummary>(runs: readonly T[]): ChainGroup<T>[] {
+  // Union-find over the same links chainOf follows (shared sessionId, resumedFrom): linear in the run count, because
+  // the tab selectors run on every store change.
+  const parent = new Map<string, string>()
+  const find = (id: string): string => {
+    let root = id
+    while (parent.get(root) !== root) root = parent.get(root) as string
+    let cur = id
+    while (cur !== root) {
+      const next = parent.get(cur) as string
+      parent.set(cur, root)
+      cur = next
+    }
+    return root
+  }
+  const union = (a: string, b: string): void => {
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent.set(ra, rb)
+  }
+  for (const r of runs) if (!parent.has(r.id)) parent.set(r.id, r.id)
+  const bySession = new Map<string, string>()
+  for (const r of runs) {
+    if (r.resumedFrom && parent.has(r.resumedFrom)) union(r.id, r.resumedFrom)
+    if (r.sessionId !== undefined) {
+      const other = bySession.get(r.sessionId)
+      if (other !== undefined) union(r.id, other)
+      else bySession.set(r.sessionId, r.id)
+    }
+  }
+  const byRoot = new Map<string, T[]>()
   const seen = new Set<string>()
-  const groups: ChainGroup<T>[] = []
   for (const r of runs) {
     if (seen.has(r.id)) continue
-    const members = chainOf(runs, r.id)
-    for (const m of members) seen.add(m.id)
+    seen.add(r.id)
+    const root = find(r.id)
+    const list = byRoot.get(root)
+    if (list) list.push(r)
+    else byRoot.set(root, [r])
+  }
+  const groups: ChainGroup<T>[] = []
+  for (const list of byRoot.values()) {
+    const members = list.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
     groups.push({ key: members[0].id, members, first: members[0], newest: members[members.length - 1] })
   }
   return groups.sort((a, b) => b.newest.startedAt - a.newest.startedAt || a.key.localeCompare(b.key))

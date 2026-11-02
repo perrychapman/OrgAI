@@ -1,17 +1,17 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
-import { History as HistoryIcon } from 'lucide-react'
-import { FolderPlus } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight, FolderPlus, History as HistoryIcon } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
 import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
-import { runCostInput } from '../lib/cost'
-import { canContinue, chainOf, continuedBy, isOpenStatus, needsYou, predecessorOf, relativeTime } from '../lib/runChains'
+import { runCostInput, sumCosts } from '../lib/cost'
+import { canContinue, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
+import { IconButton } from './ui/IconButton'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
@@ -33,12 +33,12 @@ const STATUS_BADGE: Record<RunTone, BadgeTone> = {
 }
 
 /**
- * The History tab: every run of the project as a table (status, prompt first, kind, started, cost) with its
- * actions. Rows are real table rows; every action is a real button. Opening a run switches to Live and shows it.
+ * The History tab: one row per conversation (a session chain) as a table (prompt first, status, cost, age, kind) with
+ * its actions. Rows are real table rows; every action is a real button. Opening a row switches to Live and shows the
+ * chain's tab. A chain of several sessions can be expanded to list them.
  */
 export default function RunHistory(): ReactElement {
   const summaries = useProjectSummaries()
-  const runs = useAppStore((s) => s.runs)
   const openRun = useAppStore((s) => s.openRun)
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
   const startRetro = useAppStore((s) => s.startRetro)
@@ -49,8 +49,12 @@ export default function RunHistory(): ReactElement {
   const project = useAppStore(selectedProject)
   const isChat = project?.id === QUICK_PROJECT_ID
   const [saving, setSaving] = useState<RunSummary | null>(null)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  const shown = summaries.filter((r) => filter === 'all' || (filter === 'work' ? r.kind === 'work' : r.kind === 'setup'))
+  const groups = useMemo(() => chainGroups(summaries), [summaries])
+  // The kind filter applies to a chain by its first member.
+  const shown = groups.filter((g) => filter === 'all' || (filter === 'work' ? g.first.kind === 'work' : g.first.kind === 'setup'))
+  const viewedKey = current ? groups.find((g) => g.members.some((m) => m.id === current.summary.id))?.key : undefined
 
   return (
     <div className="history">
@@ -122,20 +126,20 @@ export default function RunHistory(): ReactElement {
               </tr>
             </thead>
             <tbody>
-              {shown.map((r) => (
-                <HistoryRow
-                  key={r.id}
-                  r={r}
-                  index={indexes.get(r.id)}
-                  waiting={!!runs[r.id] && needsYou(runs[r.id])}
-                  viewed={current?.summary.id === r.id}
-                  summaries={summaries}
+              {shown.map((g) => (
+                <HistoryChain
+                  key={g.key}
+                  group={g}
                   indexes={indexes}
-                  onOpen={() => void openRun(r.id)}
-                  onContinue={() => void continueFromHistory(r.id)}
-                  onRetro={() => void startRetro(r.id)}
+                  viewed={viewedKey === g.key}
+                  summaries={summaries}
+                  isExpanded={!!expanded[g.key]}
+                  onToggle={() => setExpanded((e) => ({ ...e, [g.key]: !e[g.key] }))}
+                  onOpen={(id) => void openRun(id)}
+                  onContinue={() => void continueFromHistory(g.newest.id)}
+                  onRetro={() => void startRetro(g.newest.id)}
                   chat={isChat}
-                  onSave={() => setSaving(r)}
+                  onSave={() => setSaving(g.newest)}
                 />
               ))}
             </tbody>
@@ -147,137 +151,167 @@ export default function RunHistory(): ReactElement {
   )
 }
 
-function HistoryRow({
-  r,
-  index,
-  waiting,
+function HistoryChain({
+  group,
+  indexes,
   viewed,
   summaries,
-  indexes,
+  isExpanded,
+  onToggle,
   onOpen,
   onContinue,
   onRetro,
   chat,
   onSave
 }: {
-  r: RunSummary
-  index: number | undefined
-  waiting: boolean
+  group: ChainGroup<RunSummary>
+  indexes: Map<string, number>
   viewed: boolean
   summaries: RunSummary[]
-  indexes: Map<string, number>
-  onOpen: () => void
+  isExpanded: boolean
+  onToggle: () => void
+  onOpen: (id: string) => void
   onContinue: () => void
   onRetro: () => void
   chat: boolean
   onSave: () => void
 }): ReactElement {
-  const live = useAppStore((s) => s.runs[r.id])
+  const { first, newest, members } = group
+  const liveNewest = useAppStore((s) => s.runs[newest.id])
   const proj = useAppStore(selectedProject)
-  const status = statusOfRun(live ?? { summary: r }, proj, waiting)
-  const successor = continuedBy(summaries, r.id)
-  const predecessor = predecessorOf(summaries, r.id)
-  const chainLength = chainOf(summaries, r.id).length
-  const started = new Date(r.startedAt)
-  const open = isOpenStatus(r.status)
+  const status = statusOfRun(liveNewest ?? { summary: newest }, proj, !!liveNewest && needsYou(liveNewest))
+  const words = statusText(status)
+  const sessions = members.length
+  const last = lastActivityAt(newest)
+  const open = isOpenStatus(newest.status)
+  const tag = runTag(indexes.get(first.id))
+  const cost = useMemo(() => sumCosts(members.map(runCostInput)), [members])
   return (
-    <tr className={`run-row ${viewed ? 'active' : ''}`}>
-      <td className="col-prompt">
-        {r.title ? (
-          <>
-            <div className="run-name" title={runName(r)}>
-              <span className="run-index">{runTag(index)}</span> {runName(r)}
+    <>
+      <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions}>
+        <td className="col-prompt">
+          <div className="run-head">
+            {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={isExpanded ? `Hide sessions of ${tag}` : `Show sessions of ${tag}`} expanded={isExpanded} onClick={onToggle} testId="history-sessions-toggle" />}
+            <div className="run-head-text">
+              {first.title ? (
+                <>
+                  <div className="run-name" title={runName(first)}>
+                    <span className="run-index">{tag}</span> {runName(first)}
+                  </div>
+                  <div className="prompt muted" title={promptLine(first.prompt)}>
+                    {promptLine(first.prompt)}
+                  </div>
+                </>
+              ) : (
+                <div className="prompt" title={promptLine(first.prompt)}>
+                  <span className="run-index">{tag}</span> {promptLine(first.prompt)}
+                </div>
+              )}
             </div>
-            <div className="prompt muted" title={promptLine(r.prompt)}>
-              {promptLine(r.prompt)}
-            </div>
-          </>
-        ) : (
-          <div className="prompt" title={promptLine(r.prompt)}>
-            <span className="run-index">{runTag(index)}</span> {promptLine(r.prompt)}
-          </div>
-        )}
-        {(predecessor || r.resumedFrom || successor || chainLength > 1) && (
-          <div className="run-chain">
-            {r.resumedFrom && (
-              <>
-                Continues{' '}
-                {predecessor ? (
-                  <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openRun(predecessor.id)} title={promptLine(predecessor.prompt)}>
-                    {runTag(indexes.get(predecessor.id))}: {runName(predecessor)}
-                  </button>
-                ) : (
-                  'an earlier run'
-                )}
-              </>
-            )}
-            {r.resumedFrom && successor && ' · '}
-            {successor && (
-              <>
-                Continued by{' '}
-                <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openRun(successor.id)} title={promptLine(successor.prompt)}>
-                  {runTag(indexes.get(successor.id))}: {runName(successor)}
-                </button>
-              </>
+            {sessions > 1 && (
+              <Badge tone="neutral" title={`${sessions} sessions in this conversation`}>
+                {sessions} sessions
+              </Badge>
             )}
           </div>
-        )}
-      </td>
-      <td>
-        <Badge tone={STATUS_BADGE[status.tone]} title={r.pauseReason ?? status.note}>
-          <span className="status-dot" aria-hidden="true" />
-          {statusText(status)}
-        </Badge>
-      </td>
-      <td className="col-cost">
-        <Cost value={runCostInput(r)} />
-      </td>
-      <td className="col-started" title={started.toLocaleString()}>
-        {relativeTime(r.startedAt)}
-      </td>
-      <td className="col-kind">
-        <Badge tone={r.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(r)}</Badge>
-      </td>
-      {chat && (
-        <td className="col-folder" data-testid="history-folder" title={r.quick?.scratch ? 'A private scratch folder' : r.quick?.folder}>
-          {quickFolderLabel(r.quick)}
         </td>
-      )}
-      <td>
-        <div className="run-row-actions">
-          <Button size="sm" className="run-open" onClick={onOpen} title={open ? 'Open this live run' : 'Open this run'}>
-            Open
-          </Button>
-          {viewed && (
-            <Badge tone="accent" title="You are viewing this run">
-              Viewing
-            </Badge>
-          )}
-          {canContinue(summaries, r.id) && (
-            <Button size="sm" variant="secondary" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
-              Continue
+        <td>
+          <Badge tone={STATUS_BADGE[status.tone]} title={newest.pauseReason ?? status.note}>
+            <span className="status-dot" aria-hidden="true" />
+            {words}
+          </Badge>
+        </td>
+        <td className="col-cost">
+          <Cost value={cost} />
+        </td>
+        <td className="col-started" title={new Date(last).toLocaleString()}>
+          {relativeTime(last)}
+        </td>
+        <td className="col-kind">
+          <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(first)}</Badge>
+        </td>
+        {chat && (
+          <td className="col-folder" data-testid="history-folder" title={first.quick?.scratch ? 'A private scratch folder' : first.quick?.folder}>
+            {quickFolderLabel(first.quick)}
+          </td>
+        )}
+        <td>
+          <div className="run-row-actions">
+            <Button size="sm" className="run-open" onClick={() => onOpen(newest.id)} title={open ? 'Open this live run' : 'Open this run'}>
+              Open
             </Button>
-          )}
-          {chat && offersSaveAsProject(r) && !open && (
-            canPromote(r).ok ? (
-              <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" title="Save this chat as a project in its folder" onClick={onSave}>
-                Save as project
+            {viewed && (
+              <Badge tone="accent" title="This conversation is open on the Live tab">
+                Open in Live
+              </Badge>
+            )}
+            {canContinue(summaries, newest.id) && (
+              <Button size="sm" variant="secondary" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
+                Continue
               </Button>
-            ) : (
-              <span className="run-act-disabled" title={SCRATCH_PROMOTE_REASON}>
-                <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" disabled>
+            )}
+            {chat && offersSaveAsProject(newest) && !open && (
+              canPromote(newest).ok ? (
+                <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" title="Save this chat as a project in its folder" onClick={onSave}>
                   Save as project
                 </Button>
-              </span>
-            )
-          )}
-          {offersRetro(r) && (
-            <Button size="sm" className="run-retro" title="Have the Architect review this run and revise the org chart where roles struggled" onClick={onRetro}>
-              Retrospective
-            </Button>
-          )}
+              ) : (
+                <span className="run-act-disabled" title={SCRATCH_PROMOTE_REASON}>
+                  <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" disabled>
+                    Save as project
+                  </Button>
+                </span>
+              )
+            )}
+            {offersRetro(newest) && (
+              <Button size="sm" className="run-retro" title="Have the Architect review this run and revise the org chart where roles struggled" onClick={onRetro}>
+                Retrospective
+              </Button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {isExpanded &&
+        members.map((m, i) => (
+          <MemberRow key={m.id} member={m} number={i + 1} chat={chat} onOpen={() => onOpen(m.id)} />
+        ))}
+    </>
+  )
+}
+
+/** One session of an expanded chain: when it started, its prompt, cost and Open (which scrolls the feed to it). */
+function MemberRow({ member, number, chat, onOpen }: { member: RunSummary; number: number; chat: boolean; onOpen: () => void }): ReactElement {
+  const live = useAppStore((s) => s.runs[member.id])
+  const proj = useAppStore(selectedProject)
+  const status = statusOfRun(live ?? { summary: member }, proj, false)
+  const started = new Date(member.startedAt)
+  return (
+    <tr className="run-member-row" data-run={member.id}>
+      <td className="col-prompt">
+        <div className="run-member">
+          <span className="run-member-no">Session {number}</span>
+          <span className="run-member-prompt" title={promptLine(member.prompt)}>
+            {promptLine(member.prompt)}
+          </span>
+        </div>
+      </td>
+      <td>{statusText(status)}</td>
+      <td className="col-cost">
+        <Cost value={runCostInput(member)} />
+      </td>
+      <td className="col-started" title={started.toLocaleString()}>
+        {started.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+      </td>
+      <td className="col-kind" />
+      {chat && <td className="col-folder" />}
+      <td>
+        <div className="run-row-actions">
+          <Button size="sm" className="run-member-open" ariaLabel={`Open session ${number}`} onClick={onOpen}>
+            Open
+          </Button>
         </div>
       </td>
     </tr>
   )
 }
+
