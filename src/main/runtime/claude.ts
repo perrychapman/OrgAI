@@ -1509,10 +1509,7 @@ export class ClaudeSession implements RuntimeSession {
     this.restarting = false
     this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
     // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
-    const old = this.input
-    this.input = new PushStream<SDKUserMessage>()
-    for (const m of old.drain()) this.input.push(m)
-    old.end()
+    this.swapInput()
     const oldQ = this.q
     this.restartCloseTimer = setTimeout(() => {
       this.restartCloseTimer = null
@@ -1525,6 +1522,17 @@ export class ClaudeSession implements RuntimeSession {
       }
     }, MCP_RESTART_CLOSE_MS)
     return true
+  }
+
+  /**
+   * Give the next query a fresh input stream: messages pushed but unread move over, and the old stream ends, so a query
+   * that is closing (or died with a read still pending) cannot swallow a message meant for its successor.
+   */
+  private swapInput(): void {
+    const old = this.input
+    this.input = new PushStream<SDKUserMessage>()
+    for (const m of old.drain()) this.input.push(m)
+    old.end()
   }
 
   /** The pending servers cannot reach this session: warn, and tell the orchestrator they wait for the next run. */
@@ -1810,6 +1818,7 @@ export class ClaudeSession implements RuntimeSession {
               this.endPausedAfterRestart(why)
               break
             }
+            this.swapInput()
             this.nextQuery = next
           } else throw e
         }

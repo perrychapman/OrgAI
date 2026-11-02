@@ -689,4 +689,264 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     q1.emit(result)
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
   }, 10_000)
+
+  // ---------- review fixes (H1, M2-M5, L1, L2, L3, L5, L7) ----------
+
+  const plan = (): RunPlan => ({
+    goal: 'Ship it',
+    steps: [
+      { id: 'p1', title: 'Build', status: 'done' },
+      { id: 'p2', title: 'Test', status: 'pending' }
+    ],
+    status: 'active',
+    autoContinues: 0,
+    updatedAt: 0
+  })
+  const pg = () => mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['engineer', 'lead'], secretEnv: [] })
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const restartWait = { timeout: MCP_RESTART_DELAY_MS + 3000 }
+  const NUDGE = 'Harness: plan'
+  /** Start a run, see init, attach pg; resolves with the first query. */
+  async function attached(over: Partial<RuntimeContext> = {}, projectOver: Partial<Project> = {}, dir?: string) {
+    const servers: McpServerSpec[] = []
+    const run = start(servers, over, projectOver, dir)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+    servers.push(pg())
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await attach(run.session, servers[0]!)
+    return { ...run, servers, q1 }
+  }
+
+  it('H1: a plan nudge never starves the restart; the notice comes first and nudging resumes after it', async () => {
+    const { ctx, q1 } = await attached({ autoContinue: true, continuationDelayMs: 10 })
+    await ctx.updatePlan(plan())
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    // The deferred turn end sent no nudge to the old query.
+    expect(texts(q1)).not.toContain(NUDGE)
+    const q2 = sdk.queries[1]!
+    await vi.waitFor(() => expect(texts(q2)).toContain('The MCP server pg is attached now.'))
+    expect(texts(q2)).not.toContain(NUDGE)
+    // The notice's turn ends: the driver nudges as usual.
+    q2.emit(init)
+    q2.emit(result)
+    await vi.waitFor(() => expect(texts(q2)).toContain(NUDGE))
+    expect(sdk.queries).toHaveLength(2)
+  }, 10_000)
+
+  it('H1: when the deferred restart turns out blocked, the turn end goes to the driver (no stuck run)', async () => {
+    const { ctx, q1 } = await attached({ autoContinue: true, continuationDelayMs: 10 })
+    await ctx.updatePlan(plan())
+    q1.emit(result)
+    // A background shell task starts before the restart check: the restart waits, the nudge goes out.
+    q1.emit({ type: 'system', subtype: 'task_started', task_id: 'bash-1', task_type: 'local_bash', description: 'npm test', session_id: 'sess-1', uuid: 'u1' })
+    await vi.waitFor(() => expect(texts(q1)).toContain(NUDGE), restartWait)
+    expect(sdk.queries).toHaveLength(1)
+  }, 10_000)
+
+  it('M5: an open background task blocks the restart until its notification', async () => {
+    const { q1 } = await attached()
+    q1.emit({ type: 'system', subtype: 'task_started', task_id: 'bash-1', task_type: 'local_bash', description: 'npm test', session_id: 'sess-1', uuid: 'u1' })
+    // Ambient tasks (watchers) never block.
+    q1.emit({ type: 'system', subtype: 'task_started', task_id: 'watch-1', task_type: 'monitor', description: 'watch', ambient: true, session_id: 'sess-1', uuid: 'u2' })
+    q1.emit(result)
+    await sleep(MCP_RESTART_DELAY_MS + 300)
+    expect(sdk.queries).toHaveLength(1)
+    q1.emit({ type: 'system', subtype: 'task_notification', task_id: 'bash-1', status: 'completed', output_file: '', summary: 'ok', session_id: 'sess-1', uuid: 'u3' })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+  }, 10_000)
+
+  it('L1: a result while the attach notice is prepared never starts a second restart', async () => {
+    const { q1 } = await attached()
+    q1.emit(result)
+    // The new query does not report the server yet, so the notice polls mcpServerStatus for a while.
+    sdk.status = []
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    const q2 = sdk.queries[1]!
+    q2.emit(init)
+    q2.emit(result)
+    await sleep(MCP_RESTART_DELAY_MS + 300)
+    expect(sdk.queries).toHaveLength(2)
+    // The notice still arrives, with the tool names reported before the restart.
+    await vi.waitFor(() => expect(texts(q2)).toContain('Its tools: mcp__pg__query.'), { timeout: 7000 })
+  }, 15_000)
+
+  it('M2: a restarted query gets only what is left of the budget, and none is started when nothing is left', async () => {
+    const { q1 } = await attached({}, { maxBudgetUsd: 1 })
+    expect(q1.options.maxBudgetUsd).toBe(1)
+    q1.emit({ ...result, total_cost_usd: 0.4 })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    expect(sdk.queries[1]!.options.maxBudgetUsd).toBeCloseTo(0.6, 6)
+
+    sdk.queries.length = 0
+    const spent = await attached({}, { maxBudgetUsd: 1 })
+    spent.q1.emit({ ...result, total_cost_usd: 1.2 })
+    await vi.waitFor(() => expect(texts(spent.q1)).toContain('could not be attached to this session (this run has used its budget)'), restartWait)
+    expect(sdk.queries).toHaveLength(1)
+  }, 10_000)
+
+  it('M3: server-level rules never approve a server an agent installed this run; exact tool rules and other servers still do', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-mcp-'))
+    addRules(dir, ['mcp__pg', 'mcp__github__*', 'Read'])
+    let granted = ['mcp__pg', 'mcp__github__*']
+    const github = mcpSpec({ id: 'mcp-gh', name: 'github', roles: undefined, secretEnv: [], source: 'user' })
+    const servers: McpServerSpec[] = [github]
+    const { session } = start(servers, { allowedRules: () => granted, project: project({ path: dir, mcpServers: [github] }) }, {}, dir)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    expect(q1.options.allowedTools).toEqual(['mcp__pg', 'mcp__github__*', 'Read'])
+    servers.push(pg())
+    sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+    await attach(session, servers[1]!)
+    const eng = { id: 'a1', type: 'engineer' }
+    // The saved / granted server rule for "pg" does not cover the agent-installed pg: the call goes to the normal ask path.
+    expect((await decision(q1, 'mcp__pg__query', eng))?.permissionDecision).toBeUndefined()
+    // A project server keeps its server-level rule.
+    expect((await decision(q1, 'mcp__github__list', eng))?.permissionDecision).toBe('allow')
+    // An exact tool grant made for this run still applies.
+    granted = [...granted, 'mcp__pg__query']
+    expect((await decision(q1, 'mcp__pg__query', eng))?.permissionDecision).toBe('allow')
+    // After the restart the CLI's own allowedTools leave the pg server rule out (the hook calls above made a1 a live report).
+    q1.emit({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', output_file: '', summary: 'done', session_id: 'sess-1', uuid: 'u9' })
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    expect(sdk.queries[1]!.options.allowedTools).toEqual(['mcp__github__*', 'Read'])
+  }, 10_000)
+
+  it('M4: a restarted query that cannot start is retried, then resumed without the new server, then the run pauses (never error)', async () => {
+    const { ctx, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3))
+    expect(Object.keys(sdk.queries[2]!.options.mcpServers)).toContain('pg')
+    sdk.queries[2]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(4))
+    const q4 = sdk.queries[3]!
+    expect(Object.keys(q4.options.mcpServers)).not.toContain('pg')
+    expect(q4.options.agents.engineer.tools).not.toContain('mcp__pg')
+    expect(q4.options.resume).toBe('sess-1')
+    await vi.waitFor(() => expect(texts(q4)).toContain('The MCP server pg could not be attached to this session'))
+    q4.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    const statuses = ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    expect(statuses).not.toContain('error')
+    expect(statuses).not.toContain('finished')
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused')
+    expect(paused).toMatchObject({ pauseReason: expect.stringContaining('could not be resumed after attaching an MCP server'), autoResume: true })
+  }, 10_000)
+
+  it('M4: a restarted query that started resets the retries, so a later restart is retried again', async () => {
+    const { session, servers, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3))
+    const q3 = sdk.queries[2]!
+    q3.emit(init)
+    // A second install later in the run.
+    servers.push(mcpSpec({ id: 'mcp-docs', name: 'docs', roles: undefined, secretEnv: [] }))
+    sdk.status = [{ name: 'docs', status: 'connected', tools: [{ name: 'search' }] }]
+    await attach(session, servers[1]!)
+    q3.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(4), restartWait)
+    sdk.queries[3]!.fail(new Error('spawn failed'))
+    // Retried with docs still in it (a first failure), not dropped.
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(5))
+    expect(Object.keys(sdk.queries[4]!.options.mcpServers)).toEqual(expect.arrayContaining(['pg', 'docs']))
+  }, 15_000)
+
+  it('L2: only MCP calls read the live server list, and an unreadable list denies the MCP call', async () => {
+    let reads = 0
+    let broken = false
+    const servers = [mcpSpec({ name: 'github', roles: undefined, secretEnv: [] })]
+    start(servers, {
+      mcpServers: () => {
+        reads += 1
+        if (broken) throw new Error('store gone')
+        return servers
+      }
+    })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    const before = reads
+    await decision(q, 'Read', { id: 'a1', type: 'engineer' })
+    await decision(q, 'Bash', { id: 'a1', type: 'engineer' })
+    expect(reads).toBe(before)
+    broken = true
+    const out = await decision(q, 'mcp__github__list', { id: 'a1', type: 'engineer' })
+    expect(out?.permissionDecision).toBe('deny')
+    expect(out?.permissionDecisionReason).toContain('could not check which MCP servers')
+    expect((await decision(q, 'Read', { id: 'a1', type: 'engineer' }))?.permissionDecision).not.toBe('deny')
+  })
+
+  it('L3: the MCP resource tools are gated on input.server', async () => {
+    const servers = [mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] }), mcpSpec({ id: 'm2', name: 'docs', roles: undefined, secretEnv: [] })]
+    start(servers)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    const withInput = async (tool: string, input: Record<string, unknown>, agent: { id: string; type: string }) =>
+      (await preToolUse(q)({ ...call(tool, agent), tool_input: input }, 'x', {})).hookSpecificOutput
+    const rev = { id: 'a1', type: 'reviewer' }
+    const eng = { id: 'a2', type: 'engineer' }
+    expect((await withInput('ReadMcpResourceTool', { server: 'github', uri: 'x://1' }, rev))?.permissionDecision).toBe('deny')
+    expect((await withInput('ReadMcpResourceTool', { server: 'github', uri: 'x://1' }, eng))?.permissionDecision).not.toBe('deny')
+    expect((await withInput('ListMcpResourcesTool', { server: 'docs' }, rev))?.permissionDecision).not.toBe('deny')
+    // No server = every server: only for a role granted all of them.
+    expect((await withInput('ListMcpResourcesTool', {}, rev))?.permissionDecision).toBe('deny')
+    expect((await withInput('ListMcpResourcesTool', {}, eng))?.permissionDecision).not.toBe('deny')
+  })
+
+  it('L5: the MCP gate and the Skill gate name the same role (agent_type first, then the recorded agent)', async () => {
+    const servers = [mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })]
+    const { session } = start(servers)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent', subagent_type: 'engineer', tool_use_id: 'tu-spawn', description: 'work', session_id: 'sess-1', uuid: 'u1' })
+    await vi.waitFor(() => expect(q.inputs.length).toBeGreaterThan(0))
+    await sleep(10)
+    // No agent_type on the call: the agent recorded at task_started (engineer) is used.
+    const noType = { ...call('mcp__github__list'), agent_id: 'a1' }
+    expect((await preToolUse(q)(noType, 'x', {})).hookSpecificOutput?.permissionDecision).not.toBe('deny')
+    // agent_type on the call wins over the record.
+    expect((await decision(q, 'mcp__github__list', { id: 'a1', type: 'reviewer' }))?.permissionDecision).toBe('deny')
+    // The Skill gate takes its role id from the same helper.
+    const roleOf = (i: { agent_id?: string; agent_type?: string }) => (session as unknown as { callerRole(x: typeof i): { slug: string } | undefined }).callerRole(i)?.slug
+    expect(roleOf({ agent_id: 'a1' })).toBe('engineer')
+    expect(roleOf({ agent_id: 'a1', agent_type: 'reviewer' })).toBe('reviewer')
+    expect(roleOf({})).toBe('lead')
+    expect(roleOf({ agent_id: 'nobody' })).toBeUndefined()
+  })
+
+  it('L7: an interrupt during the restart window drops queued nudges and holds other notices for the user', async () => {
+    sdk.autoEnd = false
+    const { session, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(q1.inputClosed).toBe(true), restartWait)
+    // Queued while the old query winds down: a plan nudge and a report notice.
+    const notify = (session as unknown as { notifyOrchestrator(t: string, a?: string, o?: { nudge?: boolean }): void }).notifyOrchestrator.bind(session)
+    notify('Harness: plan 1 of 2 done. Continue.', 'x', { nudge: true })
+    notify('[OrgAI harness] report merged', 'x')
+    await session.interrupt()
+    q1.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    const q2 = sdk.queries[1]!
+    await sleep(50)
+    expect(texts(q2)).not.toContain(NUDGE)
+    expect(texts(q2)).not.toContain('report merged')
+    // The attach notice waits for the user too.
+    await sleep(300)
+    expect(texts(q2)).not.toContain('is attached now')
+    await vi.waitFor(() => expect((session as unknown as { heldNotices: string[] }).heldNotices.some((n) => n.includes('is attached now'))).toBe(true))
+    await session.send('carry on')
+    await vi.waitFor(() => expect(texts(q2)).toContain('carry on'))
+    const sent = texts(q2)
+    expect(sent).toContain('report merged')
+    expect(sent).toContain('The MCP server pg is attached now.')
+    expect(sent).not.toContain(NUDGE)
+  }, 10_000)
 })
