@@ -267,7 +267,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     refuses, for every rule, options that run another program or read other config: npm-family `--script-shell` /
     `--node-options` / `--prefix` / `-C`..., go `-exec` / `-toolexec`, cargo `--config` / `-Z`, make `-f` / `SHELL=`,
     dotnet `-p:*Event=`, node `--import` / `-r` / `-e`, git global `-c` / `--git-dir`, `--config`, `--template`,
-    `--output`, clone `-c`, branch `-D`, stash drop, and `PROGRAM_ENV` assignments (NODE_OPTIONS, GIT_*...). Only bare
+    `--output`, clone `-c`, branch `-D`, stash drop, and `PROGRAM_ENV` assignments (NODE_OPTIONS, GIT_*...); any `$`
+    outside single quotes refuses the segment. `ruleCoversButRefused` says when the Claude hook must answer ask (the CLI
+    would approve by its own prefix match); claude.ts does not call it yet (open, reviewer-4 H-A). Only bare
     shells or shells in the exact `SYSTEM_SHELL_DIRS` are unwrapped.
   - Suggestions (permissionRules.ts): per segment, all or nothing, always covering the command; launchers two words
     (podman, nerdctl, kubectl, terraform, helm too), runner words and gh / aws / az / gcloud three; `isTooBroadPrefix`

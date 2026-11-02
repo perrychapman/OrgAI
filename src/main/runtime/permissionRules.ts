@@ -135,7 +135,9 @@ export const EXEC_WRAPPERS: ReadonlySet<string> = new Set([
   // PowerShell aliases and jobs.
   'icm', 'saps', 'start-job', 'sajb', 'invoke-item', 'ii',
   // Windows script hosts and launchers.
-  'forfiles', 'mshta', 'rundll32', 'wscript', 'cscript', 'regsvr32', 'msiexec', 'schtasks'
+  'forfiles', 'mshta', 'rundll32', 'wscript', 'cscript', 'regsvr32', 'msiexec', 'schtasks',
+  // Node and version-manager launchers that run the command they are given (reviewer-4 M-3).
+  'cross-env', 'dotenv', 'env-cmd', 'concurrently', 'nodemon', 'npm-run-all', 'run-p', 'run-s', 'corepack', 'volta', 'mise', 'asdf'
 ])
 
 /** A command word's program name: base name, lowercase, `.exe` / `.cmd` / `.bat` / `.ps1` dropped. */
@@ -172,7 +174,11 @@ const NEVER_DERIVE_PAIRS: ReadonlySet<string> = new Set([
   'git config', 'git submodule', 'git bisect', 'git difftool', 'git filter-branch', 'npm pkg', 'npm config', 'npm set',
   'pnpm config', 'pnpm pkg', 'yarn config', 'yarn node', 'gh api', 'gh extension', 'gh alias', 'deno eval',
   // Containers (reviewer-3 H3): run / exec / compose / buildx can mount the host or run as root; podman and nerdctl alike.
-  ...['docker', 'podman', 'nerdctl'].flatMap((c) => ['run', 'container', 'compose', 'buildx', 'exec'].map((s) => `${c} ${s}`)),
+  // reviewer-4 M-1: create (then start), service / stack / plugin / kube, cp (writes anywhere on the host).
+  ...['docker', 'podman', 'nerdctl'].flatMap((c) =>
+    ['run', 'container', 'compose', 'buildx', 'exec', 'create', 'service', 'stack', 'plugin', 'cp', 'kube', 'swarm'].map((s) => `${c} ${s}`)
+  ),
+  'kubectl apply', 'kubectl create', 'kubectl debug', 'kubectl cp', 'kubectl attach', 'kubectl replace', 'kubectl patch',
   // Credentials and package scaffolders that run any package (reviewer-3 M1).
   'gh auth', 'gh secret', 'gh ssh-key', 'gh gpg-key', 'gh codespace', 'npm init', 'npm create', 'pnpm create', 'yarn create', 'bun create',
   'uv tool', 'kubectl exec', 'kubectl run', 'kubectl delete', 'terraform destroy'
@@ -187,8 +193,11 @@ export function isTooBroadPrefix(prefix: string): boolean {
   const [first = '', second = '', third = ''] = words
   if (!first) return true
   if (NEVER_DERIVE_FIRST.has(first) || EXEC_WRAPPERS.has(first)) return true
-  // A one-word rule on an interpreter (`python.exe:*`, `/usr/bin/node:*`) runs anything.
-  if (words.length === 1 && CODE_RUNNERS.has(first)) return true
+  // A one-word rule on an interpreter (`python.exe:*`, `/usr/bin/node:*`) runs anything; on a launcher (`docker:*`,
+  // `git:*`, `npx:*`) it covers every verb, `docker run --privileged` included (reviewer-4 M-2).
+  if (words.length === 1 && (CODE_RUNNERS.has(first) || LAUNCHERS.has(first))) return true
+  // gh / aws / az / gcloud: the group alone (`gh repo:*`) covers delete and auth verbs.
+  if (words.length === 2 && THREE_WORD_LAUNCHERS.has(first)) return true
   if (second && NEVER_DERIVE_PAIRS.has(`${first} ${second}`)) return true
   // npx / bunx / pnpx / uvx / pipx run a package: an interpreter as the package runs anything.
   if (PACKAGE_RUNNERS.has(first) && CODE_RUNNERS.has(second)) return true

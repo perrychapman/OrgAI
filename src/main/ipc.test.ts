@@ -37,6 +37,9 @@ describe('permissionAddRefusal (permissions:add, reviewer-3 L4)', () => {
     expect(permissionAddRefusal('Bash(curl:*)')).toMatch(/far more than one command.*Bash\(curl\)/)
     expect(permissionAddRefusal('Bash(docker compose:*)')).toMatch(/far more than one command/)
     expect(permissionAddRefusal('Bash(npx tsx *)')).toMatch(/far more than one command/)
+    // reviewer-4 M-2: a one-word launcher covers every verb.
+    expect(permissionAddRefusal('Bash(docker:*)')).toMatch(/far more than one command/)
+    expect(permissionAddRefusal('Bash(gh:*)')).toMatch(/far more than one command/)
     expect(permissionAddRefusal('Bash(bash:*)')).toMatch(/run any other command/)
     expect(permissionAddRefusal('Edit')).toMatch(/edits anywhere/)
     expect(permissionAddRefusal('not a rule(')).toMatch(/A rule looks like/)

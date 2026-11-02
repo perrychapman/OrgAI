@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FREE_CD_LABEL, cdTarget, isFreeCdTarget, isValidRule, matchOptionsFor, matchesBashRule, mcpServerOfRule, matchingRule, programRunsProgram, segmentWords, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
+import { FREE_CD_LABEL, cdTarget, isFreeCdTarget, isValidRule, matchOptionsFor, matchesBashRule, mcpServerOfRule, matchingRule, programRunsProgram, ruleCoversButRefused, segmentWords, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
 
 describe('isValidRule', () => {
   it('accepts tool names, prefix rules and exact rules', () => {
@@ -321,7 +321,7 @@ describe('reviewer-3: program options that run another program (programRunsProgr
   })
 
   it('H1 npm family: script shell, node options, other config or package folders, in every spelling', () => {
-    const rules = ['Bash(npm test:*)', 'Bash(pnpm test:*)', 'Bash(yarn test:*)', 'Bash(bun test:*)', 'Bash(npm run lint:*)', 'Bash(npx eslint:*)', 'Bash(npm exec eslint:*)', 'Bash(pnpm -C:*)', 'Bash(pnpm --dir:*)', 'Bash(npx -c:*)', 'Bash(npx --call:*)', 'Bash(npx --node-options=--import=x eslint:*)', 'Bash(npm exec -c:*)']
+    const rules = ['Bash(npm test:*)', 'Bash(pnpm test:*)', 'Bash(yarn test:*)', 'Bash(bun test:*)', 'Bash(npm run lint:*)', 'Bash(npx eslint:*)', 'Bash(npm exec eslint:*)', 'Bash(pnpm -C:*)', 'Bash(pnpm --dir:*)', 'Bash(npx -c:*)', 'Bash(npx --call:*)', 'Bash(npx --node-options=--import=x eslint:*)', 'Bash(npm exec -c:*)', 'Bash(pnpm dlx eslint:*)']
     for (const c of [
       'npm test --node-options="--import=data:text/javascript,process.exit()"',
       'npm test --node-options "--require ./evil.js"',
@@ -354,7 +354,8 @@ describe('reviewer-3: program options that run another program (programRunsProgr
       'pnpm test -c vitest.config.ts',
       'npx eslint -c .eslintrc src',
       'npx eslint --prefix x',
-      'npm exec eslint -c .eslintrc'
+      // npm exec keeps parsing npm's options after the package (reviewer-4 H-D), so its `-c` is --call: refused below.
+      'pnpm dlx eslint -c .eslintrc'
     ]) ok(c, rules)
   })
 
@@ -450,5 +451,75 @@ describe('reviewer-3: program options that run another program (programRunsProgr
     ]) {
       expect(programRunsProgram(c), c).toBe(false)
     }
+  })
+})
+
+describe('reviewer-4 re-check', () => {
+  type Opts = Parameters<typeof matchesBashRule>[2]
+  const ok = (c: string, rules: string[], opts?: Opts) => expect(matchesBashRule(c, rules, opts), c).toBe(true)
+  const no = (c: string, rules: string[], opts?: Opts) => expect(matchesBashRule(c, rules, opts), c).toBe(false)
+
+  it('H-A: ruleCoversButRefused flags a command a rule covers by text but the matcher refuses', () => {
+    const rules = ['Bash(npm test:*)', 'Bash(git clone:*)', 'Bash(git branch:*)']
+    for (const c of ['npm test --script-shell=calc', 'git clone -c core.sshCommand=calc url', 'git branch -D x', 'cd src && npm test $_', 'npm test | calc', "bash -c 'npm test --script-shell=calc'"]) {
+      expect(ruleCoversButRefused('Bash', { command: c }, rules), c).toBe(true)
+    }
+    for (const c of ['npm test', 'curl https://x', 'git status']) expect(ruleCoversButRefused('Bash', { command: c }, rules), c).toBe(false)
+    expect(ruleCoversButRefused('WebFetch', { command: 'npm test --script-shell=x' }, rules)).toBe(false)
+    expect(ruleCoversButRefused('PowerShell', { command: 'npm test --script-shell=x' }, rules)).toBe(false)
+    expect(ruleCoversButRefused('PowerShell', { command: 'npm test --script-shell=x' }, ['PowerShell(npm test:*)'])).toBe(true)
+  })
+
+  it('H-B: expansions outside single quotes never match', () => {
+    const rules = ['Bash(npm test:*)', 'Bash(git log:*)']
+    for (const c of ['npm test -- --script-shell=calc; npm test $_', 'npm test "${Z:---script-shell=calc}"', 'npm test $"--script-shell=calc"', 'npm test $X', 'git log "$X"']) no(c, rules)
+    ok("npm test 'cost $5'", rules)
+    for (const tool of ['Bash', 'PowerShell']) expect(matchingRule(tool, { command: 'npm test $env:X' }, [`${tool}(npm test:*)`]), tool).toBeUndefined()
+  })
+
+  it('H-C: npm reads single- and triple-dash long options', () => {
+    const rules = ['Bash(npm test:*)']
+    for (const c of ['npm test -script-shell=calc', 'npm test ---script-shell=calc', 'npm test -node-options=--require=./x.js', 'npm test -node_options=x']) no(c, rules)
+    ok('npm test -w @org/app', rules)
+  })
+
+  it('H-D: npm exec / npm x keep parsing npm options after the package', () => {
+    const rules = ['Bash(npm exec eslint:*)', 'Bash(npm x eslint:*)', 'Bash(npx eslint:*)']
+    for (const c of ['npm exec eslint -c calc', 'npm x eslint --script-shell=calc', 'npm exec eslint --call=calc']) no(c, rules)
+    ok('npm exec eslint src', rules)
+    ok('npx eslint -c .eslintrc', rules)
+  })
+
+  it('H-E: a -- taken as an option value does not end the scan', () => {
+    no('go test -run -- -exec=calc ./...', ['Bash(go test:*)'])
+    no('go test -run -args -exec=calc ./...', ['Bash(go test:*)'])
+    no('git clone -b -- -c core.sshCommand=calc git@h:x/y d', ['Bash(git clone:*)'])
+    no('git grep -e -- -Ocalc .', ['Bash(git grep:*)'])
+    no('cargo test --features -- --config x', ['Bash(cargo test:*)'])
+    no('npm test --tag -- --script-shell=calc', ['Bash(npm test:*)'])
+    ok('go test -v -args -exec x', ['Bash(go test:*)'])
+    ok('npm test --silent -- --dir x', ['Bash(npm test:*)'])
+    ok('git diff -- src/a.ts', ['Bash(git diff:*)'])
+  })
+
+  it('H-F: dotnet properties with a separate value or =', () => {
+    const rules = ['Bash(dotnet build:*)']
+    for (const c of ['dotnet build -p PreBuildEvent=calc', 'dotnet build --property PostBuildEvent=calc', 'dotnet build -p=PreBuildEvent=calc', 'dotnet build --property:RunCommand=calc']) no(c, rules)
+    ok('dotnet build -p Configuration=Release', rules)
+  })
+
+  it('M-4: npm, bun, node and git program options', () => {
+    for (const c of ['npm install --git=calc', 'npm test --browser=calc', 'npm test --editor calc', 'npm test --shell=calc', 'npm install --node-gyp=calc']) no(c, ['Bash(npm install:*)', 'Bash(npm test:*)'])
+    for (const c of ['bun test --preload ./x.ts', 'bun test -r ./x.ts', 'bun test --env-file=x']) no(c, ['Bash(bun test:*)'])
+    for (const c of ['node --test --experimental_loader=data:x', 'node --test --env_file=x', 'node --test --test-reporter=./evil.mjs', 'node --test --test-reporter ./evil.mjs']) no(c, ['Bash(node --test:*)'])
+    ok('node --test --test-reporter=spec', ['Bash(node --test:*)'])
+    for (const c of ['git send-email --to-cmd=calc x.patch', 'git send-email --smtp-server=/tmp/x x.patch', 'git instaweb --httpd=calc', 'git rebase -x calc HEAD~1']) {
+      no(c, ['Bash(git send-email:*)', 'Bash(git instaweb:*)', 'Bash(git rebase:*)'])
+    }
+  })
+
+  it('L-4: npm --global and npx --no are not read as abbreviations', () => {
+    ok('npm i --global typescript', ['Bash(npm i:*)'])
+    ok('npx --no eslint', ['Bash(npx --no:*)'])
   })
 })

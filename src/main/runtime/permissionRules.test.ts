@@ -494,6 +494,29 @@ describe('server-level MCP rules', () => {
   })
 })
 
+describe('reviewer-4: derive lists', () => {
+  it('M-1: container create / service / stack / plugin / cp / kube and kubectl apply-like verbs are never derived', () => {
+    for (const c of [
+      'docker create -v /:/h --privileged img', 'docker service create img', 'docker stack deploy -c x s', 'docker plugin install x', 'docker cp c:/x ./y',
+      'podman kube play x.yaml', 'nerdctl create img', 'kubectl apply -f x.yaml', 'kubectl create ns x', 'kubectl debug p', 'kubectl cp p:/x y', 'kubectl attach p'
+    ]) expect(shellRuleContents('Bash', c), c).toEqual([])
+    expect(shellRuleContents('Bash', 'docker ps -a')).toEqual(['docker ps:*'])
+    expect(shellRuleContents('Bash', 'kubectl get pods')).toEqual(['kubectl get:*'])
+  })
+
+  it('M-2: a one-word launcher rule and a two-word gh / cloud group are too broad', () => {
+    for (const p of ['docker', 'npx', 'gh', 'kubectl', 'git', 'npm', 'gh repo', 'aws s3', 'gcloud compute']) expect(isTooBroadPrefix(p), p).toBe(true)
+    for (const p of ['npm test', 'git status', 'gh pr list', 'docker ps']) expect(isTooBroadPrefix(p), p).toBe(false)
+  })
+
+  it('M-3: node and version-manager launchers are exec wrappers', () => {
+    for (const c of ['npx concurrently "npm:a" "npm:b"', 'npx cross-env A=1 npm test', 'npx nodemon --exec x', 'corepack pnpm i', 'dotenv -- npm test', 'volta run node x', 'mise exec -- x']) {
+      expect(shellRuleContents('Bash', c), c).toEqual([])
+    }
+    for (const r of ['Bash(cross-env:*)', 'Bash(concurrently:*)', 'Bash(volta:*)']) expect(isBlanketAllowRule(r), r).toBe(true)
+  })
+})
+
 describe('reviewer-3: derive lists', () => {
   it('H3: container run / exec / compose / buildx are never derived; podman and nerdctl like docker', () => {
     for (const c of [
