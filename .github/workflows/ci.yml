@@ -44,7 +44,8 @@ jobs:
       - name: e2e (free)
         run: npm run e2e:free
         env:
-          # The e2e scripts pick their own temp data dir; this keeps any stray launch off the runner's profile.
+          # The e2e scripts ignore this and give each script its own temp data dir (E2E_DATA_DIR overrides); this only keeps
+          # any stray launch off the runner's profile.
           # (The runner context is only available at step level.)
           ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
       - name: Upload e2e screenshots

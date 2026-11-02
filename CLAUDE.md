@@ -564,7 +564,9 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - These pieces are unit-tested where they are pure. Packaging (`dist:mac`, `dist:mac:unsigned`,
     `build/entitlements.mac.plist`) is unverified.
   - `ORGAI_DATA_DIR` replaces userData and puts the logs under it. e2e (a fresh temp dir per script) and CI use it to
-    keep off the real profile. package.json `productName: "OrgAI"` names the packaged app (`app.name`, log dir).
+    keep off the real profile. Since 18070b8 the e2e scripts ignore an ambient `ORGAI_DATA_DIR` (`E2E_DATA_DIR` is the
+    override): CI's one shared dir let connections.mjs's leftover library entry open a different dialog in team.mjs.
+    package.json `productName: "OrgAI"` names the packaged app (`app.name`, log dir).
   - The `pathKey` symlink fix (macOS `/tmp` is `/private/tmp`) and the OrgAI identity fallback for commit and merge are
     unit-tested with a junction/symlink and a git that has no identity config.
   - CI (`.github/workflows/ci.yml`) runs on windows-latest and macos-14. Release legs run on native-arch runners
