@@ -340,8 +340,7 @@ describe('MCP tools', () => {
 
   it('safeMcpToolNames keeps a 64-char name whole and drops invalid names', () => {
     const long = 'a'.repeat(64)
-    expect(safeMcpToolNames([long, 'ok_name-1', 'has space', 'new
-line', 'a'.repeat(65), '', 7, null])).toEqual([long, 'ok_name-1'])
+    expect(safeMcpToolNames([long, 'ok_name-1', 'has space', 'new\nline', 'a'.repeat(65), '', 7, null])).toEqual([long, 'ok_name-1'])
   })
 
   it('request_mcp_install: a 64-char tool name survives and the result uses the filtered list with the more tail', async () => {
