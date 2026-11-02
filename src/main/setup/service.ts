@@ -9,6 +9,7 @@ import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_
 import { addRules, isUnsafeAllowRule } from '../runtime/permissionRules'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
+import { mergeOrgChart } from './orgMerge'
 import { scanAgentSources } from './import/scan'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 import type { LibraryProposalOptions } from '../mcp/service'
@@ -201,8 +202,10 @@ export class SetupService {
         const written = writeArchitecture(project.path, project.name, proposal.payload)
         return this.projects.save({ ...project, setup: { ...setup, architecture: proposal.payload, architecturePath: written } })
       }
-      case 'orgChart':
-        return this.projects.save({ ...project, roles: proposal.payload.roles, setup })
+      case 'orgChart': {
+        const m = mergeOrgChart(project, proposal.payload.roles)
+        return this.projects.save({ ...project, roles: m.roles, ...(m.mcpServers ? { mcpServers: m.mcpServers } : {}), setup })
+      }
       case 'settings': {
         const p = proposal.payload
         const next: Project = { ...project, setup }

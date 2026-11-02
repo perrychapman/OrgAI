@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Proposal, SettingsProposalPayload, SkillsProposalPayload } from '@shared/types'
+import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Proposal, Role, SettingsProposalPayload, SkillsProposalPayload } from '@shared/types'
 import { ProjectStore } from '../store/projects'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { SecretStore } from '../store/secrets'
@@ -149,6 +149,76 @@ describe('applyProposal (settings)', () => {
     service.applyProposal(p.id, settings(p.id, { brief: 'New brief' }))
     expect(listRules(repo)).toEqual([])
     expect(store.get(p.id)?.brief).toBe('New brief')
+  })
+})
+
+describe('applyProposal (orgChart merge)', () => {
+  let dir: string
+  let store: ProjectStore
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'orgai-setup-org-'))
+    mkdirSync(join(dir, 'repo'))
+    store = new ProjectStore(join(dir, 'data'))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const orgProposal = (roles: Role[]): Proposal => ({
+    id: 'prop-1',
+    runId: 'run-1',
+    agentId: 'root',
+    title: 'Org',
+    createdAt: 0,
+    kind: 'orgChart',
+    payload: { rationale: 'r', roles }
+  })
+  const proposedRole = (id: string, name: string, over: Partial<Role> = {}): Role => ({
+    id,
+    slug: name.toLowerCase().replace(/\s+/g, '-'),
+    name,
+    description: 'd',
+    responsibilities: [],
+    prompt: 'p',
+    tools: ['Read'],
+    model: 'sonnet',
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: null,
+    position: { x: 0, y: 0 },
+    color: '#000',
+    ...over
+  })
+  function seed() {
+    const p = store.create({ name: 'A', path: join(dir, 'repo'), brief: '' })
+    const [lead, ...rest] = p.roles
+    const worker = rest[0] ?? { ...lead, id: 'w', slug: 'worker', name: 'Worker' }
+    const gone = { ...worker, id: 'gone', slug: 'gone-role', name: 'Gone Role' }
+    const roles = [{ ...lead, mcpServers: ['m1'] }, { ...worker, mcpServers: ['m1'] }, gone]
+    const servers: McpServerSpec[] = [
+      { id: 'm1', name: 'a', transport: 'stdio', command: 'npx', args: ['-y', 'pkg@1.2.3'], enabled: true, source: 'user', addedAt: '', roles: [worker.slug, 'gone-role'] },
+      { id: 'm2', name: 'b', transport: 'stdio', command: 'npx', args: ['-y', 'pkg@1.2.3'], enabled: true, source: 'user', addedAt: '', roles: ['gone-role'] },
+      { id: 'm3', name: 'c', transport: 'stdio', command: 'npx', args: ['-y', 'pkg@1.2.3'], enabled: true, source: 'user', addedAt: '' }
+    ]
+    return store.save({ ...p, roles, mcpServers: servers })
+  }
+
+  it('keeps ids and grants through an org change, drops removed slugs and never widens', () => {
+    const p = seed()
+    const [lead, worker] = p.roles
+    const saved = new SetupService(store).applyProposal(
+      p.id,
+      orgProposal([
+        proposedRole('n1', lead.name, { canSpawn: true, spawnable: ['n2'] }),
+        proposedRole('n2', worker.name, { reportsTo: 'n1' }),
+        proposedRole('n3', 'Brand New', { reportsTo: 'n1' })
+      ])
+    )
+    expect(saved.roles.map((r) => r.id)).toEqual([lead.id, worker.id, 'n3'])
+    expect(saved.roles[0].mcpServers).toEqual(['m1'])
+    expect(saved.roles[1]).toMatchObject({ reportsTo: lead.id, mcpServers: ['m1'] })
+    expect(saved.roles[0].spawnable).toEqual([worker.id])
+    const roles = Object.fromEntries((saved.mcpServers ?? []).map((s) => [s.id, s.roles]))
+    expect(roles).toEqual({ m1: [worker.slug], m2: [], m3: undefined })
+    expect(store.get(p.id)?.mcpServers?.find((s) => s.id === 'm2')?.roles).toEqual([])
   })
 })
 
