@@ -776,7 +776,10 @@ export class RunManager {
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
           summary.autoResume = e.autoResume
-          this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
+          // An adapter that says autoResume: false (e.g. Claude's failed MCP restart on a run the user interrupted)
+          // waits for the user; any other paused status keeps the auto-resume timer.
+          if (e.autoResume === false) this.clearResume(summary.id)
+          else this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
         }
         this.store.upsert(summary)
       } else if (e.type === 'run.cost') {

@@ -185,6 +185,11 @@ class PushStream<T> implements AsyncIterable<T> {
     return this.queue.splice(0)
   }
 
+  /** The values pushed but not yet read, left in place. */
+  peek(): T[] {
+    return [...this.queue]
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
@@ -272,7 +277,7 @@ export function safeMcpToolNames(names: readonly unknown[]): string[] {
  * roles granted them. Tool names come from the server (untrusted): only plain identifiers are listed, at most
  * MCP_NOTICE_TOOL_CAP per server, and every name (server, tools, roles) goes through datum().
  */
-export function mcpAttachedNotice(servers: { name: string; tools: string[]; roles: Pick<Role, 'name' | 'slug'>[] }[]): string {
+export function mcpAttachedNotice(servers: { name: string; tools: string[]; roles?: Pick<Role, 'name' | 'slug'>[] }[]): string {
   const parts = servers.map((s) => {
     const name = datum(s.name, 64)
     const prefix = `mcp__${name}__`
@@ -281,9 +286,12 @@ export function mcpAttachedNotice(servers: { name: string; tools: string[]; role
     const listed = safe.slice(0, MCP_NOTICE_TOOL_CAP).map((t) => prefix + datum(t, 64)).join(', ')
     const more = safe.length > MCP_NOTICE_TOOL_CAP ? `, and ${safe.length - MCP_NOTICE_TOOL_CAP} more` : ''
     const tools = safe.length ? `Its tools: ${listed}${more}.` : `Its tool names start with ${prefix}.`
-    const roles = s.roles.length
-      ? `Roles that may use it: ${s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ')}.`
-      : 'No role in the org chart is granted it, so no agent can call it in this run.'
+    // roles undefined: the grants could not be read (announceAttached failed); the PreToolUse gate still enforces them.
+    const roles = !s.roles
+      ? 'Only roles the org chart grants it may call it.'
+      : s.roles.length
+        ? `Roles that may use it: ${s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ')}.`
+        : 'No role in the org chart is granted it, so no agent can call it in this run.'
     return `The MCP server ${name} is attached now. ${tools} ${roles}`
   })
   return `[OrgAI harness] ${parts.join(' ')} Calls to it may still ask the user for permission under the project's permission mode. Reports you spawn from now on get it if their role is granted it.`
@@ -716,13 +724,19 @@ export class ClaudeSession implements RuntimeSession {
    * Harness messages pushed to the input, by kind. When an interrupt holds the run across a restart, unread plan nudges
    * are dropped and other unread harness notices wait for the user's next message (dropHeldHarnessMessages).
    */
-  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string }>()
+  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean }>()
   /** Attach notices that arrived while the run was held: prepended to the user's next message. */
   private heldNotices: string[] = []
   /** The session ended paused (a restarted query could not start); emitEnd is skipped. */
   private pausedEnd = false
   /** The current query has emitted its init message. */
   private queryInitSeen = false
+  /**
+   * Every message the current query may have read before its init (review N2): what was queued when it started plus
+   * everything pushed since. A restarted query that dies before init may have read some of them; recoverRestart
+   * re-pushes them into the fresh stream. Cleared at init, so nothing is delivered twice.
+   */
+  private preInit: SDKUserMessage[] = []
   /** Cost of this run reported by earlier queries of the session (restarts), and the SDK total last seen. */
   private priorQueriesCost = 0
   private lastRunCost = 0
@@ -790,7 +804,7 @@ export class ClaudeSession implements RuntimeSession {
       this.share = null
     }
     const composed = note ? (text ? `${note}\n\n---\n${text}` : note) : text
-    this.input.push({
+    this.pushInput({
       type: 'user',
       message: { role: 'user', content: userContent(composed, images) },
       parent_tool_use_id: null
@@ -947,15 +961,25 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; nudge?: boolean } = {}): void {
+  private notifyOrchestrator(
+    text: string,
+    activity = 'Integrating a report…',
+    opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean } = {}
+  ): void {
     const message: SDKUserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
-    this.harnessMessages.set(message, { nudge: !!opts.nudge, text })
-    this.input.push(message)
+    this.harnessMessages.set(message, { nudge: !!opts.nudge, text, ...(opts.restart ? { restart: true } : {}) })
+    this.pushInput(message)
     if (opts.transcript !== false) {
       this.transcript(ROOT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
     }
     const root = this.agents.get(ROOT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
+  }
+
+  /** Push to the current input stream; before the query's init the message is also kept for a restart replay (N2). */
+  private pushInput(message: SDKUserMessage): void {
+    this.input.push(message)
+    if (!this.queryInitSeen) this.preInit.push(message)
   }
 
   /** An agent called SendMessage: draw it on the canvas and keep a copy in the sender's transcript. */
@@ -1468,8 +1492,9 @@ export class ClaudeSession implements RuntimeSession {
     const max = this.ctx.project.maxBudgetUsd
     if (!max || this.isSetup) return undefined
     const left = max - Math.max(0, this.lastRunCost, this.lastPricedTotal)
-    if (!(left > 0)) return null
-    return Math.max(MCP_RESTART_MIN_BUDGET_USD, left)
+    // Below the minimum counts as nothing left: rounding it up would overshoot the budget (review N7).
+    if (!(left >= MCP_RESTART_MIN_BUDGET_USD)) return null
+    return left
   }
 
   /**
@@ -1535,6 +1560,21 @@ export class ClaudeSession implements RuntimeSession {
     old.end()
   }
 
+  /**
+   * A restarted query died before its init (review N2): give the next one a fresh stream holding every message the dead
+   * query may have read (preInit) plus anything still unread, each once. Attach / not-attached notices of the dead
+   * query are left out: startRestartedQuery sends them again.
+   */
+  private replayInput(): void {
+    const old = this.input
+    const unread = old.drain()
+    old.end()
+    this.input = new PushStream<SDKUserMessage>()
+    const replay = [...this.preInit, ...unread.filter((m) => !this.preInit.includes(m))]
+    for (const m of replay) if (!this.harnessMessages.get(m)?.restart) this.input.push(m)
+    this.preInit = []
+  }
+
   /** The pending servers cannot reach this session: warn, and tell the orchestrator they wait for the next run. */
   private giveUpPendingMcp(why: string): void {
     const names = [...this.pendingMcp.keys()]
@@ -1544,13 +1584,13 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Warn and tell the orchestrator (or, while held, the user's next message) that servers could not be attached. */
-  private tellNotAttached(names: string[], why: string): void {
+  private tellNotAttached(names: string[], why: string, restart = false): void {
     const plural = names.length === 1 ? '' : 's'
     this.log('warn', `Could not attach the MCP server${plural} ${names.join(', ')} to this session: ${why}`)
     const text = `[OrgAI harness] The MCP server${plural} ${names.map((n) => datum(n, 64)).join(', ')} could not be attached to this session (${datum(why, 300)}). It is available from the next run; continue without it.`
     const summary = `Could not attach the MCP server${plural} ${names.join(', ')}`
     if (this.held || this.capTripped) this.holdNotice(text, summary)
-    else this.notifyOrchestrator(text, 'Thinking…', { summary })
+    else this.notifyOrchestrator(text, 'Thinking…', { summary, restart })
   }
 
   /**
@@ -1598,14 +1638,30 @@ export class ClaudeSession implements RuntimeSession {
     this.dropHeldHarnessMessages()
     this.restarts += 1
     this.queryInitSeen = false
+    // What the new query may read before its init: everything queued now plus what is pushed until then.
+    this.preInit = this.input.peek()
     this.lastRestart = { servers: next.servers, tools: next.tools }
     this.priorQueriesCost = this.lastRunCost
     this.prevQuerySdkTotal = this.lastSdkTotal
     this.resumeCostBase = null
     this.harnessServer = harnessServerOf(next.options)
     this.q = query({ prompt: this.input, options: next.options })
-    if (next.dropped?.length) this.tellNotAttached(next.dropped, `the resumed session would not start with ${next.dropped.length === 1 ? 'it' : 'them'}`)
-    else if (next.servers.length) void this.announceAttached(next.servers, next.tools, this.q)
+    if (next.dropped?.length) this.tellNotAttached(next.dropped, `the resumed session would not start with ${next.dropped.length === 1 ? 'it' : 'them'}`, true)
+    else if (next.servers.length) {
+      const q = this.q
+      // Never left unhandled (review N4): a failure still sends a notice with the known tool names and releases a
+      // deferred turn end, so an unattended run does not stall.
+      void this.announceAttached(next.servers, next.tools, q).catch((e) => {
+        this.log('warn', `Could not read the attached MCP servers' grants: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
+        try {
+          this.sendAttachNotice(q, next.servers.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers)
+        } catch (e2) {
+          this.log('warn', `Could not send the MCP attach notice: ${(e2 as Error)?.message ?? String(e2)}`)
+        } finally {
+          this.releaseTurnEnd()
+        }
+      })
+    }
   }
 
   /** The run is held for the user: show a harness notice in the transcript and deliver it with the user's next message. */
@@ -1622,6 +1678,11 @@ export class ClaudeSession implements RuntimeSession {
       const fresh = await this.serverTools(name, MCP_STATUS_WAIT_MS, q)
       entries.push({ name, tools: fresh.length ? fresh : (known.get(name) ?? []), roles: rolesGrantedServer(this.ctx.roles, live, name) })
     }
+    this.sendAttachNotice(q, entries, servers)
+  }
+
+  /** Deliver the attach notice for query q (dropped if q is no longer current); while held it waits for the user. */
+  private sendAttachNotice(q: Query, entries: Parameters<typeof mcpAttachedNotice>[0], servers: string[]): void {
     if (this.abort.signal.aborted || this.q !== q) return
     const summary = `MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')} attached`
     // Held by an interrupt meanwhile: no new turn now; the notice goes with the user's next message.
@@ -1629,7 +1690,7 @@ export class ClaudeSession implements RuntimeSession {
       this.holdNotice(mcpAttachedNotice(entries), summary)
       return
     }
-    this.notifyOrchestrator(mcpAttachedNotice(entries), 'Using a new MCP server…', { summary })
+    this.notifyOrchestrator(mcpAttachedNotice(entries), 'Using a new MCP server…', { summary, restart: true })
   }
 
   /** What lives for the whole run: the skills plugin and the bound harness tools. Called once, before the first query. */
@@ -1818,7 +1879,7 @@ export class ClaudeSession implements RuntimeSession {
               this.endPausedAfterRestart(why)
               break
             }
-            this.swapInput()
+            this.replayInput()
             this.nextQuery = next
           } else throw e
         }
@@ -1855,18 +1916,22 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
-   * No restarted query could start (recoverRestart gave up): end the session paused, not failed. RunManager resumes a
-   * paused run at pausedUntil (a fresh resume of the same session, without this run's run-scoped servers).
+   * No restarted query could start (recoverRestart gave up): end the session paused, not failed. Unless the user held
+   * the run (interrupt or window cap: autoResume false, no pausedUntil, it waits for the user), RunManager resumes it at
+   * pausedUntil (a fresh resume of the same session, without this run's run-scoped servers).
    */
   private endPausedAfterRestart(why: string): void {
     this.pausedEnd = true
     this.ending = true
-    const pausedUntil = Date.now() + MCP_RESTART_PAUSE_MS
+    // A run the user interrupted (or the window cap stopped) waits for the user, never auto-resumes (review N1).
+    const autoResume = !(this.held || this.capTripped)
+    const pausedUntil = autoResume ? Date.now() + MCP_RESTART_PAUSE_MS : undefined
     const reason = 'The session could not be resumed after attaching an MCP server.'
-    this.log('error', `${reason} Pausing the run; it resumes at ${new Date(pausedUntil).toLocaleString()} or when you continue it. Last error: ${why}`)
+    const when = pausedUntil ? `it resumes at ${new Date(pausedUntil).toLocaleString()} or when you continue it` : 'it waits until you continue it'
+    this.log('error', `${reason} Pausing the run; ${when}. Last error: ${why}`)
     this.transcript(ROOT_ID, { kind: 'system', text: `${reason} The run is paused.`, detail: why }, { source: 'harness' })
     this.setState(ROOT_ID, 'idle', 'Paused')
-    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'paused', pausedUntil, pauseReason: reason, autoResume: true })
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'paused', ...(pausedUntil ? { pausedUntil } : {}), pauseReason: reason, autoResume })
   }
 
   /** The run's closing status: 'error' with the readable message after an auth failure, else 'finished'. */
@@ -1901,6 +1966,7 @@ export class ClaudeSession implements RuntimeSession {
           this.upsert(root)
           this.sessionId = msg.session_id
           this.queryInitSeen = true
+          this.preInit = []
           // A restarted query that starts clears the failure count, so a later restart gets its own retries.
           this.restartFailures = 0
           this.emit({ type: 'run.status', runId, status: 'running', sessionId: msg.session_id })

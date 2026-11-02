@@ -497,8 +497,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     - Notice (M1): server tool names are untrusted; only `^[A-Za-z0-9_-]{1,64}$` names are kept (`safeMcpToolNames`),
       at most `MCP_NOTICE_TOOL_CAP` 20 per server plus ", and N more", and server, tool and role names go through
       `datum()`. The could-not-attach notice quotes names and reason through `datum()` too.
-    - Budget (M2): a restarted query gets `maxBudgetUsd` minus the run's cost so far, at least
-      `MCP_RESTART_MIN_BUDGET_USD` 0.01; with nothing left there is no restart, a run warning, and the orchestrator is
+    - Budget (M2): a restarted query gets `maxBudgetUsd` minus the run's cost so far; with less than
+      `MCP_RESTART_MIN_BUDGET_USD` 0.01 left there is no restart (N7), a run warning, and the orchestrator is
       told the server comes with the next run. Whether the SDK counts the earlier cost against `maxBudgetUsd` on a
       resumed query is unverified.
     - Background tasks (M5): non-subagent tasks from `task_started` (ambient and `skip_transcript` ones excluded) are
@@ -507,14 +507,25 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
       re-schedules it. Field shapes from the 0.3.312 typings only.
     - Failed starts (M4): the failure count resets at a restarted query's init. Failures before init: the 1st resumes
       again with the same servers, the 2nd resumes without the new servers (`droppedMcp`, the orchestrator is told), the
-      3rd or no budget ends the run `paused` (never error) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
-      `pauseReason`, `autoResume: true`, an error log line and a harness transcript row. Each new query gets a fresh
-      input stream (`swapInput`).
+      3rd or no budget ends the run `paused` (not error, except a throw from `buildOptions` inside `recoverRestart`, open M2) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
+      `pauseReason`, `autoResume: !(held || capTripped)` (N1: an interrupted run waits for the user; RunManager schedules no resume for `autoResume: false`, runManager.test.ts; it gets no
+      `pausedUntil`), an error log line and a harness transcript row. Each new query gets a fresh input stream; after a
+      failed start `replayInput` fills it with every message pushed before the dead query's init (`preInit`, cleared at
+      init) plus any unread ones, each once, leaving out notices flagged `restart` because the next query sends them
+      again (N2).
     - Pending list (L1): servers leave `pendingMcp` synchronously when the restart starts; their tool names travel with
       it as the notice's fallback.
     - Held runs (L7): before a restarted query starts, a run held by an interrupt or the window cap drops its queued
       plan nudges; other queued harness notices, and an attach or could-not-attach notice arriving while held, are
       delivered with the user's next message.
+    - Second review (2026-11-02; N1 and N2 above, all unit-tested only, none run live): a rejected `announceAttached`
+      logs a warning, sends a fallback notice with the known tool names (`mcpAttachedNotice` with `roles` undefined
+      reads "Only roles the org chart grants it may call it.") and always calls `releaseTurnEnd` (N4). `restartBudget`
+      returns null (no restart, the no-budget path) when less than `MCP_RESTART_MIN_BUDGET_USD` is left, so a
+      restarted query never gets more than what is left (N7). The request_mcp_install result lists tool names through
+      harnessTools.ts `safeMcpToolNames` (twin of claude.ts's, same `^[A-Za-z0-9_-]{1,64}$` rule, keep them in sync)
+      with `datum(t, 64)` (N5, harnessTools.test.ts). Open: N3, N6, N8 and the third check's M1, M2,
+      L1-L4 (ARCHITECTURE.md Risks).
   - Per-role MCP grants (`mcpGrants.ts` `mcpCallDenial`): the Claude PreToolUse hook (and the mock) checks every
     `mcp__<server>__<tool>` call against `mcpServersForRole` over the live server list (run-scoped installs and the
     card's `roles` included), root included, before any allow path; unknown callers and unknown or disabled servers
@@ -534,14 +545,15 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     every options build (`withoutServerRules`); exact single-tool rules still apply. The mock does the same (its only
     other parity with these fixes is L3; it attaches at once, so it has no restart). NOT covered: `mcp__<server>` allow
     rules the CLI loads itself from `<project>/.claude/settings.json`, and server-level session rules the CLI adds
-    from an "always allow" suggestion. Unit-tested (claude.test.ts, mcpGrants.test.ts, mock.test.ts).
+    from an "always allow" suggestion. The mock filters its own session rules too (`sessionRules` in its ask path), so
+    mock tests are stricter than Claude here. Unit-tested (claude.test.ts, mcpGrants.test.ts, mock.test.ts).
   - Server-level permission rules (`ruleMatch.ts` `mcpServerOfRule`, `matchingRule`): `mcp__<server>` and
     `mcp__<server>__*` match every tool with the exact prefix `mcp__<server>__` (a server name with `__` inside is not
     a server rule); `mcp__*`, other wildcards, `mcp__orgai` and `mcp__orgai__*` are refused by `isValidRule` and
     `isUnsafeAllowRule`. `permissionRules.ts` `ruleLabel` reads both forms as "All tools of <server>" (the rules card
     still shows raw strings). Unit-tested.
   - Skills have no mid-run path: `active.skills` is read once at run start and the Claude skill plugin is built once
-    in `buildOptions` (a restart reuses it), so a skill added or granted during a live run reaches only the next run.
+    in `prepare()`, before the first query (a restart reuses it), so a skill added or granted during a live run reaches only the next run.
     `Query.reloadSkills()` / `reloadPlugins` exist in the 0.3.312 typings and are untested.
   - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
     another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
