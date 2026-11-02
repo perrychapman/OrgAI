@@ -206,6 +206,24 @@ export function isTooBroadPrefix(prefix: string): boolean {
   return false
 }
 
+/**
+ * Why a shell prefix rule grants far more than one command (its prefix isTooBroadPrefix: `curl:*`,
+ * `docker compose:*`, `npx tsx *`), else null. Exact shell rules and other tools pass. Shared by permissions:add,
+ * request_permission_rules cards and Architect proposals so all three use one wording (reviewer-4 M-2).
+ */
+export function tooBroadRuleRefusal(rule: string): string | null {
+  const m = /^(?:Bash|PowerShell)\((.*)\)$/.exec(rule.trim())
+  const prefix = m ? rulePrefix(m[1]) : null
+  if (prefix === null || !isTooBroadPrefix(prefix)) return null
+  return `"${rule}" would allow far more than one command (it writes, fetches, runs code or controls containers). Use an exact rule such as ${rule.trim().replace(/(?::\*| \*)\)$/, ')')} instead.`
+}
+
+/** Why an allow rule must not be saved: destructive or unbounded (isUnsafeAllowRule) or too broad (tooBroadRuleRefusal). */
+export function allowRuleRefusal(rule: string): string | null {
+  if (isUnsafeAllowRule(rule)) return `"${rule}" would allow a destructive or unbounded command. Allow the command once from its card instead.`
+  return tooBroadRuleRefusal(rule)
+}
+
 /** The exec wrapper a shell rule's command starts with (base name, `.exe` dropped), else null. */
 function execWrapperOf(command: string): string | null {
   const first = command.trim().split(/\s+/)[0] ?? ''

@@ -130,9 +130,9 @@ describe('applyProposal (settings)', () => {
   it('merges proposed allow rules into .claude/settings.local.json without duplicates or other keys lost', () => {
     const p = store.create({ name: 'X', path: repo, brief: '' })
     mkdirSync(join(repo, '.claude'))
-    writeFileSync(settingsLocalPath(repo), JSON.stringify({ env: { A: '1' }, permissions: { allow: ['Bash(npm:*)'], deny: ['Read(.env)'] } }))
-    service.applyProposal(p.id, settings(p.id, { allowRules: ['Bash(npm:*)', 'Bash(git status:*)', ' Bash(git diff:*) ', 'Bash(git status:*)'] }))
-    expect(listRules(repo)).toEqual(['Bash(npm:*)', 'Bash(git status:*)', 'Bash(git diff:*)'])
+    writeFileSync(settingsLocalPath(repo), JSON.stringify({ env: { A: '1' }, permissions: { allow: ['Bash(npm test:*)'], deny: ['Read(.env)'] } }))
+    service.applyProposal(p.id, settings(p.id, { allowRules: ['Bash(npm test:*)', 'Bash(git status:*)', ' Bash(git diff:*) ', 'Bash(git status:*)'] }))
+    expect(listRules(repo)).toEqual(['Bash(npm test:*)', 'Bash(git status:*)', 'Bash(git diff:*)'])
     const file = JSON.parse(readFileSync(settingsLocalPath(repo), 'utf8'))
     expect(file.env).toEqual({ A: '1' })
     expect(file.permissions.deny).toEqual(['Read(.env)'])
@@ -140,8 +140,14 @@ describe('applyProposal (settings)', () => {
 
   it('creates the settings file when the project has none, and drops destructive rules', () => {
     const p = store.create({ name: 'X', path: repo, brief: '' })
-    service.applyProposal(p.id, settings(p.id, { allowRules: ['Bash(npx:*)', 'Bash(rm:*)', 'Bash(git push:*)', 'Bash', 'Bash(sudo apt:*)', 'Bash(git reset --hard:*)'] }))
-    expect(listRules(repo)).toEqual(['Bash(npx:*)'])
+    service.applyProposal(p.id, settings(p.id, { allowRules: ['Bash(npm run lint:*)', 'Bash(rm:*)', 'Bash(git push:*)', 'Bash', 'Bash(sudo apt:*)', 'Bash(git reset --hard:*)'] }))
+    expect(listRules(repo)).toEqual(['Bash(npm run lint:*)'])
+  })
+
+  it('drops shell prefixes that grant far more than one command, as permissions:add does (reviewer-4 M-2)', () => {
+    const p = store.create({ name: 'X', path: repo, brief: '' })
+    service.applyProposal(p.id, settings(p.id, { allowRules: ['Bash(npx:*)', 'Bash(docker compose:*)', 'Bash(npx tsx *)', 'Bash(gh repo:*)', 'Bash(curl:*)', 'Bash(git status:*)', 'Bash(curl https://example.com)'] }))
+    expect(listRules(repo)).toEqual(['Bash(git status:*)', 'Bash(curl https://example.com)'])
   })
 
   it('writes nothing when no rules are proposed', () => {
@@ -462,10 +468,11 @@ describe('applyProposal (mcpServers) with the MCP library', () => {
 describe('cleanAllowRules', () => {
   it('keeps safe rule strings and drops junk', () => {
     expect(cleanAllowRules(undefined)).toEqual([])
-    expect(cleanAllowRules(['Bash(node:*)', 3, '', '  ', 'WebSearch', 'Bash(*)', 'Bash(git log:*)'])).toEqual(['Bash(node:*)', 'WebSearch', 'Bash(git log:*)'])
+    expect(cleanAllowRules(['Bash(npm test:*)', 3, '', '  ', 'WebSearch', 'Bash(*)', 'Bash(git log:*)'])).toEqual(['Bash(npm test:*)', 'WebSearch', 'Bash(git log:*)'])
+    expect(cleanAllowRules(['Bash(node:*)', 'Bash(npm:*)', 'PowerShell(python:*)'])).toEqual([])
   })
 
   it('drops rules with a bidi or zero-width character', () => {
-    expect(cleanAllowRules(['Bash(npm:*)', 'Bash(git ‮status:*)', 'Bash(n​pm test:*)', 'Bash(ls\u0007:*)'])).toEqual(['Bash(npm:*)'])
+    expect(cleanAllowRules(['Bash(npm test:*)', 'Bash(git ‮status:*)', 'Bash(n​pm test:*)', 'Bash(ls\u0007:*)'])).toEqual(['Bash(npm test:*)'])
   })
 })

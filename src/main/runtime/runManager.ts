@@ -63,7 +63,7 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
-import { addRules, isBlanketAllowRule, isUnsafeAllowRule, listRules } from './permissionRules'
+import { addRules, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
@@ -1861,7 +1861,8 @@ export class RunManager {
     const request: PermissionRuleRequest = {
       ...req,
       rules,
-      flagged: rules.filter((r) => isUnsafeAllowRule(r)),
+      // Destructive or unbounded rules, and shell prefixes that grant far more than one command (reviewer-4 M-2).
+      flagged: rules.filter((r) => isUnsafeAllowRule(r) || tooBroadRuleRefusal(r) !== null),
       id: newId('rule'),
       runId: active.summary.id,
       createdAt: Date.now()
@@ -1876,7 +1877,8 @@ export class RunManager {
   /**
    * Answer a request_permission_rules card. A grant is in force before the agent's tool call returns: run
    * scope adds the rules to the run (allowedRules), project scope also saves them to the settings file. The user
-   * chose the rules knowingly, so flagged (destructive) rules are saved too.
+   * chose the rules knowingly, so flagged destructive rules are saved too; blanket rules and too-broad shell prefixes
+   * (tooBroadRuleRefusal) stay run grants.
    */
   decideRules(runId: string, requestId: string, decision: PermissionRuleDecision): void {
     const active = this.runs.get(runId)
@@ -1892,9 +1894,14 @@ export class RunManager {
       for (const r of rules) if (!active.runRules.includes(r)) active.runRules.push(r)
       if (scope === 'project') {
         // A blanket rule (bare Bash / Edit / Write ...) stays a run grant; it is never written to the file.
-        const savable = rules.filter((r) => !isBlanketAllowRule(r))
+        // A too-broad shell prefix (tooBroadRuleRefusal, the wording permissions:add uses) also stays on the run (M-2).
+        const savable = rules.filter((r) => !isBlanketAllowRule(r) && tooBroadRuleRefusal(r) === null)
         const blanket = rules.filter(isBlanketAllowRule)
         if (blanket.length) this.broadcast({ type: 'log', runId, level: 'warn', message: `Not saved for the project (too broad): ${blanket.join(', ')}. It applies to this run only.` })
+        for (const r of rules) {
+          const refusal = isBlanketAllowRule(r) ? null : tooBroadRuleRefusal(r)
+          if (refusal) this.broadcast({ type: 'log', runId, level: 'warn', message: `Not saved for the project: ${refusal} It applies to this run only.` })
+        }
         try {
           if (savable.length) addRules(active.projectPath, savable)
         } catch (e) {

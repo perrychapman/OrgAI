@@ -6,7 +6,7 @@ import { validateSpec } from '../mcp/validate'
 import { setupKindLabel } from '@shared/setup'
 import { isPermissionMode } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
-import { addRules, isUnsafeAllowRule } from '../runtime/permissionRules'
+import { addRules, allowRuleRefusal } from '../runtime/permissionRules'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
@@ -314,13 +314,14 @@ export class SetupService {
 
 /**
  * Trimmed, non-empty, de-duplicated rule strings. Non-strings and rules the harness never saves from a
- * proposal (bare shell access, destructive commands such as rm, git push or sudo) are dropped, and so is any rule
+ * proposal (allowRuleRefusal: bare shell access, destructive commands such as rm, git push or sudo, and shell prefixes
+ * that grant far more than one command such as `docker:*` or `npx tsx:*`) are dropped, and so is any rule
  * holding a control, zero-width, bidi or other invisible character (propose_settings already refuses those).
  */
 export function cleanAllowRules(rules: unknown): string[] {
   if (!Array.isArray(rules)) return []
   const strings = rules.filter((r): r is string => typeof r === 'string').map((r) => r.trim())
-  return [...new Set(strings.filter((r) => r && !hiddenCharIn(r) && !isUnsafeAllowRule(r)))]
+  return [...new Set(strings.filter((r) => r && !hiddenCharIn(r) && allowRuleRefusal(r) === null))]
 }
 
 function clamp(n: number, lo: number, hi: number): number {

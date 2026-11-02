@@ -114,8 +114,8 @@ import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { projectConnection } from '@shared/defaults'
 import { log, logPath, logsDir } from './log'
-import { addRules, isTooBroadPrefix, isUnsafeAllowRule, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
-import { isValidRule, rulePrefix } from './runtime/ruleMatch'
+import { addRules, allowRuleRefusal, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
+import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
 import { checkProjectPath } from './store/projects'
 import { checkRunTarget, isValidId } from './windowScope'
@@ -866,13 +866,7 @@ export function permissionAddRefusal(rule: string): string | null {
   if (!isValidRule(rule)) return 'A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(npm test:*)'
   const refusal = ruleSaveRefusal(rule)
   if (refusal) return refusal
-  if (isUnsafeAllowRule(rule)) return `"${rule}" would allow a destructive or unbounded command. Allow the command once from its card instead.`
-  const m = /^(?:Bash|PowerShell)\((.*)\)$/.exec(rule.trim())
-  const prefix = m ? rulePrefix(m[1]) : null
-  if (prefix !== null && isTooBroadPrefix(prefix)) {
-    return `"${rule}" would allow far more than one command (it writes, fetches, runs code or controls containers). Use an exact rule such as ${rule.trim().replace(/(?::\*| \*)\)$/, ')')} instead.`
-  }
-  return null
+  return allowRuleRefusal(rule)
 }
 
 /** Most secret values one proposal decision may carry, and the longest key / value. */

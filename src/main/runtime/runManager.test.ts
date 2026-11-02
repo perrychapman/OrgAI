@@ -670,7 +670,7 @@ describe('RunManager with the mock adapter', () => {
       const { m } = manager(p, script('gh repo create a/b --public && git push -u origin main'))
       const run = await m.start({ project: p, prompt: 'Publish' })
       const req = await waitFor(isType('rules.request'))
-      expect(req.request).toMatchObject({ agentId: 'root', rules: ['Bash(gh:*)', 'Bash(git push:*)'], reason: 'Publish the repo', flagged: ['Bash(git push:*)'] })
+      expect(req.request).toMatchObject({ agentId: 'root', rules: ['Bash(gh:*)', 'Bash(git push:*)'], reason: 'Publish the repo', flagged: ['Bash(gh:*)', 'Bash(git push:*)'] })
       m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'run' })
       await waitFor(isType('rules.resolved'))
       await waitFor(isType('run.status', (e) => e.status === 'idle'))
@@ -691,7 +691,9 @@ describe('RunManager with the mock adapter', () => {
       m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'project' })
       await waitFor(isType('run.status', (e) => e.status === 'idle'))
       const saved = JSON.parse(readFileSync(join(p.path, '.claude', 'settings.local.json'), 'utf8')) as { permissions: { allow: string[] } }
-      expect(saved.permissions.allow).toEqual(['Bash(gh:*)', 'Bash(git push:*)'])
+      // Bash(gh:*) covers every gh verb: like permissions:add, it is never saved for the project (reviewer-4 M-2).
+      expect(saved.permissions.allow).toEqual(['Bash(git push:*)'])
+      expect(events.some((e) => e.type === 'log' && e.level === 'warn' && /Not saved for the project: "Bash\(gh:\*\)" would allow far more than one command.*It applies to this run only/.test(e.message))).toBe(true)
       expect(events.filter(isType('transcript')).some((e) => e.entry.block.kind === 'tool_result' && /GRANTED \(saved for this project\)/.test(String(e.entry.block.content)))).toBe(true)
       await m.stop(run.id)
     })
@@ -700,7 +702,7 @@ describe('RunManager with the mock adapter', () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const blanket: MockScript = {
         work: [
-          { type: 'harness', name: 'request_permission_rules', args: { rules: ['Edit', 'Bash(gh:*)'], reason: 'Edit elsewhere' } },
+          { type: 'harness', name: 'request_permission_rules', args: { rules: ['Edit', 'Bash(gh repo view:*)'], reason: 'Edit elsewhere' } },
           { type: 'tool', name: 'Bash', input: { command: 'gh repo view' }, ask: true, result: 'ok' }
         ]
       }
@@ -710,7 +712,7 @@ describe('RunManager with the mock adapter', () => {
       m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'project' })
       await waitFor(isType('run.status', (e) => e.status === 'idle'))
       const saved = JSON.parse(readFileSync(join(p.path, '.claude', 'settings.local.json'), 'utf8')) as { permissions: { allow: string[] } }
-      expect(saved.permissions.allow).toEqual(['Bash(gh:*)'])
+      expect(saved.permissions.allow).toEqual(['Bash(gh repo view:*)'])
       expect(events.some((e) => e.type === 'log' && e.level === 'warn' && /Not saved for the project \(too broad\): Edit/.test(e.message))).toBe(true)
       await m.stop(run.id)
     })
