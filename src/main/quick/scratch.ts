@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import type { RunSummary } from '@shared/types'
 import { newId } from '@shared/defaults'
 
@@ -20,16 +20,22 @@ export function scratchRoot(dataDir: string): string {
 
 const win = (): boolean => process.platform === 'win32'
 
-/** A path as a comparison key: resolved, trailing separators dropped, case-folded on Windows. */
+/**
+ * A path as a comparison key: resolved, trailing separators dropped, case-folded on Windows. A root keeps its
+ * separator (`C:\`, `/`): stripped it would be `c:` / '' and `relative` would resolve that against the cwd, so a
+ * drive root would no longer contain the data dir (M3 fail-open).
+ */
 export function pathKey(p: string): string {
-  const r = resolve(p).replace(/[\\/]+$/, '')
-  return win() ? r.toLowerCase() : r
+  const r = resolve(p)
+  const root = parse(r).root
+  const k = r.length > root.length ? r.replace(/[\\/]+$/, '') : root
+  return win() ? k.toLowerCase() : k
 }
 
 /** True when `child` is `parent` or inside it (lexical, after resolve). */
 export function isInside(parent: string, child: string): boolean {
   const rel = relative(pathKey(parent), pathKey(child))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 /** The path as the file system spells it; the input when it cannot be resolved. */
