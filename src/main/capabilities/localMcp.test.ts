@@ -129,7 +129,7 @@ describe('discoverLocalMcp', () => {
     put(join(codex, 'config.toml'), '[mcp_servers.z]\ncommand = "npx"\nargs = ["-y", "z@1.0.0"]\n')
     put(join(root, 'ad', 'Claude', 'claude_desktop_config.json'), JSON.stringify({ mcpServers: { d: { command: 'node' } } }))
     const r = discoverLocalMcp(ctx({ env: { CODEX_HOME: codex, APPDATA: join(root, 'ad') }, platform: 'win32' }))
-    expect(r.candidates.map((c) => c.item.name).sort()).toEqual(process.platform === 'win32' ? ['d', 'z'] : ['z'])
+    expect(r.candidates.map((c) => c.item.name).sort()).toEqual(['d', 'z'])
   })
 
   it('blocks an unpinned npx server', () => {
