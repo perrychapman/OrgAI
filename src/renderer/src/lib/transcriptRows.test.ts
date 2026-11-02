@@ -23,6 +23,17 @@ describe('mergeChainFeed', () => {
     expect(div.kind === 'divider' && div.divider.runId).toBe('run_2')
   })
 
+  it('prefixes tool_use ids and tool_result toolUseIds of earlier members so pairs still match', () => {
+    const feed = mergeChainFeed([
+      m('run_1', 0, undefined, [entry('e1', { kind: 'tool_use', id: 't1', name: 'Read', input: {} }), entry('e2', { kind: 'tool_result', toolUseId: 't1', content: 'x', isError: false })]),
+      m('run_2', 10, 'run_1', [entry('e1', { kind: 'tool_use', id: 't1', name: 'Read', input: {} })])
+    ])
+    const blocks = feed.flatMap((f) => (f.kind === 'entry' ? [f.entry.block] : []))
+    expect(blocks[0].kind === 'tool_use' && blocks[0].id).toBe('run_1:t1')
+    expect(blocks[1].kind === 'tool_result' && blocks[1].toolUseId).toBe('run_1:t1')
+    expect(blocks[2].kind === 'tool_use' && blocks[2].id).toBe('t1')
+  })
+
   it('drops the continuation notice only at a resumed member start and only for the harness system shape', () => {
     const feed = mergeChainFeed([
       m('run_1', 0, undefined, [note('keep-first-member')]),

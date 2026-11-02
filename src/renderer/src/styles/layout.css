@@ -580,6 +580,16 @@ button.run-meta-item:focus-visible {
   margin-inline: auto;
   flex: none;
 }
+/* Earlier sessions (a plain container) and the newest session (the live log) lay out like one list. */
+.conversation-earlier,
+.conversation-newest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.conversation-earlier {
+  margin-bottom: var(--space-3);
+}
 .conversation-jump {
   flex: none;
   display: flex;

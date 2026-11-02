@@ -55,7 +55,8 @@ export function chainCanvas(members: readonly ChainMemberView[]): ChainCanvas {
 
   const earlier: EarlierGroup[] = []
   const origin = new Map<string, { runId: string; agentId: string }>()
-  const before = members.slice(0, -1)
+  // Hold the earlier groups until the newest root exists: without it they would render as roots themselves.
+  const before = newestRoot ? members.slice(0, -1) : []
   for (const m of before) {
     const settled = settleEndedAgents(m.summary, m.agents)
     const list: AgentInstance[] = []
@@ -64,7 +65,7 @@ export function chainCanvas(members: readonly ChainMemberView[]): ChainCanvas {
       const id = `${m.summary.id}/${a.id}`
       const parent = settled[a.parentId]
       const nested = !!parent && parent.parentId !== null
-      list.push({ ...a, id, parentId: nested ? `${m.summary.id}/${a.parentId}` : (newestRoot?.id ?? null) })
+      list.push({ ...a, id, parentId: nested ? `${m.summary.id}/${a.parentId}` : (newestRoot as AgentInstance).id })
       origin.set(id, { runId: m.summary.id, agentId: a.id })
     }
     if (list.length > 0) earlier.push({ runId: m.summary.id, key: earlierKey(m.summary.id), label: earlierLabel(list.length), agents: list })

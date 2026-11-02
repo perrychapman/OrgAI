@@ -101,14 +101,19 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const virtual = isVirtualProjectId(project.id)
   const newLabel = virtual ? newSessionLabel(project.id as VirtualProjectId) : 'New run'
 
-  const viewedRun = !draftPage && viewedId ? runs.find((r) => r.summary.id === viewedId) : undefined
-  const selectedId = viewedRun ? viewedRun.summary.id : DRAFT_ID
   const summaries = useProjectSummaries()
   const groupOf = useMemo(() => {
     const byMember = new Map<string, ReturnType<typeof chainGroups<(typeof summaries)[number]>>[number]>()
     for (const g of chainGroups(summaries)) for (const m of g.members) byMember.set(m.id, g)
     return byMember
   }, [summaries])
+  // The viewed id may name an older member of a chain (a stale pointer): it still selects that chain's one tab.
+  const viewedGroup = viewedId ? groupOf.get(viewedId) : undefined
+  const viewedRun =
+    !draftPage && viewedId
+      ? (runs.find((r) => r.summary.id === viewedId) ?? (viewedGroup ? runs.find((r) => groupOf.get(r.summary.id) === viewedGroup) : undefined))
+      : undefined
+  const selectedId = viewedRun ? viewedRun.summary.id : DRAFT_ID
   const items: TabItem[] = useMemo(() => {
     const list: TabItem[] = runs.map((run) => {
       const g = groupOf.get(run.summary.id)

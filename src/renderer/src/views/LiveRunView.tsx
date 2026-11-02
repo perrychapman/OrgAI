@@ -36,9 +36,9 @@ import { Switch } from '../components/ui/Switch'
 import RunActions from '../components/RunActions'
 import RunMeta from '../components/RunMeta'
 import { useCssVar } from '../lib/useCssVar'
-import { activeRun, useAppStore, useChainRuns, useProjectSummaries } from '../store/useAppStore'
+import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
-import { canContinue as chainCanContinue, chainKeyOf, chainOf, continuedBy, endedComposerCopy, newestOf, sessionOpenRunId } from '../lib/runChains'
+import { canContinueIn, chainKeyOf, chainOf, continuedByIn, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
 import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
@@ -186,10 +186,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const focusComposer = useAppStore((s) => s.focusComposer)
   const summaries = useProjectSummaries()
   // The pick is kept for the conversation: the newest member's own choice, else an earlier member's.
+  // The chain is worked out once per render; newest / canContinue / successor / key all derive from it.
+  const chainSummaries = useMemo(() => chainOf(summaries, runId), [summaries, runId])
   const chainIds = useMemo(() => {
-    const ids = chainOf(summaries, runId).map((r) => r.id).reverse()
+    const ids = chainSummaries.map((r) => r.id).reverse()
     return ids.length > 0 ? ids : [runId]
-  }, [summaries, runId])
+  }, [chainSummaries, runId])
   const chosenLayout = useAppStore((s) => {
     for (const id of chainIds) if (s.runLayoutByRun[id]) return s.runLayoutByRun[id]
     return undefined
@@ -215,7 +217,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
-  const members = useChainRuns(runId)
+  const allRuns = useAppStore((s) => s.runs)
+  // Loaded members, oldest first (members whose records are not loaded yet are missing until loadChain fetches them).
+  const members = useMemo(() => [...chainIds].reverse().map((id) => allRuns[id]).filter((r): r is RunState => !!r), [chainIds, allRuns])
+  const historyLoaded = useAppStore((s) => s.historyByProject[project.id] !== undefined)
+  const continueIntent = useAppStore((s) => s.continueIntent === chainIds[0])
   const loadChain = useAppStore((s) => s.loadChain)
   const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
@@ -240,9 +246,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
 
   // Earlier sessions of this conversation load lazily; the view stays mounted when a continue changes the viewed run.
+  // It re-runs when the set of known members changes or the history arrives: a run opened before history loaded gets its earlier members then.
+  const chainMemberKey = chainIds.join(',')
   useEffect(() => {
     void loadChain(runId)
-  }, [runId, loadChain])
+  }, [runId, chainMemberKey, historyLoaded, loadChain])
+  // History's Continue asks for the composer: it takes focus once (the Composer sees autoFocus on mount), then the request is cleared.
+  useEffect(() => {
+    if (continueIntent) useAppStore.setState({ continueIntent: null })
+  }, [continueIntent])
   const prevRunId = useRef(runId)
   useEffect(() => {
     const prev = prevRunId.current
@@ -264,9 +276,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
   // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
   // session chain: an older member points to the newest.
-  const canContinue = chainCanContinue(summaries, runId)
-  const newestRun = newestOf(summaries, runId)
-  const successor = !sessionOpen ? continuedBy(summaries, runId) : undefined
+  const canContinue = canContinueIn(chainSummaries, runId)
+  const newestRun = chainSummaries[chainSummaries.length - 1]
+  const successor = !sessionOpen ? continuedByIn(chainSummaries, runId) : undefined
   const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
   // M6: an ended, continuable work run opened in a window under 1100 px starts as the conversation (decided once, at
   // open, so a live run that ends or a continue never flips the layout under the user). A saved choice always wins.
@@ -831,7 +843,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className="conversation-stage" data-testid="run-conversation">
-                <TranscriptPanel variant="conversation" runId={runId} agent={rootAgent} entries={[]} feed={feed} logs={[]} />
+                <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} logs={[]} />
               </div>
             ) : (
             <ReactFlow
@@ -886,10 +898,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         {successor && newestRun && newestRun.id !== runId ? (
           <div className="composer composer-ended" data-testid="composer-superseded">
-            <div className="composer-notice info" role="status">
+            <div className="composer-notice info">
               This conversation continues in {runName(newestRun)}.
             </div>
-            <Button variant="primary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id)}>
+            <Button variant="primary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id).then(() => focusComposer())}>
               Go to latest
             </Button>
           </div>
@@ -914,10 +926,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           primaryLabel={primaryLabel}
           placeholder={placeholder}
           focusToken={composerFocusToken}
+          autoFocus={continueIntent}
           notices={
             <>
               {endedCopy?.notice && (
-                <div className="composer-notice cut" role="status" data-testid="composer-cut-notice">
+                <div className="composer-notice cut" data-testid="composer-cut-notice">
                   {endedCopy.notice}
                 </div>
               )}
@@ -951,6 +964,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <div className="live-panel">
             <TranscriptPanel
               runId={runId}
+              tagRunId={chainIds[chainIds.length - 1]}
               agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
               entries={selectedAgent && !rootSelected ? entries : []}
               feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}

@@ -7,7 +7,7 @@ import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunInd
 import { Cost } from './ui/Cost'
 import { runCostInput, sumCosts } from '../lib/cost'
 import { canContinue, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
-import { promptLine, runName, runTag } from '../lib/runLabels'
+import { promptLine, runName, runTag, shortPrompt } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
@@ -17,6 +17,10 @@ import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
 import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
+
+/** Untrusted prompt text in a tooltip is capped. */
+const TIP_CHARS = 300
+const memberRowId = (runId: string): string => `history-member-${runId}`
 
 type Filter = 'all' | 'work' | 'setup'
 type HistoryView = 'runs' | 'trends'
@@ -191,19 +195,19 @@ function HistoryChain({
       <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions}>
         <td className="col-prompt">
           <div className="run-head">
-            {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={isExpanded ? `Hide sessions of ${tag}` : `Show sessions of ${tag}`} expanded={isExpanded} onClick={onToggle} testId="history-sessions-toggle" />}
+            {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={members.map((m) => memberRowId(m.id)).join(' ')} onClick={onToggle} testId="history-sessions-toggle" />}
             <div className="run-head-text">
               {first.title ? (
                 <>
                   <div className="run-name" title={runName(first)}>
                     <span className="run-index">{tag}</span> {runName(first)}
                   </div>
-                  <div className="prompt muted" title={promptLine(first.prompt)}>
+                  <div className="prompt muted" title={shortPrompt(first.prompt, TIP_CHARS)}>
                     {promptLine(first.prompt)}
                   </div>
                 </>
               ) : (
-                <div className="prompt" title={promptLine(first.prompt)}>
+                <div className="prompt" title={shortPrompt(first.prompt, TIP_CHARS)}>
                   <span className="run-index">{tag}</span> {promptLine(first.prompt)}
                 </div>
               )}
@@ -286,11 +290,11 @@ function MemberRow({ member, number, chat, onOpen }: { member: RunSummary; numbe
   const status = statusOfRun(live ?? { summary: member }, proj, false)
   const started = new Date(member.startedAt)
   return (
-    <tr className="run-member-row" data-run={member.id}>
+    <tr className="run-member-row" id={memberRowId(member.id)} data-run={member.id}>
       <td className="col-prompt">
         <div className="run-member">
           <span className="run-member-no">Session {number}</span>
-          <span className="run-member-prompt" title={promptLine(member.prompt)}>
+          <span className="run-member-prompt" title={shortPrompt(member.prompt, TIP_CHARS)}>
             {promptLine(member.prompt)}
           </span>
         </div>

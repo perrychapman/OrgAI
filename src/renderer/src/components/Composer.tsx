@@ -157,8 +157,8 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
           <textarea
             ref={ref}
             className="textarea"
-            aria-labelledby={labelId}
-            aria-describedby={hintId}
+            aria-label={composerPlaceholder(placeholder)}
+            aria-describedby={`${labelId} ${hintId}`}
             value={text}
             onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
             onPaste={(e) => {
