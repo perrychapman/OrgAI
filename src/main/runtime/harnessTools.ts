@@ -500,7 +500,7 @@ function mcpRoleSentence(ctx: RuntimeContext, roles: string[] | undefined): stri
 }
 
 /** Registry and project strings are data: one line, no angle brackets (so they cannot close a delimiter). */
-function datum(s: string | undefined, max = 240): string {
+export function datum(s: string | undefined, max = 240): string {
   return (s ?? '').replace(/[\r\n\t]+/g, ' ').replace(/</g, '‹').replace(/>/g, '›').trim().slice(0, max)
 }
 
