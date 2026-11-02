@@ -214,6 +214,8 @@ interface ActiveRun {
   limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /** Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }). The first one wins. */
+  endedBy?: 'user' | 'app'
   /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
   titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
@@ -888,6 +890,11 @@ export class RunManager {
         if (e.error) summary.error = e.error
         active.idleTimer.set(e.status === 'idle', now)
         if (closing) summary.endedAt = now
+        // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
+        if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
+          summary.endedBy = active.endedBy
+          if (active.endedBy === 'app') summary.endedWithApp = true
+        }
         if (e.status === 'paused') {
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
@@ -1974,18 +1981,48 @@ export class RunManager {
     const active = this.runs.get(runId)
     if (!active?.session) return
     active.userStopped = true
+    active.endedBy ??= 'user'
     active.titleAbort?.abort()
     active.emit({ type: 'run.status', runId, status: 'stopping' })
     await active.session.stop()
   }
 
-  async stopAll(): Promise<void> {
+  /**
+   * Stop every live run. `reason: 'quit'` (the app is quitting) records the cut runs as `endedBy: 'app'` with
+   * `endedWithApp: true`, not as user-stopped; without it they read as ended by the user. Either way no run pauses
+   * or auto-resumes, pending titles are aborted, and every summary and record is on disk before this resolves.
+   */
+  async stopAll(opts: { reason?: 'quit' } = {}): Promise<void> {
+    const by = opts.reason === 'quit' ? 'app' : 'user'
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
-    for (const r of this.runs.values()) r.userStopped = true
+    for (const r of this.runs.values()) {
+      r.userStopped = true
+      r.endedBy ??= by
+    }
     // Titles still pending for runs that already ended are cancelled too (app quit).
     for (const a of this.titleAborts.keys()) a.abort()
     await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
-    for (const r of this.runs.values()) this.flush(r)
+    for (const r of this.runs.values()) {
+      // A session that never reported its end (still opening, or its stop failed) is written as ended here, so
+      // the index does not depend on the store's boot normalization.
+      // A paused run keeps its pause (the store's boot normalization ends it next start, as before).
+      const s = r.summary
+      if (by === 'app' && s.status !== 'finished' && s.status !== 'error' && s.status !== 'paused') {
+        s.status = 'finished'
+        s.endedAt ??= Date.now()
+        if (s.autoResume) delete s.autoResume
+      }
+      if ((s.status === 'finished' || s.status === 'error') && r.endedBy && !s.endedBy) {
+        s.endedBy = r.endedBy
+        if (r.endedBy === 'app') s.endedWithApp = true
+      }
+      try {
+        this.store.upsert(s)
+      } catch (e) {
+        console.error('Failed to persist run summary:', e)
+      }
+      this.flush(r)
+    }
   }
 
   list(projectId: string): RunSummary[] {

@@ -31,6 +31,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
+  - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`), 'app' when OrgAI quit
+    (`stopAll({ reason: 'quit' })`, awaited by index.ts `before-quit` for at most 3 s) or crashed (RunStore boot
+    normalization), always next to `endedWithApp: true`, and absent when the run ended on its own; junk values are
+    dropped on read. The status word comes from the summary alone (ux-review-continue.md M1). Unit-tested; the real
+    Electron quit path is not.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls

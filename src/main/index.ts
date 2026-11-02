@@ -503,8 +503,35 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => {
-  void runManager?.stopAll()
+/** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
+const QUIT_STOP_DEADLINE_MS = 3000
+let quitStopsDone = false
+app.on('before-quit', (event) => {
+  // Live runs are cut by the app, not the user (RunSummary.endedBy 'app'); hold the quit once until their
+  // summaries are on disk, or the deadline passes. The flag makes the second app.quit() go through.
+  if (quitStopsDone || !runManager || runManager.liveRunCount() === 0) {
+    quitStopsDone = true
+    void runManager?.stopAll({ reason: 'quit' })
+    return
+  }
+  event.preventDefault()
+  quitStopsDone = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), QUIT_STOP_DEADLINE_MS)
+  })
+  const stopped = runManager.stopAll({ reason: 'quit' }).then(
+    () => 'done' as const,
+    (e: unknown) => {
+      console.warn(`Stopping runs on quit failed: ${(e as Error)?.message ?? e}`)
+      return 'done' as const
+    }
+  )
+  void Promise.race([stopped, deadline]).then((result) => {
+    clearTimeout(timer)
+    if (result === 'timeout') console.warn(`Live runs did not stop within ${QUIT_STOP_DEADLINE_MS} ms; quitting anyway.`)
+    app.quit()
+  })
 })
 
 app.on('window-all-closed', () => {
