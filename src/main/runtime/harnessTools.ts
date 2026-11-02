@@ -38,10 +38,24 @@ export interface HarnessToolHooks {
    * request_mcp_install was approved and RunManager added the server to the run (ctx.mcpServers() now lists
    * it): attach it to the live session (Claude: Query.setMcpServers with every resolved server; Codex: restart
    * or resume the thread with the new config). Resolves with the tool prefix the agent should use
-   * (mcp__<name>__) or rejects with a reason the tool returns to the agent. Missing = the server is available
-   * from the next run only.
+   * (mcp__<name>__) or an McpAttachResult, or rejects with a reason the tool returns to the agent. A bare
+   * string means availability 'now'. Missing = the server is available from the next run only.
    */
-  addMcpServer?(spec: McpServerSpec): Promise<string>
+  addMcpServer?(spec: McpServerSpec): Promise<string | McpAttachResult>
+}
+
+/** What an adapter's addMcpServer hook reports back, so request_mcp_install says exactly what is true. */
+export interface McpAttachResult {
+  /** The tool prefix, mcp__<name>__. */
+  prefix: string
+  /**
+   * 'now': the tools are callable by the granted roles in the current turn. 'after-idle': the session is
+   * re-created (or the app-server restarted) once the agents are idle, and the orchestrator is told through
+   * the harness-message path when the tools are there.
+   */
+  availability: 'now' | 'after-idle'
+  /** Tool names (without prefix) the attached server listed, when the adapter knows them. */
+  tools?: string[]
 }
 
 /**
