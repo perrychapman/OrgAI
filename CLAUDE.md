@@ -232,7 +232,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `setup/orgMerge.ts` mergeOrgChart. Proposal decisions add 'decline' and card-typed MCP `secrets`
   (`proposalSecretKey`), stored in main and never in events (`ProposalOutcome`), and `Proposal.effect`.
   Verified by unit tests, fake query() / fake Codex server tests and the mock (runManagerConfig.test.ts end to end);
-  nothing live. The renderer side is the proposal-cards pass (see Renderer below).
+  nothing live. The renderer side is the proposal-cards pass (see Renderer below). A grant change also reaches the run's
+  own role copies (`runManager.ts` `refreshRoleGrants`: `Role.mcpServers` / `skills` by id, in place, so every adapter
+  gate, role lookup and restart sees it; ids and other fields stay, an org change applies from the next run; review M1).
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
     characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
     breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside
