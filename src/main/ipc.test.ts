@@ -11,7 +11,23 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionRuleArgs } = await import('./ipc')
+
+describe('permissionRuleArgs (permissions:add / permissions:remove, review re-check L8)', () => {
+  it('rebuilds the input with a trimmed rule and drops extra fields', () => {
+    expect(permissionRuleArgs({ projectId: 'p1', rule: '  Bash(npm test:*) ', extra: 1 })).toEqual({ projectId: 'p1', rule: 'Bash(npm test:*)' })
+    expect(permissionRuleArgs({ projectId: 'p1', rule: 'x'.repeat(PERMISSION_RULE_MAX_CHARS) }).rule).toHaveLength(1000)
+  })
+
+  it('refuses malformed input', () => {
+    for (const bad of [null, undefined, 'p1', 42, [], {}, { projectId: 7, rule: 'WebSearch' }, { projectId: '', rule: 'WebSearch' }, { projectId: 'p'.repeat(201), rule: 'WebSearch' }]) {
+      expect(() => permissionRuleArgs(bad), JSON.stringify(bad)).toThrow('Project not found')
+    }
+    for (const rule of [undefined, null, 5, {}, ['WebSearch']]) expect(() => permissionRuleArgs({ projectId: 'p1', rule })).toThrow('must be text')
+    expect(() => permissionRuleArgs({ projectId: 'p1', rule: '   ' })).toThrow('empty')
+    expect(() => permissionRuleArgs({ projectId: 'p1', rule: 'x'.repeat(PERMISSION_RULE_MAX_CHARS + 1) })).toThrow('too long')
+  })
+})
 
 describe('connectorArgs', () => {
   it('rebuilds connectors:add with only the id and variant', () => {

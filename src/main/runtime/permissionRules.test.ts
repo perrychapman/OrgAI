@@ -191,6 +191,45 @@ describe('path rule hygiene (issue #14 E)', () => {
   })
 })
 
+describe('review re-check M2 / L6: rules that grant more than the command, provider setMode', () => {
+  it('never derives a prefix rule for writers, fetchers, config verbs or interpreters behind a launcher', () => {
+    for (const c of [
+      'git config core.fsmonitor x', 'npm pkg set scripts.test=x', 'npm config set registry x', 'gh api repos/x/y', 'deno eval 1',
+      'npx tsx x.ts', 'npx ts-node x.ts', 'uv run python x.py', 'pnpm dlx tsx x.ts', 'npm exec node x.js', 'bunx node x.js',
+      'wsl ls', 'cp a b', 'mv a b', 'curl https://x', 'wget https://x', 'ssh host', 'scp a host:b', 'rsync a b'
+    ]) {
+      expect(shellRuleContents('Bash', c), c).toEqual([])
+      expect(deriveSuggestions('Bash', { command: c }).filter((s) => s.type === 'addRules'), c).toEqual([])
+    }
+    // py / pythonw are launchers now (two words), like python.
+    expect(segmentRulePrefix('Bash', 'py -m pytest')).toBeNull()
+    expect(segmentRulePrefix('Bash', 'py tools/gen.py')).toBe('py tools/gen.py')
+    expect(segmentRulePrefix('Bash', 'npm test')).toBe('npm test')
+    expect(segmentRulePrefix('Bash', 'uv run pytest')).toBe('uv run pytest')
+    expect(segmentRulePrefix('Bash', 'git status')).toBe('git status')
+  })
+
+  it('drops a provider prefix rule that is too broad, keeps exact rules', () => {
+    const provided: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm pkg:*' }, { toolName: 'Bash', ruleContent: 'curl *' }], behavior: 'allow', destination: 'localSettings' }]
+    expect(chooseSuggestions('Bash', { command: 'npm pkg get name' }, provided).filter((s) => s.type === 'addRules')).toEqual([])
+    const exact: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm pkg get name' }], behavior: 'allow', destination: 'localSettings' }]
+    expect(allowRules(chooseSuggestions('Bash', { command: 'npm pkg get name' }, exact))).toEqual(['Bash(npm pkg get name)'])
+  })
+
+  it('keeps only an acceptEdits setMode from the provider', () => {
+    for (const mode of ['bypassPermissions', 'auto', 'dontAsk', 'plan', 'default'] as const) {
+      const provided = [{ type: 'setMode', mode, destination: 'session' }] as PermissionSuggestion[]
+      expect(chooseSuggestions('Edit', { file_path: '/x/a.ts' }, provided), mode).toEqual([])
+    }
+    const ok = [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }] as PermissionSuggestion[]
+    expect(chooseSuggestions('Edit', { file_path: '/x/a.ts' }, ok)).toEqual(ok)
+  })
+})
+
+function allowRules(s: PermissionSuggestion[]): string[] {
+  return s.flatMap((x) => (x.type === 'addRules' ? x.rules.map((r) => (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName)) : []))
+}
+
 describe('per-segment shell rules', () => {
   it('use the first word, or the first two after a launcher', () => {
     expect(segmentRulePrefix('Bash', 'npm test -- --watch')).toBe('npm test')

@@ -203,6 +203,31 @@ describe('free cd segments', () => {
     expect(unwrapShellCommand("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command 'cd src'")).toBe('cd src')
   })
 
+  it('review re-check High 1: PowerShell expressions, script blocks and splatting never pass as plain words', () => {
+    for (const tool of ['Bash', 'PowerShell']) {
+      const rules = [`${tool}(npm test:*)`]
+      for (const c of ['cd (calc)', 'cd (Stop-Computer)', 'cd (.\\run.ps1)', 'cd @x', 'cd a,b', 'cd "(calc)"']) {
+        expect(matchingRule(tool, { command: c }, [], posixOpts), `${tool} ${c}`).toBeUndefined()
+        expect(matchingRule(tool, { command: c }, [], winOpts), `${tool} ${c} (win32)`).toBeUndefined()
+      }
+      for (const c of ['npm test (calc)', 'npm test @{a=calc}', 'npm test @(calc)', 'npm test @args', 'npm test {calc}', 'npm test x@{a=calc}']) {
+        expect(matchingRule(tool, { command: c }, rules, posixOpts), `${tool} ${c}`).toBeUndefined()
+      }
+      // Quoted text and a mid-word @ stay plain.
+      expect(matchingRule(tool, { command: 'npm test "(calc)"' }, rules, posixOpts)).toBe(rules[0])
+      expect(matchingRule(tool, { command: 'npm test pkg@1.2.3' }, rules, posixOpts)).toBe(rules[0])
+    }
+    expect(matchesBashRule(`pwsh -Command 'npm test (calc)'`, ['Bash(npm test:*)'], winOpts)).toBe(false)
+  })
+
+  it('review re-check L7: win32 trailing dot or space names are never free; MSYS paths only for bash', () => {
+    for (const c of ['cd "sub\\.. "', 'cd sub.', 'cd "sub "']) expect(matchesBashRule(c, [], winOpts), c).toBe(false)
+    expect(matchesBashRule('cd sub', [], winOpts)).toBe(true)
+    expect(matchingRule('Bash', { command: 'cd /c/Users/me/proj/sub' }, [], winOpts)).toBe(FREE_CD_LABEL)
+    expect(matchingRule('PowerShell', { command: 'cd /c/Users/me/proj/sub' }, [], winOpts)).toBeUndefined()
+    expect(matchesBashRule('cd /c/Users/me/proj/sub', [], { ...winOpts, shell: 'powershell' })).toBe(false)
+  })
+
   it('reviewer Low: only the exact system shell folders, never a subfolder of Program Files or System32', () => {
     for (const bin of [
       '"C:\\Program Files\\Git\\bin\\bash.exe"',
