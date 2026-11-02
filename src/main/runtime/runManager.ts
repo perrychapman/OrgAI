@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
   RunUsage,
@@ -49,7 +50,7 @@ import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
-import { isTrustRestrictedRun } from '../quick/scratch'
+import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
 import type { SkillRunSource } from '../skills/types'
@@ -61,7 +62,7 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
-import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
+import { addRules, isBlanketAllowRule, isOfferableDirectory, isUnsafeAllowRule, listRules } from './permissionRules'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
@@ -75,6 +76,65 @@ export function canonicalPath(p: string): string {
   } catch {
     return p
   }
+}
+
+/** Result of resolveAllowedDirectories. */
+export interface ResolvedAllowedDirectories {
+  /** Existing directories, canonical, deduped: what the run may use. */
+  dirs: string[]
+  /** Entries that do not exist or are not directories (as given). */
+  missing: string[]
+  /** Entries left out on purpose: OrgAI's data folder (either direction) or the project folder itself / inside it. */
+  dropped: string[]
+  /** The subset of `dropped` left out as too broad or sensitive (home, a folder holding the project, ~/.ssh ...). */
+  unsafe: string[]
+}
+
+/** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
+export function protectedDirsOf(dataDir: string | undefined): string[] {
+  if (!dataDir) return []
+  return [...new Set([dataDir, canonicalDeep(dataDir)])]
+}
+
+/**
+ * Resolve `Project.allowedDirectories` for one run. Keeps existing directories only (canonical spelling), drops any
+ * that sit inside OrgAI's data dir or contain it, drops the project folder and anything inside it (already free),
+ * and dedupes. `dataDir` is optional for tests only: without it the data-dir check is skipped.
+ */
+export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, opts: { projectPath: string; dataDir?: string; home?: string }): ResolvedAllowedDirectories {
+  const out: ResolvedAllowedDirectories = { dirs: [], missing: [], dropped: [], unsafe: [] }
+  const denied = protectedDirsOf(opts.dataDir)
+  for (const entry of raw ?? []) {
+    if (typeof entry !== 'string' || !entry.trim()) continue
+    const given = entry.trim()
+    let isDir = false
+    try {
+      isDir = statSync(resolvePath(given)).isDirectory()
+    } catch {
+      isDir = false
+    }
+    if (!isDir) {
+      out.missing.push(given)
+      continue
+    }
+    const canon = canonicalPath(resolvePath(given))
+    if (opts.dataDir && (isInsideEither(opts.dataDir, canon) || isInsideEither(canon, opts.dataDir))) {
+      out.dropped.push(given)
+      continue
+    }
+    if (isInsideEither(opts.projectPath, canon)) {
+      out.dropped.push(given)
+      continue
+    }
+    if (!isOfferableDirectory(canon, { cwd: opts.projectPath, deniedDirs: denied, ...(opts.home ? { home: opts.home } : {}) })) {
+      out.dropped.push(given)
+      out.unsafe.push(given)
+      continue
+    }
+    if (out.dirs.some((d) => samePath(d, canon))) continue
+    out.dirs.push(canon)
+  }
+  return out
 }
 
 const FLUSH_INTERVAL_MS = 1500
@@ -313,6 +373,14 @@ function excerpt(prompt: string, max = 60): string {
 }
 
 export interface RunManagerOptions {
+  /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
+  dataDir?: string
+  /**
+   * Save permission changes made from a card onto the stored project (index.ts: ProjectStore.update, which cleans
+   * allowedDirectories). `addDirectories` are appended, never replacing; `acceptEdits` sets permissionMode
+   * 'acceptEdits'. Returns the saved project. Missing = RuntimeContext.allowDirectories / acceptEditsForProject absent.
+   */
+  saveProjectPermissions?: (projectId: string, patch: { addDirectories?: string[]; acceptEdits?: true }) => Project
   /** The current project for a run being resumed automatically. */
   resolveProject?: (projectId: string) => Project | null | undefined
   /** App setting passed to adapters (see RuntimeContext.opusGuardThreshold). */
@@ -953,6 +1021,26 @@ export class RunManager {
           }
         }
       }
+      // Extra folders (Project.allowedDirectories): work and setup-like runs of a real project only.
+      const folderSave = this.options.saveProjectPermissions
+      const foldersOn = !restricted && !isVirtualProjectId(project.id)
+      let allowedDirs: string[] = []
+      const warnedMissing = new Set<string>()
+      const resolveFolders = (): void => {
+        const r = resolveAllowedDirectories(live.allowedDirectories, { projectPath: live.path, dataDir: this.options.dataDir })
+        allowedDirs = r.dirs
+        for (const m of r.missing) {
+          if (warnedMissing.has(m)) continue
+          warnedMissing.add(m)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${m} does not exist; agents cannot use it in this run.` })
+        }
+        for (const u of r.unsafe) {
+          if (warnedMissing.has(u)) continue
+          warnedMissing.add(u)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
+        }
+      }
+      if (foldersOn) resolveFolders()
       const ctx: RuntimeContext = {
         run: summary,
         project,
@@ -1005,7 +1093,36 @@ export class RunManager {
         requestPermissionRules: (req) => this.requestRules(active, req),
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
+        protectedDirectories: () => protectedDirsOf(this.options.dataDir),
         allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
+        ...(foldersOn
+          ? {
+              allowedDirectories: () => [...allowedDirs],
+              ...(folderSave
+                ? {
+                    allowDirectories: (dirs: string[]) => {
+                      const saved = folderSave(live.id, { addDirectories: dirs })
+                      setLive(saved, false)
+                      this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
+                      resolveFolders()
+                      const asked = resolveAllowedDirectories(dirs, { projectPath: live.path, dataDir: this.options.dataDir }).dirs
+                      const inForce = asked.filter((d) => allowedDirs.some((a) => samePath(a, d)))
+                      if (inForce.length) emit({ type: 'log', runId: summary.id, level: 'info', message: `Allowed folders for this project: ${inForce.join(', ')}` })
+                      return inForce
+                    },
+                    acceptEditsForProject: () => {
+                      if (live.permissionMode !== 'default') return false
+                      const saved = folderSave(live.id, { acceptEdits: true })
+                      setLive(saved, false)
+                      if (saved.permissionMode !== 'acceptEdits') return false
+                      this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
+                      emit({ type: 'log', runId: summary.id, level: 'info', message: 'Permission mode set to Accept edits for this project.' })
+                      return true
+                    }
+                  }
+                : {})
+            }
+          : {}),
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
@@ -1684,8 +1801,12 @@ export class RunManager {
       clean = { behavior: 'grant', scope }
       for (const r of rules) if (!active.runRules.includes(r)) active.runRules.push(r)
       if (scope === 'project') {
+        // A blanket rule (bare Bash / Edit / Write ...) stays a run grant; it is never written to the file.
+        const savable = rules.filter((r) => !isBlanketAllowRule(r))
+        const blanket = rules.filter(isBlanketAllowRule)
+        if (blanket.length) this.broadcast({ type: 'log', runId, level: 'warn', message: `Not saved for the project (too broad): ${blanket.join(', ')}. It applies to this run only.` })
         try {
-          addRules(active.projectPath, rules)
+          if (savable.length) addRules(active.projectPath, savable)
         } catch (e) {
           clean = { behavior: 'grant', scope: 'run' }
           this.broadcast({ type: 'log', runId, level: 'warn', message: `Could not save the rules to the project (${(e as Error).message}); they apply to this run only.` })

@@ -326,6 +326,15 @@ app.whenReady().then(() => {
     }, LITELLM_SPEND_DELAY_MS)
   }
   runManager = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
+    dataDir,
+    // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
+    saveProjectPermissions: (projectId, patch) =>
+      projects.update(projectId, (p) => ({
+        ...p,
+        ...(patch.addDirectories?.length ? { allowedDirectories: [...(p.allowedDirectories ?? []), ...patch.addDirectories] } : {}),
+        // Re-checked on the stored copy: the user may have changed the mode since the run started.
+        ...(patch.acceptEdits && p.permissionMode === 'default' ? { permissionMode: 'acceptEdits' as const } : {})
+      })),
     resolveProject: (projectId) => projectOrHarness(projectId),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
     buildProject: (summary) => harnessProjectFor(summary, settings.get(), dataDir, mockAdapter),

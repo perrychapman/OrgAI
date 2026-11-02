@@ -617,7 +617,8 @@ describe('RunManager with the mock adapter', () => {
     expect(req.request.toolName).toBe('Edit')
     expect(req.request.agentId).toBe('mock-report-1')
     expect(req.request.summary).toBe('Editing example.ts')
-    expect(req.request.ruleLabels).toEqual(['Edit'])
+    // Edit tools never get a whole-tool rule (UX H4): the card offers auto-accept edits instead.
+    expect(req.request.ruleLabels).toEqual(['Auto-accept file edits in this project'])
     m.decide(run.id, req.request.id, { behavior: 'allow' })
 
     await waitFor(isType('run.status', (e) => e.status === 'idle'))
@@ -695,6 +696,25 @@ describe('RunManager with the mock adapter', () => {
       await m.stop(run.id)
     })
 
+    it('a project grant keeps a blanket Edit rule out of the settings file and warns', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const blanket: MockScript = {
+        work: [
+          { type: 'harness', name: 'request_permission_rules', args: { rules: ['Edit', 'Bash(gh:*)'], reason: 'Edit elsewhere' } },
+          { type: 'tool', name: 'Bash', input: { command: 'gh repo view' }, ask: true, result: 'ok' }
+        ]
+      }
+      const { m } = manager(p, blanket)
+      const run = await m.start({ project: p, prompt: 'Go' })
+      const req = await waitFor(isType('rules.request'))
+      m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'project' })
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      const saved = JSON.parse(readFileSync(join(p.path, '.claude', 'settings.local.json'), 'utf8')) as { permissions: { allow: string[] } }
+      expect(saved.permissions.allow).toEqual(['Bash(gh:*)'])
+      expect(events.some((e) => e.type === 'log' && e.level === 'warn' && /Not saved for the project \(too broad\): Edit/.test(e.message))).toBe(true)
+      await m.stop(run.id)
+    })
+
     it('a denial reaches the agent with the note, and the next call still asks', async () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m } = manager(p, script('gh repo view'))
@@ -766,7 +786,7 @@ describe('RunManager with the mock adapter', () => {
 
     const perm = await waitFor(isType('permission.request'))
     expect(perm.request.toolName).toBe('Bash')
-    expect(perm.request.ruleLabels).toEqual(['Bash(git:*)'])
+    expect(perm.request.ruleLabels).toEqual(['Bash(git status:*)'])
     m.decide(run.id, perm.request.id, { behavior: 'allow', scope: 'session' })
 
     // Ask for changes on the first architecture proposal; the mock proposes again.

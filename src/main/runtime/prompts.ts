@@ -1,6 +1,6 @@
 import type { Project, QuickRunInfo, Role } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
-import { INTEGRATE_TOOL } from './harnessTools'
+import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
 
 /**
@@ -37,6 +37,11 @@ export interface PromptFlags {
    * paragraphs (architecture, org changes, cross-run messaging, brief). Adapters pass ctx.run.quick.
    */
   quick?: QuickRunInfo
+  /**
+   * Extra folders the agents may read and edit (RuntimeContext.allowedDirectories()). Work-run prompts (not setup,
+   * not quick) gain one sentence naming them. Missing or empty = no sentence.
+   */
+  allowedDirectories?: string[]
 }
 
 /** The roles this role may delegate to. */
@@ -130,6 +135,23 @@ export function unattendedText(): string {
     'Mark steps with update_plan as you go. Do not stop to ask whether to continue; continue until every step is done, then call complete_plan with a summary. ' +
     'Stop only for a genuine decision the user must make: ask_user (waits for the answer) or mark_blocked (ends the run\'s automatic continuation with the reason). ' +
     'The harness will remind you of remaining steps whenever a turn ends with work left.'
+  )
+}
+
+/** One sentence naming the project's extra allowed folders (paths are data: one line, no angle brackets, at most 20). */
+export function allowedDirectoriesText(dirs: string[] | undefined): string {
+  const list = (dirs ?? []).filter((d) => typeof d === 'string' && d.trim()).slice(0, 20).map((d) => '"' + datum(d, 300) + '"')
+  return list.length ? 'You may also read and edit files in: ' + list.join(', ') + '.' : ''
+}
+
+/**
+ * Every work-run role (issue #14 D): file edits through the edit tools and simple commands, so approvals stay few and
+ * the rules they save match the next call.
+ */
+export function toolHygieneText(): string {
+  return (
+    'Edit files with the Edit and Write tools, not sed -i, perl -i or heredoc redirects. ' +
+    'Your working directory is already the project (or your worktree), so avoid cd ... && chains and run one simple command per call.'
   )
 }
 
@@ -294,6 +316,9 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     else if (role.canSpawn) parts.push(mcpInstallText('lead'))
     if (role.reportsTo === null) parts.push(skillsConfigText())
     parts.push(permissionRequestText())
+    parts.push(toolHygieneText())
+    const folders = allowedDirectoriesText(flags.allowedDirectories)
+    if (folders) parts.push(folders)
     const skills = skillsText(flags.skills, flags.skillTool)
     if (skills) parts.push(skills)
     const brief = briefText(project.brief)

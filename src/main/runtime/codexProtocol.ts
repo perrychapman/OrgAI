@@ -301,7 +301,7 @@ export interface PolicyChoice {
   sandbox: SandboxMode
   /** 'auto': Codex's own reviewer subagent approves or denies each request (ThreadStartParams.approvalsReviewer, UNSTABLE). */
   approvalsReviewer?: 'auto_review'
-  /** acceptEdits: the harness accepts file-change approvals itself and only asks for commands. */
+  /** acceptEdits: the harness accepts file-change approvals whose concrete paths are inside a free folder (codex.ts onFileApproval checks every path); anything else, and every command, asks. */
   autoAcceptEdits: boolean
   /** dontAsk / plan: any approval request that still arrives is declined. */
   denyApprovals: boolean
@@ -310,7 +310,7 @@ export interface PolicyChoice {
 /**
  * Map the project's permission mode onto Codex's approval policy and sandbox.
  *   auto              on-request + workspace-write, Codex's auto_review reviewer decides, asks only when unsure
- *   acceptEdits       untrusted + workspace-write; the harness accepts file edits, commands ask
+ *   acceptEdits       untrusted + workspace-write; the harness accepts file edits whose concrete paths are in free folders (path-checked), commands ask
  *   default           untrusted + workspace-write; everything not known-safe asks
  *   dontAsk           never + workspace-write; whatever the sandbox refuses stays refused (approvals declined)
  *   plan              never + read-only
@@ -441,8 +441,16 @@ export interface LaunchConfig {
  * Two stdio servers needing the same secret name with different values cannot both use env_vars; the later one
  * gets the value inline in `env` (visible in the process arguments) and the summary says so.
  */
-export function buildLaunchConfig(connection: RunConnection | undefined, servers: ResolvedMcpServer[], opts: { noProjectDocs?: boolean } = {}): LaunchConfig {
+export function buildLaunchConfig(
+  connection: RunConnection | undefined,
+  servers: ResolvedMcpServer[],
+  opts: { noProjectDocs?: boolean; writableRoots?: string[] } = {}
+): LaunchConfig {
   const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
+  // Allowed folders become extra writable roots of the workspace-write sandbox (key found in the codex 0.166.0
+  // binary; whether it takes effect with thread/start's sandbox mode string is unverified live).
+  const roots = (opts.writableRoots ?? []).filter((r) => typeof r === 'string' && r.length > 0)
+  if (roots.length) config.push(`sandbox_workspace_write.writable_roots=${tomlArray(roots)}`)
   const env: Record<string, string> = { ...(connection?.env ?? {}) }
   const summary: string[] = []
   const skipped: LaunchConfig['skipped'] = []

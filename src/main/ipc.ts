@@ -114,7 +114,7 @@ import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { projectConnection } from '@shared/defaults'
 import { log, logPath, logsDir } from './log'
-import { addRules, listRules, removeRule } from './runtime/permissionRules'
+import { addRules, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
 import { checkProjectPath } from './store/projects'
@@ -473,6 +473,8 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (!project) throw new Error('Project not found')
     const rule = String(input.rule ?? '').trim()
     if (!isValidRule(rule)) throw new Error('A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(gh:*)')
+    const refusal = ruleSaveRefusal(rule)
+    if (refusal) throw new Error(refusal)
     return addRules(project.path, [rule])
   })
   ipcMain.handle(
