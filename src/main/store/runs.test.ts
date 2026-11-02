@@ -79,6 +79,52 @@ describe('RunStore', () => {
     expect('endedBy' in reloaded.get('obj')!).toBe(false)
   })
 
+  it('keeps an End session under way as the user\'s end at boot', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('stopping', { status: 'stopping', endedBy: 'user' }))
+    s.upsert(run('idle-user', { status: 'idle', endedBy: 'user', endedWhile: 'waiting' }))
+    const reloaded = new RunStore(dataDir)
+    for (const id of ['stopping', 'idle-user']) {
+      const r = reloaded.get(id)!
+      expect(r).toMatchObject({ status: 'finished', endedBy: 'user' })
+      expect(r.endedAt).toBeTypeOf('number')
+      expect('endedWithApp' in r).toBe(false)
+      expect('endedWhile' in r).toBe(false)
+    }
+  })
+
+  it('normalizes endedWithApp: exactly true, only with endedBy app, and a legacy flag gets endedBy app', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('legacy', { status: 'finished', endedWithApp: true }))
+    s.upsert(run('user', { status: 'finished', endedBy: 'user', endedWithApp: true }))
+    s.upsert(run('junk', { status: 'finished', endedBy: 'app', endedWithApp: 'yes' as never }))
+    s.upsert(run('false', { status: 'finished', endedWithApp: false as never }))
+    const reloaded = new RunStore(dataDir)
+    expect(reloaded.get('legacy')).toMatchObject({ endedBy: 'app', endedWithApp: true })
+    expect(reloaded.get('user')!.endedBy).toBe('user')
+    expect('endedWithApp' in reloaded.get('user')!).toBe(false)
+    expect('endedWithApp' in reloaded.get('junk')!).toBe(false)
+    expect(reloaded.get('junk')!.endedBy).toBe('app')
+    expect('endedWithApp' in reloaded.get('false')!).toBe(false)
+    expect('endedBy' in reloaded.get('false')!).toBe(false)
+  })
+
+  it('drops index entries that are not objects with a string id instead of throwing', () => {
+    mkdirSync(dataDir, { recursive: true })
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ version: 1, runs: [null, 3, 'x', [], { id: 7 }, run('ok', { status: 'running' })] }))
+    const reloaded = new RunStore(dataDir)
+    expect(reloaded.list('p1').map((r) => r.id)).toEqual(['ok'])
+    expect(reloaded.get('ok')).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
+  })
+
+  it('reads a runs.json of null or without a runs array as empty', () => {
+    mkdirSync(dataDir, { recursive: true })
+    writeFileSync(join(dataDir, 'runs.json'), 'null')
+    expect(new RunStore(dataDir).list('p1')).toEqual([])
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ runs: { id: 'a' } }))
+    expect(new RunStore(dataDir).list('p1')).toEqual([])
+  })
+
   it('derives endedWhile from the status as saved and drops junk values', () => {
     const s = new RunStore(dataDir)
     s.upsert(run('idle', { status: 'idle' }))
