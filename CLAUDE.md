@@ -485,18 +485,56 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     `Query.setMcpServers` at once (errors surface immediately), reads tool names from `mcpServerStatus` (up to 5 s),
     and because whitelists are fixed per query (smoke facts below) re-creates the query with `resume` and agent
     definitions rebuilt from the live `ctx.mcpServers()` once the root is idle and no report, background task or card
-    is open (`mcpRestartBlocker`), then sends `mcpAttachedNotice` through `notifyOrchestrator`. Plan nudges are held
-    while such a restart is pending, a restarted query gets the remaining run budget only, and server-level rules never
-    auto-allow a run-scoped install the agent requested. Codex restarts its app-server at idle (unchanged, now reported
-    'after-idle'). Verified by unit tests (fake `query()`) and the mock (`[mock:mcp-midrun]`, `mcpMidrun.test.ts`);
-    the resume restart itself has never run live.
+    is open (`mcpRestartBlocker`), then sends `mcpAttachedNotice` through `notifyOrchestrator`. Codex restarts its
+    app-server at idle (unchanged, now reported 'after-idle'). Verified by unit tests (fake `query()`) and the mock
+    (`[mock:mcp-midrun]`, `mcpMidrun.test.ts`); the resume restart itself has never run live.
+  - Claude restart details after the review fixes (7cc7e3b, 5ee83e5; each unit-tested in claude.test.ts with a fake
+    `query()`, none run live):
+    - Turn end (H1): a successful turn end with a restart pending and no blocker is withheld from the
+      ContinuationDriver (`onTurnEnded`), so no plan nudge starves the restart; the attach notice wakes the
+      orchestrator. If the restart is blocked, has no budget, fails while building options or throws, `releaseTurnEnd`
+      hands the held turn end to the driver, so the run never stalls.
+    - Notice (M1): server tool names are untrusted; only `^[A-Za-z0-9_-]{1,64}$` names are kept (`safeMcpToolNames`),
+      at most `MCP_NOTICE_TOOL_CAP` 20 per server plus ", and N more", and server, tool and role names go through
+      `datum()`. The could-not-attach notice quotes names and reason through `datum()` too.
+    - Budget (M2): a restarted query gets `maxBudgetUsd` minus the run's cost so far, at least
+      `MCP_RESTART_MIN_BUDGET_USD` 0.01; with nothing left there is no restart, a run warning, and the orchestrator is
+      told the server comes with the next run. Whether the SDK counts the earlier cost against `maxBudgetUsd` on a
+      resumed query is unverified.
+    - Background tasks (M5): non-subagent tasks from `task_started` (ambient and `skip_transcript` ones excluded) are
+      tracked until `task_notification` or `task_updated` completed / failed / killed; they block the restart
+      (`McpRestartState.backgroundTasks`, blocker 'background tasks are still running') and the last one to end
+      re-schedules it. Field shapes from the 0.3.312 typings only.
+    - Failed starts (M4): the failure count resets at a restarted query's init. Failures before init: the 1st resumes
+      again with the same servers, the 2nd resumes without the new servers (`droppedMcp`, the orchestrator is told), the
+      3rd or no budget ends the run `paused` (never error) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
+      `pauseReason`, `autoResume: true`, an error log line and a harness transcript row. Each new query gets a fresh
+      input stream (`swapInput`).
+    - Pending list (L1): servers leave `pendingMcp` synchronously when the restart starts; their tool names travel with
+      it as the notice's fallback.
+    - Held runs (L7): before a restarted query starts, a run held by an interrupt or the window cap drops its queued
+      plan nudges; other queued harness notices, and an attach or could-not-attach notice arriving while held, are
+      delivered with the user's next message.
   - Per-role MCP grants (`mcpGrants.ts` `mcpCallDenial`): the Claude PreToolUse hook (and the mock) checks every
-    `mcp__<server>__<tool>` call, plus ListMcpResourcesTool / ReadMcpResourceTool by their `server` input, against
-    `mcpServersForRole` over the live server list (run-scoped installs and the card's `roles` included), root
-    included, before any allow path; unknown callers and unknown or disabled servers are denied with a reason naming
-    the role and server. It also enforces `mcp__orgai__*` audiences. This is the only grant boundary on Claude:
-    `AgentDefinition.mcpServers` does not restrict a subagent (smoke, below). Codex does NOT enforce per-role MCP
-    grants (every thread shares the app-server's servers; review M6, open). Unit-tested.
+    `mcp__<server>__<tool>` call against `mcpServersForRole` over the live server list (run-scoped installs and the
+    card's `roles` included), root included, before any allow path; unknown callers and unknown or disabled servers
+    are denied with a reason naming the role and server. It also enforces `mcp__orgai__*` audiences. The caller's role
+    comes from one `callerRole` helper shared with the Skill gate: the hook's `agent_type` first, then the role
+    recorded for the agent id (L5; this changed the Skill gate's order). The live list is read only for `mcp__` and
+    the resource tools, in try/catch, and an unreadable list denies the call (L2). Resource tools (L3,
+    `MCP_RESOURCE_TOOLS`: ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool; names from the 0.3.312
+    typings, unverified live): a named `server` goes through the same per-role check (`orgai` allowed), a read without
+    a server is denied, and a list without a server is allowed only when the role is granted every enabled server.
+    This is the only grant boundary on Claude: `AgentDefinition.mcpServers` does not restrict a subagent (smoke,
+    below). Codex does NOT enforce per-role MCP grants (every thread shares the app-server's servers; review M6,
+    open). Unit-tested (claude.test.ts, mcpGrants.test.ts); the mock has the resource-tool gate too (mock.test.ts).
+  - Agent-installed servers and server-level rules (M3): "installed this run" is every server an agent asked for
+    through `addMcpServer` plus every live server with source 'agent' absent at run start (`agentInstalledServers`).
+    For those, server-level rules are skipped in the hook's rule-allow path and dropped from `options.allowedTools` on
+    every options build (`withoutServerRules`); exact single-tool rules still apply. The mock does the same (its only
+    other parity with these fixes is L3; it attaches at once, so it has no restart). NOT covered: `mcp__<server>` allow
+    rules the CLI loads itself from `<project>/.claude/settings.json`, and server-level session rules the CLI adds
+    from an "always allow" suggestion. Unit-tested (claude.test.ts, mcpGrants.test.ts, mock.test.ts).
   - Server-level permission rules (`ruleMatch.ts` `mcpServerOfRule`, `matchingRule`): `mcp__<server>` and
     `mcp__<server>__*` match every tool with the exact prefix `mcp__<server>__` (a server name with `__` inside is not
     a server rule); `mcp__*`, other wildcards, `mcp__orgai` and `mcp__orgai__*` are refused by `isValidRule` and
