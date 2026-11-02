@@ -193,6 +193,16 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     refuses a folder that contains the data dir ("That folder contains OrgAI's data…"). Promote counts a paused run
     with `autoResume` as live. `ProjectStore.save` and `saveFromRenderer` refuse virtual ids. `list_projects` and `quickChatText`
     tell the agent reading outside the folder may need the user's permission. Unit-tested.
+  - Quick-path identity (merged c7d8de7, found by the v0.1.5 release build): `createScratchDir` returns the canonical
+    path, and every containment or identity check compares both spellings through `scratch.ts` `isInsideEither` /
+    `samePath` / `isReferencedScratch` (`canonicalDeep` resolves the nearest existing ancestor and re-appends the rest;
+    `validateQuickFolder` fails closed with "OrgAI could not check that folder against its data folder." when
+    resolution throws). Lexical and real paths differ on macOS (`/var` vs `/private/var`) and on the windows-latest
+    runner (8.3 temp path `RUNNER~1`), which is why five quickRuns tests passed locally and failed in CI on both OSes.
+    `pathKey` keeps a root's separator, so a drive root is refused by M3 (review High, pre-existing). Open Lows: case
+    folding of a missing data-dir tail on macOS, a dangling link in the data dir's ancestry, and `mcp/builds.ts`
+    `insideWorkspace` still compares lexically. Unit-tested with a junction (Windows) or dir symlink; macOS confirmed
+    only by CI.
   - Built MCP servers (`src/main/mcp/builds.ts`, review M5): approving a library proposal from a build session copies
     a stdio server whose command or args point into the workspace to `<data>/mcp-builds/<entryId>/` (regular files
     only, symlinks and junctions skipped, realpath-confined, `.git` / `node_modules` / `.claude` skipped,
