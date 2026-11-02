@@ -184,6 +184,25 @@ describe('free cd segments', () => {
     expect(matchesBashRule('pwsh -Command "cd src"', [], winOpts)).toBe(true)
   })
 
+  it('re-check High 1: text after the wrapper quote is never read as quoted', () => {
+    const attack = "bash -c 'npm test x'; evil; echo 'y'"
+    expect(matchesBashRule(attack, ['Bash(npm test:*)'], posixOpts)).toBe(false)
+    expect(unwrapShellCommand(attack)).toBe(attack)
+    expect(matchesBashRule('bash -c "npm test $(evil)"', ['Bash(npm test:*)'], posixOpts)).toBe(false)
+    expect(matchesBashRule('bash -c "npm test" ; evil ; echo "y"', ['Bash(npm test:*)'], posixOpts)).toBe(false)
+    expect(unwrapShellCommand('bash -c "npm test"')).toBe('npm test')
+  })
+
+  it('re-check High 2: only a bare shell or one in a system folder is unwrapped', () => {
+    for (const c of ["./bash -c 'cd .'", "tools/sh -c 'cd .'", "\".\\bash.exe\" -c 'cd .'", "/home/u/proj/bin/bash -c 'cd .'", "C:\\Users\\me\\bash.exe -c 'cd .'"]) {
+      expect(matchesBashRule(c, [], posixOpts), c).toBe(false)
+      expect(matchesBashRule(c, [], winOpts), c).toBe(false)
+    }
+    expect(unwrapShellCommand("/usr/bin/bash -c 'cd src'")).toBe('cd src')
+    expect(unwrapShellCommand("sh -c 'cd src'")).toBe('cd src')
+    expect(unwrapShellCommand("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command 'cd src'")).toBe('cd src')
+  })
+
   it('review H3: backslash-quote and $\'...\' quoting never match a rule', () => {
     expect(matchesBashRule('echo "a\\" "; evil; ": ', ['Bash(echo:*)'])).toBe(false)
     expect(matchesBashRule("echo $'\\'' ; evil ; echo $'\\''", ['Bash(echo:*)'])).toBe(false)

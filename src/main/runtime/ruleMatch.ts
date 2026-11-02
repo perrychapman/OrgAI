@@ -87,19 +87,41 @@ export function isValidRule(rule: string): boolean {
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)
 }
 
+/** System folders a wrapped shell may be named by absolute path (lowercase, forward slashes, no trailing slash). */
+const SYSTEM_SHELL_DIRS = [
+  '/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin',
+  'c:/program files/git/bin', 'c:/program files/git/usr/bin', 'c:/windows/system32/windowspowershell/v1.0', 'c:/program files/powershell/7'
+]
+
+/**
+ * True for the shell a wrapper may name: a bare shell name (PATH lookup) or an absolute path in a system shell
+ * folder. Never a relative path with a separator (`./bash`, `tools/sh`): a repo could ship its own `bash`.
+ */
+function isSystemShell(bin: string): boolean {
+  const parts = bin.split(/[\\/]/)
+  const base = parts.pop() ?? ''
+  if (!SHELL_BINARY.test(base)) return false
+  if (parts.length === 0) return true
+  const dir = parts.join('/').toLowerCase()
+  // Admin-only Windows install folders (Git, PowerShell 7 and Windows PowerShell live there).
+  if (/^c:\/(?:program files|program files \(x86\)|windows\/system32)\/[^.]/.test(dir) && !dir.split('/').includes('..')) return true
+  return SYSTEM_SHELL_DIRS.includes(dir)
+}
+
 /**
  * The inner command of `bash -lc '...'` / `pwsh -Command "..."` style wrappers; the input when it is not wrapped.
- * Only a known shell binary (by its base name, optionally with a path) is unwrapped: `./x.sh -c 'cd .'` or
- * `$(evil) -c 'cd .'` stay whole, so the outer program needs its own rule and UNSAFE_SEGMENT still applies.
+ * Only a system shell (isSystemShell) is unwrapped, and only when the inner text cannot close its quote early: for
+ * `'...'` no `'` inside, for `"..."` no `"`, `$` or backtick inside. Anything else stays whole, so the outer program
+ * needs its own rule (a shell rule is never saved) and UNSAFE_SEGMENT still applies.
  */
 export function unwrapShellCommand(command: string): string {
   const c = command.trim()
-  const m = /^("[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(['"])([\s\S]*)\2$/i.exec(c)
+  const m = /^("[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(?:'([^']*)'|"([^"$`]*)")$/i.exec(c)
   if (!m) return c
   const bin = m[1].replace(/^"|"$/g, '')
-  if (/[$`(){};&|<>]/.test(bin)) return c
-  const base = bin.split(/[\\/]/).pop() ?? ''
-  return SHELL_BINARY.test(base) ? m[3].trim() : c
+  if (/[$`(){};&|<>'"]/.test(bin)) return c
+  if (!isSystemShell(bin)) return c
+  return (m[2] ?? m[3] ?? '').trim()
 }
 
 /** Split a command on `&&`, `||` and `;` outside quotes. A trailing or empty segment stays empty (invalid). */
