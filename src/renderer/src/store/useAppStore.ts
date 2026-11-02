@@ -6,7 +6,9 @@ import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
-import { chainOf, needsYou } from '../lib/runChains'
+import { chainGroups, chainOf, needsYou } from '../lib/runChains'
+import { cutWhile, settleEndedAgents } from '../lib/runStatus'
+import { readOpenTabs, writeOpenTabs } from '../lib/openTabs'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
 import { cleanIpcError } from '../lib/ipcError'
@@ -397,11 +399,26 @@ export function useProjectSummaries(): RunSummary[] {
 }
 
 /** State patch that shows a run in its project's workspace: leaves the New run page, un-hides the tab. */
-function showRunPatch(s: AppState, projectId: string, runId: string): Partial<AppState> {
+function showRunPatch(s: AppState, projectId: string, requestedId: string): Partial<AppState> {
+  // One conversation per chain: the tab always shows the chain's newest loaded member, and un-hides the whole chain.
+  const members = chainOf(summariesOf(s, projectId), requestedId)
+  const runId = [...members].reverse().find((m) => s.runs[m.id])?.id ?? requestedId
   const { [projectId]: _draft, ...draftPage } = s.draftPage
-  const { [runId]: _hidden, ...dismissedRuns } = s.dismissedRuns
-  const { [runId]: _read, ...unreadByRun } = s.unreadByRun
+  const dismissedRuns = { ...s.dismissedRuns }
+  const unreadByRun = { ...s.unreadByRun }
+  for (const id of [runId, requestedId, ...members.map((m) => m.id)]) {
+    delete dismissedRuns[id]
+    delete unreadByRun[id]
+  }
   return { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root', view: 'run', draftPage, dismissedRuns, unreadByRun }
+}
+
+/** Summaries of one project: its persisted history merged with the runs the renderer holds (fresher). */
+function summariesOf(s: AppState, projectId: string): RunSummary[] {
+  const byId = new Map<string, RunSummary>()
+  for (const h of s.historyByProject[projectId] ?? (s.selectedProjectId === projectId ? s.history : [])) byId.set(h.id, h)
+  for (const r of Object.values(s.runs)) if (r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary)) byId.set(r.summary.id, r.summary)
+  return [...byId.values()]
 }
 
 /** A run record from the main process as renderer state. Pending cards are not in a record; events fill them. */
@@ -425,33 +442,126 @@ async function seedPendingCards(runId: string): Promise<void> {
 }
 
 function stateFromRecord(record: Omit<RunState, 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'partial' | 'messages' | 'mcpInstalls' | 'mcpResolved'>): RunState {
-  return { ...record, permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
+  // What the run was doing when it was cut, read before the agents are settled (H4); then no ended run keeps a live label.
+  const ended = record.summary.status === 'finished' || record.summary.status === 'error'
+  const cut = ended ? cutWhile(record.agents) : undefined
+  const agents = settleEndedAgents(record.summary, record.agents)
+  return { ...record, agents, ...(cut ? { cutWhile: cut } : {}), permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
 
-/** Runs of a project that have a tab (not hidden), oldest first. */
+/**
+ * Tabs of a project: one run per session chain (its newest loaded member), hidden chains left out, ordered by the
+ * chain's first member start (oldest first).
+ */
 function tabRunsOf(s: AppState, projectId: string): RunState[] {
-  return runsOfProject(s, projectId)
-    .filter((r) => !s.dismissedRuns[r.summary.id] || s.activeRunByProject[projectId] === r.summary.id)
-    .sort((a, b) => a.summary.startedAt - b.summary.startedAt || a.summary.id.localeCompare(b.summary.id))
+  if (!Object.values(s.runs).some((r) => r.summary.projectId === projectId)) return []
+  const out: { run: RunState; first: RunSummary }[] = []
+  for (const g of chainGroups(summariesOf(s, projectId))) {
+    const run = [...g.members]
+      .reverse()
+      .map((m) => s.runs[m.id])
+      .find((r): r is RunState => !!r)
+    if (!run || isTeamSurfaceRun(run.summary)) continue
+    if (s.dismissedRuns[run.summary.id] && s.activeRunByProject[projectId] !== run.summary.id) continue
+    out.push({ run, first: g.first })
+  }
+  return out.sort((a, b) => a.first.startedAt - b.first.startedAt || a.first.id.localeCompare(b.first.id)).map((x) => x.run)
+}
+
+// ---------- Chain loading and open-tab restore (docs/design/ux-review-continue.md H1, M2) ----------
+
+const chainFetches = new Map<string, Promise<void>>()
+
+/** Fetches one run record into the store unless it is loaded or already on its way. Events that created the run meanwhile win. */
+function fetchRun(id: string): Promise<void> {
+  if (useAppStore.getState().runs[id]) return Promise.resolve()
+  const pending = chainFetches.get(id)
+  if (pending) return pending
+  const p = window.orgai.runs
+    .get(id)
+    .then((record) => {
+      if (record) useAppStore.setState((s) => (s.runs[id] ? {} : { runs: { ...s.runs, [id]: stateFromRecord(record) } }))
+    })
+    .catch(() => undefined)
+    .finally(() => chainFetches.delete(id))
+  chainFetches.set(id, p)
+  return p
+}
+
+const restoredTabs = new Map<string, Promise<string | undefined>>()
+
+/**
+ * The first settle of a real project after launch: loads the newest member of each remembered chain so its tab is
+ * back. Resolves to the remembered viewed chain's newest member (the run to open when nothing needs you).
+ */
+function restoreOpenTabs(projectId: string): Promise<string | undefined> {
+  const known = restoredTabs.get(projectId)
+  if (known) return known
+  const p = (async () => {
+    if (isVirtualProjectId(projectId)) return undefined
+    const remembered = readOpenTabs(projectId)
+    const sums = summariesOf(useAppStore.getState(), projectId)
+    const newestOfKey = (key: string): string | undefined => chainOf(sums, key).at(-1)?.id
+    const ids = remembered.chains.map(newestOfKey).filter((id): id is string => !!id)
+    await Promise.all(ids.map((id) => fetchRun(id)))
+    return remembered.viewed ? newestOfKey(remembered.viewed) : undefined
+  })()
+  restoredTabs.set(projectId, p)
+  return p
+}
+
+let tabsWatch: (() => void) | null = null
+/** Writes each restored project's tab set and viewed chain to localStorage whenever they change. */
+function watchOpenTabs(): void {
+  if (tabsWatch) return
+  const written = new Map<string, string>()
+  tabsWatch = useAppStore.subscribe((s, prev) => {
+    if (s.runs === prev.runs && s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject) return
+    for (const [projectId, state] of restoreDone) {
+      if (!state || isVirtualProjectId(projectId)) continue
+      const sums = summariesOf(s, projectId)
+      const keyOf = (id: string): string => chainOf(sums, id)[0]?.id ?? id
+      const chains = tabRunsOf(s, projectId).map((r) => keyOf(r.summary.id))
+      const viewedId = s.draftPage[projectId] ? undefined : s.activeRunByProject[projectId]
+      const viewed = viewedId ? keyOf(viewedId) : undefined
+      const sig = JSON.stringify([chains, viewed])
+      if (written.get(projectId) === sig) continue
+      written.set(projectId, sig)
+      writeOpenTabs(projectId, { chains, ...(viewed ? { viewed } : {}) })
+    }
+  })
+}
+/** Projects whose remembered tabs are back: only then do we overwrite what was remembered. */
+const restoreDone = new Map<string, boolean>()
+function markTabsRestored(projectId: string): void {
+  if (isVirtualProjectId(projectId)) return
+  restoreDone.set(projectId, true)
+  watchOpenTabs()
 }
 
 /** Opens the project's newest run (or the New run page) when its workspace shows nothing yet. */
 async function settleWorkspace(projectId: string): Promise<void> {
   const { getState, setState } = useAppStore
   await getState().loadHistory()
-  const s = getState()
-  if (s.selectedProjectId !== projectId || s.draftPage[projectId]) return
-  const viewed = s.activeRunByProject[projectId]
-  if (viewed && s.runs[viewed]) {
-    if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
-    return
+  // The first settle after launch brings the remembered tabs back (M2); the remembered viewed chain is the fallback "last viewed".
+  const remembered = await restoreOpenTabs(projectId)
+  try {
+    const s = getState()
+    if (s.selectedProjectId !== projectId || s.draftPage[projectId]) return
+    const viewed = s.activeRunByProject[projectId]
+    if (viewed && s.runs[viewed]) {
+      if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
+      return
+    }
+    // An assistant opens a live run or its start page, never an ended run.
+    const target = isVirtualProjectId(projectId)
+      ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
+      : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed ?? remembered)
+    if (target) await getState().openRun(target)
+    else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
+  } finally {
+    markTabsRestored(projectId)
   }
-  // An assistant opens a live run or its start page, never an ended run.
-  const target = isVirtualProjectId(projectId)
-    ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
-    : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed)
-  if (target) await getState().openRun(target)
-  else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
 }
 
 /** Show a run that continues an earlier one (Continue, Resume now). */
@@ -461,7 +571,9 @@ function showContinuation(summary: RunSummary): void {
   setState((s) => ({
     // Events may have landed before the IPC call returned; keep them and take the real summary.
     runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, resumedFrom: summary.resumedFrom } } },
-    ...showRunPatch(s, summary.projectId, summary.id)
+    ...showRunPatch(s, summary.projectId, summary.id),
+    // M3: focus stays in the composer after a send that switches run ids.
+    composerFocusToken: s.composerFocusToken + 1
   }))
   void getState().loadHistory()
 }
@@ -518,8 +630,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingDecisionRequest: null,
   continueIntent: null,
   chainFocusRun: null,
-  async loadChain() {
-    // Contract stub: the chain-data engineer implements it (see the brief).
+  async loadChain(runId) {
+    const s = get()
+    const projectId = s.runs[runId]?.summary.projectId || s.selectedProjectId || ''
+    const members = chainOf(summariesOf(s, projectId), runId)
+    const ids = members.length ? members.map((m) => m.id) : [runId]
+    await Promise.all(ids.map((id) => fetchRun(id)))
   },
   historyByProject: {},
   usage: null,
@@ -721,7 +837,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async continueFromHistory(runId) {
-    set({ continueIntent: runId })
+    // Continue acts on the chain's newest member, which is the run the tab shows.
+    const s = get()
+    const newest = chainOf(summariesOf(s, s.selectedProjectId ?? ''), runId).at(-1)?.id ?? runId
+    set({ continueIntent: newest })
     await get().openRun(runId)
     get().focusComposer()
   },
@@ -790,10 +909,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   async openProject(projectId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     await get().loadHistory()
+    const remembered = await restoreOpenTabs(projectId)
     const s = get()
-    const target = defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], s.activeRunByProject[projectId])
+    const target = defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], s.activeRunByProject[projectId] ?? remembered)
     if (target) await get().openRun(target)
     else get().openDraft()
+    markTabsRestored(projectId)
   },
 
   async jumpToDecision(projectId, runId, requestId) {
@@ -948,13 +1069,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   async openRun(runId) {
     const project = selectedProject(get())
     if (!project) return
-    const live = get().runs[runId]
-    if (!live) {
-      const record = await window.orgai.runs.get(runId)
-      if (!record) return
-      set((s) => ({ runs: { ...s.runs, [runId]: stateFromRecord(record) } }))
-    }
-    set((s) => showRunPatch(s, project.id, runId))
+    // One conversation per chain: load every member (the feed is complete on first paint), then show the newest.
+    await get().loadChain(runId)
+    if (!get().runs[runId]) return
+    const members = chainOf(summariesOf(get(), project.id), runId)
+    const newestId = [...members].reverse().find((m) => get().runs[m.id])?.id ?? runId
+    set((s) => ({ ...showRunPatch(s, project.id, newestId), chainFocusRun: newestId === runId ? null : runId }))
   },
 
   async loadLiveRuns() {
@@ -1114,6 +1234,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   async stopRun() {
     const run = activeRun(get())
     if (run) await window.orgai.runs.stop(run.summary.id)
+    // M3: End session must not strand focus; the composer takes it back.
+    get().focusComposer()
   },
 
   async decide(requestId, decision) {
@@ -1281,6 +1403,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             run.mcpResolved = {}
             run.partial = {}
           }
+          // H4: an ended run's agents never keep Thinking / Waiting for you (the same object comes back when main already settled them).
+          if (e.status === 'finished' || e.status === 'error') run.agents = settleEndedAgents(run.summary, run.agents)
           if (e.status === 'finished' || e.status === 'error' || e.status === 'running' || e.status === 'paused') void get().loadHistory()
           break
         case 'agent.upsert':
@@ -1395,8 +1519,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const run = s.runs[runId]
       if (!run || isRunLive(run)) return {}
       const projectId = run.summary.projectId
+      // Hiding a tab hides its whole chain.
       const dismissedRuns = { ...s.dismissedRuns, [runId]: true as const }
-      const { [runId]: _unread, ...unreadByRun } = s.unreadByRun
+      const unreadByRun = { ...s.unreadByRun }
+      for (const m of chainOf(summariesOf(s, projectId), runId)) {
+        dismissedRuns[m.id] = true
+        delete unreadByRun[m.id]
+      }
+      delete unreadByRun[runId]
       const tabNotice = HIDDEN_NOTICE
       if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, unreadByRun, tabNotice }
       // Hiding the viewed tab moves to its right neighbour, else the left one; with no tab left, the New run page.
@@ -1451,7 +1581,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]
-        const follow = !!resumedFrom && viewed === resumedFrom && s.runs[resumedFrom]?.summary.pausedUntil !== undefined
+        // A newer member of the viewed chain (auto-resume, a continue from another window) takes the tab: the tab shows the chain's newest member.
+        const follow = !!resumedFrom && viewed === resumedFrom
         return {
           runs: { ...s.runs, [runId]: { ...run, summary, agents } },
           ...(follow ? { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root' } : {})
