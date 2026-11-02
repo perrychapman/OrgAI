@@ -56,6 +56,8 @@ interface Props {
   finished?: FinishedGroup
   /** 'conversation' renders only the entry list as the Live view's stage (no header or tabs, stick to the bottom). */
   variant?: 'panel' | 'conversation'
+  /** The chain's first member: its index is the header tag (the conversation keeps one name). Defaults to `runId`. */
+  tagRunId?: string
 }
 
 const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
@@ -225,7 +227,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
   return { hidden, body }
 }
 
-export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel' }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
@@ -233,7 +235,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => s.runs[runId]?.plan)
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
-  const index = useRunIndexes().get(runId)
+  const index = useRunIndexes().get(tagRunId ?? runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
   const tab: SideTab = planTab
@@ -263,7 +265,8 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     if (item.kind === 'divider') {
       return (
         <div key={`divider-${item.divider.runId}`} className="chain-divider" data-testid="chain-divider" data-run={item.divider.runId} title={item.divider.title}>
-          {item.divider.label}
+          <span>{item.divider.label}</span>
+          <span className="sr-only"> ({item.divider.title})</span>
         </div>
       )
     }
@@ -323,6 +326,12 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     }
   })
 
+  // The newest member's items are the live region; everything before its divider is history and must not be re-announced when a chain load inserts it.
+  const newestAt = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
+  const splitAt = newestAt < 0 ? 0 : newestAt
+  const earlierRows = rows.slice(0, splitAt)
+  const newestRows = rows.slice(splitAt)
+
   // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
   const listRef = useRef<HTMLDivElement>(null)
   const stuck = useRef(true)
@@ -331,10 +340,14 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   useEffect(() => {
     if (!focusRun) return
     const body = variant === 'conversation' ? listRef.current : bottom.current?.parentElement
-    const target = body?.querySelector<HTMLElement>(`.chain-divider[data-run="${CSS.escape(focusRun)}"]`)
-    if (!body || !target) return
+    if (!body) return
+    const target = body.querySelector<HTMLElement>(`.chain-divider[data-run="${CSS.escape(focusRun)}"]`)
+    // The chain's first member has no divider: its start is the top of the feed.
+    const first = items[0]
+    const startsWithFocus = first?.kind === 'entry' && first.runId === focusRun
+    if (!target && !startsWithFocus) return
     stuck.current = false
-    body.scrollTop = target.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop
+    body.scrollTop = target ? target.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop : 0
     useAppStore.setState({ chainFocusRun: null })
   }, [focusRun, items, variant, tab])
   const [away, setAway] = useState(false)
@@ -356,9 +369,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         <div
           ref={listRef}
           className="transcript conversation-list"
-          role="log"
-          aria-label="Conversation"
+          role="region"
           tabIndex={0}
+          aria-label="Conversation scroll area"
           onScroll={(e) => {
             const el = e.currentTarget
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
@@ -366,13 +379,16 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             setAway(!atEnd)
           }}
         >
-          {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
-          {rows}
-          {partial && (
-            <div className="entry text streaming">
-              <Markdown text={partial} />
-            </div>
-          )}
+          {splitAt > 0 && <div className="conversation-earlier">{earlierRows}</div>}
+          <div className="conversation-newest" role="log" aria-label="Conversation">
+            {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+            {newestRows}
+            {partial && (
+              <div className="entry text streaming">
+                <Markdown text={partial} />
+              </div>
+            )}
+          </div>
         </div>
         {away && (
           <div className="conversation-jump">

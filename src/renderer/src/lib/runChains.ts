@@ -35,19 +35,59 @@ export function chainOf<T extends ChainSummary>(runs: readonly T[], id: string):
   return runs.filter((r) => members.has(r.id)).sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
 }
 
+/** How many fetch rounds `loadChain` walks back along `resumedFrom` before it stops. */
+export const CHAIN_WALK_MAX_HOPS = 50
+
+/**
+ * The run ids a chain load should fetch next: the known chain members (the run alone when it is unknown) and every
+ * `resumedFrom` target of those members, minus `skip` (already fetched or tried). Empty means the walk is done.
+ */
+export function chainIdsToLoad<T extends ChainSummary>(runs: readonly T[], id: string, skip: ReadonlySet<string>): string[] {
+  const members = chainOf(runs, id)
+  const out = new Set<string>()
+  for (const m of members.length > 0 ? members : [{ id } as ChainSummary]) {
+    out.add(m.id)
+    if (m.resumedFrom) out.add(m.resumedFrom)
+  }
+  return [...out].filter((x) => !skip.has(x))
+}
+
+const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['finished', 'error', 'paused'])
+const END_FIELDS = ['endedBy', 'endedWhile', 'endedWithApp', 'endedAt', 'error'] as const
+
+/**
+ * A live run's summary lacks how it ended (run.status events carry no `endedBy`). When the persisted `row` has those
+ * fields and the run is terminal, returns the summary with them adopted; null when nothing differs. A live status
+ * never adopts: main sets `endedBy` while the status is still 'stopping'.
+ */
+export function adoptEndFacts(summary: RunSummary, row: Partial<RunSummary>): RunSummary | null {
+  if (!TERMINAL.has(summary.status)) return null
+  let next: RunSummary | null = null
+  for (const f of END_FIELDS) {
+    const v = row[f]
+    if (v === undefined || summary[f] === v) continue
+    next = { ...(next ?? summary), [f]: v }
+  }
+  return next
+}
+
 /** The chain's newest member. */
 export function newestOf<T extends ChainSummary>(runs: readonly T[], id: string): T | undefined {
   const chain = chainOf(runs, id)
   return chain[chain.length - 1]
 }
 
-/** The run that continued this one (the next chain member), when this run is not the newest. */
-export function continuedBy<T extends ChainSummary>(runs: readonly T[], id: string): T | undefined {
-  const chain = chainOf(runs, id)
+/** The run that continued this one, from an already computed chain (oldest first). */
+export function continuedByIn<T extends ChainSummary>(chain: readonly T[], id: string): T | undefined {
   const direct = chain.find((r) => r.resumedFrom === id)
   if (direct) return direct
   const i = chain.findIndex((r) => r.id === id)
   return i >= 0 ? chain[i + 1] : undefined
+}
+
+/** The run that continued this one (the next chain member), when this run is not the newest. */
+export function continuedBy<T extends ChainSummary>(runs: readonly T[], id: string): T | undefined {
+  return continuedByIn(chainOf(runs, id), id)
 }
 
 /** The run this one continues (its direct predecessor), when that record is known. */
@@ -57,11 +97,16 @@ export function predecessorOf<T extends ChainSummary>(runs: readonly T[], id: st
   return runs.find((r) => r.id === run.resumedFrom)
 }
 
+/** canContinue from an already computed chain (oldest first). */
+export function canContinueIn<T extends ChainSummary>(chain: readonly T[], id: string): boolean {
+  const run = chain.find((r) => r.id === id)
+  if (!run || !run.sessionId || !CONTINUABLE.has(run.status)) return false
+  return chain[chain.length - 1]?.id === id
+}
+
 /** Continue is offered only on the chain's newest member, once it stopped and has a provider session. */
 export function canContinue<T extends ChainSummary>(runs: readonly T[], id: string): boolean {
-  const run = runs.find((r) => r.id === id)
-  if (!run || !run.sessionId || !CONTINUABLE.has(run.status)) return false
-  return newestOf(runs, id)?.id === id
+  return canContinueIn(chainOf(runs, id), id)
 }
 
 interface CountedRun {
@@ -108,28 +153,6 @@ export function relativeTime(at: number, now: number = Date.now()): string {
   const h = Math.round(m / 60)
   if (h < 24) return `${h} h ago`
   return `${Math.round(h / 24)} d ago`
-}
-
-/** Plain-words status for chips and rows. `waiting` wins over the run status. */
-export function statusLabel(status: RunStatus, waiting = false, endedWithApp = false): string {
-  if (waiting) return 'Waiting for you'
-  // Cut by app exit wins even when the run had paused before the restart.
-  if (endedWithApp && status === 'finished') return 'Ended when OrgAI closed'
-  switch (status) {
-    case 'starting':
-    case 'running':
-      return 'Working'
-    case 'idle':
-      return 'Idle'
-    case 'stopping':
-      return 'Stopping'
-    case 'paused':
-      return 'Paused'
-    case 'error':
-      return 'Failed'
-    default:
-      return 'Finished'
-  }
 }
 
 /** Parses a "Session already open" refusal from runs.continue; returns the live run's id. */

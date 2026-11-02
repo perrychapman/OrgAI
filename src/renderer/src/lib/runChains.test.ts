@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { RunStatus } from '@shared/types'
-import { canContinue, chainOf, continuedBy, newestOf, predecessorOf, projectCounts, relativeTime, sessionOpenRunId, statusLabel } from './runChains'
+import { adoptEndFacts, canContinue, chainIdsToLoad, chainOf, continuedBy, newestOf, predecessorOf, projectCounts, relativeTime, sessionOpenRunId } from './runChains'
 
 const r = (id: string, startedAt: number, extra: { sessionId?: string; resumedFrom?: string; status?: RunStatus; projectId?: string } = {}) => ({
   id,
@@ -85,16 +85,6 @@ describe('runChains', () => {
     expect(projectCounts(list, 'p')).toEqual({ open: 5, needsYou: 4 })
     expect(projectCounts(list, 'none')).toEqual({ open: 0, needsYou: 0 })
   })
-  it('labels statuses in plain words, with endedWithApp beating paused and waiting beating all', () => {
-    expect(statusLabel('running')).toBe('Working')
-    expect(statusLabel('idle')).toBe('Idle')
-    expect(statusLabel('paused')).toBe('Paused')
-    expect(statusLabel('error')).toBe('Failed')
-    expect(statusLabel('finished')).toBe('Finished')
-    expect(statusLabel('finished', false, true)).toBe('Ended when OrgAI closed')
-    expect(statusLabel('paused', false, true)).toBe('Paused')
-    expect(statusLabel('running', true, true)).toBe('Waiting for you')
-  })
   it('formats relative time and parses the refusal', () => {
     expect(relativeTime(0, 10_000)).toBe('just now')
     expect(relativeTime(0, 5 * 60_000)).toBe('5 min ago')
@@ -102,6 +92,30 @@ describe('runChains', () => {
     expect(sessionOpenRunId('Session already open: it is live in run run_ab-12 now')).toBe('run_ab-12')
     expect(sessionOpenRunId('Session already open: run run_x1 ("hi…") is continuing it; reply there instead.')).toBe('run_x1')
     expect(sessionOpenRunId('other')).toBeNull()
-    expect(statusLabel('finished', false, true)).toBe('Ended when OrgAI closed')
+  })
+})
+
+describe('chainIdsToLoad', () => {
+  const r = (id: string, startedAt: number, extra: Record<string, unknown> = {}) => ({ id, startedAt, status: 'finished' as const, ...extra })
+  it('asks for the run alone when unknown and for resumedFrom targets that are not known yet', () => {
+    expect(chainIdsToLoad([], 'a', new Set())).toEqual(['a'])
+    const list = [r('c', 3, { resumedFrom: 'b' })]
+    expect(chainIdsToLoad(list, 'c', new Set())).toEqual(['c', 'b'])
+    expect(chainIdsToLoad(list, 'c', new Set(['c', 'b']))).toEqual([])
+  })
+  it('walks back once the earlier record is known', () => {
+    const list = [r('c', 3, { resumedFrom: 'b' }), r('b', 2, { resumedFrom: 'a' })]
+    expect(chainIdsToLoad(list, 'c', new Set(['c', 'b']))).toEqual(['a'])
+  })
+})
+
+describe('adoptEndFacts', () => {
+  const base = { id: 'a', projectId: 'p', kind: 'work', prompt: '', startedAt: 1, totalCostUsd: 0 } as never as import('@shared/types').RunSummary
+  it('adopts end facts for a terminal run only and returns null when nothing differs', () => {
+    const fin = { ...base, status: 'finished' as const }
+    expect(adoptEndFacts(fin, { endedBy: 'user', endedAt: 5 })).toMatchObject({ endedBy: 'user', endedAt: 5 })
+    expect(adoptEndFacts({ ...fin, endedBy: 'user' }, { endedBy: 'user' })).toBeNull()
+    expect(adoptEndFacts({ ...base, status: 'stopping' as const }, { endedBy: 'user' })).toBeNull()
+    expect(adoptEndFacts(fin, {})).toBeNull()
   })
 })

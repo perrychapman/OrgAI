@@ -32,6 +32,16 @@ describe('chainCanvas', () => {
     expect(c.agents.find((a) => a.id === 'a')?.activity).toBe('Stopped')
   })
 
+  it('holds earlier groups until the newest member has a root', () => {
+    const r1 = member('r1', 'finished', [agent('root', null), agent('a', 'root')])
+    const r2 = member('r2', 'running', [])
+    const held = chainCanvas([r1, r2])
+    expect(held.earlier).toEqual([])
+    expect(held.origin.size).toBe(0)
+    const r2b = member('r2', 'running', [agent('root', null)])
+    expect(chainCanvas([r1, r2b]).earlier).toHaveLength(1)
+  })
+
   it('sums the root across members and folds earlier reports into one group', () => {
     const r1 = member('r1', 'finished', [
       agent('root', null, { inputTokens: 100, outputTokens: 10, costUsd: 0.5, usage: { tokens: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }, models: [], costUsd: 0.5, costSource: 'provider', turns: 1, toolCalls: 0, retries: 0 } }),

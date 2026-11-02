@@ -6,9 +6,9 @@ import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
-import { chainGroups, chainOf, needsYou } from '../lib/runChains'
+import { adoptEndFacts, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainOf, needsYou, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
-import { readOpenTabs, writeOpenTabs } from '../lib/openTabs'
+import { readOpenTabs, tabsSignature, writeOpenTabs } from '../lib/openTabs'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
 import { cleanIpcError } from '../lib/ipcError'
@@ -453,9 +453,9 @@ function stateFromRecord(record: Omit<RunState, 'permissions' | 'proposals' | 'q
  * Tabs of a project: one run per session chain (its newest loaded member), hidden chains left out, ordered by the
  * chain's first member start (oldest first).
  */
-function tabRunsOf(s: AppState, projectId: string): RunState[] {
+function tabEntriesOf(s: AppState, projectId: string): { run: RunState; group: ChainGroup<RunSummary> }[] {
   if (!Object.values(s.runs).some((r) => r.summary.projectId === projectId)) return []
-  const out: { run: RunState; first: RunSummary }[] = []
+  const out: { run: RunState; group: ChainGroup<RunSummary> }[] = []
   for (const g of chainGroups(summariesOf(s, projectId))) {
     const run = [...g.members]
       .reverse()
@@ -463,14 +463,59 @@ function tabRunsOf(s: AppState, projectId: string): RunState[] {
       .find((r): r is RunState => !!r)
     if (!run || isTeamSurfaceRun(run.summary)) continue
     if (s.dismissedRuns[run.summary.id] && s.activeRunByProject[projectId] !== run.summary.id) continue
-    out.push({ run, first: g.first })
+    out.push({ run, group: g })
   }
-  return out.sort((a, b) => a.first.startedAt - b.first.startedAt || a.first.id.localeCompare(b.first.id)).map((x) => x.run)
+  return out.sort((a, b) => a.group.first.startedAt - b.group.first.startedAt || a.group.first.id.localeCompare(b.group.first.id))
+}
+
+function tabRunsOf(s: AppState, projectId: string): RunState[] {
+  return tabEntriesOf(s, projectId).map((x) => x.run)
 }
 
 // ---------- Chain loading and open-tab restore (docs/design/ux-review-continue.md H1, M2) ----------
 
+/**
+ * Live-ended runs carry no endedBy / endedWhile / error (the run.status event has none): the persisted rows do. A
+ * terminal run adopts them; a live one never does. Returns a `runs` patch, or {} when nothing differs.
+ */
+function adoptRowsPatch(s: AppState, rows: readonly RunSummary[]): Partial<AppState> {
+  let runs: Record<string, RunState> | null = null as Record<string, RunState> | null
+  for (const row of rows) {
+    const run: RunState | undefined = (runs ?? s.runs)[row.id]
+    if (!run) continue
+    const next = adoptEndFacts(run.summary, row)
+    if (!next) continue
+    runs = { ...(runs ?? s.runs), [row.id]: { ...run, summary: next } }
+  }
+  return runs ? { runs } : {}
+}
+
+/** One delayed history reload per project after a run ends, so its end facts arrive (events carry none). */
+const endReloads = new Map<string, ReturnType<typeof setTimeout>>()
+function reloadHistoryAfterEnd(projectId: string): void {
+  if (!projectId || endReloads.has(projectId)) return
+  endReloads.set(
+    projectId,
+    setTimeout(() => {
+      endReloads.delete(projectId)
+      void window.orgai.runs
+        .list(projectId)
+        .then((rows) => {
+          const history = rows.filter((h) => !isTeamSurfaceRun(h))
+          useAppStore.setState((s) => ({
+            historyByProject: { ...s.historyByProject, [projectId]: history },
+            ...(s.selectedProjectId === projectId ? { history } : {}),
+            ...adoptRowsPatch(s, history)
+          }))
+        })
+        .catch(() => undefined)
+    }, 400)
+  )
+}
+
 const chainFetches = new Map<string, Promise<void>>()
+/** Latest openRun request per project (a stale, slower one gives way). */
+const openRunRequests = new Map<string, number>()
 
 /** Fetches one run record into the store unless it is loaded or already on its way. Events that created the run meanwhile win. */
 function fetchRun(id: string): Promise<void> {
@@ -515,15 +560,21 @@ let tabsWatch: (() => void) | null = null
 function watchOpenTabs(): void {
   if (tabsWatch) return
   const written = new Map<string, string>()
+  const signatures = new Map<string, string>()
   tabsWatch = useAppStore.subscribe((s, prev) => {
     if (s.runs === prev.runs && s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject) return
     for (const [projectId, state] of restoreDone) {
       if (!state || isVirtualProjectId(projectId)) continue
+      // Streamed events change `runs` constantly; rebuild the chains only when something that decides the tabs changed.
       const sums = summariesOf(s, projectId)
-      const keyOf = (id: string): string => chainOf(sums, id)[0]?.id ?? id
-      const chains = tabRunsOf(s, projectId).map((r) => keyOf(r.summary.id))
       const viewedId = s.draftPage[projectId] ? undefined : s.activeRunByProject[projectId]
-      const viewed = viewedId ? keyOf(viewedId) : undefined
+      const dismissed = sums.filter((r) => s.dismissedRuns[r.id]).map((r) => r.id)
+      const signature = tabsSignature(sums, dismissed, viewedId, !!s.draftPage[projectId])
+      if (signatures.get(projectId) === signature) continue
+      signatures.set(projectId, signature)
+      const entries = tabEntriesOf(s, projectId)
+      const chains = entries.map((x) => x.group.key)
+      const viewed = viewedId ? (entries.find((x) => x.group.members.some((m) => m.id === viewedId))?.group.key ?? viewedId) : undefined
       const sig = JSON.stringify([chains, viewed])
       if (written.get(projectId) === sig) continue
       written.set(projectId, sig)
@@ -631,11 +682,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   continueIntent: null,
   chainFocusRun: null,
   async loadChain(runId) {
-    const s = get()
-    const projectId = s.runs[runId]?.summary.projectId || s.selectedProjectId || ''
-    const members = chainOf(summariesOf(s, projectId), runId)
-    const ids = members.length ? members.map((m) => m.id) : [runId]
-    await Promise.all(ids.map((id) => fetchRun(id)))
+    const projectId = get().runs[runId]?.summary.projectId || get().selectedProjectId || ''
+    // Walk back along resumedFrom: each fetched record can name an earlier member the summaries did not know yet.
+    const tried = new Set<string>()
+    for (let hop = 0; hop < CHAIN_WALK_MAX_HOPS; hop++) {
+      const ids = chainIdsToLoad(summariesOf(get(), projectId), runId, tried)
+      if (ids.length === 0) break
+      for (const id of ids) tried.add(id)
+      await Promise.all(ids.map((id) => fetchRun(id)))
+    }
   },
   historyByProject: {},
   usage: null,
@@ -1057,20 +1112,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const history = (await window.orgai.runs.list(project.id)).filter((h) => !isTeamSurfaceRun(h))
     // The selection may have moved while the list was loading.
-    set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history }, ...(s.selectedProjectId === project.id ? { history } : {}) }))
+    set((s) => ({
+      historyByProject: { ...s.historyByProject, [project.id]: history },
+      ...(s.selectedProjectId === project.id ? { history } : {}),
+      ...adoptRowsPatch(s, history)
+    }))
   },
 
   async loadAllHistory() {
     const ids = [...get().projects.map((p) => p.id), ...VIRTUAL_PROJECT_IDS]
     const entries = await Promise.all(ids.map(async (id) => [id, (await window.orgai.runs.list(id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
-    set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) } }))
+    set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) }, ...adoptRowsPatch(s, entries.flatMap(([, rows]) => rows)) }))
   },
 
   async openRun(runId) {
     const project = selectedProject(get())
     if (!project) return
+    // A slower, older request must not override a newer click in the same project.
+    const request = (openRunRequests.get(project.id) ?? 0) + 1
+    openRunRequests.set(project.id, request)
     // One conversation per chain: load every member (the feed is complete on first paint), then show the newest.
     await get().loadChain(runId)
+    if (openRunRequests.get(project.id) !== request) return
     if (!get().runs[runId]) return
     const members = chainOf(summariesOf(get(), project.id), runId)
     const newestId = [...members].reverse().find((m) => get().runs[m.id])?.id ?? runId
@@ -1406,6 +1469,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // H4: an ended run's agents never keep Thinking / Waiting for you (the same object comes back when main already settled them).
           if (e.status === 'finished' || e.status === 'error') run.agents = settleEndedAgents(run.summary, run.agents)
           if (e.status === 'finished' || e.status === 'error' || e.status === 'running' || e.status === 'paused') void get().loadHistory()
+          if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') reloadHistoryAfterEnd(run.summary.projectId)
           break
         case 'agent.upsert':
           run.agents = { ...run.agents, [e.agent.id]: e.agent }
@@ -1668,3 +1732,24 @@ export function useChainRuns(runId: string | undefined): RunState[] {
 
 /** Runs of the selected project that have a tab (not hidden), oldest first. Fresh array: use with `useShallow`. */
 export const projectTabRuns = (s: AppState): RunState[] => (s.selectedProjectId ? tabRunsOf(s, s.selectedProjectId) : [])
+
+/**
+ * activeRunByProject follows a chain to its newest loaded member: when a newer member enters `runs` (an earlier
+ * member was viewed), the pointer moves to it, so no consumer sees a stale older member.
+ */
+let knownRunCount = 0
+useAppStore.subscribe((s, prev) => {
+  if (s.runs === prev.runs) return
+  const count = Object.keys(s.runs).length
+  if (count === knownRunCount) return
+  knownRunCount = count
+  let next: Record<string, string> | null = null
+  for (const [projectId, viewed] of Object.entries(s.activeRunByProject)) {
+    if (!s.runs[viewed]) continue
+    const newest = chainOf(summariesOf(s, projectId), viewed)
+      .reverse()
+      .find((m) => s.runs[m.id])
+    if (newest && newest.id !== viewed && newest.startedAt > s.runs[viewed].summary.startedAt) next = { ...(next ?? s.activeRunByProject), [projectId]: newest.id }
+  }
+  if (next) useAppStore.setState({ activeRunByProject: next })
+})

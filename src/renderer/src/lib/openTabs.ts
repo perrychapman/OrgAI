@@ -57,3 +57,19 @@ export function writeOpenTabs(projectId: string, tabs: OpenTabs): void {
     /* storage unavailable: tabs simply do not come back */
   }
 }
+
+/** What decides a project's tab set: a cheap string, so the watcher can skip rebuilding chains for streamed events. */
+export interface TabsRunFacts {
+  id: string
+  resumedFrom?: string
+  sessionId?: string
+  status: string
+}
+
+const LIVE_STATUS = new Set(['starting', 'running', 'idle', 'stopping'])
+
+/** Signature over run identity, links, status class (live or not), dismissed ids, the viewed run and the draft flag. */
+export function tabsSignature(runs: readonly TabsRunFacts[], dismissed: readonly string[], viewed: string | undefined, draft: boolean): string {
+  const rows = runs.map((r) => `${r.id}|${r.resumedFrom ?? ''}|${r.sessionId ?? ''}|${LIVE_STATUS.has(r.status) ? 'o' : 'e'}`).sort()
+  return `${rows.join(';')}#${[...dismissed].sort().join(',')}#${viewed ?? ''}#${draft ? 1 : 0}`
+}

@@ -221,6 +221,8 @@ try {
       check((await page.locator('[data-testid=run-strip] .btn:visible').first().evaluate((el) => el.getBoundingClientRect().height).catch(() => 28)) <= 36, `strip buttons fit the 40 px strip at ${w}x${h} ${theme}`)
       log(`chrome above canvas at ${w}x${h} ${theme}:`, m.stage ? Math.round(m.stage.t) : '?', 'px; stage', m.stage ? `${Math.round(m.stage.r - m.stage.l)}x${Math.round(m.stage.b - m.stage.t)}` : '?')
       // The legend lives behind the toolbar "?" popover: a shape plus a word per state.
+      // An ended single-agent run opens as the conversation under 1100 px; the legend belongs to the agents layout.
+      if ((await page.locator('[data-testid=canvas-legend-trigger]').count()) === 0) await page.locator('[data-testid=run-layout-toggle]').click()
       const legendBtn = page.locator('[data-testid=canvas-legend-trigger]')
       await legendBtn.click()
       await sleep(250)
