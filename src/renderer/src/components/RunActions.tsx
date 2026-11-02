@@ -1,7 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { FolderPlus, Pause, RotateCcw, Square } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
+import { useAppStore, useProjectSummaries } from '../store/useAppStore'
+import { newestOf } from '../lib/runChains'
 import { Button } from './ui/Button'
 import { useAssistantModelName } from '../lib/assistantModels'
 import { canPromote, offersRetro, offersSaveAsProject } from '../lib/assistants'
@@ -37,9 +38,11 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   const mock = useAppStore((s) => !!s.appInfo?.mockAdapter)
   const setupModel = useAssistantModelName('setupModel')
   const [saving, setSaving] = useState(false)
+  const summaries = useProjectSummaries()
   if (!summary) return null
   const sessionOpen = summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting'
-  const canRetro = !sessionOpen && offersRetro(summary)
+  // One conversation per chain: the retrospective reviews the whole chain and is offered once, on its newest session.
+  const canRetro = !sessionOpen && offersRetro(summary) && (newestOf(summaries, summary.id)?.id ?? summary.id) === summary.id
   const canSave = !sessionOpen && offersSaveAsProject(summary)
   const promote = canPromote(summary)
   if (!sessionOpen && !canRetro && !canSave) return null

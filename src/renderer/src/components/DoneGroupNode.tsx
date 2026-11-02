@@ -13,7 +13,7 @@ import { agentCostInput, sumCosts } from '../lib/cost'
  * stays readable once an orchestrator has cycled through many delegations.
  */
 export type DoneGroupFlowNode = Node<
-  { parentId: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void },
+  { parentId: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean },
   'done-group'
 >
 
@@ -25,7 +25,7 @@ export function groupId(parentId: string): string {
 }
 
 function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): ReactElement {
-  const { agents, color, parentId, onToggle } = data
+  const { agents, color, parentId, onToggle, label, earlier } = data
   const failed = agents.filter((a) => a.state === 'error').length
   const done = agents.length - failed
   const cost = sumCosts(agents.map(agentCostInput))
@@ -36,20 +36,20 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
     .join(', ')
 
   return (
-    <div className={`done-group ${selected ? 'selected' : ''}`} style={{ ['--role' as string]: color }} title={names + (agents.length > 4 ? ', …' : '')}>
+    <div className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`} data-earlier={earlier ? 'true' : undefined} style={{ ['--role' as string]: color }} title={names + (agents.length > 4 ? ', …' : '')}>
       <Handle type="target" position={Position.Top} />
       <Handle id={MSG_OUT} type="source" position={Position.Right} className="msg-handle" isConnectable={false} />
       <Handle id={MSG_IN} type="target" position={Position.Left} className="msg-handle" isConnectable={false} />
       <div className="done-group-main">
         <span className="done-count">
-          <i /> {done} done
+          <i /> {label ?? `${done} done`}
         </span>
         {failed > 0 && <span className="done-failed">{failed} failed</span>}
         {conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
         <Cost value={cost} hideEmpty className="done-cost" />
       </div>
       <span className="done-expand" onClick={(e) => e.stopPropagation()}>
-        <IconButton icon={ChevronDown} size="sm" label="Show these reports on the chart" onClick={() => onToggle(parentId)} />
+        <IconButton icon={ChevronDown} size="sm" label={earlier ? "Show these agents on the chart" : "Show these reports on the chart"} onClick={() => onToggle(parentId)} />
       </span>
     </div>
   )

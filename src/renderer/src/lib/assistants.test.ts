@@ -19,6 +19,11 @@ describe('run layout', () => {
     expect(runLayoutFor({ kind: 'mcp-assist' }, 'canvas')).toBe('canvas')
     expect(runLayoutFor({ kind: 'work' }, 'conversation')).toBe('conversation')
   })
+  it('an ended continuable work run in a narrow window defaults to the conversation, a choice still wins', () => {
+    expect(runLayoutFor({ kind: 'work' }, undefined, { endedNarrow: true })).toBe('conversation')
+    expect(runLayoutFor({ kind: 'work' }, 'canvas', { endedNarrow: true })).toBe('canvas')
+    expect(runLayoutFor({ kind: 'work' }, undefined, { endedNarrow: false })).toBe('canvas')
+  })
 })
 
 describe('offersSaveAsProject', () => {

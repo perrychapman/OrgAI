@@ -314,16 +314,6 @@ html[data-resizing] * {
   align-items: center;
   gap: var(--space-1);
 }
-.run-meta-chain {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-secondary);
-}
-.run-meta-chain .link-btn {
-  font-size: inherit;
-}
 button.run-meta-item {
   padding: 0;
   border: 0;
@@ -365,6 +355,7 @@ button.run-meta-item:focus-visible {
 @container frame (max-width: 420px) {
   .run-meta-cost,
   .run-meta-wall,
+  .run-meta-sessions,
   .run-meta-agents {
     display: none;
   }
