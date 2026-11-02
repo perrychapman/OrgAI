@@ -209,8 +209,16 @@ try {
   // Allowed folders: typed absolute path, kept after a reload.
   const input = page.locator('[data-testid=allowed-folder-input]')
   await input.fill(extra)
-  await page.locator('[data-testid=allowed-folder-add]').click()
+  await input.press('Enter')
   await page.locator(`[data-testid=allowed-folder-row]`).first().waitFor({ timeout: 8000 })
+  await sleep(200)
+  const afterAdd = await page.evaluate(() => ({
+    focus: document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName,
+    value: document.querySelector('[data-testid=allowed-folder-input]')?.value,
+    said: document.querySelector('[data-testid=allowed-folder-announce]')?.textContent ?? ''
+  }))
+  check(afterAdd.focus === 'allowed-folder-input' && afterAdd.value === '', 'Enter adds the folder and keeps focus in the cleared input', JSON.stringify(afterAdd))
+  check(/^Added .*extra-folder\.$/.test(afterAdd.said), 'the added folder is announced', afterAdd.said)
   const saved = (await findProject(page, NAME))?.allowedDirectories ?? []
   check(saved.length === 1 && path.resolve(saved[0]) === path.resolve(extra), 'the typed folder is saved to the project', JSON.stringify(saved))
   await page.reload()
@@ -234,6 +242,9 @@ try {
   // Remove.
   await page.locator('[data-testid=allowed-folder-remove]').first().click()
   await page.locator('[data-testid=allowed-folders-empty]').waitFor({ timeout: 8000 }).catch(() => {})
+  await sleep(200)
+  const afterRemove = await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? '')
+  check(afterRemove === 'allowed-folder-input', 'removing the last folder moves focus to the folder input', afterRemove)
   check(((await findProject(page, NAME))?.allowedDirectories ?? []).length === 0, 'Remove clears the saved folder')
 
   // Rules panel: refuse Edit, accept both prefix forms.
@@ -258,9 +269,13 @@ try {
     check(chip === 'command prefix', `${rule} is saved and marked command prefix`, chip)
   }
   await shot('settings-rules')
-  for (const rule of ['Bash(npm test:*)', 'Bash(npm test *)']) {
+  const focusedName = () => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.getAttribute('data-testid') ?? '')
+  const expectFocus = ['Remove rule Bash(npm test *)', 'New permission rule']
+  for (const [i, rule] of ['Bash(npm test:*)', 'Bash(npm test *)'].entries()) {
     await page.getByRole('button', { name: `Remove rule ${rule}`, exact: true }).click().catch(() => {})
     await sleep(400)
+    const focused = await focusedName()
+    check(focused === expectFocus[i], `after removing ${rule} focus moves to ${expectFocus[i]}`, focused)
   }
 
   // ---- [mock:fatigue] (guarded: SKIP until the runtime marker is merged) ----

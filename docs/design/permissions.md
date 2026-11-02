@@ -106,6 +106,11 @@ Draft field: examples `Bash(npm test:*)`, `Bash(npm test *)`, `Bash(git status)`
 | Compact vs roomy | Compact keeps header, title, glance and footer; Details toggles detail and helper. Roomy shows all, detail and helper open |
 | Dark and light | Token colours only (`--text-*`, `--attention-*`, `--surface-*`); attention location and whole-tool chip must keep 4.5:1 in both |
 | Keyboard | Every control reachable by Tab, visible `:focus-visible` ring; the settings link and remove buttons are real buttons |
+| Saving a folder or rule | The input stays focusable: `readOnly` with `aria-busy` (never `disabled`), and Enter is ignored until the save settles. Add, Browse and Remove are disabled meanwhile; focus is restored after the save settles, never onto a still-disabled control |
+| Folder added | Focus is in the cleared input; the sr-only `role=status` `[data-testid=allowed-folder-announce]` says "Added <path>." (Remove says "Removed <path>.") |
+| Folder refused or save failed | Focus stays in (or returns to) the input; the input keeps the text; the error is linked by `aria-describedby` |
+| Folder notices | The `role=status` list is always mounted and never `hidden`; CSS `:empty` collapses it, so the first notice is announced |
+| Rule or folder removed | Focus moves to the next row's Remove (the previous one for the last row), else the add input; on a failed remove it returns to the same row's Remove. A rule's Remove `[data-testid=rule-remove]` shows a spinner and "Removing…" while busy, and its name reads "Removing rule <rule>" to match |
 | Untrusted text | Paths, commands, rule strings and labels are plain React text, never HTML; `oneLine` strips control and bidi characters in titles, labels and chips; the command block shows hidden characters escaped |
 
 Test ids (new): `perm-location`, `perm-scope-project`, `perm-rule-chip`, `perm-scopes`, `perm-settings-link`, `permission-mode-tradeoff`, `permission-mode-note`, `allowed-folders-section`, `allowed-folder-row`, `allowed-folder-remove`, `allowed-folder-input`, `allowed-folder-browse`, `allowed-folder-add`, `allowed-folder-error`, `allowed-folder-notice`, `allowed-folders-empty`, `perm-no-rule`, `rules-section`, `rule-row` (`data-rule`), `rule-kind` (`data-kind`), `rule-count`, `rule-input`, `rule-add`, `rule-example`, `rule-draft-error`, `rule-draft-kind`, `rule-draft-warning`.

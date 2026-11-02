@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { PROJECT_ALLOWED_DIRECTORIES_MAX } from '@shared/types'
@@ -27,6 +27,8 @@ export function AllowedDirectoriesSection({ project }: { project: Project }): Re
   const [error, setError] = useState<string | null>(null)
   const [notices, setNotices] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  /** Polite announcement of a finished add or remove ("Added <path>."). */
+  const [announce, setAnnounce] = useState('')
   const inputId = useId()
   const errorId = `${inputId}-error`
   const listRef = useRef<HTMLUListElement>(null)
@@ -52,13 +54,32 @@ export function AllowedDirectoriesSection({ project }: { project: Project }): Re
     }
   }
 
+  /**
+   * Focus to restore once a save settles and the controls are enabled again: a remove button index (clamped to the
+   * last row) or null for the folder input. Applied in an effect, so it never lands on a still-disabled control.
+   */
+  const pendingFocus = useRef<number | null | undefined>(undefined)
+  useEffect(() => {
+    if (busy || pendingFocus.current === undefined) return
+    const index = pendingFocus.current
+    pendingFocus.current = undefined
+    const buttons = listRef.current?.querySelectorAll<HTMLElement>('[data-testid=allowed-folder-remove]')
+    const target = index === null || !buttons?.length ? null : buttons[Math.min(index, buttons.length - 1)]
+    if (target) target.focus()
+    else document.getElementById(inputId)?.focus()
+  }, [busy, dirs.length, inputId])
+
   const add = async (value = draft): Promise<void> => {
+    if (busy) return
     const text = value.trim()
     const problem = allowedFolderDraftProblem(text, dirs)
     if (problem) {
       setError(problem)
       return
     }
+    setAnnounce('')
+    // Success, refusal or save error: the keyboard returns to the input (an error is linked by aria-describedby).
+    pendingFocus.current = null
     const dropped = await save([...dirs, text])
     if (dropped === null) return
     if (dropped.length) {
@@ -66,19 +87,17 @@ export function AllowedDirectoriesSection({ project }: { project: Project }): Re
     } else {
       setDraft('')
       setNotices((n) => n.filter((x) => x !== text))
+      setAnnounce(`Added ${text}.`)
     }
   }
 
   const remove = async (dir: string, index: number): Promise<void> => {
+    setAnnounce('')
+    // Removed: the next row's remove button (the previous for the last row), else the input. Failed: the row is
+    // still there, so its own remove button.
+    pendingFocus.current = index
     const dropped = await save(dirs.filter((d) => d !== dir))
-    if (dropped === null) return
-    // Keep the keyboard in the list: the next row's remove button, else the input.
-    requestAnimationFrame(() => {
-      const buttons = listRef.current?.querySelectorAll<HTMLElement>('[data-testid=allowed-folder-remove]')
-      const target = buttons?.[Math.min(index, buttons.length - 1)]
-      if (target) target.focus()
-      else document.getElementById(inputId)?.focus()
-    })
+    if (dropped !== null) setAnnounce(`Removed ${dir}.`)
   }
 
   const browse = async (): Promise<void> => {
@@ -122,7 +141,8 @@ export function AllowedDirectoriesSection({ project }: { project: Project }): Re
                 aria-label="Folder path"
                 mono
                 value={draft}
-                disabled={busy}
+                readOnly={busy}
+                aria-busy={busy || undefined}
                 placeholder="An absolute folder path"
                 spellCheck={false}
                 autoComplete="off"
@@ -160,8 +180,11 @@ export function AllowedDirectoriesSection({ project }: { project: Project }): Re
               {error}
             </span>
           )}
-          {/* Always mounted, so screen readers announce the first notice too. */}
-          <ul className="allowed-folder-notices" role="status" hidden={notices.length === 0}>
+          <span className="sr-only" role="status" data-testid="allowed-folder-announce">
+            {announce}
+          </span>
+          {/* Always mounted and never hidden (CSS collapses it while empty), so the first notice is announced too. */}
+          <ul className="allowed-folder-notices" role="status">
               {notices.map((n) => (
                 <li key={n} className="allowed-folder-notice" data-testid="allowed-folder-notice">
                   <span>{droppedFolderNotice(n)}</span>
