@@ -413,3 +413,114 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
     expect(buildProject).toHaveBeenCalled()
   })
 })
+
+describe('allowed folders and permission hooks', () => {
+  const mk = (name: string): string => {
+    const p = join(dir, name)
+    mkdirSync(p, { recursive: true })
+    return p
+  }
+  const warnings = (): string[] => events.filter((e): e is Extract<RunEvent, { type: 'log' }> => e.type === 'log' && e.level === 'warn').map((e) => e.message)
+  /** A fake save option over one in-memory project (mirrors ProjectStore.update: appends, never drops). */
+  function saver(p: Project) {
+    let stored = p
+    const save = vi.fn((_id: string, patch: { addDirectories?: string[]; acceptEdits?: true }) => {
+      stored = {
+        ...stored,
+        ...(patch.addDirectories ? { allowedDirectories: [...(stored.allowedDirectories ?? []), ...patch.addDirectories] } : {}),
+        ...(patch.acceptEdits ? { permissionMode: 'acceptEdits' as const } : {})
+      }
+      return stored
+    })
+    return { save, get: () => stored }
+  }
+
+  it('resolves existing folders at start, warns once for a missing one, keeps the project and data dir out', async () => {
+    const repo = mk('repo')
+    const shared = mk('shared')
+    const data = join(dir, 'data')
+    mkdirSync(join(data, 'inner'), { recursive: true })
+    const gone = join(dir, 'gone')
+    const p = makeProject({ path: repo, allowedDirectories: [shared, shared, gone, join(repo, 'sub'), data, join(data, 'inner'), dir] })
+    mkdirSync(join(repo, 'sub'), { recursive: true })
+    const { m, ctxs } = rig({ dataDir: data }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    const dirs = ctxs[0].allowedDirectories!()
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].toLowerCase()).toBe(shared.toLowerCase())
+    expect(warnings().filter((w) => w.includes('does not exist'))).toEqual([`Allowed folder ${gone} does not exist; agents cannot use it in this run.`])
+    // the list is a copy
+    dirs.push('x')
+    expect(ctxs[0].allowedDirectories!()).toHaveLength(1)
+    await m.stopAll()
+  })
+
+  it('allowDirectories saves through the option, updates the list at once and broadcasts the project', async () => {
+    const repo = mk('repo')
+    const extra = mk('extra')
+    const p = makeProject({ path: repo })
+    const s = saver(p)
+    const { m, ctxs } = rig({ dataDir: join(dir, 'data'), saveProjectPermissions: s.save }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    expect(ctx.allowedDirectories!()).toEqual([])
+    const inForce = ctx.allowDirectories!([extra, join(dir, 'nope')])
+    expect(s.save).toHaveBeenCalledWith(p.id, { addDirectories: [extra, join(dir, 'nope')] })
+    expect(inForce).toHaveLength(1)
+    expect(inForce[0].toLowerCase()).toBe(extra.toLowerCase())
+    expect(ctx.allowedDirectories!().map((d) => d.toLowerCase())).toEqual([extra.toLowerCase()])
+    expect(events.some((e) => e.type === 'project.updated')).toBe(true)
+    expect(events.some((e) => e.type === 'log' && e.level === 'info' && e.message.startsWith('Allowed folders for this project:'))).toBe(true)
+    // the live project follows, with the run's canonical path kept
+    expect(ctx.project.allowedDirectories).toEqual([extra, join(dir, 'nope')])
+    await m.stopAll()
+  })
+
+  it('acceptEditsForProject switches only from default', async () => {
+    for (const mode of ['auto', 'plan', 'dontAsk', 'bypassPermissions', 'acceptEdits'] as const) {
+      const p = makeProject({ path: mk('repo'), permissionMode: mode })
+      const s = saver(p)
+      const { m, ctxs } = rig({ saveProjectPermissions: s.save }, { live: true })
+      await m.start({ project: p, prompt: 'go' })
+      expect(ctxs[0].acceptEditsForProject!()).toBe(false)
+      expect(s.save).not.toHaveBeenCalled()
+      await m.stopAll()
+    }
+    const p = makeProject({ path: mk('repo2'), permissionMode: 'default' })
+    const s = saver(p)
+    const { m, ctxs } = rig({ saveProjectPermissions: s.save }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    expect(ctxs[0].acceptEditsForProject!()).toBe(true)
+    expect(ctxs[0].project.permissionMode).toBe('acceptEdits')
+    expect(ctxs[0].acceptEditsForProject!()).toBe(false)
+    expect(s.save).toHaveBeenCalledTimes(1)
+    expect(events.some((e) => e.type === 'log' && e.message === 'Permission mode set to Accept edits for this project.')).toBe(true)
+    await m.stopAll()
+  })
+
+  it('has no hooks without the save option, but still lists folders', async () => {
+    const shared = mk('shared')
+    const { m, ctxs } = rig({}, { live: true })
+    await m.start({ project: makeProject({ path: mk('repo'), allowedDirectories: [shared] }), prompt: 'go' })
+    expect(ctxs[0].allowedDirectories!()).toHaveLength(1)
+    expect(ctxs[0].allowDirectories).toBeUndefined()
+    expect(ctxs[0].acceptEditsForProject).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('gives quick runs and build sessions no folders and no hooks', async () => {
+    const shared = mk('shared')
+    const s = saver(makeProject())
+    const { m, ctxs } = rig({ saveProjectPermissions: s.save }, { live: true })
+    await m.start({ project: quickProj({ allowedDirectories: [shared] }), prompt: 'q', quick: quickInfo() })
+    const ws = mk('ws')
+    await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws, allowedDirectories: [shared] }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    expect(ctxs).toHaveLength(2)
+    for (const c of ctxs) {
+      expect(c.allowedDirectories).toBeUndefined()
+      expect(c.allowDirectories).toBeUndefined()
+      expect(c.acceptEditsForProject).toBeUndefined()
+    }
+    await m.stopAll()
+  })
+})

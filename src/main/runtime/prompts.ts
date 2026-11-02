@@ -1,6 +1,6 @@
 import type { Project, QuickRunInfo, Role } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
-import { INTEGRATE_TOOL } from './harnessTools'
+import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
 
 /**
@@ -37,6 +37,11 @@ export interface PromptFlags {
    * paragraphs (architecture, org changes, cross-run messaging, brief). Adapters pass ctx.run.quick.
    */
   quick?: QuickRunInfo
+  /**
+   * Extra folders the agents may read and edit (RuntimeContext.allowedDirectories()). Work-run prompts (not setup,
+   * not quick) gain one sentence naming them. Missing or empty = no sentence.
+   */
+  allowedDirectories?: string[]
 }
 
 /** The roles this role may delegate to. */
@@ -134,6 +139,12 @@ export function unattendedText(): string {
 }
 
 /** Every work-run role: a policy denial is a request to make, not a wall to climb. */
+/** One sentence naming the project's extra allowed folders (paths are data: one line, no angle brackets, at most 20). */
+export function allowedDirectoriesText(dirs: string[] | undefined): string {
+  const list = (dirs ?? []).filter((d) => typeof d === 'string' && d.trim()).slice(0, 20).map((d) => '"' + datum(d, 300) + '"')
+  return list.length ? 'You may also read and edit files in: ' + list.join(', ') + '.' : ''
+}
+
 export function permissionRequestText(): string {
   return (
     'If the permission policy denies a tool call you need, do not work around it and do not retry it unchanged. ' +
@@ -294,6 +305,8 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     else if (role.canSpawn) parts.push(mcpInstallText('lead'))
     if (role.reportsTo === null) parts.push(skillsConfigText())
     parts.push(permissionRequestText())
+    const folders = allowedDirectoriesText(flags.allowedDirectories)
+    if (folders) parts.push(folders)
     const skills = skillsText(flags.skills, flags.skillTool)
     if (skills) parts.push(skills)
     const brief = briefText(project.brief)

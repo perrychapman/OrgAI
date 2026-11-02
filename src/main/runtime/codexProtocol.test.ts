@@ -228,6 +228,17 @@ describe('native skill discovery', () => {
   })
 })
 
+describe('buildLaunchConfig writable roots', () => {
+  it('adds the allowed folders as sandbox_workspace_write.writable_roots, JSON-quoted', () => {
+    const roots = ['C:\\shared "x"', '/opt/lib']
+    expect(buildLaunchConfig(undefined, [], { writableRoots: roots }).config).toContain(`sandbox_workspace_write.writable_roots=[${roots.map((r) => JSON.stringify(r)).join(', ')}]`)
+  })
+  it('adds nothing for none', () => {
+    expect(buildLaunchConfig(undefined, [], { writableRoots: [] }).config.join('\n')).not.toContain('writable_roots')
+    expect(buildLaunchConfig(undefined, []).config.join('\n')).not.toContain('writable_roots')
+  })
+})
+
 describe('buildLaunchConfig project docs', () => {
   it('turns project docs off only on request (project_doc_max_bytes=0)', () => {
     expect(buildLaunchConfig(undefined, [], { noProjectDocs: true }).config).toContain('project_doc_max_bytes=0')
