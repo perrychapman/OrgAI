@@ -1,18 +1,24 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
-import { Button } from '../ui/Button'
+import { useId, useState } from 'react'
+import { clampLabel } from '../../lib/clampLabel'
+import { showHidden } from '../../lib/hiddenChars'
 
-/** Agent text is untrusted: plain text, clamped, never a link or Markdown. */
-export function ClampText({ text }: { text: string }): ReactElement {
+/** Agent text is untrusted: plain text, clamped, never a link or Markdown. `label` names the row for the toggle's accessible name. */
+export function ClampText({ text: raw, label }: { text: string; label?: string }): ReactElement {
+  const text = showHidden(raw)
   const [open, setOpen] = useState(false)
+  const id = useId()
   const long = text.length > 240 || text.split('\n').length > 4
   return (
     <>
-      <p className={`mcp-prop-text${long && !open ? ' clamped' : ''}`}>{text}</p>
+      <p id={id} className={`mcp-prop-text${long && !open ? ' clamped' : ''}`}>
+        {text}
+      </p>
       {long && (
-        <Button variant="ghost" size="sm" onClick={() => setOpen((o) => !o)}>
+        <button type="button" className="btn ghost sm" aria-expanded={open} aria-controls={id} onClick={() => setOpen((o) => !o)}>
           {open ? 'Show less' : 'Show more'}
-        </Button>
+          {label && <span className="sr-only"> of {clampLabel(label, 60)}</span>}
+        </button>
       )}
     </>
   )

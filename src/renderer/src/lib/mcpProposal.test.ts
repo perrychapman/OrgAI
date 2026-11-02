@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { McpProposalServer, McpServerSpec, McpServersProposalPayload } from '@shared/types'
 import {
   PROPOSAL_EFFECT_COPY,
+  SECRETS_HELP,
+  codeLoadingEnv,
+  mcpFieldChanges,
+  mcpServerHidden,
+  proposalTarget,
+  uniqueSecretSlots,
   classifyUpsert,
   diffMcpProposal,
   effectLine,
@@ -61,8 +67,9 @@ describe('mcpProposal', () => {
   })
   it('exports the effect copy', () => {
     expect(PROPOSAL_EFFECT_COPY.now).toBe('Takes effect now.')
-    expect(PROPOSAL_EFFECT_COPY.nextRun).toBe('Applies to future runs. This run keeps its roles.')
-    expect(PROPOSAL_EFFECT_COPY.turn).toBe("Takes effect after the orchestrator's current turn. Reports already running keep what they have.")
+    expect(PROPOSAL_EFFECT_COPY['next-run']).toBe('Takes effect from the next run. This run keeps what it has.')
+    expect(PROPOSAL_EFFECT_COPY['after-turn']).toBe("Takes effect after the orchestrator's current turn. Reports already running keep what they have.")
+    expect(SECRETS_HELP).toContain('A server with an empty secret does not start.')
   })
 })
 
@@ -125,5 +132,53 @@ describe('diffMcpProposal', () => {
   })
   it('says no changes for an identical proposal with no current list', () => {
     expect(diffMcpProposal({ upsert: [], rationale: '' }, null, roles).summary).toBe('No changes')
+  })
+})
+
+describe('full target', () => {
+  it('stdio: env pairs, then command and args, quoted like reviewTarget', () => {
+    const s = { ...base, command: 'npx', args: ['-y', 'a b', ''], env: { ZED: '1', NODE_OPTIONS: '--require /tmp/x.js' }, secretEnv: ['TOKEN'] } as McpProposalServer
+    expect(proposalTarget(s)).toBe('NODE_OPTIONS="--require /tmp/x.js" ZED=1 npx -y "a b" ""')
+    expect(proposalTarget(s)).not.toContain('TOKEN')
+  })
+  it('remote: the URL plus headers', () => {
+    const s = { ...base, transport: 'http', url: 'https://x.example.com/mcp', headers: { 'X-Mode': 'ro' } } as McpProposalServer
+    expect(proposalTarget(s)).toBe('https://x.example.com/mcp -H "X-Mode: ro"')
+  })
+  it('escapes hidden characters and flags them', () => {
+    const s = { ...base, command: 'node', args: ['a‮b'] } as McpProposalServer
+    expect(proposalTarget(s)).toBe(String.raw`node a\u202eb`)
+    expect(mcpServerHidden(s)).toBe(true)
+    expect(mcpServerHidden(base)).toBe(false)
+    expect(mcpServerHidden({ ...base, name: 'p​g' })).toBe(true)
+  })
+  it('a link row falls back to the library entry', () => {
+    const link = { ...base, libraryId: 'l', command: undefined, args: undefined } as McpProposalServer
+    expect(proposalTarget(link, spec({ command: 'npx', args: ['y'], env: { A: 'b' } }))).toBe('A=b npx y')
+  })
+  it('flags code-loading environment names, case-insensitively', () => {
+    expect(codeLoadingEnv({ env: { node_options: 'x', FOO: '1', HTTPS_PROXY: 'p', PYTHONPATH: 'q', LD_PRELOAD: 'z' }, secretEnv: ['npm_config_registry', 'TOKEN'] })).toEqual(['node_options', 'HTTPS_PROXY', 'PYTHONPATH', 'LD_PRELOAD', 'npm_config_registry'])
+    expect(codeLoadingEnv({ env: { FOO: '1' } })).toEqual([])
+  })
+  it('lists changed fields before and after', () => {
+    const cur = spec({ command: 'npx', args: ['a'], env: { A: '1', B: '2' }, secretEnv: ['T'] })
+    const next = { ...cur, args: ['c'], env: { A: '9', NODE_OPTIONS: 'x' }, secretEnv: ['T', 'U'] } as McpProposalServer
+    expect(mcpFieldChanges(next, cur)).toEqual(['Args: a -> c', 'Environment: +NODE_OPTIONS, -B, A changed', 'Secret environment: +U'])
+    const remote = { ...cur, transport: 'http', command: undefined, args: undefined, url: 'https://b.example.com' } as McpProposalServer
+    expect(mcpFieldChanges(remote, { ...cur, transport: 'http', command: undefined, args: undefined, url: 'https://a.example.com' } as McpServerSpec)).toEqual(['URL: https://a.example.com -> https://b.example.com'])
+  })
+})
+
+describe('secret slots', () => {
+  it('drops duplicate slots and clamps names', () => {
+    const secrets = [
+      { serverId: 'a', kind: 'env', name: 'TOKEN' },
+      { serverId: 'a', kind: 'env', name: 'TOKEN' },
+      { serverId: 'a', kind: 'header', name: 'TOKEN' },
+      { serverId: 'a|env', kind: 'env', name: 'X' }
+    ] as never
+    expect(uniqueSecretSlots({ secrets }).map((x) => x.index)).toEqual([0, 2, 3])
+    expect(secretsLine({ upsert: [], rationale: '', secrets })).toBe('You will set 3 secrets after approving: TOKEN, TOKEN, X')
+    expect(secretsLine({ upsert: [], rationale: '', secrets: [{ serverId: 'a', kind: 'env', name: 'N'.repeat(100) }] as never })?.length).toBeLessThan(100)
   })
 })

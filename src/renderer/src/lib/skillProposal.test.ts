@@ -16,7 +16,7 @@ const current: SkillCurrent = {
     { id: 's-extra', name: 'extra' }
   ]
 }
-const item = (o: Partial<SkillRowItem> & { name: string }): SkillRowItem => ({ action: 'create', scope: 'project', draft: { name: o.name }, ...o })
+const item = (o: Partial<SkillRowItem> & { name: string }): SkillRowItem => ({ action: 'create', scope: 'project', draft: { name: o.name, body: 'Do the thing.' }, ...o })
 
 describe('skillRowView', () => {
   it('create: New, who loads it', () => {
@@ -31,7 +31,7 @@ describe('skillRowView', () => {
     expect(v.line1).toBe('Use review-checklist from your library in this project')
     expect(v.line2).toBe('Who loads it: Reviewer')
     expect(v.note).toBe('Kept in sync with the library; edit it there.')
-    expect(v.showBody).toBe(true)
+    expect(v.showBody).toBe(false)
   })
   it('grant: adds, removes, keeps; no instructions', () => {
     const v = skillRowView(item({ action: 'grant', name: 'release-notes', roles: ['orchestrator', 'reviewer'] }), current)
@@ -49,6 +49,23 @@ describe('skillRowView', () => {
     expect(v.showChanges).toBe(true)
     expect(skillRowView(item({ action: 'update', name: 'mock-skill', roles: ['orchestrator'] }), current).line2).toBe('Who loads it: Orchestrator')
     expect(skillRowView(item({ action: 'update', name: 'mock-skill' }), current).line2).toBe('Who loads it: Orchestrator')
+  })
+  it('grant: enabled and unchanged roles', () => {
+    const off = skillRowView(item({ action: 'grant', name: 'mock-skill', enabled: false }), current)
+    expect(off.stateLine).toBe('Turned off for now')
+    expect(off.line2).toBe('Role access unchanged.')
+    expect(skillRowView(item({ action: 'grant', name: 'mock-skill', enabled: true, roles: [] }), current)).toMatchObject({ stateLine: 'On', line2: 'Removes: Orchestrator.' })
+    expect(skillRowView(item({ action: 'create', name: 'x' }), current).stateLine).toBeNull()
+  })
+  it('update with no body: instructions unchanged, no diff', () => {
+    const v = skillRowView(item({ action: 'update', name: 'mock-skill', draft: { name: 'mock-skill', body: '' } }), current)
+    expect(v).toMatchObject({ line1: 'Instructions unchanged', showBody: false, showChanges: false })
+    expect(skillRowView(item({ action: 'update', name: 'mock-skill', draft: { name: 'mock-skill', body: 'new' } }), current).showChanges).toBe(true)
+  })
+  it('library update points to the library', () => {
+    const v = skillRowView(item({ action: 'update', name: 'x', scope: 'library', draft: { name: 'x', body: 'b' } }), current)
+    expect(v.note).toBe('Compare it in the Skill library.')
+    expect(v.showChanges).toBe(false)
   })
   it('remove: who loses it, linked note, no instructions', () => {
     const v = skillRowView(item({ action: 'remove', name: 'release-notes' }), current)

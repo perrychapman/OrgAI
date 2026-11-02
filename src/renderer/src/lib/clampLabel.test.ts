@@ -9,4 +9,10 @@ describe('clampLabel', () => {
     expect(out.endsWith('…')).toBe(true)
   })
   it('honours a custom max', () => expect(clampLabel('abcdef', 4)).toBe('abc…'))
+  it('replaces bidi, zero-width and control characters', () => {
+    expect(clampLabel('ev‮il')).toBe('ev il')
+    expect(clampLabel('a​b\u0007c')).toBe('a b c')
+    expect(clampLabel('  x\ny ')).toBe('x y')
+  })
+  it('does not fail on a non-string', () => expect(clampLabel(undefined as unknown as string)).toBe(''))
 })
