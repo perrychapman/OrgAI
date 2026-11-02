@@ -164,8 +164,8 @@ describe('CodexAdapter session', () => {
     const childStart = s.of('thread/start')[1].params
     expect(childStart.developerInstructions).toContain('You are engineer.')
     expect(childStart.sandbox).toBe('workspace-write')
-    // A report without reports of its own gets only the every-agent tool (request_permission_rules).
-    expect((childStart.dynamicTools as { name: string }[]).map((t) => t.name)).toEqual(['request_permission_rules'])
+    // A report without reports of its own gets only the every-agent tools (request_permission_rules, list_skills, load_skill).
+    expect((childStart.dynamicTools as { name: string }[]).map((t) => t.name)).toEqual(['request_permission_rules', 'list_skills', 'load_skill'])
     expect(s.turnStarts('th-2')[0].params.input[0].text).toContain('Build the login form')
     const childId = ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
     expect(lastAgent(ctx, childId)).toMatchObject({ handle: 'engineer-1', parentId: 'root', spawnToolUseId: 'c-spawn', roleSlug: 'engineer' })
@@ -647,6 +647,53 @@ describe('CodexAdapter session', () => {
     expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('mcp__files__')
     expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('may still ask the user for permission')
   })
+
+  it('configChanged (MCP): answers after-idle, restarts once idle from the live list, and a removed server is not re-added', async () => {
+    const mcp: any[] = [{ spec: { id: 'o', name: 'old', transport: 'stdio', command: 'old-cmd', enabled: true, source: 'user', addedAt: '' }, env: {}, headers: {} }]
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ resolvedMcpServers: async () => mcp, mcpServers: () => mcp.map((m) => m.spec) })
+    session = await adapter.start(ctx)
+    const s1 = servers[0]
+    await vi.waitFor(() => expect(s1.turnStarts('th-1')).toHaveLength(1))
+    expect(s1.options.config).toContain('mcp_servers.old.command="old-cmd"')
+    // RunManager already applied the change: 'old' is gone, 'fresh' is there.
+    mcp.splice(0, 1, { spec: { id: 'f', name: 'fresh', transport: 'stdio', command: 'fresh-cmd', enabled: true, source: 'user', addedAt: '' }, env: {}, headers: {} })
+    const res = await (session as any).configChanged({ mcp: { upserted: ['fresh'], removed: ['old'] } })
+    expect(res).toEqual({ availability: 'after-idle' })
+    expect(servers).toHaveLength(1) // the turn is still running
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    const s2 = servers[1]
+    expect(s2.options.config).toContain('mcp_servers.fresh.command="fresh-cmd"')
+    expect((s2.options.config ?? []).join('\n')).not.toContain('old-cmd')
+    await vi.waitFor(() => expect(s2.turnStarts('th-1')).toHaveLength(1))
+    expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('mcp__fresh__')
+  })
+
+  it('configChanged (MCP, removal only): tells the orchestrator the change is in place without a tool prefix', async () => {
+    const mcp: any[] = []
+    const { adapter, servers } = setup()
+    session = await adapter.start(ctxFor({ resolvedMcpServers: async () => mcp, mcpServers: () => [] }))
+    const s1 = servers[0]
+    await vi.waitFor(() => expect(s1.turnStarts('th-1')).toHaveLength(1))
+    expect(await (session as any).configChanged({ mcp: { upserted: [], removed: ['old'] } })).toEqual({ availability: 'after-idle' })
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    await vi.waitFor(() => expect(servers[1].turnStarts('th-1')).toHaveLength(1))
+    expect(servers[1].turnStarts('th-1')[0].params.input[0].text).toContain('MCP configuration change is in place')
+  })
+
+  it('configChanged (skills only) answers now and does not restart; without resolvedMcpServers an MCP change rejects', async () => {
+    const { adapter, servers } = setup()
+    session = await adapter.start(ctxFor({ resolvedMcpServers: undefined }))
+    const s1 = servers[0]
+    await vi.waitFor(() => expect(s1.turnStarts('th-1')).toHaveLength(1))
+    expect(await (session as any).configChanged({ skills: true })).toEqual({ availability: 'now' })
+    await expect((session as any).configChanged({ mcp: { upserted: ['x'], removed: [] } })).rejects.toThrow(/next run/)
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(servers).toHaveLength(1)
+  })
 })
 
 describe('CodexAdapter skills', () => {
@@ -693,12 +740,12 @@ describe('CodexAdapter skills', () => {
     expect(ctx.events.some((e) => e.type === 'skill.used')).toBe(false)
   })
 
-  it('has no skill tools without skills', async () => {
+  it('has the skill tools even without skills at start (they read ctx.skills() at call time)', async () => {
     const { adapter, servers } = setup()
     session = await adapter.start(fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5 }))
     const s = servers[0]
     await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
-    expect(s.of('thread/start')[0].params.dynamicTools.map((t: { name: string }) => t.name)).not.toContain('load_skill')
+    expect(s.of('thread/start')[0].params.dynamicTools.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
   })
 
   it('switches off Codex native skills for the thread cwd before it starts, and launches with bundled skills off', async () => {

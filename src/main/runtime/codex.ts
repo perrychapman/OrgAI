@@ -44,7 +44,7 @@ import {
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
-import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { describeTool } from './activity'
@@ -189,7 +189,8 @@ class CodexSession implements RuntimeSession {
         const activity = stepActivity(plan)
         if (rootAgent && activity && rootAgent.state !== 'done' && rootAgent.state !== 'error') this.setState(ROOT_AGENT_ID, rootAgent.state, activity)
       },
-      addMcpServer: (spec) => this.addMcpServer(spec)
+      addMcpServer: (spec) => this.addMcpServer(spec),
+      configChanged: (change) => this.configChanged(change)
     }
     this.harness = harnessToolsFor(ctx, hooks)
     for (const t of this.harness) this.harnessByCodexName.set(codexToolName(t.name), t)
@@ -994,6 +995,28 @@ class CodexSession implements RuntimeSession {
     return { prefix: mcpToolPrefix(spec.name), availability: 'after-idle' }
   }
 
+  /**
+   * An approved propose_mcp_servers / propose_skills changed the run's own project and RunManager already updated
+   * ctx.mcpServers() / resolvedMcpServers() / skills(). An MCP change marks the same restart-at-idle pending as
+   * addMcpServer (the restart rebuilds the launch config from the live list, so a removed or disabled server is simply
+   * not in it) and answers 'after-idle'. A skills-only change is 'now': list_skills / load_skill read ctx.skills() at
+   * call time. Codex's native skill lock is not redone here: a newly linked skill is not re-locked natively, which
+   * only matters for native skills, and those stay locked.
+   */
+  private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    if (!change.mcp) return { availability: 'now' }
+    if (!this.ctx.resolvedMcpServers) throw new Error('This run cannot attach MCP servers; the change applies from the next run.')
+    const live = new Set((this.ctx.mcpServers?.() ?? []).map((s) => s.name))
+    for (const name of change.mcp.upserted) {
+      const prefix = mcpToolPrefix(name)
+      if (live.has(name) && !this.pendingMcpPrefixes.includes(prefix)) this.pendingMcpPrefixes.push(prefix)
+    }
+    this.mcpRestartPending = true
+    this.log('info', 'The MCP configuration changed; Codex is restarted to apply it when the agents are idle.')
+    void this.maybeRestartForMcp()
+    return { availability: 'after-idle' }
+  }
+
   private async maybeRestartForMcp(): Promise<void> {
     if (!this.mcpRestartPending || this.restarting || this.ending || this.activeTurn.size > 0) return
     this.restarting = true
@@ -1026,7 +1049,12 @@ class CodexSession implements RuntimeSession {
       this.activeTurn.clear()
       const prefixes = this.pendingMcpPrefixes.splice(0)
       this.log('info', `Codex restarted with ${servers.filter((s) => s.spec.enabled).length} MCP server(s).`)
-      this.notifyOrchestrator(`Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`, 'Using a new MCP server…')
+      this.notifyOrchestrator(
+        prefixes.length
+          ? `Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`
+          : 'Harness: the MCP configuration change is in place now. Tools of servers that were disabled or removed are gone.',
+        'Using a new MCP server…'
+      )
     } catch (e) {
       this.restarting = false
       this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
