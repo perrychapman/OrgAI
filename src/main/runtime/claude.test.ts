@@ -885,6 +885,72 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     expect(paused).not.toHaveProperty('pausedUntil')
   }, 10_000)
 
+  it('M1 (third check): a user message sent in the restart window and never delivered pauses without auto-resume and asks to resend it', async () => {
+    const { session, ctx, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    await session.send('please also add tests')
+    await vi.waitFor(() => expect(texts(sdk.queries[1]!)).toContain('please also add tests'))
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3))
+    sdk.queries[2]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(4))
+    // The replayed message reached every dead query, none of which started.
+    await vi.waitFor(() => expect(texts(sdk.queries[3]!)).toContain('please also add tests'))
+    sdk.queries[3]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused')
+    expect(paused).toMatchObject({
+      autoResume: false,
+      pauseReason: 'The session could not be resumed after attaching an MCP server. Your last message was not delivered; send it again to continue.'
+    })
+    expect(paused).not.toHaveProperty('pausedUntil')
+    const statuses = ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    expect(statuses).not.toContain('error')
+    const rows = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'system' ? [e.entry.block.text] : []))
+    expect(rows).toContain('The session could not be resumed after attaching an MCP server. The run is paused. Your last message was not delivered; send it again to continue.')
+  }, 10_000)
+
+  it('M1 (third check): harness notices alone never count as undelivered, so the plain pause still auto-resumes', async () => {
+    const { session, ctx, q1 } = await attached()
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    const notify = (session as unknown as { notifyOrchestrator(t: string, a?: string, o?: { nudge?: boolean }): void }).notifyOrchestrator.bind(session)
+    notify('Harness: plan 1 of 2 done. Continue.', 'x', { nudge: true })
+    notify('[OrgAI harness] report merged', 'x')
+    for (let i = 1; i <= 3; i++) {
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(i + 1))
+      sdk.queries[i]!.fail(new Error('spawn failed'))
+    }
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused')
+    expect(paused).toMatchObject({ autoResume: true, pauseReason: 'The session could not be resumed after attaching an MCP server.', pausedUntil: expect.any(Number) })
+  }, 10_000)
+
+  it('M2 (third check): options that cannot be built on recovery count as failed starts; the run pauses, never errors', async () => {
+    let broken = false
+    const { ctx, q1 } = await attached({
+      resolvedMcpServers: async () => {
+        if (broken) throw new Error('secret store locked')
+        return [{ spec: pg(), env: {}, headers: {} }]
+      }
+    })
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    broken = true
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    // Both retries failed to build: no further query was started, and no loop.
+    expect(sdk.queries).toHaveLength(2)
+    const statuses = ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    expect(statuses).not.toContain('error')
+    expect(statuses).not.toContain('finished')
+    const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    expect(logs.filter((l) => l.startsWith('Could not prepare the resumed session (secret store locked)'))).toHaveLength(2)
+    expect(logs.some((l) => l.includes('Pausing the run') && l.includes('Last error: secret store locked'))).toBe(true)
+    expect(ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused')).toMatchObject({ autoResume: true })
+  }, 10_000)
+
   it('N2: a message the dying restarted query had read is replayed into the next query, once', async () => {
     const { session, q1 } = await attached()
     q1.emit(result)
@@ -941,6 +1007,27 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     const q2 = sdk.queries[1]!
     await vi.waitFor(() => expect(texts(q2)).toContain('The MCP server pg is attached now. Its tools: mcp__pg__query. Only roles the org chart grants it may call it.'))
     expect(s.turnEndDeferred).toBe(false)
+  }, 10_000)
+
+  it('L3 (third check): a failure to send the fallback attach notice is logged with secrets redacted', async () => {
+    sdk.autoEnd = false
+    const SECRET = 'tok-very-secret-123'
+    const vault = mcpSpec({ id: 'mcp-vault', name: 'vault', roles: undefined, secretEnv: ['TOKEN'] })
+    const { session, ctx, q1 } = await attached({ resolvedMcpServers: async (): Promise<ResolvedMcpServer[]> => [{ spec: vault, env: { TOKEN: SECRET }, headers: {} }, { spec: pg(), env: {}, headers: {} }] })
+    q1.emit(result)
+    await vi.waitFor(() => expect(q1.inputClosed).toBe(true), restartWait)
+    const s = session as unknown as { liveMcpServers(): McpServerSpec[]; sendAttachNotice(...a: unknown[]): void }
+    vi.spyOn(s, 'liveMcpServers').mockImplementationOnce(() => {
+      throw new Error('store gone')
+    })
+    vi.spyOn(s, 'sendAttachNotice').mockImplementationOnce(() => {
+      throw new Error(`notice failed with ${SECRET}`)
+    })
+    q1.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    const logs = () => ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    await vi.waitFor(() => expect(logs()).toContain('Could not send the MCP attach notice: notice failed with ***'))
+    expect(logs().some((l) => l.includes(SECRET))).toBe(false)
   }, 10_000)
 
   it('L2: only MCP calls read the live server list, and an unreadable list denies the MCP call', async () => {
