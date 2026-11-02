@@ -410,7 +410,7 @@ components/layout:
 - Path containment checks between a user-chosen or stored path and the data dir compare the lexical and the real spelling of both sides (CI runners have short-name or symlinked temp dirs; local machines usually do not).
 - Unit tests are *.test.ts files beside the module they test. They run with vitest in the node environment and never spend tokens.
 - Smoke scripts and the e2e scripts setup, history and worktree spend real tokens. Run them only with explicit approval. e2e:free (layout, runs, maintenance, connections, connectors, import, skills, usage, team, assistants) is safe and must pass after UI changes, with selectors updated in the same change. e2e/runs.mjs also covers run titles on the mock adapter: a 6+ word prompt gives a 4-word tab, sidebar and run-window title with the full prompt in the tab tooltip, and `[mock:title-fail]` falls back to the prompt excerpt.
-- e2e scripts and CI never touch the real user data directory: they set ORGAI_DATA_DIR.
+- e2e scripts and CI never touch the real user data directory: each script sets ORGAI_DATA_DIR for the app it launches (its own fresh temp dir, or `E2E_DATA_DIR`), and a shared ORGAI_DATA_DIR from the environment is ignored, so scripts never leak state into each other.
 - Release builds for each mac arch run on a native runner. Never cross-arch install the native CLIs.
 - New dependencies are pinned to exact versions like the rest of package.json.
 - SDK and provider behaviour claims are verified with a smoke script and recorded in CLAUDE.md with the version, or marked unverified there.
@@ -429,7 +429,7 @@ components/layout:
 - Typecheck: `npm run typecheck`
 - Unit tests: `npm test`
 - Build: `npm run build`
-- E2E (free, needs build): `npm run build && npm run e2e:free`. Each script uses a fresh temp data dir, or ORGAI_DATA_DIR if set.
+- E2E (free, needs build): `npm run build && npm run e2e:free`. Each script uses a fresh temp data dir, or `E2E_DATA_DIR` if set. An ambient ORGAI_DATA_DIR is ignored by the scripts (they still pass their own dir to the app as ORGAI_DATA_DIR).
 - E2E (spends tokens): `node e2e/setup.mjs --yes | node e2e/history.mjs --yes | node e2e/worktree.mjs --yes`
 - Smoke, spend tokens, consent required: `node scripts/smoke-codex.mjs --yes`, `node scripts/smoke-litellm.mjs --yes`, `node scripts/smoke-skills.mjs --yes` (not run yet). Without --yes, smoke-litellm only lists models and is free.
 - Connector probe, token-free but uses the network, consent each time: `npm run probe:connectors -- --out docs/connector-probe-<date>.json` (`--list` parses the catalog offline, `--only id,id`). Last run 2026-10-31.
