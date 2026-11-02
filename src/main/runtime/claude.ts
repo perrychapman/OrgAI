@@ -31,7 +31,7 @@ import { SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
-import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
@@ -40,7 +40,7 @@ import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
-import { matchingRule } from './ruleMatch'
+import { matchOptionsFor, matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
@@ -563,6 +563,8 @@ export function buildAgents(
         isSetup,
         isolation,
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
+        // PromptFlags.allowedDirectories (prompts.ts, Runtime Engineer's change, merged separately).
+        ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -607,6 +609,25 @@ export function claudeSettingSources(ctx: RuntimeContext): Options['settingSourc
 /** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
 export function claudeSavedRules(ctx: RuntimeContext): string[] {
   return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
+}
+
+/**
+ * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() read now (absent on trust-restricted
+ * runs = none). The CLI treats them like the cwd for read-only `cd` and acceptEdits (docs; unverified live).
+ */
+export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDirectories'>): string[] {
+  return (ctx.allowedDirectories?.() ?? []).filter((d) => typeof d === 'string' && d.length > 0)
+}
+
+/**
+ * What a 'project' scope may persist besides rules: the ctx hooks bound to ctx, each left out when absent. Restricted
+ * runs never get there (quickSafeDecision turns project into session) and RunManager leaves the hooks out on them.
+ */
+export function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
+  return {
+    ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
+  }
 }
 
 /** A quick or build run's "project" scope becomes "session": nothing is ever written into the user's folder. */
@@ -1335,14 +1356,14 @@ export class ClaudeSession implements RuntimeSession {
       // scripts/smoke-permission-hook.mjs). The harness's own tools carry their approval inside their round-trip,
       // and rules granted while the run is live (request_permission_rules, the rules panel) apply without a restart.
       if (harness) return hookAllow('OrgAI harness tool')
-      const rules = this.ctx.allowedRules?.()
-      if (rules?.length) {
-        // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
-        // ask per call unless an exact tool rule covers them.
-        const usable = input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
-        const hit = matchingRule(input.tool_name, toolInput, usable)
-        if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
-      }
+      // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
+      // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
+      const rules = this.ctx.allowedRules?.() ?? []
+      // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
+      // ask per call unless an exact tool rule covers them.
+      const usable = rules.length && input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
+      const hit = matchingRule(input.tool_name, toolInput, usable, matchOptionsFor(this.ctx))
+      if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
       return {}
     }
 
@@ -2212,7 +2233,8 @@ export class ClaudeSession implements RuntimeSession {
           toolName,
           input,
           permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
-          !!permOptions.suppressAlwaysAllowRule
+          !!permOptions.suppressAlwaysAllowRule,
+          matchOptionsFor(this.ctx)
         )
         const decision = await this.ctx.requestPermission({
           agentId,
@@ -2227,6 +2249,9 @@ export class ClaudeSession implements RuntimeSession {
         return { behavior: 'deny', message: decision.message }
       }
     }
+    // Allowed directories (live: folders granted during the run join the next build, a config restart included).
+    const dirs = claudeAdditionalDirectories(this.ctx)
+    if (dirs.length) options.additionalDirectories = dirs
     if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
     options.mcpServers = this.mcpRecord(resolved, harnessServer)
     options.strictMcpConfig = true
@@ -2264,7 +2289,13 @@ export class ClaudeSession implements RuntimeSession {
     suggestions: PermissionSuggestion[],
     input: Record<string, unknown>
   ): PermissionResult {
-    const granted = applyAllowScope(this.ctx.project.path, quickSafeDecision(this.ctx, decision), suggestions, (level, message) => this.log(level, message))
+    const granted = applyAllowScope(
+      this.ctx.project.path,
+      quickSafeDecision(this.ctx, decision),
+      suggestions,
+      (level, message) => this.log(level, message),
+      allowScopePersist(this.ctx)
+    )
     if (!granted) return { behavior: 'allow', updatedInput: input }
     return {
       behavior: 'allow',
