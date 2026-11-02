@@ -287,15 +287,18 @@ export function classifyUpsert(s: McpProposalServer, current: readonly McpServer
   if (!hit) return { change: s.libraryId && scope === 'project' ? 'link' : 'new' }
   const linked = !!hit.libraryId && !!s.libraryId
   if (!linked && !sameSpec(s, hit)) return { change: 'update', current: hit }
-  if (scope === 'project' && s.enabled !== undefined && s.enabled !== hit.enabled) return { change: 'toggle', current: hit }
+  // Main saves `enabled !== false`, so an omitted flag switches a disabled server on.
+  if (scope === 'project' && (s.enabled !== false) !== (hit.enabled !== false)) return { change: 'toggle', current: hit }
   if (scope === 'project' && !sameRoles(s.roles, hit.roles)) return { change: 'access', current: hit }
   return { change: 'same', current: hit }
 }
 
 /** Whether the proposal switches an existing server on or off (null when it does not). */
 export function toggleDirection(s: McpProposalServer, current: McpServerSpec | undefined): 'on' | 'off' | null {
-  if (!current || s.enabled === undefined || s.enabled === current.enabled) return null
-  return s.enabled ? 'on' : 'off'
+  if (!current) return null
+  const next = s.enabled !== false
+  if (next === (current.enabled !== false)) return null
+  return next ? 'on' : 'off'
 }
 
 /** "Switches github on. It runs code on this machine from the next run." / "... connects to <host> ..." / "Switches github off." */

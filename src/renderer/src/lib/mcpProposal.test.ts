@@ -91,7 +91,11 @@ describe('mcpProposal', () => {
     const cur = spec({ id: 'a', name: 'pg', enabled: false, command: undefined, args: undefined })
     const on = { ...base, enabled: true } as McpProposalServer
     expect(classifyUpsert(on, [cur], 'project')).toMatchObject({ change: 'toggle' })
-    expect(classifyUpsert({ ...base, enabled: undefined } as unknown as McpProposalServer, [{ ...cur, command: undefined, args: undefined }], 'project').change).not.toBe('toggle')
+    // Main saves `enabled !== false`: an omitted flag switches a disabled server on, so it reads as a toggle.
+    const omitted = { ...base, enabled: undefined } as unknown as McpProposalServer
+    expect(classifyUpsert(omitted, [cur], 'project').change).toBe('toggle')
+    expect(toggleLine(omitted, cur)).toBe('Switches pg on. It runs code on this machine from the next run.')
+    expect(classifyUpsert(omitted, [{ ...cur, enabled: true }], 'project').change).not.toBe('toggle')
     expect(toggleLine(on, cur)).toBe('Switches pg on. It runs code on this machine from the next run.')
     const remote = spec({ id: 'a', transport: 'http', url: 'https://h.example.com/mcp', enabled: false, command: undefined, args: undefined })
     expect(toggleLine({ ...base, transport: 'http', url: 'https://h.example.com/mcp', enabled: true } as McpProposalServer, remote)).toBe('Switches pg on. It connects to h.example.com from the next run.')
