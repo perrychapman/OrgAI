@@ -1826,6 +1826,227 @@ describe('who ended a run (RunSummary.endedBy)', () => {
   })
 })
 
+describe('quitting (markQuit, the quitting flag, starts in flight)', () => {
+  /** An adapter whose session reports running and whose stop() hangs unless `stopEnds` (then it emits finished). */
+  function quitAdapter(opts: { stopEnds?: boolean; opening?: Promise<void>; endsOnItsOwn?: boolean } = {}) {
+    const stops: string[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        await opts.opening
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: `s-${ctx.run.id}` })
+        if (opts.endsOnItsOwn) ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: () => {
+            stops.push(ctx.run.id)
+            if (!opts.stopEnds) return new Promise<void>(() => {})
+            ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+            return Promise.resolve()
+          },
+          finished: new Promise<void>(() => {})
+        }
+      }
+    }
+    return { adapter, stops }
+  }
+
+  function quitManager(adapter: RuntimeAdapter) {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    return { p, store, m }
+  }
+
+  /** The run's record file as written, not through the store (getRecord swaps in the index summary). */
+  const recordOnDisk = (runId: string): RunSummary => (JSON.parse(readFileSync(join(dir, 'data', 'runs', `${runId}.json`), 'utf8')) as { summary: RunSummary }).summary
+
+  it('markQuit writes index and record at once when a session never stops (the deadline path)', async () => {
+    const { adapter } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Hangs' })
+    let settled = false
+    void m.stopAll({ reason: 'quit' }).then(() => (settled = true))
+    await sleep(5)
+    expect(settled).toBe(false)
+    m.markQuit()
+    const want = { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' }
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject(want)
+    expect(recordOnDisk(run.id)).toMatchObject(want)
+  })
+
+  it('End session then quit before the session ends keeps endedBy user, on disk from the stopping save', async () => {
+    const { adapter } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Stop me' })
+    void m.stop(run.id)
+    // The raw index (a fresh RunStore would apply the boot normalization, which keeps 'user' too).
+    const index = JSON.parse(readFileSync(join(dir, 'data', 'runs.json'), 'utf8')) as { runs: RunSummary[] }
+    expect(index.runs.find((r) => r.id === run.id)).toMatchObject({ status: 'stopping', endedBy: 'user' })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(recordOnDisk(run.id).endedBy).toBe('user')
+    void m.stopAll({ reason: 'quit' })
+    m.markQuit()
+    const disk = new RunStore(join(dir, 'data')).get(run.id)!
+    expect(disk).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(disk.endedWithApp).toBeUndefined()
+    expect(disk.endedWhile).toBeUndefined()
+    expect(recordOnDisk(run.id)).toMatchObject({ status: 'finished', endedBy: 'user' })
+  })
+
+  it('quit then End session keeps endedBy app', async () => {
+    const { adapter, stops } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Quit first' })
+    void m.stopAll({ reason: 'quit' })
+    void m.stop(run.id)
+    m.markQuit()
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+    // One session.stop() shared by the quit and End session.
+    expect(stops).toEqual([run.id])
+  })
+
+  it('stopAll waits for a run still opening and stops its session as soon as it opens', async () => {
+    let open: () => void = () => {}
+    const opening = new Promise<void>((r) => (open = r))
+    const { adapter, stops } = quitAdapter({ stopEnds: true, opening })
+    const { p, store, m } = quitManager(adapter)
+    const started = m.start({ project: p, prompt: 'Opening' })
+    await sleep(2)
+    const runId = m.liveRuns()[0].id
+    expect(m.summaryOf(runId)?.status).toBe('starting')
+    let done = false
+    const all = m.stopAll({ reason: 'quit' }).then(() => (done = true))
+    await sleep(5)
+    expect(done).toBe(false)
+    open()
+    await all
+    await started
+    expect(stops).toEqual([runId])
+    expect(store.get(runId)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
+    expect(recordOnDisk(runId)).toMatchObject({ status: 'finished', endedBy: 'app' })
+  })
+
+  it('refuses start, send, continueRun and resumeNow once quitting', async () => {
+    const { adapter } = quitAdapter({ stopEnds: true })
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Live' })
+    const quit = m.stopAll({ reason: 'quit' })
+    await expect(m.start({ project: p, prompt: 'New' })).rejects.toThrow('OrgAI is quitting')
+    await expect(m.send(run.id, 'hello')).rejects.toThrow('OrgAI is quitting')
+    await expect(m.continueRun(p, run.id, 'more')).rejects.toThrow('OrgAI is quitting')
+    await expect(m.resumeNow(run.id)).rejects.toThrow('OrgAI is quitting')
+    await quit
+    expect(m.liveRuns().filter((r) => r.id !== run.id)).toEqual([])
+  })
+
+  it('markQuit alone also refuses new runs', async () => {
+    const { adapter } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    m.markQuit()
+    await expect(m.start({ project: p, prompt: 'New' })).rejects.toThrow('OrgAI is quitting')
+  })
+
+  it('a plain stopAll (not a quit) does not refuse new runs', async () => {
+    const { adapter } = quitAdapter({ stopEnds: true })
+    const { p, m } = quitManager(adapter)
+    await m.stopAll()
+    await expect(m.start({ project: p, prompt: 'Later' })).resolves.toMatchObject({ status: 'running' })
+  })
+
+  it('stopAll leaves a run that already finished (teardown pending) unlabelled', async () => {
+    const { adapter } = quitAdapter({ endsOnItsOwn: true, stopEnds: true })
+    const { p, store, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Done already' })
+    expect(m.summaryOf(run.id)?.status).toBe('finished')
+    await m.stopAll({ reason: 'quit' })
+    m.markQuit()
+    const saved = store.get(run.id)!
+    expect(saved.endedBy).toBeUndefined()
+    expect(saved.endedWithApp).toBeUndefined()
+    expect(saved.endedWhile).toBeUndefined()
+  })
+
+  it('a hung start does not hold back the stop of an open session (review M1)', async () => {
+    const stops: string[] = []
+    let n = 0
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        // The second run's adapter.start never settles.
+        if (n++ === 1) await new Promise<void>(() => {})
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: `s-${ctx.run.id}` })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => void stops.push(ctx.run.id), finished: new Promise<void>(() => {}) }
+      }
+    }
+    const { p, m } = quitManager(adapter)
+    const open = await m.start({ project: p, prompt: 'Open' })
+    void m.start({ project: p, prompt: 'Hung' })
+    await sleep(2)
+    void m.stopAll({ reason: 'quit' })
+    await sleep(5)
+    expect(stops).toEqual([open.id])
+    m.markQuit()
+    for (const r of [open.id, ...m.liveRuns().map((x) => x.id)]) expect(new RunStore(join(dir, 'data')).get(r)).toMatchObject({ status: 'finished', endedBy: 'app' })
+  })
+
+  it('End session while the session is still opening stops it once it opens (review M2)', async () => {
+    let open: () => void = () => {}
+    const opening = new Promise<void>((r) => (open = r))
+    const { adapter, stops } = quitAdapter({ stopEnds: true, opening })
+    const { p, store, m } = quitManager(adapter)
+    const started = m.start({ project: p, prompt: 'Opening' })
+    await sleep(2)
+    const runId = m.liveRuns()[0].id
+    await m.stop(runId)
+    expect(store.get(runId)).toMatchObject({ status: 'stopping', endedBy: 'user' })
+    open()
+    await started
+    await vi.waitFor(() => expect(stops).toEqual([runId]))
+    expect(store.get(runId)).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(store.get(runId)!.endedWithApp).toBeUndefined()
+  })
+
+  it('markQuit asks open sessions to stop (review L2)', async () => {
+    const { adapter, stops } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Live' })
+    m.markQuit()
+    expect(stops).toEqual([run.id])
+  })
+
+  it('no auto-resume is armed for a run that pauses while the app quits (review L1)', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-pause' })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: async () => ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'paused', pausedUntil: Date.now() + 60_000, pauseReason: 'x', autoResume: true }),
+          finished: new Promise<void>(() => {})
+        }
+      }
+    }
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Pauses' })
+    await m.stopAll({ reason: 'quit' })
+    expect(m.hasAutoResume(run.id)).toBe(false)
+  })
+
+  it('the record file is on disk when stopAll resolves', async () => {
+    const { adapter } = quitAdapter({ stopEnds: true })
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Record' })
+    await m.stopAll({ reason: 'quit' })
+    expect(recordOnDisk(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
+  })
+})
+
 /** A MockAdapter that remembers each run's RuntimeContext and session. */
 class CapturingAdapter extends MockAdapter {
   readonly ctxs = new Map<string, RuntimeContext>()

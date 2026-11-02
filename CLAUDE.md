@@ -31,13 +31,15 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
   `source: 'harness'` (Claude, Codex and mock) and render as quiet system rows. Verified by unit tests.
-  - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`), 'app' when OrgAI quit
-    (`stopAll({ reason: 'quit' })`, awaited by index.ts `before-quit` for at most 3 s) or crashed (RunStore boot
-    normalization), always next to `endedWithApp: true`, and absent when the run ended on its own; junk values are
-    dropped on read. With 'app', `endedWhile` says what it was doing: 'waiting' (idle or a card open), 'working'
-    (starting, running, stopping), absent for a paused run; stopAll reads it before stopping, the store from the saved
-    status. The status word comes from the summary alone (ux-review-continue.md M1). Unit-tested; the real
-    Electron quit path is not.
+  - Who ended it: `RunSummary.endedBy` is 'user' after End session (`RunManager.stop`, saved with the 'stopping'
+    status so a quit or crash keeps it), 'app' when OrgAI quit (`stopAll({ reason: 'quit' })` through
+    `quitGate.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot
+    normalization, `endedBy ??= 'app'`), always next to `endedWithApp: true` (only then), and absent when the run
+    ended on its own; junk values are dropped on read, a legacy lone `endedWithApp` gets 'app'. With 'app',
+    `endedWhile` says what it was doing: 'waiting' (idle or a card open), 'working' (starting, running, stopping),
+    absent for a paused run. Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
+    session still opening is stopped when it opens. The renderer's adoption of endedBy lands with the
+    one-conversation UI change. Unit-tested; the real Electron quit path is not.
 - Decision cards are kept in RunManager's pending maps (`PendingCardMaps` in `pendingCards.ts`) with their request
   objects. `RunManager.pendingCards` (IPC `runs:pendingCards`) hands them to a fresh renderer, which otherwise only
   learns of cards from `*.request` events broadcast at request time. Verified by unit tests. No renderer code calls

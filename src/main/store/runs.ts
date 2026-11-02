@@ -36,8 +36,11 @@ export class RunStore {
     this.recordsDir = join(dataDir, 'runs')
     try {
       if (existsSync(this.file)) {
-        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { runs?: RunSummary[] }
-        this.runs = Array.isArray(parsed.runs) ? parsed.runs : []
+        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { runs?: unknown } | null
+        // Only plain objects with a string id are runs; a null or junk entry is dropped, not thrown on below.
+        this.runs = Array.isArray(parsed?.runs)
+          ? (parsed!.runs as unknown[]).filter((r): r is RunSummary => !!r && typeof r === 'object' && !Array.isArray(r) && typeof (r as { id?: unknown }).id === 'string')
+          : []
       }
     } catch {
       this.runs = []
@@ -45,9 +48,14 @@ export class RunStore {
     // Anything still marked live from a previous app session is actually dead. Paused runs lose their
     // auto-resume (timers die with the process) but keep pausedUntil, so the Runs tab can offer Continue.
     // endedWithApp / endedBy 'app' tell the UI the session was cut by the app quitting, not closed by the run itself.
-    // endedBy comes from an untrusted file: anything but 'user' | 'app' is dropped.
+    // endedBy, endedWithApp and endedWhile come from an untrusted file and are normalized here.
     for (const r of this.runs) {
       if (r.endedBy !== undefined && r.endedBy !== 'user' && r.endedBy !== 'app') delete r.endedBy
+      // endedWithApp is exactly true or absent. A record saved before endedBy existed has endedWithApp alone: the
+      // app cut it, so it gets endedBy 'app' (the renderer trusts endedWithApp). Next to 'user' it is dropped.
+      if (r.endedWithApp !== undefined && (r.endedWithApp as unknown) !== true) delete r.endedWithApp
+      if (r.endedWithApp && r.endedBy === undefined) r.endedBy = 'app'
+      if (r.endedBy !== 'app') delete r.endedWithApp
       // endedWhile (also untrusted) only means something next to endedBy 'app'.
       if (r.endedWhile !== undefined && ((r.endedWhile !== 'working' && r.endedWhile !== 'waiting') || r.endedBy !== 'app')) {
         delete r.endedWhile
@@ -57,11 +65,16 @@ export class RunStore {
         const was = r.status
         r.status = 'finished'
         r.endedAt = r.endedAt ?? Date.now()
-        r.endedWithApp = true
-        r.endedBy = 'app'
-        if (was === 'idle') r.endedWhile = 'waiting'
-        else if (was === 'starting' || was === 'running' || was === 'stopping') r.endedWhile = 'working'
-        else delete r.endedWhile
+        // End session was under way (stop() saves endedBy 'user' with 'stopping'): it stays the user's end.
+        r.endedBy ??= 'app'
+        if (r.endedBy === 'app') {
+          r.endedWithApp = true
+          if (r.endedWhile === undefined) {
+            if (was === 'idle') r.endedWhile = 'waiting'
+            else if (was === 'starting' || was === 'running' || was === 'stopping') r.endedWhile = 'working'
+          }
+          if (was === 'paused') delete r.endedWhile
+        }
       }
       if (r.autoResume) delete r.autoResume
       if (!r.kind) r.kind = 'work'
