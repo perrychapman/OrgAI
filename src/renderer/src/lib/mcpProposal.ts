@@ -83,10 +83,13 @@ export function whoCanUseChange(s: McpProposalServer, current: McpServerSpec | u
 }
 
 /** Approve-helper wording for an MCP proposal. */
-export function mcpApplyNote(scope: McpProposalScope): string {
-  return scope === 'library'
-    ? 'Approving saves these MCP servers to your MCP library (available to every project). Secrets are entered separately and stored encrypted.'
-    : 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.'
+export function mcpApplyNote(scope: McpProposalScope, inlineSecrets = false): string {
+  const tail = inlineSecrets ? ' Secrets you leave empty can be set later.' : ''
+  const base =
+    scope === 'library'
+    ? 'Approving saves these MCP servers to your MCP library (available to every project). Secrets are stored encrypted.'
+    : 'Approving saves these MCP servers to the project. Secrets are stored encrypted.'
+  return base + tail
 }
 
 export function secretsLine(payload: McpServersProposalPayload, serverId?: string): string | null {
@@ -115,7 +118,9 @@ export function uniqueSecretSlots(payload: Pick<McpServersProposalPayload, 'secr
 type TargetSpec = Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url' | 'env' | 'headers' | 'secretEnv' | 'secretHeaders'>
 
 const byKey = ([a]: [string, string], [b]: [string, string]): number => (a < b ? -1 : a > b ? 1 : 0)
-const quote = (a: string): string => (a === '' || /[\s"']/.test(a) ? JSON.stringify(a) : a)
+// eslint-disable-next-line no-control-regex
+const NON_ASCII = /[^ -~]/
+const quote = (a: string): string => (a === '' || /[\s"']/.test(a) || hasHidden(a) || NON_ASCII.test(a) ? JSON.stringify(a) : a)
 
 /** `NAME=value` pairs before the command and args (stdio), or the URL plus `-H "Name: value"` headers. Secret slots are never here. */
 export function targetText(s: TargetSpec): string {
@@ -211,7 +216,7 @@ export function proposalSource(s: McpProposalServer): string | null {
 
 // ---------- Diff against what the project (or library) has now ----------
 
-export type McpChange = 'new' | 'link' | 'access' | 'update' | 'same'
+export type McpChange = 'new' | 'link' | 'toggle' | 'access' | 'update' | 'same'
 
 export interface McpRow {
   server: McpProposalServer
@@ -241,7 +246,7 @@ export interface McpDiff {
   summary: string
 }
 
-const CHANGE_ORDER: Record<McpChange, number> = { new: 0, link: 1, access: 2, update: 2, same: 3 }
+const CHANGE_ORDER: Record<McpChange, number> = { new: 0, link: 1, toggle: 2, access: 2, update: 2, same: 3 }
 
 function sameList(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
   const x = [...(a ?? [])].sort()
@@ -282,8 +287,32 @@ export function classifyUpsert(s: McpProposalServer, current: readonly McpServer
   if (!hit) return { change: s.libraryId && scope === 'project' ? 'link' : 'new' }
   const linked = !!hit.libraryId && !!s.libraryId
   if (!linked && !sameSpec(s, hit)) return { change: 'update', current: hit }
+  if (scope === 'project' && s.enabled !== undefined && s.enabled !== hit.enabled) return { change: 'toggle', current: hit }
   if (scope === 'project' && !sameRoles(s.roles, hit.roles)) return { change: 'access', current: hit }
   return { change: 'same', current: hit }
+}
+
+/** Whether the proposal switches an existing server on or off (null when it does not). */
+export function toggleDirection(s: McpProposalServer, current: McpServerSpec | undefined): 'on' | 'off' | null {
+  if (!current || s.enabled === undefined || s.enabled === current.enabled) return null
+  return s.enabled ? 'on' : 'off'
+}
+
+/** "Switches github on. It runs code on this machine from the next run." / "... connects to <host> ..." / "Switches github off." */
+export function toggleLine(s: McpProposalServer, current: McpServerSpec | undefined): string | null {
+  const dir = toggleDirection(s, current)
+  if (!dir) return null
+  const name = clampLabel(s.name)
+  if (dir === 'off') return `Switches ${name} off.`
+  const spec = current ?? s
+  if (spec.transport === 'stdio') return `Switches ${name} on. It runs code on this machine from the next run.`
+  const host = remoteHost(spec.url ?? s.url)
+  return `Switches ${name} on. It connects to ${host ?? 'a remote host'} from the next run.`
+}
+
+/** Effect line for a new or linked row; a server added switched off does not start. */
+export function newEffectLine(s: McpProposalServer): string {
+  return s.enabled === false ? 'Added switched off; it does not start until you switch it on.' : effectLine(s)
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -313,10 +342,12 @@ export function removalLabels(payload: Pick<McpServersProposalPayload, 'remove'>
 }
 
 /** "1 new, 1 linked, 1 access change, 1 changed, 1 removal; 2 servers unchanged" (zero parts left out). */
-export function mcpSummaryLine(counts: { new: number; link: number; access: number; update: number; removal: number }, unchanged: number | null): string {
+export function mcpSummaryLine(counts: { new: number; link: number; access: number; update: number; removal: number; on?: number; off?: number }, unchanged: number | null): string {
   const parts: string[] = []
   if (counts.new) parts.push(`${counts.new} new`)
   if (counts.link) parts.push(`${counts.link} linked`)
+  if (counts.on) parts.push(`${counts.on} switched on`)
+  if (counts.off) parts.push(`${counts.off} switched off`)
   if (counts.access) parts.push(plural(counts.access, 'access change', 'access changes'))
   if (counts.update) parts.push(`${counts.update} changed`)
   if (counts.removal) parts.push(plural(counts.removal, 'removal', 'removals'))
@@ -343,13 +374,14 @@ export function diffMcpProposal(payload: McpServersProposalPayload, currentServe
   for (const id of payload.remove ?? []) touched.add(id)
   const untouched = currentServers ? current.filter((c) => !touched.has(c.id)).map((c) => clampLabel(c.name)) : null
   const count = (c: McpChange): number => rows.filter((r) => r.change === c).length
+  const toggled = (d: 'on' | 'off'): number => rows.filter((r) => r.change === 'toggle' && toggleDirection(r.server, r.current) === d).length
   const unchanged = (untouched?.length ?? 0) + same.length
   return {
     rows,
     removals,
     same,
     untouched,
-    summary: mcpSummaryLine({ new: count('new'), link: count('link'), access: count('access'), update: count('update'), removal: removals.length }, unchanged)
+    summary: mcpSummaryLine({ new: count('new'), link: count('link'), access: count('access'), update: count('update'), removal: removals.length, on: toggled('on'), off: toggled('off') }, unchanged)
   }
 }
 
@@ -361,6 +393,8 @@ export function mcpRowVerb(r: McpRow): string {
       return `add ${name}`
     case 'link':
       return `link ${name}`
+    case 'toggle':
+      return `switch ${toggleDirection(r.server, r.current) ?? 'on'} ${name}`
     case 'access':
       return `change access to ${name}`
     default:
@@ -368,12 +402,27 @@ export function mcpRowVerb(r: McpRow): string {
   }
 }
 
-/** When an approved change takes effect (Proposal.effect), as the card's helper says it. */
-export const PROPOSAL_EFFECT_COPY: Record<ProposalEffect, string> = {
-  now: 'Takes effect now.',
-  'after-turn': "Takes effect after the orchestrator's current turn. Reports already running keep what they have.",
-  'next-run': 'Takes effect from the next run. This run keeps what it has.'
+/** Who made the proposal, as the effect line names it. */
+export type EffectProposer = 'assistant' | 'architect' | 'orchestrator'
+
+/** When an approved change takes effect (Proposal.effect), as the card's helper says it; null for an unknown value. */
+export function proposalEffectCopy(effect: ProposalEffect | undefined, proposer: EffectProposer = 'orchestrator'): string | null {
+  switch (effect) {
+    case 'now':
+      return 'Takes effect now.'
+    case 'after-turn': {
+      const who = proposer === 'assistant' ? "the assistant's" : proposer === 'architect' ? "the Architect's" : "the orchestrator's"
+      return `Takes effect after ${who} current turn. Reports already running keep what they have.`
+    }
+    case 'next-run':
+      return 'Takes effect from the next run. This run keeps what it has.'
+    default:
+      return null
+  }
 }
 
-/** Helper text for filling secrets on the card. */
-export const SECRETS_HELP = 'Fill them now or later in Project settings > Tools. A server with an empty secret does not start.'
+/** Helper text for filling secrets on the card; says where to find them later. */
+export function secretsHelp(scope: McpProposalScope): string {
+  const where = scope === 'library' ? 'App settings > Connectors' : 'Project settings > Tools'
+  return `Fill them now or later in ${where}. A server with an empty secret does not start.`
+}

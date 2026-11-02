@@ -1,16 +1,17 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useMemo, useState } from 'react'
-import { Minus, Pencil, Plus } from 'lucide-react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
 import type { Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { proposalNextFor } from '../lib/proposalNext'
-import { mcpApplyNote, proposalScope, PROPOSAL_EFFECT_COPY, SECRETS_HELP, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
+import { mcpApplyNote, proposalScope, proposalEffectCopy, secretsHelp, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
 import { diffOrgChart, modelDisplay, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { oneLine, proposalTitle } from '../lib/decisionTitle'
+import { hasHidden, showHidden } from '../lib/hiddenChars'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
@@ -35,7 +36,7 @@ const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
   settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.',
-  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.',
+  mcpServers: 'Approving saves these MCP servers to the project. Secrets are stored encrypted.',
   // The skills card picks its own note by scope (skillsApplyNote).
   skills: 'Approving writes these skills to this project and grants them to the listed roles.'
 }
@@ -54,6 +55,25 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const [feedback, setFeedback] = useState('')
   const [note, setNote] = useState('')
   // Typed secret values by slot index in payload.secrets. They stay in this component's state until Approve.
+  const noteId = useId()
+  const [expandSignal, setExpandSignal] = useState(0)
+  const anchorRef = useRef<HTMLSpanElement>(null)
+  const prevMode = useRef<Mode>('idle')
+  const feedbackRef = useRef<HTMLDivElement>(null)
+  // Entering a mode opens the folded body and focuses its field; Back returns focus to the button that opened it.
+  useEffect(() => {
+    const from = prevMode.current
+    prevMode.current = mode
+    if (mode !== 'idle') {
+      setExpandSignal((n) => n + 1)
+      // The folded body opens on the next render; focus the field after it.
+      const id = requestAnimationFrame(() => feedbackRef.current?.querySelector('textarea')?.focus())
+      return () => cancelAnimationFrame(id)
+    } else if (from !== 'idle') {
+      anchorRef.current?.closest('article')?.querySelector<HTMLElement>(`[data-testid="proposal-${from}"]`)?.focus()
+    }
+    return undefined
+  }, [mode])
   const [secretValues, setSecretValues] = useState<SecretValues>({})
   const { busy, error, submit } = useDecisionAnswer()
   const runSummary = useAppStore((st) => st.runs[runId]?.summary)
@@ -73,9 +93,10 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
     () => (mcpLoading ? undefined : proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent.servers, skills: skillCurrent })),
     [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading]
   )
-  const helperText =
-    proposal.kind === 'mcpServers' ? mcpApplyNote(scope) : proposal.kind === 'skills' ? skillsApplyNote(proposal.payload) : APPLY_NOTE[proposal.kind]
   const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
+  const effectCopy = proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
+  const helperText =
+    proposal.kind === 'mcpServers' ? mcpApplyNote(scope, hasSecrets) : proposal.kind === 'skills' ? skillsApplyNote(proposal.payload) : APPLY_NOTE[proposal.kind]
 
   const setSecret = (index: number, v: string): void => setSecretValues((cur) => ({ ...cur, [index]: v }))
 
@@ -110,23 +131,24 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       runId={runId}
       who={who}
       agentId={agentId}
+      expandSignal={expandSignal}
       focusDetails
       title={proposalTitle(proposal.kind)}
       summary={foldSummary}
       helper={
         <>
           {helperText}
-          {hasSecrets && <span className="proposal-effect">{SECRETS_HELP}</span>}
-          {proposal.effect && (
+          {hasSecrets && <span className="proposal-effect">{secretsHelp(scope)}</span>}
+          {effectCopy && (
             <span className="proposal-effect" data-testid="proposal-effect">
-              {PROPOSAL_EFFECT_COPY[proposal.effect]}
+              {effectCopy}
             </span>
           )}
         </>
       }
       primary={
         mode === 'idle' ? (
-          <Button variant="primary" onClick={approve} disabled={busy}>
+          <Button variant="primary" onClick={approve} disabled={busy || mcpLoading}>
             Approve
           </Button>
         ) : mode === 'revise' ? (
@@ -142,7 +164,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       secondary={
         mode === 'idle' ? (
           <>
-            <Button onClick={() => setMode('revise')} disabled={busy}>
+            <Button onClick={() => setMode('revise')} disabled={busy} testId="proposal-revise">
               Request changes
             </Button>
             {canDecline && (
@@ -169,30 +191,26 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
       {proposal.kind === 'mcpServers' && <McpProposalBody payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
       {proposal.kind === 'skills' && <SkillsProposalBody payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
-      {mode === 'revise' && (
-        <div className="proposal-feedback">
-          <Textarea
-            autoFocus
-            aria-label="What should change?"
-            value={feedback}
-            onChange={setFeedback}
-            placeholder={revisePlaceholder(proposerName(runSummary))}
-          />
+      {mode !== 'idle' && (
+        <div className="proposal-feedback" ref={feedbackRef}>
+          <label className="proposal-note-label" htmlFor={`${noteId}-${mode}`}>
+            {mode === 'revise' ? 'What should change?' : 'Anything the agent should know? (optional)'}
+          </label>
+          {mode === 'revise' ? (
+            <Textarea
+              id={`${noteId}-revise`}
+              value={feedback}
+              onChange={setFeedback}
+              maxLength={PROPOSAL_NOTE_MAX_CHARS}
+              placeholder={revisePlaceholder(proposerName(runSummary))}
+            />
+          ) : (
+            <Textarea id={`${noteId}-decline`} data-testid="proposal-decline-note" maxLength={PROPOSAL_NOTE_MAX_CHARS} value={note} onChange={setNote} />
+          )}
+          <span className="proposal-note-hint">Up to {PROPOSAL_NOTE_MAX_CHARS.toLocaleString('en-US')} characters</span>
         </div>
       )}
-      {mode === 'decline' && (
-        <div className="proposal-feedback">
-          <Textarea
-            autoFocus
-            aria-label="Anything the agent should know? (optional)"
-            data-testid="proposal-decline-note"
-            maxLength={PROPOSAL_NOTE_MAX_CHARS}
-            value={note}
-            onChange={setNote}
-            placeholder="Anything the agent should know? (optional)"
-          />
-        </div>
-      )}
+      <span ref={anchorRef} hidden />
     </DecisionCard>
   )
 }
@@ -288,7 +306,7 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
           Added
         </Badge>
         <RoleAvatar role={role} />
-        <span className="org-diff-name">{role.name}</span>
+        <span className="org-diff-name">{showHidden(role.name)}</span>
         <span className="org-diff-meta">
           reports to {parentLabel(role, all)} · {modelDisplay(role.model)}
           {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
@@ -296,7 +314,7 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
       </summary>
       <div className="proposal-role-body">
         <div>{role.description}</div>
-        <div className="mono-dim">tools: {role.tools.join(', ') || 'none'}</div>
+        <div className="mono-dim">tools: {showHidden(role.tools.join(', ')) || 'none'}</div>
         {role.responsibilities.length > 0 && (
           <ul className="proposal-list">
             {role.responsibilities.map((x, i) => (
@@ -304,7 +322,12 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
             ))}
           </ul>
         )}
-        <div className="proposal-prompt">{role.prompt}</div>
+        {(hasHidden(role.name) || hasHidden(role.prompt) || role.tools.some(hasHidden)) && (
+          <Badge tone="danger" icon={TriangleAlert}>
+            Contains hidden characters
+          </Badge>
+        )}
+        <div className="proposal-prompt">{showHidden(role.prompt)}</div>
       </div>
     </details>
   )
@@ -409,7 +432,14 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
         <Section title="Commands that never ask">
           <div className="proposal-rules">
             {payload.allowRules.map((r) => (
-              <code key={r}>{r}</code>
+              <span key={r} className="proposal-rule">
+                <code>{showHidden(r)}</code>
+                {hasHidden(r) && (
+                  <Badge tone="danger" icon={TriangleAlert}>
+                    Contains hidden characters
+                  </Badge>
+                )}
+              </span>
             ))}
           </div>
         </Section>

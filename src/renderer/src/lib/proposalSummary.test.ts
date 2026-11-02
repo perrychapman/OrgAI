@@ -27,6 +27,11 @@ describe('proposalFoldSummary', () => {
     const p = { ...base, kind: 'mcpServers', payload: { upsert: [srv('g', 'github-issues', { args: ['a‮b'] })], rationale: '' } } as Proposal
     expect(proposalFoldSummary(p, ctx)).toBe(HIDDEN_PREFIX + 'add github-issues')
   })
+  it('names switches', () => {
+    const p = { ...base, kind: 'mcpServers', payload: { upsert: [srv('g', 'github-issues', { enabled: false })], rationale: '' } } as Proposal
+    const on = { ...ctx, mcpServers: [srv('g', 'github-issues')] }
+    expect(proposalFoldSummary(p, on)).toBe('switch off github-issues')
+  })
   it('lists skills', () => {
     const p = {
       ...base,
