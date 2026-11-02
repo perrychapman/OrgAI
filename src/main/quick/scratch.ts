@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import type { RunSummary } from '@shared/types'
 import { newId } from '@shared/defaults'
 
@@ -20,16 +20,22 @@ export function scratchRoot(dataDir: string): string {
 
 const win = (): boolean => process.platform === 'win32'
 
-/** A path as a comparison key: resolved, trailing separators dropped, case-folded on Windows. */
+/**
+ * A path as a comparison key: resolved, trailing separators dropped, case-folded on Windows. A root keeps its
+ * separator (`C:\`, `/`): stripped it would be `c:` / '' and `relative` would resolve that against the cwd, so a
+ * drive root would no longer contain the data dir (M3 fail-open).
+ */
 export function pathKey(p: string): string {
-  const r = resolve(p).replace(/[\\/]+$/, '')
-  return win() ? r.toLowerCase() : r
+  const r = resolve(p)
+  const root = parse(r).root
+  const k = r.length > root.length ? r.replace(/[\\/]+$/, '') : root
+  return win() ? k.toLowerCase() : k
 }
 
 /** True when `child` is `parent` or inside it (lexical, after resolve). */
 export function isInside(parent: string, child: string): boolean {
   const rel = relative(pathKey(parent), pathKey(child))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 /** The path as the file system spells it; the input when it cannot be resolved. */
@@ -42,8 +48,50 @@ function canonical(p: string): string {
 }
 
 /**
+ * The path as the file system would spell it even when it does not exist yet: the real path of the nearest existing
+ * ancestor with the rest re-appended (macOS `/var/...` becomes `/private/var/...` for a not-yet-created data dir).
+ * The resolved input when no ancestor can be resolved.
+ */
+export function canonicalDeep(p: string): string {
+  let probe = resolve(p)
+  const rest: string[] = []
+  for (let i = 0; i < 256; i++) {
+    if (existsSync(probe)) break
+    const parent = resolve(probe, '..')
+    if (parent === probe) break
+    rest.unshift(basename(probe))
+    probe = parent
+  }
+  return rest.length ? join(canonical(probe), ...rest) : canonical(probe)
+}
+
+/** The lexical and the canonical spelling of a path (one entry when they agree). */
+function spellings(p: string): string[] {
+  const a = resolve(p)
+  const b = canonicalDeep(p)
+  return pathKey(a) === pathKey(b) ? [a] : [a, b]
+}
+
+/**
+ * True when `child` is `parent` or inside it, comparing every lexical / canonical spelling of both sides (so a path
+ * behind a link such as macOS `/var` -> `/private/var` matches either way).
+ */
+export function isInsideEither(parent: string, child: string): boolean {
+  const children = spellings(child)
+  return spellings(parent).some((pa) => children.some((c) => isInside(pa, c)))
+}
+
+/** True when `a` and `b` name the same place, lexically or through their canonical spellings. */
+export function samePath(a: string, b: string): boolean {
+  const keys = new Set(spellings(a).map(pathKey))
+  return spellings(b).some((s) => keys.has(pathKey(s)))
+}
+
+/**
  * Create a fresh scratch dir `<data>/quick/<newId('quick')>` (mode 0o700; Windows ignores the mode) and return its
- * canonical absolute path.
+ * canonical absolute path (what the run works in and its record stores). That spelling may differ from
+ * `scratchRoot(dataDir)` (macOS /var -> /private/var, Windows 8.3 short names), so compare it with `isInsideEither`,
+ * `scratchDirFor` or `isReferencedScratch`, never with the lexical `isInside`.
  */
 export function createScratchDir(dataDir: string): string {
   const root = scratchRoot(dataDir)
@@ -55,15 +103,23 @@ export function createScratchDir(dataDir: string): string {
 
 /**
  * The scratch dirs some run record points to: quick.folder of a scratch quick run, and buildWorkspace. Returned as
- * pathKey values.
+ * pathKey values of both the stored and the canonical spelling; test a dir with `isReferencedScratch`.
  */
 export function referencedScratch(runs: readonly RunSummary[]): Set<string> {
   const out = new Set<string>()
+  const add = (p: string): void => {
+    for (const s of spellings(p)) out.add(pathKey(s))
+  }
   for (const r of runs) {
-    if (r.quick?.scratch && typeof r.quick.folder === 'string') out.add(pathKey(r.quick.folder))
-    if (typeof r.buildWorkspace === 'string') out.add(pathKey(r.buildWorkspace))
+    if (r.quick?.scratch && typeof r.quick.folder === 'string') add(r.quick.folder)
+    if (typeof r.buildWorkspace === 'string') add(r.buildWorkspace)
   }
   return out
+}
+
+/** True when any spelling of `dir` is in `refs` (from referencedScratch). */
+export function isReferencedScratch(refs: ReadonlySet<string>, dir: string): boolean {
+  return spellings(dir).some((s) => refs.has(pathKey(s)))
 }
 
 /**
@@ -77,9 +133,9 @@ export function scratchDirFor(dataDir: string, dir: string): string | null {
   if (!SCRATCH_NAME.test(name)) return null
   const root = scratchRoot(dataDir)
   const expected = join(root, name)
-  const given = [pathKey(dir), pathKey(canonical(dir))]
+  const given = [pathKey(dir), pathKey(canonicalDeep(dir))]
   // The data dir itself may sit behind a link (macOS /tmp): accept the canonical spelling of the root too.
-  const expectedKeys = [pathKey(expected), pathKey(join(canonical(root), name))]
+  const expectedKeys = [pathKey(expected), pathKey(join(canonicalDeep(root), name))]
   if (!given.some((g) => expectedKeys.includes(g))) return null
   return expected
 }
@@ -121,7 +177,7 @@ export function sweepScratchDirs(dataDir: string, runs: readonly RunSummary[]): 
   for (const name of names) {
     if (!SCRATCH_NAME.test(name)) continue
     const dir = join(root, name)
-    if (removeScratchDir(dataDir, dir, (d) => referenced.has(pathKey(d)) || referenced.has(pathKey(canonical(d))))) removed++
+    if (removeScratchDir(dataDir, dir, (d) => isReferencedScratch(referenced, d))) removed++
   }
   return removed
 }
@@ -149,16 +205,7 @@ export function isWorkspaceConfigPath(workspace: string, target: unknown): boole
   const roots = [join(workspace, '.claude'), join(canonical(workspace), '.claude')]
   if (roots.some((r) => isInside(r, abs))) return true
   // Resolve the nearest existing ancestor through links, then re-append the rest.
-  let probe = resolve(abs)
-  const rest: string[] = []
-  for (let i = 0; i < 256; i++) {
-    if (existsSync(probe)) break
-    const parent = resolve(probe, '..')
-    if (parent === probe) break
-    rest.unshift(basename(probe))
-    probe = parent
-  }
-  const real = join(canonical(probe), ...rest)
+  const real = canonicalDeep(abs)
   return roots.some((r) => isInside(r, real))
 }
 
@@ -201,12 +248,21 @@ export function validateQuickFolder(raw: unknown, dataDir: string): QuickFolderC
     throw new Error(`There is no folder at ${text}. Check the path.`)
   }
   if (!stat.isDirectory()) throw new Error(`${text} is a file, not a folder. Choose a folder.`)
-  const data = canonical(dataDir)
-  if (isInside(data, real) || isInside(dataDir, real)) {
+  // Both checks compare the lexical and canonical spellings of both sides: the data dir may not exist yet and may sit
+  // behind a link (macOS /var -> /private/var), and a miss here would fail open.
+  let inData: boolean
+  let holdsData: boolean
+  try {
+    inData = isInsideEither(dataDir, real) || isInsideEither(dataDir, text)
+    holdsData = isInsideEither(real, dataDir) || isInsideEither(text, dataDir)
+  } catch {
+    throw new Error('OrgAI could not check that folder against its data folder. Choose another folder.')
+  }
+  if (inData) {
     throw new Error("That is OrgAI's own data folder. Choose another folder, or leave it empty to work in a scratch area.")
   }
   // M3: a folder that contains the data dir (Home, a drive root) would expose runs, settings and secrets ciphertext.
-  if (isInside(real, data) || isInside(real, dataDir)) {
+  if (holdsData) {
     throw new Error("That folder contains OrgAI's data; choose a folder outside it or a subfolder.")
   }
   let entries: string[]

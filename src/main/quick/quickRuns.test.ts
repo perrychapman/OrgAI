@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, QuickRunInfo, RunEvent, RunSummary } from '@shared/types'
 import { PROJECT_PEEK_BRIEF_CHARS, QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
@@ -10,7 +10,7 @@ import { RunStore } from '../store/runs'
 import { sessionChain } from '../runtime/runManager'
 import { project as makeProject } from '../runtime/testHelpers'
 import { QuickRunService, projectPeeks, quickDisplayProject, quickProject } from './quickRuns'
-import { createScratchDir, isInside, referencedScratch, removeScratchDir, scratchDirFor, scratchRoot, sweepScratchDirs, validateQuickFolder } from './scratch'
+import { createScratchDir, isInside, isInsideEither, isReferencedScratch, pathKey, referencedScratch, removeScratchDir, scratchDirFor, scratchRoot, sweepScratchDirs, validateQuickFolder } from './scratch'
 
 let dir: string
 let data: string
@@ -49,6 +49,22 @@ describe('validateQuickFolder', () => {
     expect(() => validateQuickFolder(outer, nested)).toThrow("That folder contains OrgAI's data; choose a folder outside it or a subfolder.")
     expect(() => validateQuickFolder(outer, join(nested, 'not-yet-created'))).toThrow(/contains OrgAI's data/)
     expect(validateQuickFolder(userFolder('sibling'), nested).folder).toBeTruthy()
+  })
+
+  it('refuses a drive or filesystem root, which contains the data dir whatever the cwd is', () => {
+    const root = parse(data).root
+    expect(isInside(root, data)).toBe(true)
+    expect(isInside(join(root, '.'), data)).toBe(true)
+    expect(pathKey(root).length).toBeGreaterThan(0)
+    expect(() => validateQuickFolder(root, data)).toThrow(/contains OrgAI's data/)
+    expect(() => validateQuickFolder(join(root, '.'), data)).toThrow(/contains OrgAI's data/)
+    expect(() => validateQuickFolder(root, join(data, 'not-yet-created'))).toThrow(/contains OrgAI's data/)
+  })
+
+  it('treats a child whose name starts with two dots as inside', () => {
+    expect(isInside(dir, join(dir, '..foo', 'x'))).toBe(true)
+    expect(isInside(dir, join(dir, '..'))).toBe(false)
+    expect(isInside(join(dir, 'a'), join(dir, 'ab'))).toBe(false)
   })
 
   it('refuses non-strings, empty, relative, UNC and device paths', () => {
@@ -95,7 +111,7 @@ describe('scratch directories', () => {
     const s = createScratchDir(data)
     expect(existsSync(s)).toBe(true)
     expect(statSync(s).isDirectory()).toBe(true)
-    expect(isInside(scratchRoot(data), s)).toBe(true)
+    expect(isInsideEither(scratchRoot(data), s)).toBe(true)
     expect(s).toMatch(/quick_[a-z0-9]+$/)
     expect(createScratchDir(data)).not.toBe(s)
     if (process.platform !== 'win32') expect(statSync(s).mode & 0o777).toBe(0o700)
@@ -290,7 +306,7 @@ describe('QuickRunService', () => {
     const ok = make()
     const s = await ok.svc.start({ prompt: 'hi' })
     expect(s.quick).toMatchObject({ scratch: true, team: 'single', allowEdits: false, gitRepo: false })
-    expect(isInside(scratchRoot(data), s.quick!.folder)).toBe(true)
+    expect(isInsideEither(scratchRoot(data), s.quick!.folder)).toBe(true)
     expect(existsSync(s.quick!.folder)).toBe(true)
 
     const bad = make({ startFails: true })
@@ -414,5 +430,127 @@ describe('QuickRunService', () => {
       const res = svc.promote({ runId: first.id, name: 'Repo' })
       expect(res.kind === 'created' && res.project.provider.id).toBe('mock')
     })
+  })
+})
+
+/**
+ * The data dir and the user folders reached through a link, so the lexical spelling and realpathSync.native differ the
+ * way macOS /var vs /private/var and a Windows 8.3 temp path (RUNNER~1 on CI) do. A junction on Windows, a dir
+ * symlink elsewhere.
+ */
+describe('paths behind a link (lexical and real spellings differ)', () => {
+  let realRoot: string
+  let linkRoot: string
+  let linked = false
+  beforeEach(() => {
+    realRoot = join(dir, 'real-root')
+    mkdirSync(realRoot)
+    linkRoot = join(dir, 'link-root')
+    try {
+      symlinkSync(realRoot, linkRoot, process.platform === 'win32' ? 'junction' : 'dir')
+      linked = realpathSync.native(linkRoot) !== linkRoot
+    } catch {
+      linked = false
+    }
+  })
+
+  const skip = (): boolean => {
+    if (!linked) console.warn('skipped: this machine cannot create a directory link, so lexical and real paths cannot differ')
+    return !linked
+  }
+
+  const service = (linkedData: string): { svc: QuickRunService; runStore: RunStore; projects: ProjectStore } => {
+    const runStore = new RunStore(linkedData)
+    const projects = new ProjectStore(linkedData)
+    let n = 0
+    const svc = new QuickRunService({
+      dataDir: linkedData,
+      settings: () => settings,
+      runs: {
+        start: async (input) => {
+          n++
+          const summary: RunSummary = { id: `run_${n}`, projectId: input.project.id, kind: 'work', prompt: input.prompt, status: 'finished', startedAt: n, totalCostUsd: 0, quick: input.quick }
+          runStore.upsert(summary)
+          return summary
+        },
+        summary: (id) => runStore.get(id),
+        chain: (id) => {
+          const from = runStore.get(id)
+          return from ? sessionChain(runStore.list(from.projectId), from) : []
+        }
+      },
+      store: runStore,
+      projects,
+      prepare: (p) => p,
+      broadcast: () => undefined
+    })
+    return { svc, runStore, projects }
+  }
+
+  it('M3 refuses a linked folder that contains a missing or an existing data dir', () => {
+    if (skip()) return
+    const outer = join(linkRoot, 'outer')
+    mkdirSync(outer)
+    const nested = join(outer, 'orgai-data')
+    expect(() => validateQuickFolder(outer, join(nested, 'not-yet-created'))).toThrow(/contains OrgAI's data/)
+    expect(() => validateQuickFolder(outer, nested)).toThrow(/contains OrgAI's data/)
+    mkdirSync(nested)
+    expect(() => validateQuickFolder(outer, nested)).toThrow(/contains OrgAI's data/)
+    // The data dir through the real path and the folder through the link, and the other way round.
+    expect(() => validateQuickFolder(outer, join(realRoot, 'outer', 'orgai-data', 'x'))).toThrow(/contains OrgAI's data/)
+    expect(() => validateQuickFolder(join(realRoot, 'outer'), join(nested, 'x'))).toThrow(/contains OrgAI's data/)
+    // A folder under the data dir is refused whichever spelling names it.
+    mkdirSync(join(nested, 'quick'))
+    expect(() => validateQuickFolder(join(realRoot, 'outer', 'orgai-data', 'quick'), nested)).toThrow(/data folder/)
+    expect(() => validateQuickFolder(join(nested, 'quick'), join(realRoot, 'outer', 'orgai-data'))).toThrow(/data folder/)
+    mkdirSync(join(linkRoot, 'sibling'))
+    expect(validateQuickFolder(join(linkRoot, 'sibling'), nested).folder).toBeTruthy()
+  })
+
+  it('recognizes a scratch dir under the linked data dir, keeps a referenced one and sweeps an unreferenced one', () => {
+    if (skip()) return
+    const linkedData = join(linkRoot, 'data')
+    mkdirSync(linkedData)
+    const s = createScratchDir(linkedData)
+    expect(isInside(scratchRoot(linkedData), s)).toBe(false) // the spellings really differ
+    expect(isInsideEither(scratchRoot(linkedData), s)).toBe(true)
+    const name = s.split(/[\\/]/).pop()!
+    expect(scratchDirFor(linkedData, s)).toBe(join(scratchRoot(linkedData), name))
+    expect(scratchDirFor(linkedData, join(s, '..', '..', '..', 'quick_zzz'))).toBeNull()
+    expect(scratchDirFor(linkedData, join(realRoot, 'elsewhere', name))).toBeNull()
+    const runs = [run('1', { quick: { folder: s, scratch: true, team: 'single', allowEdits: false, gitRepo: false } })]
+    const refs = referencedScratch(runs)
+    expect(isReferencedScratch(refs, scratchDirFor(linkedData, s)!)).toBe(true)
+    expect(removeScratchDir(linkedData, s, (d) => isReferencedScratch(refs, d))).toBe(false)
+    expect(sweepScratchDirs(linkedData, runs)).toBe(0)
+    expect(existsSync(s)).toBe(true)
+    expect(sweepScratchDirs(linkedData, [])).toBe(1)
+    expect(existsSync(s)).toBe(false)
+  })
+
+  it('keeps a scratch run dir while another run points to it', async () => {
+    if (skip()) return
+    const linkedData = join(linkRoot, 'data')
+    mkdirSync(linkedData)
+    const { svc, runStore } = service(linkedData)
+    const b = await svc.start({ prompt: 'b' })
+    expect(isInsideEither(scratchRoot(linkedData), b.quick!.folder)).toBe(true)
+    runStore.upsert(run('cont', { quick: b.quick, startedAt: 9 }))
+    svc.runsRemoved([run('x', { quick: b.quick })])
+    expect(existsSync(b.quick!.folder)).toBe(true)
+  })
+
+  it('promote answers existing for a project created with the linked spelling', async () => {
+    if (skip()) return
+    const linkedData = join(linkRoot, 'data')
+    mkdirSync(linkedData)
+    const { svc, projects } = service(linkedData)
+    const f = join(linkRoot, 'repo')
+    mkdirSync(f)
+    const existing = projects.create({ name: 'Mine', path: f, brief: '' }, settings, {})
+    const first = await svc.start({ prompt: 'x', folder: f })
+    expect(first.quick!.folder).not.toBe(f) // the run stores the real spelling
+    expect(svc.promote({ runId: first.id, name: 'Other' })).toEqual({ kind: 'existing', projectId: existing.id, name: 'Mine' })
+    expect(projects.list()).toHaveLength(1)
   })
 })
