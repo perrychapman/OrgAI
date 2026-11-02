@@ -88,3 +88,45 @@
   background: var(--surface-2);
   border-radius: var(--radius-sm);
 }
+
+/* A failed read of the current servers or instructions: said in words, in the warning text colour. */
+.proposal-read-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--warning-text);
+}
+.proposal-read-error > svg {
+  flex: none;
+  margin-top: var(--space-1);
+}
+.mcp-prop-checking {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+
+/* Decline and revise notes: a visible label and a quiet limit hint. */
+.proposal-note-label {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-1);
+}
+.proposal-note-hint {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  margin-block-start: var(--space-1);
+}
+.proposal-rule {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}

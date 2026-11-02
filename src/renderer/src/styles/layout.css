@@ -96,6 +96,15 @@
 }
 .frame-grid:has(> .frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) > .frame-stage {
   overflow: hidden;
+  /* Collapsed, not gone: keep it out of the tab order and the accessibility tree while it has no height. */
+  visibility: hidden;
+}
+/* The canvas-only controls (zoom, fit, legend, Hide finished) do nothing on a collapsed stage: take them out of reach. */
+.canvas-tools {
+  display: contents;
+}
+.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) :is(.canvas-tools, .run-fold) {
+  display: none;
 }
 .frame-grid > .frame-tray[data-compact='true']:has(.decision-card.kind-proposal[data-expanded='true']) {
   max-height: none;

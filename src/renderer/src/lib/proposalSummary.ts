@@ -1,6 +1,7 @@
 import type { McpServerSpec, Proposal, Role, RunSummary } from '@shared/types'
 import { diffOrgChart } from './orgDiff'
-import { diffMcpProposal, mcpRowVerb } from './mcpProposal'
+import { diffMcpProposal, mcpRowVerb, mcpServerHidden } from './mcpProposal'
+import { hasHidden } from './hiddenChars'
 import { diffSkillsProposal, skillRowVerb, type SkillCurrent } from './skillProposal'
 import { oneLine } from './decisionTitle'
 
@@ -11,6 +12,9 @@ export interface ProposalContext {
   mcpServers: readonly McpServerSpec[] | null
   skills: SkillCurrent
 }
+
+/** Starts the fold summary of a proposal whose names or commands hold hidden characters. */
+export const HIDDEN_PREFIX = 'hidden characters: '
 
 /** "a, b, c and 2 more": at most `max` items are named. */
 export function foldList(items: readonly string[], max = 3): string {
@@ -29,12 +33,14 @@ export function proposalFoldSummary(proposal: Proposal, ctx: ProposalContext): s
     case 'mcpServers': {
       const d = diffMcpProposal(proposal.payload, ctx.mcpServers, ctx.roles)
       const verbs = [...d.rows.map(mcpRowVerb), ...d.removals.map((r) => `remove ${r.name}`)]
-      return verbs.length > 0 ? foldList(verbs) : undefined
+      const hidden = proposal.payload.upsert.some((s) => mcpServerHidden(s))
+      return verbs.length > 0 ? `${hidden ? HIDDEN_PREFIX : ''}${foldList(verbs)}` : undefined
     }
     case 'skills': {
       const d = diffSkillsProposal(proposal.payload.items, ctx.skills)
       const verbs = d.rows.map((r) => skillRowVerb(r.item, r.view))
-      return verbs.length > 0 ? foldList(verbs) : undefined
+      const hidden = proposal.payload.items.some((i) => hasHidden(i.draft.name))
+      return verbs.length > 0 ? `${hidden ? HIDDEN_PREFIX : ''}${foldList(verbs)}` : undefined
     }
     case 'orgChart':
       return diffOrgChart(ctx.roles, proposal.payload.roles).summary || undefined

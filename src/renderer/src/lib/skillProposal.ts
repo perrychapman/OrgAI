@@ -2,16 +2,16 @@ import type { SkillDraft, SkillProposalItem } from '@shared/types'
 import { clampLabel } from './clampLabel'
 import type { BadgeTone } from '../components/ui/Badge'
 
-/** The actions a skills proposal item can carry. link / grant / remove land with the contract; typed here so the view compiles before then. */
-export type SkillItemAction = SkillProposalItem['action'] | 'link' | 'grant' | 'remove'
 
 /** What the view reads from an item (a SkillProposalItem satisfies it). */
 export interface SkillRowItem {
-  action: SkillItemAction
+  action: SkillProposalItem['action']
   scope: 'library' | 'project'
   draft: Pick<SkillDraft, 'name'> & Partial<SkillDraft>
   /** Role slugs that load it after approval (project scope). */
   roles?: string[]
+  /** 'grant': turn the project skill on or off; unset keeps it. */
+  enabled?: boolean
 }
 
 /** The project as it is now: who loads which skill. */
@@ -30,6 +30,8 @@ export interface SkillRowView {
   /** The "Who loads it" / grant / removal line; null when there is nothing to say. */
   line2: string | null
   note: string | null
+  /** "Turned off for now" / "On" when the item sets enabled; null otherwise. */
+  stateLine: string | null
   /** Show the instructions disclosure (hidden for grant and remove). */
   showBody: boolean
   /** Offer a before / after view of the instructions. */
@@ -82,6 +84,7 @@ export function skillRowView(item: SkillRowItem, current: SkillCurrent): SkillRo
   const now = project ? currentLoaderSlugs(item.draft.name, current) : null
   const proposed = item.roles ?? now ?? []
   const whoLoads = project ? `Who loads it: ${list(proposed, current.roles, NO_ROLE)}` : null
+  const stateLine = item.enabled === undefined ? null : item.enabled ? 'On' : 'Turned off for now'
   switch (item.action) {
     case 'link':
       return {
@@ -90,7 +93,8 @@ export function skillRowView(item: SkillRowItem, current: SkillCurrent): SkillRo
         line1: `Use ${name} from your library in this project`,
         line2: whoLoads,
         note: 'Kept in sync with the library; edit it there.',
-        showBody: true,
+        stateLine,
+        showBody: false,
         showChanges: false
       }
     case 'grant': {
@@ -110,8 +114,9 @@ export function skillRowView(item: SkillRowItem, current: SkillCurrent): SkillRo
         group: 'grant',
         badge: { text: 'Access', tone: 'warning' },
         line1: `Change who loads ${name}`,
-        line2: parts.length > 0 ? parts.join(' ') : 'No role loads it before or after.',
+        line2: item.roles === undefined ? 'Role access unchanged.' : parts.length > 0 ? parts.join(' ') : 'No role loads it before or after.',
         note: 'Instructions unchanged.',
+        stateLine,
         showBody: false,
         showChanges: false
       }
@@ -125,6 +130,7 @@ export function skillRowView(item: SkillRowItem, current: SkillCurrent): SkillRo
         line1: `Remove ${name} from ${project ? 'this project' : 'your library'}`,
         line2: project ? (holders.length > 0 ? `${andList(holders)} will no longer load it.` : 'No role loads it now.') : 'Projects that link it lose it.',
         note: linked ? 'Unlinks it; the library entry stays.' : null,
+        stateLine,
         showBody: false,
         showChanges: false
       }
@@ -132,14 +138,17 @@ export function skillRowView(item: SkillRowItem, current: SkillCurrent): SkillRo
     case 'update': {
       let line2 = whoLoads
       if (project && now && item.roles && !sameSet(item.roles, now)) line2 = `${whoLoads} (was ${list(now, current.roles, 'no role')})`
+      // No new body means the instructions stay as they are: nothing to diff or show.
+      const hasBody = !!item.draft.body
       return {
         group: 'update',
         badge: { text: 'Changed', tone: 'warning' },
-        line1: 'Instructions changed',
+        line1: hasBody ? 'Instructions changed' : 'Instructions unchanged',
         line2,
-        note: null,
-        showBody: true,
-        showChanges: true
+        note: !project ? 'Compare it in the Skill library.' : null,
+        stateLine,
+        showBody: hasBody,
+        showChanges: hasBody && project
       }
     }
     default:
@@ -149,6 +158,7 @@ export function skillRowView(item: SkillRowItem, current: SkillCurrent): SkillRo
         line1: null,
         line2: whoLoads,
         note: null,
+        stateLine,
         showBody: true,
         showChanges: false
       }
