@@ -3,7 +3,7 @@ import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, Plugi
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
+import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
@@ -251,6 +251,54 @@ const MCP_MIDRUN_STEPS: MockStep[] = [
   { type: 'text', text: 'Mock: the new MCP server was used.' }
 ]
 
+/** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
+export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
+/** The server and the skill the [mock:config-change] script proposes. */
+export const MOCK_CONFIG_SERVER = 'mock-notes'
+export const MOCK_CONFIG_SKILL = 'mock-config-skill'
+/** Harness tools the [mock:config-change] script calls (work-run tools; a run without them logs a warning and goes on). */
+const PROPOSE_MCP_TOOL = MCP_HARNESS_TOOLS.proposeServers
+const PROPOSE_SKILLS_TOOL = SKILL_ASSIST_HARNESS_TOOLS.propose
+
+/**
+ * The [mock:config-change] turn for a root role: propose an MCP server and a project skill granted to the root, then
+ * load the skill. Each approved proposal reaches the session through the configChanged hook (the mock applies it at
+ * once), and the tool results land in the transcript as usual.
+ */
+export function configChangeSteps(rootSlug: string): MockStep[] {
+  return [
+    {
+      type: 'harness',
+      name: PROPOSE_MCP_TOOL,
+      retryOnRevise: false,
+      args: {
+        title: 'Add mock notes server',
+        rationale: 'Mock config change.',
+        upsert: [{ name: MOCK_CONFIG_SERVER, transport: 'stdio', command: 'npx', args: ['-y', 'mock-fs-server@1.0.0'], roles: [rootSlug] }]
+      }
+    },
+    {
+      type: 'harness',
+      name: PROPOSE_SKILLS_TOOL,
+      retryOnRevise: false,
+      args: {
+        title: 'Add mock skill',
+        rationale: 'Mock config change.',
+        items: [
+          {
+            action: 'create',
+            scope: 'project',
+            draft: { name: MOCK_CONFIG_SKILL, description: 'Use for the mock config change.', body: 'Say that the mock config change worked.' },
+            roles: [rootSlug]
+          }
+        ]
+      }
+    },
+    { type: 'harness', name: SKILL_HARNESS_TOOLS.load, args: { name: MOCK_CONFIG_SKILL } },
+    { type: 'text', text: 'Config change done.' }
+  ]
+}
+
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
@@ -271,6 +319,9 @@ export class MockSession implements RuntimeSession {
   readonly connection?: { adapter: ProviderId; connection: ConnectionId }
   /** Servers attached mid-run through the harness's addMcpServer hook, in order. For tests. */
   readonly addedMcpServers: McpServerSpec[] = []
+  /** Changes reported through the harness's configChanged hook (approved propose_mcp_servers / propose_skills), in order. For tests. */
+  readonly configChanges: ConfigChange[] = []
+  private hooks: HarnessToolHooks
   private agents = new Map<string, AgentInstance>()
   private rolesBySlug: Map<string, Role>
   private root: Role
@@ -311,7 +362,8 @@ export class MockSession implements RuntimeSession {
       const activity = stepActivity(plan)
       if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
     }
-    this.tools = harnessToolsFor(ctx, { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec) })
+    this.hooks = { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec), configChanged: (change) => this.configChanged(change) }
+    this.tools = harnessToolsFor(ctx, this.hooks)
     this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
     this.plugins.push(...(ctx.plugins?.() ?? []).filter((p) => p.enabled))
     if (ctx.connection) this.connection = { adapter: ctx.connection.adapter, connection: ctx.connection.connection }
@@ -380,6 +432,21 @@ export class MockSession implements RuntimeSession {
   async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     this.addedMcpServers.push(spec)
     return { prefix: `mcp__${spec.name}__`, availability: 'now' }
+  }
+
+  /**
+   * The configChanged harness hook: record the change and apply it at once ('now'). The MCP grant gate already reads
+   * the live server list; a skills change re-binds the harness tools so list_skills / load_skill see the live
+   * ctx.skills() (the Claude adapter's Skill gate reads the live grants the same way, and answers 'after-idle' when a
+   * re-created query is needed).
+   */
+  async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    this.configChanges.push(structuredClone(change))
+    if (change.skills) {
+      this.tools = harnessToolsFor(this.ctx, this.hooks)
+      this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
+    }
+    return { availability: 'now' }
   }
 
   /** The run's MCP servers as they are now (project servers plus run-scoped installs). */
@@ -634,6 +701,7 @@ export class MockSession implements RuntimeSession {
       return at < 0 ? [...DEFAULT_SETUP, step] : [...DEFAULT_SETUP.slice(0, at), step, ...DEFAULT_SETUP.slice(at)]
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     return this.isSetup ? this.script.setup : this.script.work
   }
 
