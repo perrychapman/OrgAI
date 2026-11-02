@@ -38,7 +38,8 @@ import { costFromPrice, priceFor } from './pricing'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
 import { buildSkillPlugin, skillGate, type SkillPlugin } from './claudeSkills'
-import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
+import { mcpCallDenial, rolesGrantedServer } from './mcpGrants'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
@@ -179,6 +180,11 @@ class PushStream<T> implements AsyncIterable<T> {
     for (const w of this.waiters.splice(0)) w({ value: undefined as never, done: true })
   }
 
+  /** Take every value pushed but not yet read (a restart moves them to the next query's stream). */
+  drain(): T[] {
+    return this.queue.splice(0)
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
@@ -190,9 +196,61 @@ class PushStream<T> implements AsyncIterable<T> {
   }
 }
 
-/** Server-level tool rule for an MCP server. UNVERIFIED inside an AgentDefinition.tools whitelist (documented for permission rules). */
+/**
+ * Server-level tool rule for an MCP server inside an AgentDefinition.tools whitelist. Verified for a main-thread agent
+ * in scripts/smoke-mcp-midrun.mjs ('mcp__alpha' admits mcp__alpha__ping; 'mcp__*' admits nothing and makes a
+ * subagent spawn fail with "unrecognized [mcp__*]"). Whitelists are fixed for the query: a server attached later
+ * reaches a whitelisted agent only after the query is re-created (ClaudeSession.maybeRestartForMcp).
+ */
 export function mcpToolRule(serverName: string): string {
   return `mcp__${serverName}`
+}
+
+/** Wait after the orchestrator's turn ends before an MCP restart, so a report hand-back the SDK is about to resume with goes first. */
+export const MCP_RESTART_DELAY_MS = 1500
+/** How long addMcpServer polls mcpServerStatus for the new server's tool names. */
+const MCP_STATUS_WAIT_MS = 5000
+/** If the old query has not ended this long after its input closed for a restart, it is closed. */
+const MCP_RESTART_CLOSE_MS = 15_000
+
+/** What decides whether a session may be re-created now to attach MCP servers. */
+export interface McpRestartState {
+  /** The run is ending, stopped or failed. */
+  stopping: boolean
+  /** Interrupted (or stopped by the window cap) and waiting for the user. */
+  held: boolean
+  /** The provider rejected a request on a usage limit. */
+  limited: boolean
+  /** The orchestrator's turn has ended. */
+  rootIdle: boolean
+  /** Reports still running. */
+  liveReports: number
+  /** Open decision cards. */
+  pendingInteractions: number
+}
+
+/** Why an MCP restart must wait (or never happen), or undefined when it may go ahead now. Pure. */
+export function mcpRestartBlocker(s: McpRestartState): string | undefined {
+  if (s.stopping) return 'the run is ending'
+  if (s.held) return 'the run is held for the user'
+  if (s.limited) return 'the run is at a usage limit'
+  if (!s.rootIdle) return 'the orchestrator is mid-turn'
+  if (s.liveReports > 0) return 'reports are still running'
+  if (s.pendingInteractions > 0) return 'a decision card is open'
+  return undefined
+}
+
+/** The harness message that tells the orchestrator which MCP servers are attached, with their full tool names and the roles granted them. */
+export function mcpAttachedNotice(servers: { name: string; tools: string[]; roles: Pick<Role, 'name' | 'slug'>[] }[]): string {
+  const parts = servers.map((s) => {
+    const prefix = `mcp__${s.name}__`
+    const tools = s.tools.length ? `Its tools: ${s.tools.map((t) => prefix + t).join(', ')}.` : `Its tool names start with ${prefix}.`
+    const roles = s.roles.length
+      ? `Roles that may use it: ${s.roles.map((r) => `${r.name} (${r.slug})`).join(', ')}.`
+      : 'No role in the org chart is granted it, so no agent can call it in this run.'
+    return `The MCP server ${s.name} is attached now. ${tools} ${roles}`
+  })
+  return `[OrgAI harness] ${parts.join(' ')} Calls to it may still ask the user for permission under the project's permission mode. Reports you spawn from now on get it if their role is granted it.`
 }
 
 /** Names of the MCP servers a role may use (mcpServersForRole), root included. */
@@ -476,6 +534,12 @@ export function toolUseIdFromMeta(meta: unknown): string | undefined {
   return undefined
 }
 
+/** The in-process harness server inside built options (mcpServers.orgai). */
+function harnessServerOf(options: Options): McpSdkServerConfigWithInstance | undefined {
+  const s = options.mcpServers?.[ORGAI_MCP]
+  return s && s.type === 'sdk' ? (s as McpSdkServerConfigWithInstance) : undefined
+}
+
 /** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
 function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, instructions?: string): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
@@ -583,6 +647,32 @@ export class ClaudeSession implements RuntimeSession {
   private skillPlugin?: SkillPlugin
   /** Skill tool_use ids the gate allowed, until PostToolUse confirms the call ran (then skill.used is emitted). */
   private gatedSkillCalls = new Map<string, { agentId: string; skill: RunSkill }>()
+  /** The harness tools of this run, bound once (prepare()); a restart re-serves the same tools. */
+  private harnessTools: HarnessTool[] = []
+  /** Harness tool name -> audience, for the PreToolUse MCP gate. */
+  private harnessAudiences = new Map<string, HarnessToolAudience>()
+  /** The SDK session id from init; a restart resumes it. */
+  private sessionId?: string
+  /** Interrupted by the user (until their next message). An MCP restart never fires while held. */
+  private held = false
+  /** MCP servers attached with setMcpServers whose tools reach the agents only after a restart: name -> tool names. */
+  private pendingMcp = new Map<string, string[]>()
+  private restarting = false
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
+  private restartCloseTimer: ReturnType<typeof setTimeout> | null = null
+  /** Options of the query that replaces the current one once it has ended (an MCP restart). */
+  private nextQuery?: { options: Options; servers: string[] }
+  /** Queries re-created for MCP restarts so far. */
+  private restarts = 0
+  /** The servers the latest restart attached (a retried restart announces them again). */
+  private lastRestartServers: string[] = []
+  /** The current query has emitted its init message. */
+  private queryInitSeen = false
+  /** Cost of this run reported by earlier queries of the session (restarts), and the SDK total last seen. */
+  private priorQueriesCost = 0
+  private lastRunCost = 0
+  private lastSdkTotal = 0
+  private prevQuerySdkTotal = 0
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
@@ -633,6 +723,7 @@ export class ClaudeSession implements RuntimeSession {
 
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
+    this.held = false
     // After a window-cap stop, the orchestrator learns why with the user's next message, and the cap
     // measures afresh from here.
     const note = this.pendingCapNote
@@ -652,8 +743,9 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   async interrupt(): Promise<void> {
-    // An interrupted turn waits for the user; no automatic continue until they reply.
+    // An interrupted turn waits for the user; no automatic continue (and no MCP restart) until they reply.
     this.continuation.hold()
+    this.held = true
     try {
       await this.q?.interrupt()
     } catch (e) {
@@ -669,6 +761,7 @@ export class ClaudeSession implements RuntimeSession {
 
   async stop(): Promise<void> {
     this.continuation.dispose()
+    this.clearRestartTimers()
     this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
@@ -933,6 +1026,14 @@ export class ClaudeSession implements RuntimeSession {
         this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${configDenial}`)
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: configDenial } }
       }
+      // Per-role MCP grants on every MCP call, from the LIVE server list (run-scoped installs and the install card's
+      // roles included), before any rule or hook-allow path. Whitelists alone do not restrict: def.mcpServers grants
+      // nothing exclusive (scripts/smoke-mcp-midrun.mjs c), and a restart widens definitions.
+      const mcpDenial = mcpCallDenial(input.tool_name, { role: this.callerRole(input), isRoot: !input.agent_id }, this.liveMcpServers(), this.harnessAudiences)
+      if (mcpDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: mcpDenial } }
+      }
       // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
       if (input.tool_name === 'Skill') {
         const roleId = input.agent_id ? (this.agents.get(agentId)?.roleId ?? this.rolesBySlug.get(input.agent_type ?? '')?.id ?? '') : this.root.id
@@ -1108,12 +1209,15 @@ export class ClaudeSession implements RuntimeSession {
    * the earlier run's cost, the SDK evidently did not carry the old total, so nothing is subtracted.
    */
   private runCost(sdkTotal: number): number {
-    if (!this.ctx.resumeSessionId) return sdkTotal
     if (this.resumeCostBase === null) {
-      const base = this.ctx.resumeBaseCostUsd ?? 0
+      // A restarted query resumes this run's own session: whether its total carries the earlier query's is unverified,
+      // so the earlier total is subtracted only when the new one is at least that large.
+      const base = this.restarts > 0 ? this.prevQuerySdkTotal : this.ctx.resumeSessionId ? (this.ctx.resumeBaseCostUsd ?? 0) : 0
       this.resumeCostBase = sdkTotal >= base ? base : 0
     }
-    return Math.max(0, sdkTotal - this.resumeCostBase)
+    this.lastSdkTotal = sdkTotal
+    this.lastRunCost = this.priorQueriesCost + Math.max(0, sdkTotal - this.resumeCostBase)
+    return this.lastRunCost
   }
 
   private noteSecrets(resolved: ResolvedMcpServer[]): void {
@@ -1121,17 +1225,34 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Every server of the session: the harness's own plus the resolved MCP servers. */
-  private mcpRecord(resolved: ResolvedMcpServer[]): Record<string, McpServerConfig> {
+  private mcpRecord(resolved: ResolvedMcpServer[], harnessServer = this.harnessServer): Record<string, McpServerConfig> {
     const record: Record<string, McpServerConfig> = toClaudeMcpServers(resolved)
-    if (this.harnessServer) record[ORGAI_MCP] = this.harnessServer
+    if (harnessServer) record[ORGAI_MCP] = harnessServer
     return record
   }
 
+  /** The run's MCP servers as they are now (project servers plus run-scoped installs, with the card's roles). */
+  private liveMcpServers(): McpServerSpec[] {
+    return this.ctx.mcpServers ? this.ctx.mcpServers() : (this.ctx.project.mcpServers ?? [])
+  }
+
+  /** The role of the agent behind a hook call: the root when there is no agent_id, else by agent_type, else by the known agent. */
+  private callerRole(input: { agent_id?: string; agent_type?: string }): Role | undefined {
+    if (!input.agent_id) return this.root
+    const byType = input.agent_type ? this.rolesBySlug.get(input.agent_type) : undefined
+    if (byType) return byType
+    const roleId = this.agents.get(input.agent_id)?.roleId
+    return roleId ? this.ctx.roles.find((r) => r.id === roleId) : undefined
+  }
+
   /**
-   * An install was approved mid-run: attach the server to the live session. setMcpServers replaces the
-   * dynamic set, so the whole record is sent again. Resolves with the prefix the agent calls the tools by.
+   * An install was approved mid-run. setMcpServers attaches the server to the live session at once (connection
+   * errors surface here, and mcpServerStatus names its tools), but AgentDefinition.tools whitelists are exact and
+   * fixed for the query (scripts/smoke-mcp-midrun.mjs a, b), so no whitelisted agent can call the tools yet. The
+   * session is therefore re-created with resume and widened definitions once the orchestrator's turn has ended and
+   * no report is running (maybeRestartForMcp), and the orchestrator is told then: availability 'after-idle'.
    */
-  private async addMcpServer(spec: McpServerSpec): Promise<string> {
+  private async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []
     this.noteSecrets(resolved)
     if (!resolved.some((r) => r.spec.name === spec.name)) throw new Error(`MCP server "${spec.name}" is not configured for this run.`)
@@ -1144,13 +1265,155 @@ export class ClaudeSession implements RuntimeSession {
     }
     const error = result.errors?.[spec.name]
     if (error) throw new Error(redactSecrets(error, this.secrets))
-    return `mcp__${spec.name}__`
+    const tools = await this.serverTools(spec.name, MCP_STATUS_WAIT_MS)
+    this.pendingMcp.set(spec.name, tools)
+    this.log('info', `MCP server ${spec.name} is connected; the agents get its tools once the orchestrator's turn ends and no report is running (the session is resumed with the new tools).`)
+    return { prefix: `mcp__${spec.name}__`, availability: 'after-idle', ...(tools.length ? { tools } : {}) }
   }
 
-  private async buildOptions(): Promise<Options> {
-    const { project } = this.ctx
-    const env = buildEnv(this.ctx)
+  /** Tool names (no prefix) a connected server reports through mcpServerStatus, polled for up to `waitMs`; [] when unknown. */
+  private async serverTools(name: string, waitMs: number, q: Query | undefined = this.q): Promise<string[]> {
+    if (!q || typeof q.mcpServerStatus !== 'function') return []
+    const until = Date.now() + waitMs
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const status = await Promise.race([
+          q.mcpServerStatus(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('mcpServerStatus timed out')), Math.max(250, until - Date.now()))
+          })
+        ])
+        const s = status.find((x) => x.name === name)
+        if (s?.status === 'connected') return (s.tools ?? []).map((t) => t.name).filter((t) => typeof t === 'string' && t.length > 0).slice(0, 200)
+        if (s?.status === 'failed' || s?.status === 'needs-auth' || s?.status === 'disabled') return []
+      } catch {
+        return []
+      } finally {
+        clearTimeout(timer)
+      }
+      if (Date.now() >= until || this.abort.signal.aborted) return []
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
 
+  private restartState(): McpRestartState {
+    const root = this.agents.get(ROOT_ID)
+    return {
+      stopping: this.ending || this.authFailed || this.abort.signal.aborted,
+      held: this.held || this.capTripped,
+      limited: this.limited,
+      rootIdle: !!root && root.state === 'idle',
+      liveReports: [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length,
+      pendingInteractions: this.ctx.pendingInteractions()
+    }
+  }
+
+  private clearRestartTimers(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    if (this.restartCloseTimer) clearTimeout(this.restartCloseTimer)
+    this.restartTimer = null
+    this.restartCloseTimer = null
+  }
+
+  /** Check for an MCP restart shortly after a turn ends (a report hand-back the SDK resumes with goes first). */
+  private scheduleMcpRestart(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null
+      void this.maybeRestartForMcp()
+    }, MCP_RESTART_DELAY_MS)
+  }
+
+  /**
+   * Re-create the query so the attached MCP servers reach every granted role: same session (resume), definitions
+   * rebuilt from the live ctx.mcpServers(), hooks, harness tools, skills plugin, worktree state and agents kept. Only
+   * when mcpRestartBlocker allows it; otherwise the next turn end tries again. If the new options cannot be built,
+   * the old query keeps running with a run warning and the orchestrator is told the server waits for the next run.
+   */
+  private async maybeRestartForMcp(): Promise<void> {
+    if (!this.pendingMcp.size || this.restarting || this.nextQuery || !this.sessionId) return
+    if (mcpRestartBlocker(this.restartState())) return
+    this.restarting = true
+    let built: Options
+    try {
+      built = await this.buildOptions(this.sessionId)
+    } catch (e) {
+      this.restarting = false
+      this.giveUpPendingMcp(redactSecrets((e as Error).message ?? String(e), this.secrets))
+      return
+    }
+    // Something may have started meanwhile (a user message, a nudge, a report); the next turn end tries again.
+    if (mcpRestartBlocker(this.restartState()) || !this.pendingMcp.size) {
+      this.restarting = false
+      return
+    }
+    const servers = [...this.pendingMcp.keys()]
+    this.nextQuery = { options: built, servers }
+    this.restarting = false
+    this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
+    // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
+    const old = this.input
+    this.input = new PushStream<SDKUserMessage>()
+    for (const m of old.drain()) this.input.push(m)
+    old.end()
+    const oldQ = this.q
+    this.restartCloseTimer = setTimeout(() => {
+      this.restartCloseTimer = null
+      if (this.q !== oldQ || !this.nextQuery) return
+      this.log('warn', 'The previous query did not end after its input closed; closing it.')
+      try {
+        oldQ.close()
+      } catch {
+        /* already closed */
+      }
+    }, MCP_RESTART_CLOSE_MS)
+  }
+
+  /** The pending servers cannot reach this session: warn, and tell the orchestrator they wait for the next run. */
+  private giveUpPendingMcp(why: string): void {
+    const names = [...this.pendingMcp.keys()]
+    this.pendingMcp.clear()
+    if (!names.length) return
+    const plural = names.length === 1 ? '' : 's'
+    this.log('warn', `Could not resume the session to attach the MCP server${plural} ${names.join(', ')}: ${why}`)
+    this.notifyOrchestrator(
+      `[OrgAI harness] The MCP server${plural} ${names.join(', ')} could not be attached to this session (${why}). It is available from the next run; continue without it.`,
+      'Thinking…',
+      { summary: `Could not attach the MCP server${plural} ${names.join(', ')}` }
+    )
+  }
+
+  /** Start the query that replaces the one an MCP restart ended, then tell the orchestrator what is attached. */
+  private startRestartedQuery(next: { options: Options; servers: string[] }): void {
+    this.restarts += 1
+    this.queryInitSeen = false
+    this.lastRestartServers = next.servers
+    this.priorQueriesCost = this.lastRunCost
+    this.prevQuerySdkTotal = this.lastSdkTotal
+    this.resumeCostBase = null
+    this.harnessServer = harnessServerOf(next.options)
+    this.q = query({ prompt: this.input, options: next.options })
+    void this.announceAttached(next.servers, this.q)
+  }
+
+  /** After a restart: name the attached servers' tools (from the new query's mcpServerStatus) to the orchestrator. */
+  private async announceAttached(servers: string[], q: Query): Promise<void> {
+    const live = this.liveMcpServers()
+    const entries: { name: string; tools: string[]; roles: Role[] }[] = []
+    for (const name of servers) {
+      const fresh = await this.serverTools(name, MCP_STATUS_WAIT_MS, q)
+      entries.push({ name, tools: fresh.length ? fresh : (this.pendingMcp.get(name) ?? []), roles: rolesGrantedServer(this.ctx.roles, live, name) })
+      this.pendingMcp.delete(name)
+    }
+    if (this.abort.signal.aborted || this.q !== q) return
+    this.notifyOrchestrator(mcpAttachedNotice(entries), 'Using a new MCP server…', {
+      summary: `MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')} attached`
+    })
+  }
+
+  /** What lives for the whole run: the skills plugin and the bound harness tools. Called once, before the first query. */
+  private prepare(): void {
     // Granted skills become a run-scoped plugin (orgai:<name>). Setup-like runs get none.
     if (!this.isSetup) {
       const granted = this.ctx.skills?.() ?? []
@@ -1162,10 +1425,8 @@ export class ClaudeSession implements RuntimeSession {
         }
       }
     }
-    const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
-
     // The harness tools for this kind of run (setup / mcp-assist / work); the audience decides who sees which.
-    const tools = harnessToolsFor(this.ctx, {
+    this.harnessTools = harnessToolsFor(this.ctx, {
       integratePending: (wt) => this.integrator.integratePending(wt),
       onPlanUpdated: (plan) => {
         const root = this.agents.get(ROOT_ID)
@@ -1178,7 +1439,20 @@ export class ClaudeSession implements RuntimeSession {
       },
       addMcpServer: (spec) => this.addMcpServer(spec)
     }, { nativeSkills: true })
-    this.harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
+    this.harnessAudiences = new Map(this.harnessTools.map((t) => [t.name, t.audience]))
+  }
+
+  /**
+   * Query options. `resume` is the session to resume (an MCP restart); otherwise the run's own resumeSessionId.
+   * A fresh in-process harness server is built each time (same bound tools, mcpServers.orgai); the caller installs
+   * it as this.harnessServer when its query starts (harnessServerOf). Agent definitions come from the live server list.
+   */
+  private async buildOptions(resume?: string): Promise<Options> {
+    const { project } = this.ctx
+    const env = buildEnv(this.ctx)
+    const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
+    const tools = this.harnessTools
+    const harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
     const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []
@@ -1186,7 +1460,7 @@ export class ClaudeSession implements RuntimeSession {
 
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }, this.skillPlugin?.names),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.liveMcpServers() }, this.skillPlugin?.names),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
@@ -1230,7 +1504,7 @@ export class ClaudeSession implements RuntimeSession {
       }
     }
     if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
-    options.mcpServers = this.mcpRecord(resolved)
+    options.mcpServers = this.mcpRecord(resolved, harnessServer)
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
     if (this.skillPlugin) {
@@ -1252,7 +1526,8 @@ export class ClaudeSession implements RuntimeSession {
       else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
     }
     if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
-    if (this.ctx.resumeSessionId) options.resume = this.ctx.resumeSessionId
+    const resumeId = resume ?? this.ctx.resumeSessionId
+    if (resumeId) options.resume = resumeId
     return options
   }
 
@@ -1299,8 +1574,33 @@ export class ClaudeSession implements RuntimeSession {
         message: { role: 'user', content: userContent(firstMessage, this.ctx.images) },
         parent_tool_use_id: null
       })
-      this.q = query({ prompt: this.input, options: await this.buildOptions() })
-      for await (const msg of this.q) this.handle(msg)
+      this.prepare()
+      const first = await this.buildOptions()
+      this.harnessServer = harnessServerOf(first)
+      this.q = query({ prompt: this.input, options: first })
+      let retried = false
+      for (;;) {
+        try {
+          for await (const msg of this.q) this.handle(msg)
+        } catch (e) {
+          if (this.abort.signal.aborted) throw e
+          if (this.nextQuery) {
+            // The old query was closed for an MCP restart; the next one takes over below.
+          } else if (this.restarts > 0 && !this.queryInitSeen && !retried && this.sessionId) {
+            // A restarted query failed before it started: never leave the run dead, resume once more.
+            retried = true
+            const why = redactSecrets((e as Error).message ?? String(e), this.secrets)
+            this.log('warn', `The resumed session failed to start (${why}); trying once more.`)
+            const again = await this.buildOptions(this.sessionId)
+            this.nextQuery = { options: again, servers: this.lastRestartServers }
+          } else throw e
+        }
+        const next = this.nextQuery
+        this.nextQuery = undefined
+        if (!next || this.abort.signal.aborted || this.ending) break
+        this.clearRestartTimers()
+        this.startRestartedQuery(next)
+      }
       this.emitEnd()
     } catch (e) {
       if (this.abort.signal.aborted) {
@@ -1357,6 +1657,8 @@ export class ClaudeSession implements RuntimeSession {
           const root = this.ensureAgent(ROOT_ID)
           root.model = msg.model
           this.upsert(root)
+          this.sessionId = msg.session_id
+          this.queryInitSeen = true
           this.emit({ type: 'run.status', runId, status: 'running', sessionId: msg.session_id })
           // The SDK re-emits init on every resumed turn (reports landing, harness messages); log it once.
           if (!this.sessionLogged) {
@@ -1517,10 +1819,9 @@ export class ClaudeSession implements RuntimeSession {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
-              if (this.ctx.resumeSessionId) {
-                if (this.seenToolResults.has(block.tool_use_id)) continue
-                this.seenToolResults.add(block.tool_use_id)
-              }
+              // A resumed session (continued run or MCP restart) may replay history; show each result once.
+              if ((this.ctx.resumeSessionId || this.restarts > 0) && this.seenToolResults.has(block.tool_use_id)) continue
+              this.seenToolResults.add(block.tool_use_id)
               this.transcript(agentId, {
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
@@ -1570,6 +1871,8 @@ export class ClaudeSession implements RuntimeSession {
         // Unattended execution: after a short delay (a report that just landed wakes the orchestrator
         // first), remind it of the plan's remaining steps. The driver re-checks every condition then.
         if (msg.subtype === 'success' && !this.isSetup) this.continuation.turnEnded()
+        // MCP servers approved this turn reach the agents through a restart once everything is idle.
+        if (this.pendingMcp.size) this.scheduleMcpRestart()
         if (this.limited && !this.ending) {
           // Every further request would be rejected too. End the session; the run manager pauses the
           // run and continues it when the window resets.

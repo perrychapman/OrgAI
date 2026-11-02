@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { MockAdapter, type MockSession } from './mock'
+import { MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -102,8 +102,36 @@ describe('mock adapter MCP and connection recording', () => {
     const ctx = fakeCtx()
     const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
     const added = spec('m9', 'late')
-    await expect(session.addMcpServer(added)).resolves.toBe('mcp__late__')
+    await expect(session.addMcpServer(added)).resolves.toEqual({ prefix: 'mcp__late__', availability: 'now' })
     expect(session.addedMcpServers).toEqual([added])
+    await session.stop()
+    await session.finished
+  })
+
+  it('[mock:mcp-midrun]: the approved server is usable at once by granted roles; a role the card left out is denied', async () => {
+    const servers: McpServerSpec[] = []
+    const ctx = fakeCtx({
+      prompt: `Use a new server ${MCP_MIDRUN_TOKEN}`,
+      autoContinue: false,
+      mcpServers: () => servers,
+      // Like RunManager: the approved spec (roles restricted on the card to the root) joins the run's servers.
+      requestMcpInstall: vi.fn(async (req: { spec: McpServerSpec }) => {
+        const spec = { ...req.spec, roles: ['lead'] }
+        servers.push(spec)
+        return { approved: true, scope: 'run' as const, spec }
+      })
+    })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text.includes('was used'))).toBe(true))
+    expect(session.addedMcpServers.map((s) => s.name)).toEqual([MOCK_MIDRUN_SERVER])
+    expect(session.mcpServersByRole).toEqual({ lead: [MOCK_MIDRUN_SERVER], engineer: [], reviewer: [] })
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [{ agent: e.entry.agentId, ...e.entry.block }] : []))
+    expect(results.find((r) => r.agent === ROOT_AGENT_ID && r.content === 'PONG')).toBeDefined()
+    const denied = results.find((r) => r.agent === MOCK_MIDRUN_REPORT)
+    expect(denied).toMatchObject({ isError: true })
+    expect(denied?.content).toContain(`does not grant the MCP server "${MOCK_MIDRUN_SERVER}" to the Engineer role (engineer)`)
+    // The root's call still went through the permission card; the denied one never reached it.
+    expect(vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0].toolName)).toEqual([MOCK_MIDRUN_TOOL])
     await session.stop()
     await session.finished
   })
