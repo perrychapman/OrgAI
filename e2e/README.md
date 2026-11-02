@@ -20,10 +20,10 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
 
 - Each script creates its own fixture repository (a tiny Express notes API, dependencies not installed) under
   `os.tmpdir()`, deletes the OrgAI project it created, and removes the fixture.
-- The app runs against a fresh temp data dir, or `ORGAI_DATA_DIR` if you set it. `lib.mjs` passes the dir to the
+- The app runs against a fresh temp data dir, or `E2E_DATA_DIR` if you set it (an ambient `ORGAI_DATA_DIR`, as CI sets, is ignored so scripts never share state). `lib.mjs` passes the dir to the
   app as `ORGAI_DATA_DIR`, which replaces Electron's userData and also holds the logs (`<dir>/logs/main.log`), so
   your real profile, `~/Library/Logs` on macOS and your other projects are never touched. A temp dir is removed when
-  the script passes and kept (its path is printed) when a check fails. With your own `ORGAI_DATA_DIR`, test projects
+  the script passes and kept (its path is printed) when a check fails. With your own `E2E_DATA_DIR`, test projects
   are named `... (orgai test)`; delete leftovers by hand if a script is killed.
 - Paths compare against `fs.realpathSync(os.tmpdir())` (`TMP` in `lib.mjs`), because macOS reports `/private/var/...`
   for `/var/...`.
