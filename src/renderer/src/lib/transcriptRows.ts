@@ -1,5 +1,46 @@
 /** Pure humanizing for transcript rows: tool calls become sentences, raw input becomes an optional detail string. */
 
+import type { RunSummary, TranscriptEntry } from '@shared/types'
+import { continuationDivider, type ContinuationDivider } from './runChains'
+
+/** One row of a chain's merged feed: an entry of one member, or the divider where a continuation starts. */
+export type FeedItem = { kind: 'entry'; runId: string; entry: TranscriptEntry } | { kind: 'divider'; divider: ContinuationDivider }
+
+/** A chain member as the merged feed needs it. */
+export interface FeedMember {
+  summary: Pick<RunSummary, 'id' | 'startedAt' | 'status'> &
+    Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'endedAt' | 'endedWithApp'>> & { endedBy?: 'user' | 'app' }
+  entries: readonly TranscriptEntry[]
+}
+
+/** How far into a member the adapters' "Continued from run <id>" row may sit (it is written at session start). */
+const CONTINUATION_NOTICE_WINDOW = 3
+
+/**
+ * The adapters' own continuation row (M4): a harness system entry "Continued from run <id>". Only this exact shape
+ * matches; other harness rows are never hidden.
+ */
+export const isContinuationNotice = (e: TranscriptEntry): boolean =>
+  e.source === 'harness' && e.block.kind === 'system' && e.block.text.startsWith('Continued from run ')
+
+/**
+ * Every member's entries oldest first, with one divider before each continuation (members after the first). The
+ * "Continued from run <id>" row is dropped only among the first few entries of a member that has `resumedFrom`.
+ * Entry ids of all but the newest member are prefixed with the run id, so keys never collide across members.
+ */
+export function mergeChainFeed(members: readonly FeedMember[]): FeedItem[] {
+  const out: FeedItem[] = []
+  members.forEach((m, i) => {
+    const newest = i === members.length - 1
+    if (i > 0) out.push({ kind: 'divider', divider: continuationDivider(members[i - 1].summary, m.summary) })
+    m.entries.forEach((entry, at) => {
+      if (m.summary.resumedFrom && at < CONTINUATION_NOTICE_WINDOW && isContinuationNotice(entry)) return
+      out.push({ kind: 'entry', runId: m.summary.id, entry: newest ? entry : { ...entry, id: `${m.summary.id}:${entry.id}` } })
+    })
+  })
+  return out
+}
+
 export type ToolKind = 'ask' | 'plan' | 'propose' | 'permission' | 'edit' | 'read' | 'run' | 'search' | 'agent' | 'message' | 'other'
 
 export interface ToolRow {

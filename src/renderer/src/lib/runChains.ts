@@ -6,7 +6,7 @@ import type { RunStatus, RunSummary } from '@shared/types'
  * either; only its newest member may be continued.
  */
 
-type ChainSummary = Pick<RunSummary, 'id' | 'startedAt' | 'status'> & Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'projectId'>>
+export type ChainSummary = Pick<RunSummary, 'id' | 'startedAt' | 'status'> & Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'projectId'>>
 
 const OPEN: ReadonlySet<RunStatus> = new Set<RunStatus>(['starting', 'running', 'idle', 'stopping'])
 const CONTINUABLE: ReadonlySet<RunStatus> = new Set<RunStatus>(['finished', 'error', 'paused'])
@@ -136,4 +136,112 @@ export function statusLabel(status: RunStatus, waiting = false, endedWithApp = f
 export function sessionOpenRunId(message: string): string | null {
   if (!/Session already open/i.test(message)) return null
   return /run (run_[A-Za-z0-9_-]+)/.exec(message)?.[1] ?? null
+}
+
+// ---------- One conversation per session chain (docs/design/ux-review-continue.md, model 1-6) ----------
+
+type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error'>> & { endedBy?: 'user' | 'app' }
+
+/** The chain's key: its oldest member's id. Stable across continues, so a chain tab or a chain view keeps its identity. */
+export function chainKeyOf<T extends ChainSummary>(runs: readonly T[], id: string): string {
+  return chainOf(runs, id)[0]?.id ?? id
+}
+
+/** One conversation: its members oldest first, the first (names it) and the newest (status, composer, sends). */
+export interface ChainGroup<T extends ChainSummary> {
+  key: string
+  members: T[]
+  first: T
+  newest: T
+}
+
+/**
+ * Every chain among `runs`, each run in exactly one group. Groups are ordered by their newest member's start, newest
+ * first (History order); members inside a group oldest first.
+ */
+export function chainGroups<T extends ChainSummary>(runs: readonly T[]): ChainGroup<T>[] {
+  const seen = new Set<string>()
+  const groups: ChainGroup<T>[] = []
+  for (const r of runs) {
+    if (seen.has(r.id)) continue
+    const members = chainOf(runs, r.id)
+    for (const m of members) seen.add(m.id)
+    groups.push({ key: members[0].id, members, first: members[0], newest: members[members.length - 1] })
+  }
+  return groups.sort((a, b) => b.newest.startedAt - a.newest.startedAt || a.key.localeCompare(b.key))
+}
+
+/** When the run last did anything: its end, else its start. */
+export const lastActivityAt = (r: Pick<RunSummary, 'startedAt'> & Partial<Pick<RunSummary, 'endedAt'>>): number => r.endedAt ?? r.startedAt
+
+/** "right away", "3 min later", "2 h later", "4 d later" for the gap between two chain members. */
+export function gapLabel(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 45) return 'right away'
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} min later`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} h later`
+  return `${Math.round(h / 24)} d later`
+}
+
+/** The quiet divider row where a continuation starts in the merged feed. `title` holds the exact time. */
+export interface ContinuationDivider {
+  runId: string
+  label: string
+  title: string
+}
+
+const cutByApp = (s: EndSummary): boolean => s.endedBy === 'app' || (s.endedBy === undefined && !!s.endedWithApp)
+
+/**
+ * The divider before `member` (a chain member with a predecessor `prev`): "Continued after OrgAI closed" when the
+ * earlier session was cut by OrgAI closing, else "Continued 3 min later" (gap from the earlier session's end).
+ */
+export function continuationDivider(prev: EndSummary, member: EndSummary): ContinuationDivider {
+  const label = cutByApp(prev) ? 'Continued after OrgAI closed' : `Continued ${gapLabel(member.startedAt - lastActivityAt(prev))}`
+  return { runId: member.id, label, title: `Continued ${new Date(member.startedAt).toLocaleString()}` }
+}
+
+/** What Send does on the chain's newest ended member and how the composer says it (model 3 and 6). */
+export interface EndedComposerCopy {
+  mode: 'continue' | 'new'
+  /** The mode line above the field. */
+  modeLabel: string
+  placeholder: string
+  /** A warning-tone role=status notice above the field (cut by OrgAI closing). */
+  notice?: string
+}
+
+const clipReason = (s: string): string => {
+  const one = s.replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '')
+  return one.length > 160 ? one.slice(0, 159) + '…' : one
+}
+
+/**
+ * Copy for an ended run's composer. `continuable` is canContinue (newest member, a session id, ended). `cutWhile` is
+ * lib/runStatus cutWhile of the record as loaded (before settling); 'working' when unknown (a clean quit settles
+ * the agents before saving, so only a crash leaves the trace).
+ */
+export function endedComposerCopy(
+  summary: EndSummary & Pick<RunSummary, 'status'>,
+  opts: { continuable: boolean; cutWhile?: 'working' | 'waiting'; now?: number }
+): EndedComposerCopy {
+  if (!opts.continuable) return { mode: 'new', modeLabel: 'This run cannot be continued (no saved session).', placeholder: 'Describe the task' }
+  const now = opts.now ?? Date.now()
+  const placeholder = 'Message the orchestrator'
+  const ended = `Session ended ${relativeTime(lastActivityAt(summary), now)}. Send to continue with its memory.`
+  if (summary.status === 'error') {
+    const reason = clipReason(summary.error ?? '')
+    return { mode: 'continue', modeLabel: `This run failed${reason ? `: ${reason}` : ''}. Send to try again with its memory.`, placeholder }
+  }
+  if (cutByApp(summary)) {
+    return {
+      mode: 'continue',
+      modeLabel: ended,
+      placeholder: 'Pick up where it was cut off',
+      notice: `OrgAI closed while this run was ${opts.cutWhile === 'waiting' ? 'waiting for you' : 'working'}. Send to pick up where it stopped.`
+    }
+  }
+  return { mode: 'continue', modeLabel: ended, placeholder }
 }
