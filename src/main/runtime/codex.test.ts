@@ -384,6 +384,12 @@ describe('CodexAdapter session', () => {
         expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
       })
 
+      it('a blanket Edit rule never accepts a grantRoot request (re-check Medium)', async () => {
+        const { ctx, s } = await started('default', { allowedRules: () => ['Edit'] })
+        await s.ask('item/fileChange/requestApproval', { ...fe('none'), grantRoot: tmpdir() })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+      })
+
       it('asks when the path is a link that leaves the free folders', async () => {
         const outside = mkdtempSync(join(tmpdir(), 'orgai-codex-out-'))
         try {

@@ -100,6 +100,16 @@ describe('offerable directories (review M1)', () => {
     expect(isOfferableDirectory('C:\\Users\\me\\AppData\\Local\\Temp\\x', w)).toBe(true)
     expect(isOfferableDirectory('\\\\server\\share', w)).toBe(false)
   })
+  it('refuses folders on PATH or run at login (re-check L-b)', () => {
+    for (const d of ['/home/u/.local/bin', '/home/u/.cargo/bin/x', '/home/u/Library/LaunchAgents']) expect(isOfferableDirectory(d, o), d).toBe(false)
+  })
+
+  it('never offers a provider blanket rule (re-check L-d)', () => {
+    const p: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Edit' }, { toolName: 'WebFetch' }], behavior: 'allow', destination: 'session' }]
+    expect(chooseSuggestions('WebFetch', {}, p, false, o)).toEqual([{ ...p[0], rules: [{ toolName: 'WebFetch' }] }])
+    expect(chooseSuggestions('Edit', { file_path: '/home/u/proj/a' }, [{ type: 'addRules', rules: [{ toolName: 'Edit' }], behavior: 'allow', destination: 'session' }], false, o)).toEqual([])
+  })
+
   it('drops such folders from provider and derived suggestions', () => {
     expect(deriveSuggestions('Edit', { file_path: '/home/u/.local/share/OrgAI/projects.json' }, o)).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
     expect(chooseSuggestions('Edit', { file_path: '/home/u/.ssh/config' }, [
