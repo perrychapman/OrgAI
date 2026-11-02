@@ -45,5 +45,7 @@ describe('proposalNextLead', () => {
     expect(proposalNextLead({ kind: 'mcpSecrets', projectId: 'a', names: ['gh'] })).toBe('gh needs a secret before it can start.')
     expect(proposalNextLead({ kind: 'mcpSecrets', projectId: 'a', names: ['a', 'b', 'c', 'd', 'e'] })).toBe('a, b, c and 2 more need a secret before they can start.')
     expect(proposalNextLead({ kind: 'mcpSecrets', projectId: 'a', names: ['x'.repeat(100)] })).toContain('x'.repeat(39) + '…')
+    // bidi and control characters never reach the sentence
+    expect(proposalNextLead({ kind: 'mcpSecrets', projectId: 'a', names: ['g‮hx'] })).toBe('g h x needs a secret before it can start.')
   })
 })

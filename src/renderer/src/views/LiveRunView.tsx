@@ -678,7 +678,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   // One short polite line when a new decision arrives. The tray itself is not a live region: expanding Details would
   // otherwise read a whole proposal body aloud.
-  const [arrival, setArrival] = useState('')
+  const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
   const seenDecisions = useRef<{ runId: string; keys: Set<string> } | null>(null)
   const decisionKeys = decisionItems.map((d) => d.key).join('|')
   useEffect(() => {
@@ -687,12 +687,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     seenDecisions.current = { runId, keys: now }
     // First look at a run (or a different run in this view): what is already open is not an arrival.
     if (!prior || prior.runId !== runId) {
-      setArrival('')
+      setArrival(undefined)
       return
     }
     const seen = prior.keys
     const fresh = decisionItems.find((d) => now.has(d.key) && !seen.has(d.key))
-    if (fresh) setArrival(`New decision: ${fresh.label}`)
+    if (fresh) setArrival((a) => ({ text: `New decision: ${fresh.label}`, n: (a?.n ?? 0) + 1 }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [decisionKeys, runId])
 
@@ -734,7 +734,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       )}
       <div className="run-body" ref={bodyRef} data-layout={layout}>
 
-        <CanvasFrame frameRef={canvasRef}>
+        <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length} />
             <div className="frame-toolbar-end">
@@ -785,7 +785,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </ReactFlow>
             )}
           </FrameStage>
-          <FrameTray label="Decisions" announcement={decisionItems.length > 0 ? arrival : undefined} shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
+          <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
           {status === 'paused' && <PauseBanner runId={runId} />}
 
           {status !== 'paused' && run.plan?.status === 'blocked' && (

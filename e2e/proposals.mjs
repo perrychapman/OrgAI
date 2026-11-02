@@ -317,6 +317,8 @@ try {
 
   // ---- Scenario 3: [mock:config-change], a work run proposes a project MCP server and a skill ----
   await endSession(page)
+  const idleAnnounce = page.locator('[data-testid=tray-announce]')
+  check((await idleAnnounce.count()) === 1 && ((await idleAnnounce.getAttribute('role')) === 'status'), 'the announcer exists before any decision arrives (persistent role=status)')
   writeScript({ delayMs: 200 })
   await setSize(1600, 1000)
   await setTheme('dark')
@@ -369,7 +371,10 @@ try {
   await page.locator('.decision-card.kind-proposal .btn.primary').click()
   await page.locator('[data-testid=proposal-next-project-skills]').waitFor({ timeout: 15_000 })
   check(true, 'approving the skills proposal shows its project link in the run metadata')
-  check((await page.locator('[data-testid=proposal-next-secrets]').count()) === (secrets > 0 ? 0 : 0), 'no secrets notice when no slot was left empty')
+  if (secrets === 0) {
+    check((await page.locator('[data-testid=proposal-next-secrets]').count()) === 0, 'no secrets notice when the proposal had no secret slot')
+    log('the secrets notice path is not driven: the mock MCP proposal has no secret slot')
+  }
   const settled = await page.evaluate(() => document.querySelectorAll('.decision-card.kind-proposal').length)
   check(settled === 0, 'no proposal card is left open', String(settled))
 } finally {
