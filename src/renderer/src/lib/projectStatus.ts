@@ -1,4 +1,4 @@
-import type { RunStatusView } from './runStatus'
+import { statusText, type RunStatusView } from './runStatus'
 import { relativeTime } from './runChains'
 
 export interface ProjectStatusInput {
@@ -7,7 +7,7 @@ export interface ProjectStatusInput {
   /** Open decisions across those runs (lib/needsYou.ts `decisionCount`). The unit of every "needs you" number. */
   decisions: number
   /** The newest run of the project, live or from history, with its status word (from lib/runStatus.ts). */
-  newest?: { startedAt: number; status: Pick<RunStatusView, 'word'> }
+  newest?: { startedAt: number; status: Pick<RunStatusView, 'word' | 'note'> }
   now?: number
 }
 
@@ -37,7 +37,7 @@ export function projectStatus(input: ProjectStatusInput): ProjectStatus {
       : open > 0
         ? `${open} open`
         : newest
-          ? `Last run ${relativeTime(newest.startedAt, now)} · ${newest.status.word}`
+          ? `Last run ${relativeTime(newest.startedAt, now)} · ${statusText({ tone: 'ok', ...newest.status })}`
           : ''
   return { dot, decisions, open, subtitle, needsLabel: decisions === 0 ? '' : decisions === 1 ? '1 needs you' : `${decisions} need you` }
 }
