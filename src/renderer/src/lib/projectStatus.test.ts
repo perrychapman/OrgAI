@@ -20,5 +20,7 @@ describe('projectStatus', () => {
     const now = 10_000_000
     const s = projectStatus({ open: 0, decisions: 0, newest: { startedAt: now - 2 * 3600_000, status: { word: 'Finished' } }, now })
     expect(s.subtitle).toMatch(/^Last run .* · Finished$/)
+    const cut = projectStatus({ open: 0, decisions: 0, newest: { startedAt: now, status: { word: 'Stopped', note: 'Ended when OrgAI closed' } }, now })
+    expect(cut.subtitle).toMatch(/· Ended when OrgAI closed$/)
   })
 })
