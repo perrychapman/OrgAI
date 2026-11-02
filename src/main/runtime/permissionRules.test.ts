@@ -597,6 +597,12 @@ describe('tooBroadRuleRefusal / allowRuleRefusal (reviewer-4 M-2, shared wording
     for (const r of ['Bash(npm test:*)', 'Bash(curl https://example.com)', 'Bash(gh pr list:*)', 'Read', 'WebSearch', 'mcp__github__*', 'Edit(src/**)']) expect(tooBroadRuleRefusal(r), r).toBeNull()
   })
 
+  it('refuses a prefix with a disguised first word (reviewer-5 L2)', () => {
+    for (const p of ['FOO=1 curl', '"curl"', "'docker' run", 'NODE_ENV=test npm test']) expect(isTooBroadPrefix(p), p).toBe(true)
+    expect(tooBroadRuleRefusal('Bash(FOO=1 curl:*)')).toMatch(/far more than one command/)
+    expect(tooBroadRuleRefusal('Bash("curl":*)')).toMatch(/far more than one command/)
+  })
+
   it('allowRuleRefusal: destructive first, then too broad, else null', () => {
     expect(allowRuleRefusal('Bash(rm -rf:*)')).toMatch(/destructive or unbounded/)
     expect(allowRuleRefusal('Bash(*)')).toMatch(/destructive or unbounded/)

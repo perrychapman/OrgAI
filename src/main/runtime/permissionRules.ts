@@ -189,7 +189,11 @@ const THREE_WORD_LAUNCHERS: ReadonlySet<string> = new Set(['gh', 'aws', 'az', 'g
 
 /** True when a shell prefix (`npm test`, `npx tsx`) must never be derived or kept as a prefix rule. */
 export function isTooBroadPrefix(prefix: string): boolean {
-  const words = prefix.trim().split(/\s+/).map(programName)
+  const raw = prefix.trim().split(/\s+/)
+  // A disguised first word (`FOO=1 curl`, `"curl"`, `'docker' run`) cannot be checked against the lists below, and
+  // the matcher reads it as the plain program, so it counts as too broad (reviewer-5 L2).
+  if (!PLAIN_WORD.test(raw[0] ?? '')) return true
+  const words = raw.map(programName)
   const [first = '', second = '', third = ''] = words
   if (!first) return true
   if (NEVER_DERIVE_FIRST.has(first) || EXEC_WRAPPERS.has(first)) return true
