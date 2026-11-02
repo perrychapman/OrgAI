@@ -2021,7 +2021,9 @@ export class RunManager {
 
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
-    if (!active?.session) return
+    if (!active) return
+    const st = active.summary.status
+    if (st === 'finished' || st === 'error') return
     active.userStopped = true
     active.endedBy ??= 'user'
     // Saved with the 'stopping' status, so a quit or crash before the session ends still reads as the user's end.
@@ -2029,6 +2031,7 @@ export class RunManager {
     active.titleAbort?.abort()
     active.emit({ type: 'run.status', runId, status: 'stopping' })
     this.flush(active)
+    // A session still opening is stopped by start() as soon as adapter.start resolves (userStopped is set).
     await this.stopSession(active)
   }
 
@@ -2102,6 +2105,10 @@ export class RunManager {
     for (const a of this.titleAborts.keys()) a.abort()
     for (const r of this.runs.values()) this.markCut(r, 'app')
     for (const r of this.runs.values()) this.writeCut(r, true)
+    // Ask every open session to stop before the process goes (nothing waits for it).
+    for (const r of this.runs.values()) {
+      this.stopSession(r)?.catch((err: unknown) => log.warn(`Run ${r.summary.id}: stop on quit failed: ${(err as Error)?.message ?? err}`))
+    }
   }
 
   /**
@@ -2117,8 +2124,10 @@ export class RunManager {
     for (const r of this.runs.values()) this.markCut(r, quit ? 'app' : 'user')
     // Titles still pending for runs that already ended are cancelled too (app quit).
     for (const a of this.titleAborts.keys()) a.abort()
-    // Sessions still opening: start() stops each one as soon as adapter.start resolves (userStopped is set).
-    await Promise.allSettled([...this.startsInFlight])
+    // Open sessions are stopped at once, while sessions still opening are waited for (start() stops each one as soon
+    // as adapter.start resolves, userStopped being set), so one hung start does not hold back the others' stops.
+    // The second pass picks up sessions that opened meanwhile; stopSession shares one call per run.
+    await Promise.allSettled([...[...this.runs.values()].map((r) => this.stopSession(r)), ...this.startsInFlight])
     await Promise.allSettled([...this.runs.values()].map((r) => this.stopSession(r)))
     // A session that never reported its end (its stop failed) is written as ended here, so the index does not depend
     // on the store's boot normalization.
@@ -2215,6 +2224,8 @@ export class RunManager {
 
   private scheduleResume(runId: string, at: number): void {
     this.clearResume(runId)
+    // No auto-resume is armed while the app quits (resumeNow would refuse); the boot normalization ends the pause.
+    if (this.quitting) return
     const delay = Math.max(0, at - Date.now())
     const timer = setTimeout(() => {
       this.resumeTimers.delete(runId)
