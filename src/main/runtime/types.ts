@@ -223,6 +223,28 @@ export interface RuntimeContext {
    * rules granted for this run. Adapters allow matching calls themselves (ruleMatch.ts) so grants need no restart.
    */
   allowedRules?(): string[]
+  /**
+   * Extra folders agents may read and edit like the project folder: Project.allowedDirectories resolved by RunManager
+   * at run start (existing directories only, canonical, never touching OrgAI's data folder in either direction, never
+   * the project folder or a folder inside it). Live: folders added during the run through allowDirectories appear at
+   * once, so read it at call time. Claude passes it as Options.additionalDirectories on every options build; a `cd`
+   * into one needs no rule (ruleMatch.ts matchOptionsFor). Missing (quick runs, build sessions, every
+   * isTrustRestrictedRun) = none.
+   */
+  allowedDirectories?(): string[]
+  /**
+   * "Always allow for project" on an addDirectories suggestion (permissionRules.ts applyAllowScope): save the folders
+   * onto Project.allowedDirectories through ProjectStore (cleaned) and add the ones that resolve (as above) to
+   * allowedDirectories() at once. Returns the canonical folders now in force from `dirs`. Logs one info line.
+   * Missing on trust-restricted runs: nothing persists.
+   */
+  allowDirectories?(dirs: string[]): string[]
+  /**
+   * "Always allow for project" on a setMode acceptEdits suggestion: set Project.permissionMode to 'acceptEdits' only
+   * while it is 'default' (never from auto, plan, dontAsk or bypassPermissions); ctx.project follows. Returns true
+   * when it switched. Logs it. Missing on trust-restricted runs: nothing persists.
+   */
+  acceptEditsForProject?(): boolean
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
   /**

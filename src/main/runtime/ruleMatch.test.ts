@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isValidRule, matchesBashRule, mcpServerOfRule, matchingRule, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
+import { FREE_CD_LABEL, cdTarget, isFreeCdTarget, isValidRule, matchOptionsFor, matchesBashRule, mcpServerOfRule, matchingRule, shellRulesFor, splitCommand, unwrapShellCommand } from './ruleMatch'
 
 describe('isValidRule', () => {
   it('accepts tool names, prefix rules and exact rules', () => {
@@ -105,5 +105,77 @@ describe('server-level MCP rules', () => {
   it('isValidRule accepts server forms and refuses the wildcard and harness forms', () => {
     for (const r of ['mcp__github', 'mcp__github__*', 'mcp__a_b__*', 'mcp__a-b__*', 'mcp__a__tool']) expect(isValidRule(r), r).toBe(true)
     for (const r of ['mcp__*', 'mcp__orgai', 'mcp__orgai__*', 'MCP__ORGAI__*', 'mcp__a*', 'mcp__*__x']) expect(isValidRule(r), r).toBe(false)
+  })
+})
+
+describe('prefix rules written as `prefix *`', () => {
+  it('match like `prefix:*`; a star anywhere else never matches', () => {
+    expect(matchesBashRule('npm test', ['Bash(npm test *)'])).toBe(true)
+    expect(matchesBashRule('npm test -- --watch', ['Bash(npm test *)'])).toBe(true)
+    expect(matchesBashRule('npm testing', ['Bash(npm test *)'])).toBe(false)
+    expect(matchesBashRule('npm test', ['Bash(npm * test)'])).toBe(false)
+    expect(matchesBashRule('npm *test', ['Bash(npm *test)'])).toBe(false)
+    expect(matchesBashRule('ls', ['Bash(*)'])).toBe(false)
+    expect(matchesBashRule('ls', ['Bash( *)'])).toBe(false)
+    expect(matchingRule('PowerShell', { command: 'Get-ChildItem x' }, ['PowerShell(Get-ChildItem *)'])).toBe('PowerShell(Get-ChildItem *)')
+  })
+})
+
+describe('free cd segments', () => {
+  const posixOpts = { cwd: '/home/u/proj', freeDirs: ['/home/u/proj', '/home/u/notes'], platform: 'linux' as const }
+  const winOpts = { cwd: 'C:\\Users\\me\\proj', freeDirs: ['C:\\Users\\me\\proj', 'D:\\shared\\notes'], platform: 'win32' as const }
+
+  it('cdTarget strips quotes and refuses cd alone, flags, ~, variables, globs and several words', () => {
+    expect(cdTarget('cd "a b"', 'linux')).toBe('a b')
+    expect(cdTarget("cd 'x'", 'linux')).toBe('x')
+    expect(cdTarget('cd src', 'linux')).toBe('src')
+    for (const s of ['cd', 'cd -', 'cd ~', 'cd ~/x', 'cd $HOME', 'cd -P x', 'cd a b', 'cd src/*', 'cd "a"b', 'cd x\\y', 'cdx foo', 'cd %USERPROFILE%']) {
+      expect(cdTarget(s, 'linux'), s).toBeNull()
+    }
+    expect(cdTarget('cd C:\\Users\\me', 'win32')).toBe('C:\\Users\\me')
+  })
+
+  it('a cd into the project, a folder inside it, a worktree or an allowed dir needs no rule', () => {
+    expect(matchesBashRule('cd /home/u/proj/.claude/worktrees/agent-x && npm test', ['Bash(npm test:*)'], posixOpts)).toBe(true)
+    expect(matchesBashRule('cd packages/api && npm test', ['Bash(npm test:*)'], posixOpts)).toBe(true)
+    expect(matchesBashRule('cd "/home/u/notes/sub" && npm test', ['Bash(npm test:*)'], posixOpts)).toBe(true)
+    expect(matchesBashRule('cd /home/u/proj', [], posixOpts)).toBe(true)
+    expect(shellRulesFor('cd src && cd ./lib', [], posixOpts)).toEqual([FREE_CD_LABEL])
+    // Each target resolves against the project folder (no cd tracking): a step up out of it is never free.
+    expect(shellRulesFor('cd src && cd ../lib', [], posixOpts)).toBeNull()
+    expect(matchingRule('Bash', { command: 'cd src' }, [], posixOpts)).toBe(FREE_CD_LABEL)
+    expect(matchingRule('Bash', { command: 'cd src && npm test' }, ['Bash(npm test:*)'], posixOpts)).toBe('Bash(npm test:*)')
+  })
+
+  it('a cd outside, up out of the project, cd alone or with redirects stays uncovered', () => {
+    for (const c of ['cd /home/u/other && npm test', 'cd .. && npm test', 'cd ../proj2 && npm test', 'cd && npm test', 'cd - && npm test', 'cd ~ && npm test', 'cd src > x && npm test', 'cd /home/u/projX && npm test', 'cd src | cat && npm test']) {
+      expect(matchesBashRule(c, ['Bash(npm test:*)'], posixOpts), c).toBe(false)
+    }
+    // Without options nothing is free (the earlier behaviour).
+    expect(matchesBashRule('cd src && npm test', ['Bash(npm test:*)'])).toBe(false)
+    // A free cd never covers the next segment.
+    expect(matchesBashRule('cd src && npm test', [], posixOpts)).toBe(false)
+    // No cwd: relative targets are not free.
+    expect(isFreeCdTarget('src', { freeDirs: ['/home/u/proj'], platform: 'linux' })).toBe(false)
+  })
+
+  it('win32: case-insensitive, forward slashes, MSYS /c/ paths, never UNC or drive-relative', () => {
+    expect(matchesBashRule('cd c:\\users\\ME\\PROJ\\.claude\\worktrees\\a && npm test', ['Bash(npm test:*)'], winOpts)).toBe(true)
+    expect(matchesBashRule('cd /c/Users/me/proj/sub && npm test', ['Bash(npm test:*)'], winOpts)).toBe(true)
+    expect(matchesBashRule('cd "C:/Users/me/proj/sub" && npm test', ['Bash(npm test:*)'], winOpts)).toBe(true)
+    expect(matchesBashRule('cd /d/shared/notes && npm test', ['Bash(npm test:*)'], winOpts)).toBe(true)
+    expect(matchesBashRule('cd sub && npm test', ['Bash(npm test:*)'], winOpts)).toBe(true)
+    for (const c of ['cd /c/Users/me/other && npm test', 'cd \\\\server\\share && npm test', 'cd C:sub && npm test', 'cd \\Users && npm test', 'cd /tmp && npm test', 'cd C:\\Users\\me\\proj2 && npm test']) {
+      expect(matchesBashRule(c, ['Bash(npm test:*)'], winOpts), c).toBe(false)
+    }
+  })
+
+  it('matchOptionsFor reads the project path and the live allowed directories', () => {
+    let extra = ['/x']
+    const ctx = { project: { path: '/p' } as never, allowedDirectories: () => extra }
+    expect(matchOptionsFor(ctx)).toEqual({ cwd: '/p', freeDirs: ['/p', '/x'] })
+    extra = ['/x', '/y']
+    expect(matchOptionsFor(ctx).freeDirs).toEqual(['/p', '/x', '/y'])
+    expect(matchOptionsFor({ project: { path: '/p' } as never })).toEqual({ cwd: '/p', freeDirs: ['/p'] })
   })
 })

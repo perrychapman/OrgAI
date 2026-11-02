@@ -617,7 +617,8 @@ describe('RunManager with the mock adapter', () => {
     expect(req.request.toolName).toBe('Edit')
     expect(req.request.agentId).toBe('mock-report-1')
     expect(req.request.summary).toBe('Editing example.ts')
-    expect(req.request.ruleLabels).toEqual(['Edit'])
+    // Edit tools never get a whole-tool rule (UX H4): the card offers auto-accept edits instead.
+    expect(req.request.ruleLabels).toEqual(['Auto-accept file edits in this project'])
     m.decide(run.id, req.request.id, { behavior: 'allow' })
 
     await waitFor(isType('run.status', (e) => e.status === 'idle'))
@@ -766,7 +767,7 @@ describe('RunManager with the mock adapter', () => {
 
     const perm = await waitFor(isType('permission.request'))
     expect(perm.request.toolName).toBe('Bash')
-    expect(perm.request.ruleLabels).toEqual(['Bash(git:*)'])
+    expect(perm.request.ruleLabels).toEqual(['Bash(git status:*)'])
     m.decide(run.id, perm.request.id, { behavior: 'allow', scope: 'session' })
 
     // Ask for changes on the first architecture proposal; the mock proposes again.
