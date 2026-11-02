@@ -22,6 +22,16 @@ describe('waitingItems', () => {
     expect(waitingItems(run('r1', 1, 'finished', { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Edit' }] }))).toEqual([])
     expect(waitingItems(run('r1', 1, 'running'))).toEqual([])
   })
+  it('names the proposal kind first, with a plain fallback', () => {
+    const r = run('r1', 1, 'running', {
+      proposals: [
+        { id: 'a', kind: 'mcpServers', title: 'Add GitHub issues' },
+        { id: 'b', kind: 'orgChart', title: 'Add a release writer' },
+        { id: 'c' }
+      ]
+    })
+    expect(waitingItems(r).map((i) => i.label)).toEqual(['MCP servers: Add GitHub issues', 'Org chart: Add a release writer', 'Proposal: to approve'])
+  })
   it('reports a blocked plan when nothing else waits', () => {
     expect(waitingItems(run('r1', 1, 'idle', { plan: { status: 'blocked' } })).map((i) => i.kind)).toEqual(['plan'])
   })

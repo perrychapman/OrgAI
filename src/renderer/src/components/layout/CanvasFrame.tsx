@@ -3,6 +3,12 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 
 /** Frame height under which the tray's cards switch to their compact layout (data-compact on section.frame-tray). */
 export const COMPACT_FRAME_HEIGHT = 480
+/**
+ * A compact frame stays compact until it is this much taller than the threshold. An expanded proposal folds the composer
+ * under the frame, which grows the frame by up to ~60 px; without the margin that growth would end compact mode, unfold
+ * the composer and shrink the frame again, forever.
+ */
+export const COMPACT_EXIT_MARGIN = 64
 const FrameContext = createContext({ compact: false })
 
 
@@ -34,7 +40,7 @@ export function CanvasFrame({ children, frameRef, testId }: { children: ReactNod
   useEffect(() => {
     const el = inner.current
     if (!el || typeof ResizeObserver === 'undefined') return undefined
-    const read = (): void => setCompact(el.clientHeight < COMPACT_FRAME_HEIGHT)
+    const read = (): void => setCompact((was) => el.clientHeight < COMPACT_FRAME_HEIGHT + (was ? COMPACT_EXIT_MARGIN : 0))
     read()
     const ro = new ResizeObserver(read)
     ro.observe(el)

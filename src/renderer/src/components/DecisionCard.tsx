@@ -142,6 +142,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
       data-kind={kind}
       data-expanded={expanded ? 'true' : 'false'}
       data-inline={inline ? 'true' : undefined}
+      data-focus-details={focusDetails ? 'true' : undefined}
       data-testid={testId}
     >
       <header className="decision-head">
