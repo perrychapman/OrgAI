@@ -5,7 +5,6 @@ import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
 import { isHiddenCommand, permissionTitle } from '../lib/decisionTitle'
-import { HIDDEN_CHARS, showHidden } from '../lib/hiddenChars'
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
 
@@ -15,6 +14,15 @@ interface Props {
   /** Display name of the asking agent. */
   who: string
   onDecide: (decision: PermissionChoice) => void | Promise<void>
+}
+
+/** Bidi, zero-width and control characters (other than tab and newline) that can disguise a command. */
+const HIDDEN_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u061c\ufeff\u202a-\u202e\u2066-\u2069]/
+const HIDDEN_ALL = new RegExp(HIDDEN_CHARS.source, 'g')
+
+/** Replaces hidden characters with visible \\uXXXX escapes. */
+function showHidden(s: string): string {
+  return s.replace(HIDDEN_ALL, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 }
 
 const MAX_LINES = 8
