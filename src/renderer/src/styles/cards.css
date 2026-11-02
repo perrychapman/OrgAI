@@ -504,12 +504,33 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+.decision-summary {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
 .decision-body {
   flex: 1 1 auto;
   min-height: 0;
   max-height: min(40cqh, 320px);
   overflow: auto;
   padding: 0 var(--space-3) var(--space-2);
+  /* Scroll cue without script: a soft edge shows on the side that has more. The local layers cover the shadows
+     once the scroll reaches that end. */
+  background:
+    linear-gradient(var(--surface-3) 30%, transparent) 0 0 / 100% 24px no-repeat local,
+    linear-gradient(transparent, var(--surface-3) 70%) 0 100% / 100% 24px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--text-primary) 22%, transparent), transparent) 0 0 / 100% 10px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--text-primary) 22%, transparent), transparent) 0 100% / 100% 10px no-repeat scroll;
+}
+/* A proposal lists what changes: a taller body in a roomy frame. */
+.decision-card.kind-proposal .decision-body {
+  max-height: min(55cqh, 480px);
 }
 .decision-body > .decision-helper {
   margin-top: var(--space-2);
@@ -567,6 +588,16 @@
   .decision-body {
     max-height: min(30cqh, 200px);
   }
+}
+/* Compact, proposal expanded: the tray has taken the frame (layout.css), so the body gets at least 200 px and grows
+   with the room; the tray scrolls only when even that does not fit. */
+.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true'] {
+  flex: 1 1 auto;
+}
+.frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true'] .decision-body {
+  flex: 1 1 0;
+  min-height: 200px;
+  max-height: none;
 }
 /* Compact: a tighter head and footer, so the body (the question's options) keeps the room. */
 .frame-tray[data-compact='true'] .decision-head {

@@ -85,6 +85,21 @@
 .frame-grid:has(> .frame-tray .decision-card[data-inline='true']) {
   --stage-min: 36cqh;
 }
+/* A proposal lists what changes (servers, roles, skills): while one is the shown card the tray may take about 60%. */
+.frame-grid:has(> .frame-tray:not([data-compact='true']) .decision-card.kind-proposal) {
+  --stage-min: 40cqh;
+}
+/* Compact frame (under 480 px high), proposal expanded: the tray takes the frame. The stage row collapses to 0 (the canvas
+   stays mounted and in flow, nothing overlaps it); collapsing Details brings it back. */
+.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) {
+  grid-template-rows: auto 0 minmax(0, 1fr) auto;
+}
+.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) > .frame-stage {
+  overflow: hidden;
+}
+.frame-grid > .frame-tray[data-compact='true']:has(.decision-card.kind-proposal[data-expanded='true']) {
+  max-height: none;
+}
 /* Only a roomy frame (1500 x 560 or more) docks the tray beside the canvas; a narrower or shorter one stacks, so
    collapsing the side panel never moves the tray sideways. The beside tray is at least 420 px wide. */
 @container frame (min-width: 1500px) and (min-height: 560px) {
