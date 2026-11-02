@@ -284,7 +284,7 @@ app.whenReady().then(() => {
       applyProposal: (projectId, payload, opts) => mcp.applyProposal(projectId, payload, opts),
       applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
     },
-    skills: { applyProposal: (projectId, payload) => skills.applyProposal(projectId, payload) }
+    skills: { applyProposal: (projectId, payload, opts) => skills.applyProposal(projectId, payload, opts) }
   })
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.

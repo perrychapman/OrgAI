@@ -14,6 +14,30 @@ const HIDDEN_CLASS = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\
 const HIDDEN_RUN = new RegExp(`${HIDDEN_CLASS}+`, 'gu')
 /** True when the text holds a control, zero-width, bidi or other invisible character. */
 export const HIDDEN_CHARS = new RegExp(HIDDEN_CLASS, 'u')
+// The same set with tab, line feed and carriage return allowed (the renderer's lib/hiddenChars.ts mirrors it).
+const DISGUISE_CHARS = new RegExp(HIDDEN_CLASS.replace('\u0000-\u001f', '\u0000-\u0008\u000b\u000c\u000e-\u001f'), 'u')
+// Prose (descriptions): controls other than tab / LF / CR, bidi marks, overrides and isolates, zero-width space, word
+// joiner and BOM. ZWJ, ZWNJ, soft hyphen and tag characters stay allowed: emoji sequences and Persian or Indic text
+// use them, and stored or registry descriptions with them must keep validating.
+const PROSE_HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f؜​‎‏‪-‮⁠⁦-⁩﻿]/u
+
+/**
+ * The first hidden character in `s` as "U+XXXX", or null. One-line fields (names, URLs, rules, slugs) refuse every
+ * control character; `multiline` fields (descriptions, args, env values) allow tab, line feed and carriage return.
+ * Non-strings are null. Used by the proposal gates (validateSpec, skillProposalProblem, allow rules).
+ */
+export function hiddenCharIn(s: unknown, opts: { multiline?: boolean; prose?: boolean } = {}): string | null {
+  if (typeof s !== 'string') return null
+  const m = (opts.prose ? PROSE_HIDDEN : opts.multiline ? DISGUISE_CHARS : HIDDEN_CHARS).exec(s)
+  if (!m) return null
+  return `U+${(m[0].codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`
+}
+
+/** The refusal text for a field holding a hidden character, or null. `field` names it for the model and the user. */
+export function hiddenCharProblem(field: string, s: unknown, opts: { multiline?: boolean; prose?: boolean } = {}): string | null {
+  const c = hiddenCharIn(s, opts)
+  return c ? `${field} contains a hidden character (${c}, a control, zero-width, bidi or other invisible character); remove it.` : null
+}
 
 /** One line, control and bidi characters removed, at most `max` chars. Non-strings become ''. */
 export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string {

@@ -926,8 +926,19 @@ class CodexSession implements RuntimeSession {
     const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
     const paths = changes.map((c) => c.path)
     // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
-    const touchesProtected = paths.some((p) => hasProtectedSegment(p)) || (req.grantRoot ? hasProtectedSegment(req.grantRoot) : false)
-    if (!touchesProtected && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
+    // Lexical and real path both (a link inside the project can name a protected folder elsewhere).
+    const protectedPath = (p: string): boolean => {
+      if (hasProtectedSegment(p)) return true
+      try {
+        return hasProtectedSegment(canonicalDeep(p))
+      } catch {
+        return true
+      }
+    }
+    const touchesProtected = paths.some(protectedPath) || (req.grantRoot ? protectedPath(req.grantRoot) : false)
+    // A saved bare Edit / Write rule (legacy files) covers concrete changed files only, never a grantRoot request
+    // (write access to a whole folder, possibly / or home: review re-check Medium).
+    if (!touchesProtected && paths.length > 0 && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     // Accept edits (the project's mode, read now: RunManager refreshes ctx.project, or the thread's policy) or a
     // session grant of it: concrete changed files inside the project, an allowed folder or a granted folder, by lexical
     // and real path, need no card. A grantRoot alone, or anything outside, asks.

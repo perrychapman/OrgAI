@@ -45,7 +45,7 @@ beforeEach(() => {
   skills = new SkillService({ dataDir: data, projects: store })
   setup = new SetupService(store, {
     mcp: { libraryEntries: () => mcp.libraryEntries(), applyProposal: (id, pl, opts) => mcp.applyProposal(id, pl, opts), applyLibraryProposal: (pl) => mcp.applyLibraryProposal(pl) },
-    skills: { applyProposal: (id, pl) => skills.applyProposal(id, pl) }
+    skills: { applyProposal: (id, pl, opts) => skills.applyProposal(id, pl, opts) }
   })
 })
 

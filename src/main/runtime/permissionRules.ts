@@ -304,7 +304,9 @@ export interface SuggestOptions extends MatchOptions {
  */
 const HOME_CONFIG_DIRS = [
   '.ssh', '.aws', '.gnupg', '.claude', '.codex', '.config', '.kube', '.docker', '.azure', '.npmrc', '.git-credentials',
-  'AppData/Roaming', 'Library/Application Support', 'Library/Keychains'
+  'AppData/Roaming', 'Library/Application Support', 'Library/Keychains',
+  // On PATH or run at login: a file written there runs later outside any sandbox.
+  '.local/bin', '.cargo/bin', '.bun', 'go/bin', '.deno', '.npm-global', 'AppData/Local/Microsoft/WindowsApps', 'Library/LaunchAgents'
 ]
 
 /** True when `child` is `parent` or inside it (lexical; win32 case-insensitive). */
@@ -415,7 +417,13 @@ export function chooseSuggestions(
 ): PermissionSuggestion[] {
   if (suppressed) return []
   if (!provided?.length) return deriveSuggestions(toolName, input, opts).map((s) => offerableDirs(s, opts)).filter((s): s is PermissionSuggestion => !!s)
-  let out: PermissionSuggestion[] = provided.map((s) => offerableDirs(s, opts)).filter((s): s is PermissionSuggestion => !!s)
+  // A provider's blanket rule (bare Bash / Edit / Write, an exec wrapper) is never offered: a session grant of it would
+  // become a PreToolUse bypass (review re-check L-d).
+  let out: PermissionSuggestion[] = provided
+    .map((s) => offerableDirs(s, opts))
+    .filter((s): s is PermissionSuggestion => !!s)
+    .map((s) => (isAllowRules(s) ? { ...s, rules: s.rules.filter((r) => !isBlanketAllowRule(ruleToString(r))) } : s))
+    .filter((s) => !isAllowRules(s) || s.rules.length > 0)
   if (SHELL_TOOLS.has(toolName)) {
     const command = commandOf(input) ?? ''
     const derived = deriveSuggestions(toolName, input, opts)

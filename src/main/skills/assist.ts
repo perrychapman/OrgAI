@@ -6,6 +6,7 @@ import { newProject } from '@shared/defaults'
 import type { SkillAssistCatalog } from '../runtime/types'
 import { promptDatum } from '../mcp/assist'
 import { draftProblem } from './skillMd'
+import { hiddenCharProblem } from '../capabilities/sanitize'
 
 /**
  * The Skill assistant (RunKind 'skill-assist'): the display project for the virtual SKILLS_PROJECT_ID, the
@@ -85,6 +86,8 @@ export function skillProposalProblem(items: unknown, env: SkillProposalEnv): str
     if (it.scope === 'library' && env.allowLibrary === false) {
       return `${at}: this session changes this project only; scope "library" is not available. Link a library skill with action "link" instead.`
     }
+    const hidden = hiddenItemProblem(it)
+    if (hidden) return `${at}: ${hidden}`
     if (CONFIG_ACTIONS.has(it.action as string)) {
       const problem = configItemProblem(it, at, env, roleSlugs, seen)
       if (problem) return problem
@@ -120,6 +123,25 @@ export function skillProposalProblem(items: unknown, env: SkillProposalEnv): str
     }
   }
   return null
+}
+
+/**
+ * The first field of an item holding a control, zero-width, bidi or other invisible character, or null: name,
+ * libraryId and role slugs are one line; a create / update draft's name is one line and its description is prose
+ * (line breaks, which normalizeDescription folds, and emoji / Persian joiners are allowed; bidi and controls are not). Config items carry the target's own draft, which is not checked
+ * here (it is already stored). The SKILL.md body is not checked.
+ */
+function hiddenItemProblem(it: Partial<SkillProposalItem> & { name?: unknown }): string | null {
+  const roles = Array.isArray(it.roles) ? it.roles : []
+  const draft = !CONFIG_ACTIONS.has(it.action as string) && it.draft && typeof it.draft === 'object' ? (it.draft as Partial<SkillDraft>) : undefined
+  return (
+    hiddenCharProblem('name', it.name) ??
+    hiddenCharProblem('libraryId', it.libraryId) ??
+    hiddenCharProblem('draft.name', draft?.name) ??
+    hiddenCharProblem('draft.description', draft?.description, { prose: true }) ??
+    roles.map((r) => hiddenCharProblem('A role slug in roles', r)).find((p) => p !== null) ??
+    null
+  )
 }
 
 const ACTIONS = new Set<string>(['create', 'update', ...SKILL_CONFIG_ACTIONS])
