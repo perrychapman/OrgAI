@@ -1024,6 +1024,39 @@ describe('RunManager with the mock adapter', () => {
       await waitFor(isType('run.status', (e) => e.status === 'finished'))
       expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
     })
+
+    it('an adapter pause with autoResume false (held run, failed MCP restart) schedules no resume', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const p = makeProject({ path: join(dir, 'repo') })
+      const pauses: Array<boolean | undefined> = [false, undefined]
+      const adapter: RuntimeAdapter = {
+        id: 'mock',
+        complete: async () => '',
+        start: async (ctx) => {
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+          const autoResume = pauses.shift()
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'paused', pauseReason: 'MCP restart failed', autoResume })
+          return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+        }
+      }
+      const store = new RunStore(join(dir, 'data'))
+      const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100, { resolveProject: () => p })
+      const continueRun = vi.spyOn(m, 'continueRun')
+
+      const held = await m.start({ project: p, prompt: 'Go' })
+      await vi.waitFor(() => expect(m.summaryOf(held.id)).toBeUndefined())
+      expect(store.get(held.id)).toMatchObject({ status: 'paused', autoResume: false })
+      expect(m.hasAutoResume(held.id)).toBe(false)
+      vi.advanceTimersByTime(10 * 60 * 1000)
+      await Promise.resolve()
+      expect(continueRun).not.toHaveBeenCalled()
+
+      // A pause that does not say false keeps the existing auto-resume behaviour.
+      const other = await m.start({ project: p, prompt: 'Go again' })
+      await vi.waitFor(() => expect(m.summaryOf(other.id)).toBeUndefined())
+      expect(m.hasAutoResume(other.id)).toBe(true)
+      await m.stopAll()
+    })
   })
 })
 

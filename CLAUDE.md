@@ -507,8 +507,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
       re-schedules it. Field shapes from the 0.3.312 typings only.
     - Failed starts (M4): the failure count resets at a restarted query's init. Failures before init: the 1st resumes
       again with the same servers, the 2nd resumes without the new servers (`droppedMcp`, the orchestrator is told), the
-      3rd or no budget ends the run `paused` (never error) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
-      `pauseReason`, `autoResume: !(held || capTripped)` (N1: an interrupted run waits for the user and gets no
+      3rd or no budget ends the run `paused` (not error, except a throw from `buildOptions` inside `recoverRestart`, open M2) with `pausedUntil` `MCP_RESTART_PAUSE_MS` (5 min) ahead, a
+      `pauseReason`, `autoResume: !(held || capTripped)` (N1: an interrupted run waits for the user; RunManager schedules no resume for `autoResume: false`, runManager.test.ts; it gets no
       `pausedUntil`), an error log line and a harness transcript row. Each new query gets a fresh input stream; after a
       failed start `replayInput` fills it with every message pushed before the dead query's init (`preInit`, cleared at
       init) plus any unread ones, each once, leaving out notices flagged `restart` because the next query sends them
@@ -524,7 +524,8 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
       returns null (no restart, the no-budget path) when less than `MCP_RESTART_MIN_BUDGET_USD` is left, so a
       restarted query never gets more than what is left (N7). The request_mcp_install result lists tool names through
       harnessTools.ts `safeMcpToolNames` (twin of claude.ts's, same `^[A-Za-z0-9_-]{1,64}$` rule, keep them in sync)
-      with `datum(t, 64)` (N5, harnessTools.test.ts). Open: N3, N6, N8 (ARCHITECTURE.md Risks).
+      with `datum(t, 64)` (N5, harnessTools.test.ts). Open: N3, N6, N8 and the third check's M1, M2,
+      L1-L4 (ARCHITECTURE.md Risks).
   - Per-role MCP grants (`mcpGrants.ts` `mcpCallDenial`): the Claude PreToolUse hook (and the mock) checks every
     `mcp__<server>__<tool>` call against `mcpServersForRole` over the live server list (run-scoped installs and the
     card's `roles` included), root included, before any allow path; unknown callers and unknown or disabled servers

@@ -464,6 +464,10 @@ components/layout:
     - N3: allow rules the CLI loads itself from `<project>/.claude/settings.json`, or adds as session "always allow" rules, still auto-allow an agent-installed server of the same name. Candidate fix: a PreToolUse `ask` for agent-installed servers without an exact OrgAI rule; whether that `ask` takes precedence over a settings allow rule needs a consented smoke.
     - N6: a leftover saved `mcp__<name>` rule covers a project-scope agent install of that name from the next run on (the server is no longer "installed this run").
     - N8: an auto-resume after the failed-restart pause still includes a project- or library-scope install that may be why start-up failed, so the resumed run can end `error`.
+  - Open from the third check (2026-11-02; its H1, RunManager scheduling a resume for an adapter pause with `autoResume: false`, is fixed and tested in runManager.test.ts):
+    - M1: when failed restarts end the run paused, a user message sent during the restart window (in `preInit` or still unread) is dropped although the transcript shows it, and since `send()` clears `held` the run auto-resumes with RESUME_TEXT instead of the user's text.
+    - M2: `buildOptions` inside `recoverRestart` is not guarded, so a throw there (secret or MCP resolution, skills plugin) ends the run `error` instead of paused.
+    - L1: each failed start re-sends the attach or could-not-attach notice through `notifyOrchestrator`, so the transcript repeats it (the model gets it once). L2: replaying `preInit` assumes a query that died before init stored nothing in the session; a CLI that persisted the message before crashing would see it twice (unverified live). L3: one restart error log line is not passed through `redactSecrets`. L4: the N4 fallback calls `releaseTurnEnd` even when its notice already woke the orchestrator.
 - macOS is untested by hand. The user tests on a MacBook with docs/macos-testing.md. Packaging and entitlements are unverified.
 - The CI and release workflows have not had a first real run yet. Open:
   - winCodeSign extraction with signAndEditExecutable true on windows-latest.
