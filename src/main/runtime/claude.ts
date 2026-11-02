@@ -534,6 +534,12 @@ export function toolUseIdFromMeta(meta: unknown): string | undefined {
   return undefined
 }
 
+/** The in-process harness server inside built options (mcpServers.orgai). */
+function harnessServerOf(options: Options): McpSdkServerConfigWithInstance | undefined {
+  const s = options.mcpServers?.[ORGAI_MCP]
+  return s && s.type === 'sdk' ? (s as McpSdkServerConfigWithInstance) : undefined
+}
+
 /** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
 function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, instructions?: string): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
@@ -655,7 +661,7 @@ export class ClaudeSession implements RuntimeSession {
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private restartCloseTimer: ReturnType<typeof setTimeout> | null = null
   /** Options of the query that replaces the current one once it has ended (an MCP restart). */
-  private nextQuery?: { options: Options; harnessServer: McpSdkServerConfigWithInstance; servers: string[] }
+  private nextQuery?: { options: Options; servers: string[] }
   /** Queries re-created for MCP restarts so far. */
   private restarts = 0
   /** The servers the latest restart attached (a retried restart announces them again). */
@@ -1329,7 +1335,7 @@ export class ClaudeSession implements RuntimeSession {
     if (!this.pendingMcp.size || this.restarting || this.nextQuery || !this.sessionId) return
     if (mcpRestartBlocker(this.restartState())) return
     this.restarting = true
-    let built: { options: Options; harnessServer: McpSdkServerConfigWithInstance }
+    let built: Options
     try {
       built = await this.buildOptions(this.sessionId)
     } catch (e) {
@@ -1343,7 +1349,7 @@ export class ClaudeSession implements RuntimeSession {
       return
     }
     const servers = [...this.pendingMcp.keys()]
-    this.nextQuery = { ...built, servers }
+    this.nextQuery = { options: built, servers }
     this.restarting = false
     this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
     // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
@@ -1379,14 +1385,14 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Start the query that replaces the one an MCP restart ended, then tell the orchestrator what is attached. */
-  private startRestartedQuery(next: { options: Options; harnessServer: McpSdkServerConfigWithInstance; servers: string[] }): void {
+  private startRestartedQuery(next: { options: Options; servers: string[] }): void {
     this.restarts += 1
     this.queryInitSeen = false
     this.lastRestartServers = next.servers
     this.priorQueriesCost = this.lastRunCost
     this.prevQuerySdkTotal = this.lastSdkTotal
     this.resumeCostBase = null
-    this.harnessServer = next.harnessServer
+    this.harnessServer = harnessServerOf(next.options)
     this.q = query({ prompt: this.input, options: next.options })
     void this.announceAttached(next.servers, this.q)
   }
@@ -1438,10 +1444,10 @@ export class ClaudeSession implements RuntimeSession {
 
   /**
    * Query options. `resume` is the session to resume (an MCP restart); otherwise the run's own resumeSessionId.
-   * A fresh in-process harness server is built each time (same bound tools); the caller installs it as
-   * this.harnessServer when its query starts. Agent definitions come from the live server list.
+   * A fresh in-process harness server is built each time (same bound tools, mcpServers.orgai); the caller installs
+   * it as this.harnessServer when its query starts (harnessServerOf). Agent definitions come from the live server list.
    */
-  private async buildOptions(resume?: string): Promise<{ options: Options; harnessServer: McpSdkServerConfigWithInstance }> {
+  private async buildOptions(resume?: string): Promise<Options> {
     const { project } = this.ctx
     const env = buildEnv(this.ctx)
     const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
@@ -1522,7 +1528,7 @@ export class ClaudeSession implements RuntimeSession {
     if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
     const resumeId = resume ?? this.ctx.resumeSessionId
     if (resumeId) options.resume = resumeId
-    return { options, harnessServer }
+    return options
   }
 
   /** Allow result for a decision; session and project scopes add the suggested rules for the rest of the session. */
@@ -1570,8 +1576,8 @@ export class ClaudeSession implements RuntimeSession {
       })
       this.prepare()
       const first = await this.buildOptions()
-      this.harnessServer = first.harnessServer
-      this.q = query({ prompt: this.input, options: first.options })
+      this.harnessServer = harnessServerOf(first)
+      this.q = query({ prompt: this.input, options: first })
       let retried = false
       for (;;) {
         try {
@@ -1586,7 +1592,7 @@ export class ClaudeSession implements RuntimeSession {
             const why = redactSecrets((e as Error).message ?? String(e), this.secrets)
             this.log('warn', `The resumed session failed to start (${why}); trying once more.`)
             const again = await this.buildOptions(this.sessionId)
-            this.nextQuery = { ...again, servers: this.lastRestartServers }
+            this.nextQuery = { options: again, servers: this.lastRestartServers }
           } else throw e
         }
         const next = this.nextQuery
