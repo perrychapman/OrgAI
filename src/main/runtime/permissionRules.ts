@@ -192,7 +192,7 @@ export function isTooBroadPrefix(prefix: string): boolean {
   const raw = prefix.trim().split(/\s+/)
   // A disguised first word (`FOO=1 curl`, `"curl"`, `'docker' run`) cannot be checked against the lists below, and
   // the matcher reads it as the plain program, so it counts as too broad (reviewer-5 L2).
-  if (!PLAIN_WORD.test(raw[0] ?? '')) return true
+  if (!PLAIN_WORD.test(raw[0] ?? '') || raw.slice(1, 3).some((w) => /["'`\\]/.test(w))) return true
   const words = raw.map(programName)
   const [first = '', second = '', third = ''] = words
   if (!first) return true

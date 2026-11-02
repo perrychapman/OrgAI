@@ -598,7 +598,7 @@ describe('tooBroadRuleRefusal / allowRuleRefusal (reviewer-4 M-2, shared wording
   })
 
   it('refuses a prefix with a disguised first word (reviewer-5 L2)', () => {
-    for (const p of ['FOO=1 curl', '"curl"', "'docker' run", 'NODE_ENV=test npm test']) expect(isTooBroadPrefix(p), p).toBe(true)
+    for (const p of ['FOO=1 curl', '"curl"', "'docker' run", 'NODE_ENV=test npm test', 'docker "run"', "kubectl 'exec'"]) expect(isTooBroadPrefix(p), p).toBe(true)
     expect(tooBroadRuleRefusal('Bash(FOO=1 curl:*)')).toMatch(/far more than one command/)
     expect(tooBroadRuleRefusal('Bash("curl":*)')).toMatch(/far more than one command/)
   })
