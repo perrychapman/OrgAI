@@ -184,6 +184,25 @@ export function pauseReasonText(window: string | undefined, error?: string): str
   )
 }
 
+/** Any decision card open on the run (the user's turn). */
+function hasOpenCard(r: PendingCardMaps): boolean {
+  return (
+    r.pending.size > 0 ||
+    r.pendingProposals.size > 0 ||
+    r.pendingQuestions.size > 0 ||
+    r.pendingMerges.size > 0 ||
+    r.pendingInstalls.size > 0 ||
+    r.pendingRules.size > 0
+  )
+}
+
+/** RunSummary.endedWhile for a run cut by the app: idle or an open card is 'waiting', live work 'working', paused none. */
+export function quitEndedWhile(status: RunSummary['status'], openCard: boolean): 'working' | 'waiting' | undefined {
+  if (status === 'paused' || status === 'finished' || status === 'error') return undefined
+  if (status === 'idle' || openCard) return 'waiting'
+  return 'working'
+}
+
 interface ActiveRun {
   summary: RunSummary
   session?: RuntimeSession
@@ -216,6 +235,8 @@ interface ActiveRun {
   userStopped?: boolean
   /** Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }). The first one wins. */
   endedBy?: 'user' | 'app'
+  /** With endedBy 'app': what the run was doing when the quit began (RunSummary.endedWhile). Read before stopping. */
+  endedWhile?: 'working' | 'waiting'
   /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
   titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
@@ -893,7 +914,10 @@ export class RunManager {
         // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
         if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
           summary.endedBy = active.endedBy
-          if (active.endedBy === 'app') summary.endedWithApp = true
+          if (active.endedBy === 'app') {
+            summary.endedWithApp = true
+            if (active.endedWhile) summary.endedWhile = active.endedWhile
+          }
         }
         if (e.status === 'paused') {
           summary.pausedUntil = e.pausedUntil
@@ -1996,6 +2020,11 @@ export class RunManager {
     const by = opts.reason === 'quit' ? 'app' : 'user'
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
     for (const r of this.runs.values()) {
+      // What the run was doing, read before anything is stopped or settled (the user's turn vs mid-work).
+      if (by === 'app' && !r.endedBy) {
+        const w = quitEndedWhile(r.summary.status, hasOpenCard(r))
+        if (w) r.endedWhile = w
+      }
       r.userStopped = true
       r.endedBy ??= by
     }
@@ -2014,7 +2043,10 @@ export class RunManager {
       }
       if ((s.status === 'finished' || s.status === 'error') && r.endedBy && !s.endedBy) {
         s.endedBy = r.endedBy
-        if (r.endedBy === 'app') s.endedWithApp = true
+        if (r.endedBy === 'app') {
+          s.endedWithApp = true
+          if (r.endedWhile) s.endedWhile = r.endedWhile
+        }
       }
       try {
         this.store.upsert(s)
