@@ -35,16 +35,31 @@ export interface MatchOptions {
   freeDirs?: readonly string[]
   /** Path rules to apply; default process.platform. win32 compares case-insensitively and reads MSYS `/c/...` paths. */
   platform?: NodeJS.Platform
+  /** Folders never offered as extra directories (RuntimeContext.protectedDirectories: OrgAI's data folder). */
+  deniedDirs?: readonly string[]
 }
 
 /** The label a command made only of free `cd` segments is allowed by. */
 export const FREE_CD_LABEL = 'cd inside the project'
 
-/** MatchOptions for a run right now: cwd is the project path, free dirs the project path plus `allowedDirectories()` (live). */
-export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories'>): MatchOptions {
+/**
+ * MatchOptions for a run right now: cwd is the project path, free dirs the project path plus `allowedDirectories()`
+ * (live), denied dirs `protectedDirectories()`.
+ */
+export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories' | 'protectedDirectories'>): MatchOptions {
   const extra = ctx.allowedDirectories?.() ?? []
-  return { cwd: ctx.project.path, freeDirs: [ctx.project.path, ...extra] }
+  const denied = ctx.protectedDirectories?.() ?? []
+  return { cwd: ctx.project.path, freeDirs: [ctx.project.path, ...extra], ...(denied.length ? { deniedDirs: denied } : {}) }
 }
+
+/** Shells a wrapped command may name (`bash -lc '...'`); any other first token is never unwrapped. */
+const SHELL_BINARY = /^(?:bash|sh|zsh|dash|pwsh|powershell)(?:\.exe)?$/i
+
+/**
+ * Quote handling bash and PowerShell disagree on, or the splitter does not model: a backslash next to a quote
+ * (`"a\" ; b"`) and ANSI-C quoting (`$'...'`). A command containing either is never covered by a rule.
+ */
+const AMBIGUOUS_QUOTING = /\\["']|\$'/
 
 /**
  * The server name of a server-level MCP rule, else null. Two forms: `mcp__<server>` and `mcp__<server>__*`.
@@ -69,11 +84,19 @@ export function isValidRule(rule: string): boolean {
   return /^[A-Za-z_][\w-]*(?:\(.+\))?$/.test(r)
 }
 
-/** The inner command of `bash -lc '...'` / `pwsh -Command "..."` style wrappers; the input when it is not wrapped. */
+/**
+ * The inner command of `bash -lc '...'` / `pwsh -Command "..."` style wrappers; the input when it is not wrapped.
+ * Only a known shell binary (by its base name, optionally with a path) is unwrapped: `./x.sh -c 'cd .'` or
+ * `$(evil) -c 'cd .'` stay whole, so the outer program needs its own rule and UNSAFE_SEGMENT still applies.
+ */
 export function unwrapShellCommand(command: string): string {
   const c = command.trim()
-  const m = /^(?:"[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(['"])([\s\S]*)\1$/i.exec(c)
-  return m ? m[2].trim() : c
+  const m = /^("[^"]*"|\S+)\s+(?:-l?c|-Command|-c)\s+(['"])([\s\S]*)\2$/i.exec(c)
+  if (!m) return c
+  const bin = m[1].replace(/^"|"$/g, '')
+  if (/[$`(){};&|<>]/.test(bin)) return c
+  const base = bin.split(/[\\/]/).pop() ?? ''
+  return SHELL_BINARY.test(base) ? m[3].trim() : c
 }
 
 /** Split a command on `&&`, `||` and `;` outside quotes. A trailing or empty segment stays empty (invalid). */
@@ -151,7 +174,8 @@ export function cdTarget(segment: string, platform: NodeJS.Platform = process.pl
     if (arg.includes('\\') && platform !== 'win32') return null
     dir = arg
   }
-  if (!dir || dir.startsWith('-') || CD_UNSAFE.test(dir)) return null
+  // `cd -` / `cd +` walk the location history (bash, PowerShell 7).
+  if (!dir || dir.startsWith('-') || dir.startsWith('+') || CD_UNSAFE.test(dir)) return null
   return dir
 }
 
@@ -170,7 +194,9 @@ export function isFreeCdTarget(dir: string, opts: MatchOptions): boolean {
     if (/^[\\/]{2}/.test(target)) return false
     // A drive-relative path (C:foo) or a rooted path without a drive (\foo) depends on state we do not model.
     if (/^[a-zA-Z]:(?![\\/])/.test(target) || /^[\\/]/.test(target)) return false
-  }
+    // PowerShell provider paths (HKCU:\..., Microsoft.PowerShell.Core\FileSystem::C:\...): a ':' only as a drive.
+    if (target.replace(/^[a-zA-Z]:(?=[\\/])/, '').includes(':')) return false
+  } else if (target.includes(':')) return false
   if (p.isAbsolute(target)) target = p.resolve(target)
   else {
     if (!opts.cwd || !p.isAbsolute(opts.cwd)) return false
@@ -195,6 +221,7 @@ export function isFreeCd(segment: string, opts: MatchOptions | undefined): boole
  * covered by FREE_CD_LABEL.
  */
 export function shellRulesFor(command: string, rules: readonly string[], opts?: MatchOptions): string[] | null {
+  if (AMBIGUOUS_QUOTING.test(command)) return null
   const cmd = unwrapShellCommand(command)
   if (!cmd) return null
   const hits: string[] = []

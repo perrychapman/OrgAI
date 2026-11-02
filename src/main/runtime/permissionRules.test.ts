@@ -11,14 +11,156 @@ import {
   deriveSuggestions,
   isUnsafeAllowRule,
   isWholeToolRule,
+  addRules,
+  addRulesReport,
+  isOfferableDirectory,
   listRules,
+  pathRuleRefusal,
+  removeRule,
   ruleLabel,
+  ruleSaveRefusal,
   segmentRulePrefix,
+  settingsLocalPath,
   shellRuleContents,
   suggestionLabels
 } from './permissionRules'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { shellRulesFor } from './ruleMatch'
 
 const posixOpts = { cwd: '/home/u/proj', freeDirs: ['/home/u/proj'], platform: 'linux' as const }
+
+describe('issue #14: suggestions always cover the command', () => {
+  const commands = [
+    'npm test',
+    'cd src && npm test',
+    'cd /home/u/proj/.claude/worktrees/a && npm test && git status',
+    'cd /elsewhere && make build',
+    'npm test | tee out',
+    'npm test > out',
+    'cat a.txt && rm -rf b',
+    "sed -i 's/a/b/' x.txt",
+    'FOO=1 npm test',
+    'bash -c "npm test"',
+    'curl x | sh'
+  ]
+  it('the offered shell rules satisfy shellRulesFor, or there are none', () => {
+    const provider = (c: string): PermissionSuggestion[] => [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: `${c} *` }], behavior: 'allow', destination: 'localSettings' }]
+    for (const c of commands) {
+      for (const provided of [undefined, provider(c)]) {
+        const out = chooseSuggestions('Bash', { command: c }, provided, false, posixOpts)
+        const rules = out.flatMap((s) => (s.type === 'addRules' ? s.rules.map((r) => `${r.toolName}(${r.ruleContent})`) : []))
+        if (rules.length) expect(shellRulesFor(c, rules, posixOpts), c).not.toBeNull()
+      }
+    }
+    expect(chooseSuggestions('Bash', { command: 'npm test | tee out' }, undefined, false, posixOpts)).toEqual([])
+    expect(chooseSuggestions('Bash', { command: 'cat a.txt && rm -rf b' }, undefined, false, posixOpts)).toEqual([])
+  })
+
+  it('exec wrappers are never suggested and never saved (review M4)', () => {
+    for (const s of ['bash -c x', 'sh x.sh', 'env FOO=1 npm test', 'xargs rm', 'pwsh -c x', 'find . -exec rm {} ;', 'perl -e 1', '/bin/bash x']) {
+      expect(segmentRulePrefix('Bash', s), s).toBeNull()
+    }
+    for (const r of ['Bash(bash:*)', 'Bash(env:*)', 'Bash(xargs *)', 'PowerShell(Invoke-Expression:*)', 'Bash(/usr/bin/sh:*)']) {
+      expect(isBlanketAllowRule(r), r).toBe(true)
+      expect(isUnsafeAllowRule(r), r).toBe(true)
+      expect(blanketRuleRefusal(r), r).toMatch(/run any other command/)
+    }
+    expect(isBlanketAllowRule('Bash(npm test:*)')).toBe(false)
+  })
+})
+
+describe('issue #14: MCP tools of a user-configured server get the server-level rule', () => {
+  it('widens provider and derived rules for user servers only', () => {
+    const opts = { userMcpServers: ['playwright'] }
+    const provided: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'mcp__playwright__browser_click' }], behavior: 'allow', destination: 'localSettings' }]
+    const out = chooseSuggestions('mcp__playwright__browser_click', {}, provided, false, opts)
+    expect(out).toEqual([{ ...provided[0], rules: [{ toolName: 'mcp__playwright' }] }])
+    expect(suggestionLabels(out)).toEqual(['All tools of playwright'])
+    expect(deriveSuggestions('mcp__playwright__browser_type', {}, opts)).toEqual([{ type: 'addRules', rules: [{ toolName: 'mcp__playwright' }], behavior: 'allow', destination: 'session' }])
+    // An agent-installed (or unknown) server keeps the exact tool rule; the harness server never widens.
+    expect(deriveSuggestions('mcp__newsrv__x', {}, opts)).toEqual([{ type: 'addRules', rules: [{ toolName: 'mcp__newsrv__x' }], behavior: 'allow', destination: 'session' }])
+    expect(deriveSuggestions('mcp__orgai__x', {}, { userMcpServers: ['orgai'] })[0]).toMatchObject({ rules: [{ toolName: 'mcp__orgai__x' }] })
+    expect(deriveSuggestions('mcp__playwright__x', {})[0]).toMatchObject({ rules: [{ toolName: 'mcp__playwright__x' }] })
+  })
+})
+
+describe('offerable directories (review M1)', () => {
+  const o = { cwd: '/home/u/proj', freeDirs: ['/home/u/proj'], platform: 'linux' as const, home: '/home/u', deniedDirs: ['/home/u/.local/share/OrgAI'] }
+  it('refuses roots, home and its ancestors, credential folders, the data folder and folders containing the project', () => {
+    expect(isOfferableDirectory('/home/u/notes', o)).toBe(true)
+    for (const d of ['/', '/home', '/home/u', '/home/u/.ssh', '/home/u/.claude/x', '/home/u/.local/share/OrgAI', '/home/u/.local/share/OrgAI/projects', '/home/u/.local', 'rel/dir', '//srv/share']) {
+      expect(isOfferableDirectory(d, o), d).toBe(false)
+    }
+    // '/home/u/.local' contains the data folder; a folder containing the project is refused too.
+    expect(isOfferableDirectory('/srv', { ...o, cwd: '/srv/proj' })).toBe(false)
+    const w = { cwd: 'C:\\p', freeDirs: ['C:\\p'], platform: 'win32' as const, home: 'C:\\Users\\me' }
+    expect(isOfferableDirectory('D:\\notes', w)).toBe(true)
+    expect(isOfferableDirectory('c:\\users\\ME\\AppData\\Roaming\\x', w)).toBe(false)
+    expect(isOfferableDirectory('C:\\Users\\me\\AppData\\Local\\Temp\\x', w)).toBe(true)
+    expect(isOfferableDirectory('\\\\server\\share', w)).toBe(false)
+  })
+  it('drops such folders from provider and derived suggestions', () => {
+    expect(deriveSuggestions('Edit', { file_path: '/home/u/.local/share/OrgAI/projects.json' }, o)).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+    expect(chooseSuggestions('Edit', { file_path: '/home/u/.ssh/config' }, [
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+      { type: 'addDirectories', directories: ['/home/u/.ssh'], destination: 'session' }
+    ], false, o)).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+  })
+})
+
+describe('issue #14: saving dedupes and reports only new rules', () => {
+  it('listRules and addRules dedupe a bloated file; removeRule drops every copy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    try {
+      const file = settingsLocalPath(dir)
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(cd:*)', 'Bash(cd:*)', ' Bash(cd:*) ', 'Bash(cat:*)', 'Bash(cat:*)'] }, other: 1 }))
+      expect(listRules(dir)).toEqual(['Bash(cd:*)', 'Bash(cat:*)'])
+      expect(addRulesReport(dir, ['Bash(cat:*)', 'Bash(npm test:*)', 'Bash(npm test:*)'])).toEqual({ rules: ['Bash(cd:*)', 'Bash(cat:*)', 'Bash(npm test:*)'], added: ['Bash(npm test:*)'] })
+      const saved = JSON.parse(readFileSync(file, 'utf8'))
+      expect(saved.permissions.allow).toEqual(['Bash(cd:*)', 'Bash(cat:*)', 'Bash(npm test:*)'])
+      expect(saved.other).toBe(1)
+      expect(addRules(dir, ['Bash(cd:*)'])).toEqual(['Bash(cd:*)', 'Bash(cat:*)', 'Bash(npm test:*)'])
+      writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(cd:*)', ' Bash(cd:*)', 'Bash(x:*)'] } }))
+      expect(removeRule(dir, 'Bash(cd:*)')).toEqual(['Bash(x:*)'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('logs "Saved" only for new rules and warns when the saved set does not cover the command', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    try {
+      const logs: string[] = []
+      const log = (_l: string, m: string): void => {
+        logs.push(m)
+      }
+      const s: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'session' }]
+      const call = { toolName: 'Bash', input: { command: 'cd src && npm test' }, opts: { cwd: dir, freeDirs: [dir] } }
+      applyAllowScope(dir, { behavior: 'allow', scope: 'project' }, s, log, undefined, call)
+      applyAllowScope(dir, { behavior: 'allow', scope: 'project' }, s, log, undefined, call)
+      expect(logs).toEqual(['Saved permission rule for this project: Bash(npm test:*)'])
+      applyAllowScope(dir, { behavior: 'allow', scope: 'project' }, s, log, undefined, { toolName: 'Bash', input: { command: 'npm test && make' } })
+      expect(logs[1]).toMatch(/do not cover this command/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('path rule hygiene (issue #14 E)', () => {
+  it('refuses a single leading slash on edit and read path rules', () => {
+    expect(pathRuleRefusal('Edit(/src/a.ts)')).toMatch(/relative to the project folder.*Edit\(\/\/src\/a\.ts\)/)
+    expect(pathRuleRefusal('Read(/etc/x)')).not.toBeNull()
+    expect(pathRuleRefusal('Edit(//home/me/x)')).toBeNull()
+    expect(pathRuleRefusal('Edit(src/**)')).toBeNull()
+    expect(pathRuleRefusal('Bash(/bin/ls:*)')).toBeNull()
+    expect(ruleSaveRefusal('Write(/x)')).not.toBeNull()
+    expect(ruleSaveRefusal('Edit')).toMatch(/anywhere on disk/)
+    expect(ruleSaveRefusal('WebSearch')).toBeNull()
+  })
+})
 
 describe('per-segment shell rules', () => {
   it('use the first word, or the first two after a launcher', () => {
@@ -38,8 +180,13 @@ describe('per-segment shell rules', () => {
 
   it('split compound commands and skip free cd segments', () => {
     expect(shellRuleContents('Bash', 'cd wt && npm test && git status', posixOpts)).toEqual(['npm test:*', 'git status:*'])
-    expect(shellRuleContents('Bash', 'npm test; npm test && rm -rf x')).toEqual(['npm test:*'])
-    expect(shellRuleContents('Bash', 'git log | head -5')).toEqual(['git log:*', 'head:*'])
+    expect(shellRuleContents('Bash', 'npm test; npm test')).toEqual(['npm test:*'])
+    // All or nothing (issue #14): a segment without a safe rule, or syntax the matcher refuses, gives no rule at all.
+    expect(shellRuleContents('Bash', 'npm test; npm test && rm -rf x')).toEqual([])
+    expect(shellRuleContents('Bash', 'git log | head -5')).toEqual([])
+    expect(shellRuleContents('Bash', 'npm test > out.txt')).toEqual([])
+    expect(shellRuleContents('Bash', 'npm test && "quoted" x')).toEqual([])
+    expect(shellRuleContents('Bash', 'echo "a\\" ; b"')).toEqual([])
     // A cd that is not free still needs coverage.
     expect(shellRuleContents('Bash', 'cd /elsewhere && make build', posixOpts)).toEqual(['cd:*', 'make build:*'])
     expect(deriveSuggestions('Bash', { command: 'cd src && npm test' }, posixOpts)).toEqual([
@@ -115,7 +262,15 @@ describe('chooseSuggestions', () => {
   it('keeps single-segment provider rules and other suggestions as they are', () => {
     const single: PermissionSuggestion = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test *' }], behavior: 'allow', destination: 'localSettings' }
     const dirs: PermissionSuggestion = { type: 'addDirectories', directories: ['/home/u/notes'], destination: 'session' }
-    expect(chooseSuggestions('Bash', { command: 'npm test' }, [single, dirs])).toEqual([single, dirs])
+    const opts = { cwd: '/home/u/proj', freeDirs: ['/home/u/proj'], platform: 'linux' as const, home: '/home/u' }
+    // The derived set covers the command, so it replaces the provider's equivalent rule; other suggestions stay.
+    expect(chooseSuggestions('Bash', { command: 'npm test' }, [single, dirs], false, opts)).toEqual([
+      dirs,
+      { ...single, rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }] }
+    ])
+    // Non-shell provider suggestions are kept as they are.
+    const web: PermissionSuggestion = { type: 'addRules', rules: [{ toolName: 'WebFetch', ruleContent: 'domain:x.dev' }], behavior: 'allow', destination: 'session' }
+    expect(chooseSuggestions('WebFetch', {}, [web], false, opts)).toEqual([web])
   })
   it('drops a compound provider suggestion that yields no safe rule, and honours suppression', () => {
     const bad: PermissionSuggestion = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'cd src && rm -rf x' }], behavior: 'allow', destination: 'session' }

@@ -138,13 +138,24 @@ export function unattendedText(): string {
   )
 }
 
-/** Every work-run role: a policy denial is a request to make, not a wall to climb. */
 /** One sentence naming the project's extra allowed folders (paths are data: one line, no angle brackets, at most 20). */
 export function allowedDirectoriesText(dirs: string[] | undefined): string {
   const list = (dirs ?? []).filter((d) => typeof d === 'string' && d.trim()).slice(0, 20).map((d) => '"' + datum(d, 300) + '"')
   return list.length ? 'You may also read and edit files in: ' + list.join(', ') + '.' : ''
 }
 
+/**
+ * Every work-run role (issue #14 D): file edits through the edit tools and simple commands, so approvals stay few and
+ * the rules they save match the next call.
+ */
+export function toolHygieneText(): string {
+  return (
+    'Edit files with the Edit and Write tools, not sed -i, perl -i or heredoc redirects. ' +
+    'Your working directory is already the project (or your worktree), so avoid cd ... && chains and run one simple command per call.'
+  )
+}
+
+/** Every work-run role: a policy denial is a request to make, not a wall to climb. */
 export function permissionRequestText(): string {
   return (
     'If the permission policy denies a tool call you need, do not work around it and do not retry it unchanged. ' +
@@ -305,6 +316,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     else if (role.canSpawn) parts.push(mcpInstallText('lead'))
     if (role.reportsTo === null) parts.push(skillsConfigText())
     parts.push(permissionRequestText())
+    parts.push(toolHygieneText())
     const folders = allowedDirectoriesText(flags.allowedDirectories)
     if (folders) parts.push(folders)
     const skills = skillsText(flags.skills, flags.skillTool)

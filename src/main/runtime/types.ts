@@ -245,6 +245,12 @@ export interface RuntimeContext {
    * when it switched. Logs it. Missing on trust-restricted runs: nothing persists.
    */
   acceptEditsForProject?(): boolean
+  /**
+   * Folders never offered or granted as extra directories (addDirectories suggestions, session dirs): OrgAI's data
+   * folder, both spellings. Set on every run, restricted ones included. ruleMatch.ts matchOptionsFor carries it as
+   * MatchOptions.deniedDirs. Missing = only the built-in refusals (roots, UNC, home and its config folders).
+   */
+  protectedDirectories?(): string[]
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
   /**

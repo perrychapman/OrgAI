@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, mcpInstallText, peerMessageText, skillsConfigText } from './prompts'
+import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, mcpInstallText, peerMessageText, skillsConfigText, toolHygieneText } from './prompts'
 import { orgChart, project } from './testHelpers'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -123,8 +123,16 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, brief
-    expect(parts).toHaveLength(13)
+    // prompt, reports, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, tool hygiene, brief
+    expect(parts).toHaveLength(14)
+  })
+
+  it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {
+    expect(buildRolePrompt(eng, roles, project(), { isSetup: false, isolation: false })).toContain(toolHygieneText())
+    expect(toolHygieneText()).toMatch(/not sed -i, perl -i or heredoc redirects/)
+    expect(toolHygieneText()).toMatch(/avoid cd \.\.\. && chains/)
+    const architect = architectRole()
+    expect(buildRolePrompt(architect, [architect], withArch, { isSetup: true, isolation: false })).not.toContain(toolHygieneText())
   })
 
   it('tells only the work-run orchestrator about other runs', () => {

@@ -332,7 +332,8 @@ app.whenReady().then(() => {
       projects.update(projectId, (p) => ({
         ...p,
         ...(patch.addDirectories?.length ? { allowedDirectories: [...(p.allowedDirectories ?? []), ...patch.addDirectories] } : {}),
-        ...(patch.acceptEdits ? { permissionMode: 'acceptEdits' as const } : {})
+        // Re-checked on the stored copy: the user may have changed the mode since the run started.
+        ...(patch.acceptEdits && p.permissionMode === 'default' ? { permissionMode: 'acceptEdits' as const } : {})
       })),
     resolveProject: (projectId) => projectOrHarness(projectId),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
