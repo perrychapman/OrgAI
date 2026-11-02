@@ -4,7 +4,7 @@ import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJE
 import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
-import { mcpCallDenial } from './mcpGrants'
+import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
@@ -784,8 +784,9 @@ export class MockSession implements RuntimeSession {
         return
       }
     }
-    // Same per-role MCP grant gate as the Claude adapter's PreToolUse, from the live server list.
-    const mcpDenial = mcpCallDenial(step.name, { role: this.roleOf(agentId), isRoot: agentId === ROOT_AGENT_ID }, this.liveMcpServers(), this.harnessAudiences)
+    // Same per-role MCP grant gate as the Claude adapter's PreToolUse, from the live server list; the MCP resource
+    // tools are gated on input.server.
+    const mcpDenial = mcpCallDenial(step.name, { role: this.roleOf(agentId), isRoot: agentId === ROOT_AGENT_ID }, this.liveMcpServers(), this.harnessAudiences, input)
     if (mcpDenial) {
       this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
       this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: mcpDenial, isError: true })
@@ -810,8 +811,11 @@ export class MockSession implements RuntimeSession {
       // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
       const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
-      const live = this.ctx.allowedRules?.() ?? []
-      const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
+      // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
+      const installed = step.name.startsWith('mcp__') ? agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name)) : new Set<string>()
+      const savedUsable = new Set(withoutServerRules([...saved], installed))
+      const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
+      const preApproved = (rules.length > 0 && rules.every((r) => savedUsable.has(r))) || matchingRule(step.name, input, usable) !== undefined
       if (!preApproved) {
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(
