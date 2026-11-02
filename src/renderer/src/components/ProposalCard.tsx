@@ -1,21 +1,21 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useState } from 'react'
-import { Check, Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
-import type { Proposal, ProposalDecision, Role } from '@shared/types'
+import { useEffect, useMemo, useState } from 'react'
+import { Minus, Pencil, Plus } from 'lucide-react'
+import type { McpServerSpec, Proposal, ProposalDecision, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { proposalNextFor } from '../lib/proposalNext'
-import { CopyButton } from './ui/CopyButton'
-import { clampLabel } from '../lib/clampLabel'
-import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
-import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import { mcpApplyNote, proposalScope, PROPOSAL_EFFECT_COPY, SKIP_MCP_FEEDBACK, type ProposalEffect } from '../lib/mcpProposal'
+import { diffOrgChart, modelDisplay, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { oneLine, proposalTitle } from '../lib/decisionTitle'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
-import { Markdown } from './Markdown'
+import { McpProposalBody, type SecretInputs } from './proposals/McpProposalBody'
+import { SkillsProposalBody } from './proposals/SkillsProposalBody'
 
 interface Props {
   proposal: Proposal
@@ -28,6 +28,18 @@ interface Props {
   /** The proposing agent's id, for the avatar's role colour (unset for setup runs). */
   agentId?: string
   onDecide: (decision: ProposalDecision) => void | Promise<void>
+  /**
+   * Second pass (not wired yet): when given, a quiet "Not now" button (`proposal-decline`) after Request changes. The
+   * caller owns what declining sends; it runs through `submit`, so it is disabled while busy.
+   */
+  onDecline?: () => void | Promise<void>
+  /** Second pass (not wired yet): when the approved change takes effect; adds a `proposal-effect` line to the helper. */
+  effect?: ProposalEffect
+  /**
+   * Second pass (not wired yet): inline optional secret fields for each `payload.secrets` slot of an mcpServers
+   * proposal. Values live in component state only and reach the caller through onChange (non-empty values).
+   */
+  secretInputs?: SecretInputs
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
@@ -46,12 +58,39 @@ export function skillsApplyNote(payload: Extract<Proposal, { kind: 'skills' }>['
     : 'Approving writes these skills to this project and grants them to the listed roles.'
 }
 
-export default function ProposalCard({ proposal, runId, currentRoles, who, agentId, onDecide }: Props): ReactElement {
+export default function ProposalCard({ proposal, runId, currentRoles, who, agentId, onDecide, onDecline, effect, secretInputs }: Props): ReactElement {
   const [revising, setRevising] = useState(false)
   const [feedback, setFeedback] = useState('')
   const { busy, error, submit } = useDecisionAnswer()
-  const isSetup = useAppStore((st) => st.runs[runId]?.summary.kind === 'setup')
+  const runSummary = useAppStore((st) => st.runs[runId]?.summary)
+  const isSetup = runSummary?.kind === 'setup'
   const canSkip = isSetup && proposal.kind === 'mcpServers'
+  const project = useAppStore((st) => st.projects.find((p) => p.id === runSummary?.projectId))
+  const scope = proposal.kind === 'mcpServers' ? proposalScope(proposal.payload) : 'project'
+  // The library is read through the preload when the card needs it: library scope (what is there now) and link rows (their command).
+  const needsLibrary = proposal.kind === 'mcpServers' && (scope === 'library' || proposal.payload.upsert.some((s) => s.libraryId))
+  const [library, setLibrary] = useState<McpServerSpec[] | null>(null)
+  useEffect(() => {
+    if (!needsLibrary) return
+    let live = true
+    window.orgai.mcpLibrary
+      .list()
+      .then((list) => {
+        if (live) setLibrary(list.map((i) => ({ ...i.entry, enabled: true }) as McpServerSpec))
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [needsLibrary])
+  const mcpCurrent: McpServerSpec[] | null = scope === 'library' ? library : (project?.mcpServers ?? null)
+  const skillCurrent = useMemo(() => ({ roles: currentRoles, skills: project?.skills ?? [] }), [currentRoles, project?.skills])
+  const foldSummary = useMemo(
+    () => proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent, skills: skillCurrent }),
+    [proposal, currentRoles, mcpCurrent, skillCurrent]
+  )
+  const helperText =
+    proposal.kind === 'mcpServers' ? mcpApplyNote(scope) : proposal.kind === 'skills' ? skillsApplyNote(proposal.payload) : APPLY_NOTE[proposal.kind]
 
   const skip = (): void => {
     void submit(() => onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK }))
@@ -80,12 +119,18 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       agentId={agentId}
       focusDetails
       title={proposalTitle(proposal.kind)}
+      summary={foldSummary}
       helper={
-        proposal.kind === 'mcpServers'
-          ? mcpApplyNote(proposalScope(proposal.payload))
-          : proposal.kind === 'skills'
-            ? skillsApplyNote(proposal.payload)
-            : APPLY_NOTE[proposal.kind]
+        effect ? (
+          <>
+            {helperText}
+            <span className="proposal-effect" data-testid="proposal-effect">
+              {PROPOSAL_EFFECT_COPY[effect]}
+            </span>
+          </>
+        ) : (
+          helperText
+        )
       }
       primary={
         !revising ? (
@@ -104,6 +149,11 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
             <Button onClick={() => setRevising(true)} disabled={busy}>
               Request changes
             </Button>
+            {onDecline && (
+              <Button variant="ghost" onClick={() => void submit(async () => onDecline())} disabled={busy} testId="proposal-decline">
+                Not now
+              </Button>
+            )}
             {canSkip && (
               <Button onClick={skip} disabled={busy} testId="mcp-proposal-skip">
                 Skip
@@ -121,8 +171,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
       {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
-      {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} roleSlugs={currentRoles.map((r) => r.slug)} />}
-      {proposal.kind === 'skills' && <SkillsBody payload={proposal.payload} />}
+      {proposal.kind === 'mcpServers' && <McpProposalBody payload={proposal.payload} current={mcpCurrent} roles={currentRoles} library={library} secretInputs={secretInputs} />}
+      {proposal.kind === 'skills' && <SkillsProposalBody payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
       {revising && (
         <div className="proposal-feedback">
           <Textarea
@@ -130,7 +180,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
             aria-label="What should change?"
             value={feedback}
             onChange={setFeedback}
-            placeholder="What should change? The Architect revises and proposes again."
+            placeholder={revisePlaceholder(proposerName(runSummary))}
           />
         </div>
       )}
@@ -231,7 +281,7 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
         <RoleAvatar role={role} />
         <span className="org-diff-name">{role.name}</span>
         <span className="org-diff-meta">
-          reports to {parentLabel(role, all)} · {role.model}
+          reports to {parentLabel(role, all)} · {modelDisplay(role.model)}
           {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
         </span>
       </summary>
@@ -361,114 +411,5 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
         </Section>
       )}
     </>
-  )
-}
-
-/** Agent text is untrusted: plain text, clamped, never a link or Markdown. */
-function ClampText({ text }: { text: string }): ReactElement {
-  const [open, setOpen] = useState(false)
-  const long = text.length > 240 || text.split('\n').length > 4
-  return (
-    <>
-      <p className={`mcp-prop-text${long && !open ? ' clamped' : ''}`}>{text}</p>
-      {long && (
-        <Button variant="ghost" size="sm" onClick={() => setOpen((o) => !o)}>
-          {open ? 'Show less' : 'Show more'}
-        </Button>
-      )}
-    </>
-  )
-}
-
-function McpServersBody({ payload, roleSlugs }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload']; roleSlugs: string[] }): ReactElement {
-  const scope = proposalScope(payload)
-  const removals = removalLabels(payload)
-  return (
-    <div className="mcp-prop">
-      <div className="mcp-prop-scope">
-        <Badge tone="info" testId="mcp-proposal-scope">
-          {scope === 'library' ? 'Library' : 'This project'}
-        </Badge>
-        <span className="mcp-prop-scope-note">{scope === 'library' ? 'Changes your MCP library' : 'Changes this project’s MCP servers'}</span>
-      </div>
-      <ClampText text={payload.rationale} />
-      {payload.upsert.map((s) => {
-        const pin = pinState(s)
-        const secrets = secretsLine(payload, s.id)
-        const cmd = proposalCommand(s)
-        const source = proposalSource(s)
-        const who = whoCanUse(s, roleSlugs, scope)
-        return (
-          <div key={s.id} className="mcp-prop-server" data-server={clampLabel(s.name)}>
-            <div className="mcp-prop-head">
-              <strong>{upsertAction(s, scope)}</strong>
-              {scope === 'project' && s.projectOnly && !s.libraryId && <Badge tone="neutral">Project only</Badge>}
-              {pin === 'pinned' && (
-                <Badge tone="success" icon={Check}>
-                  Pinned
-                </Badge>
-              )}
-              {pin === 'unpinned' && (
-                <Badge tone="danger" icon={TriangleAlert}>
-                  Version not pinned
-                </Badge>
-              )}
-            </div>
-            {s.description && <ClampText text={s.description} />}
-            {source && <div className="mcp-prop-source muted">{source}</div>}
-            {cmd && (
-              <div className="mcpi-command">
-                <div className="code-block" data-testid="mcp-proposal-command" title={cmd}>
-                  {cmd}
-                </div>
-                <CopyButton text={cmd} label={s.transport === 'stdio' ? 'Copy command' : 'Copy URL'} />
-              </div>
-            )}
-            <ul className="mcp-prop-effects">
-              <li>{effectLine(s)}</li>
-              {who && <li>Who can use it: {who}</li>}
-              {secrets && <li>{secrets}</li>}
-            </ul>
-          </div>
-        )
-      })}
-      {removals.length > 0 && (
-        <Section title="Removals">
-          <ul className="mcp-prop-effects">
-            {removals.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
-        </Section>
-      )}
-    </div>
-  )
-}
-
-function SkillsBody({ payload }: { payload: Extract<Proposal, { kind: 'skills' }>['payload'] }): ReactElement {
-  return (
-    <div className="skill-prop">
-      <p className="proposal-rationale">{payload.rationale}</p>
-      <ul className="skill-prop-list" aria-label="Skills in this proposal">
-        {payload.items.map((item, i) => (
-          <li key={`${item.draft.name}-${i}`} className="skill-prop-item" data-testid="proposal-skill-item" data-skill={clampLabel(item.draft.name)}>
-            <div className="skill-prop-head">
-              <Badge tone={item.action === 'create' ? 'success' : 'warning'}>{item.action === 'create' ? 'New' : 'Update'}</Badge>
-              <Badge tone="info">{item.scope === 'library' ? 'Library' : 'This project'}</Badge>
-              <span className="skill-prop-name mono">{item.draft.name}</span>
-            </div>
-            {item.draft.description && <ClampText text={item.draft.description} />}
-            {item.scope === 'project' && item.roles && item.roles.length > 0 && <div className="skill-prop-roles muted">Roles: {item.roles.join(', ')}</div>}
-            {item.scope === 'project' && (!item.roles || item.roles.length === 0) && <div className="skill-prop-roles muted">No roles</div>}
-            <details className="skill-prop-body">
-              <summary>Show instructions</summary>
-              <div className="skill-prop-md">
-                <Markdown text={item.draft.body} />
-              </div>
-            </details>
-          </li>
-        ))}
-      </ul>
-    </div>
   )
 }

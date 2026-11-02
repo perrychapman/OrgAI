@@ -1,4 +1,12 @@
 /** Diff of a proposed org chart against the project's current one (spec 12.3). Pure; no UI. */
+import { MODEL_TIER_OPTIONS } from '@shared/types'
+import { settingTier, tierForModel } from '@shared/defaults'
+
+/** The tier name the user chose ("Fast") for a tier, or a vendor alias or id that maps to one; any other model is kept as is. */
+export function modelDisplay(model: string): string {
+  const tier = settingTier(model) ?? tierForModel(model)
+  return tier ? (MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label ?? model) : model
+}
 
 /** The fields the diff reads. Both the project's Role and a proposal payload role satisfy it. */
 export interface DiffRole {
@@ -66,7 +74,7 @@ function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRo
     if (from !== to) out.push({ field, label, from, to })
   }
   push('name', 'name', before.name, after.name)
-  push('model', 'model', before.model, after.model)
+  push('model', 'model', modelDisplay(before.model), modelDisplay(after.model))
   push('reportsTo', 'reports to', parentName(before, cur), parentName(after, prop))
   // A field the proposal leaves out (undefined) is not a change: only what it states is compared.
   if (after.description !== undefined) push('description', 'description', before.description ?? '', after.description)

@@ -337,7 +337,7 @@ try {
     check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the project Skill assistant opens on the Live tab')
     check((await pitem.count()) > 0, 'the project Skill assistant raises a proposal')
     const roleText = await pitem.locator('.skill-prop-roles').innerText().catch(() => '')
-    check(/Roles:\s*\S/.test(roleText), 'the project skill proposal lists a role', roleText)
+    check(/Who loads it:\s*\S/.test(roleText), 'the project skill proposal says who loads it', roleText)
     await endSession(page)
 
     // Skill assistant

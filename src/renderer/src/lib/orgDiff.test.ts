@@ -42,7 +42,7 @@ describe('diffOrgChart', () => {
     expect(d.added.map((r) => r.slug)).toEqual(['rev', 'qa'])
     expect(d.removed.map((r) => r.slug)).toEqual(['res'])
     expect(d.changed).toHaveLength(1)
-    expect(d.changed[0].changes).toEqual([{ field: 'model', label: 'model', from: 'sonnet', to: 'opus' }])
+    expect(d.changed[0].changes).toEqual([{ field: 'model', label: 'model', from: 'Everyday', to: 'Deep' }])
     expect(d.summary).toBe('2 added, 1 removed, 1 changed')
   })
 
