@@ -11,6 +11,11 @@ export const COMPACT_FRAME_HEIGHT = 480
 export const COMPACT_EXIT_MARGIN = 64
 const FrameContext = createContext({ compact: false })
 
+/** True while the surrounding CanvasFrame is under the compact height (cards fold their body, a proposal may take the stage). */
+export function useFrameCompact(): boolean {
+  return useContext(FrameContext).compact
+}
+
 
 /**
  * Canvas region with named slots. Nothing is positioned over the canvas: every slot is a grid area.
@@ -75,12 +80,13 @@ export function FrameStage({ children }: { children?: ReactNode }): ReactElement
   return <div className="frame-stage">{children}</div>
 }
 
-/** Decision tray. `label` names the region for assistive tech; content is announced politely. */
+/** Decision tray. `label` names the region for assistive tech; arrivals are announced through `announcement`. */
 export function FrameTray({
   children,
   label = 'Decisions',
   shortcutHint,
-  shortcutKeys
+  shortcutKeys,
+  announcement
 }: {
   children?: ReactNode
   label?: string
@@ -88,12 +94,19 @@ export function FrameTray({
   shortcutHint?: string
   /** `aria-keyshortcuts` value for that shortcut. */
   shortcutKeys?: string
+  /** One short line for assistive tech when something arrives ("New decision: ..."). The only live text in the tray. */
+  announcement?: string
 }): ReactElement | null {
   const { compact } = useContext(FrameContext)
   if (!hasContent(children)) return null
   return (
     // tabIndex -1: a programmatic jump can land on the region itself when it holds no button.
-    <section className="frame-tray" data-compact={compact ? 'true' : undefined} aria-label={label} aria-live="polite" tabIndex={-1} title={shortcutHint} aria-keyshortcuts={shortcutKeys}>
+    <section className="frame-tray" data-compact={compact ? 'true' : undefined} aria-label={label} tabIndex={-1} title={shortcutHint} aria-keyshortcuts={shortcutKeys}>
+      {announcement ? (
+        <p className="sr-only" role="status" aria-live="polite" data-testid="tray-announce">
+          {announcement}
+        </p>
+      ) : null}
       {children}
     </section>
   )

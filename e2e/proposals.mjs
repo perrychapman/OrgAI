@@ -58,15 +58,20 @@ const geometry = () =>
     const body = card?.querySelector('.decision-body')
     const server = card?.querySelector('[data-testid=mcp-proposal-server]')
     const trayBox = box(tray)
-    // Nothing in the stage may be positioned over the tray (no fixed/absolute overlay escaping the stage).
+    // Nothing in the stage may reach over the tray: absolute or fixed elements, counted whenever the stage is visible,
+    // by the part that shows inside the stage.
     let overlap = 0
-    if (stage && trayBox) {
+    const stageHidden = !stage || getComputedStyle(stage).visibility === 'hidden'
+    if (stage && trayBox && !stageHidden) {
       const sb = stage.getBoundingClientRect()
-      if (sb.height > 8) {
-        for (const el of stage.querySelectorAll('*')) {
-          const b = el.getBoundingClientRect()
-          if (b.width > 0 && b.height > 0 && b.bottom > trayBox.t + 1 && b.top < trayBox.b && b.right > trayBox.l && b.left < trayBox.r && getComputedStyle(el).position === 'fixed') overlap++
-        }
+      for (const el of stage.querySelectorAll('*')) {
+        const pos = getComputedStyle(el).position
+        if (pos !== 'fixed' && pos !== 'absolute') continue
+        const b = el.getBoundingClientRect()
+        if (b.width <= 0 || b.height <= 0) continue
+        const top = Math.max(b.top, sb.top)
+        const bottom = Math.min(b.bottom, pos === 'fixed' ? b.bottom : sb.bottom)
+        if (bottom > top && bottom > trayBox.t + 1 && top < trayBox.b && b.right > trayBox.l && b.left < trayBox.r) overlap++
       }
     }
     const hint = document.querySelector('.composer-hint')
@@ -81,6 +86,7 @@ const geometry = () =>
       compact: tray?.getAttribute('data-compact') ?? null,
       expanded: card?.getAttribute('data-expanded') ?? null,
       overlap,
+      stageVisibility: stage ? getComputedStyle(stage).visibility : null,
       composer: box(document.querySelector('.composer')),
       composerHint: hint ? getComputedStyle(hint).display : null
     }
@@ -204,6 +210,18 @@ try {
   const layout1 = await page.locator('.run-body').getAttribute('data-layout')
   check(layout0 !== layout1 && g.expanded === 'true' && !!g.body && g.body.h >= 200 && !!g.stage && g.stage.h < 2, `the ${layout1} layout gives the expanded card the frame too (was ${layout0})`, JSON.stringify({ body: g.body, stage: g.stage }))
   await shot('mcp-expanded-graph-layout-1024')
+  check(g.stageVisibility === 'hidden', 'the collapsed stage is visibility: hidden', String(g.stageVisibility))
+  check(
+    (await page.locator('[aria-label="Zoom in"]:visible, [aria-label="Fit to view"]:visible, [data-testid=canvas-legend-trigger]:visible').count()) === 0,
+    'zoom, fit and legend controls are out of reach while the stage is collapsed'
+  )
+  await details().focus()
+  const tabbed = []
+  for (let i = 0; i < 14; i++) {
+    await page.keyboard.press('Tab')
+    tabbed.push(await page.evaluate(() => !!document.activeElement?.closest('.frame-stage')))
+  }
+  check(!tabbed.some(Boolean), 'Tab from Details never lands inside the collapsed stage', tabbed.join(','))
   await details().click()
   await page.locator('[data-testid=run-layout-toggle]').click()
   await sleep(400)
@@ -296,6 +314,64 @@ try {
   await sleep(600)
   g = await geometry()
   check(!!g.stage && g.stage.h > 40, 'collapsing Details restores the stage with three decisions', JSON.stringify(g.stage))
+
+  // ---- Scenario 3: [mock:config-change], a work run proposes a project MCP server and a skill ----
+  await endSession(page)
+  writeScript({ delayMs: 200 })
+  await setSize(1600, 1000)
+  await setTheme('dark')
+  await projectTab(page, 'Live').click()
+  await page.keyboard.press('Control+t').catch(() => {})
+  await ta.waitFor({ timeout: 10_000 })
+  await ta.fill('Set up notes [mock:config-change]')
+  await page.locator('.composer .btn.primary').click()
+  const mcpCard = page.locator('.decision-card.kind-proposal')
+  await mcpCard.waitFor({ timeout: 30_000 })
+  await sleep(600)
+  const cardText = async () => ((await mcpCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(/mock-notes/.test(await cardText()), 'the first config-change card names the mock-notes server', (await cardText()).slice(0, 200))
+  await page.locator('[data-testid=needs-you-row]').click()
+  const need1 = page.locator('[data-testid=needs-you-list] .needs-item').first()
+  await need1.waitFor()
+  check(/^MCP servers:/.test(((await need1.innerText()) || '').replace(/\s+/g, ' ').trim()), 'Needs you labels the card "MCP servers:"')
+  await page.keyboard.press('Escape').catch(() => {})
+  const arrivalLine = ((await page.locator('[data-testid=tray-announce]').innerText().catch(() => '')) || '').trim()
+  check(/^New decision: MCP servers/.test(arrivalLine), 'the tray announces the arrival with one short polite line', arrivalLine)
+  check((await page.locator('section.frame-tray').getAttribute('aria-live')) === null, 'the tray itself is not a live region')
+  const effect1 = ((await page.locator('[data-testid=proposal-effect]').first().innerText().catch(() => '')) || '').trim()
+  check(/^Takes effect/.test(effect1), 'the MCP card states when it takes effect', effect1)
+  const secrets = await page.locator('[data-testid=mcp-proposal-secret]').count()
+  log('secret slots on the mock MCP proposal:', secrets, '(the mock server has none unless the mock changes)')
+  if (secrets > 0) await page.locator('[data-testid=mcp-proposal-secret] input').first().fill('e2e-secret')
+  await shot('config-change-mcp-1600')
+
+  // Decline the MCP card with a note: it resolves, leaves no next-link, and the run goes on to the skills card.
+  await page.locator('[data-testid=proposal-decline]').click()
+  const note = page.locator('[data-testid=proposal-decline-note]')
+  await note.waitFor()
+  await note.fill('Not needed for this task')
+  await page.locator('[data-testid=proposal-decline-send]').click()
+  await page.locator('.decision-card.kind-proposal', { hasText: 'mock-config-skill' }).waitFor({ timeout: 30_000 })
+  check((await page.locator('[data-testid^=proposal-next-]').count()) === 0, 'a declined proposal leaves no next-link')
+  const need2 = ((await cardText()) || '')
+  check(/mock-config-skill/.test(need2), 'the run continued after the decline and proposed the skill', need2.slice(0, 160))
+
+  // Approve the skills card at 1024x640 (light): effect line after Details, then the project skills link.
+  await setSize(1024, 640)
+  await setTheme('light')
+  if ((await details().isVisible().catch(() => false)) && (await mcpCard.getAttribute('data-expanded')) !== 'true') await details().click()
+  await sleep(500)
+  const effect2 = ((await page.locator('[data-testid=proposal-effect]').first().innerText().catch(() => '')) || '').trim()
+  check(/^Takes effect/.test(effect2), 'the skills card states when it takes effect', effect2)
+  const items = await page.locator('[data-testid=proposal-skill-item][data-action=create]').count()
+  check(items === 1, 'the skills card lists one created skill', String(items))
+  await shot('config-change-skills-1024-light')
+  await page.locator('.decision-card.kind-proposal .btn.primary').click()
+  await page.locator('[data-testid=proposal-next-project-skills]').waitFor({ timeout: 15_000 })
+  check(true, 'approving the skills proposal shows its project link in the run metadata')
+  check((await page.locator('[data-testid=proposal-next-secrets]').count()) === (secrets > 0 ? 0 : 0), 'no secrets notice when no slot was left empty')
+  const settled = await page.evaluate(() => document.querySelectorAll('.decision-card.kind-proposal').length)
+  check(settled === 0, 'no proposal card is left open', String(settled))
 } finally {
   await cleanup(app, page, NAME)
   finish('proposals')

@@ -195,6 +195,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const edgeStyle = useHtmlAttr('data-canvas-edges', 'curved') as keyof typeof EDGE_TYPE
   const showMinimap = useHtmlAttr('data-canvas-minimap', 'off') === 'on'
   const reducedMotion = useReducedMotion()
+  // The stage collapses to height 0 while an expanded proposal takes a compact frame: nothing to fit then.
+  const stageHidden = (): boolean => (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
   const edgeType = EDGE_TYPE[edgeStyle] ?? 'default'
 
   /** The runtime refused a Continue because the session is open in another live run. */
@@ -312,7 +314,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (prevLayout.current === layout) return undefined
     prevLayout.current = layout
     if (layout !== 'canvas') return undefined
-    const t = setTimeout(() => fitView(fitOpts({ duration: 0 })), 80)
+    const t = setTimeout(() => {
+      if (stageHidden()) return
+      void fitView(fitOpts({ duration: 0 }))
+    }, 80)
     return () => clearTimeout(t)
   }, [layout, fitView])
 
@@ -320,7 +325,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   useEffect(() => {
     if (topologyKey && topologyKey !== lastTopology.current) {
       lastTopology.current = topologyKey
-      const t = setTimeout(() => fitView(fitOpts({ duration: 500 })), 60)
+      const t = setTimeout(() => {
+        if (stageHidden()) return
+        void fitView(fitOpts({ duration: reducedMotion ? 0 : 500 }))
+      }, 60)
       return () => clearTimeout(t)
     }
     return undefined
@@ -491,8 +499,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   useEffect(() => {
     const t = setTimeout(() => {
       // An expanded proposal in a compact frame takes the stage's room (height 0): nothing to fit then.
-      if ((canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8) return
-      void fitView(fitOpts({ duration: 200 }))
+      if (stageHidden()) return
+      void fitView(fitOpts({ duration: reducedMotion ? 0 : 200 }))
     }, 80)
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
@@ -543,6 +551,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   // Re-fit when the canvas container itself changes size (window resize, side panel, decisions region).
   const canvasRef = useRef<HTMLDivElement>(null)
+  const reducedRef = useRef(reducedMotion)
+  reducedRef.current = reducedMotion
   useEffect(() => {
     const el = canvasRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
@@ -563,8 +573,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       }
       clearTimeout(t)
       t = setTimeout(() => {
-        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void fitView(fitOpts({ duration: reduced ? 0 : 150 }))
+        if (stageHidden()) return
+        void fitView(fitOpts({ duration: reducedRef.current ? 0 : 150 }))
       }, 100)
     })
     ro.observe(el)
@@ -591,9 +601,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Keyboard zoom while the canvas has focus: + / - and 0 to fit (the toolbar buttons do the same).
   const onCanvasKey = (e: React.KeyboardEvent): void => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
-    if (e.key === '+' || e.key === '=') void zoomIn({ duration: 150 })
-    else if (e.key === '-' || e.key === '_') void zoomOut({ duration: 150 })
-    else if (e.key === '0') void fitView(fitOpts({ duration: 150 }))
+    if (e.key === '+' || e.key === '=') void zoomIn({ duration: reducedMotion ? 0 : 150 })
+    else if (e.key === '-' || e.key === '_') void zoomOut({ duration: reducedMotion ? 0 : 150 })
+    else if (e.key === '0' && !stageHidden()) void fitView(fitOpts({ duration: reducedMotion ? 0 : 150 }))
   }
 
   const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
@@ -665,6 +675,26 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const pinShown = (): void => {
     if (shownKey && shownKey !== pickedDecision) setPickedDecision(shownKey)
   }
+
+  // One short polite line when a new decision arrives. The tray itself is not a live region: expanding Details would
+  // otherwise read a whole proposal body aloud.
+  const [arrival, setArrival] = useState('')
+  const seenDecisions = useRef<{ runId: string; keys: Set<string> } | null>(null)
+  const decisionKeys = decisionItems.map((d) => d.key).join('|')
+  useEffect(() => {
+    const prior = seenDecisions.current
+    const now = new Set(decisionItems.filter((d) => !isRecord(d.key)).map((d) => d.key))
+    seenDecisions.current = { runId, keys: now }
+    // First look at a run (or a different run in this view): what is already open is not an arrival.
+    if (!prior || prior.runId !== runId) {
+      setArrival('')
+      return
+    }
+    const seen = prior.keys
+    const fresh = decisionItems.find((d) => now.has(d.key) && !seen.has(d.key))
+    if (fresh) setArrival(`New decision: ${fresh.label}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decisionKeys, runId])
 
   // What the user approved in this view; the setup banner only claims what was actually applied.
   const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
@@ -755,7 +785,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </ReactFlow>
             )}
           </FrameStage>
-          <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
+          <FrameTray label="Decisions" announcement={decisionItems.length > 0 ? arrival : undefined} shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
           {status === 'paused' && <PauseBanner runId={runId} />}
 
           {status !== 'paused' && run.plan?.status === 'blocked' && (
@@ -867,12 +897,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 /** Zoom out, zoom in, fit and the legend: the canvas controls, in the toolbar so nothing sits on the canvas. */
 function CanvasTools(): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow()
+  const reduced = useReducedMotion()
+  const stageShown = (): boolean => (document.querySelector('.frame-stage')?.clientHeight ?? 1) >= 8
   return (
-    <>
+    <span className="canvas-tools">
       <span className="zoom-group" role="group" aria-label="Canvas zoom">
-        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => void zoomOut({ duration: 150 })} />
-        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => void zoomIn({ duration: 150 })} />
-        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => void fitView(fitOpts({ duration: 150 }))} />
+        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => void zoomOut({ duration: reduced ? 0 : 150 })} />
+        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => void zoomIn({ duration: reduced ? 0 : 150 })} />
+        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && void fitView(fitOpts({ duration: reduced ? 0 : 150 }))} />
       </span>
       <Popover
         label="Canvas legend"
@@ -916,7 +948,7 @@ function CanvasTools(): ReactElement {
           </li>
         </ul>
       </Popover>
-    </>
+    </span>
   )
 }
 
