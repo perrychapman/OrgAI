@@ -1825,6 +1825,87 @@ describe('who ended a run (RunSummary.endedBy)', () => {
     expect(saved.endedBy).toBeUndefined()
     expect(saved.endedWithApp).toBeUndefined()
     expect(saved.endedWhile).toBeUndefined()
+    // Its broadcast statuses carry no end facts either.
+    const statuses = events.filter((e): e is Extract<RunEvent, { type: 'run.status' }> => e.type === 'run.status' && e.runId === run.id)
+    expect(statuses.some((e) => e.status === 'finished')).toBe(true)
+    for (const e of statuses) {
+      expect(e.endedBy).toBeUndefined()
+      expect(e.endedWhile).toBeUndefined()
+    }
+  })
+
+  describe('the run.status event carries them', () => {
+    const statusesOf = (runId: string): Extract<RunEvent, { type: 'run.status' }>[] =>
+      events.filter((e): e is Extract<RunEvent, { type: 'run.status' }> => e.type === 'run.status' && e.runId === runId)
+
+    it('End session broadcasts stopping then finished with endedBy user', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+      const run = await m.start({ project: p, prompt: 'Work' })
+      await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+      await m.stop(run.id)
+      await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'finished'))
+      const st = statusesOf(run.id)
+      const stopping = st.findIndex((e) => e.status === 'stopping')
+      const finished = st.findIndex((e) => e.status === 'finished')
+      expect(stopping).toBeGreaterThanOrEqual(0)
+      expect(finished).toBeGreaterThan(stopping)
+      expect(st[stopping].endedBy).toBe('user')
+      expect(st[finished].endedBy).toBe('user')
+      expect(st[finished].endedWhile).toBeUndefined()
+      // Earlier statuses carry none.
+      for (const e of st.slice(0, stopping)) expect(e.endedBy).toBeUndefined()
+    })
+
+    it('a quit cut broadcasts finished with endedBy app and endedWhile', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+      const run = await m.start({ project: p, prompt: 'Work' })
+      await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+      await m.stopAll({ reason: 'quit' })
+      const fin = statusesOf(run.id).filter((e) => e.status === 'finished')
+      expect(fin.length).toBeGreaterThan(0)
+      for (const e of fin) expect(e).toMatchObject({ endedBy: 'app', endedWhile: 'waiting' })
+      expect(statusesOf(run.id).some((e) => e.status === 'stopping')).toBe(false)
+    })
+
+    it('a session that never reports its end gets a finished broadcast from the quit write-out', async () => {
+      const adapter: RuntimeAdapter = {
+        id: 'mock',
+        complete: async () => '',
+        start: async (ctx) => {
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-mute' })
+          return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+        }
+      }
+      const p = makeProject({ path: join(dir, 'repo') })
+      const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+      const run = await m.start({ project: p, prompt: 'Mute' })
+      await m.stopAll({ reason: 'quit' })
+      const fin = statusesOf(run.id).filter((e) => e.status === 'finished')
+      expect(fin).toHaveLength(1)
+      expect(fin[0]).toMatchObject({ endedBy: 'app', endedWhile: 'working' })
+    })
+
+    it('drops end facts an adapter put on its own events', async () => {
+      const adapter: RuntimeAdapter = {
+        id: 'mock',
+        complete: async () => '',
+        start: async (ctx) => {
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-forge', endedBy: 'user' })
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished', endedBy: 'app', endedWhile: 'working' })
+          return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+        }
+      }
+      const p = makeProject({ path: join(dir, 'repo') })
+      const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+      const run = await m.start({ project: p, prompt: 'Forge' })
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+      for (const e of statusesOf(run.id)) {
+        expect(e.endedBy).toBeUndefined()
+        expect(e.endedWhile).toBeUndefined()
+      }
+    })
   })
 })
 
@@ -1877,6 +1958,9 @@ describe('quitting (markQuit, the quitting flag, starts in flight)', () => {
     const want = { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' }
     expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject(want)
     expect(recordOnDisk(run.id)).toMatchObject(want)
+    // The forced finished summary is broadcast too, once, with who cut it.
+    const fin = events.filter((e) => e.type === 'run.status' && e.runId === run.id && e.status === 'finished')
+    expect(fin).toEqual([{ type: 'run.status', runId: run.id, status: 'finished', endedBy: 'app', endedWhile: 'working' }])
   })
 
   it('End session then quit before the session ends keeps endedBy user, on disk from the stopping save', async () => {
