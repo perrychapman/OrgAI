@@ -37,8 +37,8 @@ import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRa
 import { costFromPrice, priceFor } from './pricing'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
-import { buildSkillPlugin, skillGate, type SkillPlugin } from './claudeSkills'
-import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
+import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
+import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
 import { matchingRule } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
@@ -235,6 +235,75 @@ interface NextQuery {
   tools: Map<string, string[]>
   /** Set when these servers were left out after failed starts: the orchestrator is told they could not be attached. */
   dropped?: string[]
+  /**
+   * The skill plugin this query loads (a config change rebuilt it): installed as the session's plugin when the query
+   * starts; the one it replaces is removed only after a query's init. undefined = the current plugin; null = none.
+   */
+  plugin?: SkillPlugin | null
+  /** The plugin in use before this restart rebuilt it (a fallback after failed starts returns to it). */
+  prevPlugin?: SkillPlugin | null
+  /** Set when the restart applies an approved config change (propose_mcp_servers / propose_skills): what the notice names. */
+  config?: RestartConfig
+  /** Set when a rebuilt skill plugin was left out after failed starts: the orchestrator is told the skill changes wait. */
+  droppedSkills?: boolean
+}
+
+/** The parts of approved config changes a restart brings into the session (ConfigChange, after the adapter sorted it). */
+interface RestartConfig {
+  /** Existing servers whose roles changed so some role's whitelist grows. */
+  regranted: string[]
+  /** Servers removed or turned off (already denied by the gate; named in the notice). */
+  removed: string[]
+  /** The skills or skill grants changed. */
+  skills: boolean
+}
+
+/** One skill in the config notice: its qualified name and the roles granted it. */
+type SkillNoticeEntry = { name: string; roles: Pick<Role, 'name' | 'slug'>[] }
+
+/** Per role slug: the tools and MCP servers its AgentDefinition whitelists (fixed for the life of a query). */
+export type GrantSnapshot = Map<string, { tools: Set<string>; mcp: Set<string> }>
+
+/** The whitelists of a query's agent definitions. Pure. */
+export function grantSnapshot(agents: Record<string, AgentDefinition>): GrantSnapshot {
+  const out: GrantSnapshot = new Map()
+  for (const [slug, def] of Object.entries(agents)) {
+    const mcp = (def.mcpServers ?? []).map((s) => (typeof s === 'string' ? s : Object.keys(s).join(',')))
+    out.set(slug, { tools: new Set(def.tools ?? []), mcp: new Set(mcp) })
+  }
+  return out
+}
+
+/**
+ * True when `after` lets some role use a tool or MCP server that `before` did not: only a re-created query can give
+ * it (whitelists are exact and fixed per query). Losses never count, the PreToolUse gates enforce them at the next
+ * call. A missing `before` counts as gained. Pure.
+ */
+export function grantsGained(before: GrantSnapshot | undefined, after: GrantSnapshot): boolean {
+  if (!before) return true
+  for (const [slug, now] of after) {
+    const was = before.get(slug)
+    if (!was) return true
+    for (const t of now.tools) if (!was.tools.has(t)) return true
+    for (const m of now.mcp) if (!was.mcp.has(m)) return true
+  }
+  return false
+}
+
+/** What decides whether an upserted server was (re)defined: everything that changes what runs or where it connects. */
+export function mcpDefinitionKey(spec: McpServerSpec): string {
+  const sorted = (r?: Record<string, string>) => Object.entries(r ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  return JSON.stringify([
+    spec.transport,
+    spec.command ?? null,
+    spec.args ?? [],
+    spec.url ?? null,
+    sorted(spec.env),
+    sorted(spec.headers),
+    [...(spec.secretEnv ?? [])].sort(),
+    [...(spec.secretHeaders ?? [])].sort(),
+    spec.libraryId ?? null
+  ])
 }
 
 /** What decides whether a session may be re-created now to attach MCP servers. */
@@ -295,6 +364,35 @@ export function mcpAttachedNotice(servers: { name: string; tools: string[]; role
     return `The MCP server ${name} is attached now. ${tools} ${roles}`
   })
   return `[OrgAI harness] ${parts.join(' ')} Calls to it may still ask the user for permission under the project's permission mode. Reports you spawn from now on get it if their role is granted it.`
+}
+
+/**
+ * The harness message after a restart that applied an approved config change: the attached or re-granted servers (as
+ * mcpAttachedNotice), the servers removed or turned off, and the skills now in the session. `skills` undefined = no
+ * skill change; null = the skills changed but the list could not be read. Every name goes through datum(); at most
+ * MCP_NOTICE_TOOL_CAP skills are listed.
+ */
+export function configChangeNotice(c: {
+  servers: Parameters<typeof mcpAttachedNotice>[0]
+  removed: string[]
+  skills?: { name: string; roles: Pick<Role, 'name' | 'slug'>[] }[] | null
+}): string {
+  let text = c.servers.length ? mcpAttachedNotice(c.servers) : '[OrgAI harness] The configuration change approved this run is in effect now.'
+  if (c.removed.length) {
+    const one = c.removed.length === 1
+    text += ` The MCP server${one ? '' : 's'} ${c.removed.map((n) => datum(n, 64)).join(', ')} ${one ? 'was' : 'were'} removed or turned off: ${one ? 'its' : 'their'} tools are no longer available.`
+  }
+  if (c.skills === null) text += ' The project\'s skills changed and are loaded in this session now; load one with the Skill tool and its full name.'
+  else if (c.skills && !c.skills.length) text += ' No skills are granted in this session now.'
+  else if (c.skills) {
+    const listed = c.skills.slice(0, MCP_NOTICE_TOOL_CAP).map((s) => {
+      const roles = s.roles.length ? s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ') : 'no role'
+      return `${datum(s.name, 140)} for ${roles}`
+    })
+    const more = c.skills.length > MCP_NOTICE_TOOL_CAP ? `, and ${c.skills.length - MCP_NOTICE_TOOL_CAP} more` : ''
+    text += ` Skills in this session now: ${listed.join('; ')}${more}. Agents load one with the Skill tool and its full name, prefix included.`
+  }
+  return text
 }
 
 /** Names of the MCP servers a role may use (mcpServersForRole), root included. */
@@ -687,8 +785,26 @@ export class ClaudeSession implements RuntimeSession {
   private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
-  /** The run-scoped orgai skills plugin (work runs with granted skills); removed at stop and teardown. */
+  /** The run-scoped orgai skills plugin of the current query (work runs with granted skills). */
   private skillPlugin?: SkillPlugin
+  /**
+   * Every skill plugin this session built. A config change may rebuild the plugin for a restart: the replaced one is
+   * removed once a query using another has sent its init (retirePlugins), and all of them at stop and teardown.
+   */
+  private plugins = new Set<SkillPlugin>()
+  /** A plugin maybeRestartForMcp built and has not handed to a next query or dropped yet. */
+  private pluginInFlight?: SkillPlugin
+  /** Approved config changes waiting for a restart (pendingMcp holds the servers whose tools are announced). */
+  private pendingConfig: RestartConfig & { due: boolean } = { due: false, regranted: [], removed: [], skills: false }
+  /** Counts configChanged calls, so a restart built before a later change leaves that change pending. */
+  private configGen = 0
+  /** Server name -> mcpDefinitionKey as this session last saw it: a new or changed definition counts as installed this run. */
+  private knownDefs = new Map<string, string>()
+  /** The whitelists of the running query, and of the live config as of the latest config change. */
+  private queryGrants?: GrantSnapshot
+  private liveGrants?: GrantSnapshot
+  /** Built options -> their whitelists, read when that query starts. */
+  private optionGrants = new WeakMap<Options, GrantSnapshot>()
   /** Skill tool_use ids the gate allowed, until PostToolUse confirms the call ran (then skill.used is emitted). */
   private gatedSkillCalls = new Map<string, { agentId: string; skill: RunSkill }>()
   /** The harness tools of this run, bound once (prepare()); a restart re-serves the same tools. */
@@ -709,7 +825,9 @@ export class ClaudeSession implements RuntimeSession {
   /** Queries re-created for MCP restarts so far. */
   private restarts = 0
   /** The latest restart's servers and their tool names (a retried restart announces them again). */
-  private lastRestart: { servers: string[]; tools: Map<string, string[]> } = { servers: [], tools: new Map() }
+  private lastRestart: Omit<NextQuery, 'options' | 'dropped' | 'droppedSkills'> = { servers: [], tools: new Map() }
+  /** The latest restart (or its fallback) came from a config change: the pause wording names that. */
+  private restartForConfig = false
   /** Restarted queries that failed before their init since the last one that started (reset at init). */
   private restartFailures = 0
   /** Servers left out of every later query after a restart with them could not start. */
@@ -836,7 +954,7 @@ export class ClaudeSession implements RuntimeSession {
     this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
-    this.skillPlugin?.cleanup()
+    this.cleanupPlugins()
   }
 
   // ---------- internals ----------
@@ -1119,8 +1237,17 @@ export class ClaudeSession implements RuntimeSession {
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: mcpDenial } }
       }
       // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
+      // It reads the LIVE grants (ctx.skills()), so an ungrant or a removal approved mid-run applies at the next call.
       if (input.tool_name === 'Skill') {
-        const verdict = skillGate(input.tool_input, this.callerRole(input)?.id ?? '', this.skillPlugin?.names ?? new Map())
+        let names: Map<string, RunSkill>
+        try {
+          names = this.skillNamesFor(this.skillPlugin)
+        } catch (e) {
+          const reason = 'OrgAI could not check which skills this agent may use, so the call was refused. Try again shortly.'
+          this.log('warn', `Could not read the run's skills for a Skill call: ${(e as Error).message}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
+        }
+        const verdict = skillGate(input.tool_input, this.callerRole(input)?.id ?? '', names)
         if (!verdict.allow) {
           this.log('warn', `Blocked Skill call by ${this.agents.get(agentId)?.name ?? agentId}: ${verdict.reason}`)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }
@@ -1375,6 +1502,7 @@ export class ClaudeSession implements RuntimeSession {
   private async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     // Every server an agent asked for counts as installed this run, attached or not (server-level rules skip it).
     this.attachedMcp.add(spec.name)
+    this.knownDefs.set(spec.name, mcpDefinitionKey(spec))
     const resolved = await this.resolvedServers()
     this.noteSecrets(resolved)
     if (!resolved.some((r) => r.spec.name === spec.name)) throw new Error(`MCP server "${spec.name}" is not configured for this run.`)
@@ -1391,6 +1519,168 @@ export class ClaudeSession implements RuntimeSession {
     this.pendingMcp.set(spec.name, tools)
     this.log('info', `MCP server ${spec.name} is connected; the agents get its tools once the orchestrator's turn ends and no report is running (the session is resumed with the new tools).`)
     return { prefix: `mcp__${spec.name}__`, availability: 'after-idle', ...(tools.length ? { tools } : {}) }
+  }
+
+  /**
+   * An approved propose_mcp_servers / propose_skills changed this run's project; ctx already returns the new config.
+   * - MCP: setMcpServers with the live resolved list at once (an added or redefined server connects, a removed one is
+   *   dropped from the session's dynamic servers), and the tool names of new servers are read when cheap. A removed
+   *   server leaves every attach record (pendingMcp, a pending regrant, the latest restart, droppedMcp, attachedMcp), so
+   *   no restart or fallback brings it back. A new or redefined server counts as installed this run (no saved
+   *   server-level rule approves it, as for request_mcp_install).
+   * - Skills: the Skill gate reads the live grants on every call, so an ungrant or a removal needs nothing more. A skill
+   *   the run plugin does not hold (or whose files changed) needs a rebuilt plugin, i.e. a restart.
+   * - Whitelists: the live agent definitions are compared with the running query's (grantsGained). A role that gains a
+   *   tool rule, an MCP server or the Skill tool needs the query re-created at idle (the same restart as addMcpServer:
+   *   idle detection, the withheld turn end, the budget floor, retries, fallback and pause).
+   * Answers 'after-idle' when this change gains something only a restart gives (the orchestrator is told when it is in
+   * effect), else 'now': removals, ungrants, turning a server off, a redefinition whose name every granted role already
+   * whitelists, and a skill grant the plugin and the role's Skill tool already cover (the gate allows it at once; the
+   * role's prompt lists it from the next restart or run). Rejects (the tool then says "from the next run") when the
+   * session is not running or the live config cannot be read.
+   */
+  private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
+    if (!this.q) throw new Error('The session is not running yet.')
+    this.configGen += 1
+    const upserted = [...new Set(change.mcp?.upserted ?? [])]
+    const removedNames = [...new Set(change.mcp?.removed ?? [])]
+    const live = this.liveMcpServers()
+    const byName = new Map(live.map((s) => [s.name, s]))
+    const lost: string[] = []
+    const fresh: string[] = []
+    const regranted: string[] = []
+    for (const name of removedNames) {
+      this.forgetServer(name)
+      lost.push(name)
+    }
+    for (const name of upserted) {
+      const spec = byName.get(name)
+      // Not in the run's list (e.g. a secret slot is still empty, so it never starts): treated like a removal.
+      if (!spec) {
+        this.forgetServer(name)
+        lost.push(name)
+        continue
+      }
+      // The user approved this definition: a server an earlier failed restart left out gets another try.
+      this.droppedMcp.delete(name)
+      const key = mcpDefinitionKey(spec)
+      const known = this.knownDefs.get(name)
+      this.knownDefs.set(name, key)
+      if (!spec.enabled) {
+        this.pendingMcp.delete(name)
+        this.pendingConfig.regranted = this.pendingConfig.regranted.filter((n) => n !== name)
+        lost.push(name)
+        continue
+      }
+      if (known !== key) {
+        this.attachedMcp.add(name)
+        fresh.push(name)
+      } else regranted.push(name)
+    }
+
+    const tools: Record<string, string[]> = {}
+    if (upserted.length || removedNames.length) await this.syncMcpServers(fresh, tools)
+
+    // Whitelists and the skill plugin: what only a re-created query can bring.
+    const skillsPending = !!change.skills || this.pendingConfig.skills
+    const stale = skillsPending && pluginStale(this.skillPlugin, this.ctx.skills?.() ?? [])
+    const now = this.grantsNow()
+    const gainedNow = grantsGained(this.liveGrants, now) || (!!change.skills && stale)
+    const needRestart = grantsGained(this.queryGrants, now) || stale
+    this.liveGrants = now
+    if (needRestart) {
+      this.pendingConfig.due = true
+      for (const n of fresh) this.pendingMcp.set(n, tools[n] ?? [])
+      for (const n of regranted) if (!this.pendingConfig.regranted.includes(n)) this.pendingConfig.regranted.push(n)
+      for (const n of lost) if (!this.pendingConfig.removed.includes(n)) this.pendingConfig.removed.push(n)
+      if (change.skills) this.pendingConfig.skills = true
+      this.log('info', 'A configuration change was approved; the agents get it once the orchestrator\'s turn ends and no report is running (the session is resumed with the new config).')
+      // Normally the orchestrator is mid-turn (it called the proposal tool); if it is already idle, check now.
+      if (!mcpRestartBlocker(this.restartState())) this.scheduleMcpRestart()
+    } else {
+      // Nothing a restart would add: an earlier pending config restart is not needed any more.
+      this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+      if (!this.restartDue()) this.releaseTurnEnd()
+    }
+    return { availability: gainedNow ? 'after-idle' : 'now', ...(Object.keys(tools).length ? { tools } : {}) }
+  }
+
+  /**
+   * Send the live resolved server list to the running query (setMcpServers), then read the tool names of `fresh`
+   * servers into `tools`. A failure is logged (redacted) and never thrown: the next restart builds from the live list.
+   * Skipped while a restart is under way (the old query is closing; the change is applied by a later restart).
+   */
+  private async syncMcpServers(fresh: string[], tools: Record<string, string[]>): Promise<void> {
+    const resolved = await this.resolvedServers()
+    this.noteSecrets(resolved)
+    if (this.restarting || this.nextQuery) {
+      this.log('info', 'A restart is under way; the MCP change reaches the session with a later restart.')
+      return
+    }
+    let errors: Record<string, string> = {}
+    try {
+      const result = await this.q.setMcpServers(this.mcpRecord(resolved))
+      errors = result.errors ?? {}
+    } catch (e) {
+      this.log('warn', `Could not update the session's MCP servers now (${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}); the change applies when the session is re-created.`)
+      return
+    }
+    for (const [name, err] of Object.entries(errors)) {
+      if (fresh.includes(name)) this.log('warn', `MCP server ${name} did not connect: ${redactSecrets(String(err), this.secrets)}`)
+    }
+    const names = fresh.filter((n) => !errors[n] && resolved.some((r) => r.spec.name === n))
+    const lists = await Promise.all(names.map((n) => this.serverTools(n, MCP_STATUS_WAIT_MS)))
+    names.forEach((n, i) => {
+      if (lists[i]!.length) tools[n] = lists[i]!
+    })
+  }
+
+  /** A server left the project: drop it from every attach record so no restart, fallback or rule path brings it back. */
+  private forgetServer(name: string): void {
+    this.pendingMcp.delete(name)
+    this.pendingConfig.regranted = this.pendingConfig.regranted.filter((n) => n !== name)
+    this.lastRestart = {
+      ...this.lastRestart,
+      servers: this.lastRestart.servers.filter((n) => n !== name),
+      tools: new Map([...this.lastRestart.tools].filter(([n]) => n !== name))
+    }
+    this.droppedMcp.delete(name)
+    this.attachedMcp.delete(name)
+    this.knownDefs.delete(name)
+  }
+
+  /** The whitelists the live config gives (live servers minus droppedMcp, the plugin's skills with live grants). */
+  private grantsNow(plugin = this.skillPlugin): GrantSnapshot {
+    const servers = this.liveMcpServers().filter((s) => !this.droppedMcp.has(s.name))
+    return grantSnapshot(buildAgents(this.ctx, this.harnessTools, this.isolation, { mcpServers: servers }, this.skillNamesFor(plugin)))
+  }
+
+  /** A plugin's skills with the live grants (livePluginNames). Throws when ctx.skills() does. */
+  private skillNamesFor(plugin: SkillPlugin | undefined): Map<string, RunSkill> {
+    if (!plugin) return new Map()
+    return this.ctx.skills ? livePluginNames(plugin, this.ctx.skills()) : new Map(plugin.names)
+  }
+
+  /** A restart is due: servers to attach (addMcpServer or a config change) or a config change that needs one. */
+  private restartDue(): boolean {
+    return this.pendingMcp.size > 0 || this.pendingConfig.due
+  }
+
+  /** Remove every plugin except the current query's (after its init) or all of them (stop, teardown). */
+  private retirePlugins(): void {
+    // The old query re-emits init on later turns: a plugin built for a restart that has not started yet stays.
+    const keep = new Set([this.skillPlugin, this.pluginInFlight, this.nextQuery?.plugin])
+    for (const p of this.plugins) {
+      if (keep.has(p)) continue
+      p.cleanup()
+      this.plugins.delete(p)
+    }
+  }
+
+  private cleanupPlugins(): void {
+    for (const p of this.plugins) p.cleanup()
+    this.skillPlugin?.cleanup()
   }
 
   /** Tool names (no prefix) a connected server reports through mcpServerStatus, polled for up to `waitMs`; [] when unknown. */
@@ -1447,7 +1737,7 @@ export class ClaudeSession implements RuntimeSession {
    * the held turn end is handed to the driver (releaseTurnEnd), so the run never stalls.
    */
   private onTurnEnded(): void {
-    if (this.pendingMcp.size && !mcpRestartBlocker(this.restartState())) {
+    if (this.restartDue() && !mcpRestartBlocker(this.restartState())) {
       this.turnEndDeferred = true
       return
     }
@@ -1458,7 +1748,7 @@ export class ClaudeSession implements RuntimeSession {
   /** A non-subagent task ended; the last one to end lets a waiting MCP restart go ahead. */
   private backgroundTaskEnded(taskId: string): void {
     if (!this.backgroundTasks.delete(taskId)) return
-    if (!this.backgroundTasks.size && this.pendingMcp.size) this.scheduleMcpRestart()
+    if (!this.backgroundTasks.size && this.restartDue()) this.scheduleMcpRestart()
   }
 
   /** Give the continuation driver the turn end held back for a restart that did not happen. */
@@ -1505,7 +1795,7 @@ export class ClaudeSession implements RuntimeSession {
    * for the next run. Resolves true when the restart was set in motion.
    */
   private async maybeRestartForMcp(): Promise<boolean> {
-    if (!this.pendingMcp.size || this.restarting || this.nextQuery || !this.sessionId) return false
+    if (!this.restartDue() || this.restarting || this.nextQuery || !this.sessionId) return false
     if (mcpRestartBlocker(this.restartState())) return false
     const budget = this.restartBudget()
     if (budget === null) {
@@ -1513,26 +1803,53 @@ export class ClaudeSession implements RuntimeSession {
       return false
     }
     this.restarting = true
+    // What this restart covers; anything a config change adds while the options are built stays pending (next restart).
+    const pending = new Map(this.pendingMcp)
+    const gen = this.configGen
+    const config: RestartConfig | undefined = this.pendingConfig.due
+      ? { regranted: [...this.pendingConfig.regranted], removed: [...this.pendingConfig.removed], skills: this.pendingConfig.skills }
+      : undefined
+    let plugin: SkillPlugin | null | undefined
     let built: Options
     try {
-      built = await this.buildOptions(this.sessionId, { maxBudgetUsd: budget })
+      // A skill change the run plugin does not cover: a fresh plugin from the live skills. The old one stays until a
+      // query using the new one has started (retirePlugins at init), so a fallback can still load it.
+      if (config?.skills) {
+        const live = this.ctx.skills?.() ?? []
+        if (pluginStale(this.skillPlugin, live)) plugin = this.newSkillPlugin(live)
+        this.pluginInFlight = plugin ?? undefined
+      }
+      built = await this.buildOptions(this.sessionId, { maxBudgetUsd: budget, plugin })
     } catch (e) {
       this.restarting = false
+      this.pluginInFlight = undefined
+      this.dropUnusedPlugin(plugin)
       this.giveUpPendingMcp(redactSecrets((e as Error).message ?? String(e), this.secrets))
       return false
     }
     // Something may have started meanwhile (a user message, a nudge, a report); the next turn end tries again.
-    if (mcpRestartBlocker(this.restartState()) || !this.pendingMcp.size) {
+    this.pluginInFlight = undefined
+    if (mcpRestartBlocker(this.restartState()) || !this.restartDue()) {
       this.restarting = false
+      this.dropUnusedPlugin(plugin)
       return false
     }
     // Off the pending list now (review L1): a result while the notice is prepared cannot start a second restart.
-    const tools = new Map(this.pendingMcp)
+    const tools = pending
     const servers = [...tools.keys()]
-    this.pendingMcp.clear()
-    this.nextQuery = { options: built, servers, tools }
+    for (const [name, t] of pending) if (this.pendingMcp.get(name) === t) this.pendingMcp.delete(name)
+    if (this.configGen === gen) this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+    this.restartForConfig = !!config
+    this.nextQuery = {
+      options: built,
+      servers,
+      tools,
+      ...(plugin !== undefined ? { plugin, prevPlugin: this.skillPlugin ?? null } : {}),
+      ...(config ? { config } : {})
+    }
     this.restarting = false
-    this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
+    if (config) this.log('info', `Resuming the session to apply the approved configuration change${servers.length ? ` (MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')})` : ''}.`)
+    else this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
     // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
     this.swapInput()
     const oldQ = this.q
@@ -1575,20 +1892,55 @@ export class ClaudeSession implements RuntimeSession {
     this.preInit = []
   }
 
-  /** The pending servers cannot reach this session: warn, and tell the orchestrator they wait for the next run. */
+  /** A fresh run plugin from the live skills granted to some role; null when none is granted. Tracked for cleanup. */
+  private newSkillPlugin(live: RunSkill[]): SkillPlugin | null {
+    const granted = live.filter((s) => s.roleIds.length)
+    if (!granted.length) return null
+    const plugin = buildSkillPlugin(granted, this.ctx.run.id, (m) => this.log('warn', m))
+    this.plugins.add(plugin)
+    return plugin
+  }
+
+  /** A plugin built for a restart that did not happen: remove it (never the current one). */
+  private dropUnusedPlugin(plugin: SkillPlugin | null | undefined): void {
+    if (!plugin || plugin === this.skillPlugin) return
+    plugin.cleanup()
+    this.plugins.delete(plugin)
+  }
+
+  /** The pending servers and config changes cannot reach this session: warn, and tell the orchestrator they wait for the next run. */
   private giveUpPendingMcp(why: string): void {
     const names = [...this.pendingMcp.keys()]
     this.pendingMcp.clear()
-    if (!names.length) return
-    this.tellNotAttached(names, why)
+    const config = this.pendingConfig
+    this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+    const other = config.due ? { regranted: config.regranted.filter((n) => !names.includes(n)), skills: config.skills } : undefined
+    if (!names.length && !other?.regranted.length && !other?.skills) return
+    this.tellNotAttached(names, why, false, other)
   }
 
-  /** Warn and tell the orchestrator (or, while held, the user's next message) that servers could not be attached. */
-  private tellNotAttached(names: string[], why: string, restart = false): void {
+  /**
+   * Warn and tell the orchestrator (or, while held, the user's next message) that servers could not be attached, or
+   * that the role changes (`other.regranted`) and skill changes of an approved config change could not be applied.
+   */
+  private tellNotAttached(names: string[], why: string, restart = false, other?: { regranted: string[]; skills: boolean }): void {
     const plural = names.length === 1 ? '' : 's'
-    this.log('warn', `Could not attach the MCP server${plural} ${names.join(', ')} to this session: ${why}`)
-    const text = `[OrgAI harness] The MCP server${plural} ${names.map((n) => datum(n, 64)).join(', ')} could not be attached to this session (${datum(why, 300)}). It is available from the next run; continue without it.`
-    const summary = `Could not attach the MCP server${plural} ${names.join(', ')}`
+    const parts: string[] = []
+    if (other?.regranted.length) parts.push(`the role changes for the MCP server${other.regranted.length === 1 ? '' : 's'} ${other.regranted.map((n) => datum(n, 64)).join(', ')}`)
+    if (other?.skills) parts.push('the skill changes')
+    const rest = parts.join(' and ')
+    let text: string
+    let summary: string
+    if (names.length) {
+      this.log('warn', `Could not attach the MCP server${plural} ${names.join(', ')} to this session: ${why}`)
+      text = `[OrgAI harness] The MCP server${plural} ${names.map((n) => datum(n, 64)).join(', ')} could not be attached to this session (${datum(why, 300)}). It is available from the next run; continue without it.`
+      if (rest) text += ` ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied either; they apply from the next run.`
+      summary = `Could not attach the MCP server${plural} ${names.join(', ')}`
+    } else {
+      this.log('warn', `Could not apply the approved configuration change to this session: ${why}`)
+      text = `[OrgAI harness] ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied to this session (${datum(why, 300)}). They apply from the next run; continue without them.`
+      summary = 'Could not apply the configuration change to this session'
+    }
     if (this.held || this.capTripped) this.holdNotice(text, summary)
     else this.notifyOrchestrator(text, 'Thinking…', { summary, restart })
   }
@@ -1605,18 +1957,24 @@ export class ClaudeSession implements RuntimeSession {
       this.restartFailures += 1
       const budget = this.restartBudget()
       if (budget === null || !this.sessionId) return { why }
-      const { servers, tools } = this.lastRestart
+      const { servers, tools, plugin, prevPlugin, config } = this.lastRestart
+      // A rebuilt plugin is part of what may break the start: the fallback returns to the plugin it replaced.
+      const rebuilt = plugin !== undefined
       let next: Omit<NextQuery, 'options'>
       if (this.restartFailures === 1) {
         this.log('warn', `The resumed session failed to start (${why}); trying once more.`)
-        next = { servers, tools }
-      } else if (this.restartFailures === 2 && servers.length) {
+        next = { servers, tools, ...(rebuilt ? { plugin, prevPlugin } : {}), ...(config ? { config } : {}) }
+      } else if (this.restartFailures === 2 && (servers.length || rebuilt)) {
         for (const n of servers) this.droppedMcp.add(n)
-        this.log('warn', `The resumed session failed to start again (${why}); resuming without the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
-        next = { servers: [], tools: new Map(), dropped: servers }
+        const left = [
+          ...(servers.length ? [`the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}`] : []),
+          ...(rebuilt ? ['the rebuilt skills'] : [])
+        ].join(' and ')
+        this.log('warn', `The resumed session failed to start again (${why}); resuming without ${left}.`)
+        next = { servers: [], tools: new Map(), dropped: servers, ...(rebuilt ? { plugin: prevPlugin ?? null, droppedSkills: true } : {}) }
       } else return { why }
       try {
-        return { next: { ...next, options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget }) }, why }
+        return { next: { ...next, options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget, plugin: next.plugin }) }, why }
       } catch (e) {
         why = redactSecrets((e as Error)?.message ?? String(e), this.secrets)
         this.log('warn', `Could not prepare the resumed session (${why}).`)
@@ -1660,21 +2018,34 @@ export class ClaudeSession implements RuntimeSession {
     this.queryInitSeen = false
     // What the new query may read before its init: everything queued now plus what is pushed until then.
     this.preInit = this.input.peek()
-    this.lastRestart = { servers: next.servers, tools: next.tools }
+    this.lastRestart = {
+      servers: next.servers,
+      tools: next.tools,
+      ...(next.plugin !== undefined ? { plugin: next.plugin, prevPlugin: next.prevPlugin } : {}),
+      ...(next.config ? { config: next.config } : {})
+    }
     this.priorQueriesCost = this.lastRunCost
     this.prevQuerySdkTotal = this.lastSdkTotal
     this.resumeCostBase = null
     this.harnessServer = harnessServerOf(next.options)
+    // The plugin this query loads becomes the session's (the gate's names); the replaced one is removed at its init.
+    if (next.plugin !== undefined) this.skillPlugin = next.plugin ?? undefined
+    this.queryGrants = this.optionGrants.get(next.options)
+    this.liveGrants = this.queryGrants
     this.q = query({ prompt: this.input, options: next.options })
-    if (next.dropped?.length) this.tellNotAttached(next.dropped, `the resumed session would not start with ${next.dropped.length === 1 ? 'it' : 'them'}`, true)
-    else if (next.servers.length) {
+    const config = next.config
+    if (next.dropped?.length || next.droppedSkills) {
+      const why = `the resumed session would not start with ${(next.dropped?.length ?? 0) + (next.droppedSkills ? 1 : 0) === 1 ? 'it' : 'them'}`
+      this.tellNotAttached(next.dropped ?? [], why, true, next.droppedSkills ? { regranted: [], skills: true } : undefined)
+    } else if (next.servers.length || config) {
       const q = this.q
       // Never left unhandled (review N4): a failure still sends a notice with the known tool names and releases a
       // deferred turn end, so an unattended run does not stall.
-      void this.announceAttached(next.servers, next.tools, q).catch((e) => {
+      void this.announceAttached(next.servers, next.tools, q, config).catch((e) => {
         this.log('warn', `Could not read the attached MCP servers' grants: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
         try {
-          this.sendAttachNotice(q, next.servers.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers)
+          const names = [...new Set([...next.servers, ...(config?.regranted ?? [])])]
+          this.sendAttachNotice(q, names.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers, config && { removed: config.removed, skills: config.skills ? null : undefined })
         } catch (e2) {
           this.log('warn', `Could not send the MCP attach notice: ${redactSecrets((e2 as Error)?.message ?? String(e2), this.secrets)}`)
         } finally {
@@ -1691,26 +2062,64 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** After a restart: name the attached servers' tools (from the new query's mcpServerStatus) to the orchestrator. */
-  private async announceAttached(servers: string[], known: Map<string, string[]>, q: Query): Promise<void> {
+  private async announceAttached(servers: string[], known: Map<string, string[]>, q: Query, config?: RestartConfig): Promise<void> {
     const live = this.liveMcpServers()
+    const liveNames = new Set(live.filter((s) => s.enabled).map((s) => s.name))
+    // A config restart also names the re-granted servers; a server removed since is left out of the list.
+    const names = [...new Set([...servers, ...(config?.regranted ?? [])])].filter((n) => !config || liveNames.has(n))
     const entries: { name: string; tools: string[]; roles: Role[] }[] = []
-    for (const name of servers) {
+    for (const name of names) {
       const fresh = await this.serverTools(name, MCP_STATUS_WAIT_MS, q)
       entries.push({ name, tools: fresh.length ? fresh : (known.get(name) ?? []), roles: rolesGrantedServer(this.ctx.roles, live, name) })
     }
-    this.sendAttachNotice(q, entries, servers)
+    let extra: { removed: string[]; skills?: SkillNoticeEntry[] | null } | undefined
+    if (config) {
+      let skills: SkillNoticeEntry[] | null | undefined
+      if (config.skills) {
+        try {
+          skills = [...this.skillNamesFor(this.skillPlugin)]
+            .filter(([, s]) => s.roleIds.length)
+            .map(([name, s]) => ({ name, roles: this.ctx.roles.filter((r) => s.roleIds.includes(r.id)) }))
+        } catch {
+          skills = null
+        }
+      }
+      extra = { removed: config.removed.filter((n) => !liveNames.has(n)), ...(skills !== undefined ? { skills } : {}) }
+    }
+    this.sendAttachNotice(q, entries, servers, extra)
   }
 
-  /** Deliver the attach notice for query q (dropped if q is no longer current); while held it waits for the user. */
-  private sendAttachNotice(q: Query, entries: Parameters<typeof mcpAttachedNotice>[0], servers: string[]): void {
+  /**
+   * Deliver the attach notice for query q (dropped if q is no longer current); while held it waits for the user. With
+   * `extra` (a config restart) the notice is configChangeNotice: removed servers and the skills in the session too.
+   */
+  private sendAttachNotice(
+    q: Query,
+    entries: Parameters<typeof mcpAttachedNotice>[0],
+    servers: string[],
+    extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null }
+  ): void {
     if (this.abort.signal.aborted || this.q !== q) return
-    const summary = `MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')} attached`
+    let text: string
+    let summary: string
+    if (extra) {
+      text = configChangeNotice({ servers: entries, removed: extra.removed, ...(extra.skills !== undefined ? { skills: extra.skills } : {}) })
+      const parts = [
+        ...(entries.length ? [`MCP server${entries.length === 1 ? '' : 's'} ${entries.map((e) => e.name).join(', ')} attached`] : []),
+        ...(extra.removed.length ? [`${extra.removed.join(', ')} removed`] : []),
+        ...(extra.skills !== undefined ? ['skills updated'] : [])
+      ]
+      summary = `Configuration change in effect${parts.length ? `: ${parts.join('; ')}` : ''}`
+    } else {
+      text = mcpAttachedNotice(entries)
+      summary = `MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')} attached`
+    }
     // Held by an interrupt meanwhile: no new turn now; the notice goes with the user's next message.
     if (this.held || this.capTripped) {
-      this.holdNotice(mcpAttachedNotice(entries), summary)
+      this.holdNotice(text, summary)
       return
     }
-    this.notifyOrchestrator(mcpAttachedNotice(entries), 'Using a new MCP server…', { summary, restart: true })
+    this.notifyOrchestrator(text, extra ? 'Using the new configuration…' : 'Using a new MCP server…', { summary, restart: true })
   }
 
   /** What lives for the whole run: the skills plugin and the bound harness tools. Called once, before the first query. */
@@ -1723,8 +2132,14 @@ export class ClaudeSession implements RuntimeSession {
         if (!this.skillPlugin.names.size) {
           this.skillPlugin.cleanup()
           this.skillPlugin = undefined
-        }
+        } else this.plugins.add(this.skillPlugin)
       }
+    }
+    // The server definitions this session starts with; a config change that redefines one counts it as installed.
+    try {
+      for (const s of this.liveMcpServers()) this.knownDefs.set(s.name, mcpDefinitionKey(s))
+    } catch {
+      /* unknown: every upserted server then counts as new */
     }
     // The harness tools for this kind of run (setup / mcp-assist / work); the audience decides who sees which.
     this.harnessTools = harnessToolsFor(this.ctx, {
@@ -1738,7 +2153,8 @@ export class ClaudeSession implements RuntimeSession {
         const a = this.agents.get(ROOT_ID)
         if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
       },
-      addMcpServer: (spec) => this.addMcpServer(spec)
+      addMcpServer: (spec) => this.addMcpServer(spec),
+      configChanged: (change) => this.configChanged(change)
     }, { nativeSkills: true })
     this.harnessAudiences = new Map(this.harnessTools.map((t) => [t.name, t.audience]))
   }
@@ -1748,11 +2164,15 @@ export class ClaudeSession implements RuntimeSession {
    * A fresh in-process harness server is built each time (same bound tools, mcpServers.orgai); the caller installs
    * it as this.harnessServer when its query starts (harnessServerOf). Agent definitions come from the live server list.
    * `opts.maxBudgetUsd` replaces the project's budget (a restart passes what is left of it, restartBudget()).
+   * `opts.plugin` is the skill plugin the query loads (a config restart's rebuilt one; null = none; undefined = the
+   * session's current one). Its skills carry the live grants; a skill removed since it was copied is left out.
    */
-  private async buildOptions(resume?: string, opts: { maxBudgetUsd?: number } = {}): Promise<Options> {
+  private async buildOptions(resume?: string, opts: { maxBudgetUsd?: number; plugin?: SkillPlugin | null } = {}): Promise<Options> {
     const { project } = this.ctx
     const env = buildEnv(this.ctx)
-    const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
+    const plugin = opts.plugin === undefined ? this.skillPlugin : (opts.plugin ?? undefined)
+    const skillMap = this.skillNamesFor(plugin)
+    const skillNames = [...skillMap.keys()]
     const tools = this.harnessTools
     const harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
@@ -1764,7 +2184,7 @@ export class ClaudeSession implements RuntimeSession {
 
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: liveServers }, this.skillPlugin?.names),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: liveServers }, skillMap),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
@@ -1811,8 +2231,8 @@ export class ClaudeSession implements RuntimeSession {
     options.mcpServers = this.mcpRecord(resolved, harnessServer)
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
-    if (this.skillPlugin) {
-      plugins.push({ type: 'local', path: this.skillPlugin.path, skipMcpDiscovery: true })
+    if (plugin && skillNames.length) {
+      plugins.push({ type: 'local', path: plugin.path, skipMcpDiscovery: true })
       // Options.skills only adds Skill(<name>) allow rules (verified in sdk.mjs); the PreToolUse gate is the filter.
       options.skills = skillNames
       options.settings = { disableBundledSkills: true }
@@ -1834,6 +2254,7 @@ export class ClaudeSession implements RuntimeSession {
     else if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
     const resumeId = resume ?? this.ctx.resumeSessionId
     if (resumeId) options.resume = resumeId
+    if (options.agents) this.optionGrants.set(options, grantSnapshot(options.agents))
     return options
   }
 
@@ -1883,6 +2304,8 @@ export class ClaudeSession implements RuntimeSession {
       this.prepare()
       const first = await this.buildOptions()
       this.harnessServer = harnessServerOf(first)
+      this.queryGrants = this.optionGrants.get(first)
+      this.liveGrants = this.queryGrants
       this.q = query({ prompt: this.input, options: first })
       for (;;) {
         try {
@@ -1922,7 +2345,7 @@ export class ClaudeSession implements RuntimeSession {
       this.ending = true
       this.continuation.dispose()
       this.stopUsagePolling()
-      this.skillPlugin?.cleanup()
+      this.cleanupPlugins()
       this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
@@ -1948,7 +2371,7 @@ export class ClaudeSession implements RuntimeSession {
     // A run the user interrupted (or the window cap stopped) waits for the user, never auto-resumes (review N1).
     const autoResume = !(this.held || this.capTripped || undelivered > 0)
     const pausedUntil = autoResume ? Date.now() + MCP_RESTART_PAUSE_MS : undefined
-    const base = 'The session could not be resumed after attaching an MCP server.'
+    const base = this.restartForConfig ? 'The session could not be resumed after a configuration change.' : 'The session could not be resumed after attaching an MCP server.'
     const resend = undelivered
       ? ` ${undelivered === 1 ? 'Your last message was' : `Your last ${undelivered} messages were`} not delivered; send ${undelivered === 1 ? 'it' : 'them'} again to continue.`
       : ''
@@ -1995,6 +2418,8 @@ export class ClaudeSession implements RuntimeSession {
           this.preInit = []
           // A restarted query that starts clears the failure count, so a later restart gets its own retries.
           this.restartFailures = 0
+          // A query that started holds its own plugin: plugins it replaced (or a failed restart built) can go now.
+          this.retirePlugins()
           this.emit({ type: 'run.status', runId, status: 'running', sessionId: msg.session_id })
           // The SDK re-emits init on every resumed turn (reports landing, harness messages); log it once.
           if (!this.sessionLogged) {
@@ -2218,7 +2643,7 @@ export class ClaudeSession implements RuntimeSession {
         // With an MCP restart due, the restart's notice re-engages the orchestrator instead (onTurnEnded, review H1).
         if (msg.subtype === 'success' && !this.isSetup) this.onTurnEnded()
         // MCP servers approved this turn reach the agents through a restart once everything is idle.
-        if (this.pendingMcp.size) this.scheduleMcpRestart()
+        if (this.restartDue()) this.scheduleMcpRestart()
         if (this.limited && !this.ending) {
           // Every further request would be rejected too. End the session; the run manager pauses the
           // run and continues it when the window resets.
