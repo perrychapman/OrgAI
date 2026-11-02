@@ -5,7 +5,7 @@ import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
-import type { ProposalNext } from '../lib/proposalNext'
+import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import { needsYou } from '../lib/runChains'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
@@ -35,6 +35,7 @@ import type {
   ImageAttachment,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   PermissionRuleDecision,
   PermissionRuleRequest,
   QuestionAnswer,
@@ -255,6 +256,8 @@ interface AppState {
   importRequest: { projectId: string; fresh: boolean } | null
   importNotices: Record<string, ImportNotice>
   proposalNextByRun: Record<string, ProposalNext>
+  /** The secret-free outcome of each resolved proposal (by proposal id), from the proposal.resolved event. */
+  proposalOutcomes: Record<string, ProposalOutcome>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
   recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
   undoImport(projectId: string): Promise<void>
@@ -518,6 +521,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   importRequest: null,
   importNotices: {},
   proposalNextByRun: {},
+  proposalOutcomes: {},
 
   defaultConnection: null,
   async loadDefaultConnection() {
@@ -673,6 +677,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [runId]: _gone, ...rest } = s.proposalNextByRun
         return { proposalNextByRun: rest }
       }
+      // Servers waiting on a secret are the more useful pointer: a plain "saved" note never replaces it.
+      if (next.kind === 'mcpProject' && s.proposalNextByRun[runId]?.kind === 'mcpSecrets') return {}
       return { proposalNextByRun: { ...s.proposalNextByRun, [runId]: next } }
     })
   },
@@ -1176,6 +1182,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (e.type === 'usage.status') {
       set((st) => putUsage(st, e.usage))
       return
+    }
+    // Keep the outcome. A cancelled resolution (run ended) is not the user's choice: it sets no notice and clears none.
+    if (e.type === 'proposal.resolved') {
+      set((s) => {
+        const proposal = s.runs[e.runId]?.proposals.find((p) => p.id === e.proposalId)
+        const out: Partial<AppState> = { proposalOutcomes: { ...s.proposalOutcomes, [e.proposalId]: e.decision } }
+        const home = s.runs[e.runId]?.summary.projectId
+        const next = !e.cancelled && proposal && home ? secretsNextFor(proposal, e.decision, home) : null
+        if (next) out.proposalNextByRun = { ...s.proposalNextByRun, [e.runId]: next }
+        return out
+      })
     }
     // A note from another run: the transcript already carries it (a persisted system row); here it only marks the tab unread.
     if (e.type === 'run.message') {

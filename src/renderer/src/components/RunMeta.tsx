@@ -4,7 +4,7 @@ import { Bot, ClipboardList, Clock, Folder, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { folderName } from '../lib/paths'
-import { PROPOSAL_NEXT_COPY } from '../lib/proposalNext'
+import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
@@ -60,7 +60,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     } else if (next.kind === 'connectors') {
       requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
       st.setView('appSettings')
-    } else if (next.kind === 'mcpProject') {
+    } else if (next.kind === 'mcpProject' || next.kind === 'mcpSecrets') {
       st.openProjectMcp(next.projectId)
     } else {
       if (st.selectedProjectId !== next.projectId) st.selectProject(next.projectId)
@@ -71,7 +71,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     <div className="run-meta" data-testid="run-meta">
       {next && nextCopy && (
         <span className="run-meta-item run-meta-next" role="status">
-          {nextCopy.lead}{' '}
+          {next ? proposalNextLead(next) : nextCopy.lead}{' '}
           <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
             {nextCopy.action}
           </button>
