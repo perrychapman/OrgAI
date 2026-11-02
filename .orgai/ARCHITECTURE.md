@@ -414,7 +414,7 @@ components/layout:
 - SDK and provider behaviour claims are verified with a smoke script and recorded in CLAUDE.md with the version, or marked unverified there.
 - Worktree commit and merge belong to the harness. Never register WorktreeCreate or WorktreeRemove hooks just to observe.
 - Each feature lands as one descriptive commit plus a merge commit ('Merge <feature>').
-- Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Agent runs happen on dev.
+- Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Stable versions are plain semver (0.1.5); dev builds are `<next patch>-devN` (0.1.6-dev1, 0.1.6-dev2, ...), and the release drops the tag. Agent runs happen on dev.
 - Build output (out/, release/, release-*/, *.tsbuildinfo) is gitignored. Never commit it.
 - Permission cards never clip a command silently: a Bash command is shown in full in a scrollable block, the title carries a "(+N lines)" or "(long command)" marker, and the header shows a "Command" badge (or "N lines" / "Long command" for multi-line or long ones) for every Bash call. In compact mode (body collapsed) every Bash card with a command focuses the Details toggle instead of the primary action (`DecisionCard` `focusDetails`, a no-op outside compact; also set for broad rule requests). Bidi and control characters in a command are shown as visible `\uXXXX` escapes with a "Hidden characters" badge.
 
@@ -436,7 +436,7 @@ components/layout:
 - Package unpacked dir, no publish: `npm run pack` (not `npm pack`, which is npm's own tarball command). `npm run dist:dir` also builds an unpacked dir.
 - Package macOS: `npm run dist:mac` (signed when an identity is available) or `npm run dist:mac:unsigned`. Per arch, on a machine of that arch: `npm run dist:mac:arm64`, `npm run dist:mac:x64`
 - Regenerate icon: `npm run icon`
-- Release: bump version on dev, merge dev → main by PR, `git tag v<version> && git push origin v<version>`
+- Release: bump version on dev to the plain release version, merge dev → main by PR (a merge commit "Release <version>: <summary>" on main, as for 0.1.3 and 0.1.4), `git tag v<version> && git push origin v<version>`, then bump dev to `<next patch>-dev1` (later dev builds count up: `-dev2`, `-dev3`, ...)
 
 ## Risks and gaps
 

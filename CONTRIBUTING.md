@@ -11,11 +11,14 @@ Read `.orgai/ARCHITECTURE.md` and `CLAUDE.md` first. They record the stack, modu
 
 ## Releases
 
-1. Bump `version` in `package.json` on `dev`.
+1. Bump `version` in `package.json` on `dev` to the plain release version (for example `0.1.5`).
 2. Merge `dev` into `main` by pull request.
 3. Tag the main commit and push the tag: `git tag v<version> && git push origin v<version>`.
 4. `.github/workflows/release.yml` checks that the tag is on `main` and equals the package version, builds the
    Windows and macOS installers and drafts a GitHub release. Publish the draft by hand.
+5. Bump `dev` to the next patch with a dev tag, `<next patch>-dev1` (for example `0.1.6-dev1`). Each later dev build
+   counts the number up (`0.1.6-dev2`, ...) until the next release drops the tag. A `-dev` version shows a "Dev" badge
+   in the app.
 
 The release workflow refuses tags that are not reachable from `main`. A manual dry run of another branch builds only.
 
