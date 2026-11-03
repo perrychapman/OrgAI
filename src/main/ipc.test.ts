@@ -244,6 +244,47 @@ describe('settingsSetArgs field kinds (review fix-up)', () => {
   })
 })
 
+describe('settingsSetArgs hostile payloads (QA)', () => {
+  const stored = { ...DEFAULT_APP_SETTINGS, defaultConnection: 'openai' as const }
+
+  it('an own __proto__ key from JSON never pollutes Object.prototype or the result', () => {
+    const raw = JSON.parse('{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"notifications":false}')
+    const out = settingsSetArgs(raw, stored)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype)
+    expect((out as unknown as Record<string, unknown>).polluted).toBeUndefined()
+    expect(out.notifications).toBe(false)
+    expect(out.defaultConnection).toBe('openai')
+  })
+
+  it('arrays, class instances and null-prototype-with-junk payloads are handled', () => {
+    expect(() => settingsSetArgs([{ notifications: false }], stored)).toThrow('Settings must be an object.')
+    expect(() => settingsSetArgs(new Map(), stored)).toThrow('Settings must be an object.')
+    const nullProto = Object.assign(Object.create(null), { defaultKeepRuns: 3 })
+    expect(settingsSetArgs(nullProto, stored).defaultKeepRuns).toBe(3)
+  })
+
+  it('a huge string for a same-kind field does not throw and never touches the connection fields', () => {
+    const huge = 'x'.repeat(2_000_000)
+    const out = settingsSetArgs({ setupModel: huge, defaultConnection: huge, defaultConnectionChosen: huge, connections: huge, providerAuth: huge }, stored)
+    expect(out.defaultConnection).toBe('openai')
+    expect(out.connections).toEqual(stored.connections)
+    expect(out.providerAuth).toEqual(stored.providerAuth)
+    expect(out).not.toHaveProperty('defaultConnectionChosen', huge)
+  })
+
+  it('connectionIdArg and connectionSecretArgs refuse huge, boxed and hostile ids', () => {
+    for (const bad of ['a'.repeat(1_000_000), new String('litellm'), Object.create({ toString: () => 'litellm' }), Symbol.iterator as never]) {
+      expect(() => connectionIdArg(bad), typeof bad).toThrow('Unknown connection')
+    }
+    expect(() => connectionSecretArgs({ id: new String('litellm'), apiKey: 'k' })).toThrow('Only the LiteLLM connection has a stored secret')
+    expect(() => connectionSecretArgs({ id: ['litellm'], apiKey: 'k' })).toThrow('Only the LiteLLM connection has a stored secret')
+    expect(() => connectionSecretArgs(JSON.parse('{"__proto__":{"id":"litellm"},"apiKey":"k"}'))).toThrow('Only the LiteLLM connection has a stored secret')
+    expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 'k'.repeat(10_000_000) })).toThrow('too long')
+    expect(() => connectionSecretArgs({ id: 'litellm', apiKey: ['k'] })).toThrow('The API key must be text.')
+  })
+})
+
 describe('withEffectiveDefault (settings:get / set / changed)', () => {
   it('puts the effective default in defaultConnection and keeps the rest', () => {
     const s = { ...DEFAULT_APP_SETTINGS, defaultConnection: 'anthropic' as const, defaultConnectionChosen: false }
