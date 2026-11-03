@@ -234,3 +234,13 @@
   animation: spin 0.8s linear infinite;
   display: inline-block;
 }
+
+/* Model selects: sans face, full width of their column (240 px in a settings row). */
+.model-select > .select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.setting-row-control > .model-select {
+  flex: 1 1 auto;
+}

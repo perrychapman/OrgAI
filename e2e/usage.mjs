@@ -41,6 +41,7 @@ try {
   await page.locator('[data-testid=usage-set-price]').first().click()
   const form = page.locator('[data-testid=model-price-form]')
   await form.waitFor({ timeout: 10_000 })
+  check(await page.locator('[data-testid=settings-advanced][data-pane=app-connections]').evaluate((el) => el.open), 'Set a price opens the Connections Advanced disclosure')
   check((await form.locator('#model-price-model').inputValue()) === 'mock-unpriced', 'Set a price opens Model prices with the model id filled in')
   await form.locator('#model-price-input').fill('1.5')
   await form.locator('#model-price-output').fill('7.5')
@@ -82,8 +83,11 @@ try {
 
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  const adv = page.locator('[data-testid=settings-advanced][data-pane=app-connections]')
+  await adv.waitFor({ timeout: 10_000 })
+  if (!(await adv.evaluate((el) => el.open))) await adv.locator('> summary').click()
   await page.locator('[data-testid=model-prices]').waitFor({ timeout: 10_000 })
-  check(true, 'Model prices section is under App settings > Connections')
+  check(true, 'Model prices section is under App settings > Connections > Advanced')
 } catch (e) {
   check(false, 'usage e2e ran to the end', e.message)
   await shot('failure').catch(() => {})

@@ -71,6 +71,10 @@ export default function TierEditor({
     }
   }
 
+  // "Automatic" while every mapped tier follows the catalog (autoTiers covers all of them).
+  const mapped = MODEL_TIER_OPTIONS.filter((o) => saved[o.value])
+  const allAuto = mapped.length > 0 && mapped.every((o) => info.connection.autoTiers?.includes(o.value))
+
   const stale = MODEL_TIER_OPTIONS.filter((o) => draft[o.value] && !known.has(draft[o.value]!))
 
   return (
@@ -78,8 +82,13 @@ export default function TierEditor({
       <div className="tier-head">
         <button type="button" className="group-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((v) => !v)}>
           <Icon icon={open ? ChevronDown : ChevronRight} size="sm" />
-          <strong>Model tiers (advanced)</strong>
+          <strong>Model tiers</strong>
         </button>
+        {allAuto && (
+          <Badge testId="tiers-automatic" title="Every tier is chosen automatically and moves to a newer model when one is discovered.">
+            Automatic
+          </Badge>
+        )}
         {open && (
           <Button size="sm" variant="ghost" onClick={() => setDraft(defaultTierModels(models))}>
             Reset
@@ -109,6 +118,7 @@ export default function TierEditor({
               <ModelSelect
                 label={`${o.label} model`}
                 hideLabel
+                mono
                 value={value}
                 groups={invalid ? [{ options: [{ value, label: `${value} (unavailable)`, disabled: true }] }, ...groups] : groups}
                 placeholder="No model"
