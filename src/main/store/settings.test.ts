@@ -288,3 +288,10 @@ describe('SettingsStore', () => {
     }
   })
 })
+
+describe('defaultConnectionChosen', () => {
+  it('keeps true and drops anything else', () => {
+    expect(normalizeSettings({ defaultConnectionChosen: true }).defaultConnectionChosen).toBe(true)
+    for (const v of [false, 'true', 1, null, {}]) expect(normalizeSettings({ defaultConnectionChosen: v } as never).defaultConnectionChosen).toBeUndefined()
+  })
+})
