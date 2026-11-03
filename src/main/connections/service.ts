@@ -64,6 +64,11 @@ export interface ConnectionServiceDeps {
    * say; the catalog is kept. Missing = no Anthropic discovery (builtin aliases only).
    */
   anthropicModels?: (auth: ProviderAuth) => Promise<AdapterModelInfo[] | null>
+  /**
+   * Called when effectiveDefault() may have moved (a status change, also in chosen mode, a key removed, a connection
+   * turned off). index.ts re-broadcasts settings:changed when the effective default differs from the last one sent.
+   */
+  onDefaultChanged?: () => void
 }
 
 /** startDiscovery options. */
@@ -117,6 +122,12 @@ export class ConnectionService {
   private codexLease: CodexLease | null = null
   private pendingLogins = new Map<string, PendingLogin>()
   private disposed = false
+  /**
+   * Connections whose current 'disconnected' status is tentative (a LiteLLM base URL change or a saved key waiting
+   * for Test and connect): effectiveDefault reads them as 'unknown', so they never move the default. Cleared by the
+   * next definite status.
+   */
+  private tentative = new Set<ConnectionId>()
 
   constructor(private deps: ConnectionServiceDeps) {
     this.modelsFile = join(deps.dataDir, 'models.json')
@@ -189,6 +200,7 @@ export class ConnectionService {
 
   /** The catalog of one connection, or of every enabled connection. */
   models(query?: ModelsQuery): ProviderModel[] {
+    if (query?.connection !== undefined && !isConnectionId(query.connection)) throw new Error('Unknown connection')
     if (query?.connection) return this.catalogFor(query.connection)
     const s = this.deps.settings.get()
     return CONNECTION_IDS.filter((id) => s.connections[id].enabled).flatMap((id) => this.catalogFor(id))
@@ -201,6 +213,7 @@ export class ConnectionService {
 
   /** Re-discover models (LiteLLM, Codex) and return the new catalog. A failed discovery keeps the old catalog and sets an error status. */
   async refresh(query?: ModelsQuery): Promise<ProviderModel[]> {
+    if (query?.connection !== undefined && !isConnectionId(query.connection)) throw new Error('Unknown connection')
     const s = this.deps.settings.get()
     const ids = query?.connection ? [query.connection] : CONNECTION_IDS.filter((id) => s.connections[id].enabled)
     const results: RemapResult[] = []
@@ -333,11 +346,31 @@ export class ConnectionService {
 
   // ---------- statuses ----------
 
-  private setStatus(id: ConnectionId, status: ConnectionStatus): ConnectionStatus {
+  /**
+   * Store and broadcast a status. A definite status (probe results, logout, a removed key) may rewrite the automatic
+   * default; `definite: false` (a base URL change, a saved key waiting for Test and connect) never does, and
+   * effectiveDefault reads that status as 'unknown' until the next definite one.
+   */
+  private setStatus(id: ConnectionId, status: ConnectionStatus, opts: { definite?: boolean } = {}): ConnectionStatus {
+    if (!isConnectionId(id)) throw new Error('Unknown connection')
+    const before = this.effectiveDefault()
     this.statuses[id] = status
+    if (opts.definite === false) this.tentative.add(id)
+    else this.tentative.delete(id)
     this.deps.broadcast({ type: 'connection.status', connection: id, status })
-    if (status.state === 'connected' || status.state === 'disconnected' || status.state === 'error') this.rewriteDefault()
+    if (opts.definite !== false && (status.state === 'connected' || status.state === 'disconnected' || status.state === 'error')) this.rewriteDefault()
+    this.defaultMayHaveMoved(before)
     return status
+  }
+
+  /** Tell index.ts (onDefaultChanged) when the effective default differs from `before`. */
+  private defaultMayHaveMoved(before: ConnectionId): void {
+    if (this.effectiveDefault() === before) return
+    try {
+      this.deps.onDefaultChanged?.()
+    } catch (e) {
+      console.warn(`Default connection listener failed: ${this.safeMessage(e)}`)
+    }
   }
 
   /**
@@ -347,8 +380,13 @@ export class ConnectionService {
    * connection reports 'connected' again the default moves back and the field is cleared. Writes chosen false.
    */
   private rewriteDefault(): void {
-    const s = this.deps.settings.get()
+    let s = this.deps.settings.get()
     if (s.defaultConnectionChosen === true) return
+    // A replaced connection that is no longer configured can never be moved back to: forget it.
+    const old = s.defaultConnectionReplaced
+    if (old !== undefined && !(isConnectionId(old) && connectionConfigured(old, s.connections))) {
+      s = this.deps.settings.set({ ...withoutReplaced(s), defaultConnectionChosen: false })
+    }
     const next = this.effectiveDefault()
     const replaced = s.defaultConnectionReplaced
     if (next === s.defaultConnection) {
@@ -390,10 +428,13 @@ export class ConnectionService {
       this.rewriteDefault()
     } else {
       if (!isConnectionId(input)) throw new Error('Unknown connection')
-      if (input !== s.defaultConnection) {
-        const refusal = this.defaultRefusalFor(input)
-        if (refusal) throw new Error(refusal)
-      }
+      // Re-choosing the stored default needs only that it is still configured (its live state may be anything);
+      // any other connection must be usable now.
+      const refusal =
+        input === s.defaultConnection
+          ? connectionConfigured(input, s.connections) ? null : defaultRefusal(input, s.connections)
+          : this.defaultRefusalFor(input)
+      if (refusal) throw new Error(refusal)
       this.deps.settings.set({ ...withoutReplaced(s), defaultConnection: input, defaultConnectionChosen: true })
     }
     return this.list()
@@ -414,7 +455,10 @@ export class ConnectionService {
   effectiveDefault(): ConnectionId {
     const s = this.deps.settings.get()
     const states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>> = {}
-    for (const id of CONNECTION_IDS) if (connectionConfigured(id, s.connections)) states[id] = this.statuses[id]?.state ?? 'unknown'
+    for (const id of CONNECTION_IDS) {
+      if (!connectionConfigured(id, s.connections)) continue
+      states[id] = this.tentative.has(id) ? 'unknown' : (this.statuses[id]?.state ?? 'unknown')
+    }
     return effectiveDefaultConnection({ stored: s.defaultConnection, chosen: s.defaultConnectionChosen === true, replaced: s.defaultConnectionReplaced, states })
   }
 
@@ -475,6 +519,9 @@ export class ConnectionService {
     const checkedAt = this.now()
     if (!conn.baseUrl) return { state: 'disconnected', detail: 'Set the proxy base URL.', checkedAt }
     const key = this.deps.secrets.get(LITELLM_KEY)
+    // A key that is stored but cannot be decrypted (safeStorage failure, another OS keyring) is an error, not a
+    // definite disconnect: it must not move the automatic default.
+    if (!key && conn.hasApiKey) return { state: 'error', detail: 'The stored key could not be read. Set the API key again.', checkedAt }
     if (!key) return { state: 'disconnected', detail: 'Set an API key.', checkedAt }
     const models = await fetchLiteLLMModels(conn.baseUrl, key, this.deps.fetch ?? fetch)
     return { state: 'connected', detail: `${models.length} model${models.length === 1 ? '' : 's'} available`, checkedAt }
@@ -485,6 +532,7 @@ export class ConnectionService {
   }
 
   async test(id: ConnectionId): Promise<ConnectionStatus> {
+    if (!isConnectionId(id)) throw new Error('Unknown connection')
     return this.setStatus(id, await this.probe(id))
   }
 
@@ -496,7 +544,8 @@ export class ConnectionService {
   }
 
   async update(c: ProviderConnection): Promise<ConnectionInfo> {
-    if (!c || !CONNECTION_IDS.includes(c.id)) throw new Error('Unknown connection')
+    if (!c || !isConnectionId(c.id)) throw new Error('Unknown connection')
+    const before = this.effectiveDefault()
     const old = this.deps.settings.get().connections[c.id]
     // autoTiers is main-owned (the renderer's copy is ignored): a tier the caller changed is the user's from now on.
     const wasAuto = this.autoTiersOf(c.id, old.tierModels, old.autoTiers, suggestTierModels(c.id, this.catalogFor(c.id)))
@@ -505,33 +554,37 @@ export class ConnectionService {
     this.saveConnection({ ...c, autoTiers: MODEL_TIERS.filter((t) => wasAuto.has(t)) } as ProviderConnection)
     const fresh = this.deps.settings.get().connections[c.id]
     if (c.id === 'litellm' && fresh.id === 'litellm' && old.id === 'litellm' && fresh.baseUrl !== old.baseUrl) {
-      this.setStatus('litellm', { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() })
+      this.setStatus('litellm', { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() }, { definite: false })
     }
     if (!sameTiers(old.tierModels, fresh.tierModels)) {
       this.broadcastRemaps(this.remapConnectionProjects(c.id, fresh.tierModels, old.tierModels, 'tierModels'))
     }
     // Turning a connection off (Anthropic's Disconnect) or on changes what is configured: a definite change.
     if (old.enabled !== fresh.enabled) this.rewriteDefault()
+    this.defaultMayHaveMoved(before)
     return this.info(c.id)
   }
 
   async setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo> {
     if (input?.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
     const key = input.apiKey?.trim() || null
+    const before = this.effectiveDefault()
     this.deps.secrets.set(LITELLM_KEY, key)
     this.deps.settings.setLiteLLMKeyStored(!!key)
-    this.setStatus('litellm', {
-      state: 'disconnected',
-      detail: key ? 'Key saved. Test and connect to apply.' : 'Set an API key.',
-      checkedAt: this.now()
-    })
+    // A saved key waits for Test and connect (tentative); a removed key is a definite disconnect.
+    this.setStatus(
+      'litellm',
+      { state: 'disconnected', detail: key ? 'Key saved. Test and connect to apply.' : 'Set an API key.', checkedAt: this.now() },
+      { definite: !key }
+    )
+    this.defaultMayHaveMoved(before)
     return this.info('litellm')
   }
 
   // ---------- connect / logout ----------
 
   async connect(id: ConnectionId): Promise<ConnectionInfo> {
-    if (!CONNECTION_IDS.includes(id)) throw new Error('Unknown connection')
+    if (!isConnectionId(id)) throw new Error('Unknown connection')
     const conn = this.deps.settings.get().connections[id]
     if (!conn.enabled) this.saveConnection({ ...conn, enabled: true } as ProviderConnection)
     this.setStatus(id, { state: 'connecting', checkedAt: this.now() })
@@ -556,6 +609,8 @@ export class ConnectionService {
   }
 
   async logout(id: ConnectionId): Promise<ConnectionInfo> {
+    if (!isConnectionId(id)) throw new Error('Unknown connection')
+    const before = this.effectiveDefault()
     const checkedAt = this.now()
     if (id === 'openai') {
       if (this.deps.settings.get().connections.openai.auth.kind === 'chatgpt') {
@@ -574,6 +629,7 @@ export class ConnectionService {
     } else {
       this.setStatus('anthropic', { state: 'disconnected', detail: 'Marked disconnected', checkedAt })
     }
+    this.defaultMayHaveMoved(before)
     return this.info(id)
   }
 

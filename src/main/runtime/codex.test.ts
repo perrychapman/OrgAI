@@ -1145,6 +1145,27 @@ describe('codexModelFor', () => {
     }
   })
 
+  it('starts a report thread on its own model id, also another family on a LiteLLM proxy', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-mixed-'))
+    const { adapter, servers } = setup()
+    const p = project({ path: dir, isolateWriters: false })
+    p.provider = { ...p.provider, connection: 'litellm' }
+    p.roles = p.roles.map((r) => (r.reportsTo === null ? { ...r, model: 'gpt-5' } : r.slug === 'engineer' ? { ...r, model: 'claude-sonnet-4-5' } : r))
+    const ctx = fakeCtx({ project: p, roles: p.roles, continuationDelayMs: 5 })
+    const session = await adapter.start(ctx)
+    try {
+      const s = servers[0]
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      expect(s.of('thread/start')[0].params).toMatchObject({ model: 'gpt-5' })
+      const spawn = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+      expect(spawn).toMatchObject({ success: true })
+      expect(s.of('thread/start')[1].params).toMatchObject({ model: 'claude-sonnet-4-5' })
+    } finally {
+      await session.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('drops an invalid completion model', async () => {
     let server!: FakeServer
     const adapter = new CodexAdapter({ createServer: (o) => (server = new FakeServer(o)), completionConnection: () => ({ connection: 'openai' as const, adapter: 'codex' as const, env: { CODEX_HOME: '/h' } }) })

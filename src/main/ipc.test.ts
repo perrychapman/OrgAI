@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
 const { DEFAULT_APP_SETTINGS } = await import('@shared/defaults')
 
 describe('permissionRuleArgs (permissions:add / permissions:remove, review re-check L8)', () => {
@@ -175,5 +175,63 @@ describe('settingsSetArgs (settings:set, self-configuration H3 / M3)', () => {
     expect(out).not.toHaveProperty('appVersion')
     const { defaultConnectionReplaced: _r, ...bare } = stored
     expect(settingsSetArgs({ defaultConnectionReplaced: 'litellm' }, bare)).not.toHaveProperty('defaultConnectionReplaced')
+  })
+})
+
+describe('connection id guards (connections:test / logout, models:list / refresh)', () => {
+  it('connectionIdArg accepts only known ids, never prototype keys', () => {
+    for (const id of ['anthropic', 'openai', 'litellm']) expect(connectionIdArg(id)).toBe(id)
+    for (const bad of ['bogus', '__proto__', 'constructor', 'hasOwnProperty', '', 'Anthropic', null, undefined, 1, {}, ['anthropic']]) {
+      expect(() => connectionIdArg(bad), String(bad)).toThrow('Unknown connection')
+    }
+  })
+
+  it('modelsQueryArg rebuilds the query and refuses junk connections', () => {
+    expect(modelsQueryArg(undefined)).toBeUndefined()
+    expect(modelsQueryArg(null)).toBeUndefined()
+    expect(modelsQueryArg({})).toEqual({})
+    expect(modelsQueryArg({ connection: 'litellm', extra: 1 })).toEqual({ connection: 'litellm' })
+    for (const bad of [{ connection: '__proto__' }, { connection: 'bogus' }, { connection: null }, 'litellm', ['litellm'], 3]) {
+      expect(() => modelsQueryArg(bad), JSON.stringify(bad)).toThrow('Unknown connection')
+    }
+  })
+})
+
+describe('settingsSetArgs field kinds (review fix-up)', () => {
+  const stored = {
+    ...DEFAULT_APP_SETTINGS,
+    defaultMaxBudgetUsd: 5,
+    modelPrices: [{ model: 'gpt-5', price: { inputPerToken: 0.000001, outputPerToken: 0.000002 } }]
+  }
+
+  it('drops an incoming field whose kind differs from the stored one', () => {
+    const out = settingsSetArgs({ modelPrices: 'nope', defaultKeepRuns: '9', notifications: 'yes', appearance: [], defaultIsolateWriters: null }, stored)
+    expect(out.modelPrices).toEqual(stored.modelPrices)
+    expect(out.defaultKeepRuns).toBe(stored.defaultKeepRuns)
+    expect(out.notifications).toBe(stored.notifications)
+    expect(out.appearance).toEqual(stored.appearance)
+    expect(out.defaultIsolateWriters).toBe(stored.defaultIsolateWriters)
+    expect(settingsSetArgs({ modelPrices: {} }, stored).modelPrices).toEqual(stored.modelPrices)
+  })
+
+  it('keeps same-kind values, undefined clears an optional field, and new fields pass to normalization', () => {
+    const out = settingsSetArgs({ modelPrices: [], defaultKeepRuns: 12, defaultMaxBudgetUsd: undefined }, stored)
+    expect(out.modelPrices).toEqual([])
+    expect(out.defaultKeepRuns).toBe(12)
+    expect(out.defaultMaxBudgetUsd).toBeUndefined()
+    const { defaultMaxBudgetUsd: _b, ...without } = stored
+    expect(settingsSetArgs({ defaultMaxBudgetUsd: 3 }, without).defaultMaxBudgetUsd).toBe(3)
+  })
+})
+
+describe('withEffectiveDefault (settings:get / set / changed)', () => {
+  it('puts the effective default in defaultConnection and keeps the rest', () => {
+    const s = { ...DEFAULT_APP_SETTINGS, defaultConnection: 'anthropic' as const, defaultConnectionChosen: false }
+    const out = withEffectiveDefault(s, 'litellm')
+    expect(out.defaultConnection).toBe('litellm')
+    expect(out.defaultConnectionChosen).toBe(false)
+    expect(s.defaultConnection).toBe('anthropic')
+    // Echoing it back through settings:set never changes the stored value.
+    expect(settingsSetArgs(out, s).defaultConnection).toBe('anthropic')
   })
 })

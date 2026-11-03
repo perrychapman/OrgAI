@@ -9,6 +9,7 @@ import {
   isValidMcpServerName,
   mcpSecretNames,
   mcpServersForRole,
+  mixedFamilyRefusal,
   modelFamily,
   newProject,
   projectConnection,
@@ -114,6 +115,40 @@ describe('projectConnection and adapterForProject', () => {
     expect(choice).toEqual({ adapter: 'codex', connection: 'litellm', family: 'openai', mismatched: [b.id] })
     const claudeRoot = adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles: [{ ...root, model: 'team-claude' }] }, catalog)
     expect(claudeRoot.adapter).toBe('claude')
+    // A mixed chart on LiteLLM is informational: the root's family picked the adapter, the run may start.
+    expect(mixedFamilyRefusal(choice)).toBeNull()
+  })
+
+  it('mixedFamilyRefusal: LiteLLM refuses only without a root family; single-family connections always refuse a mix', () => {
+    const p = project()
+    const [root, a] = p.roles
+    const catalog = [litellmModel('team-claude', 'claude'), litellmModel('team-gpt', 'openai')]
+    const onLiteLLM = (rootModel: string, reportModel: string) =>
+      adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles: [{ ...root, model: rootModel }, { ...a, model: reportModel }] }, catalog)
+    expect(mixedFamilyRefusal(onLiteLLM('team-claude', 'team-gpt'))).toBeNull()
+    expect(mixedFamilyRefusal(onLiteLLM('team-gpt', 'team-claude'))).toBeNull()
+    expect(mixedFamilyRefusal(onLiteLLM('team-claude', 'team-claude'))).toBeNull()
+    // 'inherit' root: no family, the adapter defaults to Claude and a GPT report cannot be placed.
+    const inherit = onLiteLLM('inherit', 'team-gpt')
+    expect(inherit).toMatchObject({ adapter: 'claude', family: undefined, mismatched: [a.id] })
+    expect(mixedFamilyRefusal(inherit)).toBe('no-root-family')
+    expect(mixedFamilyRefusal(onLiteLLM('inherit', 'team-claude'))).toBeNull()
+    expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: ['r1'] })).toBe('single-family-connection')
+    expect(mixedFamilyRefusal({ connection: 'openai', family: 'openai', mismatched: ['r1'] })).toBe('single-family-connection')
+    expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: [] })).toBeNull()
+  })
+
+  it('keeps the anthropic and openai catalogs single-family, so a chart picked from them never mixes', () => {
+    expect(new Set(builtinModels('anthropic').map((m) => m.family))).toEqual(new Set(['claude']))
+    expect(new Set(builtinModels('openai').map((m) => m.family))).toEqual(new Set(['openai']))
+    for (const connection of ['anthropic', 'openai'] as const) {
+      const models = builtinModels(connection)
+      const p = project()
+      const roles = p.roles.map((r, i) => ({ ...r, model: models[i % models.length].id }))
+      const choice = adapterForProject({ provider: { ...p.provider, connection }, roles }, models)
+      expect(choice.mismatched).toEqual([])
+      expect(mixedFamilyRefusal(choice)).toBeNull()
+    }
   })
 
   it('keeps mock projects on the mock adapter', () => {

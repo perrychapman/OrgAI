@@ -26,12 +26,25 @@ function setup(anthropic: { state: ConnectionStatus['state'] } = { state: 'conne
   const logs: string[] = []
   const probe = { current: anthropic, throws: opts.throwProbe === true }
   const fetchImpl = { fail: false }
+  const cipher = { decryptFails: false }
+  const defaultChanged = vi.fn()
+  const statuses: { connection: string; state: string }[] = []
   const service = new ConnectionService({
     dataDir,
     settings,
     projects: new ProjectStore(dataDir),
-    secrets: new SecretStore(dataDir, { isEncryptionAvailable: () => true, encryptString: (p) => Buffer.from(p, 'utf8'), decryptString: (b) => b.toString('utf8') }),
-    broadcast: () => {},
+    secrets: new SecretStore(dataDir, {
+      isEncryptionAvailable: () => true,
+      encryptString: (p) => Buffer.from(p, 'utf8'),
+      decryptString: (b) => {
+        if (cipher.decryptFails) throw new Error('safeStorage cannot decrypt')
+        return b.toString('utf8')
+      }
+    }),
+    broadcast: (e) => {
+      if (e.type === 'connection.status') statuses.push({ connection: e.connection, state: e.status.state })
+    },
+    onDefaultChanged: defaultChanged,
     openExternal: vi.fn(async () => {}),
     fetch: (async (url: string | URL | Request) => {
       if (fetchImpl.fail) throw new Error('proxy down')
@@ -48,8 +61,99 @@ function setup(anthropic: { state: ConnectionStatus['state'] } = { state: 'conne
     await service.update({ ...settings.get().connections.litellm, baseUrl: 'http://localhost:4000/' })
     await service.setSecret({ id: 'litellm', apiKey: 'sk-test-key' })
   }
-  return { settings, service, logs, probe, fetchImpl, addLiteLLM }
+  return { settings, service, logs, probe, fetchImpl, addLiteLLM, cipher, defaultChanged, statuses }
 }
+
+describe('review hardening (self-configuration fix-up)', () => {
+  it('refuses junk connection ids in test, logout, refresh and models without touching any status', async () => {
+    const ctx = setup({ state: 'connected' })
+    await ctx.service.test('anthropic')
+    const before = ctx.settings.get()
+    for (const junk of ['bogus', '__proto__', 'constructor', 'toString', '', 42, null]) {
+      await expect(ctx.service.test(junk as never)).rejects.toThrow('Unknown connection')
+      await expect(ctx.service.logout(junk as never)).rejects.toThrow('Unknown connection')
+      await expect(ctx.service.connect(junk as never)).rejects.toThrow('Unknown connection')
+      if (junk !== null) {
+        await expect(ctx.service.refresh({ connection: junk as never })).rejects.toThrow('Unknown connection')
+        expect(() => ctx.service.models({ connection: junk as never })).toThrow('Unknown connection')
+      }
+    }
+    expect(ctx.statuses.map((s) => s.connection)).toEqual(['anthropic'])
+    expect(ctx.settings.get()).toEqual(before)
+    expect((await ctx.service.list()).find((c) => c.connection.id === 'anthropic')?.status.state).toBe('connected')
+    expect(ctx.service.effectiveDefault()).toBe('anthropic')
+  })
+
+  it('a stored LiteLLM key that cannot be decrypted probes as error and never moves the default', async () => {
+    const ctx = setup({ state: 'disconnected' })
+    await ctx.addLiteLLM()
+    await ctx.service.test('anthropic')
+    await ctx.service.connect('litellm')
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    ctx.probe.current = { state: 'error' }
+    ctx.cipher.decryptFails = true
+    const status = await ctx.service.test('litellm')
+    expect(status).toMatchObject({ state: 'error', detail: 'The stored key could not be read. Set the API key again.' })
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    expect(ctx.service.effectiveDefault()).toBe('litellm')
+  })
+
+  it('a base URL change or a saved key waits for Test and connect and does not move the automatic default', async () => {
+    const ctx = setup({ state: 'disconnected' })
+    await ctx.addLiteLLM()
+    await ctx.service.test('anthropic')
+    await ctx.service.connect('litellm')
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    const logs = ctx.logs.length
+    await ctx.service.update({ ...ctx.settings.get().connections.litellm, baseUrl: 'http://localhost:4001/' })
+    expect(ctx.statuses.at(-1)).toEqual({ connection: 'litellm', state: 'disconnected' })
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    expect(ctx.service.effectiveDefault()).toBe('litellm')
+    await ctx.service.setSecret({ id: 'litellm', apiKey: 'sk-other' })
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    expect(ctx.service.effectiveDefault()).toBe('litellm')
+    expect(ctx.logs.length).toBe(logs)
+    // The next definite probe decides again; a removed key is definite at once.
+    await ctx.service.setSecret({ id: 'litellm', apiKey: null })
+    expect(ctx.service.effectiveDefault()).toBe('anthropic')
+    expect(ctx.settings.get().defaultConnection).toBe('anthropic')
+  })
+
+  it('forgets a replaced connection that is no longer configured', async () => {
+    const ctx = setup({ state: 'disconnected' })
+    await ctx.addLiteLLM()
+    await ctx.service.test('anthropic')
+    await ctx.service.connect('litellm')
+    expect(ctx.settings.get().defaultConnectionReplaced).toBe('anthropic')
+    await ctx.service.update({ ...ctx.settings.get().connections.anthropic, enabled: false })
+    expect(ctx.settings.get()).not.toHaveProperty('defaultConnectionReplaced')
+    expect(ctx.settings.get()).toMatchObject({ defaultConnection: 'litellm', defaultConnectionChosen: false })
+  })
+
+  it('re-choosing the stored default still requires it to be configured', async () => {
+    const ctx = setup({ state: 'connected' })
+    await ctx.service.test('anthropic')
+    await ctx.service.update({ ...ctx.settings.get().connections.anthropic, enabled: false })
+    expect(ctx.settings.get().defaultConnection).toBe('anthropic') // nothing else configured
+    await expect(ctx.service.setDefault('anthropic')).rejects.toThrow(/turned off/)
+    expect(ctx.settings.get().defaultConnectionChosen).not.toBe(true)
+  })
+
+  it('reports an effective-default move in chosen mode through onDefaultChanged', async () => {
+    const ctx = setup({ state: 'connected' })
+    await ctx.addLiteLLM()
+    await ctx.service.test('anthropic')
+    await ctx.service.connect('litellm')
+    await ctx.service.setDefault('litellm')
+    ctx.defaultChanged.mockClear()
+    await ctx.service.test('anthropic') // no move
+    expect(ctx.defaultChanged).not.toHaveBeenCalled()
+    await ctx.service.logout('litellm') // chosen LiteLLM is no longer configured: the effective default moves
+    expect(ctx.settings.get()).toMatchObject({ defaultConnection: 'litellm', defaultConnectionChosen: true })
+    expect(ctx.service.effectiveDefault()).toBe('anthropic')
+    expect(ctx.defaultChanged).toHaveBeenCalled()
+  })
+})
 
 describe('automatic default connection', () => {
   it('moves the stored default to the only connected connection, remembers what it replaced and logs once', async () => {
