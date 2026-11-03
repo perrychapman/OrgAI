@@ -1,7 +1,8 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
-import type { Effort, Project, Role } from '@shared/types'
+import type { Project, Role } from '@shared/types'
+import { projectConnection } from '@shared/defaults'
 import RoleModelPicker from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
 import type { CapabilityKind } from './team/CapabilityBlock'
@@ -14,6 +15,7 @@ import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
 import { setReportsTo, wouldCycle } from '../lib/roleOps'
+import { roleModelSummary } from '../lib/roleModels'
 
 interface Props {
   project: Project
@@ -31,6 +33,7 @@ interface Props {
 
 export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
+  const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === projectConnection(project))?.connection.tierModels)
   const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
   const id = (name: string): string => `role-${name}`
@@ -151,25 +154,9 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
         <details className="role-fold stack-2" open={roomy} data-testid="role-model-fold">
           <summary className="side-section-title" id={id('model')}>
             Model
-            <span className="role-fold-summary muted">{role.model === 'inherit' ? 'Inherited' : role.model}</span>
+            <span className="role-fold-summary muted">{roleModelSummary(role, tierModels ?? {})}</span>
           </summary>
           <RoleModelPicker project={project} role={role} />
-          <div className="field">
-            <label htmlFor={id('effort')}>Effort</label>
-            <select
-              id={id('effort')}
-              className="select"
-              value={role.effort ?? ''}
-              onChange={(e) => patch({ effort: (e.target.value || undefined) as Effort | undefined })}
-            >
-              <option value="">Default</option>
-              {(['low', 'medium', 'high', 'xhigh', 'max'] as Effort[]).map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </div>
         </details>
 
         <section className="stack-2" aria-labelledby={id('delegation')}>

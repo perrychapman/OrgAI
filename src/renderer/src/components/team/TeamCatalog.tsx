@@ -7,7 +7,7 @@ import SkillsSection from '../skills/SkillsSection'
 /**
  * Catalog tab of the Team panel: the project's home for skills, connections and plugins. Each item lists who uses it
  * ("Used by" chips select that role and switch to the Role tab through `onSelectRole`). Credentials and sign-in stay in
- * App settings > Connectors; plugin add/remove stays in Project settings.
+ * App settings > Connectors.
  */
 export default function TeamCatalog({ project, onSelectRole }: { project: Project; onSelectRole?: (roleId: string) => void }): ReactElement {
   return (
@@ -15,7 +15,7 @@ export default function TeamCatalog({ project, onSelectRole }: { project: Projec
       <p className="hint">What the whole team can draw on. Open a role to choose what it uses.</p>
       <SkillsSection project={project} onSelectRole={onSelectRole} />
       <McpSection project={project} onSelectRole={onSelectRole} />
-      <PluginsSection project={project} variant="catalog" />
+      <PluginsSection project={project} />
     </div>
   )
 }
