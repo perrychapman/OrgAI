@@ -28,7 +28,7 @@ import {
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, mcpServersForRole, newId, planGuardEngaged, planGuardOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -484,10 +484,12 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
 export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
   const { project } = ctx
   const proxy = usesProxy(ctx)
+  // Explicit project limits win; otherwise derived from the roles this run actually has (setup runs: the Architect's).
+  const limits = effectiveSubagentLimits({ ...project, roles: ctx.roles })
   const env: Record<string, string | undefined> = {
     ...isolateClaudeEnv(base, { proxy, keepApiKey: false }),
-    CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(project.maxSubagentDepth),
-    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(project.maxConcurrentSubagents),
+    CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(limits.depth),
+    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(limits.concurrency),
     // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
     CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
   }
@@ -966,6 +968,8 @@ export class ClaudeSession implements RuntimeSession {
   private resumeCostBase: number | null = null
   // ---------- subscription usage ----------
   private authMode: AuthMode
+  /** The automatic plan guard's one "now active" log line was written (planGuardArmed). */
+  private planGuardAutoLogged = false
   private usage: UsageStatus | null = null
   private usageTimer: ReturnType<typeof setInterval> | null = null
   private usageUnavailableLogged = false
@@ -1368,6 +1372,24 @@ export class ClaudeSession implements RuntimeSession {
     this.usage = usage
     this.emit({ type: 'usage.status', runId: this.ctx.run.id, usage })
     this.checkWindowShare()
+    this.planGuardArmed()
+  }
+
+  /**
+   * Whether the plan guard may steer spawns in this run: never on setup runs, proxies or API keys; otherwise
+   * planGuardOf / planGuardEngaged over the latest usage report (probe merged with rate_limit_event). Under 'auto'
+   * the first time it engages writes one run log line.
+   */
+  private planGuardArmed(): boolean {
+    if (this.isSetup || usesProxy(this.ctx) || this.authMode === 'apiKey') return false
+    const mode = planGuardOf(this.ctx.project)
+    if (!planGuardEngaged(mode, this.usage)) return false
+    if (mode === 'auto' && !this.planGuardAutoLogged) {
+      this.planGuardAutoLogged = true
+      const threshold = this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD
+      this.log('info', `Plan guard is automatic and now active: this plan reports a weekly limit, so new deep and top reports move to the everyday tier at ${threshold}% of it.`)
+    }
+    return true
   }
 
   /** project.maxWindowShare: interrupt the run once it has used that many points of the five-hour window. */
@@ -1404,7 +1426,7 @@ export class ClaudeSession implements RuntimeSession {
 
   /** The everyday model to spawn this report on instead of its deep/top one while the weekly window is near its limit, if any. */
   private steerToEveryday(target: Role | undefined, toolInput: Record<string, unknown>): { from: string; to: string } | undefined {
-    if (this.isSetup || usesProxy(this.ctx) || !preferEverydayNearLimit(this.ctx.project) || this.authMode === 'apiKey') return undefined
+    if (!this.planGuardArmed()) return undefined
     const explicit = typeof toolInput.model === 'string' && validModelId(toolInput.model) ? toolInput.model : undefined
     let model = explicit ?? (target?.model && validModelId(target.model) ? target.model : 'inherit')
     if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
@@ -1506,7 +1528,7 @@ export class ClaudeSession implements RuntimeSession {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
           updates.isolation = 'worktree'
         }
-        // Near the weekly limit, new deep/top reports run on the everyday tier (preferEverydayNearLimit).
+        // Near the weekly limit, new deep/top reports run on the everyday tier (plan guard: planGuardOf / planGuardEngaged).
         const steer = this.steerToEveryday(target, toolInput)
         if (steer && validModelId(steer.to)) {
           updates.model = steer.to
