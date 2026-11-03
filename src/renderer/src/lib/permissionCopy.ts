@@ -479,7 +479,7 @@ export function checkRuleDraft(draft: string): { ok: true; rule: string; info: R
 
 /** One-line trade-off per mode, for the settings select (renderer copy; types.ts keeps the short labels). */
 export const PERMISSION_MODE_TRADEOFF: Record<PermissionMode, string> = {
-  auto: 'Claude approves safe calls itself; asks only when unsure. Fewest prompts.',
+  auto: "The model's safety check approves routine calls and asks when unsure. Fewest prompts.",
   acceptEdits: 'Edits inside the project and its allowed folders go through; commands still ask unless a rule covers them.',
   default: 'Every edit and command asks. Most prompts.',
   dontAsk: 'Never shows a card: anything a rule does not cover is refused.',

@@ -106,11 +106,11 @@ function commandBadge(command: string, hidden: boolean): string {
   return hidden ? 'Long command' : 'Command'
 }
 
-/** Open project Settings > Agents with the Permissions section focused. */
+/** Open project Settings > Permissions with the Permissions section focused. */
 function openPermissionSettings(projectId: string): void {
   const st = useAppStore.getState()
   if (st.selectedProjectId !== projectId) st.selectProject(projectId)
-  st.setProjectSettingsPane(projectId, PROJECT_SETTINGS_PANES.agents)
+  st.setProjectSettingsPane(projectId, PROJECT_SETTINGS_PANES.permissions)
   st.setView('settings')
   requestProjectSettingsSection(PROJECT_SETTINGS_SECTIONS.permissions)
 }

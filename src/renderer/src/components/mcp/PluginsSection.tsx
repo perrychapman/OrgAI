@@ -71,7 +71,7 @@ export default function PluginsSection({ project, variant = 'settings' }: { proj
       icon={Settings2}
       testId="catalog-plugin-settings"
       onClick={() => {
-        setPane(project.id, PROJECT_SETTINGS_PANES.tools)
+        setPane(project.id, PROJECT_SETTINGS_PANES.general) // interim; the button goes in the plugins pass
         setView('settings')
       }}
     >

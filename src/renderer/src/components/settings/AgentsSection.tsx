@@ -33,7 +33,7 @@ const MODE_MORE =
 function useSectionTarget(): void {
   useEffect(() => {
     const take = (): void => {
-      const id = takeProjectSettingsSection(PROJECT_SETTINGS_PANES.agents)
+      const id = takeProjectSettingsSection(PROJECT_SETTINGS_PANES.permissions)
       if (!id) return
       requestAnimationFrame(() => {
         const section = document.getElementById(id)

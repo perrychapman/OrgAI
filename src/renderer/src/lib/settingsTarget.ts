@@ -8,10 +8,30 @@ export const APP_SETTINGS_SECTIONS = {
   modelPrices: 'appsettings-section-model-prices',
   mcpLibrary: 'appsettings-section-mcp-library',
   skillLibrary: 'skill-library',
+  /** General > New projects (visible). */
+  newProjects: 'appsettings-section-new-projects',
+  /** General > Advanced > "Assistant models" group (a SettingsGroup id; its heading takes focus). */
+  assistantModels: 'appsettings-section-assistant-models',
+  /** Connections > Advanced > Costs. */
+  costs: 'appsettings-section-costs',
+  about: 'appsettings-section-about',
+  /** @deprecated Removed pane (config-review spec 3); `appPaneForSection` returns undefined. Deleted after the pane work. */
   defaults: 'appsettings-section-defaults',
-  usage: 'appsettings-section-usage',
-  about: 'appsettings-section-about'
+  /** @deprecated Removed row (weekly threshold); `appPaneForSection` returns undefined. */
+  usage: 'appsettings-section-usage'
 } as const
+
+/** The Advanced disclosure (SettingsAdvanced pane key) a section lives in; deep links open it before landing. */
+export const ADVANCED_SECTIONS: Readonly<Record<string, 'app-general' | 'app-connections'>> = {
+  [APP_SETTINGS_SECTIONS.assistantModels]: 'app-general',
+  [APP_SETTINGS_SECTIONS.costs]: 'app-connections',
+  [APP_SETTINGS_SECTIONS.modelPrices]: 'app-connections'
+}
+
+/** The App settings Advanced pane key holding a section, or undefined when the section is visible at rest. */
+export function advancedPaneForSection(id: string): 'app-general' | 'app-connections' | undefined {
+  return ADVANCED_SECTIONS[id]
+}
 
 /** Panes of the App settings page (one is shown at a time), in nav order. */
 export const APP_SETTINGS_PANES = {
@@ -19,37 +39,49 @@ export const APP_SETTINGS_PANES = {
   connections: 'connections',
   mcpLibrary: 'mcp-library',
   skillLibrary: 'skill-library',
-  defaults: 'defaults',
-  about: 'about'
+  about: 'about',
+  /** @deprecated The Defaults pane is gone (config-review spec 3); kept only until AppSettingsView drops it. */
+  defaults: 'defaults'
 } as const
 export type AppSettingsPane = (typeof APP_SETTINGS_PANES)[keyof typeof APP_SETTINGS_PANES]
 
 /**
- * Panes of the project Settings tab, in nav order. `tools` (id kept for stored choices and links) is now "Plugins and skill
- * settings": skills and connections live in Team > Catalog (`openProjectMcp` in the store deep-links there).
+ * Panes of the project Settings tab, in nav order (config-review spec 4). The Connection section lives in General;
+ * plugins moved to Team > Catalog.
  */
 export const PROJECT_SETTINGS_PANES = {
   general: 'general',
-  agents: 'agents',
+  permissions: 'permissions',
   limits: 'limits',
-  connection: 'connection',
-  tools: 'tools',
   maintenance: 'maintenance'
 } as const
 export type ProjectSettingsPane = (typeof PROJECT_SETTINGS_PANES)[keyof typeof PROJECT_SETTINGS_PANES]
+
+/** Pane ids saved before the restructure, mapped to the pane that now holds their content. */
+const LEGACY_PROJECT_PANES: Record<string, ProjectSettingsPane> = { agents: 'permissions', connection: 'general', tools: 'general' }
+
+/** A stored pane choice as a current pane: legacy ids map over, anything unknown is General. */
+export function normalizeProjectPane(stored: string | null | undefined): ProjectSettingsPane {
+  if (!stored) return 'general'
+  if ((Object.values(PROJECT_SETTINGS_PANES) as string[]).includes(stored)) return stored as ProjectSettingsPane
+  return LEGACY_PROJECT_PANES[stored] ?? 'general'
+}
 
 /** Section ids inside project Settings panes that deep links target. */
 export const PROJECT_SETTINGS_SECTIONS = {
   permissions: 'settings-section-permissions',
   allowedFolders: 'settings-section-allowed-folders',
-  rules: 'settings-section-rules'
+  rules: 'settings-section-rules',
+  /** General > Connection (not a deep-link target of PermissionCard; listed for e2e and the pane map). */
+  connection: 'settings-section-connection'
 } as const
 export type ProjectSettingsSection = (typeof PROJECT_SETTINGS_SECTIONS)[keyof typeof PROJECT_SETTINGS_SECTIONS]
 
 const PROJECT_SECTION_PANE: Record<ProjectSettingsSection, ProjectSettingsPane> = {
-  [PROJECT_SETTINGS_SECTIONS.permissions]: 'agents',
-  [PROJECT_SETTINGS_SECTIONS.allowedFolders]: 'agents',
-  [PROJECT_SETTINGS_SECTIONS.rules]: 'agents'
+  [PROJECT_SETTINGS_SECTIONS.permissions]: 'permissions',
+  [PROJECT_SETTINGS_SECTIONS.allowedFolders]: 'permissions',
+  [PROJECT_SETTINGS_SECTIONS.rules]: 'permissions',
+  [PROJECT_SETTINGS_SECTIONS.connection]: 'general'
 }
 
 /** The project Settings pane holding a section id; undefined when unknown. */
@@ -94,15 +126,20 @@ const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
   [APP_SETTINGS_SECTIONS.notifications]: 'general',
   [APP_SETTINGS_SECTIONS.connections]: 'connections',
   [APP_SETTINGS_SECTIONS.modelPrices]: 'connections',
+  [APP_SETTINGS_SECTIONS.costs]: 'connections',
+  [APP_SETTINGS_SECTIONS.newProjects]: 'general',
+  [APP_SETTINGS_SECTIONS.assistantModels]: 'general',
   [APP_SETTINGS_SECTIONS.mcpLibrary]: 'mcp-library',
   [APP_SETTINGS_SECTIONS.skillLibrary]: 'skill-library',
-  [APP_SETTINGS_SECTIONS.defaults]: 'defaults',
-  [APP_SETTINGS_SECTIONS.usage]: 'defaults',
   [APP_SETTINGS_SECTIONS.about]: 'about'
 }
 
-/** The App settings pane that contains a section id (a pane id maps to itself); undefined when unknown. */
+/**
+ * The App settings pane that contains a section id (a pane id maps to itself); undefined when unknown or removed
+ * (the old Defaults pane and its rows: the page then opens on General).
+ */
 export function appPaneForSection(id: string): AppSettingsPane | undefined {
+  if (id === APP_SETTINGS_PANES.defaults) return undefined
   if ((Object.values(APP_SETTINGS_PANES) as string[]).includes(id)) return id as AppSettingsPane
   return APP_SECTION_PANE[id]
 }
@@ -175,7 +212,7 @@ export function takeConnectorTarget(): string | null {
 const PRICE_KEY = 'orgai.pendingModelPrice'
 
 /**
- * Open App settings > Connections > Model prices (scrolled to and focused), optionally with the add form pre-filled
+ * Open App settings > Connections > Model prices (its pane's Advanced opened first, then scrolled to and focused), optionally with the add form pre-filled
  * with a model id. The caller still switches the view (`setView('appSettings')`).
  */
 export function requestModelPrice(model?: string): void {
