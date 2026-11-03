@@ -8,6 +8,7 @@ import { Button } from './ui/Button'
 import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
 import { CONNECTION_NAME } from '../lib/settingsCopy'
 import { roleTier } from '../lib/remap'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
 
 /** Resolve the tier a role effectively has: its own, or through ancestors when it inherits. */
@@ -79,7 +80,13 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
           <option value={role.model}>{role.model === 'inherit' ? 'Inherit' : 'Custom'}</option>
         </select>
         <span className="hint">Connect {CONNECTION_NAME[connection]} to choose a model.</span>
-        <Button size="sm" onClick={() => setView('appSettings')}>
+        <Button
+          size="sm"
+          onClick={() => {
+            requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+            setView('appSettings')
+          }}
+        >
           Open connections
         </Button>
       </div>

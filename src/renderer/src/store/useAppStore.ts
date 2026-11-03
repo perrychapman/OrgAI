@@ -805,7 +805,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => {
       const list = s.connections ?? []
       const exists = list.some((c) => c.connection.id === info.connection.id)
-      return { connections: exists ? list.map((c) => (c.connection.id === info.connection.id ? info : c)) : [...list, info] }
+      // Keep the list's isDefault flags until the reload lands, so two cards never claim the default at once.
+      return { connections: exists ? list.map((c) => (c.connection.id === info.connection.id ? { ...info, isDefault: c.isDefault } : c)) : [...list, info] }
     })
     // One edited record can carry a stale isDefault next to the others: re-read the whole list.
     scheduleConnectionsReload()

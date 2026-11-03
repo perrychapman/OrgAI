@@ -150,7 +150,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
     <>
       <Banner tone="info">
         The orchestrator&apos;s model family picks the adapter. Other roles can use any model the proxy serves.
-        {familyNotice && <span data-testid="proxy-family-notice"> {familyNotice}</span>}
+        {familyNotice && !refusal && <span data-testid="proxy-family-notice"> {familyNotice}</span>}
       </Banner>
       <div className="row">
         <span className="muted">Orchestrator model family</span>

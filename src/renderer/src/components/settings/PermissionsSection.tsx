@@ -177,6 +177,7 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
                   data-testid="permissions-summary-toggle"
                   aria-expanded={summaryOpen}
                   aria-controls={bodyId}
+                  aria-label={`${summaryOpen ? 'Hide' : 'Show'} rules and folders you allowed`}
                   aria-describedby={settingDescId(row('summary-row'))}
                   onClick={() => setSummaryOpen((o) => !o)}
                 >

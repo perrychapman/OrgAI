@@ -17,6 +17,12 @@ describe('newProjectConnectionView', () => {
     expect(newProjectConnectionView([info('anthropic', 'disconnected', false)])).toEqual({ text: 'Nothing is connected yet.', link: 'Connect' })
     expect(newProjectConnectionView([info('anthropic', 'error', true)]).link).toBe('Connect')
   })
+  it('names a chosen default that is not connected while another connection is', () => {
+    expect(newProjectConnectionView([info('anthropic', 'connected', false), info('openai', 'disconnected', true, { kind: 'chatgpt' })])).toEqual({
+      text: 'Runs on OpenAI (ChatGPT sign-in), which is not connected.',
+      link: 'Change'
+    })
+  })
   it('says the mock adapter when it is ticked, with no link', () => {
     expect(newProjectConnectionView([info('litellm', 'connected', true)], true)).toEqual({ text: 'Runs on the mock adapter (no tokens).', link: null })
   })

@@ -286,7 +286,13 @@ try {
       await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-fold]'); if (d) d.open = true })
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       const roleLabel = ((await page.locator('[data-testid=role-model]').evaluate((el) => (el.matches('select') ? el : el.querySelector('select'))?.selectedOptions[0]?.textContent ?? '')) || '').trim()
-      check(/(top|deep|everyday|fast)\)?$/i.test(roleLabel) || /^inherit/i.test(roleLabel), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
+      // Spec 5: tier options read "Everyday (sonnet)" (tier word first); Inherit / the connection default otherwise.
+      check(/^(top|deep|everyday|fast)\b/i.test(roleLabel) || /inherit|connection default/i.test(roleLabel), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
+      // Spec 8.3: at rest (role Advanced closed) no option of the Model select is a bare concrete model id.
+      const bareIds = await page.locator('[data-testid=role-model]').evaluate((el) =>
+        [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast)\b|inherit|connection default|custom/i.test(t))
+      )
+      check(bareIds.length === 0, `role Model select lists only tiers and Inherit at ${w}x${h} ${theme}`, bareIds.join(', '))
       await shot(`role-model-${w}x${h}-${theme}`)
     }
   }

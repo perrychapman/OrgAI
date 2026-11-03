@@ -37,7 +37,6 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
         {pane === 'general' && (
           <>
             <GeneralSection project={project} patch={patch} />
-            {/* Interim shell: the pane pass replaces this with the spec 4.1 Connection section. */}
             <RemapNotices projectId={project.id} />
             <ProjectConnection project={project} />
           </>

@@ -23,6 +23,21 @@ const KINDS: { value: SetupKind; label: string }[] = [
   { value: 'existing', label: 'Existing repository' }
 ]
 
+/**
+ * The New project form's typed values, kept while its "Change" / "Connect" link visits App settings > Connections
+ * (the view unmounts the form). Read once by the next form mount, then cleared. Session memory only.
+ */
+interface NewProjectDraft {
+  kind: SetupKind
+  name: string
+  path: string
+  brief: string
+  architect: boolean
+  picked: SetupChoice | null
+  useMock: boolean
+}
+let parkedDraft: NewProjectDraft | null = null
+
 function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
   const createProject = useAppStore((s) => s.createProject)
   const connections = useAppStore((s) => s.connections)
@@ -34,13 +49,18 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
   const uid = useId()
   const ids = { name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
 
-  const [kind, setKind] = useState<SetupKind>('new')
-  const [name, setName] = useState('')
-  const [path, setPath] = useState('')
-  const [brief, setBrief] = useState('')
-  const [architect, setArchitect] = useState(true)
-  const [picked, setPicked] = useState<SetupChoice | null>(null)
-  const [useMock, setUseMock] = useState(true)
+  const [draft] = useState(() => {
+    const d = parkedDraft
+    parkedDraft = null
+    return d
+  })
+  const [kind, setKind] = useState<SetupKind>(draft?.kind ?? 'new')
+  const [name, setName] = useState(draft?.name ?? '')
+  const [path, setPath] = useState(draft?.path ?? '')
+  const [brief, setBrief] = useState(draft?.brief ?? '')
+  const [architect, setArchitect] = useState(draft?.architect ?? true)
+  const [picked, setPicked] = useState<SetupChoice | null>(draft?.picked ?? null)
+  const [useMock, setUseMock] = useState(draft?.useMock ?? true)
   const connectionView = newProjectConnectionView(connections, mockAvailable && useMock)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -274,6 +294,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
               className="link-btn"
               data-testid="new-project-connection-change"
               onClick={() => {
+                parkedDraft = { kind, name, path, brief, architect, picked, useMock }
                 requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
                 useAppStore.getState().setView('appSettings')
               }}
@@ -311,7 +332,8 @@ export default function ProjectsView(): ReactElement {
   const appInfo = useAppStore((s) => s.appInfo)
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const { confirm, dialog } = useConfirm()
-  const [formOpen, setFormOpen] = useState(false)
+  // A form parked by its connection link comes back open.
+  const [formOpen, setFormOpen] = useState(() => parkedDraft !== null)
 
   useEffect(() => {
     void loadAppInfo()

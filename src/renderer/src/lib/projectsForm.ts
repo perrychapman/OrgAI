@@ -69,7 +69,10 @@ export function newProjectConnectionView(connections: readonly ConnectionInfo[] 
   if (mock) return { text: 'Runs on the mock adapter (no tokens).', link: null }
   if (!connections) return { text: '', link: null }
   const def = defaultConnectionInfo(connections)
-  if (!def || def.status.state !== 'connected') return { text: 'Nothing is connected yet.', link: 'Connect' }
+  // "Nothing is connected" only when nothing is: a chosen default that dropped, or one still checking, is named instead.
+  if (!connections.some((c) => c.status.state === 'connected')) return { text: 'Nothing is connected yet.', link: 'Connect' }
+  if (!def) return { text: '', link: null }
+  if (def.status.state !== 'connected') return { text: `Runs on ${connectionWithAuth(def)}, which is not connected.`, link: 'Change' }
   return { text: `Runs on ${connectionWithAuth(def)}.`, link: 'Change' }
 }
 
