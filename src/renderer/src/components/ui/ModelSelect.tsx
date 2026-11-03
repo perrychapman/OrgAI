@@ -12,7 +12,7 @@ export interface ModelGroup {
   options: ModelOption[]
 }
 
-/** Native select with optgroups for model pickers. Option text is mono so ids align. */
+/** Native select with optgroups for model pickers. Sans face by default; `mono` aligns concrete ids (the tier editor). */
 export function ModelSelect({
   label,
   hideLabel,
@@ -25,7 +25,8 @@ export function ModelSelect({
   description,
   placeholder,
   testId,
-  dataTier
+  dataTier,
+  mono
 }: {
   label: string
   hideLabel?: boolean
@@ -41,6 +42,8 @@ export function ModelSelect({
   placeholder?: string
   testId?: string
   dataTier?: string
+  /** Mono face for lists of concrete ids. */
+  mono?: boolean
 }): ReactElement {
   const id = useId()
   const msgId = `${id}-msg`
@@ -51,7 +54,7 @@ export function ModelSelect({
       </label>
       <select
         id={id}
-        className={`select mono-select${invalid ? ' invalid' : ''}`}
+        className={`select${mono ? ' mono-select' : ''}${invalid ? ' invalid' : ''}`}
         value={value}
         disabled={disabled}
         aria-invalid={invalid || undefined}
