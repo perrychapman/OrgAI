@@ -26,3 +26,20 @@ export function defaultConnectionInfo(connections: readonly ConnectionInfo[] | n
 export function connectionName(id: ConnectionId): string {
   return CONNECTION_NAME[id]
 }
+
+/**
+ * The default card's quiet mode word. 'chosen' only when the user's stored pick is this card; a chosen connection that
+ * is no longer usable leaves a fallback default, which is automatic in effect (UI review L3). null until loaded.
+ */
+export function defaultMode(cardId: ConnectionId, chosen: boolean | null, storedId: ConnectionId | null): 'chosen' | 'automatic' | null {
+  if (chosen === null) return null
+  return chosen && storedId === cardId ? 'chosen' : 'automatic'
+}
+
+/** Announcement after a default change; the automatic one names the connection now in use (UI review L14). */
+export function defaultChangeAnnouncement(next: ConnectionId | null, effective: ConnectionId | null): string {
+  if (next) return `${CONNECTION_NAME[next]} is now the default for new projects and assistants`
+  return effective
+    ? `The default connection is automatic again: ${CONNECTION_NAME[effective]} for new projects and assistants`
+    : 'The default connection is automatic again'
+}

@@ -23,6 +23,7 @@ import { spendText } from '../../lib/usage'
 import { formatUntil } from '../../lib/layout'
 import TierEditor from './TierEditor'
 import { useConnectionsAnnounce } from './announce'
+import { defaultChangeAnnouncement, defaultMode } from '../../lib/connectionLabel'
 
 const META: Record<ConnectionId, { name: string; icon: typeof Bot; hint: string }> = {
   anthropic: { name: 'Anthropic', icon: Sparkles, hint: 'Sign in with Claude Code to use Claude models.' },
@@ -63,17 +64,24 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const connected = state === 'connected'
   const isDefault = info.isDefault
   const chosen = useAppStore((s) => s.defaultConnectionChosen)
+  const storedDefault = useAppStore((s) => s.defaultConnectionStored)
+  const defaultChanges = useAppStore((s) => s.defaultConnectionChanges)
+  const mode = defaultMode(id, chosen, storedDefault)
   const loadDefault = useAppStore((s) => s.loadDefaultConnection)
   const errorId = `conn-default-error-${id}`
   useEffect(() => {
     void loadDefault()
   }, [loadDefault])
+  // Any card's successful default change makes an earlier refusal here stale (UI review L4).
+  useEffect(() => {
+    setDefaultError(null)
+  }, [defaultChanges])
   const changeDefault = async (next: ConnectionId | null): Promise<void> => {
     setDefaultError(null)
     try {
       await useAppStore.getState().setDefaultConnection(next)
-      announce(next ? `${meta.name} is now the default for new projects and assistants` : 'The default connection is automatic again')
-      requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h3')?.focus())
+      announce(defaultChangeAnnouncement(next, useAppStore.getState().defaultConnection))
+      requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h4')?.focus())
     } catch (e) {
       // The refusal ("<Name> is not connected. ...") stays in the card as plain text and is announced by the pane.
       const msg = errText(e)
@@ -189,7 +197,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           {brandMark(id) ? <BrandMark id={id} /> : <Icon icon={meta.icon} size="lg" />}
         </span>
         <div className="conn-title">
-          <h3 tabIndex={-1}>{meta.name}</h3>
+          <h4 tabIndex={-1}>{meta.name}</h4>
           <p className={state === 'error' ? 'conn-detail invalid-text' : 'conn-detail'} data-testid="connection-status">
             {detail}
           </p>
@@ -226,15 +234,21 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
               <Badge tone="accent" testId="default-connection-badge">
                 Default for new projects and assistants
               </Badge>
-              {chosen !== null && (
+              {mode && (
                 <span className="conn-default-mode" data-testid="default-connection-mode">
-                  {chosen ? 'Chosen' : 'Automatic'}
+                  {mode === 'chosen' ? 'Chosen' : 'Automatic'}
                 </span>
               )}
-              {chosen === true && (
-                <Button size="sm" variant="secondary" testId="connection-default-auto" onClick={() => void changeDefault(null)}>
+              {mode === 'chosen' && (
+                <button
+                  type="button"
+                  className="btn sm"
+                  data-testid="connection-default-auto"
+                  aria-describedby={defaultError ? errorId : undefined}
+                  onClick={() => void changeDefault(null)}
+                >
                   Back to automatic
-                </Button>
+                </button>
               )}
             </>
           ) : (

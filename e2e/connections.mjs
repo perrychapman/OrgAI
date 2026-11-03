@@ -212,7 +212,7 @@ try {
         await page.getByRole('tab', { name: 'About', exact: true }).click()
         await deepLink('appsettings-section-assistant-models')
         check((await page.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected')) === 'true' && (await details('app-general').evaluate((el) => el.open)), 'assistant-models deep link lands on General with Advanced open')
-        check(await page.evaluate(() => document.activeElement?.matches('#appsettings-section-assistant-models h4') === true), 'assistant-models deep link focuses the group heading')
+        check(await page.evaluate(() => document.activeElement?.matches('#appsettings-section-assistant-models .settings-group-title') === true), 'assistant-models deep link focuses the group heading')
         await page.getByRole('tab', { name: 'About', exact: true }).click()
         await deepLink('appsettings-section-defaults')
         check((await page.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected')) === 'true', 'the removed Defaults id opens General')

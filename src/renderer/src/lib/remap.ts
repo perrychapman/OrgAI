@@ -1,6 +1,6 @@
-import type { AdapterChoice, ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
+import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
 import { MODEL_TIERS } from '@shared/types'
-import { adapterForFamily, modelFamily, tierForModel } from '@shared/defaults'
+import { adapterForFamily, mixedFamilyRefusal, modelFamily, tierForModel } from '@shared/defaults'
 
 /** One project's predicted or applied model changes, for the notice and the preview dialog. */
 export interface ProjectChanges {
@@ -98,16 +98,10 @@ export function proxyFamilyNotice(family: ModelFamily | undefined, count: number
 }
 
 /**
- * Whether a work run with this adapter choice is refused before it exists. Same rule as `mixedFamilyRefusal` in
- * src/shared/defaults.ts on dev (5616aaa; this branch predates it, so the renderer mirrors it; switch to the shared
- * export once merged): null = it may start; 'no-root-family' = LiteLLM, roles on another family and the orchestrator
- * has no model of its own; 'single-family-connection' = Anthropic or OpenAI with a role of another family.
+ * Whether a work run with this adapter choice is refused before it exists: the shared rule main applies
+ * (`mixedFamilyRefusal` in src/shared/defaults.ts), re-exported so the banner and the start gate cannot drift.
  */
-export function startRefusal(choice: Pick<AdapterChoice, 'connection' | 'family' | 'mismatched'>): 'no-root-family' | 'single-family-connection' | null {
-  if (!choice.mismatched.length) return null
-  if (choice.connection !== 'litellm') return 'single-family-connection'
-  return choice.family === undefined ? 'no-root-family' : null
-}
+export const startRefusal = mixedFamilyRefusal
 
 /** Danger-banner copy for a refused start (null when the project can start). */
 export const START_REFUSAL_COPY: Record<'no-root-family' | 'single-family-connection', string> = {

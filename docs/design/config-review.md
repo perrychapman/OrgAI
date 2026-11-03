@@ -287,9 +287,9 @@ Where it differs from the sections above, and why:
   `components/connections/announce.ts`). The card's own live regions are gone.
 - **LiteLLM mixed models (owner decision).** The "cannot start" banner and the "Roles that must change" list are
   replaced by an info notice (`proxy-family-notice`: "Claude orchestrator; 2 roles on other model families run through
-  the proxy."). A danger banner (`project-start-refusal`) remains only when `lib/remap.ts` `startRefusal` refuses. That
-  function mirrors shared `mixedFamilyRefusal`, which landed on dev at 5616aaa after this branch was cut; switch to the
-  shared import after integration. The role panel's Exact model lists the whole proxy catalog in per-family optgroups.
+  the proxy."). A danger banner (`project-start-refusal`) remains only when `lib/remap.ts` `startRefusal` refuses. Since the
+  follow-up after edb3e95 `startRefusal` is the shared `mixedFamilyRefusal` itself (a unit test pins the identity), so
+  the banner and main's start gate cannot drift. The info notice shows only while some role is on another family. The role panel's Exact model lists the whole proxy catalog in per-family optgroups.
   The project line reads "Default connection for roles: Anthropic (Claude Code login)." instead of "Runs on ...".
 - **New project form.** It says "Runs on <Name> (<auth>), which is not connected." when the effective default is not
   connected but another connection is. "Nothing is connected yet." shows only when nothing is connected. The typed
@@ -297,9 +297,10 @@ Where it differs from the sections above, and why:
 - **Permissions.** The deep link focuses the pane h2, because the section h3 repeats the pane title and is hidden. The
   summary disclosure body is always mounted with `hidden`, so the rule count and deep links work while it is closed.
   The toggle's accessible name is "Show rules and folders you allowed" or "Hide rules and folders you allowed".
-- **Raw controls.** Four controls are native elements with the shared classes, because the `components/ui` wrappers
+- **Raw controls.** Five controls are native elements with the shared classes, because the `components/ui` wrappers
   lack the prop they need (testId on `Select`; `aria-describedby`, `aria-expanded` and `aria-controls` on `Button`):
-  `default-mode-select`, `team-assistant-select`, `connection-make-default` and `permissions-summary-toggle`.
+  `default-mode-select`, `team-assistant-select`, `connection-make-default`, `connection-default-auto` and
+  `permissions-summary-toggle`.
 - **ModelSelect** uses the sans face by default. `mono` is opt-in, and only TierEditor uses it.
 - **Role panel.** The Model select shows "Use the connection default" for the root and "Inherit from parent" for
   other roles. An exact model shows as "Custom (set under Advanced)". The Advanced disclosure is `role-model-advanced`.
@@ -318,19 +319,25 @@ Selectors added:
 Selectors removed: `role-tier-badge`, `catalog-plugin-settings`, `tools-team-pointer`, `open-team`,
 `skill-settings-section`.
 
-Still open (Reviewer Lows not fixed in this pass):
+Fixed in the follow-up after edb3e95 (unit-tested where pure; not driven by e2e):
+- L3: the mode word comes from `lib/connectionLabel.ts` `defaultMode`: "Chosen" only on the card the user picked
+  (store `defaultConnectionStored`); a fallback card reads "Automatic" and offers no "Back to automatic".
+- L4: "Back to automatic" carries `aria-describedby` to the refusal text, and every card clears its refusal when any
+  card's change succeeds (store `defaultConnectionChanges`).
+- L8: `SettingsGroup` titles are h3 directly under the pane h2 (the Advanced body, `GroupHeadingLevelContext`) and
+  h4 inside a section; connection card titles are h4 under the Connections section; the Limits Advanced group is
+  "Runs and agents". Selectors unchanged (one e2e check now matches `.settings-group-title` instead of `h4`).
+- L9: the LiteLLM info banner shows only when roles are on another family.
+- L14: `defaultChangeAnnouncement` names the default after "Back to automatic".
+
+Still open (Reviewer Lows; also listed in ARCHITECTURE.md Risks):
 - L1: the `components/ui` wrappers still lack the props listed under Raw controls.
-- L3: "Chosen" can show on a fallback card when the chosen connection is no longer configured.
-- L4: "Back to automatic" has no `aria-describedby`, and a refusal is not cleared when another card succeeds.
 - L5: opening the pane makes duplicate `connections:list` calls.
 - L6: the announcer can overwrite messages that arrive close together.
 - L7: pre-existing `role=alert` errors in App settings and Model prices.
-- L8: heading tiers. Card titles are h3, Advanced has h4 groups directly under the h2, and Limits has a "Limits" group
-  title.
 - L10: `flushSync` inside an effect in PermissionsSection.
 - L11: render-only 'anthropic' fallbacks while the list loads.
 - L13: `aria-controls` points at unmounted bodies in TierEditor and ModelList.
-- L14: the automatic announcement does not name the new default.
 
 Not exercised by e2e, because the mock connects only Anthropic: make-default, Back to automatic, a setDefault refusal,
 the multi-connection project cards, the LiteLLM notices and the unsupported-effort note.
