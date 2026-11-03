@@ -290,8 +290,28 @@ describe('SettingsStore', () => {
 })
 
 describe('defaultConnectionChosen', () => {
-  it('keeps true and drops anything else', () => {
+  it('keeps an explicit boolean', () => {
     expect(normalizeSettings({ defaultConnectionChosen: true }).defaultConnectionChosen).toBe(true)
-    for (const v of [false, 'true', 1, null, {}]) expect(normalizeSettings({ defaultConnectionChosen: v } as never).defaultConnectionChosen).toBeUndefined()
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false }).defaultConnectionChosen).toBe(false)
+    expect(normalizeSettings({ defaultConnection: 'anthropic', defaultConnectionChosen: true }).defaultConnectionChosen).toBe(true)
+  })
+
+  it('migrates a pre-merge file: a non-anthropic default was the user pick, anthropic is automatic', () => {
+    expect(normalizeSettings({ defaultConnection: 'openai' }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'litellm' }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'anthropic' }).defaultConnectionChosen).toBe(false)
+    expect(normalizeSettings(null).defaultConnectionChosen).toBe(false)
+    for (const v of ['true', 1, null, {}]) expect(normalizeSettings({ defaultConnection: 'anthropic', defaultConnectionChosen: v } as never).defaultConnectionChosen).toBe(false)
+  })
+})
+
+describe('defaultConnectionReplaced', () => {
+  it('keeps a valid id while automatic and drops it otherwise', () => {
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: 'anthropic' }).defaultConnectionReplaced).toBe('anthropic')
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: true, defaultConnectionReplaced: 'anthropic' })).not.toHaveProperty('defaultConnectionReplaced')
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: 'openai' })).not.toHaveProperty('defaultConnectionReplaced')
+    for (const v of ['bogus', 'toString', 1, null, {}]) {
+      expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: v } as never)).not.toHaveProperty('defaultConnectionReplaced')
+    }
   })
 })

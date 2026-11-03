@@ -105,7 +105,6 @@ import type { SetupService } from './setup/service'
 import type { MaintenanceService } from './maintenance'
 import type { SettingsStore } from './store/settings'
 import type { ConnectionService } from './connections/service'
-import { settingsForSave } from './connections/defaultPick'
 import type { McpService } from './mcp/service'
 import type { AgentImportService } from './setup/import/importer'
 import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from './skills/types'
@@ -442,13 +441,8 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   // settings.set() notifies SettingsStore listeners: index.ts applies the theme and broadcasts settings:changed.
   const settingsInfo = (): AppSettingsInfo => buildSettingsInfo(settings.get(), { dataDir: settings.dataDir, appVersion: app.getVersion() })
   ipcMain.handle(IPC.settingsGet, () => settingsInfo())
-  ipcMain.handle(IPC.settingsSet, (_e, next: AppSettings) => {
-    settings.set(
-      settingsForSave(stripSettingsInfo(next), settings.get(), {
-        autoReplaced: connections.autoReplacedDefault(),
-        refusal: (id) => connections.defaultRefusalFor(id)
-      })
-    )
+  ipcMain.handle(IPC.settingsSet, (_e, next: unknown) => {
+    settings.set(settingsSetArgs(next, settings.get()))
     return settingsInfo()
   })
   // Deprecated (phase 1 removes NotificationsToggle): a mirror of AppSettings.notifications, the only source the
@@ -809,6 +803,37 @@ function registerMcpIpc(
   ipcMain.handle(IPC.connectorsSetToken, (_e, input: unknown): McpLibraryInfo => mcp.connectorsSetToken(connectorArgs.setToken(input)))
   ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
   ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
+}
+
+/**
+ * settings:set input: a plain object (anything else is refused), merged onto the stored settings (never onto the
+ * defaults, so a field the renderer left out keeps its stored value). The main-owned fields always keep their stored
+ * values: defaultConnection, defaultConnectionChosen and defaultConnectionReplaced (change the default only through
+ * connections:setDefault), connections and its providerAuth mirror (connections:update / setSecret). The
+ * AppSettingsInfo extras are dropped. Pure; exported for tests. SettingsStore.set normalizes the rest.
+ */
+export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Settings must be an object.')
+  const proto = Object.getPrototypeOf(raw)
+  if (proto !== Object.prototype && proto !== null) throw new Error('Settings must be an object.')
+  const incoming = stripSettingsInfo(raw as AppSettings)
+  const {
+    defaultConnection: _dc,
+    defaultConnectionChosen: _chosen,
+    defaultConnectionReplaced: _replaced,
+    connections: _connections,
+    providerAuth: _auth,
+    ...rest
+  } = incoming
+  const out: AppSettings = { ...stored, ...rest }
+  out.defaultConnection = stored.defaultConnection
+  out.connections = stored.connections
+  out.providerAuth = stored.providerAuth
+  delete out.defaultConnectionChosen
+  delete out.defaultConnectionReplaced
+  if (stored.defaultConnectionChosen !== undefined) out.defaultConnectionChosen = stored.defaultConnectionChosen
+  if (stored.defaultConnectionReplaced !== undefined) out.defaultConnectionReplaced = stored.defaultConnectionReplaced
+  return out
 }
 
 /** Longest pasted connector token accepted over IPC; McpService re-checks the header value it builds. */

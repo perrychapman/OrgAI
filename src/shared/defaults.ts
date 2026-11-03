@@ -542,11 +542,12 @@ export function connectionInUse(
 }
 
 /**
- * Whether a connection's record allows it to be used at all: anthropic always; openai when enabled; litellm when
- * enabled with a base URL and a stored key. Says nothing about its live status. Pure.
+ * Whether a connection's record allows it to be used at all: anthropic unless it was turned off (enabled false, the
+ * card's Disconnect); openai when enabled; litellm when enabled with a base URL and a stored key. Says nothing about
+ * its live status. Pure.
  */
 export function connectionConfigured(id: ConnectionId, connections: Partial<ProviderConnections> | undefined): boolean {
-  if (id === 'anthropic') return true
+  if (id === 'anthropic') return connections?.anthropic?.enabled !== false
   if (id === 'openai') return connections?.openai?.enabled === true
   const l = connections?.litellm
   return l?.enabled === true && !!l.baseUrl?.trim() && l.hasApiKey === true
@@ -560,22 +561,37 @@ export function connectionUsable(id: ConnectionId, connections: Partial<Provider
 /**
  * The default connection consumers use (new projects, Chat, the MCP and Skill assistants). `states` holds the live
  * state of every configured connection (connectionConfigured), 'unknown' while it has not been probed yet; leave out
- * connections that are not configured. Returns the stored default when it is connected, or while its state is still
- * 'connecting' or 'unknown' (no flip while a probe runs, e.g. at boot); else the only connected connection; else,
- * with several connected, the first in CONNECTION_IDS order; else the stored value (anthropic when unset). `chosen`
- * does not change the answer (an explicit pick that is down still yields to a connected connection); it is accepted
- * so callers pass the whole setting. Pure.
+ * connections that are not configured. Pure.
+ * - chosen (the user picked it): the stored value whatever its state, so a run fails with that connection's own error
+ *   (the honest outcome). Only a chosen connection that is no longer configured (turned off) falls through.
+ * - automatic: the connection an automatic rewrite replaced (`replaced`) as soon as it is 'connected' again; else the
+ *   stored value unless it is definitely 'disconnected' or not configured ('error', 'connecting' and 'unknown' keep
+ *   it: a probe throw, a CLI timeout or a failed discovery never moves the default); else the first connected
+ *   connection in CONNECTION_IDS order other than LiteLLM, LiteLLM only when it is the only connected one; else the
+ *   stored value when configured, else the first configured connection, else the stored value (anthropic when unset).
  */
 export function effectiveDefaultConnection(input: {
   stored: ConnectionId | undefined
   chosen?: boolean
+  replaced?: ConnectionId
   states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>>
 }): ConnectionId {
-  const stored = input.stored && (CONNECTION_IDS as readonly string[]).includes(input.stored) ? input.stored : 'anthropic'
+  const stored = isConnectionId(input.stored) ? input.stored : 'anthropic'
   const own = input.states[stored]
-  if (own === 'connected' || own === 'connecting' || own === 'unknown') return stored
+  if (input.chosen === true && own !== undefined) return stored
+  const replaced = input.chosen !== true && isConnectionId(input.replaced) ? input.replaced : undefined
+  if (replaced && input.states[replaced] === 'connected') return replaced
+  if (own !== undefined && own !== 'disconnected') return stored
   const connected = CONNECTION_IDS.filter((id) => input.states[id] === 'connected')
-  return connected[0] ?? stored
+  const pick = connected.find((id) => id !== 'litellm') ?? (connected.length === 1 ? connected[0] : undefined)
+  if (pick) return pick
+  if (own !== undefined) return stored
+  return CONNECTION_IDS.find((id) => input.states[id] !== undefined) ?? stored
+}
+
+/** A known ConnectionId (own property of the id list, never a prototype key). Pure. */
+export function isConnectionId(v: unknown): v is ConnectionId {
+  return typeof v === 'string' && (CONNECTION_IDS as readonly string[]).includes(v)
 }
 
 /** Provider label for a connection. Anthropic follows the auth choice. */

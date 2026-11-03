@@ -2,18 +2,25 @@ import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
 import type { Project } from '@shared/types'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, preferEverydayNearLimit } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { SETTINGS_COPY } from '../../lib/settingsCopy'
 import { Input } from '../ui/Input'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
-import { Switch } from '../ui/Switch'
+import { Select } from '../ui/Select'
 import { ClampedNumber } from './ClampedNumber'
 import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 
 const SHARE_LABEL = 'Stop at a share of the five-hour window (%)'
+
+/** planGuardOf modes: Automatic (unset) engages on a plan with a weekly window or a warning status. */
+const PLAN_GUARD_OPTIONS = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' }
+]
 
 /** Limits pane: cost cap, retention, subagent caps, the five-hour window cap and the everyday-tier fallback. */
 export function LimitsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
@@ -146,7 +153,20 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
               </button>
             </>
           }
-          control={<Switch checked={preferEverydayNearLimit(project)} label={copy.preferEveryday.label} describedBy={desc('everyday')} onChange={(v) => patch({ preferEverydayNearLimit: v })} />}
+          width="select"
+          control={
+            <Select
+              label={copy.preferEveryday.label}
+              describedBy={desc('everyday')}
+              value={planGuardOf(project)}
+              options={PLAN_GUARD_OPTIONS}
+              onChange={(v) => {
+                // Automatic clears both the field and its legacy mirror (reconcileNearLimitProject keeps them unset).
+                const value = v === 'on' ? true : v === 'off' ? false : undefined
+                patch({ preferEverydayNearLimit: value, preferSonnetNearLimit: value })
+              }}
+            />
+          }
         />
       </SettingsCard>
     </SettingsSection>

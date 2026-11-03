@@ -11,7 +11,8 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs } = await import('./ipc')
+const { DEFAULT_APP_SETTINGS } = await import('@shared/defaults')
 
 describe('permissionRuleArgs (permissions:add / permissions:remove, review re-check L8)', () => {
   it('rebuilds the input with a trimmed rule and drops extra fields', () => {
@@ -127,5 +128,52 @@ describe('proposalDecideArgs (setup:decide)', () => {
     expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: { a: 'x'.repeat(4001) } } })).toThrow('too long')
     const many = Object.fromEntries(Array.from({ length: PROPOSAL_SECRETS_MAX + 1 }, (_, i) => ['k' + i, 'v']))
     expect(() => proposalDecideArgs({ ...head, decision: { behavior: 'approve', secrets: many } })).toThrow('At most')
+  })
+})
+
+describe('settingsSetArgs (settings:set, self-configuration H3 / M3)', () => {
+  const stored = {
+    ...DEFAULT_APP_SETTINGS,
+    defaultConnection: 'openai' as const,
+    defaultConnectionChosen: false,
+    defaultConnectionReplaced: 'anthropic' as const,
+    defaultKeepRuns: 7
+  }
+
+  it('refuses a payload that is not a plain object', () => {
+    for (const bad of [null, undefined, 'x', 42, [], new Date(), Object.create({ evil: 1 })]) {
+      expect(() => settingsSetArgs(bad, stored), String(bad)).toThrow('Settings must be an object.')
+    }
+  })
+
+  it('never changes the default connection fields or connections', () => {
+    const conns = structuredClone(stored.connections)
+    conns.openai.enabled = true
+    const out = settingsSetArgs(
+      {
+        defaultConnection: 'litellm',
+        defaultConnectionChosen: true,
+        defaultConnectionReplaced: 'litellm',
+        connections: conns,
+        providerAuth: { kind: 'apiKey', envVar: 'X' },
+        notifications: false
+      },
+      stored
+    )
+    expect(out.defaultConnection).toBe('openai')
+    expect(out.defaultConnectionChosen).toBe(false)
+    expect(out.defaultConnectionReplaced).toBe('anthropic')
+    expect(out.connections).toEqual(stored.connections)
+    expect(out.providerAuth).toEqual(stored.providerAuth)
+    expect(out.notifications).toBe(false)
+  })
+
+  it('merges onto the stored settings, never onto the defaults, and drops the info extras', () => {
+    const out = settingsSetArgs({ notifications: false, dataDir: '/x', appVersion: '9' }, stored)
+    expect(out.defaultKeepRuns).toBe(7)
+    expect(out).not.toHaveProperty('dataDir')
+    expect(out).not.toHaveProperty('appVersion')
+    const { defaultConnectionReplaced: _r, ...bare } = stored
+    expect(settingsSetArgs({ defaultConnectionReplaced: 'litellm' }, bare)).not.toHaveProperty('defaultConnectionReplaced')
   })
 })

@@ -135,6 +135,25 @@ describe('ProjectStore.saveFromRenderer skills', () => {
     expect(store.get(base.id)).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
   })
 
+  it('drops the old always-filled limits (3 / 8) once from a version 1 file and keeps other values (L3)', () => {
+    const dir = dataDir()
+    const legacy = { ...project({ id: 'p_legacy' }), maxSubagentDepth: 3, maxConcurrentSubagents: 8 }
+    const custom = { ...project({ id: 'p_custom' }), maxSubagentDepth: 2, maxConcurrentSubagents: 12 }
+    const mixed = { ...project({ id: 'p_mixed' }), maxSubagentDepth: 3, maxConcurrentSubagents: 4 }
+    writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version: 1, projects: [legacy, custom, mixed] }))
+    const store = new ProjectStore(dir)
+    expect(store.get('p_legacy')?.maxSubagentDepth).toBeUndefined()
+    expect(store.get('p_legacy')?.maxConcurrentSubagents).toBeUndefined()
+    expect(store.get('p_custom')).toMatchObject({ maxSubagentDepth: 2, maxConcurrentSubagents: 12 })
+    expect(store.get('p_mixed')?.maxSubagentDepth).toBeUndefined()
+    expect(store.get('p_mixed')?.maxConcurrentSubagents).toBe(4)
+    expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).version).toBe(2)
+    // After the migration an explicit 3 / 8 is the user's and survives a reload.
+    store.save({ ...store.get('p_legacy')!, maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
+    expect(store.migrateAll()).toBe(0)
+    expect(new ProjectStore(dir).get('p_legacy')).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
+  })
+
   it('keeps an unset plan guard unset through a renderer save', () => {
     const store = new ProjectStore(dataDir())
     const base = project()

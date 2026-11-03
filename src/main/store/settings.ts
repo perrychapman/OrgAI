@@ -12,7 +12,7 @@ import type {
   ProviderConnections
 } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
-import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections } from '@shared/defaults'
+import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId } from '@shared/defaults'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
 import { validModelId } from '../connections/codexAccount'
 
@@ -212,6 +212,14 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
       : typeof r.defaultPreferSonnetNearLimit === 'boolean'
         ? r.defaultPreferSonnetNearLimit
         : d.defaultPreferEverydayNearLimit
+  const defaultConnection: ConnectionId = isConnectionId(r.defaultConnection) ? r.defaultConnection : d.defaultConnection
+  // Explicit booleans are kept. A file saved before the field existed: a default other than anthropic was the user's
+  // pick (the old code never changed it on its own), anthropic is automatic. Automatic writes always store false.
+  const defaultConnectionChosen = typeof r.defaultConnectionChosen === 'boolean' ? r.defaultConnectionChosen : defaultConnection !== 'anthropic'
+  const replaced =
+    !defaultConnectionChosen && isConnectionId(r.defaultConnectionReplaced) && r.defaultConnectionReplaced !== defaultConnection
+      ? r.defaultConnectionReplaced
+      : undefined
   return {
     defaultPermissionMode: isPermissionMode(r.defaultPermissionMode) ? r.defaultPermissionMode : d.defaultPermissionMode,
     defaultMaxBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : d.defaultMaxBudgetUsd,
@@ -226,8 +234,9 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     // The connection is authoritative; the legacy field mirrors it (see reconcileAnthropicAuth).
     providerAuth: { ...connections.anthropic.auth },
     connections,
-    defaultConnection: (CONNECTION_IDS as readonly unknown[]).includes(r.defaultConnection) ? (r.defaultConnection as ConnectionId) : d.defaultConnection,
-    ...(r.defaultConnectionChosen === true ? { defaultConnectionChosen: true } : {}),
+    defaultConnection,
+    defaultConnectionChosen,
+    ...(replaced !== undefined ? { defaultConnectionReplaced: replaced } : {}),
     notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
     appearance: normalizeAppearance(r.appearance),
     modelPrices: normalizeModelPrices(r.modelPrices),

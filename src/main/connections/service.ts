@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForFamily, adapterForProject, builtinModels, connectionConfigured, connectionInUse, connectionProviderLabel, connectionUsable, creationConnection, effectiveDefaultConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
+import { adapterForFamily, adapterForProject, builtinModels, connectionConfigured, connectionInUse, connectionProviderLabel, connectionUsable, creationConnection, effectiveDefaultConnection, isConnectionId, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS, MODEL_TIERS } from '@shared/types'
 import type {
   ModelPriceInfo,
@@ -42,7 +42,7 @@ import { mapCodexRateLimits } from './codexUsage'
 import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
-import { defaultRefusal } from './defaultPick'
+import { CONNECTION_LABELS, defaultRefusal, withoutReplaced } from './defaultPick'
 
 export interface ConnectionServiceDeps {
   dataDir: string
@@ -117,8 +117,6 @@ export class ConnectionService {
   private codexLease: CodexLease | null = null
   private pendingLogins = new Map<string, PendingLogin>()
   private disposed = false
-  /** The stored default the last automatic rewrite replaced (stale renderer echoes of it are ignored). */
-  private autoReplaced: ConnectionId | undefined
 
   constructor(private deps: ConnectionServiceDeps) {
     this.modelsFile = join(deps.dataDir, 'models.json')
@@ -342,22 +340,29 @@ export class ConnectionService {
     return status
   }
 
-  /** While the user has not picked a default, keep the stored default equal to the effective one. */
+  /**
+   * While the user has not picked a default, keep the stored default equal to the effective one. effectiveDefault
+   * moves only after a definite 'disconnected' (or a connection turned off), never on 'error', 'connecting' or
+   * 'unknown'. The first rewrite remembers what it replaced (AppSettings.defaultConnectionReplaced); when that
+   * connection reports 'connected' again the default moves back and the field is cleared. Writes chosen false.
+   */
   private rewriteDefault(): void {
     const s = this.deps.settings.get()
     if (s.defaultConnectionChosen === true) return
     const next = this.effectiveDefault()
-    if (next === s.defaultConnection) return
-    this.autoReplaced = s.defaultConnection
-    this.deps.settings.set({ ...s, defaultConnection: next })
-    const label = (id: ConnectionId) => (id === 'anthropic' ? 'Anthropic' : id === 'openai' ? 'OpenAI' : 'LiteLLM')
-    const why = this.statuses[s.defaultConnection]?.state === 'error' ? 'has an error' : 'is not connected'
-    ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Default connection is now ${label(next)} (automatic: ${label(s.defaultConnection)} ${why})`)
-  }
-
-  /** The value the last automatic rewrite replaced, while the default is still automatic. */
-  autoReplacedDefault(): ConnectionId | undefined {
-    return this.deps.settings.get().defaultConnectionChosen === true ? undefined : this.autoReplaced
+    const replaced = s.defaultConnectionReplaced
+    if (next === s.defaultConnection) {
+      if (replaced === next) this.deps.settings.set({ ...withoutReplaced(s), defaultConnectionChosen: false })
+      return
+    }
+    const back = next === replaced
+    this.deps.settings.set(
+      back
+        ? { ...withoutReplaced(s), defaultConnection: next, defaultConnectionChosen: false }
+        : { ...s, defaultConnection: next, defaultConnectionChosen: false, defaultConnectionReplaced: replaced ?? s.defaultConnection }
+    )
+    const why = back ? `${CONNECTION_LABELS[next]} is connected again` : `${CONNECTION_LABELS[s.defaultConnection]} is not connected`
+    ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Default connection is now ${CONNECTION_LABELS[next]} (automatic: ${why})`)
   }
 
   /** Whether a connection can be the default now (configured and connected). */
@@ -381,16 +386,15 @@ export class ConnectionService {
   async setDefault(input: ConnectionDefaultInput): Promise<ConnectionInfo[]> {
     const s = this.deps.settings.get()
     if (input === null) {
-      this.deps.settings.set({ ...s, defaultConnectionChosen: false })
+      this.deps.settings.set({ ...withoutReplaced(s), defaultConnectionChosen: false })
       this.rewriteDefault()
     } else {
-      if (!(CONNECTION_IDS as readonly string[]).includes(input)) throw new Error('Unknown connection')
+      if (!isConnectionId(input)) throw new Error('Unknown connection')
       if (input !== s.defaultConnection) {
         const refusal = this.defaultRefusalFor(input)
         if (refusal) throw new Error(refusal)
       }
-      this.autoReplaced = undefined
-      this.deps.settings.set({ ...s, defaultConnection: input, defaultConnectionChosen: true })
+      this.deps.settings.set({ ...withoutReplaced(s), defaultConnection: input, defaultConnectionChosen: true })
     }
     return this.list()
   }
@@ -411,7 +415,7 @@ export class ConnectionService {
     const s = this.deps.settings.get()
     const states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>> = {}
     for (const id of CONNECTION_IDS) if (connectionConfigured(id, s.connections)) states[id] = this.statuses[id]?.state ?? 'unknown'
-    return effectiveDefaultConnection({ stored: s.defaultConnection, chosen: s.defaultConnectionChosen === true, states })
+    return effectiveDefaultConnection({ stored: s.defaultConnection, chosen: s.defaultConnectionChosen === true, replaced: s.defaultConnectionReplaced, states })
   }
 
   private info(id: ConnectionId, effective: ConnectionId = this.effectiveDefault()): ConnectionInfo {
@@ -506,6 +510,8 @@ export class ConnectionService {
     if (!sameTiers(old.tierModels, fresh.tierModels)) {
       this.broadcastRemaps(this.remapConnectionProjects(c.id, fresh.tierModels, old.tierModels, 'tierModels'))
     }
+    // Turning a connection off (Anthropic's Disconnect) or on changes what is configured: a definite change.
+    if (old.enabled !== fresh.enabled) this.rewriteDefault()
     return this.info(c.id)
   }
 

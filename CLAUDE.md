@@ -120,7 +120,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - `skill.used` events count into `RunUsage.skills` (at most 1000 loads per run, unknown ids dropped) and write a
     harness transcript row "Loaded skill <name>".
   - Evaluation (`skills:evaluate`): deterministic checks over the newest 20 work runs; the model step (`kind:
-    'skills'`) runs only when `Project.skillEvaluation.enabled` and the estimate fits its `tokenBudget`. Evidence is
+    'skills'`) runs only when `skillEvaluationOf(project).enabled` (an unset `enabled` follows the Team assistant
+    setting, `teamReviewOf(project).auto === 'ai'`; see Self-configuration) and the estimate fits its `tokenBudget`. Evidence is
     redacted, the report persists at `<data>/skill-evaluations/<pid>.json`, suggestions apply only on the user's call.
     No A/B replay.
   - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
@@ -305,33 +306,55 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 
 - Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
   automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
-  - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`:
-    stored while connected / connecting / not yet probed, else the only or first connected in CONNECTION_IDS order,
-    else stored) is what new projects, Chat, the MCP and Skill assistants and the idle usage probes use
-    (`effectiveSettings()`); `ConnectionInfo.isDefault` marks it. While `AppSettings.defaultConnectionChosen` is not
-    true, `setStatus` rewrites the stored value and logs once per change. `connections:setDefault(id | null)` picks
-    (chosen) or returns to automatic; settings:set (`connections/defaultPick.ts` `settingsForSave`) treats a changed
-    default as a pick, refuses one that is not `connectionUsable` ("OpenAI is not connected. Connect it first, then make
-    it the default."), never lets the renderer set `defaultConnectionChosen`, and ignores a stale echo of the value the
-    last automatic rewrite replaced.
+  - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`)
+    is what new projects, Chat, the MCP and Skill assistants and the idle usage probes use (`effectiveSettings()`);
+    `ConnectionInfo.isDefault` marks it. Chosen (`AppSettings.defaultConnectionChosen` true): always the stored value,
+    whatever its state (a run then fails with that connection's own auth error), unless the connection is no longer
+    configured. Automatic: the connection the first rewrite replaced (`defaultConnectionReplaced`, main-owned) once it
+    is 'connected' again (the field is then cleared); else the stored value unless it is definitely 'disconnected' or
+    not configured; else the first connected in CONNECTION_IDS order, LiteLLM only when it is the only connected one.
+    Rewrites (`rewriteDefault`, from `setStatus` and an `enabled` change in `update`) therefore happen only on a
+    definite disconnect (CLI loggedIn false, logout, removed or changed key / URL, a connection turned off) and never on
+    'error', 'connecting', 'unknown', a probe throw, a CLI timeout or missing CLI (anthropicAuth.ts `unavailable` ->
+    'error'), or a failed discovery; they write `defaultConnectionChosen: false` explicitly and log once per change.
+    `connectionConfigured('anthropic')` is false when Anthropic's `enabled` is false. settings.ts migration: an explicit
+    boolean is kept; a file without the field loads as `defaultConnection !== 'anthropic'`. The only way to change the
+    default is `connections:setDefault(id | null)` (refuses one that is not `connectionUsable`: "OpenAI is not
+    connected. Connect it first, then make it the default."; both clear `defaultConnectionReplaced`); ipc.ts
+    `settingsSetArgs` makes settings:set refuse a non-plain object, merge onto the stored settings and always keep the
+    stored `defaultConnection`, `defaultConnectionChosen`, `defaultConnectionReplaced`, `connections` and
+    `providerAuth`. Renderer: `useAppStore.setDefaultConnection` (ConnectionCard "Use for new projects", refusal in the
+    card's error banner) and the App settings Defaults select (refusal inline, `default-connection-error`) call it.
   - Plan guard: `Project.preferEverydayNearLimit` unset = 'auto' (`planGuardOf`). Claude (`planGuardArmed` in claude.ts)
     arms 'auto' when `planGuardEngaged`: the usage report has a weekly window or status 'allowed_warning' (never on an
     API key, proxy or setup run), then steers at `opusGuardThreshold` as before, with one info line per run ("Plan guard
     is automatic and now active: ..."). Codex has no plan guard. `maxWindowShare` stays an explicit opt-in.
   - Subagent limits: `Project.maxSubagentDepth` / `maxConcurrentSubagents` are optional; `effectiveSubagentLimits`
     (explicit wins, else org chart depth in edges + 1 within 1..5, concurrency 8) feeds claude.ts `buildEnv` and the
-    Codex network with the run's own roles. propose_settings leaves a value equal to the automatic one unset.
+    Codex network with the run's own roles. propose_settings deletes a stored value when the approved one equals the
+    automatic value and ignores non-finite values. ProjectStore migrates a projects.json older than version 2 once
+    (`dropLegacyLimitDefaults`): a stored depth 3 or concurrency 8 (the old always-filled defaults) is dropped, any
+    other value stays explicit; the file is then written as version 2.
+  - Plan guard UI: Project settings > Limits is a Select Automatic / On / Off over `planGuardOf` (Automatic clears
+    `preferEverydayNearLimit` and its legacy mirror). The depth and concurrency fields do not yet say "Automatic".
   - Team assistant: an unset `skillEvaluation.enabled` follows `teamReviewOf(project).auto === 'ai'`, so one switch
     drives both model steps (existing projects with the default Team review now get the skill evaluation model step,
-    within its token budget); an explicit false still wins.
+    within its token budget); an explicit false still wins. The Catalog's Evaluate button shows "Evaluate may use up
+    to N tokens to suggest skills." while the model step is on.
   - `effortOptionsFor(adapterId)`: claude / mock low..max, codex low, medium, high (Codex passes effort only for those).
     `PERMISSION_MODE_OPTIONS` labels name no vendor.
   - `maxBudgetUsd` does not count restored session spend (Claude docs, researcher 2026-11-03). claude.ts
     `restartBudget` passes the budget minus the run's cost so far, which agrees, but `runCost`'s baseline subtraction
     assumes a resumed query's total includes the earlier spend and can undercount if it starts at zero. Not fixed.
-  - Verified by unit tests only (src/shared/selfConfig.test.ts, connections/defaultConnection.test.ts,
-    claude.test.ts "plan guard steering", projects / setup / evaluation tests). Not run in the app; boot behaviour
-    depends on probe order.
+  - How each claim was checked: the effective default, rewrites, move-back, migration and settings:set rules by unit
+    tests only (src/shared/selfConfig.test.ts, connections/defaultConnection.test.ts, anthropicAuth.test.ts,
+    store/settings.test.ts, ipc.test.ts `settingsSetArgs`); subagent limits and the limits migration by unit tests
+    (projects.test.ts, setup/service.test.ts); the automatic plan guard by claude.test.ts "plan guard steering" with
+    fake usage reports, never against real plan windows; the Team-assistant-driven skill evaluation by evaluation
+    unit tests. Not run in the app: boot-time probe timing (statuses 'unknown' until each probe answers, so the
+    default never moves at boot before a definite answer) is not covered live, and the renderer pickers and the plan
+    guard Select have no e2e. Open: the LiteLLM probe lists `/v1/models` without checking the key, so a wrong key can
+    read as connected (ARCHITECTURE.md Risks).
 
 ## Renderer
 

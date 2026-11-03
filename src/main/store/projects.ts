@@ -65,6 +65,25 @@ export function sanitizeRoleModels(
   return changed ? { project: { ...project, roles }, changed } : { project, changed }
 }
 
+/** projects.json format version. 2: subagent limits are optional (automatic when unset). */
+export const PROJECTS_FILE_VERSION = 2
+
+/**
+ * One-time migration of a projects.json older than PROJECTS_FILE_VERSION 2: the old code always filled
+ * maxSubagentDepth 3 and maxConcurrentSubagents 8, so exactly those values are dropped (the project becomes
+ * automatic); any other value was the user's and stays explicit. Pure.
+ */
+export function dropLegacyLimitDefaults(p: Project): { project: Project; changed: boolean } {
+  // The values the pre-2026-11-03 code always filled (fixed here: they must not follow later default changes).
+  const legacyDepth = p.maxSubagentDepth === 3
+  const legacyConcurrency = p.maxConcurrentSubagents === 8
+  if (!legacyDepth && !legacyConcurrency) return { project: p, changed: false }
+  const project = { ...p }
+  if (legacyDepth) delete project.maxSubagentDepth
+  if (legacyConcurrency) delete project.maxConcurrentSubagents
+  return { project, changed: true }
+}
+
 /**
  * Keep Project.preferEverydayNearLimit and its deprecated mirror preferSonnetNearLimit in step on a renderer save: an
  * older renderer that changes only the legacy field wins; otherwise the new field (or, when neither is set, the legacy
@@ -255,6 +274,8 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
 export class ProjectStore {
   private file: string
   private projects: Project[] = []
+  /** Format version of the loaded projects.json; a missing file is current. */
+  private fileVersion = PROJECTS_FILE_VERSION
   private tierContext?: TierContextFor
   private dataDir: string
   private home: string
@@ -275,8 +296,9 @@ export class ProjectStore {
   private load(): void {
     try {
       if (existsSync(this.file)) {
-        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { projects?: Project[] }
+        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { version?: unknown; projects?: Project[] }
         this.projects = Array.isArray(parsed.projects) ? parsed.projects : []
+        this.fileVersion = typeof parsed.version === 'number' && Number.isFinite(parsed.version) ? parsed.version : 1
       }
     } catch (e) {
       console.error('Failed to read projects.json, starting empty:', e)
@@ -287,7 +309,7 @@ export class ProjectStore {
   private persist(): void {
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
-    writeFileSync(tmp, JSON.stringify({ version: 1, projects: this.projects }, null, 2), 'utf8')
+    writeFileSync(tmp, JSON.stringify({ version: PROJECTS_FILE_VERSION, projects: this.projects }, null, 2), 'utf8')
     renameSync(tmp, this.file)
   }
 
@@ -297,14 +319,20 @@ export class ProjectStore {
    */
   migrateAll(): number {
     let changed = 0
+    const legacyLimits = this.fileVersion < 2
     this.projects = this.projects.map((p) => {
-      const m = migrateProject(p)
+      const limits = legacyLimits ? dropLegacyLimitDefaults(p) : { project: p, changed: false }
+      const m = migrateProject(limits.project)
       const clean = sanitizeRoleModels(m.project, this.tierContext)
       const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
-      if (m.changed || clean.changed || dirs.changed) changed++
+      if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
       return dirs.project
     })
-    if (changed) this.persist()
+    // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
+    if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
+      if (this.projects.length || changed) this.persist()
+      this.fileVersion = PROJECTS_FILE_VERSION
+    }
     return changed
   }
 
