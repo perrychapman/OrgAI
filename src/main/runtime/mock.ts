@@ -23,7 +23,8 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * project's provider.id to "mock"; ORGAI_MOCK_SCRIPT may point at a JSON MockScript.
  *
  * Prompt markers (default script only): [mock:auth-fail], [mock:skill], [mock:mcp-midrun], [mock:config-change],
- * [mock:no-price], [mock:computed-cost], [mock:title-fail] (complete()), and [mock:fatigue] (fatigueSteps): the root
+ * [mock:no-price], [mock:computed-cost], [mock:title-fail] (complete()), [mock:deep-tree] (deepTreeSteps: root ->
+ * mock-lead -> mock-lead-report-1 / -2, every report finishes) and [mock:fatigue] (fatigueSteps): the root
  * runs `cd <project>/.claude/worktrees/agent-x && npm test` with a provider-style compound rule suggestion (the card
  * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
  * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
@@ -317,6 +318,35 @@ export function fatigueSteps(projectPath: string): MockStep[] {
 }
 
 /** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
+/** Trigger token (work runs, default script): a three-level agent tree whose reports all finish (deepTreeSteps). */
+export const DEEP_TREE_TOKEN = '[mock:deep-tree]'
+/** The agent ids (= handles) the [mock:deep-tree] script spawns. */
+export const MOCK_DEEP_LEAD = 'mock-lead'
+export const MOCK_DEEP_LEAD_REPORTS = ['mock-lead-report-1', 'mock-lead-report-2'] as const
+
+/**
+ * The [mock:deep-tree] turn: the root spawns `mock-lead` (role `leadSlug`), which spawns two reports of `reportSlug`;
+ * both report back to mock-lead, which then reports back to the root. Scripted spawns are the harness's own fixture,
+ * so they are not checked against the parent role's spawnable list (spawnStep never enforces it).
+ */
+export function deepTreeSteps(leadSlug: string, reportSlug: string): MockStep[] {
+  const [r1, r2] = MOCK_DEEP_LEAD_REPORTS
+  return [
+    { type: 'text', text: 'Planning the work: one lead will split it between two reports.' },
+    { type: 'spawn', id: MOCK_DEEP_LEAD, name: MOCK_DEEP_LEAD, role: leadSlug, description: 'Lead the deep-tree work' },
+    { type: 'text', agent: MOCK_DEEP_LEAD, text: 'Splitting the work in two.' },
+    { type: 'spawn', id: r1, name: r1, parent: MOCK_DEEP_LEAD, role: reportSlug, description: 'Do the first half' },
+    { type: 'spawn', id: r2, name: r2, parent: MOCK_DEEP_LEAD, role: reportSlug, description: 'Do the second half' },
+    { type: 'tool', agent: r1, name: 'Read', input: { file_path: 'README.md' }, result: '# Mock project\n' },
+    { type: 'finish', id: r1, result: 'First half done.' },
+    { type: 'tool', agent: r2, name: 'Glob', input: { pattern: 'src/**' }, result: 'src/example.ts' },
+    { type: 'finish', id: r2, result: 'Second half done.' },
+    { type: 'text', agent: MOCK_DEEP_LEAD, text: 'Both reports are done.' },
+    { type: 'finish', id: MOCK_DEEP_LEAD, result: 'Both halves done by mock-lead-report-1 and mock-lead-report-2.' },
+    { type: 'text', text: 'The lead finished: both halves are done. Anything else?' }
+  ]
+}
+
 export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
 /** The server and the skill the [mock:config-change] script proposes. */
 export const MOCK_CONFIG_SERVER = 'mock-notes'
@@ -772,6 +802,10 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
+      const lead = this.firstSpawnableSlug(this.root)
+      return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
+    }
     return this.isSetup ? this.script.setup : this.script.work
   }
 
@@ -1022,12 +1056,16 @@ export class MockSession implements RuntimeSession {
     return isFreeCdTarget(target, { ...opts, freeDirs: [...(opts.freeDirs ?? []), ...this.sessionDirs] })
   }
 
+  /** The first role `parent` may spawn, else the first non-root role, else `fallback` (default: the root's slug). */
+  private firstSpawnableSlug(parent: Role | undefined, fallback?: string): string {
+    const allowed = parent ? this.ctx.roles.filter((r) => parent.spawnable.includes(r.id)) : []
+    return allowed[0]?.slug ?? fallback ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
+  }
+
   private async spawnStep(step: Extract<MockStep, { type: 'spawn' }>): Promise<void> {
     const parentId = step.parent ?? ROOT_AGENT_ID
     const parent = this.ensureAgent(parentId)
-    const parentRole = this.rolesBySlug.get(parent.roleSlug)
-    const allowed = parentRole ? this.ctx.roles.filter((r) => parentRole.spawnable.includes(r.id)) : []
-    const slug = step.role ?? allowed[0]?.slug ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
+    const slug = step.role ?? this.firstSpawnableSlug(this.rolesBySlug.get(parent.roleSlug))
     const { handle } = spawnHandle(this.handles, slug, step.name)
     const input = { subagent_type: slug, description: step.description, prompt: step.description, name: handle }
     const toolUseId = newId('tu')

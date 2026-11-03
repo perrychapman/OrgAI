@@ -3,13 +3,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
 import { fakeCtx, project, runSummary } from './testHelpers'
 import { addRules } from './permissionRules'
+import { defaultRoles } from '@shared/defaults'
+import type { AgentInstance } from '@shared/types'
 
 describe('mock listModels', () => {
   it('lists the builtin aliases plus an unknown family', async () => {
@@ -808,5 +810,48 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit'])
     expect(allowDirectories).not.toHaveBeenCalled()
     expect(acceptEditsForProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('mock [mock:deep-tree]', () => {
+  it('plays root -> mock-lead -> two reports on the default chart, every report finishes', async () => {
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Split the work ${DEEP_TREE_TOKEN}`, project: project({ roles: defaultRoles() }) })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    const latest = (): Map<string, AgentInstance> => {
+      const m = new Map<string, AgentInstance>()
+      for (const e of ctx.events) if (e.type === 'agent.upsert') m.set(e.agent.id, e.agent)
+      return m
+    }
+    const before = latest()
+    for (const id of ['mock-lead', 'mock-lead-report-1', 'mock-lead-report-2']) {
+      expect(before.get(id)?.state).toBe('done')
+      expect(before.get(id)?.endedAt).toBeTypeOf('number')
+    }
+    await session.stop()
+    await session.finished
+    const agents = latest()
+    expect([...agents.keys()].sort()).toEqual([ROOT_AGENT_ID, 'mock-lead', 'mock-lead-report-1', 'mock-lead-report-2'].sort())
+    expect(agents.get(ROOT_AGENT_ID)?.parentId).toBeNull()
+    expect(agents.get('mock-lead')).toMatchObject({ parentId: ROOT_AGENT_ID, handle: 'mock-lead', roleSlug: 'implementer' })
+    for (const id of ['mock-lead-report-1', 'mock-lead-report-2']) {
+      expect(agents.get(id)).toMatchObject({ parentId: 'mock-lead', handle: id, roleSlug: 'implementer' })
+    }
+    for (const a of agents.values()) {
+      expect(a.state).toBe('done')
+      expect(a.endedAt).toBeTypeOf('number')
+    }
+    expect(statuses().at(-1)).toBe('finished')
+    // The lead got both reports' results; the root got the lead's.
+    const spawnIds = new Set([...agents.values()].map((a) => a.spawnToolUseId).filter(Boolean))
+    const results = ctx.events.flatMap((e) =>
+      e.type === 'transcript' && e.entry.block.kind === 'tool_result' && spawnIds.has(e.entry.block.toolUseId) ? [[e.entry.agentId, e.entry.block.content]] : []
+    )
+    expect(results).toEqual([
+      ['mock-lead', 'First half done.'],
+      ['mock-lead', 'Second half done.'],
+      [ROOT_AGENT_ID, 'Both halves done by mock-lead-report-1 and mock-lead-report-2.']
+    ])
   })
 })
