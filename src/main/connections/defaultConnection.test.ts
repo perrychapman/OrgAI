@@ -143,6 +143,10 @@ describe('settings:set decision', () => {
   it('keeps an unchanged value, even an unusable one', () => {
     expect(decideSettingsDefault({ ...base, stored: 'openai', incoming: 'openai' })).toEqual({ kind: 'keep' })
   })
+  it('keeps the stored value when the incoming one is missing or not a connection id', () => {
+    expect(decideSettingsDefault({ ...base, incoming: undefined as never })).toEqual({ kind: 'keep' })
+    expect(decideSettingsDefault({ ...base, incoming: 'toString' as never })).toEqual({ kind: 'keep' })
+  })
   it('keeps the stored value for a stale echo of the replaced one', () => {
     expect(decideSettingsDefault({ ...base, incoming: 'anthropic' })).toEqual({ kind: 'keep' })
     expect(decideSettingsDefault({ ...base, chosen: true, incoming: 'anthropic' })).toEqual({ kind: 'pick', connection: 'anthropic' })

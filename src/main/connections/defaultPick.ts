@@ -29,7 +29,8 @@ export function decideSettingsDefault(input: {
   autoReplaced: ConnectionId | undefined
   refusal: (id: ConnectionId) => string | null
 }): SettingsDefaultDecision {
-  if (input.incoming === input.stored) return { kind: 'keep' }
+  // Unchanged, or not a connection id at all (a renderer that left it out): nothing to pick, never refused.
+  if (input.incoming === input.stored || !Object.hasOwn(LABELS, input.incoming ?? '')) return { kind: 'keep' }
   if (!input.chosen && input.autoReplaced !== undefined && input.incoming === input.autoReplaced) return { kind: 'keep' }
   const message = input.refusal(input.incoming)
   return message ? { kind: 'refuse', message } : { kind: 'pick', connection: input.incoming }
