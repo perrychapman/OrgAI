@@ -152,7 +152,21 @@ export interface ConnectionInfo {
    * last good catalog and never changes `status`; a manual refresh or connect still reports errors in `status`.
    */
   modelsError?: string
+  /**
+   * This connection is the effective default connection (defaults.ts `effectiveDefaultConnection` over the stored
+   * AppSettings.defaultConnection, defaultConnectionChosen and the live statuses). Exactly one entry of
+   * connections:list has it. The renderer reads this instead of guessing from AppSettings.defaultConnection.
+   */
+  isDefault: boolean
 }
+
+/**
+ * connections:setDefault input. A ConnectionId makes it the default and marks it chosen
+ * (AppSettings.defaultConnectionChosen true); refused with a readable error naming the connection when it is not
+ * usable (defaults.ts `connectionUsable`) unless it already is the stored default. null returns to automatic
+ * (defaultConnectionChosen false; the stored value is rewritten to the effective one at once).
+ */
+export type ConnectionDefaultInput = ConnectionId | null
 
 /** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
 export interface ConnectionSecretInput {
@@ -405,9 +419,12 @@ export interface Role {
  */
 export type PermissionMode = 'auto' | 'acceptEdits' | 'default' | 'dontAsk' | 'plan' | 'bypassPermissions'
 
-/** Every permission mode, recommended first, with the label settings selects show. */
+/**
+ * Every permission mode, recommended first, with the label settings selects show. Labels are provider-neutral: they
+ * never name a vendor or model, because every connection (Claude, Codex, LiteLLM) shares them.
+ */
 export const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
-  { value: 'auto', label: 'Unattended: Claude decides each call, asks only when unsure' },
+  { value: 'auto', label: "Unattended: the model's safety check approves routine calls and asks when unsure" },
   { value: 'acceptEdits', label: 'Auto-accept file edits, ask for commands' },
   { value: 'default', label: 'Ask for everything risky' },
   { value: 'dontAsk', label: 'Never ask: deny anything that would need approval' },
@@ -445,8 +462,18 @@ export interface Project {
   permissionMode: PermissionMode
   /** Hard spend cap per run in USD. undefined = no cap. */
   maxBudgetUsd?: number
-  maxSubagentDepth: number
-  maxConcurrentSubagents: number
+  /**
+   * How many levels of reports may spawn their own reports. Missing = automatic: defaults.ts
+   * `effectiveSubagentLimits` derives it from the org chart (longest reportsTo chain in edges plus 1, at least 1, at
+   * most MAX_SUBAGENT_DEPTH_LIMIT). An explicit value is the user's override and is kept as saved. Every reader goes
+   * through `effectiveSubagentLimits`; ProjectStore never fills it in.
+   */
+  maxSubagentDepth?: number
+  /**
+   * Most reports running at once. Missing = automatic: DEFAULT_MAX_CONCURRENT_SUBAGENTS through
+   * `effectiveSubagentLimits`. An explicit value is the user's override.
+   */
+  maxConcurrentSubagents?: number
   /**
    * Run reports that can edit files in their own git worktree, and merge each report back
    * when it finishes. Needs a git repository; silently off otherwise. Default true.
@@ -467,7 +494,9 @@ export interface Project {
   /**
    * Subscription plans (Anthropic connection): spawn new deep- or top-tier reports on the connection's everyday tier
    * while the guarding weekly window (the deep model's own weekly window, else the seven-day window) is at or above
-   * the app's opusGuardThreshold. Read through defaults.ts preferEverydayNearLimit (falls back to the legacy field).
+   * the app's opusGuardThreshold. Read it through defaults.ts `planGuardOf` ('on' | 'off' | 'auto'; the legacy field
+   * is honoured): explicit true = on, explicit false = off, missing = 'auto', which engages only while the run's
+   * connection reports a weekly plan window or a rate-limit status 'allowed_warning' (`planGuardEngaged`).
    */
   preferEverydayNearLimit?: boolean
   /** @deprecated Legacy name of preferEverydayNearLimit; read only when that is unset. */
@@ -1205,10 +1234,17 @@ export interface SkillLibraryFolderInput {
   path: string
 }
 
-/** Project.skillEvaluation: proactive skill evaluation. Missing = DEFAULT_SKILL_EVALUATION (off). */
+/**
+ * Project.skillEvaluation: proactive skill evaluation. Missing = DEFAULT_SKILL_EVALUATION. Read it through defaults.ts
+ * `skillEvaluationOf`, which always returns `enabled` filled in.
+ */
 export interface SkillEvaluationSettings {
-  /** Allows the model-assisted step of skills:evaluate (the deterministic checks always run). Default false. */
-  enabled: boolean
+  /**
+   * Allows the model-assisted step of skills:evaluate (the deterministic checks always run). Missing = follow the Team
+   * assistant: on exactly when `teamReviewOf(project).auto === 'ai'`, so one project setting drives both model steps.
+   * An explicit true or false is an override and wins.
+   */
+  enabled?: boolean
   /** Most tokens (input + output) one skills:evaluate may spend on the model-assisted step. */
   tokenBudget: number
 }
@@ -1537,8 +1573,18 @@ export interface AppSettings {
   providerAuth: ProviderAuth
   /** App-wide connection records (no secrets). Filled with defaults for settings saved before connections existed. */
   connections: ProviderConnections
-  /** Connection new projects use. Default 'anthropic'. */
+  /**
+   * Connection new projects, Chat and the MCP and Skill assistants use. Default 'anthropic'. Consumers read the
+   * effective value (ConnectionService `effectiveDefault()`, defaults.ts `effectiveDefaultConnection`), never this
+   * field alone. While defaultConnectionChosen is not true, the main process rewrites it to the effective connection
+   * whenever a connection connects or disconnects, and broadcasts settings:changed.
+   */
   defaultConnection: ConnectionId
+  /**
+   * The user picked defaultConnection explicitly (connections:setDefault with an id, or a settings:set that changed
+   * it). Missing / false = automatic. Normalized by store/settings.ts; connections:setDefault(null) clears it.
+   */
+  defaultConnectionChosen?: boolean
   /**
    * OS attention notifications on or off. The single source of truth: the main process reads it every time it
    * decides to notify. Default true.
@@ -1551,7 +1597,10 @@ export interface AppSettings {
    * top-tier reports on the everyday tier. (The name predates tiers.)
    */
   opusGuardThreshold: number
-  /** preferEverydayNearLimit for new projects. Default false. */
+  /**
+   * @deprecated Was "preferEverydayNearLimit for new projects". New projects now leave preferEverydayNearLimit unset
+   * (automatic, `planGuardOf`); kept and normalized for old settings files only.
+   */
   defaultPreferEverydayNearLimit: boolean
   /**
    * @deprecated Mirror of defaultPreferEverydayNearLimit for older renderer code; settings:set keeps the two in step
@@ -3603,6 +3652,11 @@ export interface OrgAIApi {
     cancelLogin(loginId: string): Promise<void>
     /** Sign out (OpenAI ChatGPT login) or forget the stored key (LiteLLM), and mark the connection disconnected. */
     logout(id: ConnectionId): Promise<ConnectionInfo>
+    /**
+     * Pick the default connection (marks it chosen) or, with null, return to automatic. Resolves to connections:list
+     * after the change; rejects with a readable message naming the connection when it is not usable.
+     */
+    setDefault(id: ConnectionDefaultInput): Promise<ConnectionInfo[]>
   }
   models: {
     /** The model catalog: builtin plus discovered, for one connection or every enabled one. */
@@ -3990,6 +4044,7 @@ export const IPC = {
   connectionsLogin: 'connections:login',
   connectionsCancelLogin: 'connections:cancelLogin',
   connectionsLogout: 'connections:logout',
+  connectionsSetDefault: 'connections:setDefault',
   /** main -> renderer push channel carrying ConnectionEvent. */
   connectionsEvent: 'connections:event',
   modelsList: 'models:list',

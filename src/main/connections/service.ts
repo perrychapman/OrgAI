@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForFamily, adapterForProject, builtinModels, connectionInUse, connectionProviderLabel, creationConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
+import { adapterForFamily, adapterForProject, builtinModels, connectionConfigured, connectionInUse, connectionProviderLabel, creationConnection, effectiveDefaultConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS, MODEL_TIERS } from '@shared/types'
 import type {
   ModelPriceInfo,
@@ -341,7 +341,19 @@ export class ConnectionService {
     return msg.slice(0, 200)
   }
 
-  private info(id: ConnectionId): ConnectionInfo {
+  /**
+   * The effective default connection (defaults.ts effectiveDefaultConnection) over the stored setting and the live
+   * statuses of the configured connections ('unknown' before their first probe). Every consumer of the default reads
+   * this, never AppSettings.defaultConnection alone.
+   */
+  effectiveDefault(): ConnectionId {
+    const s = this.deps.settings.get()
+    const states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>> = {}
+    for (const id of CONNECTION_IDS) if (connectionConfigured(id, s.connections)) states[id] = this.statuses[id]?.state ?? 'unknown'
+    return effectiveDefaultConnection({ stored: s.defaultConnection, chosen: s.defaultConnectionChosen === true, states })
+  }
+
+  private info(id: ConnectionId, effective: ConnectionId = this.effectiveDefault()): ConnectionInfo {
     const connection = this.deps.settings.get().connections[id]
     const refreshed = this.refreshedAt[id]
     const error = this.modelsErrors[id]
@@ -349,13 +361,15 @@ export class ConnectionService {
       connection,
       status: this.statuses[id] ?? { state: 'disconnected' },
       modelCount: this.catalogFor(id).length,
+      isDefault: id === effective,
       ...(refreshed ? { modelsRefreshedAt: refreshed } : {}),
       ...(error ? { modelsError: error } : {})
     }
   }
 
   async list(): Promise<ConnectionInfo[]> {
-    return CONNECTION_IDS.map((id) => this.info(id))
+    const effective = this.effectiveDefault()
+    return CONNECTION_IDS.map((id) => this.info(id, effective))
   }
 
   /** Probe one connection without touching its catalog or enabled flag. Returns the status (not stored). */

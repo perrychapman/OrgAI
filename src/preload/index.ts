@@ -43,7 +43,8 @@ const api: OrgAIApi = {
     connect: (id) => ipcRenderer.invoke(IPC.connectionsConnect, id),
     login: (id, method) => ipcRenderer.invoke(IPC.connectionsLogin, id, method),
     cancelLogin: (loginId) => ipcRenderer.invoke(IPC.connectionsCancelLogin, loginId),
-    logout: (id) => ipcRenderer.invoke(IPC.connectionsLogout, id)
+    logout: (id) => ipcRenderer.invoke(IPC.connectionsLogout, id),
+    setDefault: (id) => ipcRenderer.invoke(IPC.connectionsSetDefault, id)
   },
   models: {
     list: (query) => ipcRenderer.invoke(IPC.modelsList, query),
