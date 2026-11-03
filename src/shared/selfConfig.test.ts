@@ -10,6 +10,7 @@ import {
   effectiveSubagentLimits,
   effortOptionsFor,
   hasWeeklyPlanWindow,
+  mixedFamilyRefusal,
   orgChartDepth,
   planGuardEngaged,
   planGuardOf,
@@ -188,6 +189,54 @@ describe('skill evaluation follows the Team assistant', () => {
     expect(storedSkillEvaluation({ enabled: false, tokenBudget: 10_000 })).toEqual({ enabled: false, tokenBudget: 10_000 })
     expect(storedSkillEvaluation(undefined)).toEqual({ tokenBudget: 20_000 })
     expect('enabled' in storedSkillEvaluation({ enabled: 'yes' as never, tokenBudget: 10_000 })).toBe(false)
+  })
+})
+
+describe('self-configuration edge cases (QA)', () => {
+  it('effectiveDefaultConnection ignores junk stored and replaced values, prototype keys included', () => {
+    const states = { anthropic: 'connected', openai: 'connected' } as const
+    for (const bad of ['__proto__', 'constructor', 'toString', '', 'OpenAI', 7, null, {}, ['openai']]) {
+      expect(effectiveDefaultConnection({ stored: bad as never, states }), String(bad)).toBe('anthropic')
+      expect(effectiveDefaultConnection({ stored: 'anthropic', replaced: bad as never, states }), String(bad)).toBe('anthropic')
+    }
+    expect(effectiveDefaultConnection({ stored: undefined, states: {} })).toBe('anthropic')
+  })
+
+  it('effectiveDefaultConnection never throws for a chosen connection without a state', () => {
+    expect(effectiveDefaultConnection({ stored: 'openai', chosen: true, states: { anthropic: 'connected' } })).toBe('anthropic')
+    expect(effectiveDefaultConnection({ stored: 'litellm', chosen: true, states: { litellm: 'disconnected' } })).toBe('litellm')
+  })
+
+  it('effectiveDefaultConnection does not return to a replaced connection once the user chose one', () => {
+    const states = { anthropic: 'connected', openai: 'connected' } as const
+    expect(effectiveDefaultConnection({ stored: 'anthropic', chosen: true, replaced: 'openai', states })).toBe('anthropic')
+  })
+
+  it('mixedFamilyRefusal: nothing mismatched is fine; single-family connections refuse; LiteLLM needs a root family', () => {
+    expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: [] })).toBeNull()
+    expect(mixedFamilyRefusal({ connection: 'litellm', family: undefined, mismatched: [] })).toBeNull()
+    expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: ['gpt-5'] })).toBe('single-family-connection')
+    expect(mixedFamilyRefusal({ connection: 'openai', family: 'openai', mismatched: ['sonnet'] })).toBe('single-family-connection')
+    expect(mixedFamilyRefusal({ connection: 'litellm', family: undefined, mismatched: ['x'] })).toBe('no-root-family')
+    expect(mixedFamilyRefusal({ connection: 'litellm', family: 'claude', mismatched: ['x'] })).toBeNull()
+  })
+
+  it('planGuardOf treats non-boolean junk and null as auto', () => {
+    expect(planGuardOf(null)).toBe('auto')
+    expect(planGuardOf({ preferEverydayNearLimit: 'yes' as never })).toBe('auto')
+    expect(planGuardOf({ preferEverydayNearLimit: 1 as never })).toBe('auto')
+    expect(planGuardOf({ preferEverydayNearLimit: undefined, preferSonnetNearLimit: false })).toBe('off')
+  })
+
+  it('effectiveSubagentLimits tolerates no roles and junk values', () => {
+    expect(effectiveSubagentLimits({})).toMatchObject({ depth: 1, concurrency: DEFAULT_MAX_CONCURRENT_SUBAGENTS, explicit: { depth: false, concurrency: false } })
+    for (const bad of [-1, 0, Number.NaN, Number.NEGATIVE_INFINITY, '3', null, {}, []]) {
+      const out = effectiveSubagentLimits({ maxSubagentDepth: bad as never, maxConcurrentSubagents: bad as never })
+      expect(out.explicit, String(bad)).toEqual({ depth: false, concurrency: false })
+    }
+    const inf = effectiveSubagentLimits({ maxSubagentDepth: Number.POSITIVE_INFINITY, maxConcurrentSubagents: Number.POSITIVE_INFINITY })
+    expect(inf.depth).toBeLessThanOrEqual(MAX_SUBAGENT_DEPTH_LIMIT)
+    expect(inf.concurrency).toBeLessThanOrEqual(MAX_CONCURRENT_SUBAGENTS_LIMIT)
   })
 })
 

@@ -154,6 +154,45 @@ describe('ProjectStore.saveFromRenderer skills', () => {
     expect(new ProjectStore(dir).get('p_legacy')).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
   })
 
+  it('does not run the limits migration on a version 2 or newer file (3 / 8 stay explicit)', () => {
+    for (const version of [2, 3, 99]) {
+      const dir = dataDir()
+      const p = { ...project({ id: 'p_new' }), maxSubagentDepth: 3, maxConcurrentSubagents: 8 }
+      writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version, projects: [p] }))
+      const store = new ProjectStore(dir)
+      expect(store.get('p_new'), `version ${version}`).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
+    }
+  })
+
+  it('treats a missing or non-numeric version as 1 and migrates once', () => {
+    for (const version of [undefined, 'two', null, '2']) {
+      const dir = dataDir()
+      const p = { ...project({ id: 'p_old' }), maxSubagentDepth: 3, maxConcurrentSubagents: 8 }
+      writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version, projects: [p] }))
+      const store = new ProjectStore(dir)
+      expect(store.get('p_old')?.maxSubagentDepth, String(version)).toBeUndefined()
+      expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).version).toBe(2)
+    }
+  })
+
+  it('starts empty on a corrupt, empty or wrongly shaped projects.json without throwing', () => {
+    const cases = ['{ not json', '', '   ', 'null', '[]', '"x"', JSON.stringify({ version: 2 }), JSON.stringify({ version: 1, projects: 'nope' }), JSON.stringify({ version: 1, projects: {} })]
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      for (const text of cases) {
+        const dir = dataDir()
+        writeFileSync(join(dir, 'projects.json'), text)
+        let store: ProjectStore | undefined
+        expect(() => (store = new ProjectStore(dir)), JSON.stringify(text)).not.toThrow()
+        expect(store!.list(), JSON.stringify(text)).toEqual([])
+        store!.save(project({ id: 'p_after' }))
+        expect(new ProjectStore(dir).get('p_after')).not.toBeNull()
+      }
+    } finally {
+      err.mockRestore()
+    }
+  })
+
   it('keeps an unset plan guard unset through a renderer save', () => {
     const store = new ProjectStore(dataDir())
     const base = project()

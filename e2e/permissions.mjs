@@ -406,6 +406,26 @@ try {
     await setAdvanced('project-limits', false)
   }
 
+  // The Limits and Permissions Advanced disclosures stay as the user left them across a reload (the App panes are
+  // checked in connections.mjs), and a closed one stays closed.
+  {
+    for (const pane of ['project-limits', 'project-permissions']) {
+      const name = pane === 'project-limits' ? 'Limits' : 'Permissions'
+      await paneTab(name)
+      await setAdvanced(pane, true)
+      await sleep(300)
+      await reloadToSettings()
+      await paneTab(name)
+      const sel = `details[data-testid=settings-advanced][data-pane="${pane}"]`
+      check(await page.locator(sel).evaluate((el) => el.open), `${pane} Advanced stays open after a reload`)
+      await setAdvanced(pane, false)
+      await sleep(300)
+      await reloadToSettings()
+      await paneTab(name)
+      check(!(await page.locator(sel).evaluate((el) => el.open)), `${pane} Advanced stays closed after a reload`)
+    }
+  }
+
   // N8: one short-name table for the permission mode on both settings pages.
   {
     await paneTab('Permissions')
