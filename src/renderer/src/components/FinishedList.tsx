@@ -8,7 +8,10 @@ import { agentCostInput } from '../lib/cost'
 
 export interface FinishedGroup {
   parentName: string
+  /** Every folded agent in the subtree, direct reports first. */
   agents: AgentInstance[]
+  /** The name of the agent a member ran under, when it is not a direct report of the group's parent. */
+  underOf?: (a: AgentInstance) => string | undefined
   onPick: (agentId: string) => void
   onExpand: () => void
 }
@@ -22,14 +25,18 @@ const WT_LABEL: Record<string, string> = {
   removed: 'removed'
 }
 
-/** Side-panel list of the finished reports a collapsed group stands for. Click one to read its transcript. */
+/**
+ * Side-panel list of every finished agent a collapsed group stands for (its whole subtree), newest first. A member
+ * that is not a direct report says which agent it ran under. Click one to read its transcript.
+ */
 export default function FinishedList({ group }: { group: FinishedGroup }): ReactElement {
   const sorted = [...group.agents].sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+  const under = new Map(group.agents.map((a) => [a.id, group.underOf?.(a)]))
   return (
     <div className="finished-list">
       <div className="finished-head">
         <span>
-          {group.agents.length} finished report{group.agents.length === 1 ? '' : 's'} under {group.parentName}
+          {group.agents.length} finished agent{group.agents.length === 1 ? '' : 's'} under {group.parentName}
         </span>
         <Button variant="ghost" size="sm" onClick={group.onExpand}>
           Show on chart
@@ -46,6 +53,7 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
               <Badge tone={a.state === 'error' ? 'danger' : 'neutral'}>{a.state === 'error' ? 'failed' : 'done'}</Badge>
               {a.worktree && <Badge>{WT_LABEL[a.worktree.status] ?? a.worktree.status}</Badge>}
             </span>
+            {under.get(a.id) && <span className="finished-under">under {under.get(a.id)}</span>}
             <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
           </span>
           <span className="finished-meta">
