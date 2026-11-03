@@ -720,7 +720,8 @@ try {
     agents: await page.locator('.react-flow__node .agent-node').count(),
     groups: await page.locator('[data-testid=done-group]').count(),
     counts: await page.locator('[data-testid=done-group]').evaluateAll((els) => els.map((e) => e.getAttribute('data-count'))),
-    text: ((await page.locator('[data-testid=done-group]').first().innerText().catch(() => '')) || '').replace(/\s+/g, ' '),
+    // No group on the canvas (Hide finished off) is a valid shape: do not let innerText wait out the 30 s default.
+    text: ((await page.locator('[data-testid=done-group]').first().innerText({ timeout: 1500 }).catch(() => '')) || '').replace(/\s+/g, ' '),
     edges: await page.locator('.react-flow__edge').count()
   })
   await page.locator('[data-testid=done-group]').first().waitFor({ timeout: 10_000 }).catch(() => {})

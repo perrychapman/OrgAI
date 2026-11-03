@@ -110,6 +110,71 @@ describe('foldFinished', () => {
     }
   })
 
+  it('a live leaf at the bottom of a deep chain keeps the whole chain on the canvas; settling it folds the chain', () => {
+    const chain = (leaf: string): AgentInstance[] => [ag('root', null, 'idle'), ag('c1', 'root'), ag('c2', 'c1'), ag('c3', 'c2'), ag('leaf', 'c3', leaf)]
+    const live = foldFinished({ agents: chain('working'), isSettled: settled, expanded: {}, collapse: true })
+    expect(ids(live.visibleAgents)).toEqual(['root', 'c1', 'c2', 'c3', 'leaf'])
+    expect(live.groups.size).toBe(0)
+    const done = foldFinished({ agents: chain('done'), isSettled: settled, expanded: {}, collapse: true })
+    expect(ids(done.visibleAgents)).toEqual(['root'])
+    expect(ids(done.groups.get('root'))).toEqual(['c1', 'c2', 'c3', 'leaf'])
+    expectAttached(done, 'root')
+    // A live side branch stops only its own path from folding.
+    const mixed = [...chain('done'), ag('side', 'c1', 'working')]
+    const m = foldFinished({ agents: mixed, isSettled: settled, expanded: {}, collapse: true })
+    expect(ids(m.visibleAgents)).toEqual(['root', 'c1', 'side'])
+    expect(ids(m.groups.get('c1'))).toEqual(['c2', 'c3', 'leaf'])
+    expectAttached(m, 'root')
+  })
+
+  it('an agent whose parent id is unknown is a root: it is never folded and its reports fold under it', () => {
+    const agents = [ag('root', null, 'idle'), ag('orphan', 'ghost'), ag('o1', 'orphan'), ag('kid', 'root')]
+    const r = foldFinished({ agents, isSettled: settled, expanded: {}, collapse: true })
+    expect(ids(r.visibleAgents)).toEqual(['root', 'orphan'])
+    expect(ids(r.groups.get('orphan'))).toEqual(['o1'])
+    expect(ids(r.groups.get('root'))).toEqual(['kid'])
+    expectAttached(r, 'root')
+  })
+
+  it('earlier-session groups and folded subtrees together keep every agent exactly once', () => {
+    const earlier = [
+      { key: earlierKey('r1'), agents: [ag('r1/a', 'root'), ag('r1/b', 'r1/a')] },
+      { key: earlierKey('r2'), agents: [ag('r2/a', 'root')] }
+    ]
+    const closed = foldFinished({ agents: deep(), isSettled: settled, expanded: {}, earlier, collapse: true })
+    expect([...closed.groups.keys()].sort()).toEqual([earlierKey('r1'), earlierKey('r2'), 'root'].sort())
+    expectAttached(closed, 'root')
+    // Open one earlier group and one lead's parent: the other earlier group stays folded, the opened one is drawn.
+    const open = foldFinished({ agents: deep(), isSettled: settled, expanded: { root: true, [earlierKey('r1')]: true }, earlier, collapse: true })
+    expect(ids(open.visibleAgents)).toEqual(['root', 'leadA', 'leadB', 'solo', 'r1/a', 'r1/b'])
+    expect(open.groups.has(earlierKey('r1'))).toBe(false)
+    expect(ids(open.groups.get(earlierKey('r2')))).toEqual(['r2/a'])
+    expect(ids(open.groups.get('leadA'))).toEqual(['a1', 'a2'])
+    expectAttached(open, 'root')
+    // Collapse off shows the earlier agents too and builds no group.
+    const off = foldFinished({ agents: deep(), isSettled: settled, expanded: {}, earlier, collapse: false })
+    expect(off.visibleAgents).toHaveLength(8 + 3)
+    expect(off.groups.size).toBe(0)
+  })
+
+  it('an expanded key survives its agent folding and applies again when the agent returns', () => {
+    const expanded = { leadB: true }
+    // leadB is folded away (root not expanded): its key does nothing.
+    const hidden = foldFinished({ agents: deep(), isSettled: settled, expanded, collapse: true })
+    expect(ids(hidden.visibleAgents)).toEqual(['root'])
+    // The user opens the root group: leadB comes back already expanded, its reports shown.
+    const back = foldFinished({ agents: deep(), isSettled: settled, expanded: { ...expanded, root: true }, collapse: true })
+    expect(ids(back.visibleAgents)).toContain('b1')
+    expect(back.groups.has('leadB')).toBe(false)
+    // A report that goes live again pulls its lead out of the fold, and an old key for a gone agent is ignored.
+    const agents = deep().map((a) => (a.id === 'a2' ? ag('a2', 'leadA', 'working') : a))
+    const live = foldFinished({ agents, isSettled: settled, expanded: { gone: true }, collapse: true })
+    expect(ids(live.visibleAgents)).toEqual(['root', 'leadA', 'a2'])
+    expect(ids(live.groups.get('leadA'))).toEqual(['a1'])
+    expect(ids(live.groups.get('root'))).toEqual(['leadB', 'solo', 'b1', 'b1x'])
+    expectAttached(live, 'root')
+  })
+
   it('survives a cycle without dropping agents', () => {
     const agents = [ag('root', null), ag('a', 'b'), ag('b', 'a')]
     const r = foldFinished({ agents, isSettled: settled, expanded: {}, collapse: true })
