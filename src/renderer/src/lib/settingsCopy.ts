@@ -68,18 +68,6 @@ export const SETTINGS_COPY = {
   },
   teamAssistant: {
     label: 'Team assistant'
-  },
-  /** @deprecated Replaced by planGuard (config-review spec 5); deleted after the pane work. */
-  preferEveryday: {
-    label: 'Use the everyday tier near the limit',
-    description: 'Starts reports on the everyday tier when the plan window nears its limit.',
-    more: 'Applies when the plan window for the deep tier (or the seven-day window, on plans without one) is at or above the threshold set in App settings. Agents already running are not changed.'
-  },
-  /** @deprecated The weekly threshold row is gone (fixed at 80); deleted after the pane work. */
-  opusThreshold: {
-    label: 'Weekly usage threshold',
-    description: 'Percent of the weekly window.',
-    more: 'Used by every project that turns on "Use the everyday tier near the limit".'
   }
 } as const satisfies Record<string, SettingCopy>
 
@@ -88,11 +76,6 @@ export type SettingCopyKey = keyof typeof SETTINGS_COPY
 /** Connection names as shown in the project picker, the Connections pane and the connection lines. */
 export const CONNECTION_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' } as const
 
-/** @deprecated The Default connection select is gone (config-review spec 3); deleted after the pane work. */
-export const DEFAULT_CONNECTION_COPY = {
-  label: 'Default connection',
-  description: 'New projects only. Change an existing project in its Settings > Connection.'
-} as const
 
 /** Plan guard line on a subscription project's Limits pane (planGuardOf; config-review spec 4.3). */
 export const PLAN_GUARD_LINE = {

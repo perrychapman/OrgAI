@@ -17,7 +17,7 @@ import { SettingsCard } from '../settings/SettingsCard'
 import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
-import { otherFamilyRoles, previewRemap, proxyFamilyNotice, roleTier, FAMILY_LABEL } from '../../lib/remap'
+import { otherFamilyRoles, previewRemap, proxyFamilyNotice, roleTier, startRefusal, START_REFUSAL_COPY, FAMILY_LABEL } from '../../lib/remap'
 import { connectionWithAuth } from '../../lib/connectionLabel'
 import { CONNECTION_NAME as NAME } from '../../lib/settingsCopy'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } from '../../lib/settingsTarget'
@@ -72,6 +72,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   const adapter = adapterForProject({ ...project, provider: { ...project.provider, connection: target } }, catalog)
   const otherFamilies = useMemo(() => (target === 'litellm' ? otherFamilyRoles(project, catalog) : []), [target, project, catalog])
   const familyNotice = proxyFamilyNotice(adapter.family, otherFamilies.length)
+  const refusal = project.provider.id === 'mock' ? null : startRefusal(adapter)
 
   const change = useMemo(
     () => previewRemap({ project, connection: target, tierModels, catalog, switching: pending !== null && pending !== current }),
@@ -140,6 +141,11 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   )
 
   // LiteLLM: one connection for the project, any model the proxy serves; the orchestrator's family picks the adapter.
+  const refusalBanner = refusal && (
+    <Banner tone="danger" testId="project-start-refusal">
+      {START_REFUSAL_COPY[refusal]}
+    </Banner>
+  )
   const litellmNotice = target === 'litellm' && (
     <>
       <Banner tone="info">
@@ -166,6 +172,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           </button>
         </p>
         {error && <Banner tone="danger">{error}</Banner>}
+        {refusalBanner}
         {litellmNotice}
         {mockCard}
       </SettingsSection>
@@ -269,7 +276,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         </p>
       </SettingsCard>
 
-      {litellmNotice}
+      {refusalBanner}
+        {litellmNotice}
       {mockCard}
 
       <RemapPreviewDialog

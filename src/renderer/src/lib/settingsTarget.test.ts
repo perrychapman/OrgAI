@@ -32,8 +32,8 @@ describe('appPaneForSection', () => {
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.about)).toBe('about')
   })
   it('returns undefined for the removed Defaults pane and its rows (the page opens on General)', () => {
-    expect(appPaneForSection(APP_SETTINGS_SECTIONS.usage)).toBeUndefined()
-    expect(appPaneForSection(APP_SETTINGS_SECTIONS.defaults)).toBeUndefined()
+    expect(appPaneForSection('appsettings-section-usage')).toBeUndefined()
+    expect(appPaneForSection('appsettings-section-defaults')).toBeUndefined()
     expect(appPaneForSection('defaults')).toBeUndefined()
   })
   it('names the Advanced disclosure a deep link must open first', () => {
@@ -44,7 +44,7 @@ describe('appPaneForSection', () => {
     expect(advancedPaneForSection(APP_SETTINGS_SECTIONS.newProjects)).toBeUndefined()
   })
   it('maps a pane id to itself', () => {
-    for (const p of Object.values(APP_SETTINGS_PANES)) if (p !== 'defaults') expect(appPaneForSection(p)).toBe(p)
+    for (const p of Object.values(APP_SETTINGS_PANES)) expect(appPaneForSection(p)).toBe(p)
   })
   it('returns undefined for unknown ids', () => {
     expect(appPaneForSection('nope')).toBeUndefined()

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Project, ProviderModel, Role } from '@shared/types'
 import { builtinModels, newProject } from '@shared/defaults'
-import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier } from './remap'
+import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier, startRefusal } from './remap'
 
 function project(models: Record<string, string>): Project {
   const p = newProject({ name: 'Demo', path: '/tmp/demo', brief: '' })
@@ -67,5 +67,14 @@ describe('remap preview', () => {
     expect(proxyFamilyNotice('claude', 2)).toBe('Claude orchestrator; 2 roles on other model families run through the proxy.')
     expect(proxyFamilyNotice('openai', 1)).toBe('OpenAI orchestrator; 1 role on another model family runs through the proxy.')
     expect(proxyFamilyNotice('claude', 0)).toBeNull()
+  })
+})
+
+describe('startRefusal', () => {
+  it('mirrors the shared mixedFamilyRefusal rule', () => {
+    expect(startRefusal({ connection: 'litellm', family: 'claude', mismatched: ['a'] })).toBeNull()
+    expect(startRefusal({ connection: 'litellm', family: undefined, mismatched: ['a'] })).toBe('no-root-family')
+    expect(startRefusal({ connection: 'anthropic', family: 'claude', mismatched: ['a'] })).toBe('single-family-connection')
+    expect(startRefusal({ connection: 'openai', family: 'openai', mismatched: [] })).toBeNull()
   })
 })

@@ -14,11 +14,7 @@ export const APP_SETTINGS_SECTIONS = {
   assistantModels: 'appsettings-section-assistant-models',
   /** Connections > Advanced > Costs. */
   costs: 'appsettings-section-costs',
-  about: 'appsettings-section-about',
-  /** @deprecated Removed pane (config-review spec 3); `appPaneForSection` returns undefined. Deleted after the pane work. */
-  defaults: 'appsettings-section-defaults',
-  /** @deprecated Removed row (weekly threshold); `appPaneForSection` returns undefined. */
-  usage: 'appsettings-section-usage'
+  about: 'appsettings-section-about'
 } as const
 
 /** The Advanced disclosure (SettingsAdvanced pane key) a section lives in; deep links open it before landing. */
@@ -39,9 +35,7 @@ export const APP_SETTINGS_PANES = {
   connections: 'connections',
   mcpLibrary: 'mcp-library',
   skillLibrary: 'skill-library',
-  about: 'about',
-  /** @deprecated The Defaults pane is gone (config-review spec 3); kept only until AppSettingsView drops it. */
-  defaults: 'defaults'
+  about: 'about'
 } as const
 export type AppSettingsPane = (typeof APP_SETTINGS_PANES)[keyof typeof APP_SETTINGS_PANES]
 
@@ -139,7 +133,6 @@ const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
  * (the old Defaults pane and its rows: the page then opens on General).
  */
 export function appPaneForSection(id: string): AppSettingsPane | undefined {
-  if (id === APP_SETTINGS_PANES.defaults) return undefined
   if ((Object.values(APP_SETTINGS_PANES) as string[]).includes(id)) return id as AppSettingsPane
   return APP_SECTION_PANE[id]
 }
