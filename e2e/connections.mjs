@@ -4,7 +4,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DATA_DIR, TMP, check, openAppSettings, openProject, openTeam, projectTab, teamPanelTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, openAppSettings, openProject, openTeam, projectTab, teamPanelTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -102,14 +102,19 @@ try {
       check((await modeSel.count()) === 1, 'Permission mode select (default-mode-select) is in New projects')
       const mb = await modeSel.boundingBox()
       check(!!mb && mb.width >= 170 && mb.width <= 250, `Permission mode select is about 240 px wide at ${w}x${h} ${theme}`, JSON.stringify(mb))
+      // N8: the same short names as the project's mode select (lib/settingsCopy.ts PERMISSION_MODE_SHORT).
+      const appModes = (await modeSel.locator('option').allTextContents()).map((t) => t.trim())
+      check(JSON.stringify(appModes) === JSON.stringify(['Unattended', 'Auto-accept edits', 'Ask for everything risky', 'Never ask', 'Plan only', 'Bypass all prompts']), `default-mode-select uses the shared short names at ${w}x${h} ${theme}`, appModes.join(' | '))
       check(/Starting values for new projects\. Existing projects keep their own\./.test((await page.locator('[data-testid=new-projects-section]').textContent()) ?? ''), 'New projects lead reads as specced')
       await shot(`general-${w}x${h}-${theme}`)
       await openAdvanced('app-general')
       for (const name of ['Setup model', 'MCP assistant model', 'Skill assistant model', 'Chat model', 'Orchestrator starting tier', 'Report starting tier']) {
         check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select in General Advanced at ${w}x${h} ${theme}`)
       }
-      const note = page.getByText("Tiers resolve through each project's connection.", { exact: true })
+      const note = page.locator('[data-testid=assistant-models-note]')
       check((await note.count()) === 1, `Assistant models note present at ${w}x${h} ${theme}`)
+      const noteText = (await note.innerText().catch(() => '')) ?? ''
+      check(/run on (Anthropic|OpenAI|LiteLLM), the default connection/.test(noteText), `Assistant models note names the default connection at ${w}x${h} ${theme}`, noteText)
       await note.scrollIntoViewIfNeeded()
       const defOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(defOv.sw <= defOv.cw, `no horizontal scroll on General at ${w}x${h} ${theme}`, JSON.stringify(defOv))
@@ -194,6 +199,9 @@ try {
             window.dispatchEvent(new Event('orgai:settings-section'))
           }, section)
           await sleep(1200)
+          // N1: only the settings scroller moves, never <html> or the app shell.
+          const shift = await windowShift(page)
+          check(shift.ok, `${section} deep link leaves the window unshifted at ${w}x${h} ${theme}`, JSON.stringify(shift))
         }
         await closeAdvanced('app-general')
         await page.getByRole('tab', { name: 'Connections', exact: true }).click()
@@ -293,6 +301,48 @@ try {
         [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast)\b|inherit|connection default|custom/i.test(t))
       )
       check(bareIds.length === 0, `role Model select lists only tiers and Inherit at ${w}x${h} ${theme}`, bareIds.join(', '))
+      // N4: the fold says "Model" once (the select's own label is visually hidden; role Advanced closed).
+      // Visible words only: text in .sr-only, select options and hidden elements does not count.
+      const foldText = await page.locator('[data-testid=role-model-fold]').evaluate((root) => {
+        const out = []
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          const el = n.parentElement
+          if (!el || el.closest('.sr-only, select') || !el.checkVisibility()) continue
+          out.push(n.textContent ?? '')
+        }
+        return out.join(' ')
+      })
+      check((foldText.match(/\bModel\b/g) ?? []).length === 1, `the role Model fold shows the word "Model" once at ${w}x${h} ${theme}`, foldText.replace(/\s+/g, ' ').slice(0, 120))
+      if (w === 1024 && theme === 'dark') {
+        // N3: a tier role's Exact model reads "Not set"; picking Not set on a custom role returns to a tier, never Inherit.
+        const roleSel = page.locator('[data-testid=role-model]')
+        const exactSel = page.locator('[data-testid=role-exact-model]')
+        const startChoice = await roleSel.inputValue()
+        await page.locator('[data-testid=role-model-advanced] > summary').click()
+        await exactSel.waitFor({ timeout: 5000 }).catch(() => {})
+        if (/^(top|deep|everyday|fast)$/.test(startChoice)) check((await exactSel.inputValue()) === '', `a ${startChoice} role's Exact model reads Not set`, await exactSel.inputValue())
+        const ids = await exactSel.locator('option:not([disabled])').evaluateAll((os) => os.map((o) => o.value).filter(Boolean))
+        let custom = false
+        for (const v of ids) {
+          await exactSel.selectOption(v)
+          await sleep(250)
+          if ((await roleSel.inputValue()) === 'custom') {
+            custom = true
+            break
+          }
+        }
+        if (custom) {
+          check((await exactSel.inputValue()) !== '', 'a custom role shows its pinned id in Exact model')
+          await exactSel.selectOption('')
+          await sleep(300)
+          const back = await roleSel.inputValue()
+          check(back !== 'inherit' && back !== 'custom', 'Not set on a custom role returns Model to a tier, not Inherit', back)
+        } else check(true, `no catalog id outside the tiers on this connection (${ids.join(', ')}); the custom round trip was skipped`)
+        await roleSel.selectOption(startChoice).catch(() => {})
+        await sleep(300)
+        await page.locator('[data-testid=role-model-advanced] > summary').click()
+      }
       await shot(`role-model-${w}x${h}-${theme}`)
     }
   }

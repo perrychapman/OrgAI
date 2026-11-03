@@ -53,6 +53,50 @@ async function sectionBlock(page) {
   check(!/Manage in Tools|MCP/.test(await block.innerText()), 'the block never says "Manage in Tools" or "MCP"')
 }
 
+/** ux-review-config-2 N3: a tier role's Exact model reads Not set; Not set on a custom role returns Model to a tier, never Inherit. */
+async function sectionExactModel(page) {
+  await selectReviewer(page)
+  await page.evaluate(() => {
+    const d = document.querySelector('[data-testid=role-model-fold]')
+    if (d) d.open = true
+  })
+  const roleSel = page.locator('[data-testid=role-model]')
+  const exactSel = page.locator('[data-testid=role-exact-model]')
+  await roleSel.waitFor({ timeout: 10_000 })
+  await page.evaluate(() => {
+    const d = document.querySelector('[data-testid=role-model-advanced]')
+    if (d) d.open = true
+  })
+  await exactSel.waitFor({ timeout: 10_000 })
+  const start = await roleSel.inputValue()
+  if (/^(top|deep|everyday|fast)$/.test(start)) check((await exactSel.inputValue()) === '', `a ${start} role's Exact model reads Not set`, await exactSel.inputValue())
+  const ids = await exactSel.locator('option:not([disabled])').evaluateAll((os) => os.map((o) => o.value).filter(Boolean))
+  let custom = false
+  for (const v of ids) {
+    await exactSel.selectOption(v)
+    await sleep(250)
+    if ((await roleSel.inputValue()) === 'custom') {
+      custom = true
+      break
+    }
+  }
+  check(custom, 'a catalog id outside the tiers makes the role Custom', ids.join(', '))
+  if (custom) {
+    check((await exactSel.inputValue()) !== '', 'a custom role shows its pinned id in Exact model')
+    await exactSel.selectOption('')
+    await sleep(400)
+    const back = await roleSel.inputValue()
+    check(back !== 'inherit' && back !== 'custom', 'Not set on a custom role returns Model to a tier, not Inherit', back)
+    check((await exactSel.inputValue()) === '', 'Exact model reads Not set again')
+  }
+  if (start !== 'custom') await roleSel.selectOption(start).catch(() => {})
+  await sleep(300)
+  await page.evaluate(() => {
+    const d = document.querySelector('[data-testid=role-model-advanced]')
+    if (d) d.open = false
+  })
+}
+
 async function sectionTools(page) {
   const block = page.locator('[data-testid=role-capabilities]')
   const before = (await reviewer(page)).role.tools
@@ -518,6 +562,7 @@ try {
   await sectionAssistant(page, shot)
   await sectionDismiss(page, shot, app)
   await sectionDesignDecisions(page, shot)
+  await sectionExactModel(page)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
   await page.locator('[data-testid=capability-chooser]').waitFor()

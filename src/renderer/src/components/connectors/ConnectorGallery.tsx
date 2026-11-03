@@ -9,6 +9,7 @@ import { SettingsSection } from '../settings/SettingsSection'
 import { CATEGORY_GROUP_THRESHOLD, CATEGORY_LABELS, categoriesPresent, gallerySections, matchesFilter, serviceCount } from '../../lib/connectors'
 import type { GalleryFilter } from '../../lib/connectors'
 import { clearTeamOrigin, peekTeamOrigin, takeConnectorTarget, type TeamOrigin } from '../../lib/settingsTarget'
+import { scrollWithin } from '../../lib/scrollWithin'
 import { useAppStore } from '../../store/useAppStore'
 import { ConnectorTile } from './ConnectorTile'
 import ConnectorDialog from './ConnectorDialog'
@@ -18,7 +19,7 @@ import { useRovingFocus } from './useRovingFocus'
 /** Scroll to the Custom servers section below the gallery and put focus on its first button. */
 function goToCustomServers(): void {
   const section = document.getElementById('appsettings-section-mcp-library')
-  section?.scrollIntoView({ block: 'start' })
+  scrollWithin(section, 'start')
   section?.querySelector<HTMLElement>('[data-testid=mcp-library-add-manual]')?.focus()
 }
 

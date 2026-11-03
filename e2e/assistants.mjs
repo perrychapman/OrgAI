@@ -2,7 +2,7 @@
 // Ctrl+Shift+N, the Projects view entry points, App settings > General > Advanced rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
 import path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
@@ -174,6 +174,42 @@ try {
       check(await visible('[data-testid=settings-advanced][data-pane=app-general] [data-testid=skill-assist-model-row-select]'), `chat-model-change opens General with Advanced open (${tag})`)
       const focusedHeading = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
       check(/Assistant models/i.test(focusedHeading), `focus is on the Assistant models group heading ${tag}`, focusedHeading)
+      // N1: the deep link scrolls only the settings scroller, never the window or the app shell (checked after the
+      // 900 ms re-land too).
+      await sleep(800)
+      let shift = await windowShift(page)
+      check(shift.ok, `chat-model-change leaves the window unshifted ${tag}`, JSON.stringify(shift))
+      // The MCP and Skill assistant start pages' "Change in App settings" (AssistantModelLine).
+      for (const id of ['harness', 'skills']) {
+        await openAssistant(id)
+        const line = page.locator(`[data-testid=assistant-start-${id}] [data-testid=assistant-model-line]`)
+        const lineText = await line.innerText().catch(() => '')
+        check(/Runs on .+ tier \(.+\) via /.test(lineText), `${LABELS[id]} model line names the resolved model and the connection ${tag}`, lineText)
+        await line.getByRole('button', { name: 'Change in App settings' }).click().catch(() => {})
+        await sleep(1500)
+        const hd = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+        check(/Assistant models/i.test(hd), `${LABELS[id]} model link focuses the Assistant models heading ${tag}`, hd)
+        shift = await windowShift(page)
+        check(shift.ok, `${LABELS[id]} model link leaves the window unshifted ${tag}`, JSON.stringify(shift))
+      }
+      if (theme === 'dark') {
+        // The MCP assist dialog's hint (Team > Catalog > Add a service > Ask the assistant).
+        await openProject(page, NAME)
+        await openTeam(page)
+        await teamPanelTab(page, 'Catalog').click().catch(() => {})
+        await page.locator('[data-testid=mcp-add-service]').scrollIntoViewIfNeeded().catch(() => {})
+        await page.locator('[data-testid=mcp-add-service]').click().catch(() => {})
+        await page.locator('[data-testid=add-service-assist]').click().catch(() => {})
+        const hint = page.locator('[data-testid=mcp-assist-model-hint]')
+        const hintText = await hint.innerText().catch(() => '')
+        check(/Runs on .+ tier \(.+\) via /.test(hintText), `MCP assist dialog hint names the resolved model and the connection ${tag}`, hintText)
+        await hint.getByRole('button', { name: 'Change in App settings' }).click().catch(() => {})
+        await sleep(1500)
+        const hd = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+        check(/Assistant models/i.test(hd), `MCP assist dialog link focuses the Assistant models heading ${tag}`, hd)
+        shift = await windowShift(page)
+        check(shift.ok, `MCP assist dialog link leaves the window unshifted ${tag}`, JSON.stringify(shift))
+      }
 
       // App settings > General > Advanced: the assistant model rows
       await openAppSettings(page)

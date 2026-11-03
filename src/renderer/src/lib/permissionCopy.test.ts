@@ -166,7 +166,7 @@ describe('scopeCopy', () => {
     )
     expect(c.session).toBe('Allow for session: auto-accepts file edits, allows edits and reads in /home/me/shared-lib and stops asking for the command "git status" and every WebSearch call until you end this session.')
     expect(c.project).toBe(
-      "Always allow for project: switches this project to Auto-accept file edits, adds /home/me/shared-lib to this project's allowed folders and stops asking for the command \"git status\" and every WebSearch call in this project."
+      "Always allow for project: switches this project to Auto-accept edits, adds /home/me/shared-lib to this project's allowed folders and stops asking for the command \"git status\" and every WebSearch call in this project."
     )
   })
   it('names a server-level MCP rule as every tool of the server', () => {
@@ -175,7 +175,7 @@ describe('scopeCopy', () => {
   it('switches the mode only from Ask for everything risky', () => {
     const mode: PermissionSuggestion = { type: 'setMode', mode: 'acceptEdits', destination: 'session' }
     expect(scopeCopy([mode], 'auto').project).toBe('Always allow for project: the same as Allow for session; nothing is saved for later runs.')
-    expect(scopeCopy([mode], 'default').project).toBe('Always allow for project: switches this project to Auto-accept file edits.')
+    expect(scopeCopy([mode], 'default').project).toBe('Always allow for project: switches this project to Auto-accept edits.')
   })
   it('ignores deny rules and malformed entries', () => {
     const deny: PermissionSuggestion = { type: 'addRules', behavior: 'deny', destination: 'session', rules: [{ toolName: 'Bash' }] }

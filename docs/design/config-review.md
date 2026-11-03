@@ -156,9 +156,12 @@ Visible, section Limits (id `settings-section-limits`):
 
 - Metered project: row "Estimated-cost cap per run", Input number 120 px, placeholder "No cap", description "Stops a
   run above this USD cost. Blank: no cap." (no Learn more), writes `maxBudgetUsd`.
-- Subscription project: one line, no control (testid `plan-guard-line`), from `planGuardOf`: auto "Plan guard:
-  automatic. Stops near your five-hour limit and uses the everyday tier when the weekly window passes 80%."; on "Plan
-  guard: on. Uses the everyday tier when the weekly window passes 80%."; off "Plan guard: off."
+- Subscription project: one line, no control (testid `plan-guard-line`, `lib/settingsCopy.ts` `planGuardLine`), saying
+  only what runs. From `planGuardOf`: auto "Plan guard: automatic. Uses the everyday tier when your weekly window passes
+  80%."; on "Plan guard: on. Uses the everyday tier when your weekly window passes 80%."; off "Plan guard: off.". Then
+  always "A run that reaches a plan limit pauses until it resets." (RunManager pauses a usage-limited run and resumes
+  it at the reset), and only when `maxWindowShare` is set "Stops at N% of the five-hour window." Automatic never stops a
+  run near the five-hour window (ux-review-config-2 N2).
 
 Advanced (`project-limits`), one card:
 
@@ -341,3 +344,36 @@ Still open (Reviewer Lows; also listed in ARCHITECTURE.md Risks):
 
 Not exercised by e2e, because the mock connects only Anthropic: make-default, Back to automatic, a setDefault refusal,
 the multi-connection project cards, the LiteLLM notices and the unsupported-effort note.
+
+Fix-up after the re-walk (`ux-review-config-2.md`, 2026-11-03):
+- N1: deep links scroll only their scroll container. `lib/scrollWithin.ts` `scrollWithin(el, block)` sets the nearest
+  `overflow-y: auto | scroll` ancestor's `scrollTop` (clamped, pure `targetScrollTop`) and resets any shifted
+  non-scrolling ancestor, `<html>` and `<body>`. It replaces `scrollIntoView` in `AppSettingsView` (the deep-link
+  effect), `PermissionsSection` (`useSectionTarget`), `ModelPricesSection`, `McpLibrarySection` and
+  `ConnectorGallery`. e2e `lib.mjs` `windowShift(page)` checks it after every Assistant models link (Chat, MCP and
+  Skill start pages at both sizes and themes, the MCP assist dialog in dark at both sizes; `assistants.mjs`), after the
+  App deep links (`connections.mjs`), the permission card link and Team assistant settings (`permissions.mjs`).
+- N2: the plan guard line is `planGuardLine(mode, maxWindowShare)` (see 4.3).
+- N3: Exact model shows a pinned id only for a Custom role (`lib/roleModels.ts` `exactModelValue`); a tier or inherit
+  role reads "Not set (use the tier above)". "Not set" on a custom role writes the role's saved tier, else everyday,
+  else the first mapped tier; inherit only when the connection maps no tier (`applyExactModel(value, tiers, role)`).
+- N4: the role Model select's label is visually hidden (the fold title "Model" names it). The org chart node's model
+  chip shows the tier word with the id in its title (`roleChipLabel`).
+- N5: `lib/assistantModels.ts` `assistantModelLabel` / `runsOnText` / `useAssistantRunsOn` give one wording,
+  "Runs on Everyday tier (sonnet) via Anthropic", to the Chat summary, the MCP and Skill start pages, the MCP assist
+  dialog hint and the Connectors "Configure with AI" title. The Assistant models note (`assistant-models-note`) reads
+  "Chat and the MCP and Skill assistants run on <Default>, the default connection. Setup uses each project's connection."
+- N6: the Team assistant tray head has a quiet gear `IconButton` "Team assistant settings" (`team-assistant-settings`).
+  It opens Project settings > Permissions with Advanced open and `team-assistant-select` focused
+  (`PROJECT_SETTINGS_SECTIONS.teamAssistant`, `PROJECT_ADVANCED_SECTIONS`, shared opener `lib/openProjectSettings.ts`).
+- M6 leftover: `SINGLE_SLASH_REASON` reads "A single leading / is read as relative to the project; ..." on every connection.
+- N8: one short-name table, `lib/settingsCopy.ts` `PERMISSION_MODE_SHORT` ("Ask for everything risky",
+  "Auto-accept edits"), for App General, project Permissions and the card's "Always allow" sentence.
+- N10: with worktrees off, "Review each report's changes before merge" says "Needs worktree isolation (above)." as its
+  description and the switch's title (`SETTINGS_COPY.reviewMerges.disabled`).
+- N11: `perm-settings-link` targets `rules`: the "Rules and folders you allowed" disclosure opens and "Saved permission
+  rules" takes focus.
+- N12: inside any Advanced body, section titles (Connections: Costs, Model prices) use the group caption style, so
+  every Advanced heading is one tier; levels and ids are unchanged.
+- Left open: N7 (App General scrolls about 91 px at rest at 1024x640), N9 (an 'error' Anthropic status keeps an
+  automatic default; main, `defaults.ts`), N13 (the About "Mock adapter" chip is unexplained).

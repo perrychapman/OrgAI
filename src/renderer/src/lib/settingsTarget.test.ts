@@ -3,6 +3,7 @@ import {
   APP_SETTINGS_PANES,
   APP_SETTINGS_SECTIONS,
   PROJECT_SETTINGS_PANES,
+  PROJECT_ADVANCED_SECTIONS,
   PROJECT_SETTINGS_SECTIONS,
   advancedPaneForSection,
   normalizeProjectPane,
@@ -101,6 +102,9 @@ describe('project settings section requests', () => {
     expect(projectPaneForSection(PROJECT_SETTINGS_SECTIONS.allowedFolders)).toBe('permissions')
     expect(projectPaneForSection(PROJECT_SETTINGS_SECTIONS.rules)).toBe('permissions')
     expect(projectPaneForSection(PROJECT_SETTINGS_SECTIONS.connection)).toBe('general')
+    expect(projectPaneForSection(PROJECT_SETTINGS_SECTIONS.teamAssistant)).toBe('permissions')
+    expect(PROJECT_ADVANCED_SECTIONS[PROJECT_SETTINGS_SECTIONS.teamAssistant]).toBe('project-permissions')
+    expect(PROJECT_ADVANCED_SECTIONS[PROJECT_SETTINGS_SECTIONS.rules]).toBeUndefined()
     expect(projectPaneForSection('nope')).toBeUndefined()
   })
   it('hands the section once to its own pane only', () => {

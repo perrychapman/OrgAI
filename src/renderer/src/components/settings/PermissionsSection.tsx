@@ -8,9 +8,11 @@ import PermissionRulesPanel from '../PermissionRulesPanel'
 import { Select } from '../ui/Select'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Switch } from '../ui/Switch'
-import { SETTINGS_COPY, ISOLATE_WRITERS_STATE, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
+import { PERMISSION_MODE_SHORT, SETTINGS_COPY, ISOLATE_WRITERS_STATE, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
 import { PERMISSION_MODE_TRADEOFF, collapseRules, rulesApplyInMode } from '../../lib/permissionCopy'
+import { scrollWithin } from '../../lib/scrollWithin'
 import {
+  PROJECT_ADVANCED_SECTIONS,
   PROJECT_SECTION_EVENT,
   PROJECT_SETTINGS_SECTIONS,
   takeProjectSettingsSection,
@@ -18,19 +20,12 @@ import {
 } from '../../lib/settingsTarget'
 import { AllowedDirectoriesSection } from './AllowedDirectoriesSection'
 import { ClampedNumber } from './ClampedNumber'
-import { SettingsAdvanced } from './SettingsAdvanced'
+import { SettingsAdvanced, openSettingsAdvanced } from './SettingsAdvanced'
 import { SettingsCard } from './SettingsCard'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
-/** Short names for the select; the trade-off sentence is the one line shown for the selected mode. */
-export const PERMISSION_MODE_SHORT: Record<PermissionMode, string> = {
-  auto: 'Unattended',
-  acceptEdits: 'Auto-accept edits',
-  default: 'Ask for everything risky',
-  dontAsk: 'Never ask',
-  plan: 'Plan only',
-  bypassPermissions: 'Bypass all prompts'
-}
+/** Short names live in lib/settingsCopy.ts (one table for both settings pages); re-exported for existing imports. */
+export { PERMISSION_MODE_SHORT }
 
 /** What still asks in each mode (renderer copy; provider-neutral, config-review spec 5). */
 const MODE_MORE =
@@ -46,19 +41,32 @@ export function allowedSummary(rules: number | null, folders: number): string | 
   return `${parts.join(' and ')} you allowed`
 }
 
-/** Scroll to and focus a section a deep link asked for; rules and folders open the disclosure first. */
+/**
+ * Scroll to and focus a section a deep link asked for, inside the settings scroller only. Rules and folders open the
+ * "Rules and folders you allowed" disclosure first; the Team assistant target opens Advanced and focuses its select.
+ */
 function useSectionTarget(openSummary: () => void): void {
   useEffect(() => {
     const take = (): void => {
       const target: ProjectSettingsSection | null = takeProjectSettingsSection('permissions')
       if (!target) return
+      const advanced = PROJECT_ADVANCED_SECTIONS[target]
+      if (advanced) {
+        openSettingsAdvanced(advanced)
+        requestAnimationFrame(() => {
+          const select = document.querySelector<HTMLElement>('[data-testid=team-assistant-select]')
+          scrollWithin(select?.closest('.setting-row') ?? select, 'center')
+          select?.focus({ preventScroll: true })
+        })
+        return
+      }
       if (target !== PROJECT_SETTINGS_SECTIONS.permissions) flushSync(openSummary)
       requestAnimationFrame(() => {
         const section = document.getElementById(target)
         const h3 = section?.querySelector<HTMLElement>('h3')
         // The Permissions section title repeats the pane title and is hidden (display: none), so the pane heading takes the focus.
         const heading = h3?.checkVisibility() ? h3 : section?.closest('[role=tabpanel]')?.querySelector<HTMLElement>('.settings-pane-title')
-        section?.scrollIntoView({ block: 'start' })
+        scrollWithin(section, 'start')
         if (heading) {
           heading.setAttribute('tabindex', '-1')
           heading.focus({ preventScroll: true })
@@ -215,11 +223,12 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
             <SettingRow
               id={row('review-row')}
               title={copy.reviewMerges.label}
-              description={copy.reviewMerges.description}
+              description={isolated ? copy.reviewMerges.description : copy.reviewMerges.disabled}
               control={
                 <Switch
                   checked={!!project.reviewMerges}
                   disabled={!isolated}
+                  title={isolated ? undefined : copy.reviewMerges.disabled}
                   label={copy.reviewMerges.label}
                   describedBy={settingDescId(row('review-row'))}
                   onChange={(v) => patch({ reviewMerges: v })}

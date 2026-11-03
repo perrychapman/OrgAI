@@ -21,11 +21,12 @@ import { SettingsAdvanced, openSettingsAdvanced } from '../components/settings/S
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
-import { SETTINGS_COPY } from '../lib/settingsCopy'
+import { CONNECTION_NAME, PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
 import { PERMISSION_MODE_TRADEOFF } from '../lib/permissionCopy'
 import { modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
 import { ADVANCED_SECTIONS, APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
+import { scrollWithin } from '../lib/scrollWithin'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
@@ -54,15 +55,6 @@ const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string
   { value: 'system', label: 'Follow system' },
   { value: 'on', label: 'Always reduce' }
 ]
-/** Short select names; the chosen mode's description shows as the row hint. Matches the project page. */
-const PERMISSION_SHORT: Record<PermissionMode, string> = {
-  auto: 'Unattended',
-  acceptEdits: 'Auto-accept edits',
-  default: 'Ask for risky actions',
-  dontAsk: 'Never ask',
-  plan: 'Plan only',
-  bypassPermissions: 'Bypass all prompts'
-}
 /** Accent choices; the first is the default. Any other color can be typed as hex. */
 const ACCENT_SWATCHES: { name: string; hex: string }[] = [
   { name: 'Violet', hex: DEFAULT_APPEARANCE.accent },
@@ -144,7 +136,8 @@ export default function AppSettingsView(): ReactElement {
     const advancedPane = ADVANCED_SECTIONS[pf.section]
     if (advancedPane) openSettingsAdvanced(advancedPane)
     focusPaneHeading({ preventScroll: true })
-    const land = (): void => document.getElementById(pf.section!)?.scrollIntoView({ block: 'start' })
+    // Scroll only the settings scroller: scrollIntoView also shifted <html> and the app shell for a target near the end (N1).
+    const land = (): void => scrollWithin(document.getElementById(pf.section!), 'start')
     land()
     // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
     setTimeout(land, 350)
@@ -429,7 +422,7 @@ export default function AppSettingsView(): ReactElement {
                     >
                       {PERMISSION_MODE_OPTIONS.map((o) => (
                         <option key={o.value} value={o.value}>
-                          {PERMISSION_SHORT[o.value]}
+                          {PERMISSION_MODE_SHORT[o.value]}
                         </option>
                       ))}
                     </select>
@@ -497,7 +490,9 @@ export default function AppSettingsView(): ReactElement {
                     control={modelSelect('Chat model', 'quick-run-model-row', info.quickRunModel ?? 'everyday', false, (quickRunModel) => patch({ quickRunModel }))}
                   />
                 </SettingsCard>
-                <p className="muted">Tiers resolve through each project's connection.</p>
+                <p className="muted" data-testid="assistant-models-note">
+                  Chat and the MCP and Skill assistants run on {CONNECTION_NAME[defaultConn]}, the default connection. Setup uses each project's connection.
+                </p>
               </SettingsGroup>
               <SettingsGroup title="New projects (advanced)">
                 <SettingsCard>

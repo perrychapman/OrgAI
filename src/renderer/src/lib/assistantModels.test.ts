@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderModel } from '@shared/types'
-import { ASSISTANT_MODEL_FALLBACK, modelDisplayName,modelSettingDescription, modelSettingGroups, modelSources } from './assistantModels'
+import { ASSISTANT_MODEL_FALLBACK, assistantModelLabel, modelDisplayName, modelSettingDescription, modelSettingGroups, modelSources, runsOnText } from './assistantModels'
 import type { ModelSource } from './assistantModels'
 
 const catalog: ProviderModel[] = [
@@ -25,6 +25,17 @@ describe('modelDisplayName', () => {
     expect(modelDisplayName('opus')).toBe('Deep tier')
     expect(modelDisplayName('gpt-x', catalog)).toBe('GPT X')
     expect(modelDisplayName('gpt-5')).toBe('gpt-5')
+  })
+})
+
+describe('assistant model lines (ux-review-config-2 N5)', () => {
+  it('names the tier with the model it resolves to on the default connection', () => {
+    const on = { id: 'anthropic' as const, tierModels: { everyday: 'sonnet' } }
+    expect(assistantModelLabel('everyday', on)).toBe('Everyday tier (sonnet)')
+    expect(assistantModelLabel('gpt-5')).toBe('gpt-5')
+    expect(assistantModelLabel('')).toBe('the configured model')
+    expect(runsOnText(assistantModelLabel('everyday', on), 'Anthropic')).toBe('Runs on Everyday tier (sonnet) via Anthropic')
+    expect(runsOnText('Deep tier')).toBe('Runs on Deep tier')
   })
 })
 

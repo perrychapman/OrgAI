@@ -10,6 +10,9 @@ export const TIER_LABEL = Object.fromEntries(MODEL_TIER_OPTIONS.map((o) => [o.va
 /** The Model select's value for a role: 'inherit', a tier word, or 'custom' (an exact model that is no tier's model). */
 export type RoleModelChoice = 'inherit' | ModelTier | 'custom'
 
+/** The Exact model select's empty option (nothing pinned; the Model select above decides). */
+export const EXACT_NOT_SET = 'Not set (use the tier above)'
+
 /** "Everyday (sonnet)": the tier word plus the model it resolves to on the project's connection. */
 export function tierOptionLabel(tier: ModelTier, tierModels: TierModels): string {
   const model = tierModels[tier]
@@ -42,10 +45,35 @@ export function applyModelChoice(choice: string, tierModels: TierModels): { mode
   return tier && model ? { model, tier } : null
 }
 
-/** What picking an exact model writes: the id, with the tier it happens to be (if any). '' goes back to inherit. */
-export function applyExactModel(value: string, tierModels: TierModels): { model: ModelRef; tier: ModelTier | undefined } {
-  if (!value) return { model: 'inherit', tier: undefined }
+/**
+ * What picking an exact model writes: the id, with the tier it happens to be (if any). '' ("Not set") goes back to the
+ * tier chosen above: the role's saved tier, else the everyday tier, else the first mapped tier. It never turns a tier
+ * role into inherit; only a role whose connection maps no tier at all falls back to inherit (ux-review-config-2 N3).
+ */
+export function applyExactModel(
+  value: string,
+  tierModels: TierModels,
+  role?: Pick<Role, 'model' | 'tier'>
+): { model: ModelRef; tier: ModelTier | undefined } {
+  if (!value) {
+    if (role?.model === 'inherit') return { model: 'inherit', tier: undefined }
+    const saved = role ? roleTier(role) : undefined
+    const tier = [saved, 'everyday' as ModelTier, ...MODEL_TIER_OPTIONS.map((o) => o.value)].find((t): t is ModelTier => !!t && !!tierModels[t])
+    return tier ? { model: tierModels[tier]!, tier } : { model: 'inherit', tier: undefined }
+  }
   return { model: value, tier: MODEL_TIER_OPTIONS.find((o) => tierModels[o.value] === value)?.value }
+}
+
+/** The Exact model select's value: the pinned id only for a custom role; '' ("Not set") for inherit and tier roles. */
+export function exactModelValue(role: Pick<Role, 'model' | 'tier'>, tierModels: TierModels): string {
+  return roleModelChoice(role, tierModels) === 'custom' ? role.model : ''
+}
+
+/** The org chart node's model chip: the tier word (the id goes in its title), "Inherit", or the custom id. */
+export function roleChipLabel(role: Pick<Role, 'model' | 'tier'>): string {
+  if (role.model === 'inherit') return 'Inherit'
+  const tier = roleTier(role)
+  return tier ? TIER_LABEL[tier] : role.model
 }
 
 export interface ExactGroup {
@@ -64,8 +92,8 @@ export function exactModelGroups(catalog: readonly ProviderModel[], litellm: boo
     : catalog.length > 0
       ? [{ label: 'Models', options: catalog.map(option) }]
       : []
-  const known = current === 'inherit' || catalog.some((m) => m.id === current)
-  const lead: ExactGroup[] = [{ options: [{ value: '', label: 'Not set (use Model above)' }] }]
+  const known = current === '' || current === 'inherit' || catalog.some((m) => m.id === current)
+  const lead: ExactGroup[] = [{ options: [{ value: '', label: EXACT_NOT_SET }] }]
   if (!known) lead.push({ options: [{ value: current, label: `${current} (unavailable)`, disabled: true }] })
   return [...lead, ...groups]
 }

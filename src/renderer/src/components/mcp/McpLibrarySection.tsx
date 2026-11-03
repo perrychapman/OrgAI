@@ -5,7 +5,8 @@ import type { McpLibraryInfo, McpTestResult } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { focusPaneHeading } from '../../lib/settingsTarget'
-import { modelDisplayName, useAssistantModel } from '../../lib/assistantModels'
+import { scrollWithin } from '../../lib/scrollWithin'
+import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -37,7 +38,7 @@ export default function McpLibrarySection(): ReactElement {
       (r) => r.summary.projectId === HARNESS_PROJECT_ID && r.summary.kind === 'mcp-assist' && ['starting', 'running', 'idle'].includes(r.summary.status)
     )
   )
-  const assistModel = modelDisplayName(useAssistantModel('mcpAssistModel'))
+  const assistModel = useAssistantRunsOn('mcpAssistModel').label
   const writer = useMemo(() => libraryWriter(setLibrary), [setLibrary])
 
   // A deep link ("Open in library") lands here: scroll to the section or the entry and move focus into it.
@@ -46,7 +47,7 @@ export default function McpLibrarySection(): ReactElement {
     if (focus.libraryId && library === null) return
     const row = focus.libraryId ? section.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(focus.libraryId)}"]`) : null
     if (row) {
-      row.scrollIntoView({ block: 'start' })
+      scrollWithin(row, 'start')
       row.querySelector<HTMLElement>('button')?.focus()
     } else {
       focusPaneHeading()

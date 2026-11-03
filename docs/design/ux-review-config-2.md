@@ -221,3 +221,25 @@ Check: from the Team tab, the Team assistant mode is reachable in 1 click.
 - L4 (New project form with a found agent).
 - Plan windows (the mock reports none), so the live plan guard behaviour behind N2 is from a code read.
 - The Settings tablist arrow keys were spot-checked only: ArrowDown moved focus from Permissions to Limits.
+
+## Status after fix-up (UI Lead, 2026-11-03)
+
+Details per finding are in `config-review.md`, Implementation notes, "Fix-up after the re-walk". Checked by typecheck,
+`npm test` and the e2e scripts named below on the mock; no new walk was done.
+
+| Finding | Status | Check |
+| --- | --- | --- |
+| N1 deep links shift the window | Fixed (`lib/scrollWithin.ts`) | `windowShift` is clean after all four Assistant models links at 1024x640 and 1600x1000 (assistants.mjs), the App deep links (connections.mjs), the permission card link and Team assistant settings (permissions.mjs) |
+| N2 plan guard line overclaims | Fixed (`planGuardLine`) | permissions.mjs: no "five-hour" without a share; "Stops at 30% of the five-hour window." with one |
+| N3 Not set resets Model to Inherit | Fixed | team.mjs (mock catalog): tier role reads Not set; custom then Not set returns to a tier; roleModels.test.ts |
+| N4 "Model" twice | Fixed; node chips show the tier word | connections.mjs: the fold's visible text has "Model" once |
+| N5 model lines and note disagree | Fixed (one helper, note names the default connection) | assistants.mjs: the MCP and Skill lines and the dialog hint read "Runs on <tier> (<model>) via <Connection>"; connections.mjs checks the note |
+| N6 Team assistant select far from Team | Fixed (`team-assistant-settings`) | permissions.mjs: 1 click, Advanced open, select focused |
+| M6 leftover `SINGLE_SLASH_REASON` | Fixed | permissionCopy.test.ts |
+| N7 App General scrolls at 1024x640 | Open | |
+| N8 mode short names differ | Fixed (`PERMISSION_MODE_SHORT`) | connections.mjs and permissions.mjs compare the option texts |
+| N9 'error' keeps an automatic default | Open (main) | |
+| N10 review switch disabled without a reason | Fixed | permissions.mjs reads its description |
+| N11 card link lands with the rules closed | Fixed (targets `rules`) | permissions.mjs: disclosure open, "Saved permission rules" focused |
+| N12 uneven heading tiers in Advanced | Fixed (CSS: one caption style) | Visual only; not checked by e2e |
+| N13 About "Mock adapter" chip | Open | |

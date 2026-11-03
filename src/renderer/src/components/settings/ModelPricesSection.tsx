@@ -7,6 +7,7 @@ import { MODEL_PRICE_ID_MAX_CHARS } from '@shared/defaults'
 import { CONNECTION_NAME } from '../../lib/settingsCopy'
 import { displayPerMTok, draftFromInfo, EMPTY_DRAFT, upsertOverride, removeOverride, validateDraft, visiblePriceRows } from '../../lib/modelPrices'
 import { APP_SETTINGS_SECTIONS, takeModelPriceTarget } from '../../lib/settingsTarget'
+import { scrollWithin } from '../../lib/scrollWithin'
 import { useAppStore } from '../../store/useAppStore'
 import type { PriceDraft, PriceErrors, PriceField } from '../../lib/modelPrices'
 import { Banner } from '../ui/Banner'
@@ -86,7 +87,7 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
     setErrors({})
     setSaveError(null)
     requestAnimationFrame(() => {
-      formRef.current?.scrollIntoView({ block: 'start' })
+      scrollWithin(formRef.current, 'start')
       // Focus the first empty field (the model id, unless a deep link pre-filled it); the form is already in view.
       const empty = (['model-price-model', 'model-price-input'] as const).find((id) => !(document.getElementById(id) as HTMLInputElement | null)?.value)
       document.getElementById(empty ?? 'model-price-model')?.focus({ preventScroll: true })

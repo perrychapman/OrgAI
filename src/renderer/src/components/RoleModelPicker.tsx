@@ -9,7 +9,7 @@ import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
 import { CONNECTION_NAME } from '../lib/settingsCopy'
 import { roleTier } from '../lib/remap'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
-import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
+import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, exactModelValue, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
 
 /** Resolve the tier a role effectively has: its own, or through ancestors when it inherits. */
 function resolveTier(project: Project, role: Role): { tier?: ModelTier; model?: string } {
@@ -24,7 +24,8 @@ function resolveTier(project: Project, role: Role): { tier?: ModelTier; model?: 
 }
 
 /**
- * The role's model controls: one Model select (Inherit or a tier, labelled "Everyday (sonnet)") and, behind
+ * The role's model controls (the fold title in RoleInspector names them, so the select's own label is visually hidden):
+ * one Model select (Inherit or a tier, labelled "Everyday (sonnet)") and, behind
  * "Advanced", the exact model and the effort. Nothing at rest shows a concrete id without a tier word.
  */
 export default function RoleModelPicker({ project, role }: { project: Project; role: Role }): ReactElement {
@@ -75,7 +76,9 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   if (!connected && connectionsLoaded) {
     return (
       <div className="field role-model-field">
-        <label htmlFor="role-model-disabled">Model</label>
+        <label htmlFor="role-model-disabled" className="sr-only">
+          Model
+        </label>
         <select id="role-model-disabled" className="select" disabled value={role.model} data-testid="role-model">
           <option value={role.model}>{role.model === 'inherit' ? 'Inherit' : 'Custom'}</option>
         </select>
@@ -94,7 +97,9 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   }
 
   const effort = effortView(role.effort, adapter)
-  const stale = role.model !== 'inherit' && !!catalog && !catalog.some((m) => m.id === role.model)
+  // Only a custom role shows a pinned id; tier and inherit roles read "Not set" (ux-review-config-2 N3).
+  const exact = exactModelValue(role, tierModels)
+  const stale = exact !== '' && !!catalog && !catalog.some((m) => m.id === exact)
 
   return (
     <div className="role-model-field stack-2">
@@ -108,7 +113,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
       ) : !catalog ? (
         <div className="skeleton" aria-busy="true" />
       ) : (
-        <ModelSelect label="Model" value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
+        <ModelSelect label="Model" hideLabel value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
       )}
 
       <details className="setting-row-more role-model-advanced" data-testid="role-model-advanced">
@@ -117,12 +122,12 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
           {catalog && (
             <ModelSelect
               label="Exact model"
-              value={role.model === 'inherit' ? '' : role.model}
-              groups={exactModelGroups(catalog, connection === 'litellm', role.model)}
+              value={exact}
+              groups={exactModelGroups(catalog, connection === 'litellm', exact)}
               invalid={stale}
-              message={stale ? `Not available on ${CONNECTION_NAME[connection]}. Choose another model or use Model above.` : undefined}
+              message={stale ? `Not available on ${CONNECTION_NAME[connection]}. Choose another model or Not set.` : undefined}
               description={connection === 'litellm' ? 'Any model the proxy serves.' : 'Pins this role to one model.'}
-              onChange={(v) => write(applyExactModel(v, tierModels))}
+              onChange={(v) => write(applyExactModel(v, tierModels, role))}
               testId="role-exact-model"
             />
           )}

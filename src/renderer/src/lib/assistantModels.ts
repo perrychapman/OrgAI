@@ -130,3 +130,32 @@ export function useAssistantModelName(key: AssistantKey): string {
   const catalog = useAppStore((s) => s.models[conn ?? 'anthropic'])
   return value ? modelDisplayName(value, catalog) : 'the configured model'
 }
+
+/**
+ * "Everyday tier (sonnet)": an assistant's model setting with the model it resolves to on `on` (the effective default
+ * connection, which Chat and the MCP and Skill assistants run on). A concrete id keeps its catalog label. Pure.
+ */
+export function assistantModelLabel(value: string, on?: Pick<ModelSource, 'id' | 'tierModels' | 'catalog'>): string {
+  if (!value) return 'the configured model'
+  const tier = settingTier(value)
+  const base = modelDisplayName(value, on?.catalog)
+  if (!tier || !on) return base
+  const hit = modelForTier(tier, { connection: on.id, tierModels: on.tierModels, catalog: on.catalog })
+  return hit?.model ? `${base} (${hit.model})` : base
+}
+
+/** "Runs on Everyday tier (sonnet) via Anthropic" (no full stop): one wording for every assistant model line (N5). */
+export function runsOnText(label: string, connectionName?: string): string {
+  return `Runs on ${label}${connectionName ? ` via ${connectionName}` : ''}`
+}
+
+/** An assistant's model on the effective default connection: its label with the resolved model, and the connection name. */
+export function useAssistantRunsOn(key: AssistantKey): { label: string; connection?: string; text: string } {
+  const value = useAssistantModel(key)
+  const conn = useAppStore((s) => s.defaultConnection)
+  const tierModels = useAppStore((s) => (conn ? s.connections?.find((c) => c.connection.id === conn)?.connection.tierModels : undefined))
+  const catalog = useAppStore((s) => (conn ? s.models[conn] : undefined))
+  const label = assistantModelLabel(value, conn ? { id: conn, tierModels: tierModels ?? {}, catalog } : undefined)
+  const connection = conn ? CONNECTION_NAMES[conn] : undefined
+  return { label, connection, text: runsOnText(label, connection) }
+}

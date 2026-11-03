@@ -440,3 +440,25 @@ export function teamPanelTab(page, name) {
 export async function openAppSettings(page) {
   await page.getByRole('button', { name: 'App settings', exact: true }).click()
 }
+
+/**
+ * How far a deep link shifted the window (ux-review-config-2 N1): `<html>` / `<body>` scrollTop, the app root's top
+ * edge, and every ancestor of the settings scroller that is scrolled. All zero / empty when only the scroller moved.
+ */
+export async function windowShift(page) {
+  return page.evaluate(() => {
+    const scroller = document.querySelector('.settings-scroll')
+    const shifted = []
+    for (let p = scroller?.parentElement; p; p = p.parentElement) {
+      if (p.scrollTop !== 0) shifted.push(`${p.tagName.toLowerCase()}.${String(p.className).split(' ')[0]}:${p.scrollTop}`)
+    }
+    const root = document.querySelector('#root') ?? document.body
+    return {
+      html: document.documentElement.scrollTop,
+      body: document.body.scrollTop,
+      appTop: Math.round(root.getBoundingClientRect().top),
+      shifted,
+      ok: document.documentElement.scrollTop === 0 && document.body.scrollTop === 0 && Math.round(root.getBoundingClientRect().top) === 0 && shifted.length === 0
+    }
+  })
+}
