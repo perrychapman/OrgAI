@@ -5,7 +5,7 @@ import { describeServer, promptDatum } from '../mcp/assist'
 import { validateSpec } from '../mcp/validate'
 import { setupKindLabel } from '@shared/setup'
 import { isPermissionMode } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { effectiveSubagentLimits, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { addRules, allowRuleRefusal } from '../runtime/permissionRules'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import type { ProjectStore } from '../store/projects'
@@ -215,8 +215,16 @@ export class SetupService {
         if (isPermissionMode(p.permissionMode)) next.permissionMode = p.permissionMode
         if (p.maxBudgetUsd === null) delete next.maxBudgetUsd
         else if (typeof p.maxBudgetUsd === 'number' && p.maxBudgetUsd > 0) next.maxBudgetUsd = p.maxBudgetUsd
-        if (p.maxSubagentDepth) next.maxSubagentDepth = clamp(p.maxSubagentDepth, 1, MAX_SUBAGENT_DEPTH_LIMIT)
-        if (p.maxConcurrentSubagents) next.maxConcurrentSubagents = clamp(p.maxConcurrentSubagents, 1, MAX_CONCURRENT_SUBAGENTS_LIMIT)
+        // A value equal to the automatic one (from the roles at apply time) is not written: the project stays automatic.
+        const auto = effectiveSubagentLimits({ roles: project.roles })
+        if (p.maxSubagentDepth) {
+          const v = clamp(p.maxSubagentDepth, 1, MAX_SUBAGENT_DEPTH_LIMIT)
+          if (v !== auto.depth) next.maxSubagentDepth = v
+        }
+        if (p.maxConcurrentSubagents) {
+          const v = clamp(p.maxConcurrentSubagents, 1, MAX_CONCURRENT_SUBAGENTS_LIMIT)
+          if (v !== auto.concurrency) next.maxConcurrentSubagents = v
+        }
         if (typeof p.isolateWriters === 'boolean') next.isolateWriters = p.isolateWriters
         if (typeof p.reviewMerges === 'boolean') next.reviewMerges = p.reviewMerges
         if (typeof p.autoContinue === 'boolean') next.autoContinue = p.autoContinue
