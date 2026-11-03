@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForFamily, adapterForProject, builtinModels, connectionConfigured, connectionInUse, connectionProviderLabel, creationConnection, effectiveDefaultConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
+import { adapterForFamily, adapterForProject, builtinModels, connectionConfigured, connectionInUse, connectionProviderLabel, connectionUsable, creationConnection, effectiveDefaultConnection, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
 import { CONNECTION_IDS, MODEL_TIERS } from '@shared/types'
 import type {
   ModelPriceInfo,
   ModelPricesQuery,
   AdapterChoice,
   ConnectionEvent,
+  AppSettings,
+  ConnectionDefaultInput,
   ConnectionId,
   ConnectionInfo,
   ConnectionLoginMethod,
@@ -40,6 +42,7 @@ import { mapCodexRateLimits } from './codexUsage'
 import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
+import { defaultRefusal } from './defaultPick'
 
 export interface ConnectionServiceDeps {
   dataDir: string
@@ -52,6 +55,8 @@ export interface ConnectionServiceDeps {
   /** Create the (not yet started) Codex app-server client. Default: a CodexAppServer with OrgAI's CODEX_HOME. */
   codexFactory?: () => CodexAppServer
   now?: () => number
+  /** Info-level log line (default console.info; index.ts passes the main log). */
+  logInfo?: (message: string) => void
   /** Probe the Anthropic connection. Default: anthropicAuth.anthropicStatus (runs `claude auth status`). */
   anthropicProbe?: typeof anthropicStatus
   /**
@@ -112,6 +117,8 @@ export class ConnectionService {
   private codexLease: CodexLease | null = null
   private pendingLogins = new Map<string, PendingLogin>()
   private disposed = false
+  /** The stored default the last automatic rewrite replaced (stale renderer echoes of it are ignored). */
+  private autoReplaced: ConnectionId | undefined
 
   constructor(private deps: ConnectionServiceDeps) {
     this.modelsFile = join(deps.dataDir, 'models.json')
@@ -331,7 +338,61 @@ export class ConnectionService {
   private setStatus(id: ConnectionId, status: ConnectionStatus): ConnectionStatus {
     this.statuses[id] = status
     this.deps.broadcast({ type: 'connection.status', connection: id, status })
+    if (status.state === 'connected' || status.state === 'disconnected' || status.state === 'error') this.rewriteDefault()
     return status
+  }
+
+  /** While the user has not picked a default, keep the stored default equal to the effective one. */
+  private rewriteDefault(): void {
+    const s = this.deps.settings.get()
+    if (s.defaultConnectionChosen === true) return
+    const next = this.effectiveDefault()
+    if (next === s.defaultConnection) return
+    this.autoReplaced = s.defaultConnection
+    this.deps.settings.set({ ...s, defaultConnection: next })
+    const label = (id: ConnectionId) => (id === 'anthropic' ? 'Anthropic' : id === 'openai' ? 'OpenAI' : 'LiteLLM')
+    const why = this.statuses[s.defaultConnection]?.state === 'error' ? 'has an error' : 'is not connected'
+    ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Default connection is now ${label(next)} (automatic: ${label(s.defaultConnection)} ${why})`)
+  }
+
+  /** The value the last automatic rewrite replaced, while the default is still automatic. */
+  autoReplacedDefault(): ConnectionId | undefined {
+    return this.deps.settings.get().defaultConnectionChosen === true ? undefined : this.autoReplaced
+  }
+
+  /** Whether a connection can be the default now (configured and connected). */
+  isUsable(id: ConnectionId): boolean {
+    return connectionUsable(id, this.deps.settings.get().connections, this.statuses[id]?.state)
+  }
+
+  /** The refusal for making an unusable connection the default, or null when it is usable. */
+  defaultRefusalFor(id: ConnectionId): string | null {
+    return this.isUsable(id) ? null : defaultRefusal(id, this.deps.settings.get().connections)
+  }
+
+  /** Settings as consumers should see them: defaultConnection is the effective default. */
+  effectiveSettings(): AppSettings {
+    const s = this.deps.settings.get()
+    const eff = this.effectiveDefault()
+    return eff === s.defaultConnection ? s : { ...s, defaultConnection: eff }
+  }
+
+  /** Pick the default connection (an id) or go back to automatic (null). */
+  async setDefault(input: ConnectionDefaultInput): Promise<ConnectionInfo[]> {
+    const s = this.deps.settings.get()
+    if (input === null) {
+      this.deps.settings.set({ ...s, defaultConnectionChosen: false })
+      this.rewriteDefault()
+    } else {
+      if (!(CONNECTION_IDS as readonly string[]).includes(input)) throw new Error('Unknown connection')
+      if (input !== s.defaultConnection) {
+        const refusal = this.defaultRefusalFor(input)
+        if (refusal) throw new Error(refusal)
+      }
+      this.autoReplaced = undefined
+      this.deps.settings.set({ ...s, defaultConnection: input, defaultConnectionChosen: true })
+    }
+    return this.list()
   }
 
   private safeMessage(e: unknown): string {
@@ -666,7 +727,7 @@ export class ConnectionService {
    * connection and the adapter its models need. Nothing is saved or broadcast.
    */
   prepareNewProject(project: Project): Project {
-    const settings = this.deps.settings.get()
+    const settings = this.effectiveSettings()
     const id = creationConnection(settings)
     if (id === 'anthropic') return project
     const tierModels = settings.connections[id].tierModels
@@ -867,7 +928,7 @@ export class ConnectionService {
    * connection nor any project's, `connectionInUse`; checked before the app-server is spawned) or not signed in.
    */
   async probeCodexUsage(): Promise<UsageStatus | null> {
-    const settings = this.deps.settings.get()
+    const settings = this.effectiveSettings()
     const conn = settings.connections.openai
     if (!conn.enabled || conn.auth.kind !== 'chatgpt') return null
     if (!connectionInUse('openai', settings, this.deps.projects.list())) return null
@@ -885,7 +946,7 @@ export class ConnectionService {
    * with a spend (no DB, refused, timeout, junk). Never throws; the key is never logged.
    */
   async probeLiteLLMUsage(): Promise<UsageStatus | null> {
-    const settings = this.deps.settings.get()
+    const settings = this.effectiveSettings()
     const conn = settings.connections.litellm
     if (!conn.enabled || !conn.baseUrl) return null
     if (!connectionInUse('litellm', settings, this.deps.projects.list())) return null

@@ -38,7 +38,7 @@ import { registerIpc, harnessProjectFor } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { dataDirOverride, installLogging } from './log'
+import { dataDirOverride, installLogging, log } from './log'
 import { buildSettingsInfo, windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
 
@@ -239,6 +239,7 @@ app.whenReady().then(() => {
     projects,
     secrets,
     broadcast: broadcastConnection,
+    logInfo: (m) => log.info(m),
     openExternal: (url) => shell.openExternal(url),
     // Models the Claude login offers (SDK supportedModels); the scripted mock answers its own list. `adapters` is
     // declared below and only read when discovery runs.
@@ -251,7 +252,7 @@ app.whenReady().then(() => {
   const communityPrices = new CommunityPrices({ dataDir, enabled: () => settings.get().communityPrices !== false })
   const mockAdapter = process.env.ORGAI_MOCK === '1'
   /** The virtual project of harness-level runs (library MCP assistant), from the current settings. */
-  const harness = () => harnessProject(settings.get(), dataDir, { mock: mockAdapter })
+  const harness = () => harnessProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
   // Set once RunManager exists (below); only read when a run or a window asks for a project.
   let quickRuns: QuickRunService | undefined
   let skillEvaluationService: SkillEvaluationService | undefined
@@ -259,7 +260,7 @@ app.whenReady().then(() => {
   const projectOrHarness = (projectId: string) =>
     projectId === HARNESS_PROJECT_ID ? harness()
     : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
-    : projectId === SKILLS_PROJECT_ID ? skillsProject(settings.get(), dataDir, { mock: mockAdapter })
+    : projectId === SKILLS_PROJECT_ID ? skillsProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
     : projects.get(projectId)
   const mcp = new McpService({
     projects,
@@ -338,7 +339,7 @@ app.whenReady().then(() => {
       })),
     resolveProject: (projectId) => projectOrHarness(projectId),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
-    buildProject: (summary) => harnessProjectFor(summary, settings.get(), dataDir, mockAdapter),
+    buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
     appSettings: () => settings.get(),
@@ -389,7 +390,7 @@ app.whenReady().then(() => {
   const rm = runManager
   quickRuns = new QuickRunService({
     dataDir,
-    settings: () => settings.get(),
+    settings: () => connections.effectiveSettings(),
     runs: rm,
     store: runStore,
     projects,
