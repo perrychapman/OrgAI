@@ -248,10 +248,19 @@ interface AppState {
   /** Static app facts (version, folders, mock availability). null until loaded. */
   appInfo: AppInfo | null
   loadAppInfo(): Promise<void>
-  /** AppSettings.defaultConnection, mirrored for the Connections pane and the new-project form. null until loaded. */
+  /**
+   * The effective default connection: the connections:list entry with `isDefault` (main decides it from the stored
+   * choice and the live statuses), never the raw AppSettings.defaultConnection. Every consumer (connection cards, the
+   * New project line, the assistants' model lines, usage) reads this one value. null until the list is loaded.
+   * Reloaded on settings:changed, connection.status events and after a connection record changes.
+   */
   defaultConnection: ConnectionId | null
+  /** AppSettings.defaultConnectionChosen: the user picked the default (true) or main picks it (false). null until loaded. */
+  defaultConnectionChosen: boolean | null
+  /** Load the connection list and the chosen flag, and start following settings:changed (idempotent). */
   loadDefaultConnection(): Promise<void>
-  setDefaultConnection(id: ConnectionId): Promise<void>
+  /** connections:setDefault: an id makes it the chosen default, null returns to automatic. Rejects with a readable refusal. */
+  setDefaultConnection(id: ConnectionId | null): Promise<void>
   connections: ConnectionInfo[] | null
   connectionsError: string | null
   /** Model catalogs by connection. */
@@ -657,6 +666,24 @@ function putUsage(st: { usageByConnection: Partial<Record<ConnectionId, UsageSta
 }
 
 let defaultConnectionWatch: (() => void) | null = null
+let connectionsReloadTimer: ReturnType<typeof setTimeout> | null = null
+
+/** The effective default from a connections:list result (exactly one entry has isDefault; null when none does). */
+function effectiveDefaultOf(list: ConnectionInfo[] | null | undefined): ConnectionId | null {
+  return list?.find((c) => c.isDefault)?.connection.id ?? null
+}
+
+/**
+ * Re-read connections:list soon (coalesced): a status change or an edited record can move the effective default,
+ * and only main decides it.
+ */
+function scheduleConnectionsReload(): void {
+  if (connectionsReloadTimer) return
+  connectionsReloadTimer = setTimeout(() => {
+    connectionsReloadTimer = null
+    void useAppStore.getState().loadConnections()
+  }, 150)
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
@@ -723,20 +750,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   proposalOutcomes: {},
 
   defaultConnection: null,
+  defaultConnectionChosen: null,
   async loadDefaultConnection() {
-    try {
-      const s = await window.orgai.settings.get()
-      set({ defaultConnection: s.defaultConnection ?? 'anthropic' })
-      if (!defaultConnectionWatch) defaultConnectionWatch = window.orgai.onSettingsChanged((n) => set({ defaultConnection: n.defaultConnection ?? 'anthropic' }))
-    } catch {
-      // Unknown: callers fall back to Anthropic wording.
+    if (!defaultConnectionWatch) {
+      // Another window, the Connections pane or main's automatic rewrite changed the default: re-read the effective one.
+      defaultConnectionWatch = window.orgai.onSettingsChanged((n) => {
+        set({ defaultConnectionChosen: n.defaultConnectionChosen === true })
+        scheduleConnectionsReload()
+      })
     }
+    await Promise.all([
+      get().loadConnections(),
+      window.orgai.settings
+        .get()
+        .then((s) => set({ defaultConnectionChosen: s.defaultConnectionChosen === true }))
+        .catch(() => undefined)
+    ])
   },
   async setDefaultConnection(id) {
     // connections:setDefault is the only way to change the default (settings:set keeps it); it rejects with a
-    // readable refusal ("OpenAI is not connected. ...") that callers show inline.
+    // readable refusal ("OpenAI is not connected. ...") that callers show inline. null returns to automatic.
     const connections = await window.orgai.connections.setDefault(id)
-    set({ connections, defaultConnection: connections.find((c) => c.isDefault)?.connection.id ?? id })
+    set({ connections, defaultConnection: effectiveDefaultOf(connections), defaultConnectionChosen: id !== null })
   },
 
   async loadAppInfo() {
@@ -751,7 +786,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async loadConnections() {
     try {
       const connections = await window.orgai.connections.list()
-      set({ connections, connectionsError: null })
+      set({ connections, connectionsError: null, defaultConnection: effectiveDefaultOf(connections) })
     } catch (e) {
       set({ connectionsError: (e as Error).message })
     }
@@ -770,8 +805,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => {
       const list = s.connections ?? []
       const exists = list.some((c) => c.connection.id === info.connection.id)
-      return { connections: exists ? list.map((c) => (c.connection.id === info.connection.id ? info : c)) : [...list, info] }
+      // Keep the list's isDefault flags until the reload lands, so two cards never claim the default at once.
+      return { connections: exists ? list.map((c) => (c.connection.id === info.connection.id ? { ...info, isDefault: c.isDefault } : c)) : [...list, info] }
     })
+    // One edited record can carry a stale isDefault next to the others: re-read the whole list.
+    scheduleConnectionsReload()
   },
 
   pushRemapNotice(cause, results, before) {
@@ -1359,6 +1397,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         set((s) => ({
           connections: s.connections?.map((c) => (c.connection.id === e.connection ? { ...c, status: e.status } : c)) ?? s.connections
         }))
+        // A connect or disconnect can move the effective default (main decides it).
+        scheduleConnectionsReload()
         return
       case 'connection.login':
         set({ login: e.login })

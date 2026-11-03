@@ -17,7 +17,7 @@ const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
 const cleanError = (e: unknown): string => (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
 /** "Always allow (project)" rules saved in the project's .claude/settings.local.json. */
-export default function PermissionRulesPanel({ project }: { project: Project }): ReactElement {
+export default function PermissionRulesPanel({ project, onRulesChange }: { project: Project; /** Called with the saved rules whenever the list loads or changes. */ onRulesChange?: (rules: string[]) => void }): ReactElement {
   const [rules, setRules] = useState<string[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -59,6 +59,12 @@ export default function PermissionRulesPanel({ project }: { project: Project }):
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  const notify = useRef(onRulesChange)
+  notify.current = onRulesChange
+  useEffect(() => {
+    if (rules) notify.current?.(rules)
+  }, [rules])
 
   const check = draft.trim() ? checkRuleDraft(draft) : null
   const add = async (): Promise<void> => {

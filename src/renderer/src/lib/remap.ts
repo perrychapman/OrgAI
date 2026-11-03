@@ -1,4 +1,4 @@
-import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
+import type { AdapterChoice, ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
 import { MODEL_TIERS } from '@shared/types'
 import { adapterForFamily, modelFamily, tierForModel } from '@shared/defaults'
 
@@ -73,23 +73,46 @@ export function previewRemap(input: PreviewInput): ProjectChanges {
   return { projectId: project.id, projectName: project.name, changes }
 }
 
-/** Roles of a LiteLLM project whose model family differs from the orchestrator's (they must change). */
-export function familyMismatches(
-  project: Project,
-  catalog: readonly ProviderModel[],
-  tierModels: Partial<Record<ModelTier, ModelRef>>
-): { roleId: string; roleName: string; from: ModelRef; suggestion?: ModelRef }[] {
+/**
+ * Roles of a LiteLLM project whose model family differs from the orchestrator's. They are allowed: the orchestrator's
+ * family picks the adapter and the proxy serves the rest. Used only to word one informational notice.
+ */
+export function otherFamilyRoles(
+  project: Pick<Project, 'roles'>,
+  catalog: readonly ProviderModel[]
+): { roleId: string; roleName: string; model: ModelRef }[] {
   const familyOf = (m: ModelRef): ModelFamily => catalog.find((x) => x.id === m)?.family ?? modelFamily(m)
   const root = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
   if (!root || root.model === 'inherit') return []
   const adapter = adapterForFamily(familyOf(root.model))
   return project.roles
     .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
-    .map((r) => {
-      const tier = roleTier(r)
-      const suggestion = tier ? tierModels[tier] : undefined
-      return { roleId: r.id, roleName: r.name, from: r.model, suggestion }
-    })
+    .map((r) => ({ roleId: r.id, roleName: r.name, model: r.model }))
+}
+
+/** "Claude orchestrator; 2 roles on other model families run through the proxy." Null when no role differs. */
+export function proxyFamilyNotice(family: ModelFamily | undefined, count: number): string | null {
+  if (count <= 0) return null
+  const who = family ? FAMILY_LABEL[family] : 'The'
+  return `${who} orchestrator; ${count} ${count === 1 ? 'role on another model family runs' : 'roles on other model families run'} through the proxy.`
+}
+
+/**
+ * Whether a work run with this adapter choice is refused before it exists. Same rule as `mixedFamilyRefusal` in
+ * src/shared/defaults.ts on dev (5616aaa; this branch predates it, so the renderer mirrors it; switch to the shared
+ * export once merged): null = it may start; 'no-root-family' = LiteLLM, roles on another family and the orchestrator
+ * has no model of its own; 'single-family-connection' = Anthropic or OpenAI with a role of another family.
+ */
+export function startRefusal(choice: Pick<AdapterChoice, 'connection' | 'family' | 'mismatched'>): 'no-root-family' | 'single-family-connection' | null {
+  if (!choice.mismatched.length) return null
+  if (choice.connection !== 'litellm') return 'single-family-connection'
+  return choice.family === undefined ? 'no-root-family' : null
+}
+
+/** Danger-banner copy for a refused start (null when the project can start). */
+export const START_REFUSAL_COPY: Record<'no-root-family' | 'single-family-connection', string> = {
+  'no-root-family': 'This project cannot start: the orchestrator has no model of its own, so the proxy cannot pick an adapter. Give the orchestrator a model in the Team tab.',
+  'single-family-connection': 'This project cannot start: some roles use models this connection does not serve. Give them a model from this connection in the Team tab.'
 }
 
 export interface TierRow {

@@ -3,6 +3,7 @@
 // still be stubs), and takes screenshots at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { DATA_DIR, TMP, check, openAppSettings, openProject, openTeam, projectTab, teamPanelTab, cleanup, createProject, finish, launch, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
@@ -15,7 +16,21 @@ const repo = path.join(base, 'repo')
 makeFixtureRepo('conn', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'conn' })
+const details = (pane) => page.locator(`[data-testid=settings-advanced][data-pane=${pane}]`)
+const advSummary = (pane) => page.locator(`[data-testid=settings-advanced][data-pane=${pane}] > summary`)
+const openAdvanced = async (pane) => {
+  if (!(await details(pane).evaluate((el) => el.open))) await advSummary(pane).click()
+}
+const closeAdvanced = async (pane) => {
+  if (await details(pane).evaluate((el) => el.open)) await advSummary(pane).click()
+}
+
 try {
+  // The built renderer no longer names the removed Defaults pane (spec 8.1).
+  const rendererOut = fileURLToPath(new URL('../out/renderer', import.meta.url))
+  const bundled = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? bundled(path.join(d, e.name)) : /.(js|html|css)$/.test(e.name) ? [path.join(d, e.name)] : []))
+  const withDefaults = fs.existsSync(rendererOut) ? bundled(rendererOut).filter((f) => fs.readFileSync(f, 'utf8').includes('App settings > Defaults')) : []
+  check(fs.existsSync(rendererOut) && withDefaults.length === 0, 'the built renderer has no "App settings > Defaults" text', withDefaults.join(', '))
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME, useMock: false })
   check(!!project, 'project created')
 
@@ -38,24 +53,73 @@ try {
       check(ov.sw <= ov.cw, `no horizontal scroll on connections at ${w}x${h} ${theme}`, JSON.stringify(ov))
       await shot(`connections-${w}x${h}-${theme}`)
 
-      // Defaults pane: the Default connection row exists
-      await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
-      const defConn = page.getByRole('combobox', { name: 'Default connection', exact: true })
-      await defConn.waitFor({ timeout: 10_000 })
-      check((await defConn.count()) === 1, `default connection row on the Defaults pane at ${w}x${h} ${theme}`)
-      for (const name of ['Setup model', 'MCP assistant model']) {
-        check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select on the Defaults pane at ${w}x${h} ${theme}`)
+      // Five panes, no Defaults tab (config-review spec 8.1)
+      const tabNames = await page.getByRole('tab').allTextContents()
+      check(!tabNames.includes('Defaults') && ['General', 'Connections', 'Connectors', 'Skill library', 'About'].every((n) => tabNames.includes(n)), `App settings has no Defaults tab at ${w}x${h} ${theme}`, tabNames.join(', '))
+
+      // Connections: one default badge, "Use for new projects" only on other connected cards, one polite live region
+      check((await page.locator('[data-testid=default-connection-badge]').count()) === 1, `exactly one default-connection badge at ${w}x${h} ${theme}`)
+      const badgeCard = page.locator('[data-testid=connection-card]:has([data-testid=default-connection-badge])')
+      check(/Default for new projects and assistants/.test((await badgeCard.locator('[data-testid=default-connection-badge]').textContent()) ?? ''), 'default badge text reads "Default for new projects and assistants"')
+      check(/^(Chosen|Automatic)$/.test(((await badgeCard.locator('[data-testid=default-connection-mode]').textContent()) ?? '').trim()), 'default badge is followed by Chosen or Automatic')
+      const listed = await page.evaluate(() => window.orgai.connections.list())
+      for (const c of listed) {
+        const card = page.locator(`[data-testid=connection-card][data-provider=${c.connection.id}]`)
+        const makeDefault = card.locator('[data-testid=connection-make-default]')
+        if (c.status.state !== 'connected') {
+          check((await makeDefault.count()) === 0, `${c.connection.id} is not connected, so it has no "Use for new projects" button at ${w}x${h} ${theme}`)
+        } else if (!c.isDefault) {
+          check((await makeDefault.count()) === 1 && ((await makeDefault.getAttribute('aria-label')) ?? '').startsWith('Use for new projects'), `${c.connection.id} connected non-default card offers "Use for new projects" with a label-in-name`)
+        }
       }
-      const note = page.getByText("A tier resolves through each project", { exact: false })
-      check((await note.count()) === 1, `Assistants note present at ${w}x${h} ${theme}`)
+      const liveRegions = await page.locator('#appsettings-section-connections [role=status], #appsettings-section-connections [aria-live=polite]').count()
+      check(liveRegions === 1, `the Connections pane has one polite live region at ${w}x${h} ${theme}`, String(liveRegions))
+      // Costs live in the pane's Advanced
+      await closeAdvanced('app-connections')
+      check(!(await page.locator('[data-testid=model-prices]').isVisible()) && !(await page.locator('#community-prices-row').isVisible()), `Costs and Model prices are hidden while Connections Advanced is closed at ${w}x${h} ${theme}`)
+      await openAdvanced('app-connections')
+      check((await page.locator('[data-testid=model-prices]').isVisible()) && (await page.locator('#community-prices-row').isVisible()), `Costs and Model prices show with Connections Advanced open at ${w}x${h} ${theme}`)
+      check((await page.locator('#appsettings-section-costs .settings-section-lead').textContent())?.trim() === 'Where cost estimates come from.', 'Costs lead reads "Where cost estimates come from."')
+      await shot(`connections-advanced-${w}x${h}-${theme}`)
+      await closeAdvanced('app-connections')
+
+      // General: at rest no model select (spec 8.3); Advanced holds the model rows
+      await page.getByRole('tab', { name: 'General', exact: true }).click()
+      await page.locator('[data-testid=new-projects-section]').waitFor({ timeout: 10_000 })
+      await closeAdvanced('app-general')
+      const restSelects = page.locator('select')
+      const rest = { modelSelects: 0, labels: [] }
+      for (let i = 0; i < (await restSelects.count()); i++) {
+        const sel = restSelects.nth(i)
+        if (!(await sel.isVisible())) continue
+        if (/-model-row-select$/.test((await sel.getAttribute('data-testid')) ?? '')) rest.modelSelects++
+        rest.labels.push(...(await sel.locator('option').allTextContents()).map((t) => t.trim()))
+      }
+      const concrete = rest.labels.filter((t) => !/\s/.test(t) && /[-.\d]/.test(t) && !/\b(top|deep|everyday|fast)\b/i.test(t))
+      check(rest.modelSelects === 0, `App General at rest shows no model select at ${w}x${h} ${theme}`, String(rest.modelSelects))
+      check(concrete.length === 0, `no visible select option at rest is a concrete model id at ${w}x${h} ${theme}`, concrete.join(', '))
+      const modeSel = page.locator('[data-testid=default-mode-select]')
+      check((await modeSel.count()) === 1, 'Permission mode select (default-mode-select) is in New projects')
+      const mb = await modeSel.boundingBox()
+      check(!!mb && mb.width >= 170 && mb.width <= 250, `Permission mode select is about 240 px wide at ${w}x${h} ${theme}`, JSON.stringify(mb))
+      check(/Starting values for new projects\. Existing projects keep their own\./.test((await page.locator('[data-testid=new-projects-section]').textContent()) ?? ''), 'New projects lead reads as specced')
+      await shot(`general-${w}x${h}-${theme}`)
+      await openAdvanced('app-general')
+      for (const name of ['Setup model', 'MCP assistant model', 'Skill assistant model', 'Chat model', 'Orchestrator starting tier', 'Report starting tier']) {
+        check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select in General Advanced at ${w}x${h} ${theme}`)
+      }
+      const note = page.getByText("Tiers resolve through each project's connection.", { exact: true })
+      check((await note.count()) === 1, `Assistant models note present at ${w}x${h} ${theme}`)
       await note.scrollIntoViewIfNeeded()
       const defOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
-      check(defOv.sw <= defOv.cw, `no horizontal scroll on Defaults at ${w}x${h} ${theme}`, JSON.stringify(defOv))
+      check(defOv.sw <= defOv.cw, `no horizontal scroll on General at ${w}x${h} ${theme}`, JSON.stringify(defOv))
       const nb = await note.boundingBox()
-      check(!!nb && nb.x >= 0 && nb.x + nb.width <= w + 0.5, `Assistants note inside the viewport at ${w}x${h} ${theme}`, JSON.stringify(nb))
-      await shot(`defaults-${w}x${h}-${theme}`)
-      const rawTiers = await page.locator('select option').evaluateAll((os) => os.map((o) => (o.textContent ?? '').trim()).filter((t) => /^(deep|everyday|fast|top)$/i.test(t)))
-      check(rawTiers.length === 0, `Defaults selects show tier labels, not raw tier ids at ${w}x${h} ${theme}`, rawTiers.join(', '))
+      check(!!nb && nb.x >= 0 && nb.x + nb.width <= w + 0.5, `Assistant models note inside the viewport at ${w}x${h} ${theme}`, JSON.stringify(nb))
+      await shot(`general-advanced-${w}x${h}-${theme}`)
+      const tierLabels = await page.locator('[data-testid=setup-model-row-select] option').evaluateAll((os) => os.map((o) => (o.textContent ?? '').trim()))
+      check(['Top', 'Deep', 'Everyday', 'Fast'].every((t) => tierLabels.some((l) => l.startsWith(`${t} tier`))) && tierLabels.every((l) => !/^(deep|everyday|fast|top)$/i.test(l)), `model selects list the four tiers with labels, not raw ids at ${w}x${h} ${theme}`, tierLabels.join(' | '))
+      const resolved = tierLabels.filter((l) => /^(Top|Deep|Everyday|Fast) tier \(.+\)$/.test(l))
+      check(resolved.length > 0, `tier options name the model they resolve to on the default connection at ${w}x${h} ${theme}`, tierLabels.join(' | '))
       // The selected tier label must fit its select (no ellipsis on the label itself).
       const clipped = await page.evaluate(() => {
         const c = document.createElement('canvas').getContext('2d')
@@ -64,12 +128,12 @@ try {
           c.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
           const label = (el.selectedOptions[0]?.textContent ?? '').trim()
           const avail = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 20
-          return /tier$/i.test(label) && c.measureText(label).width > avail ? [`${label} ${Math.round(c.measureText(label).width)}>${Math.round(avail)}`] : []
+          return / tier( \(.+\))?$/i.test(label) && c.measureText(label).width > avail ? [`${label} ${Math.round(c.measureText(label).width)}>${Math.round(avail)}`] : []
         })
       })
-      check(clipped.length === 0, `tier labels are not clipped in Defaults selects at ${w}x${h} ${theme}`, clipped.join(', '))
+      check(clipped.length === 0, `tier labels are not clipped in General Advanced selects at ${w}x${h} ${theme}`, clipped.join(', '))
       if (w === 1024 && theme === 'dark') {
-        // Setup model persists across reopening App settings
+        // Setup model persists across reopening App settings, and Advanced is remembered open
         const sm = () => page.getByRole('combobox', { name: 'Setup model', exact: true })
         const smOpts = await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))
         const smBefore = await sm().inputValue()
@@ -80,30 +144,80 @@ try {
           await page.reload()
           await page.waitForSelector('.nav-item', { timeout: 15_000 })
           await openAppSettings(page)
-          await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
+          await page.getByRole('tab', { name: 'General', exact: true }).click()
+          await page.locator('[data-testid=new-projects-section]').waitFor({ timeout: 10_000 })
+          check(await page.locator('[data-testid=settings-advanced][data-pane=app-general]').evaluate((el) => el.open), 'General Advanced is still open after reopening App settings')
           check((await sm().inputValue()) === smWant, 'Setup model persists after reopening App settings', smWant)
-          // The default is 'deep', which is not a listed model: the UI shows it only while it is the saved value, so it
-          // cannot be selected again. Restore only a listed value (temp data dir; the leftover is harmless).
+          // Restore only a listed value (temp data dir; the leftover is harmless).
           if ((await sm().locator('option').evaluateAll((os) => os.map((o) => o.value))).includes(smBefore)) await sm().selectOption(smBefore)
           await sleep(600)
           await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
         }
-        // A connection that is not set up is a disabled option; persistence is checked on a usable one.
-        const opts = await defConn.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, d: o.disabled, t: o.textContent })))
-        const pick = opts.find((o) => o.v !== 'anthropic' && !o.d)
-        check(opts.filter((o) => o.v !== 'anthropic' && o.d).every((o) => /Not connected/.test(o.t ?? '')), 'unusable default options are disabled and say Not connected', JSON.stringify(opts))
-        const want = pick ? pick.v : 'anthropic'
-        await defConn.selectOption(want)
-        await sleep(600)
-        await page.reload()
-        await page.waitForSelector('.nav-item', { timeout: 15_000 })
-        await openAppSettings(page)
-        await page.getByRole('tab', { name: 'Defaults', exact: true }).click()
-        const after = await page.getByRole('combobox', { name: 'Default connection', exact: true }).inputValue()
-        check(after === want, 'default connection persists after reload', after)
-        await page.getByRole('combobox', { name: 'Default connection', exact: true }).selectOption('anthropic')
-        await sleep(600)
-        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+
+        // Spec 8.6: the Advanced summary's name, keys, focus ring and per-pane persistence
+        for (const pane of ['app-general', 'app-connections']) {
+          if (pane === 'app-connections') {
+            await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+            await page.waitForSelector('#connections-title', { timeout: 10_000 })
+          }
+          const sum = advSummary(pane)
+          check(((await sum.innerText()) ?? '').trim() === 'Advanced settings' && (await sum.getAttribute('aria-label')) === null, `${pane} Advanced summary is named exactly "Advanced settings"`)
+          await closeAdvanced(pane)
+          await sum.focus()
+          await page.keyboard.press('Enter')
+          check(await details(pane).evaluate((el) => el.open), `${pane} Advanced opens with Enter`)
+          await page.keyboard.press('Space')
+          check(!(await details(pane).evaluate((el) => el.open)), `${pane} Advanced closes with Space`)
+          await page.keyboard.press('Space')
+          check(await details(pane).evaluate((el) => el.open), `${pane} Advanced opens with Space`)
+          await page.keyboard.press('Shift+Tab')
+          await page.keyboard.press('Tab')
+          const ring = await sum.evaluate((el) => {
+            const cs = getComputedStyle(el)
+            return { fv: el.matches(':focus-visible'), style: cs.outlineStyle, width: parseFloat(cs.outlineWidth) }
+          })
+          check(ring.fv && ring.style !== 'none' && ring.width > 0, `${pane} Advanced summary shows a focus ring`, JSON.stringify(ring))
+          await page.reload()
+          await page.waitForSelector('.nav-item', { timeout: 15_000 })
+          await openAppSettings(page)
+          await page.getByRole('tab', { name: pane === 'app-general' ? 'General' : 'Connections', exact: true }).click()
+          await page.locator(`[data-testid=settings-advanced][data-pane=${pane}]`).waitFor({ timeout: 10_000 })
+          check(await details(pane).evaluate((el) => el.open), `${pane} Advanced stays open after a reload`)
+          await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+        }
+        await page.getByRole('tab', { name: 'General', exact: true }).click()
+
+        // Spec 8.7: deep links land on the right pane with Advanced open and focus on the heading
+        const deepLink = async (section) => {
+          await page.evaluate((s) => {
+            sessionStorage.setItem('orgai.pendingSettingsSection', s)
+            window.dispatchEvent(new Event('orgai:settings-section'))
+          }, section)
+          await sleep(1200)
+        }
+        await closeAdvanced('app-general')
+        await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+        await closeAdvanced('app-connections')
+        await page.getByRole('tab', { name: 'About', exact: true }).click()
+        await deepLink('appsettings-section-model-prices')
+        check((await page.getByRole('tab', { name: 'Connections', exact: true }).getAttribute('aria-selected')) === 'true', 'model-price deep link lands on Connections')
+        check(await details('app-connections').evaluate((el) => el.open), 'model-price deep link opens Connections Advanced')
+        const priceFocus = await page.evaluate(() => {
+          const a = document.activeElement
+          return { inSection: !!a?.closest('#appsettings-section-model-prices'), text: (a?.textContent ?? '').trim().slice(0, 40) }
+        })
+        check(priceFocus.inSection, 'model-price deep link focuses the Model prices section', JSON.stringify(priceFocus))
+        await deepLink('appsettings-section-costs')
+        check(await page.evaluate(() => document.activeElement?.closest('#appsettings-section-costs') !== null), 'costs deep link focuses the Costs section title')
+        await page.getByRole('tab', { name: 'About', exact: true }).click()
+        await deepLink('appsettings-section-assistant-models')
+        check((await page.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected')) === 'true' && (await details('app-general').evaluate((el) => el.open)), 'assistant-models deep link lands on General with Advanced open')
+        check(await page.evaluate(() => document.activeElement?.matches('#appsettings-section-assistant-models h4') === true), 'assistant-models deep link focuses the group heading')
+        await page.getByRole('tab', { name: 'About', exact: true }).click()
+        await deepLink('appsettings-section-defaults')
+        check((await page.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected')) === 'true', 'the removed Defaults id opens General')
+        // Section ids that used to sit under Defaults are gone from the DOM
+        check((await page.locator('#appsettings-section-defaults, #appsettings-section-usage').count()) === 0, 'no Defaults or usage sections in the DOM')
       }
 
       // About block
@@ -129,6 +243,7 @@ try {
       await sleep(600)
       check((await page.locator('[data-testid=catalog-connections]').count()) === 1, `Connections section present in the Catalog at ${w}x${h} ${theme}`)
       check((await page.locator('[data-testid=catalog-plugins]').count()) === 1, `Plugins section present in the Catalog at ${w}x${h} ${theme}`)
+      check((await page.locator('[data-testid=catalog-plugins] [data-testid=plugins-section]').count()) === 1, `plugins-section sits inside the Catalog plugins group at ${w}x${h} ${theme}`)
       check((await page.locator('[data-testid=catalog-skills]').count()) === 1, `Skills section present in the Catalog at ${w}x${h} ${theme}`)
       check((await page.locator('[data-testid=mcp-add-service]').count()) === 1 && (await page.locator('[data-testid=mcp-add-other]').count()) === 0, 'exactly one Add a connection button, no second add menu')
       const toolsOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
@@ -138,7 +253,7 @@ try {
       await page.locator('[data-testid=catalog-skills]').scrollIntoViewIfNeeded()
       await shot(`catalog-skills-${w}x${h}-${theme}`)
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'Connection', exact: true }).click()
+      await page.getByRole('tab', { name: 'General', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
       const toggle = page.locator('[data-testid=mock-adapter-toggle]')
@@ -151,14 +266,15 @@ try {
         await sleep(800)
         check((await toggle.getAttribute('aria-checked')) === 'true', 'mock toggle is checked after click')
         check((await savedProvider(page, NAME)) === 'mock', 'saved provider.id is mock when toggled on')
-        check(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled), 'connection fieldset disabled while mock is on')
+        if (await page.locator('[data-testid=project-connection]').count()) check(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled), 'connection fieldset disabled while mock is on')
+        else check((await page.locator('[data-testid=project-connection-line]').count()) === 1, 'one connection connected: the project shows its connection line')
         await shot(`mock-on-${w}x${h}-${theme}`)
         await toggle.click()
         await sleep(800)
         check((await toggle.getAttribute('aria-checked')) === 'false', 'mock toggle unchecked after second click')
         const after = await savedProvider(page, NAME)
         check(after === before && (after === 'claude' || after === 'codex'), 'provider.id restored to the connection adapter', String(after))
-        check(!(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled)), 'connection fieldset enabled again')
+        if (await page.locator('[data-testid=project-connection]').count()) check(!(await page.locator('[data-testid=project-connection]').evaluate((el) => el.disabled)), 'connection fieldset enabled again')
       }
       await shot(`project-connection-${w}x${h}-${theme}`)
 
@@ -169,7 +285,14 @@ try {
       await page.waitForSelector('[data-testid=role-model-fold]', { timeout: 5000 })
       await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-fold]'); if (d) d.open = true })
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
-      check((await page.locator('[data-testid=role-tier-badge]').count()) === 1, `role tier badge present at ${w}x${h} ${theme}`)
+      const roleLabel = ((await page.locator('[data-testid=role-model]').evaluate((el) => (el.matches('select') ? el : el.querySelector('select'))?.selectedOptions[0]?.textContent ?? '')) || '').trim()
+      // Spec 5: tier options read "Everyday (sonnet)" (tier word first); Inherit / the connection default otherwise.
+      check(/^(top|deep|everyday|fast)\b/i.test(roleLabel) || /inherit|connection default/i.test(roleLabel), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
+      // Spec 8.3: at rest (role Advanced closed) no option of the Model select is a bare concrete model id.
+      const bareIds = await page.locator('[data-testid=role-model]').evaluate((el) =>
+        [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast)\b|inherit|connection default|custom/i.test(t))
+      )
+      check(bareIds.length === 0, `role Model select lists only tiers and Inherit at ${w}x${h} ${theme}`, bareIds.join(', '))
       await shot(`role-model-${w}x${h}-${theme}`)
     }
   }

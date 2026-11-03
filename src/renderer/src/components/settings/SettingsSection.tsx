@@ -52,11 +52,11 @@ export function SettingsSection({
 }
 
 /** Lower-tier heading (caption, sentence case) above a card or a run of rows inside a section. */
-export function SettingsGroup({ title, children }: { title: string; children: ReactNode }): ReactElement {
+export function SettingsGroup({ title, id, testId, children }: { title: string; /** Stable DOM id for deep links (the heading is focused on landing). */ id?: string; testId?: string; children: ReactNode }): ReactElement {
   const titleId = useId()
   return (
-    <div className="settings-group" role="group" aria-labelledby={titleId}>
-      <h4 id={titleId} className="settings-group-title">
+    <div id={id} className="settings-group" role="group" aria-labelledby={titleId} data-testid={testId}>
+      <h4 id={titleId} className="settings-group-title" tabIndex={id ? -1 : undefined}>
         {title}
       </h4>
       {children}

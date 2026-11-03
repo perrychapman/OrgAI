@@ -268,3 +268,69 @@ New checks (added to `connections.mjs` for app panes and `permissions.mjs` for p
 - Team assistant cost estimate ("about $0.02 per review") and derived budgets in the UI.
 - Accent swatches as one roving radiogroup; App General tab stops are not budgeted.
 - Role panel slug, colour and system prompt moves (R2, R5, R14); auth fields moving into the Connect flow (A9-A14).
+
+## Implementation notes (UI Lead, 2026-11-03)
+
+Landed on the renderer branch after c30368e (foundation 21f94cb; panes f51943e, 301b2c5, 0ca8213; fix-ups after).
+Where it differs from the sections above, and why:
+
+- **Effective default (review M-A).** The store's `defaultConnection` is the connections:list entry with `isDefault`.
+  It is re-read (coalesced, 150 ms) on settings:changed, on `connection.status` and after any single-record update; a
+  single-record merge keeps the list's `isDefault` flags until the reload lands. `defaultConnectionChosen` comes from
+  settings:get / settings:changed. `setDefaultConnection(id | null)` is the only writer. No consumer reads the stored
+  field.
+- **A way back to automatic (review M-B).** The default card's badge reads "Default for new projects and assistants"
+  plus a quiet "Chosen" or "Automatic". A chosen default shows the secondary "Back to automatic"
+  (`connection-default-auto`, `setDefault(null)`). The make-default button's accessible name is "Use for new projects:
+  <Name>"; the spec's "Use <Name> for new projects and assistants" broke label-in-name. A refusal shows as plain text in
+  the card (`aria-describedby`) and is announced through the pane's one polite live region (`connections-live`,
+  `components/connections/announce.ts`). The card's own live regions are gone.
+- **LiteLLM mixed models (owner decision).** The "cannot start" banner and the "Roles that must change" list are
+  replaced by an info notice (`proxy-family-notice`: "Claude orchestrator; 2 roles on other model families run through
+  the proxy."). A danger banner (`project-start-refusal`) remains only when `lib/remap.ts` `startRefusal` refuses. That
+  function mirrors shared `mixedFamilyRefusal`, which landed on dev at 5616aaa after this branch was cut; switch to the
+  shared import after integration. The role panel's Exact model lists the whole proxy catalog in per-family optgroups.
+  The project line reads "Default connection for roles: Anthropic (Claude Code login)." instead of "Runs on ...".
+- **New project form.** It says "Runs on <Name> (<auth>), which is not connected." when the effective default is not
+  connected but another connection is. "Nothing is connected yet." shows only when nothing is connected. The typed
+  values survive the Change / Connect detour through a session-only draft in ProjectsView.
+- **Permissions.** The deep link focuses the pane h2, because the section h3 repeats the pane title and is hidden. The
+  summary disclosure body is always mounted with `hidden`, so the rule count and deep links work while it is closed.
+  The toggle's accessible name is "Show rules and folders you allowed" or "Hide rules and folders you allowed".
+- **Raw controls.** Four controls are native elements with the shared classes, because the `components/ui` wrappers
+  lack the prop they need (testId on `Select`; `aria-describedby`, `aria-expanded` and `aria-controls` on `Button`):
+  `default-mode-select`, `team-assistant-select`, `connection-make-default` and `permissions-summary-toggle`.
+- **ModelSelect** uses the sans face by default. `mono` is opt-in, and only TierEditor uses it.
+- **Role panel.** The Model select shows "Use the connection default" for the root and "Inherit from parent" for
+  other roles. An exact model shows as "Custom (set under Advanced)". The Advanced disclosure is `role-model-advanced`.
+
+Selectors added:
+- `settings-advanced[data-pane]`, `new-projects-section`, `default-mode-select`, and the `*-model-row-select` rows,
+  which moved into General Advanced.
+- `default-connection-badge`, `connection-make-default`, `connection-default-auto`, `connections-live`,
+  `community-prices-row`.
+- `project-connection-line`, `proxy-family-notice`, `project-start-refusal`, `project-path`.
+- `permission-mode-tradeoff`, `permission-mode-default`, `permissions-summary`, `permissions-summary-toggle`,
+  `team-assistant-select`, `plan-guard-line`.
+- `new-project-connection-change`, `chat-model-change`.
+- `role-model-advanced`, `role-exact-model`, `role-effort`, `role-effort-unsupported`, `plugin-add`.
+
+Selectors removed: `role-tier-badge`, `catalog-plugin-settings`, `tools-team-pointer`, `open-team`,
+`skill-settings-section`.
+
+Still open (Reviewer Lows not fixed in this pass):
+- L1: the `components/ui` wrappers still lack the props listed under Raw controls.
+- L3: "Chosen" can show on a fallback card when the chosen connection is no longer configured.
+- L4: "Back to automatic" has no `aria-describedby`, and a refusal is not cleared when another card succeeds.
+- L5: opening the pane makes duplicate `connections:list` calls.
+- L6: the announcer can overwrite messages that arrive close together.
+- L7: pre-existing `role=alert` errors in App settings and Model prices.
+- L8: heading tiers. Card titles are h3, Advanced has h4 groups directly under the h2, and Limits has a "Limits" group
+  title.
+- L10: `flushSync` inside an effect in PermissionsSection.
+- L11: render-only 'anthropic' fallbacks while the list loads.
+- L13: `aria-controls` points at unmounted bodies in TierEditor and ModelList.
+- L14: the automatic announcement does not name the new default.
+
+Not exercised by e2e, because the mock connects only Anthropic: make-default, Back to automatic, a setDefault refusal,
+the multi-connection project cards, the LiteLLM notices and the unsupported-effort note.

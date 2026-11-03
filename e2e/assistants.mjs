@@ -1,5 +1,5 @@
 // Token-free (mock adapter). The Assistants group: sidebar rows, virtual-project topbar and tabs, the three start pages,
-// Ctrl+Shift+N, the Projects view entry points, App settings > Defaults rows, and (when the main-process handlers for
+// Ctrl+Shift+N, the Projects view entry points, App settings > General > Advanced rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
 import path from 'node:path'
 import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
@@ -149,12 +149,16 @@ try {
             check(await team.getByRole('radio', { name: 'One assistant' }).isChecked().catch(() => false), `"One assistant" is selected in Team ${tag}`)
             await team.locator('summary').click().catch(() => {})
           }
-          check((await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')).includes('Change in App settings > Defaults'), `chat-summary points to App settings > Defaults ${tag}`)
+          const summaryText = await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')
+          check(summaryText.includes(' via '), `chat-summary names the connection ("via") ${tag}`, summaryText)
+          check(!summaryText.includes('Defaults'), `chat-summary has no Defaults pointer ${tag}`, summaryText)
+          check(await visible('[data-testid=chat-model-change]'), `chat-model-change link is visible ${tag}`)
         } else if (id === 'harness') {
           check((await page.locator('textarea[data-testid=assistant-instruction]').count()) === 1, `MCP start page has the instruction textarea ${tag}`)
           const st = await switchState('[data-testid=mcp-allow-build]')
           check(!!st && !st.checked, `mcp-allow-build switch exists and is off ${tag}`, JSON.stringify(st))
           check(await visible('[data-testid=assistant-start]'), `MCP start page has a Start button ${tag}`)
+          check(((await page.locator('[data-testid=assistant-model-line]').innerText().catch(() => '')).includes(' via ')), `MCP assistant model line names the connection ${tag}`)
           const buildLabel = await page.locator('[data-testid=mcp-allow-build]').getAttribute('aria-label')
           check(/data folder/.test(buildLabel ?? ''), `mcp-allow-build names where it builds ${tag}`, buildLabel ?? '')
         } else {
@@ -163,13 +167,24 @@ try {
         }
       }
 
-      // App settings > Defaults rows
+      // chat-model-change lands on App settings > General with Advanced open and the "Assistant models" heading focused
+      await openAssistant('quick')
+      await page.locator('[data-testid=chat-model-change]').click().catch(() => {})
+      await sleep(700)
+      check(await visible('[data-testid=settings-advanced][data-pane=app-general] [data-testid=skill-assist-model-row-select]'), `chat-model-change opens General with Advanced open (${tag})`)
+      const focusedHeading = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+      check(/Assistant models/i.test(focusedHeading), `focus is on the Assistant models group heading ${tag}`, focusedHeading)
+
+      // App settings > General > Advanced: the assistant model rows
       await openAppSettings(page)
-      await page.getByRole('tab', { name: 'Defaults', exact: true }).click().catch(() => {})
-      await sleep(500)
-      check(await visible('[data-testid=skill-assist-model-row-select]'), `Defaults has the Skill assistant model row ${tag}`)
-      check(await visible('[data-testid=quick-run-model-row-select]'), `Defaults has the Chat model row ${tag}`)
-      await shot(`defaults-${w}x${h}-${theme}`)
+      await page.getByRole('tab', { name: 'General', exact: true }).click().catch(() => {})
+      await sleep(400)
+      const adv = page.locator('[data-testid=settings-advanced][data-pane=app-general]')
+      if ((await adv.count()) && !(await adv.evaluate((d) => d.open).catch(() => false))) await adv.locator('summary').click().catch(() => {})
+      await sleep(300)
+      check(await visible('[data-testid=skill-assist-model-row-select]'), `General > Advanced has the Skill assistant model row ${tag}`)
+      check(await visible('[data-testid=quick-run-model-row-select]'), `General > Advanced has the Chat model row ${tag}`)
+      await shot(`general-advanced-${w}x${h}-${theme}`)
     }
   }
 

@@ -1,36 +1,32 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo } from 'react'
-import type { ModelTier, Project, ProviderModel, Role } from '@shared/types'
+import type { Effort, ModelTier, Project, Role } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
+import { adapterForProject, projectConnection } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
-import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
-import { formatContext, roleTier } from '../lib/remap'
-
-const TIER_LABEL = Object.fromEntries(MODEL_TIER_OPTIONS.map((o) => [o.value, o.label])) as Record<ModelTier, string>
-
-const CONN_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+import { CONNECTION_NAME } from '../lib/settingsCopy'
+import { roleTier } from '../lib/remap'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
+import { TIER_LABEL, applyExactModel, applyModelChoice, effortView, exactModelGroups, roleModelChoice, tierOptionLabel } from '../lib/roleModels'
 
 /** Resolve the tier a role effectively has: its own, or through ancestors when it inherits. */
-function resolveTier(project: Project, role: Role): { tier?: ModelTier; chain: string[] } {
-  const chain: string[] = []
+function resolveTier(project: Project, role: Role): { tier?: ModelTier; model?: string } {
   let cur: Role | undefined = role
   const seen = new Set<string>()
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id)
-    if (cur.model !== 'inherit') {
-      const tier = roleTier(cur)
-      chain.push(cur.model)
-      return { tier, chain }
-    }
-    chain.push(cur.name)
+    if (cur.model !== 'inherit') return { tier: roleTier(cur), model: cur.model }
     cur = project.roles.find((r) => r.id === cur!.reportsTo)
   }
-  return { chain }
+  return {}
 }
 
+/**
+ * The role's model controls: one Model select (Inherit or a tier, labelled "Everyday (sonnet)") and, behind
+ * "Advanced", the exact model and the effort. Nothing at rest shows a concrete id without a tier word.
+ */
 export default function RoleModelPicker({ project, role }: { project: Project; role: Role }): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
   const setView = useAppStore((s) => s.setView)
@@ -50,96 +46,110 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
     if (!catalog) void loadModels(connection)
   }, [catalog, connection, loadModels])
 
-  const tierModels = info?.connection.tierModels ?? {}
+  const tierModels = useMemo(() => info?.connection.tierModels ?? {}, [info])
   const connected = info?.status.state === 'connected'
+  const adapter = adapterForProject(project, catalog ?? []).adapter
 
-  const { groups, known } = useMemo(() => {
-    const models: ProviderModel[] = catalog ?? []
-    const byId = new Map(models.map((m) => [m.id, m]))
-    const used = new Set<string>()
-    const tierGroups: ModelGroup[] = []
-    for (const o of MODEL_TIER_OPTIONS) {
-      const id = tierModels[o.value]
-      if (!id || used.has(id)) continue
-      used.add(id)
-      tierGroups.push({ label: o.label, options: [{ value: id, label: `${id} · ${o.label}` }] })
-    }
-    const others = models.filter((m) => !used.has(m.id))
-    const groups: ModelGroup[] = [
-      { label: 'Inherit', options: [{ value: 'inherit', label: isRoot ? 'Use the connection default' : 'Inherit from parent' }] },
-      ...tierGroups,
-      ...(others.length ? [{ label: 'Other models', options: others.map((m) => ({ value: m.id, label: m.recommended ? `${m.id} (recommended)` : m.id })) }] : [])
-    ]
-    return { groups, known: byId }
-  }, [catalog, tierModels, isRoot])
+  const choice = roleModelChoice(role, tierModels)
+  const groups: ModelGroup[] = useMemo(() => {
+    const tierOptions = MODEL_TIER_OPTIONS.filter((o) => tierModels[o.value]).map((o) => ({ value: o.value as string, label: tierOptionLabel(o.value, tierModels) }))
+    const rows = [{ value: 'inherit', label: isRoot ? 'Use the connection default' : 'Inherit from parent' }, ...tierOptions]
+    if (choice === 'custom') rows.push({ value: 'custom', label: 'Custom (set under Advanced)' })
+    return [{ options: rows }]
+  }, [tierModels, isRoot, choice])
 
-  const stale = role.model !== 'inherit' && !!catalog && !known.has(role.model)
-  const finalGroups: ModelGroup[] = stale ? [{ options: [{ value: role.model, label: `${role.model} (unavailable)`, disabled: true }] }, ...groups] : groups
-
-  const { tier, chain } = resolveTier(project, role)
-  const tierText = tier ? `Tier: ${TIER_LABEL[tier]}` : 'Custom model'
-  const selected = known.get(role.model)
-  const description = selected
-    ? [selected.hint, formatContext(selected.contextWindow) ? `context ${formatContext(selected.contextWindow)}` : ''].filter(Boolean).join(' · ')
-    : role.model === 'inherit'
-      ? `Resolves to ${chain[chain.length - 1] ?? 'the connection default'}${tier ? ` (${TIER_LABEL[tier]})` : ''}`
+  const resolved = resolveTier(project, role)
+  const description =
+    role.model === 'inherit'
+      ? `Uses ${resolved.tier ? TIER_LABEL[resolved.tier] : 'the connection default'}${resolved.tier && tierModels[resolved.tier] ? ` (${tierModels[resolved.tier]})` : ''} from ${isRoot ? 'the connection' : 'its parent'}.`
       : undefined
 
+  const write = (w: { model: string; tier: ModelTier | undefined }): void => {
+    updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, model: w.model, tier: w.tier } : r)))
+  }
   const pick = (value: string): void => {
-    const picked = MODEL_TIER_OPTIONS.find((o) => tierModels[o.value] === value)
-    updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, model: value, tier: value === 'inherit' ? undefined : picked?.value } : r)))
+    const w = applyModelChoice(value, tierModels)
+    if (w) write(w)
   }
 
   if (!connected && connectionsLoaded) {
     return (
-      <div className="field role-model" data-testid="role-model">
-        <div className="tier-badge-row">
-          <label>Model</label>
-          <Badge testId="role-tier-badge" title={chain.join(' -> ')}>
-            {tierText}
-          </Badge>
-        </div>
-        <select className="select" disabled aria-label="Model" value={role.model} data-testid="role-model-select">
-          <option value={role.model}>{role.model}</option>
+      <div className="field role-model-field">
+        <label htmlFor="role-model-disabled">Model</label>
+        <select id="role-model-disabled" className="select" disabled value={role.model} data-testid="role-model">
+          <option value={role.model}>{role.model === 'inherit' ? 'Inherit' : 'Custom'}</option>
         </select>
-        <span className="hint">Connect {CONN_NAME[connection]} to choose a model.</span>
-        <Button size="sm" onClick={() => setView('appSettings')}>
+        <span className="hint">Connect {CONNECTION_NAME[connection]} to choose a model.</span>
+        <Button
+          size="sm"
+          onClick={() => {
+            requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+            setView('appSettings')
+          }}
+        >
           Open connections
         </Button>
       </div>
     )
   }
 
+  const effort = effortView(role.effort, adapter)
+  const stale = role.model !== 'inherit' && !!catalog && !catalog.some((m) => m.id === role.model)
+
   return (
-    <div className="field role-model" data-testid="role-model">
-      <div className="tier-badge-row">
-        <span className="hint">Model</span>
-        <Badge testId="role-tier-badge" title={chain.join(' -> ')}>
-          {tierText}
-        </Badge>
-      </div>
+    <div className="role-model-field stack-2">
       {error ? (
-        <>
+        <div className="field">
           <span className="hint invalid-text">Could not load models</span>
           <Button size="sm" variant="ghost" onClick={() => void loadModels(connection)}>
             Retry
           </Button>
-        </>
+        </div>
       ) : !catalog ? (
         <div className="skeleton" aria-busy="true" />
       ) : (
-        <ModelSelect
-          label="Model"
-          hideLabel
-          value={role.model}
-          groups={finalGroups}
-          invalid={stale}
-          message={stale ? `Not available on ${CONN_NAME[connection]}. Choose another model or Inherit.` : undefined}
-          description={description}
-          onChange={pick}
-          testId="role-model-select"
-        />
+        <ModelSelect label="Model" value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
       )}
+
+      <details className="setting-row-more role-model-advanced" data-testid="role-model-advanced">
+        <summary>Advanced</summary>
+        <div className="setting-row-more-body stack-2">
+          {catalog && (
+            <ModelSelect
+              label="Exact model"
+              value={role.model === 'inherit' ? '' : role.model}
+              groups={exactModelGroups(catalog, connection === 'litellm', role.model)}
+              invalid={stale}
+              message={stale ? `Not available on ${CONNECTION_NAME[connection]}. Choose another model or use Model above.` : undefined}
+              description={connection === 'litellm' ? 'Any model the proxy serves.' : 'Pins this role to one model.'}
+              onChange={(v) => write(applyExactModel(v, tierModels))}
+              testId="role-exact-model"
+            />
+          )}
+          <div className="field">
+            <label htmlFor={`role-effort-${role.id}`}>Effort</label>
+            <select
+              id={`role-effort-${role.id}`}
+              className="select"
+              value={role.effort ?? ''}
+              aria-describedby={effort.note ? `role-effort-note-${role.id}` : undefined}
+              data-testid="role-effort"
+              onChange={(e) => updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, effort: (e.target.value || undefined) as Effort | undefined } : r)))}
+            >
+              {effort.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {effort.note && (
+              <span className="hint" id={`role-effort-note-${role.id}`} data-testid="role-effort-unsupported">
+                {effort.note}
+              </span>
+            )}
+          </div>
+        </div>
+      </details>
     </div>
   )
 }

@@ -123,7 +123,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               Setup is complete and the folder is still empty. The org chart can build the initial structure from the approved architecture
               document.{' '}
               {project.permissionMode === 'auto'
-                ? 'It runs unattended: Claude approves each call and asks only when unsure.'
+                ? "It runs unattended: the model's safety check approves each call and asks only when unsure."
                 : project.permissionMode === 'acceptEdits'
                   ? 'Edits are auto-accepted; shell commands still ask.'
                   : 'Approvals follow the project permission mode.'}

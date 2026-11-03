@@ -8,6 +8,7 @@ import { Textarea } from '../ui/Textarea'
 import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 
+/** General pane (config-review spec 4.1): name, working directory (picked, never typed) and the project brief. */
 export function GeneralSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const uid = useId()
   return (
@@ -22,17 +23,19 @@ export function GeneralSection({ project, patch }: { project: Project; patch: (p
           title="Working directory"
           width="full"
           control={
-            <>
-              <Input id={`${uid}-path`} aria-label="Working directory" mono value={project.path} onChange={(v) => patch({ path: v })} />
+            <div className="project-path-row">
+              <code className="project-path" data-testid="project-path" title={project.path}>
+                {project.path}
+              </code>
               <Button
                 onClick={async () => {
                   const dir = await window.orgai.projects.pickDirectory()
                   if (dir) patch({ path: dir })
                 }}
               >
-                Browse
+                Change folder
               </Button>
-            </>
+            </div>
           }
         />
         <SettingRow

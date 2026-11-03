@@ -79,14 +79,14 @@ export default function McpAssistDialog({
           type="button"
           className="link-btn"
           onClick={() => {
-            requestAppSettingsSection(APP_SETTINGS_SECTIONS.defaults)
+            requestAppSettingsSection(APP_SETTINGS_SECTIONS.assistantModels)
             onClose()
             useAppStore.getState().setView('appSettings')
             // Already on App settings (the library pane): tell the mounted page to switch panes.
             window.dispatchEvent(new Event('orgai:settings-section'))
           }}
         >
-          Change in App settings &gt; Defaults
+          Change in App settings
         </button>
       </p>
     </Dialog>

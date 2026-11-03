@@ -175,3 +175,8 @@
   display: flex;
   justify-content: flex-end;
 }
+
+.chat-model-change {
+  align-self: flex-start;
+  font-size: var(--text-caption);
+}

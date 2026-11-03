@@ -520,3 +520,13 @@
   background: var(--surface-3);
   color: var(--text-primary);
 }
+
+.pconn-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}

@@ -328,6 +328,61 @@
   color: var(--text-secondary);
 }
 
+/* A group heading a deep link lands on (SettingsGroup with an id) takes focus like the pane heading. */
+.settings-group-title[tabindex] {
+  border-radius: var(--radius-xs);
+}
+.settings-group-title[tabindex]:focus {
+  outline: none;
+}
+.settings-group-title[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---------- Pane Advanced disclosure (SettingsAdvanced; config-review spec 2) ---------- */
+/* Last in the pane, after the normal section gap, with a hairline above. Styled like the row "Learn more". */
+.settings-advanced {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+.settings-advanced > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+  border-radius: var(--radius-xs);
+}
+.settings-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-advanced > summary:hover {
+  color: var(--accent-text);
+}
+.settings-advanced > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.settings-advanced-chevron {
+  flex: none;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.settings-advanced[open] .settings-advanced-chevron {
+  transform: rotate(90deg);
+}
+.settings-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin-top: var(--space-4);
+  min-width: 0;
+}
+
 /* ---------- Legacy block helpers still used by sections not yet on SettingsCard ---------- */
 .settings-grid {
   display: grid;
@@ -457,4 +512,34 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/* Connections: the default-connection row under a card's header (badge, how it was picked, one action). */
+.conn-card .conn-default {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.conn-card .conn-default-mode {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.conn-card .conn-default-error {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.conn-card .tier-head {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.conn-card .tier-head {
+  justify-content: flex-start;
+}
+.conn-card .tier-head > .btn {
+  margin-left: auto;
 }
