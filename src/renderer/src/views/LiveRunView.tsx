@@ -17,7 +17,7 @@ import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
 import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
-import { foldFinished, groupParentOf } from '../lib/foldFinished'
+import { foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay } from '../lib/foldFinished'
 import { mergeChainFeed } from '../lib/transcriptRows'
 import { runName } from '../lib/runLabels'
 import ChatStartPage from '../components/assistants/ChatStartPage'
@@ -54,15 +54,13 @@ import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
 import { formatUntil, treeLayout } from '../lib/layout'
-import { normalizeParents } from '../lib/agentTree'
+import { agentLabel, normalizeParents } from '../lib/agentTree'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 const NODE_W = 240
 const NODE_H = 112
 const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'waiting'])
 /** A finished report keeps its own node this long before folding into its parent's "done" group. */
-const COLLAPSE_GRACE_MS = 6000
-const SETTLED_WORKTREE = new Set(['merged', 'empty', 'removed', 'held', 'conflict'])
 const COLLAPSE_KEY = 'orgai.collapseFinished'
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
@@ -108,11 +106,9 @@ const PATTERN_VARIANT = { dots: BackgroundVariant.Dots, grid: BackgroundVariant.
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
 
-/** True once a report has reported back and nothing is still happening to its branch. */
-function isSettled(a: AgentInstance, now: number): boolean {
-  if (a.state !== 'done' && a.state !== 'error') return false
-  if (a.worktree && !SETTLED_WORKTREE.has(a.worktree.status)) return false
-  return now - (a.endedAt ?? now) >= COLLAPSE_GRACE_MS
+/** The fold's name for an agent (handle first, as its node shows it), or undefined when it is not known. */
+function lookupLabel(a: AgentInstance | undefined): string | undefined {
+  return a ? agentLabel(a) : undefined
 }
 
 function readCollapsePref(): boolean {
@@ -237,7 +233,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean | number>>({})
   // The frame's one polite line: new decisions and "Showing N agents under X" after an expand.
   const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
   const [now, setNow] = useState(() => Date.now())
@@ -327,14 +323,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     [project.roles, neutralRoleColor]
   )
 
-  // Finished reports fold into one "done" node per parent after a short grace period. A ticker keeps
-  // the grace period honest while anything recently finished is still shown.
+  // Finished reports fold after a short grace period (lib/foldFinished.ts). One timeout waits for the next agent to
+  // come out of its grace period. It is keyed on that moment only, never on the agents array, so a run streaming
+  // events faster than the timer still folds its reports while it is Running (ux-review-fold.md H1).
+  const settleDue = collapseFinished ? nextSettleAt(agents, now) : undefined
   useEffect(() => {
-    const pending = agents.some((a) => (a.state === 'done' || a.state === 'error') && !isSettled(a, Date.now()))
-    if (!collapseFinished || !pending) return undefined
-    const t = setInterval(() => setNow(Date.now()), 1500)
-    return () => clearInterval(t)
-  }, [agents, collapseFinished])
+    if (settleDue === undefined) return undefined
+    // Never below the moment waited for: a timer that fires early or a clock set back would otherwise leave `now`
+    // short of it, give the same moment again and never re-arm (review M-A).
+    const t = setTimeout(() => setNow(Math.max(Date.now(), settleDue)), settleTimerDelay(settleDue, Date.now()))
+    return () => clearTimeout(t)
+  }, [settleDue])
 
   // Message edges fade after MESSAGE_EDGE_MS; tick while the newest one is still showing.
   const messages = run.messages
@@ -354,7 +353,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // under the agent still shown above it. Earlier sessions are one dashed "Earlier: N agents" group each, under the root.
   // `expandedGroups` is keyed by the group's key: the visible ancestor's id, or an earlier-session key.
   const { visibleAgents, groups } = useMemo(
-    () => foldFinished({ agents, isSettled: (a) => isSettled(a, now), expanded: expandedGroups, earlier: chain.earlier, collapse: collapseFinished }),
+    () => foldFinished({ agents, isSettled: (a) => isSettledAt(a, now), expanded: expandedGroups, earlier: chain.earlier, collapse: collapseFinished }),
     [agents, chain.earlier, collapseFinished, expandedGroups, now]
   )
 
@@ -374,7 +373,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   /** The agent a group node hangs under: the visible ancestor it is keyed by, or the root for an earlier session. */
   const groupParent = useCallback((key: string): string | null => groupParentOf(key, chain.rootId, isEarlierKey), [chain.rootId])
   const groupParentName = useCallback(
-    (key: string): string => (isEarlierKey(key) ? 'an earlier session' : (agentLookup.get(key)?.name ?? 'its parent')),
+    (key: string): string => (isEarlierKey(key) ? 'an earlier session' : (lookupLabel(agentLookup.get(key)) ?? 'its parent')),
     [agentLookup]
   )
 
@@ -384,7 +383,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     (key: string) => {
       const members = groups.get(key) ?? []
       const shownNow = isEarlierKey(key) ? members.length : members.filter((m) => m.parentId === key).length
-      setExpandedGroups((g) => ({ ...g, [key]: true }))
+      // A report group remembers when it was opened: reports that finish later fold again (ux-review-fold.md M1).
+      setExpandedGroups((g) => ({ ...g, [key]: isEarlierKey(key) ? true : Date.now() }))
       const parent = groupParent(key)
       if (parent && useAppStore.getState().selectedAgentId === groupId(key)) selectAgent(parent)
       setArrival((a) => ({ text: `Showing ${shownNow} ${shownNow === 1 ? 'agent' : 'agents'} under ${groupParentName(key)}`, n: (a?.n ?? 0) + 1 }))
@@ -550,7 +550,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       parentName: groupParentName(parentId),
       agents: members,
       // Members deeper than a direct report say which agent they ran under (earlier sessions: never).
-      underOf: (a) => (isEarlierKey(parentId) || !a.parentId || a.parentId === parentId ? undefined : (agentLookup.get(a.parentId)?.name ?? 'an earlier agent')),
+      underOf: (a) => (isEarlierKey(parentId) || !a.parentId || a.parentId === parentId ? undefined : (lookupLabel(agentLookup.get(a.parentId)) ?? 'an earlier agent')),
       onPick: (id) => selectAgent(id),
       onExpand: () => expandGroup(parentId)
     }

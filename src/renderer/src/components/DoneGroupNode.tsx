@@ -7,6 +7,7 @@ import type { AgentInstance } from '@shared/types'
 import { IconButton } from './ui/IconButton'
 import { Cost } from './ui/Cost'
 import { agentCostInput, sumCosts } from '../lib/cost'
+import { agentLabel } from '../lib/agentTree'
 
 /**
  * One compact node standing in for every finished agent folded under a visible parent (its whole settled subtree,
@@ -33,7 +34,7 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
   const conflicts = agents.filter((a) => a.worktree?.status === 'conflict' || a.worktree?.status === 'held').length
   const names = agents
     .slice(0, 4)
-    .map((a) => a.name)
+    .map(agentLabel)
     .join(', ')
 
   return (
