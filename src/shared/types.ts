@@ -164,7 +164,8 @@ export interface ConnectionInfo {
  * connections:setDefault input. A ConnectionId makes it the default and marks it chosen
  * (AppSettings.defaultConnectionChosen true); refused with a readable error naming the connection when it is not
  * usable (defaults.ts `connectionUsable`) unless it already is the stored default. null returns to automatic
- * (defaultConnectionChosen false; the stored value is rewritten to the effective one at once).
+ * (defaultConnectionChosen false; the stored value is rewritten to the effective one at once). Both clear
+ * AppSettings.defaultConnectionReplaced. The only way the renderer changes the default (settings:set keeps it).
  */
 export type ConnectionDefaultInput = ConnectionId | null
 
@@ -1576,15 +1577,24 @@ export interface AppSettings {
   /**
    * Connection new projects, Chat and the MCP and Skill assistants use. Default 'anthropic'. Consumers read the
    * effective value (ConnectionService `effectiveDefault()`, defaults.ts `effectiveDefaultConnection`), never this
-   * field alone. While defaultConnectionChosen is not true, the main process rewrites it to the effective connection
-   * whenever a connection connects or disconnects, and broadcasts settings:changed.
+   * field alone. While defaultConnectionChosen is false, the main process rewrites it to the effective connection
+   * (only after a definite 'disconnected' of the stored one, or when the replaced one connects again) and broadcasts
+   * settings:changed. Main-owned: settings:set always keeps the stored value; change it with connections:setDefault.
    */
   defaultConnection: ConnectionId
   /**
-   * The user picked defaultConnection explicitly (connections:setDefault with an id, or a settings:set that changed
-   * it). Missing / false = automatic. Normalized by store/settings.ts; connections:setDefault(null) clears it.
+   * The user picked defaultConnection explicitly (connections:setDefault with an id). false = automatic (written
+   * explicitly by connections:setDefault(null) and every automatic rewrite). Main-owned, settings:set keeps the stored
+   * value. Normalized by store/settings.ts: a file saved before the field existed loads as
+   * `defaultConnection !== 'anthropic'` (a non-default value there was the user's pick).
    */
   defaultConnectionChosen?: boolean
+  /**
+   * The connection the first automatic rewrite replaced, while the default is automatic. When it reports 'connected'
+   * again the default moves back to it and the field is cleared. Main-owned (settings:set keeps the stored value);
+   * cleared by connections:setDefault.
+   */
+  defaultConnectionReplaced?: ConnectionId
   /**
    * OS attention notifications on or off. The single source of truth: the main process reads it every time it
    * decides to notify. Default true.

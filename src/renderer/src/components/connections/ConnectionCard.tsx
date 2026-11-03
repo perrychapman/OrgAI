@@ -68,7 +68,9 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
       setAnnounce(`${meta.name} is now the default for new projects`)
       requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h3')?.focus())
     } catch (e) {
+      // The refusal ("<Name> is not connected. ...") shows in the card's error banner, which needs the card open.
       setError(errText(e))
+      setOpen(true)
     }
   }
 

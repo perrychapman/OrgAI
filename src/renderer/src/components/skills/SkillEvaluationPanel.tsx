@@ -95,7 +95,11 @@ export interface SuggestionApplied {
   roleCount: number
 }
 
-/** Evaluation settings (off by default) and the last report with its findings and suggestions. All skill text is shown as plain text. */
+/**
+ * The last evaluation report with its findings and suggestions, and the Evaluate button. The model step (suggestions)
+ * follows the Team assistant's setting unless the project turned it on or off (skillEvaluationOf). All skill text is
+ * shown as plain text.
+ */
 export default function SkillEvaluationPanel({
   project,
   skillsApi,
@@ -117,6 +121,7 @@ export default function SkillEvaluationPanel({
   actions?: ReactNode
 }): ReactElement {
   const { report, evaluating, error, finished, reload } = evaluation
+  const evalSettings = skillEvaluationOf(project)
   const [open, setOpen] = useState(false)
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [announcement, setAnnouncement] = useState('')
@@ -302,6 +307,11 @@ export default function SkillEvaluationPanel({
         </div>
       </details>
       {actions && <div className="skill-eval-actions">{actions}</div>}
+      {actions && evalSettings.enabled && (
+        <p className="muted" data-testid="skill-eval-cost-hint">
+          Evaluate may use up to {formatTokens(evalSettings.tokenBudget)} tokens to suggest skills.
+        </p>
+      )}
     </div>
   )
 }

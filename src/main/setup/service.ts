@@ -215,15 +215,18 @@ export class SetupService {
         if (isPermissionMode(p.permissionMode)) next.permissionMode = p.permissionMode
         if (p.maxBudgetUsd === null) delete next.maxBudgetUsd
         else if (typeof p.maxBudgetUsd === 'number' && p.maxBudgetUsd > 0) next.maxBudgetUsd = p.maxBudgetUsd
-        // A value equal to the automatic one (from the roles at apply time) is not written: the project stays automatic.
+        // A value equal to the automatic one (from the roles at apply time) deletes any explicit stored value, so the
+        // approved card and the stored limit agree and the project is automatic again. Non-finite values are ignored.
         const auto = effectiveSubagentLimits({ roles: project.roles })
-        if (p.maxSubagentDepth) {
+        if (typeof p.maxSubagentDepth === 'number' && Number.isFinite(p.maxSubagentDepth) && p.maxSubagentDepth > 0) {
           const v = clamp(p.maxSubagentDepth, 1, MAX_SUBAGENT_DEPTH_LIMIT)
           if (v !== auto.depth) next.maxSubagentDepth = v
+          else delete next.maxSubagentDepth
         }
-        if (p.maxConcurrentSubagents) {
+        if (typeof p.maxConcurrentSubagents === 'number' && Number.isFinite(p.maxConcurrentSubagents) && p.maxConcurrentSubagents > 0) {
           const v = clamp(p.maxConcurrentSubagents, 1, MAX_CONCURRENT_SUBAGENTS_LIMIT)
           if (v !== auto.concurrency) next.maxConcurrentSubagents = v
+          else delete next.maxConcurrentSubagents
         }
         if (typeof p.isolateWriters === 'boolean') next.isolateWriters = p.isolateWriters
         if (typeof p.reviewMerges === 'boolean') next.reviewMerges = p.reviewMerges

@@ -733,9 +733,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   async setDefaultConnection(id) {
-    const { dataDir: _d, appVersion: _v, ...cur } = await window.orgai.settings.get()
-    const saved = await window.orgai.settings.set({ ...cur, defaultConnection: id })
-    set({ defaultConnection: saved.defaultConnection ?? id })
+    // connections:setDefault is the only way to change the default (settings:set keeps it); it rejects with a
+    // readable refusal ("OpenAI is not connected. ...") that callers show inline.
+    const connections = await window.orgai.connections.setDefault(id)
+    set({ connections, defaultConnection: connections.find((c) => c.isDefault)?.connection.id ?? id })
   },
 
   async loadAppInfo() {

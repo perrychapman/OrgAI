@@ -5,7 +5,7 @@ import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import type { ConnectionId } from '@shared/types'
 import { CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
+import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT, connectionUsable } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
 import { Badge } from '../components/ui/Badge'
@@ -26,7 +26,7 @@ import { SettingsGroup, SettingsSection } from '../components/settings/SettingsS
 import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/settingsCopy'
 import { modelSettingDescription, modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
-import { connectionUsable } from '../lib/projectsForm'
+import { cleanIpcError } from '../lib/ipcError'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
@@ -93,6 +93,8 @@ function stripInfo(info: AppSettingsInfo): AppSettings {
 export default function AppSettingsView(): ReactElement {
   const [info, setInfo] = useState<AppSettingsInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** connections:setDefault refusal for the Default connection row. */
+  const [defaultError, setDefaultError] = useState<string | null>(null)
   const [hexDraft, setHexDraft] = useState<string | null>(null)
   const [customRequested, setCustomRequested] = useState(false)
   const focusHex = useRef(false)
@@ -493,7 +495,8 @@ export default function AppSettingsView(): ReactElement {
                       describedBy={settingDescId('default-connection-row')}
                       value={info.defaultConnection ?? 'anthropic'}
                       options={CONNECTION_IDS.map((id) => {
-                        const usable = id === 'anthropic' || connectionUsable(connections?.find((c) => c.connection.id === id))
+                        const live = connections?.find((c) => c.connection.id === id)
+                        const usable = !!live && connectionUsable(id, info.connections, live.status.state)
                         return {
                           value: id,
                           label: `${CONNECTION_NAME[id]}${usable ? '' : ' (Not connected)'}`,
@@ -501,11 +504,23 @@ export default function AppSettingsView(): ReactElement {
                         }
                       })}
                       onChange={(v) => {
-                        const defaultConnection = v as ConnectionId
-                        patch({ defaultConnection }, true)
-                        useAppStore.setState({ defaultConnection })
+                        // connections:setDefault picks it (settings:set never changes the default); a refusal shows below.
+                        setDefaultError(null)
+                        useAppStore
+                          .getState()
+                          .setDefaultConnection(v as ConnectionId)
+                          .then(() => window.orgai.settings.get())
+                          .then((s) => setInfo((cur) => (cur ? { ...cur, defaultConnection: s.defaultConnection, defaultConnectionChosen: s.defaultConnectionChosen } : s)))
+                          .catch((e: unknown) => setDefaultError(cleanIpcError(e)))
                       }}
                     />
+                  }
+                  hint={
+                    defaultError ? (
+                      <span className="invalid-text" role="alert" data-testid="default-connection-error">
+                        {defaultError}
+                      </span>
+                    ) : undefined
                   }
                 />
               </SettingsCard>

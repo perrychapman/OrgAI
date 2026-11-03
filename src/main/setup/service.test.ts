@@ -115,6 +115,28 @@ describe('applyProposal (settings)', () => {
     expect(diff.maxConcurrentSubagents).toBe(auto.concurrency + 1)
   })
 
+  it('a proposed value equal to the automatic one deletes an explicit stored value (M1)', () => {
+    const p = store.create({ name: 'X', path: repo, brief: '' })
+    const auto = effectiveSubagentLimits({ roles: p.roles })
+    service.applyProposal(p.id, settings(p.id, { maxSubagentDepth: auto.depth + 1, maxConcurrentSubagents: auto.concurrency + 1 }))
+    const back = service.applyProposal(p.id, settings(p.id, { maxSubagentDepth: auto.depth, maxConcurrentSubagents: auto.concurrency }))
+    expect(back.maxSubagentDepth).toBeUndefined()
+    expect(back.maxConcurrentSubagents).toBeUndefined()
+    expect(store.get(p.id)?.maxSubagentDepth).toBeUndefined()
+    expect(store.get(p.id)?.maxConcurrentSubagents).toBeUndefined()
+  })
+
+  it('ignores non-finite limits and never stores NaN (M1)', () => {
+    const p = store.create({ name: 'X', path: repo, brief: '' })
+    const auto = effectiveSubagentLimits({ roles: p.roles })
+    service.applyProposal(p.id, settings(p.id, { maxSubagentDepth: auto.depth + 1, maxConcurrentSubagents: auto.concurrency + 1 }))
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '4' as never]) {
+      const next = service.applyProposal(p.id, settings(p.id, { maxSubagentDepth: bad, maxConcurrentSubagents: bad }))
+      expect(next.maxSubagentDepth).toBe(auto.depth + 1)
+      expect(next.maxConcurrentSubagents).toBe(auto.concurrency + 1)
+    }
+  })
+
   it('applies the unattended mode and run limits, clamped to the new maxima', () => {
     const p = store.create({ name: 'X', path: repo, brief: '' })
     const next = service.applyProposal(p.id, settings(p.id, { permissionMode: 'auto', maxConcurrentSubagents: 99, maxSubagentDepth: 9 }))
