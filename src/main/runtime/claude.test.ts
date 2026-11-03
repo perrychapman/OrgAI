@@ -684,6 +684,33 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     expect((await decision(q2, 'mcp__github__list', { id: 'a2', type: 'engineer' }))?.permissionDecision).toBe('deny')
   }, 10_000)
 
+  it('on LiteLLM passes each report role its own model id across families, unaliased (owner decision 2026-11-03)', async () => {
+    const models: Record<string, string> = { lead: 'claude-sonnet-4-5', engineer: 'gpt-5', reviewer: 'gemini-2.5-pro' }
+    const roles = orgChart().map((r) => ({ ...r, model: models[r.slug]! }))
+    const connection = {
+      connection: 'litellm' as const,
+      adapter: 'claude' as const,
+      env: { ANTHROPIC_BASE_URL: 'http://proxy', ANTHROPIC_AUTH_TOKEN: 'k', ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-5' },
+      tierModels: { deep: 'claude-opus-4-1', everyday: 'claude-sonnet-4-5', fast: 'claude-haiku-4-5' }
+    }
+    start([], { connection, roles }, { roles, provider: { id: 'claude', label: 'LiteLLM', auth: { kind: 'subscription' }, connection: 'litellm' } })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q = sdk.queries[0]!
+    expect(q.options.model).toBe('claude-sonnet-4-5')
+    expect(q.options.agents.engineer.model).toBe('gpt-5')
+    expect(q.options.agents.reviewer.model).toBe('gemini-2.5-pro')
+    // The tier mapping for tier-valued roles still reaches the CLI through the connection env.
+    expect(q.options.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('claude-sonnet-4-5')
+    expect(q.options.env.ANTHROPIC_BASE_URL).toBe('http://proxy')
+    // The spawn hook neither rewrites nor drops a cross-family model.
+    const spawn = async (input: Record<string, unknown>) =>
+      (await preToolUse(q)({ ...call('Agent'), tool_input: input }, 'x', {})).hookSpecificOutput as { updatedInput?: Record<string, unknown> } | undefined
+    const explicit = await spawn({ subagent_type: 'engineer', prompt: 'x', model: 'gpt-5' })
+    expect(explicit?.updatedInput?.model).toBe('gpt-5')
+    const implicit = await spawn({ subagent_type: 'reviewer', prompt: 'x' })
+    expect(implicit?.updatedInput && 'model' in implicit.updatedInput).toBe(false)
+  })
+
   it('attaches with setMcpServers, reports after-idle, and resumes with widened definitions once the turn ends', async () => {
     const servers: McpServerSpec[] = []
     const { session } = start(servers)
