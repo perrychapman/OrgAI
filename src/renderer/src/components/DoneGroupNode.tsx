@@ -9,8 +9,9 @@ import { Cost } from './ui/Cost'
 import { agentCostInput, sumCosts } from '../lib/cost'
 
 /**
- * One compact node standing in for every finished report under a parent, so the canvas
- * stays readable once an orchestrator has cycled through many delegations.
+ * One compact node standing in for every finished agent folded under a visible parent (its whole settled subtree,
+ * direct reports first; lib/foldFinished.ts), so the canvas stays readable once an orchestrator has cycled through
+ * many delegations. Counts and cost cover the subtree.
  */
 export type DoneGroupFlowNode = Node<
   { parentId: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean },
@@ -36,7 +37,10 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
     .join(', ')
 
   return (
-    <div className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`} data-earlier={earlier ? 'true' : undefined} style={{ ['--role' as string]: color }} title={names + (agents.length > 4 ? ', …' : '')}>
+    <div
+      data-testid="done-group"
+      data-count={agents.length}
+      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`} data-earlier={earlier ? 'true' : undefined} style={{ ['--role' as string]: color }} title={names + (agents.length > 4 ? ', …' : '')}>
       <Handle type="target" position={Position.Top} />
       <Handle id={MSG_OUT} type="source" position={Position.Right} className="msg-handle" isConnectable={false} />
       <Handle id={MSG_IN} type="target" position={Position.Left} className="msg-handle" isConnectable={false} />

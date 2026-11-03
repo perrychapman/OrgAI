@@ -493,6 +493,11 @@
   background: var(--success);
   display: inline-block;
 }
+/* Finished list (side panel): the agent a folded member ran under, when it is not a direct report. */
+.finished-under {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
 .done-failed {
   color: var(--danger-text);
 }

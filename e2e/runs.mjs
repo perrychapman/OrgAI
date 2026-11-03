@@ -705,6 +705,83 @@ try {
   check((await sw2.getAttribute('aria-checked')) === 'false', 'switch is still off after reload')
   await shot('settings-messaging')
 
+  // Hide finished agents folds a settled subtree into ONE group under the nearest agent still shown ([mock:deep-tree]:
+  // root -> mock-lead -> two reports, all done). Expanding it shows mock-lead with its own "2 done" group under it.
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Deep tree fold [mock:deep-tree]')
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  // The reports finish, then the grace period (6 s) passes and the subtree folds.
+  await page.locator('[data-testid=done-group][data-count="3"]').waitFor({ timeout: 40_000 }).catch(() => {})
+  await endSession(page)
+  const nodeBox = (sel) => page.locator(sel).first().boundingBox()
+  const foldShape = async () => ({
+    agents: await page.locator('.react-flow__node .agent-node').count(),
+    groups: await page.locator('[data-testid=done-group]').count(),
+    counts: await page.locator('[data-testid=done-group]').evaluateAll((els) => els.map((e) => e.getAttribute('data-count'))),
+    text: ((await page.locator('[data-testid=done-group]').first().innerText().catch(() => '')) || '').replace(/\s+/g, ' '),
+    edges: await page.locator('.react-flow__edge').count()
+  })
+  await page.locator('[data-testid=done-group]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await sleep(800)
+  const f1 = await foldShape()
+  check(f1.agents === 1 && f1.groups === 1 && f1.counts[0] === '3' && /3 done/.test(f1.text), 'a finished subtree folds into one "3 done" group under the root', JSON.stringify(f1))
+  check(f1.edges >= 1, 'the folded group has an edge to the root', String(f1.edges))
+  const toggleLabel = (await page.locator('.run-fold .fold-label').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  check(/\(3\)/.test(toggleLabel), 'the Hide finished count matches the group count', toggleLabel)
+  const rootBox = await nodeBox('.react-flow__node-agent')
+  const groupBox = await nodeBox('.react-flow__node-done-group')
+  check(
+    !!rootBox && !!groupBox && groupBox.y >= rootBox.y + rootBox.height - 1 && groupBox.x < rootBox.x + rootBox.width && groupBox.x + groupBox.width > rootBox.x,
+    'the group sits below the root and overlaps it horizontally',
+    JSON.stringify({ rootBox, groupBox })
+  )
+  const groupFont = await page.locator('[data-testid=done-group] .done-count').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize)).catch(() => 0)
+  check(groupFont >= 12, 'the group label uses the type scale (12 px or more before zoom)', String(groupFont))
+  await shot('fold-collapsed')
+  // Expand: mock-lead shows, its two reports fold into a "2 done" group below it with an edge.
+  await page.locator('[data-testid=done-group]').first().getByRole('button', { name: 'Show these reports on the chart' }).click()
+  await page.locator('.react-flow__node[data-id="mock-lead"]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await sleep(800)
+  const f2 = await foldShape()
+  const leadBox = await nodeBox('.react-flow__node[data-id="mock-lead"]')
+  const leadGroupBox = await nodeBox('.react-flow__node[data-id="group:mock-lead"]')
+  check(f2.agents === 2 && f2.groups === 1 && f2.counts[0] === '2' && /2 done/.test(f2.text), 'expanding shows mock-lead with one "2 done" group', JSON.stringify(f2))
+  check(!!leadBox && !!leadGroupBox && leadGroupBox.y >= leadBox.y + leadBox.height - 1, 'the lead\'s group sits below the lead', JSON.stringify({ leadBox, leadGroupBox }))
+  check((await page.locator('[data-testid="rf__edge-e-mock-lead-group:mock-lead"]').count()) === 1, 'the lead\'s group has an edge from the lead')
+  await shot('fold-expanded')
+  // Fold back: Hide finished off shows all 4 agents; on again folds everything into the one root group.
+  const foldSwitch = page.getByRole('switch', { name: 'Hide finished agents' })
+  await foldSwitch.click()
+  await sleep(800)
+  const f3 = await foldShape()
+  check(f3.agents === 4 && f3.groups === 0, 'Hide finished off shows every agent of the deep tree', JSON.stringify(f3))
+  await foldSwitch.click()
+  await sleep(800)
+  const f4 = await foldShape()
+  check(f4.agents === 1 && f4.groups === 1 && f4.counts[0] === '3', 'Hide finished on again folds the subtree back into one group', JSON.stringify(f4))
+  // The folded chart at both sizes and themes: the group stays inside the stage and readable after the fit.
+  const themeBefore = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await resizeTo(w, h, w < 1180 ? 'rail' : 'full')
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await sleep(900)
+      const g = await page.evaluate(() => {
+        const r = (sel) => document.querySelector(sel)?.getBoundingClientRect() ?? null
+        const label = document.querySelector('[data-testid=done-group] .done-count')
+        return { stage: r('.frame-stage'), group: r('[data-testid=done-group]'), labelPx: label ? label.getBoundingClientRect().height : 0 }
+      })
+      const inside = !!g.stage && !!g.group && g.group.top >= g.stage.top - 1 && g.group.bottom <= g.stage.bottom + 1 && g.group.left >= g.stage.left - 1 && g.group.right <= g.stage.right + 1
+      check(inside && g.labelPx >= 12, `the folded group is inside the stage and readable at ${w}x${h} ${theme}`, JSON.stringify(g))
+      await shot(`fold-${w}x${h}-${theme}`)
+    }
+  }
+  await page.evaluate((t) => (t ? document.documentElement.setAttribute('data-theme', t) : document.documentElement.removeAttribute('data-theme')), themeBefore)
+  await resizeTo(1424, 881, 'full')
+  await endSession(page)
+
   // Closing OrgAI while a run is live: after relaunch the run reads Ended when OrgAI closed and Send continues it in the same tab.
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')

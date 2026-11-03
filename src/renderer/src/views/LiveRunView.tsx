@@ -17,6 +17,7 @@ import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
 import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
+import { foldFinished, groupParentOf } from '../lib/foldFinished'
 import { mergeChainFeed } from '../lib/transcriptRows'
 import { runName } from '../lib/runLabels'
 import ChatStartPage from '../components/assistants/ChatStartPage'
@@ -53,7 +54,7 @@ import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
 import { formatUntil, treeLayout } from '../lib/layout'
-import { ancestorsOf, hasLiveDescendant, normalizeParents } from '../lib/agentTree'
+import { normalizeParents } from '../lib/agentTree'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 const NODE_W = 240
@@ -244,15 +245,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [approvedKinds, setApprovedKinds] = useState<ProposalKind[]>([])
   const bodyRef = useRef<HTMLDivElement>(null)
 
+  // Turning "Hide finished agents" back on folds every expanded group again (the way back after expanding).
   const toggleCollapse = (): void => {
-    setCollapseFinished((v) => {
-      try {
-        localStorage.setItem(COLLAPSE_KEY, v ? 'off' : 'on')
-      } catch {
-        /* storage unavailable */
-      }
-      return !v
-    })
+    const next = !collapseFinished
+    try {
+      localStorage.setItem(COLLAPSE_KEY, next ? 'on' : 'off')
+    } catch {
+      /* storage unavailable */
+    }
+    setCollapseFinished(next)
+    if (next) setExpandedGroups({})
   }
   const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
 
@@ -347,34 +349,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return () => clearInterval(t)
   }, [messages])
 
-  // Earlier sessions: one dashed "Earlier: N agents" group each while finished agents are hidden, else their agents
-  // are on the chart (settled, under the root). Expanding a group is the same toggle as a folded report group.
-  const { visibleAgents, groups } = useMemo(() => {
-    const groups = new Map<string, AgentInstance[]>()
-    const earlierShown: AgentInstance[] = []
-    for (const g of chain.earlier) {
-      if (collapseFinished && !expandedGroups[g.key]) groups.set(g.key, g.agents)
-      else earlierShown.push(...g.agents)
-    }
-    if (!collapseFinished) return { visibleAgents: [...agents, ...earlierShown], groups }
-    const byId = new Map(agents.map((a) => [a.id, a]))
-    const settledNow = (c: AgentInstance): boolean => isSettled(c, now)
-    const visibleAgents: AgentInstance[] = []
-    for (const a of agents) {
-      const parentVisible = !a.parentId || byId.has(a.parentId)
-      const foldable =
-        a.parentId !== null && parentVisible && isSettled(a, now) && !hasLiveDescendant(agents, a.id, settledNow) && !expandedGroups[a.parentId as string]
-      if (foldable) groups.set(a.parentId as string, [...(groups.get(a.parentId as string) ?? []), a])
-      else visibleAgents.push(a)
-    }
-    // Hide the subtree under a folded report too; the list in the side panel still reaches them.
-    const folded = new Set([...groups.values()].flat().map((a) => a.id))
-    const hiddenUnder = (a: AgentInstance): boolean => ancestorsOf(byId, a.id).some((p) => folded.has(p))
-    return { visibleAgents: [...visibleAgents.filter((a) => !hiddenUnder(a)), ...earlierShown], groups }
-  }, [agents, chain.earlier, collapseFinished, expandedGroups, now])
+  // Finished agents fold into one group per visible ancestor (lib/foldFinished.ts): a settled subtree is one group
+  // under the agent still shown above it. Earlier sessions are one dashed "Earlier: N agents" group each, under the root.
+  // `expandedGroups` is keyed by the group's key: the visible ancestor's id, or an earlier-session key.
+  const { visibleAgents, groups } = useMemo(
+    () => foldFinished({ agents, isSettled: (a) => isSettled(a, now), expanded: expandedGroups, earlier: chain.earlier, collapse: collapseFinished }),
+    [agents, chain.earlier, collapseFinished, expandedGroups, now]
+  )
 
   /** The agent a group node hangs under: the folded report's parent, or the root for an earlier session. */
-  const groupParent = useCallback((key: string): string | null => (isEarlierKey(key) ? (chain.rootId ?? null) : key), [chain.rootId])
+  const groupParent = useCallback((key: string): string | null => groupParentOf(key, chain.rootId, isEarlierKey), [chain.rootId])
 
   // Recompute the tree layout only when the set of shown nodes or their parent links change.
   const topologyKey = [
@@ -525,10 +509,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return {
       parentName: isEarlierKey(parentId) ? 'an earlier session' : (run.agents[parentId]?.name ?? 'its parent'),
       agents: members,
+      // Members deeper than a direct report say which agent they ran under (earlier sessions: never).
+      underOf: (a) => (isEarlierKey(parentId) || !a.parentId || a.parentId === parentId ? undefined : (agentsById[a.parentId]?.name ?? a.parentId)),
       onPick: (id) => selectAgent(id),
       onExpand: () => toggleGroup(parentId)
     }
-  }, [run, selectedAgentId, groups, selectAgent, toggleGroup])
+  }, [run, selectedAgentId, groups, selectAgent, toggleGroup, agentsById])
   const finishedCount = [...groups.values()].reduce((n, g) => n + g.length, 0)
 
   // What Send does (model 3): reply while the session is open; on the chain's newest ended run it continues the
@@ -861,7 +847,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
             <div className="frame-toolbar-end">
               {!conversation && (agents.length > 1 || chain.earlier.length > 0) && (
-                <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
+                <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
                   <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" title="Hide finished agents" />
                   <span className="fold-label" aria-hidden="true">
                     <span className="fold-long">Hide finished agents</span>
