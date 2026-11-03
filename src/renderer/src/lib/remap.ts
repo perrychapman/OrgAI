@@ -73,23 +73,28 @@ export function previewRemap(input: PreviewInput): ProjectChanges {
   return { projectId: project.id, projectName: project.name, changes }
 }
 
-/** Roles of a LiteLLM project whose model family differs from the orchestrator's (they must change). */
-export function familyMismatches(
-  project: Project,
-  catalog: readonly ProviderModel[],
-  tierModels: Partial<Record<ModelTier, ModelRef>>
-): { roleId: string; roleName: string; from: ModelRef; suggestion?: ModelRef }[] {
+/**
+ * Roles of a LiteLLM project whose model family differs from the orchestrator's. They are allowed: the orchestrator's
+ * family picks the adapter and the proxy serves the rest. Used only to word one informational notice.
+ */
+export function otherFamilyRoles(
+  project: Pick<Project, 'roles'>,
+  catalog: readonly ProviderModel[]
+): { roleId: string; roleName: string; model: ModelRef }[] {
   const familyOf = (m: ModelRef): ModelFamily => catalog.find((x) => x.id === m)?.family ?? modelFamily(m)
   const root = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
   if (!root || root.model === 'inherit') return []
   const adapter = adapterForFamily(familyOf(root.model))
   return project.roles
     .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
-    .map((r) => {
-      const tier = roleTier(r)
-      const suggestion = tier ? tierModels[tier] : undefined
-      return { roleId: r.id, roleName: r.name, from: r.model, suggestion }
-    })
+    .map((r) => ({ roleId: r.id, roleName: r.name, model: r.model }))
+}
+
+/** "Claude orchestrator; 2 roles on other model families run through the proxy." Null when no role differs. */
+export function proxyFamilyNotice(family: ModelFamily | undefined, count: number): string | null {
+  if (count <= 0) return null
+  const who = family ? FAMILY_LABEL[family] : 'The'
+  return `${who} orchestrator; ${count} ${count === 1 ? 'role on another model family runs' : 'roles on other model families run'} through the proxy.`
 }
 
 export interface TierRow {

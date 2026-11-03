@@ -71,7 +71,7 @@ describe('assistants', () => {
   })
   it('summarises a chat', () => {
     expect(chatSummaryLine({ scratch: true, allowEdits: false, model: 'Everyday tier', connection: 'Anthropic' })).toBe(
-      'Works in a private scratch area. Reads files, asks before editing. Runs on Everyday tier via Anthropic. Change in App settings > Defaults. Counts toward your usage.'
+      'Works in a private scratch area. Reads files, asks before editing. Runs on Everyday tier via Anthropic. Counts toward your usage.'
     )
     const line = chatSummaryLine({ scratch: false, folderName: 'api', allowEdits: true, model: '', mock: true })
     expect(line).toContain('Works in api. Reads and edits files')

@@ -8,7 +8,7 @@ import { initials } from '../lib/layout'
 import { cleanIpcError } from '../lib/ipcError'
 import { examplePath } from '../lib/platform'
 import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../lib/agentImport'
-import { effectiveName, newProjectConnectionNote, pathStatus, submitBlocker } from '../lib/projectsForm'
+import { effectiveName, newProjectConnectionView, pathStatus, submitBlocker } from '../lib/projectsForm'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Checkbox } from '../components/ui/Checkbox'
@@ -25,7 +25,6 @@ const KINDS: { value: SetupKind; label: string }[] = [
 
 function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
   const createProject = useAppStore((s) => s.createProject)
-  const defaultConnection = useAppStore((s) => s.defaultConnection)
   const connections = useAppStore((s) => s.connections)
   useEffect(() => {
     void useAppStore.getState().loadDefaultConnection()
@@ -42,6 +41,7 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
   const [architect, setArchitect] = useState(true)
   const [picked, setPicked] = useState<SetupChoice | null>(null)
   const [useMock, setUseMock] = useState(true)
+  const connectionView = newProjectConnectionView(connections, mockAvailable && useMock)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [check, setCheck] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
@@ -265,21 +265,21 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
       </div>
 
       <p className="form-connection muted" data-testid="new-project-connection">
-        {newProjectConnectionNote(defaultConnection, connections, mockAvailable && useMock)}
-        {!(mockAvailable && useMock) && (
+        {connectionView.text}
+        {connectionView.link && (
           <>
-            {' '}Change in{' '}
+            {' '}
             <button
               type="button"
               className="link-btn"
+              data-testid="new-project-connection-change"
               onClick={() => {
-                requestAppSettingsSection(APP_SETTINGS_SECTIONS.defaults)
+                requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
                 useAppStore.getState().setView('appSettings')
               }}
             >
-              App settings &gt; Defaults
+              {connectionView.link}
             </button>
-            .
           </>
         )}
       </p>

@@ -77,7 +77,7 @@ export interface ChatSummaryInput {
   allowEdits: boolean
   /** Display name of the Chat model ("Everyday tier"); empty until settings load. */
   model: string
-  /** Connection name ("Anthropic"); optional. */
+  /** Effective default connection name ("Anthropic"); empty only until the connection list loads. */
   connection?: string
   mock?: boolean
 }
@@ -87,7 +87,7 @@ export function chatSummaryLine(i: ChatSummaryInput): string {
   const where = i.scratch || !i.folderName ? 'Works in a private scratch area' : `Works in ${i.folderName}`
   const what = i.allowEdits && !i.scratch ? 'Reads and edits files, asks before each edit and command' : 'Reads files, asks before editing'
   const model = i.model || 'the configured model'
-  const runs = `Runs on ${model}${i.connection ? ` via ${i.connection}` : ''}. Change in App settings > Defaults`
+  const runs = `Runs on ${model}${i.connection ? ` via ${i.connection}` : ''}`
   return [where, what, runs, i.mock ? 'Mock run, no tokens' : 'Counts toward your usage'].map((s) => `${s}.`).join(' ')
 }
 

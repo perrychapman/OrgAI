@@ -1,24 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectPathCheck } from '@shared/types'
-import { effectiveName, isFullPath, newProjectConnectionLine, pathStatus, submitBlocker } from './projectsForm'
+import { effectiveName, isFullPath, newProjectConnectionView, pathStatus, submitBlocker } from './projectsForm'
 
-describe('newProjectConnectionLine', () => {
-  const status = { state: 'connected' }
-  const lite = (baseUrl: string, hasApiKey: boolean): never => ({ connection: { id: 'litellm', enabled: true, tierModels: {}, baseUrl, hasApiKey }, status, modelCount: 0 }) as never
-  const oai = (enabled: boolean): never => ({ connection: { id: 'openai', enabled, tierModels: {}, auth: { kind: 'chatgpt' } }, status, modelCount: 0 }) as never
-  it('uses the default when it is usable', () => {
-    expect(newProjectConnectionLine('litellm', [lite('http://x', true)])).toContain('Runs on LiteLLM.')
-    expect(newProjectConnectionLine('openai', [oai(true)])).toContain('Runs on OpenAI.')
+describe('newProjectConnectionView', () => {
+  const info = (id: 'anthropic' | 'openai' | 'litellm', state: string, isDefault: boolean, auth?: object): never =>
+    ({ connection: { id, enabled: true, tierModels: {}, auth: auth ?? { kind: 'subscription' }, baseUrl: 'http://x', hasApiKey: true }, status: { state }, modelCount: 0, isDefault }) as never
+  it('names the effective default with its auth method and offers Change', () => {
+    expect(newProjectConnectionView([info('anthropic', 'connected', true)])).toEqual({ text: 'Runs on Anthropic (Claude Code login).', link: 'Change' })
+    expect(newProjectConnectionView([info('anthropic', 'disconnected', false), info('openai', 'connected', true, { kind: 'chatgpt' })])).toEqual({
+      text: 'Runs on OpenAI (ChatGPT sign-in).',
+      link: 'Change'
+    })
+    expect(newProjectConnectionView([info('litellm', 'connected', true)]).text).toBe('Runs on LiteLLM (proxy key).')
   })
-  it('says the mock adapter when it is ticked', () => {
-    expect(newProjectConnectionLine('litellm', [lite('http://x', true)], true)).toBe('Runs on the mock adapter (no tokens).')
+  it('says nothing is connected when there is no connected default', () => {
+    expect(newProjectConnectionView([info('anthropic', 'disconnected', false)])).toEqual({ text: 'Nothing is connected yet.', link: 'Connect' })
+    expect(newProjectConnectionView([info('anthropic', 'error', true)]).link).toBe('Connect')
   })
-  it('falls back to Anthropic when it is not', () => {
-    expect(newProjectConnectionLine('litellm', [lite('', true)])).toContain('so this project runs on Anthropic.')
-    expect(newProjectConnectionLine('litellm', [lite('http://x', false)])).toContain('so this project runs on Anthropic.')
-    expect(newProjectConnectionLine('openai', [oai(false)])).toBe('OpenAI is not connected, so this project runs on Anthropic. Change in App settings > Defaults.')
-    expect(newProjectConnectionLine('litellm', null)).toContain('LiteLLM is not connected, so this project runs on Anthropic.')
-    expect(newProjectConnectionLine(null, null)).toContain('Runs on Anthropic.')
+  it('says the mock adapter when it is ticked, with no link', () => {
+    expect(newProjectConnectionView([info('litellm', 'connected', true)], true)).toEqual({ text: 'Runs on the mock adapter (no tokens).', link: null })
+  })
+  it('is empty until the list loads', () => {
+    expect(newProjectConnectionView(null)).toEqual({ text: '', link: null })
   })
 })
 

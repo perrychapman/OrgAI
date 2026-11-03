@@ -681,3 +681,7 @@
   gap: var(--space-2);
   min-width: 0;
 }
+
+.role-model-advanced {
+  margin-top: var(--space-1);
+}

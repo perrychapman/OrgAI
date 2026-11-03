@@ -48,7 +48,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   if (!sessionOpen && !canRetro && !canSave) return null
   const interruptHelp = 'Stops the current turn. The session stays open.'
   const endHelp = 'Ends the session and stops all of its agents.'
-  const retroHelp = `Have the Architect (${setupModel}, set in App settings > Defaults) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
+  const retroHelp = `Have the Architect (${setupModel}, set in App settings > General) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
   return (
     <div className="run-actions" role="group" aria-label="Run actions">
       {sessionOpen && (
