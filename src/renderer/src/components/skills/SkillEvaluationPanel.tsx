@@ -1,9 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronRight, CircleCheck, Info, Pencil, Undo2, TriangleAlert } from 'lucide-react'
 import type { Project, SkillEvaluationReport, SkillInfo, SkillSuggestion } from '@shared/types'
-import { SKILL_EVAL_MAX_BUDGET, SKILL_EVAL_MIN_BUDGET, skillEvaluationOf } from '@shared/defaults'
-import { useAppStore } from '../../store/useAppStore'
+import { skillEvaluationOf } from '@shared/defaults'
 import { cleanIpcError } from '../../lib/ipcError'
 import { formatTokens } from '../../lib/cost'
 import {
@@ -20,11 +19,6 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
-import { SettingRow, settingDescId } from '../ui/SettingRow'
-import { Switch } from '../ui/Switch'
-import { ClampedNumber } from '../settings/ClampedNumber'
-import { SettingsCard } from '../settings/SettingsCard'
-import { SettingsGroup } from '../settings/SettingsSection'
 import { SkillRolePicker } from './SkillRoleAccess'
 import type { ProjectSkills } from './useSkills'
 
@@ -313,54 +307,6 @@ export default function SkillEvaluationPanel({
         </p>
       )}
     </div>
-  )
-}
-
-/** The evaluation switch and token budget (Project settings > Skills). The results and the Evaluate button live in the Catalog. */
-export function SkillEvaluationSettings({ project }: { project: Project }): ReactElement {
-  const uid = useId()
-  const updateProject = useAppStore((s) => s.updateProject)
-  const settings = skillEvaluationOf(project)
-  // Write only what the user changed: an unset `enabled` keeps following the Team assistant (skillEvaluationOf).
-  const save = (next: Partial<typeof settings>): void => updateProject({ ...project, skillEvaluation: { ...project.skillEvaluation, tokenBudget: settings.tokenBudget, ...next } })
-  return (
-    <SettingsGroup title="Evaluation">
-      <SettingsCard>
-        <SettingRow
-          id={`${uid}-enabled`}
-          title="Suggest new skills"
-          description="Lets a model read recent runs and draft skills for repeated work. Nothing is added until you apply it. The checks for unused, vague or stale skills always run."
-          control={
-            <Switch
-              checked={settings.enabled}
-              label="Suggest new skills"
-              describedBy={settingDescId(`${uid}-enabled`)}
-              testId="skill-eval-enabled"
-              onChange={(enabled) => save({ enabled })}
-            />
-          }
-        />
-        <SettingRow
-          id={`${uid}-budget`}
-          title="Token budget"
-          description="Most tokens one evaluation may spend on suggestions."
-          width="number"
-          control={
-            <span data-testid="skill-eval-budget">
-              <ClampedNumber
-                label="Token budget"
-                value={settings.tokenBudget}
-                min={SKILL_EVAL_MIN_BUDGET}
-                max={SKILL_EVAL_MAX_BUDGET}
-                disabled={!settings.enabled}
-                describedBy={settingDescId(`${uid}-budget`)}
-                onCommit={(tokenBudget) => save({ tokenBudget })}
-              />
-            </span>
-          }
-        />
-      </SettingsCard>
-    </SettingsGroup>
   )
 }
 

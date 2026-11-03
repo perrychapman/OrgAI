@@ -1,4 +1,4 @@
-// Token-free. Mock adapter, temp ORGAI_DATA_DIR. Permission cards and Project settings > Agents > Permissions
+// Token-free. Mock adapter, temp ORGAI_DATA_DIR. Permission cards and Project settings > Permissions > Permissions
 // (docs/design/permissions.md): at 1024x640 and 1600x1000, dark and light, a scripted work run raises a plain Bash
 // card, a compound `cd <worktree> && git add && git commit` card and an Edit outside the project. Each card shows its
 // location line, the effect sentence and the rule chips without opening Details; the compound title names the real
@@ -99,14 +99,22 @@ const endRun = async () => {
     await sleep(1200)
   }
 }
-const openAgentsPane = async () => {
+const openPermissionsPane = async () => {
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Agents', exact: true }).click()
+  await page.getByRole('tab', { name: 'Permissions', exact: true }).click()
   await page.locator('#settings-section-permissions').waitFor({ timeout: 10_000 })
 }
 
+/** Open the "Rules and folders you allowed" disclosure (closed on every mount) and assert its state flips. */
+const openAllowed = async () => {
+  const toggle = page.locator('[data-testid=permissions-summary-toggle]')
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+  check((await toggle.getAttribute('aria-expanded')) === 'true', 'the Rules and folders toggle is expanded after Show')
+  await page.locator('[data-testid=allowed-folder-input]').waitFor({ state: 'visible', timeout: 8000 })
+}
+
 try {
-  const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
+  const project =await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
 
   // ---- Cards: each size, both themes ----
@@ -124,6 +132,7 @@ try {
     const l1 = await nextCard('')
     check(l1 === 'Permission: Run git status --short', `the first card asks to run git status ${tag}`, l1)
     if (l1) {
+      check(!/Claude/.test(await page.locator(CARD).first().innerText()), `no "Claude" in the permission card copy ${tag}`)
       const loc = page.locator(`${CARD} [data-testid=perm-location]`)
       check((await loc.getAttribute('data-kind')) === 'project' && /Starts in the project/.test(await loc.innerText()), `the location line says Starts in the project ${tag}`, await loc.innerText().catch(() => ''))
       for (const theme of ['dark', 'light']) {
@@ -173,13 +182,17 @@ try {
       await shot(`card-outside-${tag}-light`)
       await setTheme('dark')
       if (w === 1600) {
-        // The quiet link opens Project settings > Agents with the Permissions heading focused.
+        // The quiet link opens Project settings > Permissions with the Permissions heading focused.
         await page.locator(`${CARD} [data-testid=perm-settings-link]`).click()
         await page.locator('#settings-section-permissions').waitFor({ timeout: 10_000 })
         await sleep(400)
-        const focused = await page.evaluate(() => document.activeElement?.closest('section')?.id ?? '')
-        check(focused === 'settings-section-permissions', 'the Fewer prompts link focuses the Permissions section', focused)
-        check((await page.getByRole('tab', { name: 'Agents', exact: true }).getAttribute('aria-selected')) === 'true', 'the link opens the Agents pane')
+        // The Permissions section title repeats the pane title (hidden), so the pane heading takes the focus.
+        const focused = await page.evaluate(() => {
+          const a = document.activeElement
+          return a?.matches('h2, h3') ? `${a.tagName}:${a.textContent}` : `(${a?.outerHTML.slice(0, 120)})`
+        })
+        check(focused === 'H2:Permissions', 'the Fewer prompts link focuses the Permissions pane heading', focused)
+        check((await page.getByRole('tab', { name: 'Permissions', exact: true }).getAttribute('aria-selected')) === 'true', 'the link opens the Permissions pane')
         await projectTab(page, 'Live').click()
         await nextCard('', 8000)
       }
@@ -189,11 +202,11 @@ try {
     await endRun()
   }
 
-  // ---- Settings > Agents > Permissions ----
+  // ---- Settings > Permissions ----
   await setSize(1600, 1000)
   for (const theme of ['dark', 'light']) {
     await setTheme(theme)
-    await openAgentsPane()
+    await openPermissionsPane()
     const trade = await page.locator('[data-testid=permission-mode-tradeoff]').innerText()
     check(trade.length > 20 && /prompts|asks|approves/i.test(trade), `the mode shows its trade-off line (${theme})`, trade)
     const note = await page.locator('[data-testid=permission-mode-note]').innerText()
@@ -201,12 +214,15 @@ try {
     await shot(`settings-${theme}`)
   }
   await setTheme('dark')
-  await openAgentsPane()
+  await openPermissionsPane()
   const mode = (await findProject(page, NAME))?.permissionMode
   const tradeNow = await page.locator('[data-testid=permission-mode-tradeoff]').innerText()
   if (mode === 'auto') check(/Fewest prompts/.test(tradeNow), 'Unattended reads "Fewest prompts"', tradeNow)
 
+  // The summary row counts rules and folders before anything is allowed.
+  check(/None yet/.test(await page.locator('[data-testid=permissions-summary]').innerText()), 'the summary says None yet with no rules or folders')
   // Allowed folders: typed absolute path, kept after a reload.
+  await openAllowed()
   const input = page.locator('[data-testid=allowed-folder-input]')
   await input.fill(extra)
   await input.press('Enter')
@@ -221,10 +237,12 @@ try {
   check(/^Added .*extra-folder\.$/.test(afterAdd.said), 'the added folder is announced', afterAdd.said)
   const saved = (await findProject(page, NAME))?.allowedDirectories ?? []
   check(saved.length === 1 && path.resolve(saved[0]) === path.resolve(extra), 'the typed folder is saved to the project', JSON.stringify(saved))
+  check(/1 folder you allowed/.test(await page.locator('[data-testid=permissions-summary]').innerText()), 'the summary counts the added folder')
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
-  await openAgentsPane()
+  await openPermissionsPane()
+  await openAllowed()
   const rows = await page.locator('[data-testid=allowed-folder-row]').allInnerTexts()
   check(rows.length === 1 && rows[0].includes('extra-folder'), 'the allowed folder is listed after a reload', rows.join(' | '))
   // A relative path is dropped by main and gets the quiet notice.
@@ -276,6 +294,189 @@ try {
     await sleep(400)
     const focused = await focusedName()
     check(focused === expectFocus[i], `after removing ${rule} focus moves to ${expectFocus[i]}`, focused)
+  }
+
+  // ---- Project settings panes: acceptance checks (config-review spec 8) ----
+  const paneTab = async (name) => {
+    await projectTab(page, 'Settings').click()
+    await page.getByRole('tab', { name, exact: true }).click()
+    await page.locator('.settings-pane-title').waitFor({ timeout: 10_000 })
+    await sleep(300)
+  }
+  const setAdvanced = (pane, open) =>
+    page.evaluate(([p, o]) => {
+      const el = document.querySelector(`details[data-testid=settings-advanced][data-pane="${p}"]`)
+      if (el) el.open = o
+    }, [pane, open])
+  /** Tab stops from the pane h2 to the end of the pane: visible, enabled, tabbable controls (radios count once per name). */
+  const tabStops = () =>
+    page.evaluate(() => {
+      const panel = document.querySelector('[role=tabpanel]')
+      if (!panel) return []
+      const sel = 'a[href], button, input, select, textarea, summary, [tabindex]'
+      const seen = new Set()
+      const out = []
+      for (const el of panel.querySelectorAll(sel)) {
+        if (el.disabled || el.getAttribute('tabindex') === '-1' || !el.checkVisibility()) continue
+        if (el.closest('[data-testid=mock-adapter-toggle]') || el.matches('[data-testid=mock-adapter-toggle]')) continue
+        if (el.type === 'radio') {
+          const key = `radio:${el.name}`
+          if (seen.has(key)) continue
+          seen.add(key)
+        }
+        out.push(el.getAttribute('aria-label') || el.getAttribute('data-testid') || el.textContent.trim().slice(0, 30) || el.tagName)
+      }
+      return out
+    })
+  const scrollFits = () => page.evaluate(() => {
+    const s = document.querySelector('.settings-scroll')
+    return { sh: s?.scrollHeight ?? 0, ch: s?.clientHeight ?? 0 }
+  })
+  const setProjectAuth = (kind) =>
+    page.evaluate(async (k) => {
+      const list = await window.orgai.connections.list()
+      const conn = list.find((c) => c.connection.id === 'anthropic').connection
+      await window.orgai.connections.update({ ...conn, auth: k === 'apiKey' ? { kind: 'apiKey', envVar: 'ANTHROPIC_API_KEY' } : { kind: 'subscription' } })
+    }, kind)
+  const reloadToSettings = async () => {
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 30_000 })
+    await openProject(page, NAME)
+  }
+  const originalAuth = await page.evaluate(async () => (await window.orgai.connections.list()).find((c) => c.connection.id === 'anthropic').connection.auth)
+  log('anthropic connection auth before the pane checks:', JSON.stringify(originalAuth))
+
+  for (const [w, h] of [
+    [1024, 640],
+    [1600, 1000]
+  ]) {
+    const tag = `${w}x${h}`
+    await setSize(w, h)
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme)
+      // (2) Permissions at rest does not scroll at 1024x640.
+      await paneTab('Permissions')
+      await setAdvanced('project-permissions', false)
+      const summaryToggle = page.locator('[data-testid=permissions-summary-toggle]')
+      if ((await summaryToggle.getAttribute('aria-expanded')) === 'true') await summaryToggle.click()
+      await sleep(200)
+      check((await page.locator('[data-testid=permissions-summary-toggle]').getAttribute('aria-expanded')) === 'false', `the Rules and folders summary starts hidden ${tag} ${theme}`)
+      const fit = await scrollFits()
+      if (w === 1024) check(fit.sh <= fit.ch, `Permissions at rest needs no scrolling ${tag} ${theme}`, JSON.stringify(fit))
+      // (5) tab stops at rest.
+      const perm = await tabStops()
+      check(perm.length <= 3, `Permissions has at most 3 tab stops at rest ${tag} ${theme}`, perm.join(' | '))
+      await shot(`pane-permissions-${tag}-${theme}`)
+      await paneTab('General')
+      const gen = await tabStops()
+      check(gen.length <= 4, `General has at most 4 tab stops at rest ${tag} ${theme}`, gen.join(' | '))
+      const wd = page.locator('[data-testid=project-path]')
+      check((await wd.getAttribute('title')) === repo && (await page.locator('input[aria-label="Working directory"]').count()) === 0, `the working directory is a read-only path with the full path in its title ${tag} ${theme}`)
+      await shot(`pane-general-${tag}-${theme}`)
+      // (4) subscription project: plan guard line, no percent input at rest.
+      await paneTab('Limits')
+      await setAdvanced('project-limits', false)
+      await sleep(200)
+      const lim = await tabStops()
+      check(lim.length <= 2, `Limits has at most 2 tab stops at rest ${tag} ${theme}`, lim.join(' | '))
+      check((await page.locator('[data-testid=plan-guard-line]').count()) === 1, `Limits shows the plan guard line on a subscription project ${tag} ${theme}`)
+      check((await page.locator('[role=tabpanel] input[type=number]:visible').count()) === 0, `no number input is visible at rest on a subscription project ${tag} ${theme}`)
+      await shot(`pane-limits-${tag}-${theme}`)
+    }
+  }
+
+  // (4) metered project: no five-hour or weekly text, Advanced open or closed. The connection is restored afterwards.
+  try {
+    await setProjectAuth('apiKey')
+    await reloadToSettings()
+    for (const [w, h] of [
+      [1024, 640],
+      [1600, 1000]
+    ]) {
+      await setSize(w, h)
+      for (const theme of ['dark', 'light']) {
+        await setTheme(theme)
+        const tag = `${w}x${h} ${theme}`
+        await paneTab('Limits')
+        for (const open of [false, true]) {
+          await setAdvanced('project-limits', open)
+          await sleep(200)
+          const text = await page.locator('[role=tabpanel]').innerText()
+          check(!/five-hour|weekly/i.test(text), `Limits has no five-hour or weekly text on an API-key project, Advanced ${open ? 'open' : 'closed'} ${tag}`, text.slice(0, 200))
+        }
+        await setAdvanced('project-limits', false)
+        check((await page.locator('[data-testid=plan-guard-line]').count()) === 0, `no plan guard line on an API-key project ${tag}`)
+        check((await page.getByRole('spinbutton', { name: 'Estimated-cost cap per run' }).count()) === 1, `the cost cap is visible at rest on an API-key project ${tag}`)
+        if (w === 1600 && theme === 'dark') await shot('pane-limits-metered')
+      }
+    }
+  } finally {
+    await page.evaluate(async (auth) => {
+      const list = await window.orgai.connections.list()
+      const conn = list.find((c) => c.connection.id === 'anthropic').connection
+      await window.orgai.connections.update({ ...conn, auth })
+    }, originalAuth)
+    await reloadToSettings()
+  }
+  await setTheme('dark')
+  await setSize(1600, 1000)
+
+  // Advanced behaviours on the Permissions pane: name, Enter and Space, focus ring, open state across a reload.
+  await paneTab('Permissions')
+  await setAdvanced('project-permissions', false)
+  const sum = page.locator('details[data-testid=settings-advanced][data-pane=project-permissions] > summary')
+  check((await sum.innerText()).trim() === 'Advanced settings' && !(await sum.getAttribute('aria-label')), 'the Advanced summary reads "Advanced settings" with no aria-label override')
+  const adv = page.locator('details[data-testid=settings-advanced][data-pane=project-permissions]')
+  await sum.focus()
+  await page.keyboard.press('Enter')
+  check(await adv.evaluate((el) => el.open), 'Enter opens Advanced settings')
+  await page.keyboard.press('Space')
+  check(!(await adv.evaluate((el) => el.open)), 'Space closes Advanced settings')
+  const ring = await sum.evaluate((el) => {
+    const cs = getComputedStyle(el)
+    return { style: cs.outlineStyle, width: cs.outlineWidth, shadow: cs.boxShadow, focus: el.matches(':focus-visible') }
+  })
+  check(ring.focus && ring.style !== 'none' && parseFloat(ring.width) > 0, 'the Advanced summary shows a focus ring when keyboard focused', JSON.stringify(ring))
+  await page.keyboard.press('Enter')
+  check(await adv.evaluate((el) => el.open), 'Advanced reopens before the reload')
+  check(await page.getByRole('switch', { name: 'Let runs message each other' }).isVisible(), 'the Runs rows are visible in the open Advanced settings')
+  await reloadToSettings()
+  await paneTab('Permissions')
+  check(await adv.evaluate((el) => el.open), 'the open Advanced state survives a reload')
+  await setAdvanced('project-permissions', false)
+
+  // Summary counts after the earlier steps: no folders or rules are left, so the row reads None yet.
+  check(/None yet/.test(await page.locator('[data-testid=permissions-summary]').innerText()), 'the summary reads None yet after every folder and rule was removed')
+  check((await page.locator('[data-testid=permission-mode-default]').innerText()).startsWith('App default for new projects:'), 'the mode row shows the App default hint')
+
+  // (8) No "Claude" in permission copy; try to put the project on OpenAI first.
+  const toOpenAi = await page.evaluate(async (name) => {
+    try {
+      const list = await window.orgai.projects.list()
+      const p = list.find((x) => x.name === name)
+      if (!p) return 'no project'
+      await window.orgai.projects.save({ ...p, provider: { ...p.provider, connection: 'openai' } })
+      const after = (await window.orgai.projects.list()).find((x) => x.name === name)
+      return after?.provider?.connection === 'openai' ? 'openai' : `stayed ${after?.provider?.connection}`
+    } catch (e) {
+      return `error ${e}`
+    }
+  }, NAME)
+  log('project connection switch to openai:', toOpenAi)
+  if (toOpenAi === 'openai') await reloadToSettings()
+  await paneTab('Permissions')
+  await setAdvanced('project-permissions', true)
+  await page.locator('[data-testid=permissions-summary-toggle]').click()
+  const paneText = await page.locator('[role=tabpanel]').innerText()
+  check(!/Claude/.test(paneText), `no "Claude" in the Permissions pane text (project on ${toOpenAi === 'openai' ? 'OpenAI' : 'the default connection; the mock could not switch to OpenAI'})`, (paneText.match(/.{0,40}Claude.{0,40}/) ?? [''])[0])
+  await setAdvanced('project-permissions', false)
+  if (toOpenAi === 'openai') {
+    await page.evaluate(async (name) => {
+      const p = (await window.orgai.projects.list()).find((x) => x.name === name)
+      const { connection: _c, ...provider } = p.provider
+      await window.orgai.projects.save({ ...p, provider })
+    }, NAME)
+    await reloadToSettings()
   }
 
   // ---- [mock:fatigue] (guarded: SKIP until the runtime marker is merged) ----
