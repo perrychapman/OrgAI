@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
+import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, ConnectionId,FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
 import { HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
@@ -34,7 +34,7 @@ import { MockAdapter } from './runtime/mock'
 import { sweepStaleSkillDirs } from './runtime/claudeSkills'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
-import { registerIpc, harnessProjectFor } from './ipc'
+import { registerIpc, harnessProjectFor, withEffectiveDefault } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
@@ -67,10 +67,20 @@ function applyTheme(s: AppSettings): void {
   if (nativeTheme.themeSource !== s.appearance.theme) nativeTheme.themeSource = s.appearance.theme
 }
 
-/** Every window hears about a save, so a second window and the deprecated notifications mirror stay in step. */
+/** The effective default connection (ConnectionService.effectiveDefault); set once the service exists. */
+let effectiveDefaultOf: (() => ConnectionId) | undefined
+/** The defaultConnection last sent with settings:changed, so a moved effective default is re-broadcast once. */
+let lastBroadcastDefault: ConnectionId | undefined
+
+/**
+ * Every window hears about a save, so a second window and the deprecated notifications mirror stay in step. The
+ * payload's defaultConnection is the effective default (withEffectiveDefault), never the stored value.
+ */
 function broadcastSettings(s: AppSettings): void {
   if (!settingsStore) return
-  const info = buildSettingsInfo(s, { dataDir: settingsStore.dataDir, appVersion: app.getVersion() })
+  const effective = effectiveDefaultOf?.() ?? s.defaultConnection
+  lastBroadcastDefault = effective
+  const info = buildSettingsInfo(withEffectiveDefault(s, effective), { dataDir: settingsStore.dataDir, appVersion: app.getVersion() })
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.settingsChanged, info)
   }
@@ -240,6 +250,10 @@ app.whenReady().then(() => {
     secrets,
     broadcast: broadcastConnection,
     logInfo: (m) => log.info(m),
+    // The effective default moved without a settings write (e.g. chosen mode, a removed key): re-broadcast once.
+    onDefaultChanged: () => {
+      if (effectiveDefaultOf && effectiveDefaultOf() !== lastBroadcastDefault) broadcastSettings(settings.get())
+    },
     openExternal: (url) => shell.openExternal(url),
     // Models the Claude login offers (SDK supportedModels); the scripted mock answers its own list. `adapters` is
     // declared below and only read when discovery runs.
@@ -248,6 +262,8 @@ app.whenReady().then(() => {
       return adapter?.listModels?.(auth) ?? Promise.resolve(null)
     }
   })
+  effectiveDefaultOf = () => connections.effectiveDefault()
+  lastBroadcastDefault = connections.effectiveDefault()
   // Community model prices (LiteLLM's public list): a cached fallback after the builtin table; AppSettings.communityPrices turns it off.
   const communityPrices = new CommunityPrices({ dataDir, enabled: () => settings.get().communityPrices !== false })
   const mockAdapter = process.env.ORGAI_MOCK === '1'

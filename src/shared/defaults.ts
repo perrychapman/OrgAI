@@ -345,8 +345,9 @@ export function projectConnection(project: Pick<Project, 'provider'>): Connectio
 
 /**
  * Pick the adapter for a project's run. 'anthropic' runs on Claude, 'openai' on Codex. 'litellm' follows the
- * root role's model family (its catalog entry first, else modelFamily), and every role's model must share it:
- * roles that would need the other adapter are listed in `mismatched`. 'inherit' roles always match.
+ * root role's model family (its catalog entry first, else modelFamily). Roles whose model would need the other
+ * adapter are listed in `mismatched` ('inherit' roles always match): informational on LiteLLM, where reports may run
+ * any model the proxy serves (mixedFamilyRefusal), a refusal on the single-family connections.
  * A 'mock' provider always runs on the mock adapter with nothing mismatched.
  */
 export function adapterForProject(project: Pick<Project, 'provider' | 'roles'>, catalog: readonly ProviderModel[]): AdapterChoice {
@@ -362,6 +363,20 @@ export function adapterForProject(project: Pick<Project, 'provider' | 'roles'>, 
     .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
     .map((r) => r.id)
   return { adapter, connection, family, mismatched }
+}
+
+/**
+ * Whether a work run with this adapter choice must be refused before it exists (owner decision 2026-11-03: one
+ * connection per project; on a LiteLLM proxy the orchestrator's model picks the adapter and reports may run any model
+ * the proxy serves). null = it may start (nothing mismatched, or a LiteLLM root with a known family);
+ * 'no-root-family' = LiteLLM, roles on another family and the root has no model of its own ('inherit' or no roles),
+ * so no adapter can be picked from it; 'single-family-connection' = Anthropic or OpenAI with a role of another family
+ * (cannot come from their single-family catalogs; refused as before). Pure.
+ */
+export function mixedFamilyRefusal(choice: Pick<AdapterChoice, 'connection' | 'family' | 'mismatched'>): 'no-root-family' | 'single-family-connection' | null {
+  if (!choice.mismatched.length) return null
+  if (choice.connection !== 'litellm') return 'single-family-connection'
+  return choice.family === undefined ? 'no-root-family' : null
 }
 
 /** Connection records for fresh settings. The Anthropic connection takes the given (legacy) auth. */

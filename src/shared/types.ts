@@ -294,15 +294,19 @@ export interface RemapModelsOutput {
 }
 
 /**
- * Which adapter a project's run uses (adapterForProject). For 'litellm' the root role's model family decides;
- * every role in the run must then share it, because one run drives one adapter.
+ * Which adapter a project's run uses (adapterForProject). For 'litellm' the root role's model family decides, and
+ * one run drives that one adapter; reports may run any model the proxy serves (each role's model id goes through).
  */
 export interface AdapterChoice {
   adapter: ProviderId
   connection: ConnectionId
   /** Family of the root role's model, when it is known. */
   family?: ModelFamily
-  /** Ids of roles whose model would need the other adapter. Non-empty = the run cannot start as configured. */
+  /**
+   * Ids of roles whose model family differs from the adapter's. Informational on 'litellm' (show it as a notice);
+   * a work run is refused only per mixedFamilyRefusal: on LiteLLM when the root has no family, and on the
+   * single-family connections (anthropic, openai), where their catalogs make it unreachable.
+   */
   mismatched: string[]
 }
 

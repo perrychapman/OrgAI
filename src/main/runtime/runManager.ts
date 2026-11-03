@@ -46,7 +46,7 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, projectConnection, runMessagingOn, settingTier } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, runMessagingOn, settingTier } from '@shared/defaults'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
@@ -553,6 +553,8 @@ export function mergeInstallEdit(requested: McpServerSpec, edit: McpServerSpec |
 /** Human label of a model family for refusal messages. */
 const FAMILY_LABEL: Record<string, string> = { claude: 'Claude', openai: 'OpenAI', other: 'other' }
 const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+/** A project or role name for one log line: control characters become spaces, at most 80 chars. */
+const logText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 80)
 
 export interface StartInput {
   project: Project
@@ -693,20 +695,34 @@ export class RunManager {
   }
 
   /**
-   * Pick the adapter for a run. Work runs refuse to start when some roles would need the other adapter;
-   * setup-like runs use a built-in role and only need the root's adapter.
+   * Pick the adapter for a run (mixedFamilyRefusal decides whether a work run whose roles span model families may
+   * start). On LiteLLM a mixed chart starts with one info line naming the roles on another family; setup-like runs
+   * use a built-in role and only need the root's adapter.
    */
   private choose(project: Project, kind: RunKind): { adapter: RuntimeAdapter; choice: AdapterChoice } {
-    const choice = adapterForProject(project, this.options.catalog?.() ?? [])
+    const catalog = this.options.catalog?.() ?? []
+    const choice = adapterForProject(project, catalog)
     if (!isSetupLikeRun(kind) && choice.mismatched.length) {
-      const catalog = this.options.catalog?.() ?? []
       const bad = choice.mismatched.map((id) => project.roles.find((r) => r.id === id)).filter((r): r is Role => !!r)
-      const names = bad.length ? bad.map((r) => r.name) : choice.mismatched
+      const names = (bad.length ? bad.map((r) => r.name) : choice.mismatched).map((n) => logText(String(n)))
       const families = [...new Set(bad.map((r) => catalog.find((m) => m.id === r.model && m.connection === choice.connection)?.family ?? modelFamily(r.model)))]
       const other = families.length ? families.map((f) => (f === 'other' ? 'non-Claude' : (FAMILY_LABEL[f] ?? f))).join('/') : 'other'
+      const where = CONNECTION_LABEL[choice.connection] ?? choice.connection
+      const refusal = mixedFamilyRefusal(choice)
+      if (refusal === 'no-root-family') {
+        throw new Error(
+          `Roles ${names.join(', ')} use ${other}-family models, but this ${where} project's orchestrator has no model of its own, so OrgAI cannot tell which runtime to use. Give the orchestrator a model.`
+        )
+      }
+      if (refusal === 'single-family-connection') {
+        const rootFamily = choice.family ?? 'claude'
+        throw new Error(
+          `Roles ${names.join(', ')} use ${other}-family models, but this ${where} project's orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}. Pick models of one family.`
+        )
+      }
       const rootFamily = choice.family ?? 'claude'
-      throw new Error(
-        `Roles ${names.join(', ')} use ${other}-family models, but this ${CONNECTION_LABEL[choice.connection] ?? choice.connection} project's orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}. Pick models of one family.`
+      log.info(
+        `${where} project ${logText(project.name)}: the orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}; ${names.join(', ')} use ${other}-family models through the proxy${choice.adapter === 'codex' ? " (on Codex a report whose model is a tier name or a bare Claude alias runs on its parent's model)" : ''}.`
       )
     }
     const adapter = this.adapters[choice.adapter]

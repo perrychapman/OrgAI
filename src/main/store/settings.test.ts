@@ -29,6 +29,17 @@ describe('tier model validation', () => {
 describe('modelPrices', () => {
   const price = { inputPerToken: 1e-6, outputPerToken: 2e-6 }
 
+  it('normalizes defaultRootModel / defaultReportModel as model refs (review fix-up)', () => {
+    const d = normalizeSettings({})
+    for (const bad of ['a b', 'new\nline', 'inherit', 'x'.repeat(201), 'caf\u00e9', 42]) {
+      const s = normalizeSettings({ defaultRootModel: bad, defaultReportModel: bad } as never)
+      expect(s.defaultRootModel, String(bad)).toBe(d.defaultRootModel)
+      expect(s.defaultReportModel, String(bad)).toBe(d.defaultReportModel)
+    }
+    expect(normalizeSettings({ defaultRootModel: ' openai/gpt-5 ', defaultReportModel: 'everyday' }).defaultRootModel).toBe('openai/gpt-5')
+    expect(normalizeSettings({ defaultReportModel: 'everyday' }).defaultReportModel).toBe('everyday')
+  })
+
   it('defaults to an empty list and ignores non-arrays', () => {
     expect(normalizeSettings({}).modelPrices).toEqual([])
     expect(normalizeSettings({ modelPrices: { model: 'x', price } } as never).modelPrices).toEqual([])

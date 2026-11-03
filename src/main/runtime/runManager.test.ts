@@ -14,6 +14,7 @@ import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 import { defaultConnections } from '@shared/defaults'
+import { log } from '../log'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -1193,16 +1194,56 @@ describe('RunManager adapter selection, connections and MCP', () => {
       await m.stopAll()
     })
 
-    it('refuses a work run whose roles mix families, before creating the run', async () => {
+    it('starts a LiteLLM work run whose reports use another family on the root adapter, with one info line', async () => {
+      const info = vi.spyOn(log, 'info')
       const claude = recorder('claude')
       const codex = recorder('codex')
       const p = litellm('sonnet', { engineer: 'gpt-5', reviewer: 'gpt-5' })
+      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      await m.start({ project: p, prompt: 'go' })
+      expect(claude.ctxs).toHaveLength(1)
+      expect(codex.ctxs).toHaveLength(0)
+      // Each report keeps its own model id; the root's family picked the adapter.
+      expect(claude.ctxs[0].roles.find((r) => r.slug === 'engineer')?.model).toBe('gpt-5')
+      const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('-family models through the proxy'))
+      expect(lines).toEqual([expect.stringMatching(/^LiteLLM project .*: the orchestrator runs on Claude; Engineer, Reviewer use OpenAI-family models through the proxy\.$/)])
+      // The reverse: a GPT root runs on Codex with a Claude report.
+      const q = litellm('gpt-5', { engineer: 'claude-sonnet-4-5' })
+      await m.start({ project: q, prompt: 'go' })
+      expect(codex.ctxs).toHaveLength(1)
+      expect(codex.ctxs[0].roles.find((r) => r.slug === 'engineer')?.model).toBe('claude-sonnet-4-5')
+      info.mockRestore()
+      await m.stopAll()
+    })
+
+    it('refuses a LiteLLM work run whose root has no model of its own while reports use another family', async () => {
+      const claude = recorder('claude')
+      const codex = recorder('codex')
+      const p = litellm('inherit', { engineer: 'gpt-5' })
       const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
       await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
-        "Roles Engineer, Reviewer use OpenAI-family models, but this LiteLLM project's orchestrator runs on Claude. Pick models of one family."
+        "Roles Engineer use OpenAI-family models, but this LiteLLM project's orchestrator has no model of its own, so OrgAI cannot tell which runtime to use. Give the orchestrator a model."
       )
       expect(store.list(p.id)).toEqual([])
       expect(events).toEqual([])
+      expect(claude.ctxs.length + codex.ctxs.length).toBe(0)
+      // An 'inherit' root with every report on the default (Claude) family still starts.
+      const ok = litellm('inherit', { engineer: 'sonnet', reviewer: 'sonnet' })
+      await m.start({ project: ok, prompt: 'go' })
+      expect(claude.ctxs).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('still refuses a mixed chart on the single-family connections (anthropic, openai)', async () => {
+      const claude = recorder('claude')
+      const codex = recorder('codex')
+      const base = litellm('sonnet', { engineer: 'gpt-5' })
+      const p: Project = { ...base, provider: { ...base.provider, connection: 'anthropic' } }
+      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
+        "Roles Engineer use OpenAI-family models, but this Anthropic project's orchestrator runs on Claude. Pick models of one family."
+      )
+      expect(store.list(p.id)).toEqual([])
       expect(claude.ctxs.length + codex.ctxs.length).toBe(0)
     })
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { ROLE_COLORS, adapterForProject, newId, slugify } from '@shared/defaults'
+import { ROLE_COLORS, adapterForProject, mixedFamilyRefusal, newId, slugify } from '@shared/defaults'
 import type {
   AgentImportAction,
   AgentImportChoice,
@@ -339,9 +339,10 @@ function finish(input: ConvertInput, roles: Role[], drafts: Draft[], replacedRol
   if (instructionFiles.length) warnings.push(`Instruction files are not turned into roles: ${instructionFiles.join(', ')}. The Architect reads them during setup.`)
   if (input.model.connection === 'litellm' && drafts.some((d) => d.action !== 'skip')) {
     const choice = adapterForProject({ provider: input.provider, roles }, input.model.catalog)
-    if (choice.mismatched.length) {
+    // On LiteLLM reports may use another family (mixedFamilyRefusal); only a root without a model blocks a run.
+    if (mixedFamilyRefusal(choice) === 'no-root-family') {
       const names = choice.mismatched.map((id) => byId.get(id)?.name ?? id).join(', ')
-      warnings.push(`On LiteLLM every role must use the root's model family; ${names} would need the other adapter. Change their models before running.`)
+      warnings.push(`On LiteLLM the orchestrator's model picks the runtime, and it has none; ${names} use another model family. Give the orchestrator a model before running.`)
     }
   }
   const items: AgentImportItem[] = drafts.map((d) => {

@@ -314,9 +314,26 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     is 'connected' again (the field is then cleared); else the stored value unless it is definitely 'disconnected' or
     not configured; else the first connected in CONNECTION_IDS order, LiteLLM only when it is the only connected one.
     Rewrites (`rewriteDefault`, from `setStatus` and an `enabled` change in `update`) therefore happen only on a
-    definite disconnect (CLI loggedIn false, logout, removed or changed key / URL, a connection turned off) and never on
+    definite disconnect (CLI loggedIn false, logout, a removed key, a connection turned off) and never on
     'error', 'connecting', 'unknown', a probe throw, a CLI timeout or missing CLI (anthropicAuth.ts `unavailable` ->
     'error'), or a failed discovery; they write `defaultConnectionChosen: false` explicitly and log once per change.
+    A LiteLLM base-URL change and a saved key ("Changed / Key saved. Test and connect to apply.") are tentative
+    (`setStatus(..., { definite: false })`, service `tentative` set): they never rewrite and `effectiveDefault` reads
+    them as 'unknown' until the next definite status. A stored LiteLLM key that cannot be decrypted (`hasApiKey` true,
+    `secrets.get` undefined) probes as 'error' ("The stored key could not be read..."), never 'disconnected'.
+    `rewriteDefault` drops `defaultConnectionReplaced` once that connection is no longer configured, and `update` rewrites when `enabled` or `connectionConfigured` changes (e.g. a cleared LiteLLM base URL).
+  - Review hardening (2026-11-03): `connections:test` / `logout` / `models:list` / `models:refresh` rebuild their input
+    (ipc.ts `connectionIdArg`, `modelsQueryArg`; connections:connect and connections:update use `connectionIdArg` too, and connections:setSecret `connectionSecretArgs`: id litellm, apiKey a string of at most 4,000 chars without control or hidden characters, or null) and `ConnectionService.test` / `logout` / `connect` / `refresh` /
+    `models` / `setStatus` throw "Unknown connection" for anything not in CONNECTION_IDS (prototype keys included).
+    settings:get / settings:set results and the settings:changed payload carry `defaultConnection` =
+    `effectiveDefault()` (ipc.ts `withEffectiveDefault`; the stored value stays main-only and settings:set still keeps
+    it); `ConnectionService` calls `onDefaultChanged` when the effective default moves in setStatus, update, setSecret
+    or logout (chosen mode included) and index.ts re-broadcasts settings:changed when it differs from the last one sent.
+    `ConnectionInfo.isDefault` stays the renderer's primary source. `settingsSetArgs` drops an incoming field whose
+    kind (null, array, typeof) differs from the stored one's (a non-array `modelPrices` never wipes overrides;
+    undefined still clears an optional field). `setDefault(id)` re-choosing the stored default still requires
+    `connectionConfigured`. `defaultRootModel` / `defaultReportModel` normalize through `modelRef` (printable, no
+    spaces, at most 200, not 'inherit').
     `connectionConfigured('anthropic')` is false when Anthropic's `enabled` is false. settings.ts migration: an explicit
     boolean is kept; a file without the field loads as `defaultConnection !== 'anthropic'`. The only way to change the
     default is `connections:setDefault(id | null)` (refuses one that is not `connectionUsable`: "OpenAI is not
@@ -334,7 +351,10 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     Codex network with the run's own roles. propose_settings deletes a stored value when the approved one equals the
     automatic value and ignores non-finite values. ProjectStore migrates a projects.json older than version 2 once
     (`dropLegacyLimitDefaults`): a stored depth 3 or concurrency 8 (the old always-filled defaults) is dropped, any
-    other value stays explicit; the file is then written as version 2.
+    other value stays explicit; the file is then written as version 2. The automatic value is computed from the
+    project's roles at apply time, so an org chart approved later in the same setup run changes what "equal to
+    automatic" meant: a limit dropped as automatic then follows the new chart, and one kept as explicit may now equal
+    the new automatic value (accepted; not re-checked after the org change).
   - Plan guard UI: Project settings > Limits is a Select Automatic / On / Off over `planGuardOf` (Automatic clears
     `preferEverydayNearLimit` and its legacy mirror). The depth and concurrency fields do not yet say "Automatic".
   - Team assistant: an unset `skillEvaluation.enabled` follows `teamReviewOf(project).auto === 'ai'`, so one switch
@@ -354,7 +374,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     unit tests. Not run in the app: boot-time probe timing (statuses 'unknown' until each probe answers, so the
     default never moves at boot before a definite answer) is not covered live, and the renderer pickers and the plan
     guard Select have no e2e. Open: the LiteLLM probe lists `/v1/models` without checking the key, so a wrong key can
-    read as connected (ARCHITECTURE.md Risks).
+    read as connected (ARCHITECTURE.md Risks). The review hardening above is verified by unit tests only
+    (defaultConnection.test.ts "review hardening", ipc.test.ts, settings.test.ts); boot-time probe timing and the live
+    CLI timeout path are not covered.
 
 ## Renderer
 
@@ -521,7 +543,20 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
 
 - Connections and adapters are separate. The connections are `anthropic`, `openai` and `litellm`, and the adapters are
   `claude` and `codex`. `adapterForProject` (`src/shared/defaults.ts`) picks the adapter from the connection, or for
-  LiteLLM from the root role's model family. A work run whose roles mix families is refused before the run exists.
+  LiteLLM from the root role's model family. Mixed families (owner decision 2026-11-03; one connection per project
+  stays): on LiteLLM the orchestrator's model picks the adapter and reports may run any model the proxy serves;
+  `adapterForProject` still lists them in `mismatched` (meant for an informational notice; the renderer still shows the old danger banner "This project cannot start as configured" in `ProjectConnection.tsx` until the UI pass decides with `mixedFamilyRefusal`) and RunManager
+  `choose` logs one info line naming them and starts. `defaults.ts` `mixedFamilyRefusal` refuses a work run before
+  it exists only when a LiteLLM root has no family ('inherit' or no roles) while reports need the other adapter
+  ("...has no model of its own... Give the orchestrator a model."), or on anthropic / openai with a role of another
+  family (their catalogs are single-family, so this cannot come from a picker; unit-tested invariant). Setup-like
+  runs never check. The Claude adapter passes a report's model id unchanged to `AgentDefinition.model` (no alias
+  table; `ANTHROPIC_DEFAULT_*_MODEL` still maps tier aliases) and the Codex adapter starts a report thread on its
+  role's id through the `orgai` provider (`codexModelFor` still drops tier names and bare Claude aliases such as
+  'sonnet', so such a report inherits its parent's model). Agent import warns only for the no-root-family case.
+  Verified by unit tests (types.test.ts, runManager.test.ts, codex.test.ts, claude.test.ts). Unverified live: Claude
+  CLI tool calling against a non-Claude model behind the proxy, and LiteLLM serving `/v1/responses` for non-OpenAI
+  models on the Codex side (`scripts/smoke-litellm.mjs` can check later, with consent).
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
 - Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new
   project takes the effective default connection (`effectiveDefault()`, see Self-configuration) when `creationConnection` (`defaults.ts`) finds it usable (anthropic

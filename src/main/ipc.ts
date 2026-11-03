@@ -92,7 +92,7 @@ import type {
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
-import { isSafeId } from '@shared/defaults'
+import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
 import { skillAssistPrompt, skillsProject } from './skills/assist'
 import { harnessProject as buildHarnessProject } from './mcp/assist'
@@ -439,7 +439,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   })
 
   // settings.set() notifies SettingsStore listeners: index.ts applies the theme and broadcasts settings:changed.
-  const settingsInfo = (): AppSettingsInfo => buildSettingsInfo(settings.get(), { dataDir: settings.dataDir, appVersion: app.getVersion() })
+  // defaultConnection is the effective default (connections.effectiveDefault()); the stored value stays main-only.
+  const settingsInfo = (): AppSettingsInfo =>
+    buildSettingsInfo(withEffectiveDefault(settings.get(), connections.effectiveDefault()), { dataDir: settings.dataDir, appVersion: app.getVersion() })
   ipcMain.handle(IPC.settingsGet, () => settingsInfo())
   ipcMain.handle(IPC.settingsSet, (_e, next: unknown) => {
     settings.set(settingsSetArgs(next, settings.get()))
@@ -726,19 +728,20 @@ function registerConnectionIpc(projects: ProjectStore, connections: ConnectionSe
   })
   ipcMain.handle(IPC.connectionsList, (): Promise<ConnectionInfo[]> => connections.list())
   ipcMain.handle(IPC.connectionsUpdate, (_e, connection: ProviderConnection): Promise<ConnectionInfo> => {
-    if (!CONNECTION_IDS.includes(connection?.id)) throw new Error('Unknown connection')
+    if (!connection || typeof connection !== 'object') throw new Error('Unknown connection')
+    connectionIdArg(connection.id)
     return connections.update(connection)
   })
-  ipcMain.handle(IPC.connectionsSetSecret, (_e, input: ConnectionSecretInput): Promise<ConnectionInfo> => connections.setSecret(input))
-  ipcMain.handle(IPC.connectionsTest, (_e, id: ConnectionId): Promise<ConnectionStatus> => connections.test(id))
-  ipcMain.handle(IPC.connectionsConnect, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.connect(id))
+  ipcMain.handle(IPC.connectionsSetSecret, (_e, input: unknown): Promise<ConnectionInfo> => connections.setSecret(connectionSecretArgs(input)))
+  ipcMain.handle(IPC.connectionsTest, (_e, id: unknown): Promise<ConnectionStatus> => connections.test(connectionIdArg(id)))
+  ipcMain.handle(IPC.connectionsConnect, (_e, id: unknown): Promise<ConnectionInfo> => connections.connect(connectionIdArg(id)))
   ipcMain.handle(IPC.connectionsLogin, (_e, id: 'openai', method?: ConnectionLoginMethod): Promise<ConnectionLoginStart> =>
     connections.login(id, method === 'deviceCode' ? 'deviceCode' : 'browser')
   )
   ipcMain.handle(IPC.connectionsCancelLogin, (_e, loginId: string): Promise<void> => connections.cancelLogin(loginId))
-  ipcMain.handle(IPC.connectionsLogout, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.logout(id))
-  ipcMain.handle(IPC.modelsList, (_e, query?: ModelsQuery): ProviderModel[] => connections.models(query))
-  ipcMain.handle(IPC.modelsRefresh, (_e, query?: ModelsQuery): Promise<ProviderModel[]> => connections.refresh(query))
+  ipcMain.handle(IPC.connectionsLogout, (_e, id: unknown): Promise<ConnectionInfo> => connections.logout(connectionIdArg(id)))
+  ipcMain.handle(IPC.modelsList, (_e, query?: unknown): ProviderModel[] => connections.models(modelsQueryArg(query)))
+  ipcMain.handle(IPC.modelsRefresh, (_e, query?: unknown): Promise<ProviderModel[]> => connections.refresh(modelsQueryArg(query)))
   ipcMain.handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => {
     const connection = query && typeof query === 'object' ? query.connection : undefined
     if (connection !== undefined && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
@@ -806,6 +809,56 @@ function registerMcpIpc(
 }
 
 /**
+ * The settings the renderer sees (settings:get / settings:set results, the settings:changed push): defaultConnection
+ * is the effective default, never the stored value (defaultConnectionChosen still says whether the user picked it;
+ * settings:set keeps the stored value whatever is echoed back). Pure; exported for tests and index.ts.
+ */
+export function withEffectiveDefault(s: AppSettings, effective: ConnectionId): AppSettings {
+  return { ...s, defaultConnection: effective }
+}
+
+/**
+ * connections:test / connections:logout input: a known ConnectionId (an own entry of CONNECTION_IDS, never a
+ * prototype key), else "Unknown connection". Exported for tests.
+ */
+export function connectionIdArg(raw: unknown): ConnectionId {
+  if (!isConnectionId(raw)) throw new Error('Unknown connection')
+  return raw
+}
+
+/** Longest LiteLLM key accepted over IPC (connections:setSecret). */
+export const CONNECTION_SECRET_MAX_CHARS = 4000
+
+/**
+ * connections:setSecret input rebuilt as `{ id: 'litellm', apiKey: string | null }`: the key is printable text
+ * without line breaks or control characters (it becomes an env var and an Authorization header), at most
+ * CONNECTION_SECRET_MAX_CHARS; '' or null clears it. Anything else is refused; extra fields are dropped. The error
+ * never echoes the value. Exported for tests.
+ */
+export function connectionSecretArgs(raw: unknown): ConnectionSecretInput {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Only the LiteLLM connection has a stored secret')
+  const i = raw as Record<string, unknown>
+  if (i.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
+  if (i.apiKey === null || i.apiKey === undefined) return { id: 'litellm', apiKey: null }
+  if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')
+  if (i.apiKey.length > CONNECTION_SECRET_MAX_CHARS) throw new Error(`The API key is too long (at most ${CONNECTION_SECRET_MAX_CHARS} characters).`)
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(i.apiKey.trim())) throw new Error('The API key contains line breaks or hidden characters.')
+  return { id: 'litellm', apiKey: i.apiKey }
+}
+
+/**
+ * models:list / models:refresh input rebuilt: undefined or null for every enabled connection, else an object whose
+ * `connection` is absent or a known ConnectionId; other fields are dropped. Exported for tests.
+ */
+export function modelsQueryArg(raw: unknown): ModelsQuery | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Unknown connection')
+  const connection = (raw as Record<string, unknown>).connection
+  if (connection === undefined) return {}
+  return { connection: connectionIdArg(connection) }
+}
+
+/**
  * settings:set input: a plain object (anything else is refused), merged onto the stored settings (never onto the
  * defaults, so a field the renderer left out keeps its stored value). The main-owned fields always keep their stored
  * values: defaultConnection, defaultConnectionChosen and defaultConnectionReplaced (change the default only through
@@ -825,6 +878,15 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
     providerAuth: _auth,
     ...rest
   } = incoming
+  // A field whose kind differs from the stored one's (a non-array modelPrices, a string flag, null) is dropped, so a
+  // malformed save never wipes a stored value. undefined still clears an optional field; a field with nothing stored
+  // goes through to SettingsStore normalization.
+  const kindOf = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v)
+  const storedFields = stored as unknown as Record<string, unknown>
+  for (const [key, value] of Object.entries(rest)) {
+    const was = Object.hasOwn(storedFields, key) ? storedFields[key] : undefined
+    if (value !== undefined && was !== undefined && kindOf(value) !== kindOf(was)) delete (rest as Record<string, unknown>)[key]
+  }
   const out: AppSettings = { ...stored, ...rest }
   out.defaultConnection = stored.defaultConnection
   out.connections = stored.connections
