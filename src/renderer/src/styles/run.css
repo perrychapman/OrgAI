@@ -493,6 +493,20 @@
   background: var(--success);
   display: inline-block;
 }
+/* Finished list (side panel): the role beside a member's handle, secondary to it. */
+.finished-role {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* A long handle with no spaces wraps instead of widening the panel. */
+.finished-title strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
 /* Finished list (side panel): the agent a folded member ran under, when it is not a direct report. */
 .finished-under {
   font-size: var(--text-caption);

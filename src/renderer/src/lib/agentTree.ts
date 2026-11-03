@@ -1,9 +1,28 @@
 import type { AgentInstance } from '@shared/types'
+import { HIDDEN_OR_CONTROL_RUN } from './hiddenChars'
+
+/** Longest handle the fold shows before an ellipsis (handles are chosen by the model). */
+export const AGENT_LABEL_MAX = 64
+/** Non-global twin of HIDDEN_OR_CONTROL_RUN, so `test` keeps no lastIndex between calls. */
+const UNSAFE_HANDLE = new RegExp(HIDDEN_OR_CONTROL_RUN.source, 'u')
 
 type AgentLookup = Map<string, AgentInstance> | Record<string, AgentInstance>
 
 function lookup(byId: AgentLookup, id: string): AgentInstance | undefined {
   return byId instanceof Map ? byId.get(id) : Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : undefined
+}
+
+/**
+ * How the fold names an agent, matching its canvas node: the handle other agents address it by (e.g. "runtime-lead-1"),
+ * else its name (the role name; the root usually has no handle). A handle is model-chosen, untrusted text: one with
+ * control, zero-width or bidi characters falls back to the role name, and a long one is cut to `AGENT_LABEL_MAX`.
+ */
+export function agentLabel(a: Pick<AgentInstance, 'name' | 'handle'>): string {
+  const h = a.handle?.trim()
+  if (!h) return a.name
+  if (UNSAFE_HANDLE.test(h)) return a.name
+  const chars = [...h]
+  return chars.length > AGENT_LABEL_MAX ? `${chars.slice(0, AGENT_LABEL_MAX - 1).join('')}…` : h
 }
 
 /** Ancestor ids from the direct parent upward. Cycle-safe; stops at null or an unknown parent. */

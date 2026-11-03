@@ -5,12 +5,14 @@ import { Button } from './ui/Button'
 import { formatElapsed, initials } from '../lib/layout'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
+import { agentLabel } from '../lib/agentTree'
 
 export interface FinishedGroup {
+  /** The group's parent as the fold names it (`agentLabel`), or "an earlier session". */
   parentName: string
   /** Every folded agent in the subtree, direct reports first. */
   agents: AgentInstance[]
-  /** The name of the agent a member ran under, when it is not a direct report of the group's parent. */
+  /** The label (`agentLabel`) of the agent a member ran under, when it is not a direct report of the group's parent. */
   underOf?: (a: AgentInstance) => string | undefined
   onPick: (agentId: string) => void
   onExpand: () => void
@@ -42,27 +44,31 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
           Show on chart
         </Button>
       </div>
-      {sorted.map((a) => (
-        <button type="button" key={a.id} className="finished-row" onClick={() => group.onPick(a.id)}>
-          <span className="avatar" style={{ ['--role' as string]: a.worktree?.status === 'conflict' ? 'var(--danger)' : 'var(--border-strong)' }}>
-            {initials(a.name)}
-          </span>
-          <span className="finished-body">
-            <span className="finished-title">
-              <strong>{a.name}</strong>
-              <Badge tone={a.state === 'error' ? 'danger' : 'neutral'}>{a.state === 'error' ? 'failed' : 'done'}</Badge>
-              {a.worktree && <Badge>{WT_LABEL[a.worktree.status] ?? a.worktree.status}</Badge>}
+      {sorted.map((a) => {
+        const label = agentLabel(a)
+        return (
+          <button type="button" key={a.id} className="finished-row" onClick={() => group.onPick(a.id)}>
+            <span className="avatar" style={{ ['--role' as string]: a.worktree?.status === 'conflict' ? 'var(--danger)' : 'var(--border-strong)' }}>
+              {initials(a.name)}
             </span>
-            {under.get(a.id) && <span className="finished-under">under {under.get(a.id)}</span>}
-            <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
-          </span>
-          <span className="finished-meta">
-            <Cost value={agentCostInput(a)} hideEmpty />
-            <br />
-            {formatElapsed(a.startedAt, a.endedAt)}
-          </span>
-        </button>
-      ))}
+            <span className="finished-body">
+              <span className="finished-title">
+                <strong>{label}</strong>
+                {label !== a.name && <span className="finished-role">{a.name}</span>}
+                <Badge tone={a.state === 'error' ? 'danger' : 'neutral'}>{a.state === 'error' ? 'failed' : 'done'}</Badge>
+                {a.worktree && <Badge>{WT_LABEL[a.worktree.status] ?? a.worktree.status}</Badge>}
+              </span>
+              {under.get(a.id) && <span className="finished-under">under {under.get(a.id)}</span>}
+              <span className="finished-sub">{(a.result ?? a.lastText ?? a.activity).replace(/\s+/g, ' ').slice(0, 140)}</span>
+            </span>
+            <span className="finished-meta">
+              <Cost value={agentCostInput(a)} hideEmpty />
+              <br />
+              {formatElapsed(a.startedAt, a.endedAt)}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }

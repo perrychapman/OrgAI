@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance } from '@shared/types'
 import { earlierKey, isEarlierKey } from './chainView'
-import { foldFinished, groupParentOf, type FoldResult } from './foldFinished'
+import { COLLAPSE_GRACE_MS, SETTLE_TIMER_FLOOR_MS, foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay, type FoldResult } from './foldFinished'
 
 const ag = (id: string, parentId: string | null, state = 'done'): AgentInstance => ({ id, parentId, state }) as unknown as AgentInstance
 const settled = (a: AgentInstance): boolean => a.state === 'done' || a.state === 'error'
@@ -180,5 +180,82 @@ describe('foldFinished', () => {
     const r = foldFinished({ agents, isSettled: settled, expanded: {}, collapse: true })
     const folded = [...r.groups.values()].reduce((n, g) => n + g.length, 0)
     expect(r.visibleAgents.length + folded).toBe(3)
+  })
+})
+
+const ended = (id: string, parentId: string | null, endedAt: number | undefined, extra: Partial<AgentInstance> = {}): AgentInstance =>
+  ({ id, parentId, state: 'done', endedAt, ...extra }) as unknown as AgentInstance
+
+describe('isSettledAt', () => {
+  it('settles a finished agent once the grace period has passed', () => {
+    const a = ended('a', 'root', 1000)
+    expect(isSettledAt(a, 1000 + COLLAPSE_GRACE_MS - 1)).toBe(false)
+    expect(isSettledAt(a, 1000 + COLLAPSE_GRACE_MS)).toBe(true)
+  })
+  it('never settles a working agent or one whose worktree is still integrating', () => {
+    expect(isSettledAt(ended('a', 'root', 0, { state: 'thinking' } as Partial<AgentInstance>), 1e9)).toBe(false)
+    expect(isSettledAt(ended('a', 'root', 0, { worktree: { status: 'active' } } as unknown as Partial<AgentInstance>), 1e9)).toBe(false)
+    expect(isSettledAt(ended('a', 'root', 0, { worktree: { status: 'merged' } } as unknown as Partial<AgentInstance>), 1e9)).toBe(true)
+  })
+  it('settles a finished agent with no endedAt at once (nothing to time the grace from)', () => {
+    expect(isSettledAt(ended('a', 'root', undefined), 0)).toBe(true)
+  })
+})
+
+describe('nextSettleAt', () => {
+  it('is undefined when nothing is waiting out its grace period', () => {
+    expect(nextSettleAt([], 0)).toBeUndefined()
+    expect(nextSettleAt([ended('a', 'root', undefined), ended('b', 'root', 0, { state: 'thinking' } as Partial<AgentInstance>)], 0)).toBeUndefined()
+    // Already settled at the fold time: no timer for it.
+    expect(nextSettleAt([ended('a', 'root', 0)], COLLAPSE_GRACE_MS)).toBeUndefined()
+  })
+  it('picks the earliest moment still ahead among several pending agents', () => {
+    const agents = [ended('a', 'root', 5000), ended('b', 'root', 2000), ended('c', 'root', 0), ended('d', 'root', 3000)]
+    // c settled at 6000 (not ahead of 7000); b at 8000 is the earliest still ahead.
+    expect(nextSettleAt(agents, 7000)).toBe(2000 + COLLAPSE_GRACE_MS)
+  })
+  it('skips an agent whose worktree is not settled yet (its next event re-checks)', () => {
+    expect(nextSettleAt([ended('a', 'root', 0, { worktree: { status: 'active' } } as unknown as Partial<AgentInstance>)], 0)).toBeUndefined()
+  })
+  it('moves past a moment once the fold is computed at it, so the timer re-arms for the next one', () => {
+    const agents = [ended('a', 'root', 0), ended('b', 'root', 1000)]
+    const due = nextSettleAt(agents, -1) as number
+    expect(due).toBe(COLLAPSE_GRACE_MS)
+    expect(nextSettleAt(agents, due)).toBe(1000 + COLLAPSE_GRACE_MS)
+  })
+  it('does not depend on how often events arrive: the same agents give the same moment', () => {
+    const agents = [ended('a', 'root', 1000)]
+    expect(nextSettleAt(agents, 0)).toBe(nextSettleAt([...agents], 0))
+  })
+})
+
+describe('settleTimerDelay', () => {
+  it('waits until the moment, never less than the floor', () => {
+    expect(settleTimerDelay(5000, 1000)).toBe(4000)
+    expect(settleTimerDelay(1100, 1000)).toBe(SETTLE_TIMER_FLOOR_MS)
+  })
+  it('re-checks at once (the floor) when the moment is already past', () => {
+    expect(settleTimerDelay(1000, 9000)).toBe(SETTLE_TIMER_FLOOR_MS)
+  })
+})
+
+describe('foldFinished with a timed expansion', () => {
+  it('keeps the reports finished before the expansion and folds the ones that finish after it', () => {
+    const agents = [ag('root', null, 'running'), ended('old', 'root', 100), ended('new', 'root', 900), ag('busy', 'root', 'running')]
+    const r = foldFinished({ agents, isSettled: settled, expanded: { root: 500 }, collapse: true })
+    expect(ids(r.visibleAgents)).toEqual(['root', 'old', 'busy'])
+    expect(ids(r.groups.get('root'))).toEqual(['new'])
+    expectAttached(r, 'root')
+  })
+  it('shows every report with a plain true expansion', () => {
+    const agents = [ag('root', null, 'running'), ended('old', 'root', 100), ended('new', 'root', 900)]
+    const r = foldFinished({ agents, isSettled: settled, expanded: { root: true }, collapse: true })
+    expect(ids(r.visibleAgents)).toEqual(['root', 'old', 'new'])
+    expect(r.groups.size).toBe(0)
+  })
+  it('keeps a report with no endedAt shown under a timed expansion', () => {
+    const agents = [ag('root', null, 'running'), ended('x', 'root', undefined)]
+    const r = foldFinished({ agents, isSettled: settled, expanded: { root: 500 }, collapse: true })
+    expect(ids(r.visibleAgents)).toEqual(['root', 'x'])
   })
 })
