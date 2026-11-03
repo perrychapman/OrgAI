@@ -158,7 +158,7 @@ describe('registered handlers', () => {
       setup: {} as never,
       maintenance: {} as never,
       settings: settings as never,
-      connections: {} as never,
+      connections: { effectiveSettings: () => settings.get() } as never,
       mcp: { removeProjectSecrets: vi.fn() } as never,
       adapterIds: ['mock'],
       harnessProject: () => makeProject({ id: 'harness', name: 'OrgAI', roles: [] }),

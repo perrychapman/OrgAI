@@ -1,6 +1,6 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
-import { newId } from '@shared/defaults'
+import { effectiveSubagentLimits, newId } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
@@ -198,7 +198,9 @@ class CodexSession implements RuntimeSession {
     this.root = root
     this.setupLike = isSetupLikeRun(ctx.run.kind)
     this.isolation = !this.setupLike && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
-    this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: ctx.project.maxSubagentDepth, maxConcurrent: ctx.project.maxConcurrentSubagents })
+    // Explicit project limits win; otherwise derived from the roles this run actually has (effectiveSubagentLimits).
+    const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
+    this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
     this.partial = new ThrottledPartial((agentId, text) => this.emit({ type: 'agent.partial', runId: ctx.run.id, agentId, text }))
 

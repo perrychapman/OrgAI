@@ -105,6 +105,7 @@ import type { SetupService } from './setup/service'
 import type { MaintenanceService } from './maintenance'
 import type { SettingsStore } from './store/settings'
 import type { ConnectionService } from './connections/service'
+import { settingsForSave } from './connections/defaultPick'
 import type { McpService } from './mcp/service'
 import type { AgentImportService } from './setup/import/importer'
 import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from './skills/types'
@@ -257,7 +258,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   const projectOrHarness = (id: string): Project | null =>
     id === HARNESS_PROJECT_ID ? harnessProject()
     : id === QUICK_PROJECT_ID ? quick.displayProject()
-    : id === SKILLS_PROJECT_ID ? skillsProject(settings.get(), settings.dataDir, { mock })
+    : id === SKILLS_PROJECT_ID ? skillsProject(connections.effectiveSettings(), settings.dataDir, { mock })
     : projects.get(id)
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
@@ -322,7 +323,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   // Skill assistant: library scope on the virtual skills project, project scope on a stored project.
   ipcMain.handle(IPC.skillsStartAssist, async (_e, input: unknown): Promise<RunSummary> => {
     const target = skillAssistArgs(input, (id) => !!projects.get(id))
-    const project = target.library ? skillsProject(settings.get(), settings.dataDir, { mock }) : projects.get(target.projectId)
+    const project = target.library ? skillsProject(connections.effectiveSettings(), settings.dataDir, { mock }) : projects.get(target.projectId)
     if (!project) throw new Error('Project not found')
     return runs.start({ project, kind: 'skill-assist', prompt: skillAssistPrompt(project, target.instruction) })
   })
@@ -366,7 +367,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     // A quick run continues as the project rebuilt from its own summary (folder, team, edits), never a stored one.
     checkQuickContinue(from, input.text, settings.dataDir)
     const existing = from.quick ? quick.projectFor(from)
-      : from.projectId === HARNESS_PROJECT_ID ? harnessProjectFor(from, settings.get(), settings.dataDir, mock)
+      : from.projectId === HARNESS_PROJECT_ID ? harnessProjectFor(from, connections.effectiveSettings(), settings.dataDir, mock)
       : projectOrHarness(from.projectId)
     if (!existing) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
@@ -442,7 +443,12 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   const settingsInfo = (): AppSettingsInfo => buildSettingsInfo(settings.get(), { dataDir: settings.dataDir, appVersion: app.getVersion() })
   ipcMain.handle(IPC.settingsGet, () => settingsInfo())
   ipcMain.handle(IPC.settingsSet, (_e, next: AppSettings) => {
-    settings.set(stripSettingsInfo(next))
+    settings.set(
+      settingsForSave(stripSettingsInfo(next), settings.get(), {
+        autoReplaced: connections.autoReplacedDefault(),
+        refusal: (id) => connections.defaultRefusalFor(id)
+      })
+    )
     return settingsInfo()
   })
   // Deprecated (phase 1 removes NotificationsToggle): a mirror of AppSettings.notifications, the only source the
@@ -485,7 +491,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   )
 
   registerConnectionIpc(projects, connections)
-  registerMcpIpc(runs, mcp, projectOrHarness, { quick, settings, mock })
+  registerMcpIpc(runs, mcp, projectOrHarness, { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock })
   registerSkillIpc(skills, skillEvaluation)
   registerCapabilityIpc(capabilities)
 }
@@ -720,6 +726,10 @@ function registerCapabilityIpc(capabilities: CapabilityServiceApi): void {
 
 /** Connections, model catalog and remaps: ConnectionService 1:1. */
 function registerConnectionIpc(projects: ProjectStore, connections: ConnectionService): void {
+  ipcMain.handle(IPC.connectionsSetDefault, (_e, raw: unknown): Promise<ConnectionInfo[]> => {
+    if (raw !== null && !(typeof raw === 'string' && (CONNECTION_IDS as readonly string[]).includes(raw))) throw new Error('Unknown connection')
+    return connections.setDefault(raw as ConnectionId | null)
+  })
   ipcMain.handle(IPC.connectionsList, (): Promise<ConnectionInfo[]> => connections.list())
   ipcMain.handle(IPC.connectionsUpdate, (_e, connection: ProviderConnection): Promise<ConnectionInfo> => {
     if (!CONNECTION_IDS.includes(connection?.id)) throw new Error('Unknown connection')
@@ -752,7 +762,7 @@ function registerMcpIpc(
   runs: RunManager,
   mcp: McpService,
   projectOrHarness: (id: string) => Project | null,
-  assist: { quick: QuickRunService; settings: SettingsStore; mock: boolean }
+  assist: { quick: QuickRunService; settings: SettingsStore; effectiveSettings: () => AppSettings; mock: boolean }
 ): void {
   ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
   ipcMain.handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
@@ -771,7 +781,7 @@ function registerMcpIpc(
     if (allowBuild) {
       const workspace = createScratchDir(assist.settings.dataDir)
       try {
-        const project = buildHarnessProject(assist.settings.get(), assist.settings.dataDir, { mock: assist.mock, allowBuild: true, workspace })
+        const project = buildHarnessProject(assist.effectiveSettings(), assist.settings.dataDir, { mock: assist.mock, allowBuild: true, workspace })
         return await runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction), buildWorkspace: workspace })
       } catch (e) {
         assist.quick.removeScratch(workspace)

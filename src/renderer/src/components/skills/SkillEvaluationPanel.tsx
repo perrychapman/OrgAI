@@ -311,7 +311,8 @@ export function SkillEvaluationSettings({ project }: { project: Project }): Reac
   const uid = useId()
   const updateProject = useAppStore((s) => s.updateProject)
   const settings = skillEvaluationOf(project)
-  const save = (next: Partial<typeof settings>): void => updateProject({ ...project, skillEvaluation: { ...settings, ...next } })
+  // Write only what the user changed: an unset `enabled` keeps following the Team assistant (skillEvaluationOf).
+  const save = (next: Partial<typeof settings>): void => updateProject({ ...project, skillEvaluation: { ...project.skillEvaluation, tokenBudget: settings.tokenBudget, ...next } })
   return (
     <SettingsGroup title="Evaluation">
       <SettingsCard>

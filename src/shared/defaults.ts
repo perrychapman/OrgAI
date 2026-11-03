@@ -4,6 +4,8 @@ import type {
   AppearanceSettings,
   AppSettings,
   ConnectionId,
+  ConnectionStatus,
+  Effort,
   ImageMediaType,
   McpLibraryEntry,
   McpServerSpec,
@@ -23,9 +25,10 @@ import type {
   TeamReviewSettings,
   SkillSpec,
   TokenUsage,
+  UsageStatus,
   ToolName
 } from './types'
-import { DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier } from './types'
+import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -162,9 +165,103 @@ export function resolveModelSetting(value: string | undefined, ctx: TierContext)
   return { model: v, ...(known ? { tier: known } : {}) }
 }
 
-/** Whether a project steers deep- and top-tier spawns to the everyday tier near the plan limit (legacy field honoured). */
+/**
+ * Whether a project explicitly turned the plan guard on (legacy field honoured). Only an explicit true counts: an unset
+ * value is 'auto' (see planGuardOf), which this returns false for. Prefer planGuardOf in new code.
+ */
 export function preferEverydayNearLimit(project: Pick<Project, 'preferEverydayNearLimit' | 'preferSonnetNearLimit'> | null | undefined): boolean {
   return (project?.preferEverydayNearLimit ?? project?.preferSonnetNearLimit) === true
+}
+
+/** The plan guard setting of a project: 'on' / 'off' when set explicitly (legacy preferSonnetNearLimit honoured), else 'auto'. */
+export type PlanGuardMode = 'on' | 'off' | 'auto'
+
+/**
+ * Project.preferEverydayNearLimit as a mode: explicit true = 'on', explicit false = 'off', unset (and no legacy value)
+ * = 'auto'. Adapters decide 'auto' per run with planGuardEngaged.
+ */
+export function planGuardOf(project: Pick<Project, 'preferEverydayNearLimit' | 'preferSonnetNearLimit'> | null | undefined): PlanGuardMode {
+  const v = project?.preferEverydayNearLimit ?? project?.preferSonnetNearLimit
+  return v === true ? 'on' : v === false ? 'off' : 'auto'
+}
+
+/**
+ * Whether a usage report shows a plan with a weekly window: a seven-day window (overall, deep or everyday model) or a
+ * per-model weekly window was reported. API-key and LiteLLM spend reports never have one.
+ */
+export function hasWeeklyPlanWindow(usage: UsageStatus | null | undefined): boolean {
+  if (!usage || usage.authMode === 'apiKey') return false
+  const w = usage.windows ?? {}
+  return !!(w.sevenDay || w.sevenDayOpus || w.sevenDaySonnet || (usage.modelWindows?.length ?? 0) > 0)
+}
+
+/**
+ * Whether the plan guard is armed for a run: 'on' always, 'off' never, 'auto' exactly when the run's connection
+ * reports a weekly plan window or its latest rate-limit status is 'allowed_warning'. Armed is not the same as
+ * steering: the adapter still compares the guarding window with AppSettings.opusGuardThreshold. Pure.
+ */
+export function planGuardEngaged(mode: PlanGuardMode, usage: UsageStatus | null | undefined): boolean {
+  if (mode === 'on') return true
+  if (mode === 'off') return false
+  if (!usage || usage.authMode === 'apiKey') return false
+  return hasWeeklyPlanWindow(usage) || usage.status === 'allowed_warning'
+}
+
+/** The subagent limits a run actually uses (Project.maxSubagentDepth / maxConcurrentSubagents or the automatic values). */
+export interface SubagentLimits {
+  /** Levels of reports that may spawn (1 = reports cannot spawn). */
+  depth: number
+  /** Most reports running at once. */
+  concurrency: number
+  /** Which value came from the project (an explicit override) rather than the automatic rule. */
+  explicit: { depth: boolean; concurrency: boolean }
+}
+
+/**
+ * Longest reportsTo chain of an org chart, in edges (root alone = 0, root -> lead -> engineer = 2). A reportsTo that
+ * names no role ends the chain; cycles are cut. Pure.
+ */
+export function orgChartDepth(roles: readonly Pick<Role, 'id' | 'reportsTo'>[]): number {
+  const byId = new Map(roles.map((r) => [r.id, r]))
+  let longest = 0
+  for (const role of roles) {
+    let edges = 0
+    const seen = new Set<string>([role.id])
+    let cur = role.reportsTo ? byId.get(role.reportsTo) : undefined
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      edges++
+      cur = cur.reportsTo ? byId.get(cur.reportsTo) : undefined
+    }
+    longest = Math.max(longest, edges)
+  }
+  return longest
+}
+
+function explicitLimit(v: unknown, max: number): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 1 ? Math.min(max, Math.round(v)) : undefined
+}
+
+/**
+ * The subagent limits of a project. An explicit Project.maxSubagentDepth / maxConcurrentSubagents (a finite number
+ * >= 1, clamped to the limits) wins. Otherwise depth = orgChartDepth(roles) + 1 (one level for forks), at least 1, at
+ * most MAX_SUBAGENT_DEPTH_LIMIT, and concurrency = DEFAULT_MAX_CONCURRENT_SUBAGENTS. Every reader (env vars, Codex
+ * network, prompts, proposals) goes through this. Pure.
+ */
+export function effectiveSubagentLimits(project: Pick<Project, 'maxSubagentDepth' | 'maxConcurrentSubagents'> & { roles?: readonly Pick<Role, 'id' | 'reportsTo'>[] }): SubagentLimits {
+  const depth = explicitLimit(project.maxSubagentDepth, MAX_SUBAGENT_DEPTH_LIMIT)
+  const concurrency = explicitLimit(project.maxConcurrentSubagents, MAX_CONCURRENT_SUBAGENTS_LIMIT)
+  const auto = Math.min(MAX_SUBAGENT_DEPTH_LIMIT, Math.max(1, orgChartDepth(project.roles ?? []) + 1))
+  return {
+    depth: depth ?? auto,
+    concurrency: concurrency ?? DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+    explicit: { depth: depth !== undefined, concurrency: concurrency !== undefined }
+  }
+}
+
+/** Reasoning effort levels a role can pick on an adapter (Role.effort). Codex passes effort only for low / medium / high. */
+export function effortOptionsFor(adapterId: ProviderId | null | undefined): Effort[] {
+  return adapterId === 'codex' ? ['low', 'medium', 'high'] : ['low', 'medium', 'high', 'xhigh', 'max']
 }
 
 const CLAUDE_ALIAS_TIERS: Record<string, ModelTier> = { fable: 'top', opus: 'deep', sonnet: 'everyday', haiku: 'fast' }
@@ -444,6 +541,43 @@ export function connectionInUse(
   return projects.some((p) => projectConnection(p) === id)
 }
 
+/**
+ * Whether a connection's record allows it to be used at all: anthropic always; openai when enabled; litellm when
+ * enabled with a base URL and a stored key. Says nothing about its live status. Pure.
+ */
+export function connectionConfigured(id: ConnectionId, connections: Partial<ProviderConnections> | undefined): boolean {
+  if (id === 'anthropic') return true
+  if (id === 'openai') return connections?.openai?.enabled === true
+  const l = connections?.litellm
+  return l?.enabled === true && !!l.baseUrl?.trim() && l.hasApiKey === true
+}
+
+/** Whether a connection can be the default: configured (connectionConfigured) and its live status is 'connected'. Pure. */
+export function connectionUsable(id: ConnectionId, connections: Partial<ProviderConnections> | undefined, state: ConnectionStatus['state'] | undefined): boolean {
+  return connectionConfigured(id, connections) && state === 'connected'
+}
+
+/**
+ * The default connection consumers use (new projects, Chat, the MCP and Skill assistants). `states` holds the live
+ * state of every configured connection (connectionConfigured), 'unknown' while it has not been probed yet; leave out
+ * connections that are not configured. Returns the stored default when it is connected, or while its state is still
+ * 'connecting' or 'unknown' (no flip while a probe runs, e.g. at boot); else the only connected connection; else,
+ * with several connected, the first in CONNECTION_IDS order; else the stored value (anthropic when unset). `chosen`
+ * does not change the answer (an explicit pick that is down still yields to a connected connection); it is accepted
+ * so callers pass the whole setting. Pure.
+ */
+export function effectiveDefaultConnection(input: {
+  stored: ConnectionId | undefined
+  chosen?: boolean
+  states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>>
+}): ConnectionId {
+  const stored = input.stored && (CONNECTION_IDS as readonly string[]).includes(input.stored) ? input.stored : 'anthropic'
+  const own = input.states[stored]
+  if (own === 'connected' || own === 'connecting' || own === 'unknown') return stored
+  const connected = CONNECTION_IDS.filter((id) => input.states[id] === 'connected')
+  return connected[0] ?? stored
+}
+
 /** Provider label for a connection. Anthropic follows the auth choice. */
 export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth']): string {
   return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : 'LiteLLM'
@@ -585,13 +719,8 @@ export function newProject(input: { name: string; path: string; brief: string; s
       provider: { id: 'claude', label: claudeProviderLabel(auth), auth, connection: 'anthropic' },
       permissionMode: settings.defaultPermissionMode,
       maxBudgetUsd: settings.defaultMaxBudgetUsd,
-      maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
-      maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
       isolateWriters: settings.defaultIsolateWriters,
       keepRuns: settings.defaultKeepRuns,
-      preferEverydayNearLimit: settings.defaultPreferEverydayNearLimit,
-      // Deprecated mirror for renderer code that still reads the legacy name (ProjectStore keeps the two in step).
-      preferSonnetNearLimit: settings.defaultPreferEverydayNearLimit,
       autoContinue: settings.defaultAutoContinue,
       maxAutoContinues: settings.defaultMaxAutoContinues,
       roles,
@@ -607,8 +736,6 @@ export function newProject(input: { name: string; path: string; brief: string; s
     brief: input.brief,
     provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' }, connection: 'anthropic' },
     permissionMode: 'auto',
-    maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
-    maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
     isolateWriters: true,
     roles: defaultRoles(),
     setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
@@ -666,8 +793,11 @@ export function cacheHitRate(t: TokenUsage): number | null {
 
 // ---------- Skills ----------
 
-/** Project.skillEvaluation when unset: off, with a modest budget for the model-assisted step. */
-export const DEFAULT_SKILL_EVALUATION: SkillEvaluationSettings = { enabled: false, tokenBudget: 20_000 }
+/**
+ * Project.skillEvaluation when unset: `enabled` follows the Team assistant (skillEvaluationOf), with a modest budget
+ * for the model-assisted step.
+ */
+export const DEFAULT_SKILL_EVALUATION: SkillEvaluationSettings = { tokenBudget: 20_000 }
 /** Bounds of SkillEvaluationSettings.tokenBudget (settings inputs, store normalization). */
 export const SKILL_EVAL_MIN_BUDGET = 1_000
 export const SKILL_EVAL_MAX_BUDGET = 500_000
@@ -676,14 +806,26 @@ export const SKILL_EVALUATION_RUNS = 20
 /** Most suggestions the model-assisted step may draft. */
 export const SKILL_MAX_SUGGESTIONS = 3
 
-/** The project's evaluation settings with defaults filled in and the budget clamped. */
-export function skillEvaluationOf(project: Pick<Project, 'skillEvaluation'> | null | undefined): SkillEvaluationSettings {
+/**
+ * The project's evaluation settings with defaults filled in and the budget clamped. `enabled` is always set: an
+ * explicit boolean wins, else it follows the Team assistant (`teamReviewOf(project).auto === 'ai'`).
+ */
+export function skillEvaluationOf(project: Pick<Project, 'skillEvaluation' | 'teamReview'> | null | undefined): SkillEvaluationSettings & { enabled: boolean } {
   const s = project?.skillEvaluation
   const budget = typeof s?.tokenBudget === 'number' && Number.isFinite(s.tokenBudget) ? Math.round(s.tokenBudget) : DEFAULT_SKILL_EVALUATION.tokenBudget
   return {
-    enabled: s?.enabled === true,
+    enabled: typeof s?.enabled === 'boolean' ? s.enabled : teamReviewOf(project).auto === 'ai',
     tokenBudget: Math.min(SKILL_EVAL_MAX_BUDGET, Math.max(SKILL_EVAL_MIN_BUDGET, budget))
   }
+}
+
+/**
+ * Project.skillEvaluation as stored: the budget clamped and `enabled` kept only when it is an explicit boolean (unset
+ * stays unset, so it keeps following the Team assistant). For ProjectStore normalization.
+ */
+export function storedSkillEvaluation(value: SkillEvaluationSettings | null | undefined): SkillEvaluationSettings {
+  const { enabled: _derived, ...rest } = skillEvaluationOf({ skillEvaluation: value ?? undefined, teamReview: { auto: 'off', tokenBudget: 0, everyRuns: 1 } })
+  return typeof value?.enabled === 'boolean' ? { enabled: value.enabled, ...rest } : rest
 }
 
 /**

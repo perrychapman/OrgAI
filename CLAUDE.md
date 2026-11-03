@@ -303,6 +303,36 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     edits free, session setMode / addDirectories from canUseTool, the CLI's per-segment matching agreeing with ours,
     a restarted query picking up new additionalDirectories, Codex writable_roots and its file-approval wire shape.
 
+- Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
+  automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
+  - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`:
+    stored while connected / connecting / not yet probed, else the only or first connected in CONNECTION_IDS order,
+    else stored) is what new projects, Chat, the MCP and Skill assistants and the idle usage probes use
+    (`effectiveSettings()`); `ConnectionInfo.isDefault` marks it. While `AppSettings.defaultConnectionChosen` is not
+    true, `setStatus` rewrites the stored value and logs once per change. `connections:setDefault(id | null)` picks
+    (chosen) or returns to automatic; settings:set (`connections/defaultPick.ts` `settingsForSave`) treats a changed
+    default as a pick, refuses one that is not `connectionUsable` ("OpenAI is not connected. Connect it first, then make
+    it the default."), never lets the renderer set `defaultConnectionChosen`, and ignores a stale echo of the value the
+    last automatic rewrite replaced.
+  - Plan guard: `Project.preferEverydayNearLimit` unset = 'auto' (`planGuardOf`). Claude (`planGuardArmed` in claude.ts)
+    arms 'auto' when `planGuardEngaged`: the usage report has a weekly window or status 'allowed_warning' (never on an
+    API key, proxy or setup run), then steers at `opusGuardThreshold` as before, with one info line per run ("Plan guard
+    is automatic and now active: ..."). Codex has no plan guard. `maxWindowShare` stays an explicit opt-in.
+  - Subagent limits: `Project.maxSubagentDepth` / `maxConcurrentSubagents` are optional; `effectiveSubagentLimits`
+    (explicit wins, else org chart depth in edges + 1 within 1..5, concurrency 8) feeds claude.ts `buildEnv` and the
+    Codex network with the run's own roles. propose_settings leaves a value equal to the automatic one unset.
+  - Team assistant: an unset `skillEvaluation.enabled` follows `teamReviewOf(project).auto === 'ai'`, so one switch
+    drives both model steps (existing projects with the default Team review now get the skill evaluation model step,
+    within its token budget); an explicit false still wins.
+  - `effortOptionsFor(adapterId)`: claude / mock low..max, codex low, medium, high (Codex passes effort only for those).
+    `PERMISSION_MODE_OPTIONS` labels name no vendor.
+  - `maxBudgetUsd` does not count restored session spend (Claude docs, researcher 2026-11-03). claude.ts
+    `restartBudget` passes the budget minus the run's cost so far, which agrees, but `runCost`'s baseline subtraction
+    assumes a resumed query's total includes the earlier spend and can undercount if it starts at zero. Not fixed.
+  - Verified by unit tests only (src/shared/selfConfig.test.ts, connections/defaultConnection.test.ts,
+    claude.test.ts "plan guard steering", projects / setup / evaluation tests). Not run in the app; boot behaviour
+    depends on probe order.
+
 ## Renderer
 
 - Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard
@@ -455,7 +485,8 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   through the connection's `tierModels` (`defaults.ts` `modelForTier` / `resolveModelSetting`), never a vendor alias.
   The default chart, `newProject`, built-in roles (fallback 'inherit'), run titles, org chart proposals and the drafter
   (`draft.ts` `toRoles` maps tier names per connection) follow it. Near the plan limit, deep/top spawns move to the
-  everyday tier (`Project.preferEverydayNearLimit`; the legacy `preferSonnetNearLimit` is mirrored on renderer saves).
+  everyday tier (`Project.preferEverydayNearLimit`, unset = automatic, see Self-configuration; the legacy
+  `preferSonnetNearLimit` is mirrored on renderer saves).
   Verified by unit tests.
 - Model discovery: Anthropic via `ClaudeAdapter.listModels` (SDK `supportedModels()`, typings 0.3.312 sdk.d.ts:3096,
   no prompt, `strictMcpConfig`, 10 s timeout). The live list (whether it has 'default', which ids, descriptions that
@@ -470,7 +501,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   LiteLLM from the root role's model family. A work run whose roles mix families is refused before the run exists.
   `ConnectionService.runConnection` builds the per-run `RunConnection` (env, API key, Codex home). Verified by unit tests.
 - Default connection: `projects:create` passes `ConnectionService.prepareNewProject` to `ProjectStore.create`. A new
-  project takes `AppSettings.defaultConnection` when `creationConnection` (`defaults.ts`) finds it usable (anthropic
+  project takes the effective default connection (`effectiveDefault()`, see Self-configuration) when `creationConnection` (`defaults.ts`) finds it usable (anthropic
   always, openai when enabled, litellm when enabled with a base URL and a stored key) and the connection maps every
   tier the roles use; otherwise it stays on anthropic. It gets that connection's provider label, tier models (the
   'switched' remap) and adapter. Mock projects and existing projects are untouched. Verified by unit tests.

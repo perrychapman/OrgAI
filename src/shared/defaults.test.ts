@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG } from './defaults'
+import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG } from './defaults'
 import type { ProviderModel } from './types'
 import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
 import { isSafeId } from './defaults'
@@ -59,7 +59,7 @@ describe('tier-based model defaults', () => {
     const p = newProject({ name: 'x', path: '/x', brief: '' }, settings)
     expect(p.roles[0]).toMatchObject({ model: 'claude-opus-9', tier: 'deep' })
     expect(p.roles[1]).toMatchObject({ model: 'sonnet', tier: 'everyday' })
-    expect(p.preferEverydayNearLimit).toBe(false)
+    expect(p.preferEverydayNearLimit).toBeUndefined()
   })
 
   it('reads the near-limit flag with the legacy field as fallback', () => {
@@ -212,13 +212,20 @@ describe('run defaults', () => {
   it('starts new projects unattended with room for parallel, layered work', () => {
     const bare = newProject({ name: 'X', path: '/x', brief: '' })
     expect(bare.permissionMode).toBe('auto')
-    expect(bare.maxConcurrentSubagents).toBe(8)
-    expect(bare.maxSubagentDepth).toBe(3)
+    // Subagent limits are automatic: nothing is stored, effectiveSubagentLimits derives them from the chart.
+    expect(bare.maxConcurrentSubagents).toBeUndefined()
+    expect(bare.maxSubagentDepth).toBeUndefined()
+    expect(effectiveSubagentLimits(bare)).toEqual({ depth: 2, concurrency: 8, explicit: { depth: false, concurrency: false } })
     const fromSettings = newProject({ name: 'X', path: '/x', brief: '' }, DEFAULT_APP_SETTINGS)
     expect(DEFAULT_APP_SETTINGS.defaultPermissionMode).toBe('auto')
     expect(fromSettings.permissionMode).toBe('auto')
-    expect(fromSettings.maxConcurrentSubagents).toBe(8)
-    expect(fromSettings.maxSubagentDepth).toBe(3)
+    expect(fromSettings.maxConcurrentSubagents).toBeUndefined()
+    expect(fromSettings.maxSubagentDepth).toBeUndefined()
+    expect(fromSettings.preferEverydayNearLimit).toBeUndefined()
+    expect(fromSettings.preferSonnetNearLimit).toBeUndefined()
+    expect(planGuardOf(fromSettings)).toBe('auto')
+    // The deprecated app default no longer reaches new projects.
+    expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPreferEverydayNearLimit: true }).preferEverydayNearLimit).toBeUndefined()
     expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'dontAsk' }).permissionMode).toBe('dontAsk')
   })
 })
@@ -227,8 +234,12 @@ describe('permission modes', () => {
   it('lists every mode once, unattended first', () => {
     expect(PERMISSION_MODES[0]).toBe('auto')
     expect([...PERMISSION_MODES].sort()).toEqual(['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'])
-    expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'auto')?.label).toBe('Unattended: Claude decides each call, asks only when unsure')
+    expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'auto')?.label).toBe("Unattended: the model's safety check approves routine calls and asks when unsure")
     expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'dontAsk')?.label).toBe('Never ask: deny anything that would need approval')
+  })
+
+  it('names no vendor or model in any label', () => {
+    for (const o of PERMISSION_MODE_OPTIONS) expect(o.label).not.toMatch(/claude|codex|anthropic|openai|gpt|opus|sonnet/i)
   })
 
   it('recognizes modes', () => {

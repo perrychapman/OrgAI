@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
 import type { Project } from '@shared/types'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, preferEverydayNearLimit } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, preferEverydayNearLimit } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { SETTINGS_COPY } from '../../lib/settingsCopy'
@@ -81,7 +81,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
               describedBy={desc('depth')}
               min={1}
               max={MAX_SUBAGENT_DEPTH_LIMIT}
-              value={project.maxSubagentDepth}
+              value={effectiveSubagentLimits(project).depth}
               onCommit={(n) => patch({ maxSubagentDepth: n })}
             />
           }
@@ -98,7 +98,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
               describedBy={desc('conc')}
               min={1}
               max={MAX_CONCURRENT_SUBAGENTS_LIMIT}
-              value={project.maxConcurrentSubagents}
+              value={effectiveSubagentLimits(project).concurrency}
               onCommit={(n) => patch({ maxConcurrentSubagents: n })}
             />
           }

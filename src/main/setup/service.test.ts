@@ -1,3 +1,4 @@
+import { effectiveSubagentLimits } from '@shared/defaults'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -101,6 +102,17 @@ describe('applyProposal (settings)', () => {
     createdAt: 0,
     kind: 'settings',
     payload: { rationale: 'r', ...payload }
+  })
+
+  it('does not write limits equal to the automatic ones, but writes different ones', () => {
+    const p = store.create({ name: 'X', path: repo, brief: '' })
+    const auto = effectiveSubagentLimits({ roles: p.roles })
+    const same = service.applyProposal(p.id, settings(p.id, { maxSubagentDepth: auto.depth, maxConcurrentSubagents: auto.concurrency }))
+    expect(same.maxSubagentDepth).toBeUndefined()
+    expect(same.maxConcurrentSubagents).toBeUndefined()
+    const diff = service.applyProposal(p.id, settings(p.id, { maxSubagentDepth: auto.depth + 1, maxConcurrentSubagents: auto.concurrency + 1 }))
+    expect(diff.maxSubagentDepth).toBe(auto.depth + 1)
+    expect(diff.maxConcurrentSubagents).toBe(auto.concurrency + 1)
   })
 
   it('applies the unattended mode and run limits, clamped to the new maxima', () => {

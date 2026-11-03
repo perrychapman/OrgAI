@@ -227,6 +227,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     providerAuth: { ...connections.anthropic.auth },
     connections,
     defaultConnection: (CONNECTION_IDS as readonly unknown[]).includes(r.defaultConnection) ? (r.defaultConnection as ConnectionId) : d.defaultConnection,
+    ...(r.defaultConnectionChosen === true ? { defaultConnectionChosen: true } : {}),
     notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
     appearance: normalizeAppearance(r.appearance),
     modelPrices: normalizeModelPrices(r.modelPrices),

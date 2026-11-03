@@ -89,6 +89,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 })
 
 import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { DEFAULT_MAX_CONCURRENT_SUBAGENTS } from '@shared/defaults'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
@@ -1517,5 +1518,117 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(vi.mocked(ctx.requestPermission)).toHaveBeenCalledTimes(1)
     expect(allowDirectories).not.toHaveBeenCalled()
     expect(acceptEditsForProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('subagent limits in buildEnv', () => {
+  it('unset project limits give the chart-derived depth and the default concurrency', () => {
+    const roles = orgChart()
+    const p = project({ roles, maxSubagentDepth: undefined, maxConcurrentSubagents: undefined })
+    const env = buildEnv(fakeCtx({ project: p, roles }), {})
+    // lead -> engineer is one edge, so depth 2; concurrency is the defaults.ts default.
+    expect(env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('2')
+    expect(env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe(String(DEFAULT_MAX_CONCURRENT_SUBAGENTS))
+    // The run's roles decide, not the stored chart (setup runs carry the Architect's roles).
+    const flat = [role({ id: 'solo', slug: 'solo' })]
+    expect(buildEnv(fakeCtx({ project: p, roles: flat }), {}).CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('1')
+  })
+
+  it('explicit project limits pass through', () => {
+    const env = buildEnv(fakeCtx({ project: project({ maxSubagentDepth: 4, maxConcurrentSubagents: 7 }) }), {})
+    expect(env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('4')
+    expect(env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe('7')
+  })
+})
+
+describe('plan guard steering', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Hook = (i: unknown, id: string, o: unknown) => Promise<Record<string, any>>
+  const AUTO_LOG =
+    'Plan guard is automatic and now active: this plan reports a weekly limit, so new deep and top reports move to the everyday tier at 80% of it.'
+  const weekly = (utilization: number, over: Record<string, unknown> = {}) => ({
+    authMode: 'subscription' as const,
+    subscriptionType: 'max',
+    available: true,
+    windows: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization, resetsAt: null } },
+    status: 'allowed' as const,
+    updatedAt: 0,
+    ...over
+  })
+  function session(over: Partial<Project> = {}) {
+    const roles = orgChart().map((r) => (r.slug === 'engineer' ? { ...r, model: 'opus' } : r))
+    const ctx = fakeCtx({ project: project({ roles, provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, ...over }), roles })
+    const s = new ClaudeSession(ctx) as unknown as {
+      applyUsage(u: unknown): void
+      buildHooks(): { PreToolUse: Array<{ hooks: Hook[] }> }
+    }
+    let n = 0
+    const spawn = async () => {
+      const hook = s.buildHooks().PreToolUse[0].hooks[0]
+      const out = await hook(
+        { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `t${n++}`, tool_input: { subagent_type: 'engineer', prompt: 'x' }, cwd: '/repo' },
+        't',
+        { signal: new AbortController().signal }
+      )
+      return out.hookSpecificOutput?.updatedInput?.model as string | undefined
+    }
+    const logs = () => ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    return { s, spawn, logs }
+  }
+
+  it("'auto' with a weekly window above the threshold steers, and logs the engage line once", async () => {
+    const { s, spawn, logs } = session()
+    s.applyUsage(weekly(90))
+    expect(await spawn()).toBe('sonnet')
+    s.applyUsage(weekly(91))
+    expect(await spawn()).toBe('sonnet')
+    expect(logs().filter((m) => m === AUTO_LOG)).toHaveLength(1)
+    expect(logs().filter((m) => m.startsWith('Spawning Engineer on the everyday tier (sonnet) instead of opus'))).toHaveLength(2)
+  })
+
+  it("'auto' below the threshold engages (one log line) but does not steer", async () => {
+    const { s, spawn, logs } = session()
+    s.applyUsage(weekly(20))
+    expect(await spawn()).toBeUndefined()
+    expect(logs()).toContain(AUTO_LOG)
+  })
+
+  it("'auto' with no weekly window and status 'allowed' neither engages nor steers", async () => {
+    const { s, spawn, logs } = session()
+    s.applyUsage({ ...weekly(0), windows: { fiveHour: { utilization: 95, resetsAt: null } } })
+    expect(await spawn()).toBeUndefined()
+    expect(logs()).not.toContain(AUTO_LOG)
+  })
+
+  it("'auto' follows the latest report: nothing before the first report, steering once a weekly window arrives", async () => {
+    const { s, spawn, logs } = session()
+    expect(await spawn()).toBeUndefined()
+    expect(logs()).not.toContain(AUTO_LOG)
+    s.applyUsage(weekly(85))
+    expect(await spawn()).toBe('sonnet')
+    expect(logs().filter((m) => m === AUTO_LOG)).toHaveLength(1)
+  })
+
+  it('explicit off never steers; explicit on steers without the automatic log line', async () => {
+    const off = session({ preferEverydayNearLimit: false })
+    off.s.applyUsage(weekly(99))
+    expect(await off.spawn()).toBeUndefined()
+    expect(off.logs()).not.toContain(AUTO_LOG)
+    const legacyOff = session({ preferSonnetNearLimit: false })
+    legacyOff.s.applyUsage(weekly(99))
+    expect(await legacyOff.spawn()).toBeUndefined()
+    const on = session({ preferEverydayNearLimit: true })
+    on.s.applyUsage(weekly(90))
+    expect(await on.spawn()).toBe('sonnet')
+    expect(on.logs()).not.toContain(AUTO_LOG)
+  })
+
+  it('an API-key project never steers, in any mode', async () => {
+    for (const preferEverydayNearLimit of [true, undefined]) {
+      const { s, spawn, logs } = session({ preferEverydayNearLimit, provider: { id: 'claude', label: 'Claude', auth: { kind: 'apiKey', envVar: 'K' } } })
+      s.applyUsage(weekly(99, { authMode: 'apiKey' }))
+      expect(await spawn()).toBeUndefined()
+      expect(logs()).not.toContain(AUTO_LOG)
+    }
   })
 })
