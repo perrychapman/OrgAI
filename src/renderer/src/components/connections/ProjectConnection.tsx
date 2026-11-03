@@ -148,10 +148,13 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   )
   const litellmNotice = target === 'litellm' && (
     <>
-      <Banner tone="info">
-        The orchestrator&apos;s model family picks the adapter. Other roles can use any model the proxy serves.
-        {familyNotice && !refusal && <span data-testid="proxy-family-notice"> {familyNotice}</span>}
-      </Banner>
+      {/* Only when some role is on another family (UI review L9); a refused start shows the danger banner instead. */}
+      {familyNotice && !refusal && (
+        <Banner tone="info">
+          The orchestrator&apos;s model family picks the adapter. Other roles can use any model the proxy serves.
+          <span data-testid="proxy-family-notice"> {familyNotice}</span>
+        </Banner>
+      )}
       <div className="row">
         <span className="muted">Orchestrator model family</span>
         <span title="Change the orchestrator's model to change the family.">
@@ -173,7 +176,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         </p>
         {error && <Banner tone="danger">{error}</Banner>}
         {refusalBanner}
-        {litellmNotice}
+      {litellmNotice}
         {mockCard}
       </SettingsSection>
     )

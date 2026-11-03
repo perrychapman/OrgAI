@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectionInfo } from '@shared/types'
-import { authMethodLabel, connectionWithAuth, defaultConnectionInfo } from './connectionLabel'
+import { authMethodLabel, connectionWithAuth, defaultChangeAnnouncement, defaultConnectionInfo, defaultMode } from './connectionLabel'
 
 const info = (connection: ConnectionInfo['connection'], isDefault = false): ConnectionInfo => ({ connection, status: { state: 'connected' }, modelCount: 0, isDefault })
 
@@ -24,5 +24,26 @@ describe('defaultConnectionInfo', () => {
     expect(defaultConnectionInfo([a, o])?.connection.id).toBe('openai')
     expect(defaultConnectionInfo(null)).toBeNull()
     expect(defaultConnectionInfo([a])).toBeNull()
+  })
+})
+
+describe('defaultMode', () => {
+  it('says Chosen only on the card the user picked', () => {
+    expect(defaultMode('openai', true, 'openai')).toBe('chosen')
+    expect(defaultMode('anthropic', false, 'anthropic')).toBe('automatic')
+    expect(defaultMode('anthropic', null, 'anthropic')).toBeNull()
+  })
+  it('says Automatic on a fallback card when the chosen connection is no longer usable (L3)', () => {
+    expect(defaultMode('anthropic', true, 'openai')).toBe('automatic')
+  })
+})
+
+describe('defaultChangeAnnouncement', () => {
+  it('names the chosen default', () => {
+    expect(defaultChangeAnnouncement('openai', 'openai')).toBe('OpenAI is now the default for new projects and assistants')
+  })
+  it('names the automatic default it falls back to (L14)', () => {
+    expect(defaultChangeAnnouncement(null, 'anthropic')).toBe('The default connection is automatic again: Anthropic for new projects and assistants')
+    expect(defaultChangeAnnouncement(null, null)).toBe('The default connection is automatic again')
   })
 })

@@ -1,6 +1,7 @@
 import type { ReactElement, ReactNode, SyntheticEvent } from 'react'
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
+import { GroupHeadingLevelContext } from './SettingsSection'
 
 /** Panes that have an Advanced disclosure (config-review spec 2). Not per project. */
 export type SettingsAdvancedPane = 'app-general' | 'app-connections' | 'project-permissions' | 'project-limits'
@@ -52,7 +53,10 @@ export function SettingsAdvanced({ paneKey, children }: { paneKey: SettingsAdvan
         <ChevronRight className="settings-advanced-chevron" size={14} aria-hidden="true" />
         Advanced settings
       </summary>
-      <div className="settings-advanced-body">{children}</div>
+      <div className="settings-advanced-body">
+        {/* Groups here sit directly under the pane's h2, so their titles are h3 (a SettingsSection inside resets to h4). */}
+        <GroupHeadingLevelContext.Provider value={3}>{children}</GroupHeadingLevelContext.Provider>
+      </div>
     </details>
   )
 }

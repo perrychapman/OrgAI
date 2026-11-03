@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Project, ProviderModel, Role } from '@shared/types'
-import { builtinModels, newProject } from '@shared/defaults'
+import { builtinModels, mixedFamilyRefusal, newProject } from '@shared/defaults'
 import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier, startRefusal } from './remap'
 
 function project(models: Record<string, string>): Project {
@@ -71,6 +71,9 @@ describe('remap preview', () => {
 })
 
 describe('startRefusal', () => {
+  it('is the shared mixedFamilyRefusal rule main applies', () => {
+    expect(startRefusal).toBe(mixedFamilyRefusal)
+  })
   it('mirrors the shared mixedFamilyRefusal rule', () => {
     expect(startRefusal({ connection: 'litellm', family: 'claude', mismatched: ['a'] })).toBeNull()
     expect(startRefusal({ connection: 'litellm', family: undefined, mismatched: ['a'] })).toBe('no-root-family')

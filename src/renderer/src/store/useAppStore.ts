@@ -257,6 +257,13 @@ interface AppState {
   defaultConnection: ConnectionId | null
   /** AppSettings.defaultConnectionChosen: the user picked the default (true) or main picks it (false). null until loaded. */
   defaultConnectionChosen: boolean | null
+  /**
+   * The stored AppSettings.defaultConnection (the user's pick while defaultConnectionChosen is true). Only for telling
+   * whether the effective default is that pick or a fallback (lib/connectionLabel.ts `defaultMode`). null until loaded.
+   */
+  defaultConnectionStored: ConnectionId | null
+  /** Counts successful setDefaultConnection calls, so every card can clear its own earlier refusal. */
+  defaultConnectionChanges: number
   /** Load the connection list and the chosen flag, and start following settings:changed (idempotent). */
   loadDefaultConnection(): Promise<void>
   /** connections:setDefault: an id makes it the chosen default, null returns to automatic. Rejects with a readable refusal. */
@@ -751,11 +758,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   defaultConnection: null,
   defaultConnectionChosen: null,
+  defaultConnectionStored: null,
+  defaultConnectionChanges: 0,
   async loadDefaultConnection() {
     if (!defaultConnectionWatch) {
       // Another window, the Connections pane or main's automatic rewrite changed the default: re-read the effective one.
       defaultConnectionWatch = window.orgai.onSettingsChanged((n) => {
-        set({ defaultConnectionChosen: n.defaultConnectionChosen === true })
+        set({ defaultConnectionChosen: n.defaultConnectionChosen === true, defaultConnectionStored: n.defaultConnection ?? null })
         scheduleConnectionsReload()
       })
     }
@@ -763,7 +772,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().loadConnections(),
       window.orgai.settings
         .get()
-        .then((s) => set({ defaultConnectionChosen: s.defaultConnectionChosen === true }))
+        .then((s) => set({ defaultConnectionChosen: s.defaultConnectionChosen === true, defaultConnectionStored: s.defaultConnection ?? null }))
         .catch(() => undefined)
     ])
   },
@@ -771,7 +780,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     // connections:setDefault is the only way to change the default (settings:set keeps it); it rejects with a
     // readable refusal ("OpenAI is not connected. ...") that callers show inline. null returns to automatic.
     const connections = await window.orgai.connections.setDefault(id)
-    set({ connections, defaultConnection: effectiveDefaultOf(connections), defaultConnectionChosen: id !== null })
+    const effective = effectiveDefaultOf(connections)
+    set((s) => ({
+      connections,
+      defaultConnection: effective,
+      defaultConnectionChosen: id !== null,
+      defaultConnectionStored: id ?? effective ?? s.defaultConnectionStored,
+      defaultConnectionChanges: s.defaultConnectionChanges + 1
+    }))
   },
 
   async loadAppInfo() {
