@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   Notification: class {}
 }))
 
-const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
+const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, connectionSecretArgs, CONNECTION_SECRET_MAX_CHARS, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
 const { DEFAULT_APP_SETTINGS } = await import('@shared/defaults')
 
 describe('permissionRuleArgs (permissions:add / permissions:remove, review re-check L8)', () => {
@@ -183,6 +183,26 @@ describe('connection id guards (connections:test / logout, models:list / refresh
     for (const id of ['anthropic', 'openai', 'litellm']) expect(connectionIdArg(id)).toBe(id)
     for (const bad of ['bogus', '__proto__', 'constructor', 'hasOwnProperty', '', 'Anthropic', null, undefined, 1, {}, ['anthropic']]) {
       expect(() => connectionIdArg(bad), String(bad)).toThrow('Unknown connection')
+    }
+  })
+
+  it('connectionSecretArgs rebuilds the LiteLLM key input and never echoes the value', () => {
+    expect(connectionSecretArgs({ id: 'litellm', apiKey: 'sk-abc', extra: 1 })).toEqual({ id: 'litellm', apiKey: 'sk-abc' })
+    expect(connectionSecretArgs({ id: 'litellm', apiKey: null })).toEqual({ id: 'litellm', apiKey: null })
+    expect(connectionSecretArgs({ id: 'litellm' })).toEqual({ id: 'litellm', apiKey: null })
+    for (const bad of [null, 'litellm', [], { id: 'anthropic', apiKey: 'k' }, { id: '__proto__', apiKey: 'k' }]) {
+      expect(() => connectionSecretArgs(bad), JSON.stringify(bad)).toThrow('Only the LiteLLM connection has a stored secret')
+    }
+    expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 42 })).toThrow('The API key must be text.')
+    expect(() => connectionSecretArgs({ id: 'litellm', apiKey: 'k'.repeat(CONNECTION_SECRET_MAX_CHARS + 1) })).toThrow('too long')
+    for (const bad of ['sk-a\nb', 'sk-a\rb', 'sk\u200b', 'sk\u202e', 'sk\u0000']) {
+      let message = ''
+      try {
+        connectionSecretArgs({ id: 'litellm', apiKey: bad })
+      } catch (e) {
+        message = (e as Error).message
+      }
+      expect(message, JSON.stringify(bad)).toBe('The API key contains line breaks or hidden characters.')
     }
   })
 

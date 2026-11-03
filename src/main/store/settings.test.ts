@@ -31,7 +31,7 @@ describe('modelPrices', () => {
 
   it('normalizes defaultRootModel / defaultReportModel as model refs (review fix-up)', () => {
     const d = normalizeSettings({})
-    for (const bad of ['a b', 'new\nline', 'inherit', 'x'.repeat(201), 'café', 42]) {
+    for (const bad of ['a b', 'new\nline', 'inherit', 'x'.repeat(201), 'caf\u00e9', 42]) {
       const s = normalizeSettings({ defaultRootModel: bad, defaultReportModel: bad } as never)
       expect(s.defaultRootModel, String(bad)).toBe(d.defaultRootModel)
       expect(s.defaultReportModel, String(bad)).toBe(d.defaultReportModel)

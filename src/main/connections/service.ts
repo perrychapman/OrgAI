@@ -547,6 +547,7 @@ export class ConnectionService {
     if (!c || !isConnectionId(c.id)) throw new Error('Unknown connection')
     const before = this.effectiveDefault()
     const old = this.deps.settings.get().connections[c.id]
+    const wasConfigured = connectionConfigured(c.id, this.deps.settings.get().connections)
     // autoTiers is main-owned (the renderer's copy is ignored): a tier the caller changed is the user's from now on.
     const wasAuto = this.autoTiersOf(c.id, old.tierModels, old.autoTiers, suggestTierModels(c.id, this.catalogFor(c.id)))
     for (const tier of MODEL_TIERS) if ((c.tierModels?.[tier] ?? '') !== (old.tierModels[tier] ?? '')) wasAuto.delete(tier)
@@ -559,8 +560,9 @@ export class ConnectionService {
     if (!sameTiers(old.tierModels, fresh.tierModels)) {
       this.broadcastRemaps(this.remapConnectionProjects(c.id, fresh.tierModels, old.tierModels, 'tierModels'))
     }
-    // Turning a connection off (Anthropic's Disconnect) or on changes what is configured: a definite change.
-    if (old.enabled !== fresh.enabled) this.rewriteDefault()
+    // Turning a connection off (Anthropic's Disconnect) or on, or clearing / setting LiteLLM's base URL, changes what
+    // is configured: a definite change.
+    if (old.enabled !== fresh.enabled || wasConfigured !== connectionConfigured(c.id, this.deps.settings.get().connections)) this.rewriteDefault()
     this.defaultMayHaveMoved(before)
     return this.info(c.id)
   }

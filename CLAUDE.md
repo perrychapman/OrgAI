@@ -321,9 +321,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (`setStatus(..., { definite: false })`, service `tentative` set): they never rewrite and `effectiveDefault` reads
     them as 'unknown' until the next definite status. A stored LiteLLM key that cannot be decrypted (`hasApiKey` true,
     `secrets.get` undefined) probes as 'error' ("The stored key could not be read..."), never 'disconnected'.
-    `rewriteDefault` drops `defaultConnectionReplaced` once that connection is no longer configured.
+    `rewriteDefault` drops `defaultConnectionReplaced` once that connection is no longer configured, and `update` rewrites when `enabled` or `connectionConfigured` changes (e.g. a cleared LiteLLM base URL).
   - Review hardening (2026-11-03): `connections:test` / `logout` / `models:list` / `models:refresh` rebuild their input
-    (ipc.ts `connectionIdArg`, `modelsQueryArg`) and `ConnectionService.test` / `logout` / `connect` / `refresh` /
+    (ipc.ts `connectionIdArg`, `modelsQueryArg`; connections:connect and connections:update use `connectionIdArg` too, and connections:setSecret `connectionSecretArgs`: id litellm, apiKey a string of at most 4,000 chars without control or hidden characters, or null) and `ConnectionService.test` / `logout` / `connect` / `refresh` /
     `models` / `setStatus` throw "Unknown connection" for anything not in CONNECTION_IDS (prototype keys included).
     settings:get / settings:set results and the settings:changed payload carry `defaultConnection` =
     `effectiveDefault()` (ipc.ts `withEffectiveDefault`; the stored value stays main-only and settings:set still keeps
@@ -545,7 +545,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   `claude` and `codex`. `adapterForProject` (`src/shared/defaults.ts`) picks the adapter from the connection, or for
   LiteLLM from the root role's model family. Mixed families (owner decision 2026-11-03; one connection per project
   stays): on LiteLLM the orchestrator's model picks the adapter and reports may run any model the proxy serves;
-  `adapterForProject` still lists them in `mismatched` (the renderer shows an informational notice) and RunManager
+  `adapterForProject` still lists them in `mismatched` (meant for an informational notice; the renderer still shows the old danger banner "This project cannot start as configured" in `ProjectConnection.tsx` until the UI pass decides with `mixedFamilyRefusal`) and RunManager
   `choose` logs one info line naming them and starts. `defaults.ts` `mixedFamilyRefusal` refuses a work run before
   it exists only when a LiteLLM root has no family ('inherit' or no roles) while reports need the other adapter
   ("...has no model of its own... Give the orchestrator a model."), or on anthropic / openai with a role of another

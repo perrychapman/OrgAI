@@ -704,7 +704,7 @@ export class RunManager {
     const choice = adapterForProject(project, catalog)
     if (!isSetupLikeRun(kind) && choice.mismatched.length) {
       const bad = choice.mismatched.map((id) => project.roles.find((r) => r.id === id)).filter((r): r is Role => !!r)
-      const names = bad.length ? bad.map((r) => r.name) : choice.mismatched
+      const names = (bad.length ? bad.map((r) => r.name) : choice.mismatched).map((n) => logText(String(n)))
       const families = [...new Set(bad.map((r) => catalog.find((m) => m.id === r.model && m.connection === choice.connection)?.family ?? modelFamily(r.model)))]
       const other = families.length ? families.map((f) => (f === 'other' ? 'non-Claude' : (FAMILY_LABEL[f] ?? f))).join('/') : 'other'
       const where = CONNECTION_LABEL[choice.connection] ?? choice.connection
@@ -722,7 +722,7 @@ export class RunManager {
       }
       const rootFamily = choice.family ?? 'claude'
       log.info(
-        `${where} project ${logText(project.name)}: the orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}; ${names.map((n) => logText(String(n))).join(', ')} use ${other}-family models through the proxy.`
+        `${where} project ${logText(project.name)}: the orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}; ${names.join(', ')} use ${other}-family models through the proxy${choice.adapter === 'codex' ? " (on Codex a report whose model is a tier name or a bare Claude alias runs on its parent's model)" : ''}.`
       )
     }
     const adapter = this.adapters[choice.adapter]

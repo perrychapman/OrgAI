@@ -728,12 +728,13 @@ function registerConnectionIpc(projects: ProjectStore, connections: ConnectionSe
   })
   ipcMain.handle(IPC.connectionsList, (): Promise<ConnectionInfo[]> => connections.list())
   ipcMain.handle(IPC.connectionsUpdate, (_e, connection: ProviderConnection): Promise<ConnectionInfo> => {
-    if (!CONNECTION_IDS.includes(connection?.id)) throw new Error('Unknown connection')
+    if (!connection || typeof connection !== 'object') throw new Error('Unknown connection')
+    connectionIdArg(connection.id)
     return connections.update(connection)
   })
-  ipcMain.handle(IPC.connectionsSetSecret, (_e, input: ConnectionSecretInput): Promise<ConnectionInfo> => connections.setSecret(input))
+  ipcMain.handle(IPC.connectionsSetSecret, (_e, input: unknown): Promise<ConnectionInfo> => connections.setSecret(connectionSecretArgs(input)))
   ipcMain.handle(IPC.connectionsTest, (_e, id: unknown): Promise<ConnectionStatus> => connections.test(connectionIdArg(id)))
-  ipcMain.handle(IPC.connectionsConnect, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.connect(id))
+  ipcMain.handle(IPC.connectionsConnect, (_e, id: unknown): Promise<ConnectionInfo> => connections.connect(connectionIdArg(id)))
   ipcMain.handle(IPC.connectionsLogin, (_e, id: 'openai', method?: ConnectionLoginMethod): Promise<ConnectionLoginStart> =>
     connections.login(id, method === 'deviceCode' ? 'deviceCode' : 'browser')
   )
@@ -823,6 +824,26 @@ export function withEffectiveDefault(s: AppSettings, effective: ConnectionId): A
 export function connectionIdArg(raw: unknown): ConnectionId {
   if (!isConnectionId(raw)) throw new Error('Unknown connection')
   return raw
+}
+
+/** Longest LiteLLM key accepted over IPC (connections:setSecret). */
+export const CONNECTION_SECRET_MAX_CHARS = 4000
+
+/**
+ * connections:setSecret input rebuilt as `{ id: 'litellm', apiKey: string | null }`: the key is printable text
+ * without line breaks or control characters (it becomes an env var and an Authorization header), at most
+ * CONNECTION_SECRET_MAX_CHARS; '' or null clears it. Anything else is refused; extra fields are dropped. The error
+ * never echoes the value. Exported for tests.
+ */
+export function connectionSecretArgs(raw: unknown): ConnectionSecretInput {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Only the LiteLLM connection has a stored secret')
+  const i = raw as Record<string, unknown>
+  if (i.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
+  if (i.apiKey === null || i.apiKey === undefined) return { id: 'litellm', apiKey: null }
+  if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')
+  if (i.apiKey.length > CONNECTION_SECRET_MAX_CHARS) throw new Error(`The API key is too long (at most ${CONNECTION_SECRET_MAX_CHARS} characters).`)
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(i.apiKey.trim())) throw new Error('The API key contains line breaks or hidden characters.')
+  return { id: 'litellm', apiKey: i.apiKey }
 }
 
 /**

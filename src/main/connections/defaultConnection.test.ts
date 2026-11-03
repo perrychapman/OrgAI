@@ -139,6 +139,23 @@ describe('review hardening (self-configuration fix-up)', () => {
     expect(ctx.settings.get().defaultConnectionChosen).not.toBe(true)
   })
 
+  it('rewrites the automatic default when a cleared base URL leaves LiteLLM unconfigured, and moves back later', async () => {
+    const ctx = setup({ state: 'disconnected' })
+    await ctx.addLiteLLM()
+    await ctx.service.test('anthropic')
+    await ctx.service.connect('litellm')
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    ctx.probe.current = { state: 'connected' }
+    await ctx.service.test('anthropic') // moves back to anthropic (the replaced one)
+    expect(ctx.settings.get().defaultConnection).toBe('anthropic')
+    await ctx.service.setDefault('litellm')
+    await ctx.service.setDefault(null)
+    expect(ctx.settings.get().defaultConnection).toBe('litellm')
+    await ctx.service.update({ ...ctx.settings.get().connections.litellm, baseUrl: '' })
+    expect(ctx.settings.get()).toMatchObject({ defaultConnection: 'anthropic', defaultConnectionChosen: false })
+    expect(ctx.service.effectiveDefault()).toBe('anthropic')
+  })
+
   it('reports an effective-default move in chosen mode through onDefaultChanged', async () => {
     const ctx = setup({ state: 'connected' })
     await ctx.addLiteLLM()
