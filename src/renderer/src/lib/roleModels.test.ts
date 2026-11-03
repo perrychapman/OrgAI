@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderModel } from '@shared/types'
-import { applyExactModel, applyModelChoice, effortView, exactModelGroups, roleModelChoice, roleModelSummary, tierOptionLabel } from './roleModels'
+import { applyExactModel, applyModelChoice, effortView, exactModelGroups, exactModelValue, roleChipLabel, roleModelChoice, roleModelSummary, tierOptionLabel } from './roleModels'
 
 const tiers = { top: 'fable', deep: 'opus', everyday: 'sonnet', fast: 'haiku' }
 const m = (id: string, family: ProviderModel['family']): ProviderModel => ({ id, family, connection: 'litellm' }) as ProviderModel
@@ -30,7 +30,19 @@ describe('role model choice', () => {
   it('writes an exact model with its tier when it is one', () => {
     expect(applyExactModel('haiku', tiers)).toEqual({ model: 'haiku', tier: 'fast' })
     expect(applyExactModel('other', tiers)).toEqual({ model: 'other', tier: undefined })
-    expect(applyExactModel('', tiers)).toEqual({ model: 'inherit', tier: undefined })
+    // Not set returns to the tier above, never inherit on its own (ux-review-config-2 N3).
+    expect(applyExactModel('', tiers, { model: 'gpt-x', tier: 'deep' })).toEqual({ model: 'opus', tier: 'deep' })
+    expect(applyExactModel('', tiers, { model: 'gpt-x' })).toEqual({ model: 'sonnet', tier: 'everyday' })
+    expect(applyExactModel('', tiers, { model: 'inherit' })).toEqual({ model: 'inherit', tier: undefined })
+    expect(applyExactModel('', {}, { model: 'gpt-x' })).toEqual({ model: 'inherit', tier: undefined })
+  })
+  it('shows a pinned id only for a custom role and chips the tier word', () => {
+    expect(exactModelValue({ model: 'opus', tier: 'deep' }, tiers)).toBe('')
+    expect(exactModelValue({ model: 'inherit' }, tiers)).toBe('')
+    expect(exactModelValue({ model: 'gpt-x' }, tiers)).toBe('gpt-x')
+    expect(roleChipLabel({ model: 'opus', tier: 'deep' })).toBe('Deep')
+    expect(roleChipLabel({ model: 'inherit' })).toBe('Inherit')
+    expect(roleChipLabel({ model: 'gpt-x' })).toBe('gpt-x')
   })
 })
 

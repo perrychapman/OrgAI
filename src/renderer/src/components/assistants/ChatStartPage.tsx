@@ -3,7 +3,7 @@ import { useEffect, useId, useState } from 'react'
 import type { Project, ProjectPathCheck, QuickRunTeam } from '@shared/types'
 import { QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
 import { chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
-import { useAssistantModelName } from '../../lib/assistantModels'
+import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { folderName } from '../../lib/paths'
 import { pathStatus } from '../../lib/projectsForm'
 import { CONNECTION_NAME } from '../../lib/settingsCopy'
@@ -31,7 +31,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const setView = useAppStore((s) => s.setView)
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
-  const model = useAssistantModelName('quickRunModel')
+  const model = useAssistantRunsOn('quickRunModel').label
   const [text, setText] = useState('')
   const [checked, setChecked] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
   const [pickError, setPickError] = useState<string | null>(null)

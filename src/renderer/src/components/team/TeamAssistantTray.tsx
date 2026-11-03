@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, RefreshCw, Sparkles, X } from 'lucide-react'
+import { Loader2, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import type { Project, TeamReview } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_SESSION, useTeamAssistantStore, useTeamReviewSummary, type CardState, type TeamSession } from '../../store/teamAssistant'
@@ -31,6 +31,9 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
+import { IconButton } from '../ui/IconButton'
+import { openProjectSettings } from '../../lib/openProjectSettings'
+import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { Select } from '../ui/Select'
 import { Tabs, panelDomId } from '../ui/Tabs'
 import { AppliedRow, CapabilityCard, DismissedList, DismissedRow, type AppliedInfo } from './CapabilityCard'
@@ -111,6 +114,14 @@ export default function TeamAssistantTray({
         <h2>Team assistant</h2>
         <div className="grow" />
         <Tabs tabs={MODE_TABS} value={mode} onChange={(id) => onModeChange(id as TeamAssistantMode)} label="Assistant mode" idPrefix="team-mode" compact />
+        {/* The Off / Free checks / AI suggestions select lives in Project settings > Permissions > Advanced (ux-review-config-2 N6). */}
+        <IconButton
+          icon={Settings2}
+          size="sm"
+          label="Team assistant settings"
+          testId="team-assistant-settings"
+          onClick={() => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.teamAssistant)}
+        />
       </div>
       <div role="tabpanel" id={panelDomId('team-mode', 'recommend')} hidden={mode !== 'recommend'} className="team-mode-pane">
         <RecommendPane project={project} scope={scope} active={mode === 'recommend'} onDesign={() => onModeChange('design')} />

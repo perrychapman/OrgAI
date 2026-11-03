@@ -5,6 +5,7 @@ import { memo } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { TOOL_CATALOG, type Role } from '@shared/types'
 import { initials } from '../lib/layout'
+import { roleChipLabel } from '../lib/roleModels'
 import { elevatedTools, toolsAriaLabel } from '../lib/roleCapabilities'
 import { capabilityLabel, capabilityParts, type CapabilityCounts } from '../lib/teamView'
 
@@ -27,7 +28,9 @@ function RoleNodeView({ data, selected }: NodeProps<RoleFlowNode>): ReactElement
         </div>
       </div>
       <div className="meta">
-        <span className="chip">{role.model}</span>
+        <span className="chip" title={role.model === 'inherit' ? undefined : role.model}>
+          {roleChipLabel(role)}
+        </span>
         {role.canSpawn && <span className="chip">leads {reportCount}</span>}
       </div>
       <div className="caps" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`}>

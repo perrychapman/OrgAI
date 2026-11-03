@@ -5,7 +5,7 @@ import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { projectMetering } from '../../lib/limits'
-import { PLAN_GUARD_LINE, SETTINGS_COPY } from '../../lib/settingsCopy'
+import { SETTINGS_COPY, planGuardLine } from '../../lib/settingsCopy'
 import { Input } from '../ui/Input'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Select } from '../ui/Select'
@@ -118,7 +118,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         {metered && <SettingsCard>{costRow()}</SettingsCard>}
         {metering === 'subscription' && (
           <p className="perm-plan-line" data-testid="plan-guard-line">
-            {PLAN_GUARD_LINE[planGuardOf(project)]}
+            {planGuardLine(planGuardOf(project), project.maxWindowShare)}
           </p>
         )}
       </SettingsSection>

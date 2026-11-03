@@ -1,3 +1,5 @@
+import type { PermissionMode } from '@shared/types'
+
 /**
  * Label, one-line description and optional long rationale for the settings that exist on both settings pages (the
  * project's own value and the App settings default for new projects). Both pages read from this table so the wording
@@ -10,6 +12,8 @@ export interface SettingCopy {
   description?: string
   /** Long explanation, shown behind a "Learn more" disclosure. */
   more?: string
+  /** Replaces `description` while the control is disabled: the reason it cannot be changed. */
+  disabled?: string
 }
 
 export const SETTINGS_COPY = {
@@ -60,7 +64,9 @@ export const SETTINGS_COPY = {
   },
   reviewMerges: {
     label: "Review each report's changes before merge",
-    description: 'You merge, hold or discard each diff.'
+    description: 'You merge, hold or discard each diff.',
+    /** Shown while worktree isolation is off (the switch is disabled). */
+    disabled: 'Needs worktree isolation (above).'
   },
   runMessaging: {
     label: 'Let runs message each other',
@@ -77,12 +83,39 @@ export type SettingCopyKey = keyof typeof SETTINGS_COPY
 export const CONNECTION_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' } as const
 
 
-/** Plan guard line on a subscription project's Limits pane (planGuardOf; config-review spec 4.3). */
+/**
+ * Plan guard line on a subscription project's Limits pane (planGuardOf; config-review spec 4.3). It says only what
+ * runs: automatic and on move deep/top reports to the everyday tier near the weekly limit, a run that reaches a plan
+ * limit pauses until the window resets, and a five-hour stop happens only with the Advanced share set (`maxWindowShare`).
+ */
 export const PLAN_GUARD_LINE = {
-  auto: 'Plan guard: automatic. Stops near your five-hour limit and uses the everyday tier when the weekly window passes 80%.',
-  on: 'Plan guard: on. Uses the everyday tier when the weekly window passes 80%.',
+  auto: 'Plan guard: automatic. Uses the everyday tier when your weekly window passes 80%.',
+  on: 'Plan guard: on. Uses the everyday tier when your weekly window passes 80%.',
   off: 'Plan guard: off.'
 } as const
+
+/** The plan-limit sentence every mode shares (RunManager pauses a usage-limited run and resumes it at the reset). */
+export const PLAN_LIMIT_PAUSE = 'A run that reaches a plan limit pauses until it resets.'
+
+/** The whole Limits line: the guard mode, the plan-limit pause, and the five-hour share only when it is set. */
+export function planGuardLine(mode: keyof typeof PLAN_GUARD_LINE, maxWindowShare?: number): string {
+  const share =
+    typeof maxWindowShare === 'number' && Number.isFinite(maxWindowShare) && maxWindowShare > 0 ? Math.min(100, Math.round(maxWindowShare)) : null
+  return [PLAN_GUARD_LINE[mode], PLAN_LIMIT_PAUSE, share !== null ? `Stops at ${share}% of the five-hour window.` : ''].filter(Boolean).join(' ')
+}
+
+/**
+ * Short permission-mode names for both settings pages (App General's default and the project's mode select) and the
+ * approval card copy; the chosen mode's trade-off sentence shows beside the select.
+ */
+export const PERMISSION_MODE_SHORT: Record<PermissionMode, string> = {
+  auto: 'Unattended',
+  acceptEdits: 'Auto-accept edits',
+  default: 'Ask for everything risky',
+  dontAsk: 'Never ask',
+  plan: 'Plan only',
+  bypassPermissions: 'Bypass all prompts'
+}
 
 /** Team assistant select (Permissions > Advanced): option labels and the selected option's description. */
 export const TEAM_ASSISTANT_COPY = {

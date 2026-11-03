@@ -9,7 +9,8 @@ import { Badge } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import { isHiddenCommand, permissionTitle, shellSegments } from '../lib/decisionTitle'
 import { noRuleLine, permissionLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
-import { PROJECT_SETTINGS_PANES, PROJECT_SETTINGS_SECTIONS, requestProjectSettingsSection } from '../lib/settingsTarget'
+import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
+import { openProjectSettings } from '../lib/openProjectSettings'
 import { useAppStore } from '../store/useAppStore'
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
@@ -106,13 +107,12 @@ function commandBadge(command: string, hidden: boolean): string {
   return hidden ? 'Long command' : 'Command'
 }
 
-/** Open project Settings > Permissions with the Permissions section focused. */
+/**
+ * Open project Settings > Permissions with "Rules and folders you allowed" open and the rules heading focused: the user
+ * came to cut prompts (ux-review-config-2 N11).
+ */
 function openPermissionSettings(projectId: string): void {
-  const st = useAppStore.getState()
-  if (st.selectedProjectId !== projectId) st.selectProject(projectId)
-  st.setProjectSettingsPane(projectId, PROJECT_SETTINGS_PANES.permissions)
-  st.setView('settings')
-  requestProjectSettingsSection(PROJECT_SETTINGS_SECTIONS.permissions)
+  openProjectSettings(projectId, PROJECT_SETTINGS_SECTIONS.rules)
 }
 
 /**

@@ -67,7 +67,9 @@ export const PROJECT_SETTINGS_SECTIONS = {
   allowedFolders: 'settings-section-allowed-folders',
   rules: 'settings-section-rules',
   /** General > Connection (not a deep-link target of PermissionCard; listed for e2e and the pane map). */
-  connection: 'settings-section-connection'
+  connection: 'settings-section-connection',
+  /** Permissions > Advanced > Runs > the Team assistant select (Team tab "Team assistant settings"; the select takes focus). */
+  teamAssistant: 'settings-section-team-assistant'
 } as const
 export type ProjectSettingsSection = (typeof PROJECT_SETTINGS_SECTIONS)[keyof typeof PROJECT_SETTINGS_SECTIONS]
 
@@ -75,7 +77,13 @@ const PROJECT_SECTION_PANE: Record<ProjectSettingsSection, ProjectSettingsPane> 
   [PROJECT_SETTINGS_SECTIONS.permissions]: 'permissions',
   [PROJECT_SETTINGS_SECTIONS.allowedFolders]: 'permissions',
   [PROJECT_SETTINGS_SECTIONS.rules]: 'permissions',
-  [PROJECT_SETTINGS_SECTIONS.connection]: 'general'
+  [PROJECT_SETTINGS_SECTIONS.connection]: 'general',
+  [PROJECT_SETTINGS_SECTIONS.teamAssistant]: 'permissions'
+}
+
+/** Project targets inside a pane's Advanced disclosure (SettingsAdvanced pane key); deep links open it before landing. */
+export const PROJECT_ADVANCED_SECTIONS: Readonly<Partial<Record<ProjectSettingsSection, 'project-permissions' | 'project-limits'>>> = {
+  [PROJECT_SETTINGS_SECTIONS.teamAssistant]: 'project-permissions'
 }
 
 /** The project Settings pane holding a section id; undefined when unknown. */

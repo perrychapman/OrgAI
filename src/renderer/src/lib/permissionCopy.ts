@@ -8,6 +8,7 @@ import type { PermissionMode, PermissionSuggestion } from '@shared/types'
 import { PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { isCdSegment, oneLine, shellSegments } from './decisionTitle'
 import { abbreviatePath } from './paths'
+import { PERMISSION_MODE_SHORT } from './settingsCopy'
 
 // ---------- Paths ----------
 
@@ -299,7 +300,7 @@ export interface ScopeCopy {
 /**
  * One sentence per answer, from what the suggestions grant. Session: rules, folders and a mode for the rest of this
  * run. Project: rules saved to the project's rules file, folders added to its allowed folders, and an edit in a project
- * on "Ask for everything risky" switches it to "Auto-accept file edits".
+ * on "Ask for everything risky" switches it to "Auto-accept edits" (PERMISSION_MODE_SHORT).
  */
 export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefined, projectMode?: PermissionMode): ScopeCopy {
   const once = 'Allow once: this call only.'
@@ -327,7 +328,7 @@ export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefin
     if (mode === 'acceptEdits') {
       session.push('auto-accepts file edits')
       // Main switches the project's mode only from "Ask for everything risky"; in other modes the switch is session-only.
-      if (projectMode === 'default') project.push('switches this project to Auto-accept file edits')
+      if (projectMode === 'default') project.push(`switches this project to ${PERMISSION_MODE_SHORT.acceptEdits}`)
     } else {
       session.push(oneLine(`uses permission mode ${mode}`, 60))
     }
@@ -441,7 +442,7 @@ const DESTRUCTIVE = /^(?:sudo|rm|rmdir|del|erase|rd|format|mkfs|dd|shutdown|rebo
 
 const FILE_RULE_TOOLS = /^(Edit|Write|Read|MultiEdit|NotebookEdit)\(\/(?!\/)/
 
-export const SINGLE_SLASH_REASON = 'Claude Code reads a single leading / as relative to the project; write // for an absolute path (e.g. Edit(//Users/me/docs/**)).'
+export const SINGLE_SLASH_REASON = 'A single leading / is read as relative to the project; write // for an absolute path (e.g. Edit(//Users/me/docs/**)).'
 
 /**
  * Check a typed rule before it is sent. Main checks again (ipc.ts). `warning` flags an accepted rule that is broad or

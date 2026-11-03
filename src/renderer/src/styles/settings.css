@@ -382,6 +382,14 @@
   margin-top: var(--space-4);
   min-width: 0;
 }
+/* Inside Advanced every heading is one tier: a section title (Connections: Costs, Model prices) reads like the group
+   captions of General and Limits (ux-review-config-2 N12). Levels stay h3 under the pane h2. */
+.settings-advanced-body .settings-section-title {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
 
 /* ---------- Legacy block helpers still used by sections not yet on SettingsCard ---------- */
 .settings-grid {
