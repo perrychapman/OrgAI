@@ -107,7 +107,43 @@ describe('ProjectStore.saveFromRenderer skills', () => {
     const saved = store.saveFromRenderer(project({ skillEvaluation: { enabled: true, tokenBudget: 5 } }))
     expect(saved.skillEvaluation).toEqual({ enabled: true, tokenBudget: 1000 })
     const bad = store.saveFromRenderer(project({ skillEvaluation: { enabled: 'yes', tokenBudget: 'lots' } as never }))
-    expect(bad.skillEvaluation).toEqual({ enabled: false, tokenBudget: 20000 })
+    expect(bad.skillEvaluation).toEqual({ tokenBudget: 20000 })
+    expect('enabled' in (bad.skillEvaluation ?? {})).toBe(false)
+  })
+
+  it('keeps an unset skillEvaluation.enabled unset', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project())
+    const saved = store.saveFromRenderer(project({ skillEvaluation: { tokenBudget: 30_000 } }))
+    expect(saved.skillEvaluation).toEqual({ tokenBudget: 30_000 })
+    expect(store.get(saved.id)?.skillEvaluation?.enabled).toBeUndefined()
+  })
+
+  it('never fills subagent limits and keeps explicit ones', () => {
+    const store = new ProjectStore(dataDir())
+    const base = project()
+    delete (base as Partial<Project>).maxSubagentDepth
+    delete (base as Partial<Project>).maxConcurrentSubagents
+    store.save(base)
+    const saved = store.saveFromRenderer({ ...base })
+    expect(saved.maxSubagentDepth).toBeUndefined()
+    expect(saved.maxConcurrentSubagents).toBeUndefined()
+    expect(store.get(base.id)?.maxSubagentDepth).toBeUndefined()
+    expect(store.get(base.id)?.maxConcurrentSubagents).toBeUndefined()
+    const explicit = store.saveFromRenderer({ ...base, maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
+    expect(explicit).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
+    expect(store.get(base.id)).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
+  })
+
+  it('keeps an unset plan guard unset through a renderer save', () => {
+    const store = new ProjectStore(dataDir())
+    const base = project()
+    delete (base as Partial<Project>).preferEverydayNearLimit
+    delete (base as Partial<Project>).preferSonnetNearLimit
+    store.save(base)
+    const saved = store.saveFromRenderer({ ...base })
+    expect(saved.preferEverydayNearLimit).toBeUndefined()
+    expect(saved.preferSonnetNearLimit).toBeUndefined()
   })
 })
 

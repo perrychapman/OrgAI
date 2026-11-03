@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
 import { HARNESS_PROJECT_ID, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isVirtualProjectId } from '@shared/types'
-import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, teamReviewOf, type TierContext } from '@shared/defaults'
+import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
@@ -380,7 +380,7 @@ export class ProjectStore {
         return { ...r, skills: kept }
       })
     }
-    if (next.skillEvaluation !== undefined) next.skillEvaluation = skillEvaluationOf(next)
+    if (next.skillEvaluation !== undefined) next.skillEvaluation = storedSkillEvaluation(next.skillEvaluation)
     if (next.teamReview !== undefined) next.teamReview = teamReviewOf(next)
     return this.save(next)
   }

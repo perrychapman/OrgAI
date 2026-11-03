@@ -100,6 +100,21 @@ describe('SkillEvaluationService.evaluate', () => {
     expect(r.findings.length).toBeGreaterThan(0)
   })
 
+  it('derives enabled from the team review when unset, and an explicit false wins', async () => {
+    proj = { ...proj, skillEvaluation: { tokenBudget: 20_000 }, teamReview: { auto: 'ai', tokenBudget: 20_000, everyRuns: 3 } }
+    const on = await svc.evaluate('p1')
+    expect(on.modelAssisted).toBe(true)
+    expect(complete).toHaveBeenCalledTimes(1)
+    complete.mockClear()
+    proj = { ...proj, teamReview: { auto: 'free', tokenBudget: 20_000, everyRuns: 3 } }
+    const free = await svc.evaluate('p1')
+    expect(free.skippedReason).toBe('disabled')
+    proj = { ...proj, skillEvaluation: { enabled: false, tokenBudget: 20_000 }, teamReview: { auto: 'ai', tokenBudget: 20_000, everyRuns: 3 } }
+    const off = await svc.evaluate('p1')
+    expect(off.skippedReason).toBe('disabled')
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('skips when there are no gaps', async () => {
     records = [seqRecord('r1', 1)]
     const r = await svc.evaluate('p1')
