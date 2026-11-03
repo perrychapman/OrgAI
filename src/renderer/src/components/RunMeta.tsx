@@ -142,7 +142,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && !isVirtualProjectId(summary.projectId) && (
         <span
           className="run-meta-item run-meta-unattended"
-          title="Permission mode is auto: Claude approves or denies each call and asks only when unsure. Saved rules never ask."
+          title="Permission mode is auto: the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
         >
           <Icon icon={ShieldAlert} size="xs" />
           unattended

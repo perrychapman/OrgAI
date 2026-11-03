@@ -687,7 +687,8 @@ try {
 
   // Run messaging switch persists through projects:save.
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
-  await page.getByRole('tab', { name: 'Agents', exact: true }).click()
+  await page.getByRole('tab', { name: 'Permissions', exact: true }).click()
+  await page.locator('[data-testid=settings-advanced][data-pane=project-permissions] > summary').click()
   const sw =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw.waitFor({ timeout: 10_000 })
   check((await sw.getAttribute('aria-checked')) === 'true', 'run messaging switch starts on')
@@ -699,7 +700,8 @@ try {
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, NAME)
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
-  await page.getByRole('tab', { name: 'Agents', exact: true }).click()
+  await page.getByRole('tab', { name: 'Permissions', exact: true }).click()
+  check(await page.locator('details[data-testid=settings-advanced][data-pane=project-permissions]').evaluate((el) => el.open), 'the Advanced disclosure is still open after the reload')
   const sw2 =page.getByRole('switch', { name: 'Let runs message each other' })
   await sw2.waitFor({ timeout: 10_000 })
   check((await sw2.getAttribute('aria-checked')) === 'false', 'switch is still off after reload')
