@@ -497,6 +497,9 @@
 .finished-under {
   font-size: var(--text-caption);
   color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .done-failed {
   color: var(--danger-text);

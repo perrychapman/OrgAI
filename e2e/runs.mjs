@@ -741,9 +741,11 @@ try {
   check(groupFont >= 12, 'the group label uses the type scale (12 px or more before zoom)', String(groupFont))
   await shot('fold-collapsed')
   // Expand: mock-lead shows, its two reports fold into a "2 done" group below it with an edge.
-  await page.locator('[data-testid=done-group]').first().getByRole('button', { name: 'Show these reports on the chart' }).click()
+  await page.locator('[data-testid=done-group]').first().getByRole('button', { name: /^Show reports under / }).click()
   await page.locator('.react-flow__node[data-id="mock-lead"]').waitFor({ timeout: 10_000 }).catch(() => {})
   await sleep(800)
+  const focusAfter = await page.evaluate(() => document.activeElement?.closest('.react-flow__node')?.getAttribute('data-id') ?? document.activeElement?.tagName ?? '')
+  check(focusAfter !== '' && focusAfter !== 'BODY' && !focusAfter.startsWith('group:'), 'focus moves to the agent the expanded group hung under', focusAfter)
   const f2 = await foldShape()
   const leadBox = await nodeBox('.react-flow__node[data-id="mock-lead"]')
   const leadGroupBox = await nodeBox('.react-flow__node[data-id="group:mock-lead"]')

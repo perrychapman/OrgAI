@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance } from '@shared/types'
+import { earlierKey, isEarlierKey } from './chainView'
 import { foldFinished, groupParentOf, type FoldResult } from './foldFinished'
 
 const ag = (id: string, parentId: string | null, state = 'done'): AgentInstance => ({ id, parentId, state }) as unknown as AgentInstance
 const settled = (a: AgentInstance): boolean => a.state === 'done' || a.state === 'error'
-const isEarlier = (k: string): boolean => k.startsWith('earlier:')
+const isEarlier = isEarlierKey
 const ids = (list: AgentInstance[] | undefined): string[] => (list ?? []).map((a) => a.id)
 
 /** Invariant: every group hangs under an agent on the canvas, and no agent is both shown and folded. */
@@ -82,13 +83,13 @@ describe('foldFinished', () => {
   })
 
   it('earlier-session groups hang under the root, or show their agents when expanded', () => {
-    const earlier = [{ key: 'earlier:r1', agents: [ag('r1/a', 'root')] }]
+    const earlier = [{ key: earlierKey('r1'), agents: [ag('r1/a', 'root')] }]
     const r = foldFinished({ agents: deep(), isSettled: settled, expanded: {}, earlier, collapse: true })
-    expect(ids(r.groups.get('earlier:r1'))).toEqual(['r1/a'])
+    expect(ids(r.groups.get(earlierKey('r1')))).toEqual(['r1/a'])
     expectAttached(r, 'root')
-    const open = foldFinished({ agents: deep(), isSettled: settled, expanded: { 'earlier:r1': true }, earlier, collapse: true })
+    const open = foldFinished({ agents: deep(), isSettled: settled, expanded: { [earlierKey('r1')]: true }, earlier, collapse: true })
     expect(ids(open.visibleAgents)).toContain('r1/a')
-    expect(open.groups.has('earlier:r1')).toBe(false)
+    expect(open.groups.has(earlierKey('r1'))).toBe(false)
     expectAttached(open, 'root')
   })
 

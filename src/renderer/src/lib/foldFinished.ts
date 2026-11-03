@@ -44,7 +44,12 @@ export function foldFinished({ agents, isSettled, expanded, earlier = [], collap
 
   const byId = new Map(agents.map((a) => [a.id, a]))
   const children = new Map<string, AgentInstance[]>()
-  for (const a of agents) if (a.parentId !== null && byId.has(a.parentId)) children.set(a.parentId, [...(children.get(a.parentId) ?? []), a])
+  for (const a of agents) {
+    if (a.parentId === null || !byId.has(a.parentId)) continue
+    const list = children.get(a.parentId)
+    if (list) list.push(a)
+    else children.set(a.parentId, [a])
+  }
 
   // "Settled with nothing live under it", memoized per agent; cycle-safe (a cycle counts as live, so it stays shown).
   const quiet = new Map<string, boolean>()
@@ -94,8 +99,8 @@ function collectSubtree(first: AgentInstance[], children: Map<string, AgentInsta
   const out: AgentInstance[] = []
   const queue = [...first]
   for (const a of first) placed.add(a.id)
-  while (queue.length) {
-    const a = queue.shift() as AgentInstance
+  for (let i = 0; i < queue.length; i++) {
+    const a = queue[i]
     out.push(a)
     for (const c of children.get(a.id) ?? []) {
       if (placed.has(c.id)) continue

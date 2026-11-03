@@ -14,7 +14,7 @@ import { agentCostInput, sumCosts } from '../lib/cost'
  * many delegations. Counts and cost cover the subtree.
  */
 export type DoneGroupFlowNode = Node<
-  { parentId: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean },
+  { parentId: string; parentName: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean },
   'done-group'
 >
 
@@ -26,7 +26,7 @@ export function groupId(parentId: string): string {
 }
 
 function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): ReactElement {
-  const { agents, color, parentId, onToggle, label, earlier } = data
+  const { agents, color, parentId, parentName, onToggle, label, earlier } = data
   const failed = agents.filter((a) => a.state === 'error').length
   const done = agents.length - failed
   const cost = sumCosts(agents.map(agentCostInput))
@@ -56,7 +56,7 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
         <IconButton
           icon={ChevronDown}
           size="sm"
-          label={earlier && label ? `Show ${label} on the chart` : 'Show these reports on the chart'}
+          label={earlier && label ? `Show ${label} on the chart` : `Show reports under ${parentName}`}
           onClick={(e) => {
             // The click expands the group; it must not also select the node.
             e.stopPropagation()

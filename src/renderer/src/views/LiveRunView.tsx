@@ -238,6 +238,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
+  // The frame's one polite line: new decisions and "Showing N agents under X" after an expand.
+  const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedDecision, setPickedDecision] = useState<string | null>(null)
@@ -256,7 +258,6 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     setCollapseFinished(next)
     if (next) setExpandedGroups({})
   }
-  const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
 
   // Earlier sessions of this conversation load lazily; the view stays mounted when a continue changes the viewed run.
   // It re-runs when the set of known members changes or the history arrives: a run opened before history loaded gets its earlier members then.
@@ -357,8 +358,47 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     [agents, chain.earlier, collapseFinished, expandedGroups, now]
   )
 
-  /** The agent a group node hangs under: the folded report's parent, or the root for an earlier session. */
+  // An expanded key whose agent has left the canvas (it finished and folded) is dropped, so expanding the group it is
+  // now in shows that agent folded like its siblings (review L2). Earlier-session keys stay.
+  useEffect(() => {
+    const shown = new Set(visibleAgents.map((a) => a.id))
+    const stale = Object.keys(expandedGroups).filter((k) => !isEarlierKey(k) && !shown.has(k))
+    if (stale.length === 0) return
+    setExpandedGroups((g) => {
+      const next = { ...g }
+      for (const k of stale) delete next[k]
+      return next
+    })
+  }, [visibleAgents, expandedGroups])
+
+  /** The agent a group node hangs under: the visible ancestor it is keyed by, or the root for an earlier session. */
   const groupParent = useCallback((key: string): string | null => groupParentOf(key, chain.rootId, isEarlierKey), [chain.rootId])
+  const groupParentName = useCallback(
+    (key: string): string => (isEarlierKey(key) ? 'an earlier session' : (agentLookup.get(key)?.name ?? 'its parent')),
+    [agentLookup]
+  )
+
+  // Expanding removes the group node (and the focused button in it): focus moves to the agent it hung under, a stale
+  // group selection follows it, and the frame says what appeared (review M1).
+  const expandGroup = useCallback(
+    (key: string) => {
+      const members = groups.get(key) ?? []
+      const shownNow = isEarlierKey(key) ? members.length : members.filter((m) => m.parentId === key).length
+      setExpandedGroups((g) => ({ ...g, [key]: true }))
+      const parent = groupParent(key)
+      if (parent && useAppStore.getState().selectedAgentId === groupId(key)) selectAgent(parent)
+      setArrival((a) => ({ text: `Showing ${shownNow} ${shownNow === 1 ? 'agent' : 'agents'} under ${groupParentName(key)}`, n: (a?.n ?? 0) + 1 }))
+      if (parent) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const el = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(parent)}"]`)
+            el?.focus({ preventScroll: true })
+          })
+        )
+      }
+    },
+    [groups, groupParent, groupParentName, selectAgent]
+  )
 
   // Recompute the tree layout only when the set of shown nodes or their parent links change.
   const topologyKey = [
@@ -421,11 +461,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
         selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
-        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: toggleGroup, ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
+        data: { parentId, parentName: groupParentName(parentId), agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: expandGroup, ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, toggleGroup, neutralRoleColor])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor])
 
   const edges: Edge[] = useMemo(() => {
     const shown = new Set(visibleAgents.map((a) => a.id))
@@ -507,14 +547,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     const members = groups.get(parentId)
     if (!members) return undefined
     return {
-      parentName: isEarlierKey(parentId) ? 'an earlier session' : (run.agents[parentId]?.name ?? 'its parent'),
+      parentName: groupParentName(parentId),
       agents: members,
       // Members deeper than a direct report say which agent they ran under (earlier sessions: never).
-      underOf: (a) => (isEarlierKey(parentId) || !a.parentId || a.parentId === parentId ? undefined : (agentsById[a.parentId]?.name ?? a.parentId)),
+      underOf: (a) => (isEarlierKey(parentId) || !a.parentId || a.parentId === parentId ? undefined : (agentLookup.get(a.parentId)?.name ?? 'an earlier agent')),
       onPick: (id) => selectAgent(id),
-      onExpand: () => toggleGroup(parentId)
+      onExpand: () => expandGroup(parentId)
     }
-  }, [run, selectedAgentId, groups, selectAgent, toggleGroup, agentsById])
+  }, [selectedAgentId, groups, selectAgent, expandGroup, groupParentName, agentLookup])
   const finishedCount = [...groups.values()].reduce((n, g) => n + g.length, 0)
 
   // What Send does (model 3): reply while the session is open; on the chain's newest ended run it continues the
@@ -786,7 +826,6 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   // One short polite line when a new decision arrives. The tray itself is not a live region: expanding Details would
   // otherwise read a whole proposal body aloud.
-  const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
   const seenDecisions = useRef<{ runId: string; keys: Set<string> } | null>(null)
   const decisionKeys = decisionItems.map((d) => d.key).join('|')
   useEffect(() => {
@@ -848,7 +887,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             <div className="frame-toolbar-end">
               {!conversation && (agents.length > 1 || chain.earlier.length > 0) && (
                 <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
-                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" title="Hide finished agents" />
+                  <Switch
+                    checked={collapseFinished}
+                    onChange={toggleCollapse}
+                    label="Hide finished agents"
+                    title={collapseFinished && finishedCount ? `Hide finished agents (${finishedCount} hidden)` : 'Hide finished agents'}
+                  />
                   <span className="fold-label" aria-hidden="true">
                     <span className="fold-long">Hide finished agents</span>
                     <span className="fold-short">Hide finished</span>
