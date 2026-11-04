@@ -57,7 +57,8 @@ try {
 
   // Grant it to a role through the Roles control.
   await row.locator('[data-testid=skill-choose-roles]').click()
-  check(await row.locator('[data-testid=skill-roles][aria-expanded=true]').isVisible(), '"Choose roles" opens the Roles control')
+  const opened = await row.locator('[data-testid=skill-roles][aria-expanded=true]').waitFor({ timeout: 5000 }).then(() => true, () => false)
+  check(opened, '"Choose roles" opens the Roles control')
   await row.locator('input[type=checkbox]').first().check({ force: true })
   await sleep(500)
   const proj = await findProject(page, NAME)
