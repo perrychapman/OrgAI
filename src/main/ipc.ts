@@ -138,6 +138,8 @@ import {
   teamReviewFile,
   updateEngagementDocument
 } from './store/projectData'
+import { clearKnowledge, knowledgeNodeCount, readKnowledge, removeEdge, removeNode, saveEdge, saveNodeForUser, userSource } from './store/knowledge'
+import { emptyKnowledgeGraph } from '@shared/knowledge'
 import type { TemplateService } from './setup/templates'
 import type {
   EngagementChangedEvent,
@@ -147,6 +149,13 @@ import type {
   EngagementNoteContent,
   EngagementNoteRef,
   EngagementNoteSaveInput,
+  KnowledgeEdge,
+  KnowledgeEdgeSaveInput,
+  KnowledgeFactInput,
+  KnowledgeGraph,
+  KnowledgeItemRef,
+  KnowledgeNode,
+  KnowledgeNodeSaveInput,
   OrgTemplateApplyInput,
   OrgTemplateInfo,
   OrgTemplateSaveInput,
@@ -466,6 +475,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     return runs.usageCsv(q, { project: project.name, client: project.client ?? '' })
   })
   registerTemplateEngagementIpc({ projects, templates, dataDir: settings.dataDir })
+  registerKnowledgeIpc({ projects, dataDir: settings.dataDir })
   ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
     const target = checkRunTarget(input, {
       project: (id) => projectOrHarness(id),
@@ -750,8 +760,7 @@ export function removalFacts(deps: RemovalDeps, projectId: string, removeRuns: b
     rulesRemoved: appRulesExist(deps.dataDir, projectId),
     teamReviewRemoved: exists(teamReviewFile(deps.dataDir, projectId)),
     skillEvaluationRemoved: exists(skillEvaluationFile(deps.dataDir, projectId)),
-    // Placeholder: the knowledge store lands with the Runtime Engineer, who replaces this with the node count.
-    knowledgeRemoved: 0
+    knowledgeRemoved: safe(() => knowledgeNodeCount(deps.dataDir, projectId), 0)
   }
 }
 
@@ -799,14 +808,174 @@ export const templateEngagementArgs = {
       if (typeof i.noteId !== 'string' || !NOTE_ID.test(i.noteId)) throw new Error('Note not found')
       noteId = i.noteId
     }
-    return { projectId: storedIdArg(i.projectId), ...(noteId ? { noteId } : {}), title: i.title, text: i.text }
+    if (i.retired !== undefined && i.retired !== null && typeof i.retired !== 'boolean') throw new Error('retired must be true or false.')
+    return {
+      projectId: storedIdArg(i.projectId),
+      ...(noteId ? { noteId } : {}),
+      title: i.title,
+      text: i.text,
+      ...(typeof i.retired === 'boolean' ? { retired: i.retired } : {})
+    }
   }
 }
 
-function broadcastEngagementChanged(event: EngagementChangedEvent): void {
+/** Push projects:engagementChanged to every live window (RunManager gets it as `engagementChanged` for agent writes). */
+export function broadcastEngagementChanged(event: EngagementChangedEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.projectsEngagementChanged, event)
   }
+}
+
+const isKnowledgeId = (x: unknown, prefix: string): x is string => isSafeId(x) && x.startsWith(prefix)
+
+/** An optional id field: undefined / null = absent; anything else must be a string with the prefix, else `refusal`. */
+function optionalKnowledgeId(x: unknown, prefix: string, refusal: string): string | undefined {
+  if (x === undefined || x === null) return undefined
+  if (!isKnowledgeId(x, prefix)) throw new Error(refusal)
+  return x
+}
+
+/** An optional string field: undefined / null = absent; anything else must be a string. */
+function optionalText(x: unknown, label: string): string | undefined {
+  if (x === undefined || x === null) return undefined
+  if (typeof x !== 'string') throw new Error(`${label} must be text.`)
+  return x
+}
+
+function optionalBoolean(x: unknown, label: string): boolean | undefined {
+  if (x === undefined || x === null) return undefined
+  if (typeof x !== 'boolean') throw new Error(`${label} must be true or false.`)
+  return x
+}
+
+function optionalTextList(x: unknown, label: string): string[] | undefined {
+  if (x === undefined || x === null) return undefined
+  if (!Array.isArray(x) || x.some((s) => typeof s !== 'string')) throw new Error(`${label} must be a list of text.`)
+  return [...(x as string[])]
+}
+
+/**
+ * Renderer input of the knowledge:* channels, rebuilt field by field (extra fields dropped, wrong types refused with a
+ * short message). String content (lengths, hidden characters, keys, caps) is the store's to validate.
+ */
+export const knowledgeArgs = {
+  projectId(input: unknown): string {
+    return storedIdArg(input)
+  },
+  saveNode(input: unknown): KnowledgeNodeSaveInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = storedIdArg(i.projectId)
+    const nodeId = optionalKnowledgeId(i.nodeId, 'kn_', 'Entity not found')
+    if (typeof i.kind !== 'string') throw new Error('The kind must be text.')
+    if (typeof i.name !== 'string') throw new Error('The name must be text.')
+    const aliases = optionalTextList(i.aliases, 'Aliases')
+    const summary = optionalText(i.summary, 'The summary')
+    const noteIds = optionalTextList(i.noteIds, 'Note links')
+    const retired = optionalBoolean(i.retired, 'retired')
+    let facts: KnowledgeFactInput[] | undefined
+    if (i.facts !== undefined && i.facts !== null) {
+      if (!Array.isArray(i.facts)) throw new Error('Facts must be a list.')
+      facts = i.facts.map((raw): KnowledgeFactInput => {
+        const f = obj<Record<string, unknown>>(raw)
+        const id = optionalKnowledgeId(f.id, 'kf_', 'Fact not found')
+        if (typeof f.text !== 'string') throw new Error('A fact must be text.')
+        const flag = optionalBoolean(f.retired, 'A fact\'s retired flag')
+        return { ...(id ? { id } : {}), text: f.text, ...(flag !== undefined ? { retired: flag } : {}) }
+      })
+    }
+    return {
+      projectId,
+      ...(nodeId ? { nodeId } : {}),
+      kind: i.kind,
+      name: i.name,
+      ...(aliases ? { aliases } : {}),
+      ...(summary !== undefined ? { summary } : {}),
+      ...(facts ? { facts } : {}),
+      ...(noteIds ? { noteIds } : {}),
+      ...(retired !== undefined ? { retired } : {})
+    }
+  },
+  /** projectId plus exactly one of nodeId / edgeId. */
+  itemRef(input: unknown): KnowledgeItemRef {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = storedIdArg(i.projectId)
+    const nodeId = optionalKnowledgeId(i.nodeId, 'kn_', 'Entity not found')
+    const edgeId = optionalKnowledgeId(i.edgeId, 'ke_', 'Relation not found')
+    if ((nodeId === undefined) === (edgeId === undefined)) throw new Error('Name exactly one of nodeId or edgeId.')
+    return { projectId, ...(nodeId ? { nodeId } : {}), ...(edgeId ? { edgeId } : {}) }
+  },
+  saveEdge(input: unknown): KnowledgeEdgeSaveInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = storedIdArg(i.projectId)
+    const edgeId = optionalKnowledgeId(i.edgeId, 'ke_', 'Relation not found')
+    if (typeof i.from !== 'string' || typeof i.to !== 'string') throw new Error('Name the two entities to relate.')
+    if (typeof i.relation !== 'string') throw new Error('The relation must be text.')
+    const note = optionalText(i.note, 'The note')
+    const retired = optionalBoolean(i.retired, 'retired')
+    return {
+      projectId,
+      ...(edgeId ? { edgeId } : {}),
+      from: i.from,
+      to: i.to,
+      relation: i.relation,
+      ...(note !== undefined ? { note } : {}),
+      ...(retired !== undefined ? { retired } : {})
+    }
+  }
+}
+
+/** knowledge:* handlers: reads for any stored project (empty for code projects), writes for engagements only. */
+function registerKnowledgeIpc({ projects, dataDir }: { projects: ProjectStore; dataDir: string }): void {
+  const stored = (id: string): Project => {
+    const p = projects.get(id)
+    if (!p) throw new Error('Project not found')
+    return p
+  }
+  const engagement = (id: string): Project => {
+    const p = stored(id)
+    if (projectKindOf(p) !== 'engagement') throw new Error('Only engagements keep a knowledge graph.')
+    return p
+  }
+  const changed = (projectId: string, ids?: string[]): void => broadcastEngagementChanged({ projectId, what: 'knowledge', ...(ids ? { ids } : {}) })
+  ipcMain.handle(IPC.knowledgeGet, (_e, id: unknown): KnowledgeGraph => {
+    const project = stored(knowledgeArgs.projectId(id))
+    return projectKindOf(project) === 'engagement' ? readKnowledge(dataDir, project.id) : emptyKnowledgeGraph()
+  })
+  ipcMain.handle(IPC.knowledgeSaveNode, (_e, input: unknown): KnowledgeNode => {
+    const { projectId, ...rest } = knowledgeArgs.saveNode(input)
+    const node = saveNodeForUser(dataDir, engagement(projectId).id, rest)
+    changed(projectId, [node.id])
+    return node
+  })
+  ipcMain.handle(IPC.knowledgeRemoveNode, (_e, input: unknown): KnowledgeGraph => {
+    const ref = knowledgeArgs.itemRef(input)
+    if (!ref.nodeId) throw new Error('Entity not found')
+    const project = engagement(ref.projectId)
+    const before = readKnowledge(dataDir, project.id)
+    const removedEdges = before.edges.filter((e) => e.from === ref.nodeId || e.to === ref.nodeId).map((e) => e.id)
+    const graph = removeNode(dataDir, project.id, ref.nodeId)
+    changed(project.id, [ref.nodeId, ...removedEdges])
+    return graph
+  })
+  ipcMain.handle(IPC.knowledgeSaveEdge, (_e, input: unknown): KnowledgeEdge => {
+    const { projectId, ...rest } = knowledgeArgs.saveEdge(input)
+    const { edge } = saveEdge(dataDir, engagement(projectId).id, rest, userSource())
+    changed(projectId, [edge.id])
+    return edge
+  })
+  ipcMain.handle(IPC.knowledgeRemoveEdge, (_e, input: unknown): KnowledgeGraph => {
+    const ref = knowledgeArgs.itemRef(input)
+    if (!ref.edgeId) throw new Error('Relation not found')
+    const graph = removeEdge(dataDir, engagement(ref.projectId).id, ref.edgeId)
+    changed(ref.projectId, [ref.edgeId])
+    return graph
+  })
+  ipcMain.handle(IPC.knowledgeClear, (_e, id: unknown): KnowledgeGraph => {
+    const project = engagement(knowledgeArgs.projectId(id))
+    const graph = clearKnowledge(dataDir, project.id)
+    changed(project.id)
+    return graph
+  })
 }
 
 function registerTemplateEngagementIpc({ projects, templates, dataDir }: { projects: ProjectStore; templates: TemplateService; dataDir: string }): void {
@@ -841,14 +1010,14 @@ function registerTemplateEngagementIpc({ projects, templates, dataDir }: { proje
   })
   ipcMain.handle(IPC.projectsSaveNote, (_e, input: unknown): EngagementNote => {
     const i = templateEngagementArgs.saveNote(input)
-    const note = saveNote(dataDir, stored(i.projectId).id, { noteId: i.noteId, title: i.title, text: i.text })
-    broadcastEngagementChanged({ projectId: i.projectId, what: 'notes' })
+    const note = saveNote(dataDir, stored(i.projectId).id, { noteId: i.noteId, title: i.title, text: i.text, retired: i.retired })
+    broadcastEngagementChanged({ projectId: i.projectId, what: 'notes', ids: [note.id] })
     return note
   })
   ipcMain.handle(IPC.projectsRemoveNote, (_e, input: unknown): EngagementNote[] => {
     const ref = templateEngagementArgs.noteRef(input)
     const rest = removeNote(dataDir, stored(ref.projectId).id, ref.noteId)
-    broadcastEngagementChanged({ projectId: ref.projectId, what: 'notes' })
+    broadcastEngagementChanged({ projectId: ref.projectId, what: 'notes', ids: [ref.noteId] })
     return rest
   })
 }
