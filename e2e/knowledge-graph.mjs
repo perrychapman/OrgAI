@@ -95,6 +95,9 @@ const NODE = `${GRAPH} .react-flow__node`
 const nodeNames = async () =>
   page.evaluate((sel) => [...document.querySelectorAll(`${sel} [data-testid=knowledge-node]`)].map((n) => n.querySelector('.knowledge-name-text, .hex-name')?.textContent?.trim() ?? ''), GRAPH)
 const nodeCount = () => page.locator(`${GRAPH} [data-testid=knowledge-node]`).count()
+// The selected node's name (the node renders an aria-hidden avatar with initials before the name, so innerText is "JD Jane Doe ...").
+const selectedNodes = async () =>
+  page.evaluate((sel) => [...document.querySelectorAll(`${sel} .react-flow__node.selected [data-testid=knowledge-node]`)].map((n) => n.querySelector('.knowledge-name-text, .hex-name')?.textContent?.trim() ?? ''), GRAPH)
 const waitNodes = (n, ms = 15_000) => until(async () => (await nodeCount()) === n, ms)
 const zoomOf = () =>
   page.evaluate((sel) => {
@@ -156,8 +159,8 @@ try {
   check(names1.join('|') === [ACME, JANE, DECISION].join('|'), 'the nodes come in list order (creation order: Acme, Jane, the decision)', names1.join(' | '))
   check((await page.locator(`${GRAPH} [data-testid=knowledge-retired-group]`).count()) === 0, 'no retired group: nothing is retired', '')
   check((await page.locator(`${GRAPH} .react-flow[aria-label="Knowledge graph"]`).count()) === 1, 'the flow is labelled "Knowledge graph"')
-  const selectedNode = page.locator(`${NODE}.selected [data-testid=knowledge-node]`)
-  check((await selectedNode.count()) === 1 && clean(await selectedNode.innerText()).startsWith(JANE), 'the selected node is Jane Doe (the canvas selection cue)', String(await selectedNode.count()))
+  const selected1 = await selectedNodes()
+  check(selected1.length === 1 && selected1[0] === JANE, 'the selected node is Jane Doe (the canvas selection cue)', selected1.join(' | '))
   // Spoken names.
   const labels = await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .react-flow__node`)].map((n) => n.getAttribute('aria-label') ?? ''), GRAPH)
   const jane = labels.find((l) => l.startsWith('Jane Doe, person.')) ?? ''
@@ -256,8 +259,8 @@ try {
   // Space selects the focused node; the list shares it.
   await page.keyboard.press('Space')
   await sleep(300)
-  const sel = page.locator(`${NODE}.selected [data-testid=knowledge-node]`)
-  check((await sel.count()) === 1 && clean(await sel.innerText()).startsWith(DECISION), 'Space selects the decision', String(await sel.count()))
+  const sel = await selectedNodes()
+  check(sel.length === 1 && sel[0] === DECISION, 'Space selects the decision', sel.join(' | '))
   // Ctrl+Arrow follows a relation (optional in the spec; built): from the decision towards Jane.
   const before = await focusedNodeName()
   for (const key of ['Control+ArrowUp', 'Control+ArrowLeft', 'Control+ArrowRight', 'Control+ArrowDown']) {
@@ -272,8 +275,8 @@ try {
   check(opened, 'Enter on a node opens the detail pane and focuses its heading', await activeTestId())
   const detailName = clean(await page.locator('#knowledge-detail-heading').innerText().catch(() => ''))
   check(detailName.includes(JANE), 'the detail pane shows Jane Doe', detailName)
-  const sel2 = page.locator(`${NODE}.selected [data-testid=knowledge-node]`)
-  check((await sel2.count()) === 1 && clean(await sel2.innerText()).startsWith(JANE), 'the graph selection follows: Jane Doe is selected', String(await sel2.count()))
+  const sel2 = await selectedNodes()
+  check(sel2.length === 1 && sel2[0] === JANE, 'the graph selection follows: Jane Doe is selected', sel2.join(' | '))
   // The Skip to list link focuses the list.
   await page.locator('[data-testid=knowledge-skip-list]').focus()
   await page.keyboard.press('Enter')
