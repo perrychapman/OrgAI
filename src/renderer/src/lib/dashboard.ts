@@ -306,11 +306,12 @@ export interface ForgetConfirmText {
 export function forgetConfirmText(preview: ProjectRemoveResult | null, openRuns: number, folder: string): ForgetConfirmText {
   const stays = `Stays: files in ${folder || 'the working folder'} and in the reference folders, your library skills, custom servers and connected services.`
   if (!preview) {
-    return { lines: [], uncounted: 'its plan, context notes, saved rules, runs and costs', stays }
+    return { lines: [], uncounted: 'its plan, context notes, what the team recorded, saved rules, runs and costs', stays }
   }
   const lines: string[] = []
   if (preview.documentRemoved) lines.push('The engagement plan')
   if (preview.notesRemoved > 0) lines.push(plural(preview.notesRemoved, 'context note', 'context notes'))
+  if (preview.knowledgeRemoved > 0) lines.push(plural(preview.knowledgeRemoved, 'recorded item', 'recorded items'))
   if (preview.rulesRemoved) lines.push('Saved permission rules')
   const open = Math.max(0, Math.floor(openRuns))
   if (preview.runsRemoved > 0) {
@@ -325,11 +326,12 @@ export function forgetConfirmText(preview: ProjectRemoveResult | null, openRuns:
   return { lines, uncounted: null, stays }
 }
 
-/** The Dashboard notice after a forget: "Forgot Acme. Deleted the plan, 12 notes, its saved rules, 23 runs." */
+/** The Dashboard notice after a forget: "Forgot Acme. Deleted the plan, 12 notes, 40 recorded items, its saved rules, 23 runs." */
 export function forgetNoticeText(name: string, result: ProjectRemoveResult): string {
   const parts: string[] = []
   if (result.documentRemoved) parts.push('the plan')
   if (result.notesRemoved > 0) parts.push(plural(result.notesRemoved, 'note', 'notes'))
+  if (result.knowledgeRemoved > 0) parts.push(plural(result.knowledgeRemoved, 'recorded item', 'recorded items'))
   if (result.rulesRemoved) parts.push('its saved rules')
   if (result.runsRemoved > 0) parts.push(plural(result.runsRemoved, 'run', 'runs'))
   if (result.skillsRemoved > 0) parts.push(plural(result.skillsRemoved, 'skill copy', 'skill copies'))

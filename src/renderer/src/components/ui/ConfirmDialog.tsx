@@ -10,6 +10,8 @@ export interface ConfirmOptions {
   confirmLabel: string
   /** Danger variant for destructive confirms (discard, delete, remove). */
   danger?: boolean
+  /** data-testid of the confirm button. */
+  confirmTestId?: string
 }
 
 /**
@@ -43,6 +45,7 @@ export function useConfirm(): { confirm: (opts: ConfirmOptions) => Promise<boole
       body={shown?.body}
       confirmLabel={shown?.confirmLabel ?? 'Confirm'}
       danger={shown?.danger}
+      confirmTestId={shown?.confirmTestId}
       onConfirm={() => settle(true)}
       onCancel={() => settle(false)}
     />

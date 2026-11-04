@@ -1,14 +1,16 @@
 import type { EngagementDocumentInfo, EngagementNote } from '@shared/types'
+import { formatDate, formatFullDateTime } from './dates'
 
 /** Pure copy helpers for Project settings > Engagement plan and Context notes (engagement-2 spec 5). */
 
-const dateOf = (ms: number): string => new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+/** Dates go through lib/dates.ts (one format app-wide: "4 Nov 2026"). */
+const dateOf = formatDate
 
 /** "Approved in the setup interview, 3 Nov 2026" / "Edited by you, 4 Nov 2026"; null without a write time. `title` has the full time. */
 export function planRevisedLine(info: Pick<EngagementDocumentInfo, 'updatedAt' | 'updatedBy'>): { text: string; title: string } | null {
   if (typeof info.updatedAt !== 'number' || !Number.isFinite(info.updatedAt) || info.updatedAt <= 0) return null
   const when = dateOf(info.updatedAt)
-  const title = new Date(info.updatedAt).toLocaleString()
+  const title = formatFullDateTime(info.updatedAt)
   return { text: info.updatedBy === 'user' ? `Edited by you, ${when}` : `Approved in the setup interview, ${when}`, title }
 }
 

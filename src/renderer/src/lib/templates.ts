@@ -3,6 +3,7 @@
  * and the App settings list. No IPC, no React.
  */
 
+import { formatDate } from './dates'
 import type { OrgTemplateInfo, Project, ProjectKind } from '@shared/types'
 
 /** localStorage key of the template last used for a new project (preselected next time while it still exists). */
@@ -40,7 +41,7 @@ export function roleNamesLine(template: Pick<OrgTemplateInfo, 'roleCount' | 'rol
 export function savedDateLine(ms: number): string {
   const d = new Date(ms)
   if (!Number.isFinite(d.getTime())) return 'Saved'
-  return `Saved ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+  return `Saved ${formatDate(d.getTime())}`
 }
 
 /** Templates of the project's kind first, then the rest ("Other kinds"). Each group keeps the list order. */

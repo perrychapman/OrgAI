@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useState } from 'react'
-import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { KnowledgeGraph, MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
 import { isRunLive, useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
 import { useForgetEngagement } from '../dashboard/useForgetEngagement'
@@ -12,8 +12,17 @@ import { SettingRow } from '../ui/SettingRow'
 import { SettingsCard } from './SettingsCard'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { isolateWritersOn, projectKindOf } from '@shared/defaults'
+import { cleanIpcError } from '../../lib/ipcError'
+import { clearCountsLine } from '../../lib/knowledge'
 import { MAINTENANCE_ENGAGEMENT_LINE } from '../../lib/settingsCopy'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
+
+/** The Maintenance notice after knowledge:clear (docs/design/knowledge.md section 9). */
+export const KNOWLEDGE_CLEARED_NOTICE = 'Cleared everything the team recorded.'
+
+/** The engagement danger-zone text; "what the team recorded" names the knowledge graph. */
+export const ENGAGEMENT_DANGER_TEXT =
+  'Deletes everything OrgAI keeps for this engagement: the plan, context notes, what the team recorded, saved permission rules, run history and costs, and saved service values for it. Files in the working folder and in reference folders are not touched.'
 
 /** Leftover report branches, the architecture document, and (in a danger zone at the foot) removing OrgAI's files. */
 export function MaintenanceSection({ project }: { project: Project }): ReactElement {
@@ -27,10 +36,74 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<MaintenanceResult | null>(null)
   const [diffs, setDiffs] = useState<Record<string, WorktreeDiff | 'loading'>>({})
+  // What the team recorded (engagements): the counts the Clear-everything confirm names; null until read.
+  const [graph, setGraph] = useState<KnowledgeGraph | null>(null)
 
   // Engagements write nothing to their folder unless separate git copies are on. Branches are always looked up, and the
   // block shows whenever any exist, so leftovers can be discarded after isolation was turned off.
   const engagement = projectKindOf(project) === 'engagement'
+
+  useEffect(() => {
+    if (!engagement) return
+    let gone = false
+    const read = (): void => {
+      window.orgai.knowledge
+        .get(project.id)
+        .then((g) => {
+          if (!gone) setGraph(g)
+        })
+        .catch(() => {
+          if (!gone) setGraph((g) => g ?? { version: 1, nodes: [], edges: [] })
+        })
+    }
+    setGraph(null)
+    read()
+    const off = window.orgai.onEngagementChanged((ev) => {
+      if (ev.projectId === project.id && ev.what === 'knowledge') read()
+    })
+    return () => {
+      gone = true
+      off()
+    }
+  }, [engagement, project.id])
+
+  const graphEmpty = graph !== null && graph.nodes.length === 0 && graph.edges.length === 0
+  const noticeRef = useRef<HTMLDivElement>(null)
+  const [noticeFocus, setNoticeFocus] = useState(0)
+  useEffect(() => {
+    if (noticeFocus > 0) noticeRef.current?.focus()
+  }, [noticeFocus])
+
+  const clearKnowledge = async (): Promise<void> => {
+    const ok = await confirm({
+      title: 'Clear everything the team recorded?',
+      body: (
+        <p data-testid="knowledge-clear-body">
+          Deletes {clearCountsLine(graph ?? { nodes: [], edges: [] })}. Context notes stay. Agents and you can no longer see them. Retire items on the Knowledge tab to keep records instead.
+        </p>
+      ),
+      confirmLabel: 'Clear everything',
+      danger: true,
+      confirmTestId: 'knowledge-clear-confirm'
+    })
+    if (!ok) {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
+      return
+    }
+    setBusy('knowledge-clear')
+    setNotice(null)
+    try {
+      setGraph(await window.orgai.knowledge.clear(project.id))
+      setNotice({ ok: true, message: KNOWLEDGE_CLEARED_NOTICE })
+      // The button is disabled once the graph is empty, so after a clear focus moves to the notice (reviewer M1).
+      setNoticeFocus((n) => n + 1)
+    } catch (e) {
+      setNotice({ ok: false, message: cleanIpcError(e) })
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
+    } finally {
+      setBusy(null)
+    }
+  }
   const isolating = isolateWritersOn(project)
   const showBranches = !engagement || isolating || (worktrees !== null && worktrees.length > 0)
 
@@ -225,23 +298,41 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
         </SettingsCard>
       )}
 
-      {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'}>{notice.message}</div>}
+      {notice && (
+        <div ref={noticeRef} tabIndex={-1} className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'} data-testid="maintenance-notice">
+          {notice.message}
+        </div>
+      )}
 
       {engagement && (
         <SettingsGroup title="Danger zone">
           <div className="danger-zone">
             <p className="danger-zone-text" data-testid="danger-zone-text">
-              Deletes everything OrgAI keeps for this engagement: the plan, context notes, saved permission rules, run history and costs, and saved service values for it. Files in the working folder and in reference folders are not touched.
+              {ENGAGEMENT_DANGER_TEXT}
             </p>
             {forgetError && (
               <Banner tone="danger" title="Could not forget this engagement" testId="forget-error">
                 {forgetError}
               </Banner>
             )}
-            <div className="row gap-2">
+            <div className="row gap-2 wrap">
               <Button variant="danger" size="sm" disabled={busy !== null} testId="forget-engagement" onClick={() => void forgetThis()}>
                 {busy === 'forget' ? 'Forgetting…' : 'Forget this engagement…'}
               </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={busy !== null || graph === null || graphEmpty}
+                testId="knowledge-clear"
+                onClick={() => void clearKnowledge()}
+              >
+                {busy === 'knowledge-clear' ? 'Clearing…' : 'Clear everything…'}
+              </Button>
+              {graphEmpty && (
+                <span className="settings-quiet" data-testid="knowledge-clear-empty">
+                  Nothing recorded yet.
+                </span>
+              )}
             </div>
           </div>
         </SettingsGroup>

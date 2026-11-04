@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Circle,
   CircleDot,
+  Database,
   FileText,
   HelpCircle,
   BookOpen,
@@ -40,6 +41,7 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { collapseKnowledgeWrites, type KnowledgeRow } from '../lib/knowledgeRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -81,6 +83,7 @@ const TOOL_ICONS: Record<ToolKind, LucideIcon> = {
   search: Search,
   agent: Bot,
   message: MessageSquare,
+  knowledge: Database,
   other: Wrench
 }
 
@@ -166,13 +169,13 @@ function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement
   )
 }
 
-function ToolUseRow({ name, input }: { name: string; input: unknown }): ReactElement {
+function ToolUseRow({ name, input, label }: { name: string; input: unknown; /** A sentence that needed the result (lib/knowledgeRun.ts labels). */ label?: string }): ReactElement {
   const row = humanizeToolUse(name, input)
   return (
     <div className="entry tool_use">
       <Icon icon={TOOL_ICONS[row.kind]} size="sm" />
       <div className="tool-main">
-        <div className="tool-label">{row.label}</div>
+        <div className="tool-label">{label ?? row.label}</div>
         {row.details && row.details !== '{}' && (
           <details className="entry-detail">
             <summary>Show details</summary>
@@ -187,9 +190,10 @@ function ToolUseRow({ name, input }: { name: string; input: unknown }): ReactEle
 function ToolResultRow({ toolName, content, isError }: { toolName?: string; content: string; isError: boolean }): ReactElement | null {
   const row = humanizeToolResult(toolName, content, isError)
   if (!row) return null
+  const failed = isError || !!row.failed
   return (
-    <div className={`entry tool_result${isError ? ' error' : ''}`}>
-      <Icon icon={isError ? XCircle : CheckCircle2} size="sm" />
+    <div className={`entry tool_result${failed ? ' error' : ''}`}>
+      <Icon icon={failed ? XCircle : CheckCircle2} size="sm" />
       <div className="tool-main">
         <div className="tool-label">{row.label}</div>
         {row.full && (
@@ -229,8 +233,42 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
   return { hidden, body }
 }
 
+/**
+ * The harness row that stands for a knowledge write (section 7): the humanised headline, an "Open" link to the item on
+ * the Knowledge tab and the tool's result behind "Show output".
+ */
+function KnowledgeWriteRow({ row, body, projectId }: { row: KnowledgeRow; body: string | undefined; projectId: string | undefined }): ReactElement {
+  const open = (): void => {
+    if (!projectId || !row.focus) return
+    useAppStore.getState().openKnowledgeItem({ projectId, ...row.focus })
+  }
+  return (
+    <div className="entry system harness knowledge-row" data-testid="knowledge-row">
+      <Icon icon={Database} size="sm" />
+      <div className="tool-main">
+        <span className="entry-plain">{row.text}</span>
+        {row.focus && projectId && (
+          <>
+            {' '}
+            <button type="button" className="link-btn knowledge-row-open" data-testid="knowledge-row-open" aria-label={`Open ${row.name || 'this item'} in Knowledge`} onClick={open}>
+              Open
+            </button>
+          </>
+        )}
+        {body && (
+          <details className="entry-detail">
+            <summary>Show output</summary>
+            <pre>{body}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
+  const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
   const setTab = useAppStore((s) => s.setSideTab)
   const [showThinking, setShowThinking] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
@@ -262,7 +300,10 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   // One skill load is one row: the harness "Loaded skill <name>" row stands for the load_skill call and its result, and
   // carries SKILL.md under "Show instructions". Calls without a matching row (refused, resource files) stay visible.
   const skillLoads = useMemo(() => collapseSkillLoads(entries), [entries])
-  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id)
+  // One knowledge write is one row too: the harness "Recorded <kind> <name>" row stands for the engagement_knowledge /
+  // engagement_context call and its result (docs/design/knowledge.md section 7).
+  const knowledge = useMemo(() => collapseKnowledgeWrites(entries), [entries])
+  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id)
   const visible = entries.filter(shown)
 
   const rows = items.map((item) => {
@@ -309,13 +350,15 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           </div>
         )
       case 'tool_use':
-        return <ToolUseRow key={e.id} name={b.name} input={b.input} />
+        return <ToolUseRow key={e.id} name={b.name} input={b.input} label={knowledge.labels.get(e.id)} />
       case 'tool_result':
         return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
       case 'system': {
         const peer = parsePeerNote(b.text)
         if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
         const harness = e.source === 'harness'
+        const kRow = harness ? knowledge.rows.get(e.id) : undefined
+        if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} />
         const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
         const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
         // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
