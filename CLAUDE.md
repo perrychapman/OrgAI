@@ -54,9 +54,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   docs/macos-testing.md). Cmd/Ctrl+W is close-tab's only (never a window close); Window > Close window is a plain item
   with no accelerator, not the `close` role. Help opens only the fixed `DOCS_URL` / `ISSUES_URL` (guarded by
   `openHelpUrl`) and "Open data folder" opens `app.getPath('userData')` (ORGAI_DATA_DIR replaces it). Window
-  `minHeight` stays 680 (an outer size: at the minimum window the content area on Windows is about 654 px with the
+  `minHeight` stays 680 (an outer size: at the minimum window the content area on Windows is 615 px measured in the re-walk, ux-review-menu-2.md M4, with the
   26 px menu bar; accepted, see ux-review-menu.md M1).
-  Unit-tested only; the live menu bars, the enablement greying are unverified until QA or a pack.
+  Unit-tested, and walked on Windows on mock data at both sizes and themes (ux-review-menu-2.md): the bar follows the theme, every renderer item works, real Ctrl+T / Ctrl+B fire once, run-window actions land in the main window. Open Mediums: M1 (Go to decision only looks at the current project), M2 (Team / Project settings on assistants, Org retrospective on live runs and Save chat as project on scratch chats announce instead of greying), M3 (Ctrl+. works only on Live), M5 (App settings counts as "no project": sections greyed, Ctrl+T announces "Open a project first."), plus Lows. macOS, Linux and packaged builds not driven.
 - Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
