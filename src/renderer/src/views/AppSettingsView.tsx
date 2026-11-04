@@ -34,6 +34,7 @@ import PresetsSection from '../components/connectors/PresetsSection'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
+import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
@@ -532,8 +533,8 @@ export default function AppSettingsView(): ReactElement {
           </>
         )}
         {pane === 'skill-library' && <SkillLibrarySection />}
-        {/* A second section, "Practice kit", joins this pane later. */}
         {pane === 'kit' && <TemplatesSection />}
+        {pane === 'kit' && <KitSection />}
         {pane === 'about' && appInfo && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About" testId="about-block">
             <SettingsCard>

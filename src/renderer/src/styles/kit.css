@@ -1,0 +1,250 @@
+/* Practice kit (App settings > Templates and kit; engagement-2 section 8). Tokens only. */
+
+.kit-last {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.kit-status:empty {
+  display: none;
+}
+.kit-saved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.kit-left-out,
+.kit-failed,
+.kit-file-notes,
+.kit-item-notes {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+
+/* Export dialog */
+.kit-export,
+.kit-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.kit-skeleton {
+  height: var(--space-16);
+}
+.kit-group {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  min-width: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.kit-group legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+}
+.kit-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: var(--scroll-region-max);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.kit-item-detail {
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.kit-empty,
+.kit-note {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.kit-count {
+  margin-right: auto;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+/* The group checkbox's mixed state (set through input.indeterminate). */
+.kit-group-check .checkbox input:indeterminate + .checkbox-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.kit-group-check .checkbox input:indeterminate + .checkbox-box::after {
+  content: '';
+  width: 8px;
+  height: 2px;
+  border-radius: var(--radius-xs);
+  background: var(--text-on-accent);
+}
+.kit-group-check .checkbox input:indeterminate + .checkbox-box svg {
+  display: none;
+}
+
+/* Import preview: a table that stacks under a 640 px container. */
+.kit-preview-wrap {
+  container-type: inline-size;
+  container-name: kit-preview;
+  min-width: 0;
+}
+.kit-preview {
+  width: 100%;
+  border-collapse: collapse;
+}
+.kit-preview th {
+  text-align: left;
+  font-weight: 600;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+}
+.kit-preview td {
+  vertical-align: top;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+.kit-cell-action {
+  width: 220px;
+}
+.kit-cell-action .select {
+  width: 100%;
+}
+.kit-row.is-refused {
+  color: var(--text-disabled);
+}
+.kit-item-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.kit-item-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.kit-item-desc {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.kit-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1h);
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-small);
+  color: var(--warning-text);
+  overflow-wrap: anywhere;
+}
+.kit-warn svg {
+  flex: none;
+  margin-top: var(--space-0h);
+}
+.kit-disclosure {
+  margin-top: var(--space-1);
+}
+.kit-disclosure > summary {
+  cursor: pointer;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.kit-disclosure > summary:hover {
+  color: var(--text-primary);
+}
+.kit-disclosure > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.kit-disclosure-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  font-size: var(--text-caption);
+}
+.kit-command {
+  margin: 0;
+  align-self: stretch;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.kit-roles {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.kit-role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h);
+}
+.kit-role-name {
+  font-size: var(--text-small);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.kit-role .kit-disclosure {
+  flex-basis: 100%;
+  margin-top: 0;
+}
+
+@container kit-preview (max-width: 640px) {
+  .kit-preview,
+  .kit-preview tbody,
+  .kit-preview tr,
+  .kit-preview td {
+    display: block;
+  }
+  .kit-preview thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .kit-preview tr {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .kit-preview td {
+    padding: var(--space-1) 0;
+    border-bottom: 0;
+  }
+  .kit-cell-type {
+    font-size: var(--text-small);
+    color: var(--text-secondary);
+  }
+  .kit-cell-action {
+    width: 100%;
+  }
+}
