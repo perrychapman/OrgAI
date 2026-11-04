@@ -128,3 +128,53 @@ describe('code projects are unchanged', () => {
     await m.stopAll()
   })
 })
+
+describe('reference-folder permission requests', () => {
+  const ask = async (referenceFolder: string | undefined) => {
+    const { m, ctxs } = rig()
+    const run = await m.start({ project: makeProject({ id: 'p1', path: folder(), kind: 'engagement' }), prompt: 'go' })
+    const pending = ctxs[0].requestPermission({
+      agentId: 'root',
+      toolName: 'Bash',
+      input: { command: 'del refs/a.md' },
+      summary: 'Run del',
+      suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'del:*' }], behavior: 'allow', destination: 'session' }] as never,
+      ruleLabels: ['Bash(del:*)'],
+      ...(referenceFolder ? { referenceFolder } : {})
+    })
+    const req = events.find((e): e is Extract<RunEvent, { type: 'permission.request' }> => e.type === 'permission.request')!
+    return { m, run, pending, req: req.request }
+  }
+
+  it('drops suggestions and rule labels from the broadcast request', async () => {
+    const { m, req } = await ask('C:\\refs')
+    expect(req.referenceFolder).toBe('C:\\refs')
+    expect(req.suggestions).toBeUndefined()
+    expect(req.ruleLabels).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('keeps suggestions on an ordinary request', async () => {
+    const { m, req } = await ask(undefined)
+    expect(req.suggestions).toBeDefined()
+    expect(req.ruleLabels).toEqual(['Bash(del:*)'])
+    await m.stopAll()
+  })
+
+  it.each(['session', 'project'] as const)('narrows a %s allow to once', async (scope) => {
+    const { m, run, pending, req } = await ask('C:\\refs')
+    m.decide(run.id, req.id, { behavior: 'allow', scope })
+    expect(await pending).toEqual({ behavior: 'allow', scope: 'once' })
+    const resolved = events.find((e) => e.type === 'permission.resolved')
+    expect(resolved).toBeDefined()
+    expect(resolved).not.toHaveProperty('savedToProject')
+    await m.stopAll()
+  })
+
+  it('leaves a session allow alone on an ordinary request', async () => {
+    const { m, run, pending, req } = await ask(undefined)
+    m.decide(run.id, req.id, { behavior: 'allow', scope: 'session' })
+    expect(await pending).toEqual({ behavior: 'allow', scope: 'session' })
+    await m.stopAll()
+  })
+})
