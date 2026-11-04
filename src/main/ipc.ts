@@ -91,7 +91,7 @@ import type {
   TeamReviewInput
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
-import type { McpCopyFromLibraryInput } from '@shared/types'
+import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
 import { MCP_SCOPE_IPC } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isConnectionId, isSafeId } from '@shared/defaults'
@@ -840,6 +840,11 @@ function registerMcpIpc(
 
   // ---- MCP per-project secrets and custom connector presets ----
   ipcMain.handle(MCP_SCOPE_IPC.mcpCopyFromLibrary, (_e, input: unknown) => mcp.copyFromLibrary(mcpCopyArgs(input)))
+  ipcMain.handle(MCP_SCOPE_IPC.mcpSetProjectOverrides, (_e, input: unknown) => mcp.setProjectOverrides(mcpOverridesArgs(input)))
+  ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsList, () => mcp.connectorPresetsList())
+  // The service validates the whole definition (validateUserPreset); the handler passes the raw structured-clone input.
+  ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsUpsert, (_e, input: unknown) => mcp.connectorPresetsUpsert(input))
+  ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsRemove, (_e, input: unknown) => mcp.connectorPresetsRemove(presetRemoveArgs(input)))
 }
 
 /**
@@ -1016,6 +1021,51 @@ export function mcpCopyArgs(input: unknown): McpCopyFromLibraryInput {
   const i = input as Record<string, unknown>
   if (!isSafeId(i.projectId) || !isSafeId(i.serverId) || typeof i.copySecrets !== 'boolean') throw new Error('Invalid copy request.')
   return { projectId: i.projectId, serverId: i.serverId, copySecrets: i.copySecrets }
+}
+
+/** Most names one mcp:setProjectOverrides map may carry (the entry's perProjectEnv is capped at 20 anyway). */
+export const OVERRIDES_MAX_KEYS = 50
+
+/**
+ * mcp:setProjectOverrides input rebuilt field by field: a plain object with SAFE_ID projectId and serverId and, for
+ * env and headers each, absent or a plain object of at most OVERRIDES_MAX_KEYS string values; anything else is refused
+ * ("Invalid overrides."), extra fields are dropped. McpService.setProjectOverrides filters names and checks values.
+ * Exported for tests.
+ */
+export function mcpOverridesArgs(input: unknown): McpProjectOverridesInput {
+  const bad = (): never => {
+    throw new Error('Invalid overrides.')
+  }
+  const isPlainObject = (v: unknown): v is Record<string, unknown> => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+    const proto = Object.getPrototypeOf(v)
+    return proto === Object.prototype || proto === null
+  }
+  if (!isPlainObject(input)) return bad()
+  if (!isSafeId(input.projectId) || !isSafeId(input.serverId)) return bad()
+  const out: McpProjectOverridesInput = { projectId: input.projectId, serverId: input.serverId }
+  for (const field of ['env', 'headers'] as const) {
+    const given = Object.hasOwn(input, field) ? input[field] : undefined
+    if (given === undefined) continue
+    if (!isPlainObject(given)) return bad()
+    const entries = Object.entries(given)
+    if (entries.length > OVERRIDES_MAX_KEYS) return bad()
+    const map: Record<string, string> = {}
+    for (const [k, v] of entries) {
+      if (typeof v !== 'string' || k === '__proto__') return bad()
+      map[k] = v
+    }
+    out[field] = map
+  }
+  return out
+}
+
+/** connectorPresets:remove input rebuilt as `{ id }`: a kebab-case id of at most 64 characters, else "Unknown connector." Exported for tests. */
+export function presetRemoveArgs(input: unknown): ConnectorPresetRemoveInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Unknown connector.')
+  const id = (input as Record<string, unknown>).id
+  if (typeof id !== 'string' || !CONNECTOR_ID_RE.test(id)) throw new Error('Unknown connector.')
+  return { id }
 }
 
 /** Longest permission rule accepted over IPC (permissions:add / permissions:remove). */

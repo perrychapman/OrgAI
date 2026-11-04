@@ -8,20 +8,38 @@ import type { OAuthPreset } from './oauth'
  * state, token header values and the ORGAI_MOCK=1 stand-ins. Pure; McpService owns persistence and secrets.
  */
 
-/** The preset and variant behind a library entry, or undefined for an ordinary entry (or an unknown preset). */
-export function connectorOf(entry: Pick<McpServerSpec, 'connectorId' | 'connectorVariant'> | undefined): { def: ConnectorDef; variant: ConnectorVariant } | undefined {
+/** Looks up a custom preset's ConnectorDef projection by id (McpService passes it; undefined = no such preset). */
+export type CustomConnectorLookup = (id: string) => ConnectorDef | undefined
+
+type ConnectorRef = Pick<McpServerSpec, 'connectorId' | 'connectorVariant' | 'connectorCustom'>
+
+/**
+ * The preset and variant behind a library entry, or undefined for an ordinary entry (or an unknown preset). An entry
+ * with connectorCustom resolves only through `custom` (never the curated catalog), and only while its variant is still
+ * one of the preset's; every other entry resolves only through the curated catalog.
+ */
+export function connectorOf(entry: ConnectorRef | undefined, custom?: CustomConnectorLookup): { def: ConnectorDef; variant: ConnectorVariant } | undefined {
   if (!entry?.connectorId) return undefined
+  if (entry.connectorCustom === true) {
+    const def = custom?.(entry.connectorId)
+    if (!def) return undefined
+    if (entry.connectorVariant === undefined) return { def, variant: connectorVariant(def) }
+    const variant = def.variants.find((v) => v.id === entry.connectorVariant)
+    return variant ? { def, variant } : undefined
+  }
   const def = connectorById(entry.connectorId)
   if (!def) return undefined
   return { def, variant: connectorVariant(def, entry.connectorVariant) }
 }
 
 /** The OAuth preset for runAuthorization / refreshTokens; undefined for token and no-auth connectors and ordinary entries. */
-export function oauthPresetFor(entry: Pick<McpServerSpec, 'connectorId' | 'connectorVariant'> | undefined): OAuthPreset | undefined {
-  const c = connectorOf(entry)
+export function oauthPresetFor(entry: ConnectorRef | undefined, custom?: CustomConnectorLookup): OAuthPreset | undefined {
+  const c = connectorOf(entry, custom)
   if (!c) return undefined
   const auth = c.variant.auth
   if (auth.kind === 'token' || auth.kind === 'none') return undefined
+  // A custom preset's OAuth carries scopes only: discovery does the rest.
+  if (entry?.connectorCustom === true) return auth.kind === 'oauth' && auth.scopes?.length ? { scopes: [...auth.scopes] } : {}
   const o = auth.overrides ?? {}
   return {
     ...(o.issuer ? { issuer: o.issuer } : {}),
@@ -37,7 +55,7 @@ export function oauthPresetFor(entry: Pick<McpServerSpec, 'connectorId' | 'conne
 }
 
 /** A library name for the connector: its id, else id-2 ... id-9 when a custom entry already holds the name. */
-export function connectorEntryName(def: ConnectorDef, taken: readonly string[]): string {
+export function connectorEntryName(def: { id: string; name: string }, taken: readonly string[]): string {
   const names = new Set(taken)
   if (!names.has(def.id)) return def.id
   for (let i = 2; i < 10; i++) {
