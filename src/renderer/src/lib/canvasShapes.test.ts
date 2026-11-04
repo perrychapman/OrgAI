@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { exitPoint } from './canvasShapes'
+import { exitPoint, messageSides, msgHandleId } from './canvasShapes'
+
+describe('messageSides', () => {
+  const box = (x: number, y: number, width = 240, height = 120) => ({ x, y, width, height })
+  it('siblings side by side leave by the facing sides', () => {
+    expect(messageSides(box(0, 200), box(300, 200))).toEqual({ out: 'right', in: 'left' })
+    expect(messageSides(box(300, 200), box(0, 200))).toEqual({ out: 'left', in: 'right' })
+  })
+  it('a node below or above uses bottom and top', () => {
+    expect(messageSides(box(0, 0), box(20, 300))).toEqual({ out: 'bottom', in: 'top' })
+    expect(messageSides(box(20, 300), box(0, 0))).toEqual({ out: 'top', in: 'bottom' })
+  })
+  it('picks the axis with more room between the boxes', () => {
+    // 260 right but only 100 down with 120 tall boxes: they overlap vertically, so the gap is sideways.
+    expect(messageSides(box(0, 0), box(260, 100))).toEqual({ out: 'right', in: 'left' })
+  })
+  it('a pair on a reporting line takes the other axis', () => {
+    // Top-down: the parent above the child; the line uses bottom to top, the message goes beside it.
+    expect(messageSides(box(0, 0), box(300, 300), 'y')).toEqual({ out: 'right', in: 'left' })
+    expect(messageSides(box(300, 300), box(0, 0), 'y')).toEqual({ out: 'left', in: 'right' })
+    // Left-right: the line uses right to left; the message goes over or under.
+    expect(messageSides(box(0, 0), box(400, 300), 'x')).toEqual({ out: 'bottom', in: 'top' })
+  })
+  it('boxes that overlap on the chosen axis leave and enter by the same side', () => {
+    expect(messageSides(box(0, 0), box(40, 300), 'y')).toEqual({ out: 'right', in: 'right' })
+  })
+  it('names handles per side', () => {
+    expect(msgHandleId('out', 'top')).toBe('msg-out-top')
+    expect(msgHandleId('in', 'left')).toBe('msg-in-left')
+  })
+})
 
 describe('exitPoint', () => {
   it('box: leaves through the nearer side plus the gap', () => {

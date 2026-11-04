@@ -1,8 +1,8 @@
 import { MarkerType, type Edge, type Node } from '@xyflow/react'
 import type { AgentInstance, AgentState } from '@shared/types'
 import { ROLE_COLORS } from '@shared/defaults'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, edgeStroke, groupNodeSize, reportingLineRole, ringStepFor, type CanvasOptions } from './canvas'
-import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from './canvasShapes'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, edgeStroke, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, type CanvasOptions } from './canvas'
+import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH, messageSides, msgHandleId, type PlacedBox } from './canvasShapes'
 import { layoutCanvas, type RingGuides } from './layout'
 
 /**
@@ -31,10 +31,6 @@ export interface SampleGraph {
   edges: Edge[]
   rings?: RingGuides
 }
-
-/** Handle ids the agent and group nodes expose for messages (twins of AgentNode's MSG_OUT / MSG_IN). */
-const MSG_OUT_ID = 'msg-out'
-const MSG_IN_ID = 'msg-in'
 
 interface SampleAgent {
   id: string
@@ -191,12 +187,16 @@ export function buildSample(opts: Pick<CanvasOptions, 'layout' | 'nodeStyle' | '
       : { stroke: inks.groupEdge, strokeWidth: 1.4, strokeDasharray: '4 4' },
     ...(station ? corners : {})
   }
+  // The sides facing each other, as the Live canvas picks them; the reviewer reports to the orchestrator, so the
+  // message takes the axis the reporting line does not use.
+  const box = (id: string, size: { width: number; height: number }): PlacedBox => ({ ...at(id), width: size.width, height: size.height })
+  const sides = messageSides(box(GROUP_PARENT, agentSize), box('sample-root', agentSize), handlesFor(opts.layout).source === 'bottom' ? 'y' : 'x')
   const message: Edge = {
     id: 'msg-sample-reviewer-sample-root',
     source: GROUP_PARENT,
     target: 'sample-root',
-    sourceHandle: MSG_OUT_ID,
-    targetHandle: MSG_IN_ID,
+    sourceHandle: msgHandleId('out', sides.out),
+    targetHandle: msgHandleId('in', sides.in),
     type,
     selectable: false,
     focusable: false,

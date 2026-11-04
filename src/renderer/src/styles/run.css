@@ -13,11 +13,7 @@
   transition: border-color var(--dur-base), box-shadow var(--dur-base), opacity var(--dur-base);
   position: relative;
 }
-/* Selected: role-colour border plus an inner 1px line (no layout shift). Keyboard focus is the outline below. */
-.agent-node.selected {
-  border-color: var(--role);
-  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
-}
+/* Keyboard focus is the outline (2 px, 3 px out). Selection is drawn after the state rules below, so it wins over them. */
 .react-flow__node:focus-visible > .agent-node,
 .react-flow__node:focus-visible > .done-group {
   outline: 2px solid var(--canvas-focus-ring);
@@ -46,6 +42,48 @@
 .agent-node.state-delegating,
 .agent-node.state-starting {
   box-shadow: var(--glow-working), var(--elev-1);
+}
+
+/* Selected beats every state colour (done, error, waiting, no result): a role-colour border plus an inner 1px line, and
+ * a shape cue that does not depend on colour, so it never reads as keyboard focus (the outline) even when the role
+ * colour equals the accent. Card: a 4 px bar on the leading edge, inside the padding. Name tag: a 3 px border. */
+.agent-node[data-style='card'].selected,
+.agent-node[data-style='compact'].selected {
+  border-color: var(--role);
+  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
+}
+.agent-node[data-style='card'].selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 4px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--role);
+  pointer-events: none;
+}
+.agent-node[data-style='compact'].selected {
+  box-shadow: inset 0 0 0 2px var(--role), var(--elev-2);
+}
+/* A waiting agent keeps its halo and a working one its glow under the selection line. */
+.agent-node[data-style='card'].selected.state-waiting {
+  box-shadow: inset 0 0 0 1px var(--role), var(--halo-warning), var(--elev-2);
+}
+.agent-node[data-style='card'].selected.state-thinking,
+.agent-node[data-style='card'].selected.state-tool,
+.agent-node[data-style='card'].selected.state-delegating,
+.agent-node[data-style='card'].selected.state-starting {
+  box-shadow: inset 0 0 0 1px var(--role), var(--glow-working), var(--elev-2);
+}
+.agent-node[data-style='compact'].selected.state-waiting {
+  box-shadow: inset 0 0 0 2px var(--role), var(--halo-warning), var(--elev-2);
+}
+.agent-node[data-style='compact'].selected.state-thinking,
+.agent-node[data-style='compact'].selected.state-tool,
+.agent-node[data-style='compact'].selected.state-delegating,
+.agent-node[data-style='compact'].selected.state-starting {
+  box-shadow: inset 0 0 0 2px var(--role), var(--glow-working), var(--elev-2);
 }
 
 .agent-node .head {
@@ -173,6 +211,21 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* A long handle clips in the middle so its end (the number that tells siblings apart) stays visible. */
+.agent-node .clip-label {
+  display: flex;
+  min-width: 0;
+}
+.agent-node .clip-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-node .clip-tail {
+  flex: none;
+  white-space: nowrap;
 }
 .agent-node .sub {
   display: flex;
@@ -511,6 +564,15 @@
 .done-group:hover {
   border-color: var(--role);
   color: var(--canvas-node-text);
+}
+/* Selected, not just hovered: a solid border with an inner line (the dashed fold alone reads as hover). */
+.done-group[data-style='card'].selected,
+.done-group[data-style='compact'].selected {
+  border-style: solid;
+  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
+}
+.done-group[data-style='compact'].selected {
+  box-shadow: inset 0 0 0 2px var(--role), var(--elev-2);
 }
 /* An earlier session's reports: same dashed fold, quieter dot, opaque canvas colour. */
 .done-group.earlier {

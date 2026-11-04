@@ -3,7 +3,7 @@ import { memo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
-import { MSG_IN, MSG_OUT } from './AgentNode'
+import { MessageHandles } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
 import { IconButton } from './ui/IconButton'
 import { Cost } from './ui/Cost'
@@ -54,7 +54,8 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
   }
   const tip = names + (agents.length > 4 ? ', …' : '') + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
   const expand = (
-    <span className="done-expand">
+    // Enter and Space on the chevron expand the group; React Flow's node handler must not also select it.
+    <span className="done-expand" onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}>
       <IconButton
         icon={ChevronDown}
         size="sm"
@@ -90,8 +91,7 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
       title={tip}
     >
       <Handle type="target" position={sides.target as Position} {...hs(sides.target)} />
-      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgOut)} />
-      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgIn)} />
+      <MessageHandles hs={hs} />
       {station && (
         <>
           <div className="station-terminus" style={{ left: geo.cx - 14, top: geo.cy - 5 }} aria-hidden="true" />
