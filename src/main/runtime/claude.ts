@@ -610,9 +610,19 @@ export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
   return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && ctx.project.permissionMode === 'bypassPermissions'
 }
 
-/** A quick run's folder and a build session's scratch dir are untrusted: .claude/settings*.json (rules, hooks) must not load. */
+/**
+ * Whether the CLI loads the working folder's `.claude/settings.json` (settingSources ['project']). Not for a quick run's
+ * folder or a build session's scratch dir (trust-restricted), and not for any run of an engagement: its folder is
+ * often a client share, so its hooks, rules and MCP servers must not load (OrgAI keeps an engagement's rules in its
+ * own data folder, ctx.savedRules). Every reader of that file (claudeSettingSources, cliProjectSettings) uses this.
+ */
+export function projectSettingsLoad(ctx: Pick<RuntimeContext, 'run' | 'project'>): boolean {
+  return !isTrustRestrictedRun(ctx.run) && projectKindOf(ctx.project) !== 'engagement'
+}
+
+/** settingSources for a run: ['project'] only when projectSettingsLoad (never for a restricted run or an engagement). */
 export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
-  return isTrustRestrictedRun(ctx.run) ? [] : ['project']
+  return projectSettingsLoad(ctx) ? ['project'] : []
 }
 
 /**
@@ -662,10 +672,11 @@ const cliSettingsCache = new Map<string, { mtimeMs: number; size: number; result
  * Reads `<project>/.claude/settings.json` for the PreToolUse ask check, never as an allow source. The file is untrusted
  * and read synchronously on the main process: lstat first (a symlink, FIFO or directory is refused without opening it),
  * at most CLI_SETTINGS_MAX_BYTES, a leading BOM stripped, cached by path + mtimeMs + size. A missing file (or project
- * path) is no rules; a trust-restricted run (settingSources []) is no rules.
+ * path) is no rules. When the CLI does not load the file (projectSettingsLoad false: a trust-restricted run or an
+ * engagement, settingSources []) it holds no rules the CLI could apply, so it is not read and forces no 'ask'.
  */
 export function cliProjectSettings(ctx: Pick<RuntimeContext, 'run' | 'project'>): CliProjectSettings {
-  if (isTrustRestrictedRun(ctx.run) || !ctx.project.path) return NO_CLI_SETTINGS
+  if (!projectSettingsLoad(ctx) || !ctx.project.path) return NO_CLI_SETTINGS
   const file = join(ctx.project.path, '.claude', 'settings.json')
   let st
   try {

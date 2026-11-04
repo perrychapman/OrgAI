@@ -75,6 +75,19 @@ describe('policyFor (permission mode -> approval policy + sandbox)', () => {
       expect(policyFor(mode, { writes: true, setupLike: false, quick: true })).toMatchObject({ approvalPolicy: 'untrusted', autoAcceptEdits: false, denyApprovals: false })
     }
   })
+
+  it('with reference folders: bypass becomes workspace-write + untrusted, auto loses its reviewer, the rest is unchanged', () => {
+    const refs = { ...work, referenceFolders: true }
+    expect(policyFor('bypassPermissions', refs)).toEqual({ approvalPolicy: 'untrusted', sandbox: 'workspace-write', autoAcceptEdits: false, denyApprovals: false })
+    expect(policyFor('auto', refs)).toEqual({ approvalPolicy: 'on-request', sandbox: 'workspace-write', autoAcceptEdits: false, denyApprovals: false })
+    for (const mode of ['default', 'acceptEdits', 'dontAsk', 'plan'] as const) expect(policyFor(mode, refs), mode).toEqual(policyFor(mode, work))
+    // Read-only roles and setup runs are read-only already: nothing to downgrade.
+    expect(policyFor('bypassPermissions', { writes: false, setupLike: false, referenceFolders: true })).toEqual(policyFor('bypassPermissions', { writes: false, setupLike: false }))
+    expect(policyFor('auto', { writes: false, setupLike: false, referenceFolders: true })).toEqual(policyFor('auto', { writes: false, setupLike: false }))
+    expect(policyFor('bypassPermissions', { writes: true, setupLike: true, referenceFolders: true }).sandbox).toBe('read-only')
+    // referenceFolders false or absent: unchanged.
+    expect(policyFor('bypassPermissions', { ...work, referenceFolders: false })).toEqual(policyFor('bypassPermissions', work))
+  })
 })
 
 describe('matchesBashRule (saved allow rules)', () => {

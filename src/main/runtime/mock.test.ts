@@ -901,6 +901,22 @@ describe('mock [mock:reference-edit]', () => {
     expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
     await session.stop()
   })
+
+  it('L4: an unreadable reference list refuses edit tools (warn log, no card) and leaves other tools alone', async () => {
+    const ctx = fakeCtx({ autoContinue: false, referenceDirectories: () => { throw new Error('boom') } })
+    const work = [
+      { type: 'tool' as const, name: 'Edit', input: { file_path: join(ctx.project.path, 'a.md') }, ask: true, result: 'edited' },
+      { type: 'tool' as const, name: 'Read', input: { file_path: join(ctx.project.path, 'a.md') }, result: 'read' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+    expect(results[0]).toMatchObject({ isError: true, content: 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.' })
+    expect(results[1]).toMatchObject({ content: 'read' })
+    expect(ctx.requestPermission).not.toHaveBeenCalled()
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's reference folders: boom"))).toBe(true)
+    await session.stop()
+  })
 })
 
 describe('mock [mock:deep-tree]', () => {
