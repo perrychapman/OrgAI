@@ -7,6 +7,8 @@ import { isVirtualProjectId } from '@shared/types'
 import { newSessionLabel } from '../lib/assistants'
 import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { chainGroups, needsYou } from '../lib/runChains'
+import { runMenuAction } from '../lib/menuRegistry'
+import { openRunWindow } from '../lib/menuActions'
 import { runName, runTag, shortPrompt } from '../lib/runLabels'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
@@ -56,24 +58,13 @@ export function useRunTabShortcuts(): void {
       // Electron's default menu would close the window; swallow Ctrl+W everywhere.
       if (key === 'w') e.preventDefault()
       if (e.repeat) return
-      const st = useAppStore.getState()
-      const pid = st.selectedProjectId
-      if (!pid || st.view === 'projects' || st.view === 'appSettings') return
+      // Both keys share the application menu's router (Ctrl+T = File > New run, Ctrl+W = Window > Close tab).
       if (key === 't') {
         e.preventDefault()
-        st.openDraft()
-        st.focusComposer()
+        runMenuAction('new-run')
         return
       }
-      if (st.view !== 'run') return
-      const runId = st.draftPage[pid] ? undefined : st.activeRunByProject[pid]
-      const run = runId ? st.runs[runId] : undefined
-      if (!run) {
-        if (st.draftPage[pid]) st.closeDraft()
-        return
-      }
-      if (isRunLive(run)) st.setTabNotice('A working run stays open. End its session first.')
-      else st.dismissRun(run.summary.id)
+      runMenuAction('close-tab')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -323,9 +314,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const openInWindow = (item: TabItem): void => {
     const run = item.run
     if (!run) return
-    window.orgai.window
-      .openRun({ projectId: run.summary.projectId, runId: run.summary.id })
-      .catch((err: unknown) => setTabNotice(`Could not open a new window: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : 'unknown error'}`))
+    openRunWindow(run.summary.projectId, run.summary.id)
   }
   const onMenuKey = (e: ReactKeyboardEvent, root: HTMLElement | null = menuRef.current, close: () => void = () => {
     setMenuOpen(false)

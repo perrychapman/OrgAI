@@ -318,3 +318,33 @@ The menu adds discovery and keyboard reach, not speed; the in-app controls stay 
 - Scaling above 100% (bar height grows).
 - Native folder pickers, the Save chat as project flow and the MCP and Skill assistant runs were not driven in this
   walk.
+
+## Implementation notes
+
+Renderer router (`lib/menuActions.ts`, `lib/menuRegistry.ts`, `lib/useAppMenu.ts`, `components/AppMenuLayer.tsx`).
+A registered screen handler wins; otherwise the store fallback below; a returned or fallback sentence is announced.
+
+| Action | Store call or fallback | Not applicable |
+|---|---|---|
+| new-project / new-chat | `openNewProject()` / `openNewChat()` | none |
+| open-chat / -mcp-assistant / -skill-assistant | `openAssistant('quick' / 'harness' / 'skills')` | none |
+| new-run | `setView('run')` if needed, `openDraft()`, `focusComposer()` | "Open a project first." |
+| show-live / show-history | `setView('run' / 'history')` | "Open a project first." |
+| show-team / show-project-settings | `setView('team' / 'settings')` | "Open a project first."; on an assistant "Assistants have no team or settings." |
+| open-app-settings, -connections, -connectors, -skill-library, -about | `requestAppSettingsSection` (general, connections, mcp-library, skill-library, about), `setView('appSettings')`, then the `orgai:settings-section` event | none |
+| toggle-sidebar | `toggleSidebar()` | none |
+| keyboard-shortcuts | opens `KeyboardShortcutsDialog` | none |
+| close-tab | `closeCurrentTab()` (draft closes, finished run `dismissRun`, working run notice) | silent |
+| interrupt-run | `interrupt()` when status is Running | "Open a run first." / "This run is not working right now." |
+| end-session | `stopRun()` when live | "Open a run first." / "This session has already ended." |
+| go-to-decision (fallback) | `jumpToDecision` to the active run's first waiting item | "No decision is waiting on this run." |
+| show-needs-you | `jumpToDecision` to the oldest waiting item in any run | "Nothing needs you right now." |
+| open-run-window | `openRunWindow(projectId, runId)` | "Open a run first." |
+| org-retrospective, save-chat-as-project (fallback) | RunActions registers them | "Not available for this run." |
+| toggle-conversation, toggle-hide-finished, canvas-fit, canvas-zoom-in/out (fallback) | the Live view registers them | "Open a run on Live to use the canvas." |
+
+Decisions: announcements use the run tabs' visible `tabNotice` when a project is in the run view, else the sr-only
+`menu-announce` status region (cleared, then set 60 ms later, cleared after 4 s, so a repeat is read again). The
+shortcuts dialog reads one `SHORTCUTS` table (Cmd on a Mac, detected from the platform string); after Esc, focus goes to
+`#main-content` when nothing held it. Ctrl+T always calls preventDefault, Ctrl+W always does and keeps the repeat guard.
+Not driven in the running app: the dialog layout at both window sizes, the live region, the native menu round trip.
