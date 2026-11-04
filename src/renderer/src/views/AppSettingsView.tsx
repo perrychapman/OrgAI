@@ -32,6 +32,7 @@ import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
+import TemplatesSection from '../components/templates/TemplatesSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
@@ -63,6 +64,7 @@ const PANES: SettingsNavItem[] = [
   { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
   { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
   { id: APP_SETTINGS_PANES.skillLibrary, label: 'Skill library' },
+  { id: APP_SETTINGS_PANES.kit, label: 'Templates and kit' },
   { id: APP_SETTINGS_PANES.about, label: 'About' }
 ]
 
@@ -528,6 +530,8 @@ export default function AppSettingsView(): ReactElement {
           </>
         )}
         {pane === 'skill-library' && <SkillLibrarySection />}
+        {/* A second section, "Practice kit", joins this pane later. */}
+        {pane === 'kit' && <TemplatesSection />}
         {pane === 'about' && appInfo && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About" testId="about-block">
             <SettingsCard>

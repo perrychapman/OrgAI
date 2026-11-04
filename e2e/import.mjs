@@ -31,6 +31,7 @@ try {
   check((await found.innerText()).trim() === 'Found 2 Claude Code agents and AGENTS.md.', 'form names the agents found', await found.innerText())
   const radios = form.locator('[data-testid=setup-choice] input[type=radio]')
   check((await radios.count()) === 3, 'three setup choices replace the Architect checkbox')
+  check((await form.locator('[data-testid=setup-choice] legend').innerText()).trim() === 'How should the team start?', 'setup choice legend reads "How should the team start?"')
   check((await form.locator('[data-testid=architect-setup]').count()) === 0, 'no Architect checkbox when agents exist')
   await shot('form')
   await form.getByRole('button', { name: 'Create project and review import' }).click()

@@ -6,7 +6,8 @@ import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
-import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../../lib/agentImport'
+import { effectiveSetupChoice, foundLine, setupChoiceLabel, setupSubmitLabel, templateChoiceHint, totalAgents, type SetupChoice } from '../../lib/agentImport'
+import { groupTemplatesByKind, initialTemplateId, readLastTemplateId, templateOptionLabel, writeLastTemplateId } from '../../lib/templates'
 import { REFERENCE_FOLDERS_HINT } from '../settings/AllowedDirectoriesSection'
 import { firstWorkingFolderConflict } from '../../lib/folderLists'
 import { addReferenceFolder,effectiveName, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
@@ -86,6 +87,10 @@ export function NewProjectForm({
     if (!useAppStore.getState().connections) void useAppStore.getState().loadConnections()
   }, [])
   const startSetup = useAppStore((s) => s.startSetup)
+  const templates = useAppStore((s) => s.templates)
+  useEffect(() => {
+    void useAppStore.getState().loadTemplates()
+  }, [])
   const uid = useId()
   const ids = { client: `${uid}-client`, ref: `${uid}-ref`, refErr: `${uid}-ref-err`, extrasErr: `${uid}-extras-err`, name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
 
@@ -152,7 +157,14 @@ export function NewProjectForm({
   const hasAgents = agentTotal > 0
   // An engagement hides instruction-file talk (CLAUDE.md, AGENTS.md) unless saved team members were found.
   const found = engagement && !hasAgents ? null : foundLine(current)
-  const choice = effectiveSetupChoice(hasAgents, picked, architect)
+  const templateList = templates ?? []
+  const hasTemplates = templateList.length > 0
+  const choice = effectiveSetupChoice(hasAgents, picked, architect, hasTemplates)
+  const formKind: ProjectKind = projectKind ?? 'code'
+  const [templatePick, setTemplatePick] = useState<string | null>(null)
+  // The pick while that template still exists, else the last one used, else this kind's first.
+  const templateId = templateList.some((t) => t.id === templatePick) ? (templatePick as string) : initialTemplateId(templateList, formKind, readLastTemplateId(window.localStorage))
+  const templateGroups = groupTemplatesByKind(templateList, formKind)
   const repoHint = !hasAgents || choice === 'architect'
     ? 'The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.'
     : choice === 'import'
@@ -253,6 +265,7 @@ export function NewProjectForm({
         brief: brief.trim(),
         setupKind: choice === 'architect' ? kind : undefined,
         kind: projectKind,
+        ...(choice === 'template' && templateId ? { templateId } : {}),
         ...(engagement && trimmedClient ? { client: trimmedClient } : {}),
         ...(engagement && refs.length > 0 ? { referenceDirectories: refs } : {}),
         ...(mockAvailable && useMock ? { mock: true } : {})
@@ -260,6 +273,7 @@ export function NewProjectForm({
       const extras: { failed: string | null } = { failed: null }
       const created = await createProject(input, { onExtrasError: (err) => void (extras.failed = cleanIpcError(err)) })
       writeLastProjectKind(projectKind)
+      if (input.templateId) writeLastTemplateId(window.localStorage, input.templateId)
       if (extras.failed) {
         // The project exists; wait for the user rather than leaving the form with the problem unseen.
         setPending({ project: created, message: extras.failed })
@@ -486,16 +500,67 @@ export function NewProjectForm({
 
       {projectKind && (
       <div className="stack-2 form-options">
-        {hasAgents ? (
+        {hasAgents || hasTemplates ? (
           <fieldset className="import-choice" data-testid="setup-choice">
-            <legend>How should the org chart start?</legend>
-            {(['import', 'architect', 'default'] as const).map((c) => (
-              <label key={c}>
-                <input type="radio" name={`${uid}-setup`} value={c} checked={choice === c} onChange={() => setPicked(c)} />
-                {importChoiceLabel(c, agentTotal)}
-              </label>
-            ))}
-            {choice === 'import' && <span className="hint">The project is created first; you review the roles next. Nothing is added until you import.</span>}
+            <legend>How should the team start?</legend>
+            {(hasTemplates
+              ? hasAgents
+                ? (['architect', 'template', 'import', 'default'] as const)
+                : (['architect', 'template', 'default'] as const)
+              : (['import', 'architect', 'default'] as const)
+            ).map((c) =>
+                c === 'template' ? (
+                  <div key={c} className="import-choice-template">
+                    <label>
+                      <input
+                        type="radio"
+                        name={`${uid}-setup`}
+                        value={c}
+                        checked={choice === c}
+                        onChange={() => setPicked(c)}
+                        data-testid="setup-choice-template"
+                      />
+                      {setupChoiceLabel(c, agentTotal, formKind, hasAgents)}
+                    </label>
+                    <select
+                      className="select"
+                      aria-label="Template"
+                      value={templateId}
+                      disabled={choice !== 'template'}
+                      onChange={(e) => setTemplatePick(e.target.value)}
+                      data-testid="new-project-template"
+                    >
+                      {templateGroups.same.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {templateOptionLabel(t)}
+                        </option>
+                      ))}
+                      {templateGroups.other.length > 0 &&
+                        (templateGroups.same.length > 0 ? (
+                          <optgroup label="Other kinds">
+                            {templateGroups.other.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {templateOptionLabel(t)}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : (
+                          templateGroups.other.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {templateOptionLabel(t)}
+                            </option>
+                          ))
+                        ))}
+                    </select>
+                  </div>
+                ) : (
+                  <label key={c}>
+                    <input type="radio" name={`${uid}-setup`} value={c} checked={choice === c} onChange={() => setPicked(c)} />
+                    {setupChoiceLabel(c, agentTotal, formKind, hasAgents)}
+                  </label>
+                )
+              )}
+            {choice === 'template' && <span className="hint">{templateChoiceHint(formKind)}</span>}            {choice === 'import' && <span className="hint">The project is created first; you review the roles next. Nothing is added until you import.</span>}
           </fieldset>
         ) : (
           <Checkbox
