@@ -58,6 +58,28 @@ describe('oauthPresetFor', () => {
     })
   })
 
+  it('GitHub own-app variants: replaced endpoints, exact issuer for the iss check, no resource, read-only header kept', async () => {
+    const p = oauthPresetFor({ connectorId: 'github', connectorVariant: 'app-readonly' })!
+    expect(p).toMatchObject({
+      issuer: 'https://github.com/login/oauth',
+      authorizationEndpoint: 'https://github.com/login/oauth/authorize',
+      tokenEndpoint: 'https://github.com/login/oauth/access_token',
+      endpointsMode: 'replace',
+      scopes: ['repo', 'read:org', 'read:user'],
+      sendResource: false,
+      redirectPort: CONNECTOR_REDIRECT_PORT
+    })
+    const noFetch = (async () => {
+      throw new Error('no network')
+    }) as unknown as FetchLike
+    const d = await discoverWithPreset('https://api.githubcopilot.com/mcp/', noFetch, p)
+    expect(d.issuer ?? d.authorizationServer).toBe('https://github.com/login/oauth')
+    const def = connectorById('github')!
+    const entry = buildConnectorEntry(def, connectorVariant(def, 'app-readonly')!, 'mcpl_gh', [], NOW)
+    expect(entry.headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    expect(entry.secretHeaders).toBeUndefined()
+  })
+
   it('Slack: fallback endpoints and the authed_user token shape', () => {
     expect(oauthPresetFor({ connectorId: 'slack' })).toMatchObject({ endpointsMode: 'fallback', tokenResponse: 'slackUser', redirectPort: CONNECTOR_REDIRECT_PORT })
   })
