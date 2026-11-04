@@ -2,7 +2,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
-import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
@@ -32,6 +32,8 @@ import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
+import { CanvasSection } from '../components/settings/CanvasSection'
+import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -40,16 +42,6 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' },
   { value: 'system', label: 'System' }
-]
-const PATTERN_OPTIONS: { value: CanvasPattern; label: string }[] = [
-  { value: 'dots', label: 'Dots' },
-  { value: 'grid', label: 'Grid' },
-  { value: 'none', label: 'None' }
-]
-const EDGE_OPTIONS: { value: CanvasEdgeStyle; label: string }[] = [
-  { value: 'curved', label: 'Curved' },
-  { value: 'orthogonal', label: 'Right-angle' },
-  { value: 'straight', label: 'Straight' }
 ]
 const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string }[] = [
   { value: 'system', label: 'Follow system' },
@@ -110,7 +102,7 @@ export default function AppSettingsView(): ReactElement {
       if (target) {
         // A removed id (the old Defaults pane or its rows) opens General.
         setPane(appPaneForSection(target) ?? APP_SETTINGS_PANES.general)
-        pendingFocus.current = { section: ADVANCED_SECTIONS[target] ? target : undefined }
+        pendingFocus.current = { section: ADVANCED_SECTIONS[target] || target === APP_SETTINGS_SECTIONS.canvas ? target : undefined }
         setFocusTick((t) => t + 1)
       }
     }
@@ -142,6 +134,11 @@ export default function AppSettingsView(): ReactElement {
     // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
     setTimeout(land, 350)
     setTimeout(land, 900)
+    if (pf.section === APP_SETTINGS_SECTIONS.canvas) {
+      // The canvas section lands on its checked style option.
+      focusCheckedPreset(document.getElementById(pf.section))
+      return
+    }
     const title = document.getElementById(pf.section)?.querySelector('.settings-section-title, .settings-group-title')
     title?.setAttribute('tabindex', '-1')
     ;(title as HTMLElement | null)?.focus({ preventScroll: true })
@@ -383,6 +380,7 @@ export default function AppSettingsView(): ReactElement {
                   />
               </SettingsCard>
             </SettingsSection>
+            <CanvasSection canvas={appearance.canvas} onChange={(canvas) => patchAppearance({}, canvas)} />
             <SettingsSection id={APP_SETTINGS_SECTIONS.notifications} title="Notifications">
               <SettingsCard>
                 <SettingRow
@@ -431,31 +429,13 @@ export default function AppSettingsView(): ReactElement {
               </SettingsCard>
             </SettingsSection>
             <SettingsAdvanced paneKey="app-general">
-              <SettingsGroup title="Motion and canvas">
+              <SettingsGroup title="Motion">
                 <SettingsCard>
                   <SettingRow
                     title="Motion"
                     description="Reduce animation across the app."
                     width="select"
                     control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />}
-                  />
-                  <SettingRow
-                    title="Pattern"
-                    width="select"
-                    control={<SegmentedControl label="Canvas pattern" value={appearance.canvas.pattern} options={PATTERN_OPTIONS} onChange={(pattern) => patchAppearance({}, { pattern })} />}
-                  />
-                  <SettingRow
-                    title="Connection lines"
-                    width="select"
-                    control={<SegmentedControl label="Connection lines" value={appearance.canvas.edges} options={EDGE_OPTIONS} onChange={(edges) => patchAppearance({}, { edges })} />}
-                  />
-                  <SettingRow
-                    title="Tint with the accent"
-                    control={<Switch checked={appearance.canvas.tint} label="Tint the canvas with the accent" onChange={(tint) => patchAppearance({}, { tint })} />}
-                  />
-                  <SettingRow
-                    title="Minimap"
-                    control={<Switch checked={appearance.canvas.minimap} label="Show the minimap" onChange={(minimap) => patchAppearance({}, { minimap })} />}
                   />
                 </SettingsCard>
               </SettingsGroup>

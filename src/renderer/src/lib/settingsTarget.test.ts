@@ -30,6 +30,8 @@ describe('appPaneForSection', () => {
     expect(appPaneForSection('skill-library')).toBe('skill-library')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.appearance)).toBe('general')
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.notifications)).toBe('general')
+    expect(appPaneForSection(APP_SETTINGS_SECTIONS.canvas)).toBe('general')
+    expect(advancedPaneForSection(APP_SETTINGS_SECTIONS.canvas)).toBeUndefined()
     expect(appPaneForSection(APP_SETTINGS_SECTIONS.about)).toBe('about')
   })
   it('returns undefined for the removed Defaults pane and its rows (the page opens on General)', () => {
