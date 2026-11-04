@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '@shared/types'
-import { collapseKnowledgeWrites, entityNameOfResult, humanizeKnowledgeRow, isKnowledgeWriteRow, noteTitleOfResult, recordedCount } from './knowledgeRun'
+import {
+  breakdownKey,
+  breakdownTotal,
+  collapseKnowledgeWrites,
+  entityNameOfResult,
+  humanizeKnowledgeRow,
+  isKnowledgeWriteRow,
+  noteTitleOfResult,
+  parseBreakdownKey,
+  recordedBreakdown,
+  recordedBreakdownText,
+  recordedCount,
+  recordedLabel
+} from './knowledgeRun'
 
 let n = 0
 const entry = (block: TranscriptEntry['block'], opts: { source?: 'harness'; agentId?: string } = {}): TranscriptEntry =>
@@ -40,6 +53,17 @@ describe('recordedCount', () => {
     expect(recordedCount(entries)).toBe(5)
     expect(isKnowledgeWriteRow(entries[0])).toBe(true)
     expect(isKnowledgeWriteRow(entries[7])).toBe(false)
+    const b = recordedBreakdown(entries)
+    expect(b).toEqual({ items: 1, updates: 1, relations: 1, notes: 1, retired: 1 })
+    expect(breakdownTotal(b)).toBe(5)
+    expect(parseBreakdownKey(breakdownKey(b))).toEqual(b)
+  })
+  it('writes the breakdown text and label', () => {
+    expect(recordedBreakdownText({ items: 4, updates: 0, relations: 2, notes: 1, retired: 1 })).toBe('4 items, 2 relations, 1 note, 1 retired')
+    expect(recordedBreakdownText({ items: 1, updates: 2, relations: 1, notes: 2, retired: 0 })).toBe('1 item, 2 updates, 1 relation, 2 notes')
+    expect(recordedBreakdownText({ items: 0, updates: 1, relations: 0, notes: 0, retired: 0 })).toBe('1 update')
+    expect(recordedLabel(8)).toBe('Recorded 8 changes')
+    expect(recordedLabel(1)).toBe('Recorded 1 change')
   })
 })
 

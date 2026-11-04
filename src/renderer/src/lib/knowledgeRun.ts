@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the knowledge tools in run views (docs/design/knowledge.md sections 7 and 8): the "Recorded N
- * items" count over a run's harness rows, and the collapse of each knowledge write (engagement_knowledge upsert_node /
+ * changes" count and its breakdown over a run's harness rows, and the collapse of each knowledge write (engagement_knowledge upsert_node /
  * link / retire, engagement_context save) into the one harness row RunManager wrote for it, with the humanised
  * headline, the tool result behind "Show output" and the Knowledge-tab focus request for its "Open" link. No I/O.
  */
@@ -40,12 +40,63 @@ const WRITE_ROW_RE = /^(Recorded|Updated|Linked|Retired|Saved note) /
 /** A harness system row RunManager wrote for a knowledge write ("Recorded <kind> <name>", "Updated ...", "Linked ...", "Retired ...", "Saved note <title>"). */
 export const isKnowledgeWriteRow = (e: TranscriptEntry): boolean => e.source === 'harness' && e.block.kind === 'system' && WRITE_ROW_RE.test(e.block.text)
 
-/** Section 8: how many items the run recorded, updated, linked, retired or saved as notes (every agent). */
+/** Section 8: how many changes the run made to the knowledge (every agent): recorded, updated, linked, retired, saved as notes. */
 export function recordedCount(entries: readonly TranscriptEntry[]): number {
   let n = 0
   for (const e of entries) if (isKnowledgeWriteRow(e)) n++
   return n
 }
+
+/** The write rows of a run by kind of change. */
+export interface RecordedBreakdown {
+  items: number
+  updates: number
+  relations: number
+  notes: number
+  retired: number
+}
+
+export const EMPTY_BREAKDOWN: RecordedBreakdown = { items: 0, updates: 0, relations: 0, notes: 0, retired: 0 }
+
+/** Counts write rows by their lead word: Recorded (items), Updated, Linked (relations), Saved note (notes), Retired. */
+export function recordedBreakdown(entries: readonly TranscriptEntry[]): RecordedBreakdown {
+  const b = { ...EMPTY_BREAKDOWN }
+  for (const e of entries) {
+    if (!isKnowledgeWriteRow(e) || e.block.kind !== 'system') continue
+    const t = e.block.text
+    if (t.startsWith('Recorded ')) b.items++
+    else if (t.startsWith('Updated ')) b.updates++
+    else if (t.startsWith('Linked ')) b.relations++
+    else if (t.startsWith('Saved note ')) b.notes++
+    else if (t.startsWith('Retired ')) b.retired++
+  }
+  return b
+}
+
+/** A breakdown as one stable string ("4,0,2,1,1") so a store selector can return a primitive. */
+export const breakdownKey = (b: RecordedBreakdown): string => `${b.items},${b.updates},${b.relations},${b.notes},${b.retired}`
+
+/** The inverse of `breakdownKey`; junk reads as zeros. */
+export function parseBreakdownKey(key: string): RecordedBreakdown {
+  const [items = 0, updates = 0, relations = 0, notes = 0, retired = 0] = key.split(',').map((x) => Math.max(0, Number(x) || 0))
+  return { items, updates, relations, notes, retired }
+}
+
+export const breakdownTotal = (b: RecordedBreakdown): number => b.items + b.updates + b.relations + b.notes + b.retired
+
+/** "4 items, 2 relations, 1 note, 1 retired": zero parts omitted, singular forms. */
+export function recordedBreakdownText(b: RecordedBreakdown): string {
+  const parts: string[] = []
+  if (b.items) parts.push(`${b.items} ${b.items === 1 ? 'item' : 'items'}`)
+  if (b.updates) parts.push(`${b.updates} ${b.updates === 1 ? 'update' : 'updates'}`)
+  if (b.relations) parts.push(`${b.relations} ${b.relations === 1 ? 'relation' : 'relations'}`)
+  if (b.notes) parts.push(`${b.notes} ${b.notes === 1 ? 'note' : 'notes'}`)
+  if (b.retired) parts.push(`${b.retired} retired`)
+  return parts.join(', ')
+}
+
+/** The RunMeta label: "Recorded 8 changes" / "Recorded 1 change". */
+export const recordedLabel = (total: number): string => `Recorded ${total} ${total === 1 ? 'change' : 'changes'}`
 
 type WriteKind = 'upsert_node' | 'link' | 'retire' | 'save'
 
