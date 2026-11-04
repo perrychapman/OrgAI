@@ -3,6 +3,9 @@ import type { AppSettings, ConnectionId, ConnectionInfo, Project, UsageSpend, Us
 
 export const CONNECTION_LABEL: Record<ConnectionId, string> = { anthropic: 'Claude', openai: 'Codex', litellm: 'LiteLLM' }
 
+/** The connection name before the account row's spend figure; the row hides it visually under a narrow footer (usage.css). */
+export const SPEND_ROW_PREFIX = `${CONNECTION_LABEL.litellm} · `
+
 export const WARN_AT = 80
 
 export type SpendLevel = '' | 'warn' | 'danger'
@@ -62,7 +65,7 @@ export function spendText(spend: UsageSpend): string {
 
 /** Sidebar label for a LiteLLM report without period figures: the current budget text. */
 export function spendLabel(spend: UsageSpend): string {
-  return `LiteLLM · ${spendText(spend)}`
+  return `${SPEND_ROW_PREFIX}${spendText(spend)}`
 }
 
 /** The bar's name: share of the key budget only (a "today" figure has no denominator). */
@@ -90,7 +93,7 @@ export function periodText(usd: number, period: SpendPeriodKey): string {
  * else the current budget text. Never two figures (the row clips at 200 px, ux-review-litellm-periods.md M1).
  */
 export function spendRowLabel(spend: UsageSpend): string {
-  return `LiteLLM · ${spendRowFigure(spend)}`
+  return `${SPEND_ROW_PREFIX}${spendRowFigure(spend)}`
 }
 
 /** The row's figure without the connection name: "$3.20 today" with periods, else "$42.10 of $50.00" / "$42.10 spent". */
