@@ -2815,7 +2815,17 @@ export type RunEvent =
    * user answered; the same flag is on every *.resolved event. RunManager emits these for every pending item
    * before the terminal run.status, so no card outlives its run.
    */
-  | { type: 'permission.resolved'; runId: string; requestId: string; cancelled?: true }
+  | {
+      type: 'permission.resolved'
+      runId: string
+      requestId: string
+      cancelled?: true
+      /**
+       * Set when the user's allow decision had project scope after RunManager's narrowing, so the project's saved
+       * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
+       */
+      savedToProject?: true
+    }
   /** Adapters report the provider's run total here; RunManager stores the priced total on the summary. Kept for older readers. */
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
   /**

@@ -367,6 +367,8 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
       const req = events.filter((e) => e.type === 'permission.request' && e.runId === run.id).at(-1) as Extract<RunEvent, { type: 'permission.request' }>
       m.decide(run.id, req.request.id, { behavior: 'allow', scope: 'project' })
       expect(await pending).toEqual({ behavior: 'allow', scope: 'session' })
+      const resolved = events.filter((e) => e.type === 'permission.resolved' && e.runId === run.id).at(-1)
+      expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id })
       expect(existsSync(join(path, '.claude', 'settings.local.json'))).toBe(false)
     }
   })

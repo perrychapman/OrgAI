@@ -758,6 +758,24 @@ describe('RunManager with the mock adapter', () => {
     await m.stop(run.id)
   })
 
+  it.each([
+    [{ behavior: 'allow', scope: 'project' }, true],
+    [{ behavior: 'allow', scope: 'session' }, false],
+    [{ behavior: 'allow', scope: 'once' }, false],
+    [{ behavior: 'allow' }, false],
+    [{ behavior: 'deny', message: 'No' }, false]
+  ] as const)('permission.resolved for %j carries savedToProject only for a project allow', async (decision, saved) => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    const run = await m.start({ project: p, prompt: 'Change x' })
+    const req = await waitFor(isType('permission.request'))
+    m.decide(run.id, req.request.id, decision as never)
+    const resolved = await waitFor(isType('permission.resolved'))
+    expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, ...(saved ? { savedToProject: true } : {}) })
+    expect('savedToProject' in resolved).toBe(saved)
+    await m.stop(run.id)
+  })
+
   it('stopping while a permission is pending ends the run and denies the request', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p)
