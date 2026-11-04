@@ -2893,6 +2893,75 @@ export interface FocusRunTarget {
   runId: string
 }
 
+/**
+ * Application menu items that the renderer handles. Main pushes `{ action }` on `menu:action` (IPC.menuAction) to
+ * the focused window (else the first live one); the renderer routes on the name. A fixed enum: main never puts a
+ * renderer-supplied string into the menu, and the renderer must ignore names it does not know.
+ */
+export const MENU_ACTIONS = [
+  'new-project',
+  'new-chat',
+  'open-chat',
+  'open-mcp-assistant',
+  'open-skill-assistant',
+  'new-run',
+  'interrupt-run',
+  'end-session',
+  'org-retrospective',
+  'show-live',
+  'show-history',
+  'show-team',
+  'show-project-settings',
+  'open-app-settings',
+  'open-connections',
+  'open-connectors',
+  'open-skill-library',
+  'open-about',
+  'toggle-sidebar',
+  'toggle-hide-finished',
+  'canvas-fit',
+  'keyboard-shortcuts',
+  'close-tab',
+  'go-to-decision',
+  'show-needs-you',
+  'toggle-conversation',
+  'save-chat-as-project',
+  'open-run-window',
+  'canvas-zoom-in',
+  'canvas-zoom-out'
+] as const
+
+export type MenuAction = (typeof MENU_ACTIONS)[number]
+
+/** Payload of the main -> renderer `menu:action` push. Structured-clone safe. */
+export interface MenuActionEvent {
+  action: MenuAction
+}
+
+/**
+ * What the window's renderer is showing, sent on `menu:setState` (renderer -> main) whenever it changes. Main keeps
+ * one per sender window, validates it (booleans only, anything else false) and rebuilds the application menu from
+ * the focused window's state, greying out items that do not apply. Structured-clone safe.
+ */
+export interface MenuState {
+  /** A real or virtual project is open (section items, New run). */
+  hasProject: boolean
+  /** A run tab is shown (Close tab, Open in new window, Show conversation, canvas items). */
+  hasRun: boolean
+  /** The shown run is live (Interrupt, End session). */
+  runLive: boolean
+  /** The shown run is a Chat run that Save as project applies to. */
+  chatRun: boolean
+  /** At least one decision card is open (Go to decision, Show what needs you). */
+  hasDecision: boolean
+}
+
+export const EMPTY_MENU_STATE: MenuState = { hasProject: false, hasRun: false, runLive: false, chatRun: false, hasDecision: false }
+
+export function isMenuAction(value: unknown): value is MenuAction {
+  return typeof value === 'string' && (MENU_ACTIONS as readonly string[]).includes(value)
+}
+
 /** Hash prefix of a run-scoped window: `#/run/<projectId>/<runId>`. The main (unscoped) window has no hash. */
 export const RUN_WINDOW_HASH_PREFIX = '#/run/'
 
@@ -3961,6 +4030,15 @@ export interface OrgAIApi {
   onRunEvent(cb: (event: RunEvent) => void): () => void
   /** A clicked OS notification asks the renderer to show this run. */
   onFocusRun(cb: (target: FocusRunTarget) => void): () => void
+  /**
+   * An application menu item routed to the renderer was chosen (File / View / Run / Help ...). Only names in
+   * MENU_ACTIONS are delivered. Returns an unsubscribe function.
+   */
+  onMenuAction(cb: (action: MenuAction) => void): () => void
+  menu: {
+    /** Tell main what this window shows so the application menu greys out items that do not apply. Send on change. */
+    setState(state: MenuState): Promise<void>
+  }
   usage: {
     /** Read plan usage now, without a run. null when the provider cannot report it. */
     refresh(): Promise<UsageStatus | null>
@@ -4054,6 +4132,10 @@ export const IPC = {
   settingsChanged: 'settings:changed',
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
+  /** main -> renderer push of MenuActionEvent when a renderer-routed application menu item is chosen. */
+  menuAction: 'menu:action',
+  /** renderer -> main: the sender window's MenuState (validated in main, never echoed). */
+  menuSetState: 'menu:setState',
   appSetNotifications: 'app:setNotifications',
   usageRefresh: 'usage:refresh',
   appOpenLogs: 'app:openLogs',

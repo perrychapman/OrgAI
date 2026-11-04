@@ -43,6 +43,7 @@ Icon checks: Finder shows the OrgAI mark (from `build/icon.icns`, with its margi
 
 - Open the log: `open ~/Library/Logs/OrgAI` (the app also has an Open log folder action). The first lines should include `OrgAI <version> starting ... darwin arm64 packaged=true` and a `PATH: N entries added (login shell)` line.
 - In the app, confirm `git`, `claude` and `codex` are found: the Claude status pill shows logged in, and starting a project on a git repo works.
+- Cmd+B, Cmd+Shift+N, Cmd+T, Cmd+W (Close tab, never closes the window) and Cmd+. (Go to decision) each fire once through the menu (the native menu consumes them on macOS; check the renderer handler does not fire a second time). Cmd+1..4 switch Live / History / Team / Project settings. Run and View > Canvas items grey out when no project, run or decision applies; Help > Open data folder opens the data folder.
 - Check the packaged native binaries exist: `ls /Applications/OrgAI.app/Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/*/claude` and `.../@openai/codex-darwin-*/vendor/*/codex/codex`.
 
 ## 6. Claude login

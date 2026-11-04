@@ -109,6 +109,7 @@ import type { SettingsStore } from './store/settings'
 import type { ConnectionService } from './connections/service'
 import type { McpService } from './mcp/service'
 import type { AgentImportService } from './setup/import/importer'
+import { cleanMenuState, setMenuState } from './appMenu'
 import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from './skills/types'
 import type { CapabilityServiceApi } from './capabilities/types'
 import { claudeAuthStatus } from './connections/anthropicAuth'
@@ -480,6 +481,11 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     logPath() // creates the folder if nothing has been logged yet
     const error = await shell.openPath(logsDir())
     if (error) log.warn(`Could not open logs folder: ${error}`)
+  })
+  // What the renderer shows, for enabling application menu items. Booleans only; nothing is echoed back.
+  ipcMain.handle(IPC.menuSetState, (e, input: unknown): void => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (win && !win.isDestroyed()) setMenuState(win, cleanMenuState(input))
   })
   ipcMain.handle(IPC.permissionsList, (_e, projectId: string) => {
     const project = projects.get(projectId)

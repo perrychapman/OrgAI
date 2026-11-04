@@ -8,6 +8,8 @@ import type {
   DraftRequest,
   FocusRunTarget,
   McpLibraryInfo,
+  MenuActionEvent,
+  MenuState,
   OrgAIApi,
   SkillLibraryInfo,
   PermissionDecision,
@@ -17,7 +19,7 @@ import type {
   StartRunInput,
   TeamReviewSummary
 } from '../shared/types'
-import { IPC } from '../shared/types'
+import { IPC, isMenuAction } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -214,6 +216,24 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)
     ipcRenderer.on(IPC.appFocusRun, listener)
     return () => ipcRenderer.removeListener(IPC.appFocusRun, listener)
+  },
+  onMenuAction: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: MenuActionEvent): void => {
+      const action = event && typeof event === 'object' ? event.action : undefined
+      if (isMenuAction(action)) cb(action)
+    }
+    ipcRenderer.on(IPC.menuAction, listener)
+    return () => ipcRenderer.removeListener(IPC.menuAction, listener)
+  },
+  menu: {
+    setState: (state: MenuState) =>
+      ipcRenderer.invoke(IPC.menuSetState, {
+        hasProject: state?.hasProject === true,
+        hasRun: state?.hasRun === true,
+        runLive: state?.runLive === true,
+        chatRun: state?.chatRun === true,
+        hasDecision: state?.hasDecision === true
+      })
   },
   usage: {
     refresh: () => ipcRenderer.invoke(IPC.usageRefresh)
