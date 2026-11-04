@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -109,7 +109,8 @@ describe('CodexAdapter session', () => {
   let dir = ''
   let session: RuntimeSession | undefined
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'orgai-codex-session-'))
+    // Real path: the runners' tmpdir is an 8.3 name (Windows) or under /var -> /private/var (macOS).
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-session-')))
   })
   afterEach(async () => {
     await session?.stop()
@@ -439,7 +440,7 @@ describe('CodexAdapter session', () => {
         s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path, kind: { type: 'update', move_path: null }, diff: '' }] } })
       let other = ''
       beforeEach(() => {
-        other = mkdtempSync(join(tmpdir(), 'orgai-codex-other-'))
+        other = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-other-')))
       })
       afterEach(() => rmSync(other, { recursive: true, force: true }))
 
@@ -1093,7 +1094,7 @@ describe('CodexAdapter.complete', () => {
 
 describe('offerableByRealPath (session folders, reviewer-3 M3)', () => {
   it('refuses a link whose real path is a credential folder under home, keeps a plain folder', () => {
-    const base = mkdtempSync(join(tmpdir(), 'orgai-realpath-'))
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-realpath-')))
     try {
       const home = join(base, 'home')
       const ssh = join(home, '.ssh')
