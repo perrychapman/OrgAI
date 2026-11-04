@@ -2203,6 +2203,11 @@ export const USAGE_STATS_MAX_LIMIT = 2000
 export interface RunUsageRow {
   runId: string
   kind: RunKind
+  /**
+   * 'single' when RunSummary.team is 'single' (an Ask run); absent otherwise. The CSV `kind` column is then 'ask'
+   * instead of 'work'; its values are the RunKind values plus 'ask'.
+   */
+  team?: 'single'
   status: RunStatus
   /** RunSummary.title when set. */
   title?: string

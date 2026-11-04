@@ -476,6 +476,7 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
   const runs = picked.slice(0, limit).map((s) => {
     const row: UsageStats['runs'][number] = { runId: s.id, kind: s.kind, status: s.status, prompt: oneLine(s.prompt, 120), startedAt: s.startedAt, usage: s.usage ?? legacySummaryUsage(s, now) }
     if (s.title) row.title = s.title
+    if (s.team === 'single') row.team = 'single'
     if (s.endedAt !== undefined) row.endedAt = s.endedAt
     if (s.resumedFrom) row.resumedFrom = s.resumedFrom
     return row
@@ -559,7 +560,7 @@ export function buildUsageCsv(stats: UsageStats): string {
     const cells: (string | number)[] = [
       iso(r.startedAt),
       iso(r.endedAt),
-      r.kind,
+      r.team === 'single' && r.kind === 'work' ? 'ask' : r.kind,
       r.status,
       r.title || r.prompt || '',
       u.roles.length,

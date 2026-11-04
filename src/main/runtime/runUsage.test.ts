@@ -240,6 +240,12 @@ describe('buildUsageStats', () => {
   const run = (id: string, startedAt: number, u: RunUsage | undefined, over: Partial<RunSummary> = {}): RunSummary =>
     runSummary({ id, projectId: 'p1', startedAt, status: 'finished', ...(u ? { usage: u } : {}), ...over })
 
+  it('copies team single from the summary onto the row', () => {
+    const s = buildUsageStats([run('a', D(2026, 10, 1), usage(), { team: 'single' }), run('b', D(2026, 10, 2), usage())], { projectId: 'p1' }, 1)
+    expect(s.runs.find((r) => r.runId === 'a')?.team).toBe('single')
+    expect(s.runs.find((r) => r.runId === 'b')).not.toHaveProperty('team')
+  })
+
   it('filters by project, kind and time, newest first', () => {
     const list = [
       run('a', D(2026, 10, 1), usage()),

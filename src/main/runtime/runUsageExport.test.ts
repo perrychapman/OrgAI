@@ -66,6 +66,13 @@ describe('buildUsageCsv', () => {
     expect(lines[2]!.split(',')[4]).toBe('Do it')
   })
 
+  it('writes kind ask for a single-team work row and keeps work otherwise', () => {
+    const lines = buildUsageCsv(stats([row({ team: 'single' }), row({ runId: 'r2' }), row({ runId: 'r3', kind: 'setup', team: 'single' })])).split('\r\n')
+    expect(lines[1]!.split(',')[2]).toBe('ask')
+    expect(lines[2]!.split(',')[2]).toBe('work')
+    expect(lines[3]!.split(',')[2]).toBe('setup')
+  })
+
   it('is only the header for no runs', () => {
     expect(buildUsageCsv(stats([]))).toBe('﻿' + USAGE_CSV_COLUMNS.join(','))
   })

@@ -344,7 +344,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `<data>/projects/<id>/` (projectData.ts; `expectedUpdatedAt` refuses a stale save) with the `engagement_context`
   harness tool (audience 'all', engagement work runs and single runs), `projects:remove` / `removePreview` returning
   `ProjectRemoveResult` (removeRuns default true; engagements always forget their runs), and usage export
-  (`UsageStatsQuery.range` month, `runs:usageCsv` with formula-injection quoting). Contracts sit in one types.ts section
+  (`UsageStatsQuery.range` month, `runs:usageCsv` with formula-injection quoting; `RunUsageRow.team: 'single'` marks Ask runs and the CSV `kind` is then `ask`). Contracts sit in one types.ts section
   with their channels in `TEMPLATE_ENGAGEMENT_IPC`. Verified by unit tests and the mock only; no renderer uses it yet.
 - Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
   automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
