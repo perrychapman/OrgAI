@@ -39,7 +39,25 @@ export function hasParkedDraft(): boolean {
   return parkedDraft !== null
 }
 
-export function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
+/**
+ * 'card' (default): its own card with an h2 and a ghost Cancel in the header. 'dialog': inside a Dialog, so no h2 and no
+ * second card border. 'inline': in a page panel (first launch), no h2. In 'dialog' and 'inline' Cancel (when given) is a
+ * secondary Button in the submit row, so the submit stays the only primary.
+ */
+export type NewProjectFormVariant = 'card' | 'dialog' | 'inline'
+
+export function NewProjectForm({
+  mockAvailable,
+  onCancel,
+  variant = 'card',
+  autoFocus = true
+}: {
+  mockAvailable: boolean
+  onCancel?: () => void
+  variant?: NewProjectFormVariant
+  /** Put the cursor in the Name field on mount (default). Off where the form sits beside other controls. */
+  autoFocus?: boolean
+}): ReactElement {
   const createProject = useAppStore((s) => s.createProject)
   const connections = useAppStore((s) => s.connections)
   useEffect(() => {
@@ -69,7 +87,7 @@ export function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boo
 
   // The form opens with the cursor in its first field.
   useEffect(() => {
-    document.getElementById(ids.name)?.focus()
+    if (autoFocus) document.getElementById(ids.name)?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -209,15 +227,21 @@ export function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boo
   )
 
   return (
-    <form className="card project-form" onSubmit={submit}>
-      <div className="row between">
-        <h2 className="form-title">New project</h2>
-        {onCancel && (
-          <Button variant="ghost" size="sm" onClick={onCancel}>
-            Cancel
-          </Button>
-        )}
-      </div>
+    <form
+      className={`card project-form${variant === 'dialog' ? ' in-dialog' : variant === 'inline' ? ' in-panel' : ''}`}
+      aria-label={variant === 'inline' ? 'New project' : undefined}
+      onSubmit={submit}
+    >
+      {variant === 'card' && (
+        <div className="row between">
+          <h2 className="form-title">New project</h2>
+          {onCancel && (
+            <Button variant="ghost" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+        </div>
+      )}
       <SegmentedControl
         label="Project type"
         value={kind}
@@ -310,6 +334,11 @@ export function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boo
         <Button type="submit" variant="primary" loading={busy} disabled={!!blocker}>
           {existingId ? `Open ${current?.existingProjectName ?? 'project'}` : setupSubmitLabel(choice, busy)}
         </Button>
+        {variant !== 'card' && onCancel && (
+          <Button variant="secondary" onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
         {existingId && (
           <Button onClick={() => void submit(null, true)} disabled={!!blocker || busy}>
             {setupSubmitLabel(choice, busy)} anyway

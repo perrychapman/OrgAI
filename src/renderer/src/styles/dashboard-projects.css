@@ -1,0 +1,419 @@
+/* Dashboard: project tiles, fact cards, the New project dialog form and the first-launch choice.
+   Region placement (.dashboard, .dashboard-grid) lives in dashboard.css. Tokens only. */
+
+/* ---------- Projects region ---------- */
+
+.dash-projects-region {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.dash-projects-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.dash-projects-head h2 {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-projects-count {
+  color: var(--text-secondary);
+}
+.dash-projects-search {
+  max-width: 24rem;
+}
+.dash-projects-none {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.dash-projects-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+
+/* ---------- Project tile ---------- */
+
+.project-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+  transition: border-color var(--dur-fast);
+}
+.project-tile:hover,
+.project-tile:has(.project-tile-main:focus-visible) {
+  border-color: var(--border-strong);
+}
+.project-tile[data-state='decisions'] {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+.project-tile[data-state='live'] {
+  /* The 2 px working edge sits inside the radius, so the corner stays clean. */
+  box-shadow: var(--elev-1), inset 2px 0 0 var(--state-working);
+}
+
+.project-tile-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+.project-tile-title {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.project-tile-main {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  min-width: 0;
+  cursor: pointer;
+}
+.project-tile-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The whole tile is the hit area. It stacks under the More button (z-index 1) and above the plain text. */
+.project-tile-main::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+}
+.project-tile-main:focus-visible {
+  outline: none;
+}
+.project-tile-main:focus-visible::after {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.project-tile-more {
+  position: relative;
+  z-index: 1;
+}
+
+.project-tile-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.project-tile-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--state-idle);
+}
+.project-tile-dot.decisions {
+  background: var(--state-waiting);
+}
+.project-tile-dot.live {
+  background: var(--state-working);
+  box-shadow: var(--halo-dot-live);
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-tile-dot.live {
+    box-shadow: none;
+  }
+}
+html[data-reduce-motion='on'] .project-tile-dot.live {
+  box-shadow: none;
+}
+
+.project-tile-folder,
+.project-tile-run {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.project-tile-folder {
+  font-family: var(--font-mono);
+}
+.project-tile-run {
+  color: var(--text-secondary);
+}
+.project-tile-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  color: var(--text-secondary);
+}
+.project-tile-cost-unit {
+  color: var(--text-tertiary);
+}
+.project-tile-error {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--danger-text, var(--danger));
+}
+
+/* More menu */
+.project-tile-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.project-tile-menuitem {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.project-tile-menuitem:hover {
+  background: var(--surface-3);
+}
+.project-tile-menuitem:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.project-tile-menuitem.danger {
+  color: var(--danger-text, var(--danger));
+}
+.project-tile-menusep {
+  margin: var(--space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---------- Fact cards ---------- */
+
+.dash-facts {
+  container: dash-facts / inline-size;
+  min-width: 0;
+}
+.dash-facts-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+@container dash-facts (min-width: 600px) {
+  .dash-facts-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.dash-fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+}
+.dash-fact h2 {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-fact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.dash-fact-note,
+.dash-fact-foot,
+.dash-fact-line {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-fact-foot {
+  color: var(--text-tertiary);
+}
+.dash-fact-link {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.dash-usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+.dash-usage-row .usage-mini {
+  flex: none;
+  max-width: none;
+  width: 100%;
+}
+.dash-usage-name {
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+
+.dash-cost-figure {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  color: var(--text-primary);
+}
+.dash-cost-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-cost-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-conn-default {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-body);
+}
+.dash-conn-problem {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--danger-text, var(--danger));
+}
+
+/* ---------- New project form inside the dialog or a page panel ---------- */
+
+/* Inside the dialog the dialog is the card: no second border, fill or padding. */
+.project-form.in-dialog {
+  max-width: none;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.project-form.in-panel {
+  max-width: none;
+}
+
+/* ---------- First launch ---------- */
+
+.dash-first {
+  container: dash-first / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 880px;
+  min-width: 0;
+}
+.dash-first-choice {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.dash-first-choice legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-first-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+@container dash-first (min-width: 600px) {
+  .dash-first-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.dash-first-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  align-items: start;
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+  cursor: pointer;
+}
+.dash-first-option input {
+  grid-row: 1 / span 2;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.dash-first-option:hover {
+  border-color: var(--border-strong);
+}
+.dash-first-option:has(input:checked) {
+  border-color: var(--accent-border);
+  background: var(--accent-faint);
+}
+.dash-first-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-first-option-title {
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-first-option-text {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.dash-first-panel {
+  min-width: 0;
+}
+.dash-first-panel[hidden] {
+  display: none;
+}

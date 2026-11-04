@@ -5,7 +5,10 @@ import {
   deleteProjectBody,
   elapsedLabel,
   endedKind,
+  errorFirstLine,
   heroFigure,
+  heroSublineParts,
+  pausedRuns,
   planStepLabel,
   projectAttentionOrder,
   readLastSeen,
@@ -125,11 +128,18 @@ describe('endedKind', () => {
 })
 
 describe('sinceLastSeen', () => {
+  const T0 = NOW - 2 * DAY
   const run = (id: string, startedAt: number, extra: Partial<EndedRunLike> = {}): EndedRunLike => ({ id, status: 'finished', startedAt, ...extra })
-  it('keeps runs that ended after lastSeen, newest first, and skips live ones', () => {
+  it('keeps runs that ended after lastSeen, newest first, and skips live and paused ones', () => {
     const out = sinceLastSeen(
-      [run('old', 1, { endedAt: 100 }), run('a', 1, { endedAt: 300 }), run('b', 1, { endedAt: 200, status: 'error' }), run('live', 1, { status: 'running' })],
-      150,
+      [
+        run('old', 1, { endedAt: T0 + 100 }),
+        run('a', 1, { endedAt: T0 + 300 }),
+        run('b', 2, { endedAt: T0 + 200, status: 'error' }),
+        run('live', 3, { status: 'running' }),
+        run('p', 4, { status: 'paused' })
+      ],
+      T0 + 150,
       NOW
     )
     expect(out.items.map((i) => i.run.id)).toEqual(['a', 'b'])
@@ -137,25 +147,60 @@ describe('sinceLastSeen', () => {
     expect(out.more).toBe(0)
   })
   it('excludes a run that ended exactly at lastSeen', () => {
-    expect(sinceLastSeen([run('a', 1, { endedAt: 150 })], 150, NOW).items).toHaveLength(0)
+    expect(sinceLastSeen([run('a', 1, { endedAt: T0 })], T0, NOW).items).toHaveLength(0)
   })
-  it('uses the start when there is no end', () => {
-    const out = sinceLastSeen([run('p', 500, { status: 'paused' })], 100, NOW)
-    expect(out.items[0]).toMatchObject({ kind: 'paused', endedAt: 500 })
-  })
-  it('on a first visit returns the last 24 hours', () => {
-    const out = sinceLastSeen([run('in', 1, { endedAt: NOW - 23 * HOUR }), run('out', 1, { endedAt: NOW - 25 * HOUR })], null, NOW)
+  it('limits to 7 days', () => {
+    const out = sinceLastSeen([run('in', 1, { endedAt: NOW - 6 * DAY }), run('out', 2, { endedAt: NOW - 8 * DAY })], 0, NOW)
     expect(out.items.map((i) => i.run.id)).toEqual(['in'])
   })
-  it('caps and counts the rest', () => {
-    const rows = [1, 2, 3, 4, 5, 6, 7].map((n) => run(`r${n}`, n, { endedAt: 1000 + n }))
-    const out = sinceLastSeen(rows, 0.5, NOW, { cap: 3 })
-    expect(out.items.map((i) => i.run.id)).toEqual(['r7', 'r6', 'r5'])
-    expect(out.more).toBe(4)
+  it('keeps work and quick runs only', () => {
+    const out = sinceLastSeen([run('w', 1, { endedAt: T0, kind: 'work' }), run('s', 2, { endedAt: T0, kind: 'setup' })], 0, NOW)
+    expect(out.items.map((i) => i.run.id)).toEqual(['w'])
+  })
+  it('caps at 6 by default and counts the rest', () => {
+    const rows = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => run(`r${n}`, n, { endedAt: T0 + n }))
+    expect(sinceLastSeen(rows, 0, NOW).items).toHaveLength(6)
+    const out = sinceLastSeen(rows, 0, NOW, { cap: 3 })
+    expect(out.items.map((i) => i.run.id)).toEqual(['r8', 'r7', 'r6'])
+    expect(out.more).toBe(5)
   })
   it('counts a duplicated run once', () => {
-    const a = run('a', 1, { endedAt: 300 })
-    expect(sinceLastSeen([a, { ...a }], 0.5, NOW).items).toHaveLength(1)
+    const a = run('a', 1, { endedAt: T0 })
+    expect(sinceLastSeen([a, { ...a }], 0, NOW).items).toHaveLength(1)
+  })
+  it('shows one row per chain, its newest member', () => {
+    const first = run('c1', 1, { endedAt: T0, sessionId: 's' })
+    const second = run('c2', 2, { endedAt: T0 + 50, sessionId: 's', resumedFrom: 'c1' })
+    const out = sinceLastSeen([first, second], 0, NOW)
+    expect(out.items.map((i) => i.run.id)).toEqual(['c2'])
+  })
+  it('hides a chain whose newest member is live', () => {
+    const first = run('c1', 1, { endedAt: T0, sessionId: 's' })
+    const second = run('c2', 2, { status: 'running', sessionId: 's', resumedFrom: 'c1' })
+    expect(sinceLastSeen([first, second], 0, NOW).items).toHaveLength(0)
+  })
+})
+
+describe('pausedRuns', () => {
+  it('lists chains whose newest member is paused, newest start first', () => {
+    const rows: EndedRunLike[] = [
+      { id: 'a', status: 'paused', startedAt: 1 },
+      { id: 'b', status: 'paused', startedAt: 5 },
+      { id: 'c', status: 'finished', startedAt: 9 },
+      { id: 'd1', status: 'paused', startedAt: 2, sessionId: 'x' },
+      { id: 'd2', status: 'finished', startedAt: 3, sessionId: 'x', resumedFrom: 'd1' }
+    ]
+    expect(pausedRuns(rows).map((r) => r.id)).toEqual(['b', 'a'])
+  })
+})
+
+describe('errorFirstLine', () => {
+  it('takes the first non-empty line and cuts at 100', () => {
+    expect(errorFirstLine('\n  Boom\nsecond')).toBe('Boom')
+    expect(errorFirstLine(undefined)).toBe('')
+    const cut = errorFirstLine('x'.repeat(150))
+    expect(cut).toHaveLength(100)
+    expect(cut.endsWith('…')).toBe(true)
   })
 })
 
@@ -197,38 +242,56 @@ describe('elapsedLabel', () => {
 })
 
 describe('planStepLabel', () => {
-  const steps = (...s: string[]): { steps: { status: string }[] } => ({ steps: s.map((status) => ({ status })) })
+  const plan = (status: string, ...s: string[]): { status: string; steps: { status: string }[] } => ({ status, steps: s.map((st) => ({ status: st })) })
   it('names the first step not done', () => {
-    expect(planStepLabel(steps('done', 'done', 'in_progress', 'pending', 'pending', 'pending', 'pending'))).toBe('Step 3 of 7')
-    expect(planStepLabel(steps('done', 'skipped', 'blocked'))).toBe('Step 3 of 3')
+    expect(planStepLabel(plan('active', 'done', 'done', 'in_progress', 'pending', 'pending', 'pending', 'pending'))).toBe('Step 3 of 7')
   })
-  it('says when all are done', () => {
-    expect(planStepLabel(steps('done', 'skipped'))).toBe('All 2 steps done')
-    expect(planStepLabel(steps('done'))).toBe('All 1 step done')
+  it('counts only steps that are not skipped', () => {
+    expect(planStepLabel(plan('active', 'done', 'skipped', 'pending'))).toBe('Step 2 of 2')
+    expect(planStepLabel(plan('active', 'skipped', 'pending', 'pending'))).toBe('Step 1 of 2')
   })
-  it('is null without a plan or steps', () => {
+  it('says blocked and done from the plan status', () => {
+    expect(planStepLabel(plan('blocked', 'done', 'pending'))).toBe('Plan blocked')
+    expect(planStepLabel(plan('done', 'done'))).toBe('Plan done')
+  })
+  it('is null without a plan or counted steps', () => {
     expect(planStepLabel(null)).toBeNull()
     expect(planStepLabel(undefined)).toBeNull()
     expect(planStepLabel({ steps: [] })).toBeNull()
+    expect(planStepLabel(plan('active', 'skipped'))).toBeNull()
   })
 })
 
 describe('heroFigure', () => {
-  it('prefers decisions, then running, then quiet', () => {
-    expect(heroFigure({ decisions: 3, running: 2 }).figure).toBe('3 need you')
-    expect(heroFigure({ decisions: 1, running: 0 })).toEqual({ figure: '1 needs you', caption: 'decision waiting' })
-    expect(heroFigure({ decisions: 0, running: 2 })).toEqual({ figure: '2 running', caption: 'runs in progress' })
-    expect(heroFigure({ decisions: 0, running: 1 }).caption).toBe('run in progress')
-    expect(heroFigure({ decisions: 0, running: 0 }).figure).toBe('All quiet')
+  const f = (decisions: number, running: number, paused: number, projects = 2): string => heroFigure({ decisions, running, paused, projects }).figure
+  it('prefers decisions, then running, then paused, then quiet', () => {
+    expect(f(3, 2, 1)).toBe('3 need you')
+    expect(f(1, 0, 0)).toBe('1 needs you')
+    expect(f(0, 2, 1)).toBe('2 running')
+    expect(f(0, 0, 1)).toBe('1 paused')
+    expect(f(0, 0, 4)).toBe('4 paused')
+    expect(f(0, 0, 0)).toBe('All quiet')
+  })
+  it('welcomes a user with no projects', () => {
+    expect(f(0, 0, 0, 0)).toBe('Welcome to OrgAI')
+  })
+})
+
+describe('heroSublineParts', () => {
+  it('leaves empty parts out', () => {
+    expect(heroSublineParts({ projects: 3, openRuns: 2 })).toEqual(['3 projects', '2 runs open'])
+    expect(heroSublineParts({ projects: 1, openRuns: 1 })).toEqual(['1 project', '1 run open'])
+    expect(heroSublineParts({ projects: 2, openRuns: 0 })).toEqual(['2 projects'])
+    expect(heroSublineParts({ projects: 0, openRuns: 0 })).toEqual([])
   })
 })
 
 describe('deleteProjectBody', () => {
+  const also = 'Its project skills and saved service secrets go too. Files in its folder are untouched.'
   it('covers the cases', () => {
-    expect(deleteProjectBody({ openRuns: 1, historyRuns: 3 })).toBe('Ends 1 open run and deletes the history, transcripts and costs of 3 runs. Files in its folder are untouched.')
-    expect(deleteProjectBody({ openRuns: 2, historyRuns: 1 })).toBe('Ends 2 open runs and deletes the history, transcripts and costs of 1 run. Files in its folder are untouched.')
-    expect(deleteProjectBody({ openRuns: 0, historyRuns: 4 })).toBe('Deletes the history, transcripts and costs of 4 runs. Files in its folder are untouched.')
-    expect(deleteProjectBody({ openRuns: 1, historyRuns: 0 })).toBe('Ends 1 open run and deletes the project from OrgAI. Files in its folder are untouched.')
-    expect(deleteProjectBody({ openRuns: 0, historyRuns: 0 })).toBe('Deletes the project from OrgAI. It has no runs. Files in its folder are untouched.')
+    expect(deleteProjectBody({ openRuns: 1, historyRuns: 3 })).toBe(`Ends 1 open run and deletes the history, transcripts and costs of 3 runs. ${also}`)
+    expect(deleteProjectBody({ openRuns: 2, historyRuns: 1 })).toBe(`Ends 2 open runs and deletes the history, transcripts and costs of 1 run. ${also}`)
+    expect(deleteProjectBody({ openRuns: 0, historyRuns: 4 })).toBe(`Deletes the history, transcripts and costs of 4 runs. ${also}`)
+    expect(deleteProjectBody({ openRuns: 0, historyRuns: 0 })).toBe('Removes the project from OrgAI. Files in its folder are untouched.')
   })
 })
