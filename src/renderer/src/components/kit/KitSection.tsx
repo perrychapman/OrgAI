@@ -89,6 +89,7 @@ export default function KitSection(): ReactElement | null {
         </p>
       )}
       <div className="kit-status" role="status" aria-live="polite" data-testid="kit-status">
+        {notice && <p className="sr-only">{importedLine(importedCount(notice))}</p>}
         {saved && (
           <>
             <p className="kit-saved">
@@ -144,6 +145,7 @@ function ImportNotice({ result, onOpenConnectors, onDismiss }: { result: KitAppl
       tone="success"
       title={importedLine(importedCount(result))}
       onDismiss={onDismiss}
+      label="Import result"
       testId="kit-import-notice"
       actions={
         result.needsSecrets.length > 0 ? (

@@ -145,6 +145,7 @@
   overflow-wrap: anywhere;
 }
 .kit-warn {
+  overflow-wrap: anywhere;
   display: flex;
   align-items: flex-start;
   gap: var(--space-1h);
