@@ -337,6 +337,15 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     edits free, session setMode / addDirectories from canUseTool, the CLI's per-segment matching agreeing with ours,
     a restarted query picking up new additionalDirectories, Codex writable_roots and its file-approval wire shape.
 
+- Engagement phases 2-3, runtime (2026-11-04; ARCHITECTURE.md Shared contracts "Engagement kind (phases 2-3, runtime)"):
+  team templates (`setup/templates.ts`, templates:* IPC, `ProjectCreateInput.templateId`, propose_org_chart
+  `fromTemplate` on setup runs), single-agent work runs (`RunTeam` 'single' on StartRunInput / RunSummary,
+  defaults.ts `singleRunProject`, no plan nudges, no list_projects), the engagement document and context notes in
+  `<data>/projects/<id>/` (projectData.ts; `expectedUpdatedAt` refuses a stale save) with the `engagement_context`
+  harness tool (audience 'all', engagement work runs and single runs), `projects:remove` / `removePreview` returning
+  `ProjectRemoveResult` (removeRuns default true; engagements always forget their runs), and usage export
+  (`UsageStatsQuery.range` month, `runs:usageCsv` with formula-injection quoting). Contracts sit in one types.ts section
+  with their channels in `TEMPLATE_ENGAGEMENT_IPC`. Verified by unit tests and the mock only; no renderer uses it yet.
 - Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
   automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
   - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`)
