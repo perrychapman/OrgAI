@@ -3,8 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, LayoutGrid, MousePointerClick, Plus, Undo2, Upload } from 'lucide-react'
 import {
   ReactFlow,
-  Background,
-  BackgroundVariant,
   Controls,
   MarkerType,
   type Connection,
@@ -30,7 +28,15 @@ import { importBannerVisible, notImportedLine, readBannerMemory, writeBannerMemo
 import { useConfirm } from '../components/ui/ConfirmDialog'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
-import { treeLayout } from '../lib/layout'
+import { layoutCanvas } from '../lib/layout'
+import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
+import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
+import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
+import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
+import { EDGE_TYPE, edgeStroke, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+
+/** Role node box per node style for layout and fit (section 4): cards 220 wide, name tags 160 x 40. */
+const ROLE_NODE_SIZE = { card: { width: 220, height: 96 }, compact: { width: 160, height: 40 } } as const
 import { nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
 import { cleanIpcError } from '../lib/ipcError'
 import { useCssVar } from '../lib/useCssVar'
@@ -105,9 +111,17 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const connectionInfos = useAppStore((s) => s.connections)
   const modelCatalogs = useAppStore((s) => s.models)
   const { confirm, dialog } = useConfirm()
-  const patternColor = useCssVar('--canvas-pattern')
   const faintColor = useCssVar('--text-tertiary')
   const labelBg = useCssVar('--surface-1')
+  const groupEdgeColor = useCssVar('--canvas-edge-group')
+  const edgeMix = useCssVar('--canvas-edge-role-mix')
+  const edgeInk = useCssVar('--canvas-edge-ink')
+  const options = useCanvasOptions()
+  const reducedMotion = useReducedMotion()
+  const nodeDims = useNodeDims()
+  const radial = options.layout === 'radial'
+  const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
+  const roleSize = ROLE_NODE_SIZE[options.nodeStyle === 'compact' ? 'compact' : 'card']
 
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ roleId: string; text: string } | null>(null)
@@ -214,11 +228,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           position: role.position,
           selected: role.id === selectedRoleId,
           deletable: role.reportsTo !== null,
+          initialWidth: roleSize.width,
+          initialHeight: roleSize.height,
+          ...(nodeDims.dims[role.id] ? { measured: nodeDims.dims[role.id] } : {}),
           ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
           data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities }
         }
       }),
-    [project, selectedRoleId]
+    [project, selectedRoleId, roleSize, nodeDims.dims]
   )
 
   const edges: Edge[] = useMemo(
@@ -229,23 +246,26 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           const parent = project.roles.find((x) => x.id === r.reportsTo)!
           const allowed = parent.canSpawn && parent.spawnable.includes(r.id)
           const id = `e-${parent.id}-${r.id}`
+          const color = edgeStroke(r.color, edgeMix, edgeInk)
           return {
             id,
             source: parent.id,
             target: r.id,
+            type: edgeType,
             selected: id === selectedEdgeId,
             ariaLabel:
               parent.id === root?.id
                 ? `${parent.name} manages ${r.name}.`
                 : `${parent.name} manages ${r.name}. Press Delete to make ${r.name} report to ${root?.name ?? 'the root'} instead.`,
-            style: { stroke: allowed ? r.color : 'var(--text-faint)', strokeDasharray: allowed ? undefined : '4 4' },
-            markerEnd: { type: MarkerType.ArrowClosed, color: allowed ? r.color : faintColor },
+            style: allowed ? { stroke: color, strokeWidth: 1.6 } : { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' },
+            // The "cannot delegate" line has no arrow (section 5).
+            markerEnd: allowed ? { type: MarkerType.ArrowClosed, color } : undefined,
             label: allowed ? undefined : 'not delegable',
             labelStyle: { fill: faintColor, fontSize: 11 },
             labelBgStyle: { fill: labelBg }
           }
         }),
-    [project.roles, selectedEdgeId, root, faintColor, labelBg]
+    [project.roles, selectedEdgeId, root, faintColor, labelBg, edgeType, edgeMix, edgeInk, groupEdgeColor]
   )
 
   const reparentToRoot = useCallback(
@@ -297,6 +317,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   const onNodesChange = useCallback(
     (changes: NodeChange<RoleFlowNode>[]) => {
+      nodeDims.apply(changes as NodeChange[])
       const moves = changes.filter((c) => c.type === 'position' && c.position)
       if (moves.length) {
         updateRoles(project.id, (roles) =>
@@ -313,7 +334,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         selectRole(picked.id)
       }
     },
-    [project.id, updateRoles, selectRole]
+    [project.id, updateRoles, selectRole, nodeDims.apply]
   )
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
@@ -431,11 +452,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
 
   const autoLayout = (): void => {
-    const pos = treeLayout(
-      project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: 220, height: 96 })),
-      { nodesep: 60, ranksep: 110 }
+    const { positions: pos } = layoutCanvas(
+      options.layout,
+      project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: roleSize.width, height: roleSize.height })),
+      { nodesep: 60, ranksep: 110, ringStep: ringStepFor(options.nodeStyle) }
     )
     updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
+    window.setTimeout(() => {
+      void flowRef.current?.fitView({ padding: radial ? 0.12 : 0.3, maxZoom: 1, duration: reducedMotion ? 0 : 300 })
+    }, 80)
   }
 
   return (
@@ -487,6 +512,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </Button>
               </span>
             )}
+            <CanvasStyleButton testId="canvas-style-button" />
           </FrameToolbar>
         <div className="import-notices">
           {importNotice && importNotice.state !== 'reverted' && (
@@ -555,6 +581,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={CANVAS_EDGE_TYPES}
+            data-layout={options.layout}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -575,8 +603,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             elementsSelectable
             edgesFocusable={false}
           >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />
-            <Controls showInteractive={false} />
+            <CanvasBackdrop />
+            <Controls showInteractive={false} position="bottom-right" />
+            <CanvasMinimap ariaLabel="Org chart minimap" />
           </ReactFlow>
         </FrameStage>
         <FrameTray label="Team assistant">

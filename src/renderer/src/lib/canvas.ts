@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { Position } from '@xyflow/react'
+import { useCallback, useEffect, useState } from 'react'
+import type { NodeChange, Position } from '@xyflow/react'
 import type { AppearanceSettings, CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS } from '@shared/types'
 import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, type CanvasPreset, type CanvasPresetId } from '@shared/defaults'
@@ -148,18 +148,86 @@ export function agentNodeSize(style: CanvasNodeStyle): { width: number; height: 
   return style === 'compact' ? AGENT_NODE_SIZE.compact : AGENT_NODE_SIZE.card
 }
 
+type Rgb = [number, number, number]
+
+/** '#rgb', '#rrggbb' or 'rgb(r, g, b)' to channels; null for anything else (var(), named colours, hsl...). */
+function parseColor(value: string): Rgb | null {
+  const v = value.trim()
+  const hex3 = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(v)
+  if (hex3) return [parseInt(hex3[1] + hex3[1], 16), parseInt(hex3[2] + hex3[2], 16), parseInt(hex3[3] + hex3[3], 16)]
+  const hex6 = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(v)
+  if (hex6) return [parseInt(hex6[1], 16), parseInt(hex6[2], 16), parseInt(hex6[3], 16)]
+  const rgb = /^rgba?\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\s*(?:[,/]\s*[\d.]+%?\s*)?\)$/i.exec(v)
+  if (rgb) return [Math.min(255, +rgb[1]), Math.min(255, +rgb[2]), Math.min(255, +rgb[3])]
+  return null
+}
+
+function toHex(c: Rgb): string {
+  return `#${c.map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')).join('')}`
+}
+
 /**
  * Edge colour (docs/design/canvas-themes.md section 5): the role colour mixed toward `ink` in sRGB, keeping `mix`
- * percent of the role colour, as '#rrggbb'. Inputs are hex; `mix` is a number 0-100 or a string like '50%'.
- * SEAM: placeholder until the canvas-engine brief implements it (returns the role colour).
+ * percent of the role colour, as '#rrggbb'. `mix` is a number 0-100 or a string like '50%'. A role or ink that is not
+ * a hex (or rgb()) colour, or a mix that is not a number, returns `role` unchanged.
  */
-export function edgeStroke(role: string, _mix: number | string, _ink: string): string {
-  return role
+export function edgeStroke(role: string, mix: number | string, ink: string): string {
+  const a = parseColor(role)
+  const b = parseColor(ink)
+  const pct = typeof mix === 'number' ? mix : Number.parseFloat(mix)
+  if (!a || !b || !Number.isFinite(pct)) return role
+  const t = Math.max(0, Math.min(100, pct)) / 100
+  return toHex([a[0] * t + b[0] * (1 - t), a[1] * t + b[1] * (1 - t), a[2] * t + b[2] * (1 - t)])
+}
+
+/** True when the OS or the app asks for reduced motion (animated edges stay still, refits are instant). */
+export function useReducedMotion(): boolean {
+  const attr = useHtmlAttr('data-reduce-motion', '')
+  const [os, setOs] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const on = (): void => setOs(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return os || (attr !== '' && attr !== 'false' && attr !== 'off')
+}
+
+export type NodeDims = Record<string, { width: number; height: number }>
+
+/**
+ * Measured node sizes for a canvas whose nodes are rebuilt from state (controlled nodes). React Flow reports sizes as
+ * `dimensions` changes; a rebuilt node without `measured` is invisible to the minimap (ux-review-canvas-themes H1).
+ * Feed `apply` the changes from `onNodesChange` and spread `dims[id]` into each node's `measured`.
+ */
+export function useNodeDims(): { dims: NodeDims; apply: (changes: NodeChange[]) => void } {
+  const [dims, setDims] = useState<NodeDims>({})
+  const apply = useCallback((changes: NodeChange[]) => {
+    const sized = changes.filter((c): c is Extract<NodeChange, { type: 'dimensions' }> => c.type === 'dimensions' && !!c.dimensions)
+    if (sized.length === 0) return
+    setDims((prev) => {
+      let next: NodeDims | null = null
+      for (const c of sized) {
+        const d = c.dimensions!
+        const old = prev[c.id]
+        if (old && old.width === d.width && old.height === d.height) continue
+        next ??= { ...prev }
+        next[c.id] = { width: d.width, height: d.height }
+      }
+      return next ?? prev
+    })
+  }, [])
+  return { dims, apply }
+}
+
+/** Ring step of the radial layout per node style (section 3): 300 for cards, 200 for compact. */
+export function ringStepFor(style: CanvasNodeStyle): number {
+  return style === 'compact' ? 200 : 300
 }
 
 /**
  * Minimap size for a stage (section 6): width clamp(120, round(0.18 * w), 200), height min(round(0.3 * h),
- * round(0.75 * width)); null below 240 px high or 480 px wide. SEAM: the canvas-engine brief owns it and its tests.
+ * round(0.75 * width)); null below 240 px high or 480 px wide.
  */
 export function minimapSize(stageWidth: number, stageHeight: number): { width: number; height: number } | null {
   if (stageHeight < 240 || stageWidth < 480) return null

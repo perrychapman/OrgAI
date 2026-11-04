@@ -2,16 +2,19 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
-  Background,
-  BackgroundVariant,
-  MiniMap,
   MarkerType,
   useReactFlow,
   ReactFlowProvider,
   type Edge,
   type FitViewOptions,
+  type NodeChange,
   type NodeMouseHandler
 } from '@xyflow/react'
+import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
+import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
+import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
+import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
+import { EDGE_TYPE, agentNodeSize, edgeStroke, groupNodeSize, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
 import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
@@ -42,7 +45,7 @@ import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../s
 import { Button } from '../components/ui/Button'
 import { CHAIN_EAGER_MEMBERS, canContinueIn, chainKeyOf, chainOf, continuedByIn, earlierMembersToLoad, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
-import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
+import { DoneGroupNode, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
@@ -54,12 +57,10 @@ import { CanvasFrame, FrameStage, FrameToolbar, FrameTray } from '../components/
 import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
-import { formatUntil, treeLayout } from '../lib/layout'
+import { formatUntil, layoutCanvas } from '../lib/layout'
 import { agentLabel, normalizeParents } from '../lib/agentTree'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
-const NODE_W = 240
-const NODE_H = 112
 const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'waiting'])
 /** A finished report keeps its own node this long before folding into its parent's "done" group. */
 const COLLAPSE_KEY = 'orgai.collapseFinished'
@@ -68,25 +69,14 @@ const MESSAGE_EDGE_MS = 12_000
 /** Neutral role colour used when a role has none; resolved from a token at render time (React Flow cannot take var()). */
 const NEUTRAL_ROLE_TOKEN = '--text-tertiary'
 
-/** Reads a data-* attribute on <html> and follows changes (the appearance settings write them). */
-function useHtmlAttr(name: string, fallback: string): string {
-  const read = (): string => document.documentElement.getAttribute(name) ?? fallback
-  const [value, setValue] = useState(read)
-  useEffect(() => {
-    const update = (): void => setValue(read())
-    update()
-    const mo = new MutationObserver(update)
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: [name] })
-    return () => mo.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
-  return value
-}
-
-/** Fit-to-view options. A stage under 300 px tall (1024x640 with several decisions) keeps nodes readable: zoom stays at 0.8 or more and the chart pans. */
+/**
+ * Fit-to-view options. A stage under 300 px tall (1024x640 with several decisions) keeps nodes readable: zoom stays at
+ * 0.8 or more and the chart pans. The radial layout fits with less padding (spec section 3).
+ */
 function fitOpts(o: { duration: number }): FitViewOptions {
   const h = document.querySelector('.frame-stage')?.clientHeight ?? 1000
-  return { padding: 0.25, maxZoom: 1, duration: o.duration, ...(h < 300 ? { minZoom: 0.8 } : {}) }
+  const radial = !!document.querySelector('.frame-stage .react-flow[data-layout="radial"]')
+  return { padding: radial ? 0.12 : 0.25, maxZoom: 1, duration: o.duration, ...(h < 300 ? { minZoom: 0.8 } : {}) }
 }
 
 /** The canvas controls, shared by the toolbar buttons and the application menu handlers. */
@@ -101,21 +91,8 @@ function fitCanvas(rf: { fitView: (o?: FitViewOptions) => unknown }, reduced: bo
   void rf.fitView(fitOpts({ duration: reduced ? 0 : ZOOM_MS }))
 }
 
-/** True when the OS or the app asks for reduced motion (animated edges stay still). */
-function useReducedMotion(): boolean {
-  const attr = useHtmlAttr('data-reduce-motion', '')
-  const [os, setOs] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const on = (): void => setOs(mq.matches)
-    mq.addEventListener('change', on)
-    return () => mq.removeEventListener('change', on)
-  }, [])
-  return os || (attr !== '' && attr !== 'false' && attr !== 'off')
-}
-
-const EDGE_TYPE = { curved: 'default', orthogonal: 'smoothstep', straight: 'straight' } as const
-const PATTERN_VARIANT = { dots: BackgroundVariant.Dots, grid: BackgroundVariant.Lines } as const
+/** A message edge glows (Starfield) and is marked fresh for this long. */
+const MESSAGE_FRESH_MS = 1500
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
 
@@ -214,16 +191,21 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const stopRun = useAppStore((s) => s.stopRun)
   const messageColor = useCssVar('--edge-message')
   const neutralRoleColor = useCssVar(NEUTRAL_ROLE_TOKEN)
-  const borderStrong = useCssVar('--border-strong')
-  const patternColor = useCssVar('--canvas-pattern')
-  const surfaceColor = useCssVar('--surface-0')
-  const patternKind = useHtmlAttr('data-canvas-pattern', 'dots')
-  const edgeStyle = useHtmlAttr('data-canvas-edges', 'curved') as keyof typeof EDGE_TYPE
-  const showMinimap = useHtmlAttr('data-canvas-minimap', 'off') === 'on'
+  const edgeMix = useCssVar('--canvas-edge-role-mix')
+  const edgeInk = useCssVar('--canvas-edge-ink')
+  const edgeDoneOpacity = Number.parseFloat(useCssVar('--canvas-edge-done-opacity')) || 0.8
+  const groupEdgeColor = useCssVar('--canvas-edge-group')
+  const liveDash = useCssVar('--canvas-edge-live-dash') || '6 4'
+  const messageDash = useCssVar('--canvas-edge-message-dash') || '2 5'
+  const options = useCanvasOptions()
   const reducedMotion = useReducedMotion()
+  const nodeDims = useNodeDims()
   // The stage collapses to height 0 while an expanded proposal takes a compact frame: nothing to fit then.
   const stageHidden = (): boolean => (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
-  const edgeType = EDGE_TYPE[edgeStyle] ?? 'default'
+  const radial = options.layout === 'radial'
+  const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
+  const agentSize = agentNodeSize(options.nodeStyle)
+  const groupSize = groupNodeSize(options.nodeStyle)
 
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
@@ -420,15 +402,22 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   ]
     .sort()
     .join('|')
-  const positions = useMemo(
+  // The layout, node style and topology decide where nodes sit and when to refit.
+  const layoutKey = `${topologyKey}#${options.layout}#${options.nodeStyle}`
+  const placed = useMemo(
     () =>
-      treeLayout([
-        ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: NODE_W, height: NODE_H })),
-        ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: groupParent(p), width: GROUP_W, height: GROUP_H }))
-      ]),
+      layoutCanvas(
+        options.layout,
+        [
+          ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
+          ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: groupParent(p), width: groupSize.width, height: groupSize.height }))
+        ],
+        { ringStep: ringStepFor(options.nodeStyle) }
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [topologyKey]
+    [layoutKey]
   )
+  const positions = placed.positions
 
   // Switching back to the canvas mounts a fresh React Flow: fit it once it has a size.
   const prevLayout = useRef(layout)
@@ -445,16 +434,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   const lastTopology = useRef('')
   useEffect(() => {
-    if (topologyKey && topologyKey !== lastTopology.current) {
-      lastTopology.current = topologyKey
+    if (topologyKey && layoutKey !== lastTopology.current) {
+      lastTopology.current = layoutKey
       const t = setTimeout(() => {
         if (stageHidden()) return
-        void fitView(fitOpts({ duration: reducedMotion ? 0 : 500 }))
+        void fitView(fitOpts({ duration: reducedMotion ? 0 : 300 }))
       }, 60)
       return () => clearTimeout(t)
     }
     return undefined
-  }, [topologyKey, fitView])
+  }, [layoutKey, fitView])
 
   const nodes: CanvasNode[] = useMemo(() => {
     const agentNodes: CanvasNode[] = visibleAgents.map((agent) => ({
@@ -463,6 +452,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       position: positions[agent.id] ?? { x: 0, y: 0 },
       selected: agent.id === selectedAgentId,
       draggable: false,
+      initialWidth: agentSize.width,
+      initialHeight: agentSize.height,
+      ...(nodeDims.dims[agent.id] ? { measured: nodeDims.dims[agent.id] } : {}),
       data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
     }))
     const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
@@ -474,26 +466,39 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
         selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
+        initialWidth: groupSize.width,
+        initialHeight: groupSize.height,
+        ...(nodeDims.dims[groupId(parentId)] ? { measured: nodeDims.dims[groupId(parentId)] } : {}),
         data: { parentId, parentName: groupParentName(parentId), agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: expandGroup, ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims])
+
+  // Controlled nodes: keep React Flow's measured sizes so the minimap draws every node (H1).
+  const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => nodeDims.apply(changes as NodeChange[]), [nodeDims.apply])
 
   const edges: Edge[] = useMemo(() => {
     const shown = new Set(visibleAgents.map((a) => a.id))
     const agentEdges: Edge[] = visibleAgents
       .filter((a) => a.parentId && shown.has(a.parentId))
       .map((a) => {
-        const color = roleColor(a.roleId, a.roleSlug)
+        // Role colour mixed toward the ink; the marker takes the same literal colour (section 5).
+        const color = edgeStroke(roleColor(a.roleId, a.roleSlug), edgeMix, edgeInk)
         const live = LIVE_STATES.has(a.state)
+        const finished = a.state === 'done'
         return {
           id: `e-${a.parentId}-${a.id}`,
           source: a.parentId as string,
           target: a.id,
           type: edgeType,
           animated: live && !reducedMotion,
-          style: { stroke: color, strokeWidth: live ? 2.2 : 1.4, opacity: a.state === 'done' ? 0.45 : 1 },
+          style: {
+            stroke: color,
+            strokeWidth: live ? 2.2 : finished ? 1.4 : 1.6,
+            opacity: finished ? edgeDoneOpacity : 1,
+            ...(live ? { strokeDasharray: liveDash } : {})
+          },
           markerEnd: { type: MarkerType.ArrowClosed, color }
         }
       })
@@ -504,7 +509,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         source: groupParent(p) as string,
         target: groupId(p),
         type: edgeType,
-        style: { stroke: borderStrong, strokeWidth: 1.2, strokeDasharray: '4 4' }
+        style: { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' }
       }))
     // Recent messages: a dashed, animated side-to-side edge. A folded agent's end attaches to its group node;
     // a message whose ends are not on the canvas (or land on the same node) is skipped.
@@ -538,18 +543,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         sourceHandle: MSG_OUT,
         targetHandle: MSG_IN,
         type: edgeType,
-        animated: !reducedMotion,
-        className: 'msg-edge',
-        label: 'msg',
-        labelStyle: { fill: messageColor, fontSize: 'var(--text-small)' },
-        labelBgStyle: { fill: surfaceColor },
-        style: { stroke: messageColor, strokeWidth: 1.8, strokeDasharray: '6 4' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: messageColor },
-        zIndex: 10
+        data: { message: true },
+        className: msgNow - m.at < MESSAGE_FRESH_MS ? 'msg-edge msg-fresh' : 'msg-edge',
+        style: { stroke: messageColor, strokeWidth: 1.8, strokeDasharray: messageDash, strokeLinecap: 'round' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: messageColor }
       })
     }
     return [...agentEdges, ...groupEdges, ...messageEdges.values()]
-  }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, borderStrong, messageColor, surfaceColor])
+  }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, groupEdgeColor, messageColor, edgeMix, edgeInk, edgeDoneOpacity, liveDash, messageDash])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
 
@@ -960,20 +961,23 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
+              edgeTypes={CANVAS_EDGE_TYPES}
+              data-layout={options.layout}
+              onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
               onPaneClick={() => selectAgent(null)}
               nodesConnectable={false}
               elementsSelectable
               fitView
-              fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
+              fitViewOptions={{ padding: radial ? 0.12 : 0.25, maxZoom: 1 }}
               proOptions={{ hideAttribution: true }}
               deleteKeyCode={null}
               edgesFocusable={false}
               minZoom={0.3}
               onKeyDown={onCanvasKey}
             >
-              {patternKind !== 'none' && <Background variant={PATTERN_VARIANT[patternKind as 'dots' | 'grid'] ?? BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />}
-              {showMinimap && <MiniMap pannable zoomable ariaLabel="Run minimap" nodeColor={neutralRoleColor} />}
+              <CanvasBackdrop rings={placed.rings} />
+              <CanvasMinimap ariaLabel="Run minimap" />
             </ReactFlow>
             )}
           </FrameStage>
@@ -1101,6 +1105,7 @@ function CanvasTools(): ReactElement {
         <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => zoomInCanvas({ zoomIn }, reduced)} />
         <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && fitCanvas({ fitView }, reduced)} />
       </span>
+      <CanvasStyleButton testId="canvas-style-button" />
       <Popover
         label="Canvas legend"
         placement="bottom-end"
@@ -1121,22 +1126,40 @@ function CanvasTools(): ReactElement {
             <span className="legend-shape legend-warn">
               <Icon icon={Bell} size="sm" />
             </span>
-            Needs approval
+            Needs you
           </li>
           <li>
             <span className="legend-shape legend-ok">
               <Icon icon={CircleCheck} size="sm" />
             </span>
-            Done
+            Finished
           </li>
           <li>
             <span className="legend-shape legend-bad">
               <Icon icon={TriangleAlert} size="sm" />
             </span>
-            Error
+            Failed
           </li>
           <li>
             <span className="legend-shape">
+              <span className="legend-selected" />
+            </span>
+            Selected
+          </li>
+          <li>
+            <span className="legend-shape legend-wide">
+              <span className="legend-folded" aria-hidden="true">3 done</span>
+            </span>
+            Folded finished agents
+          </li>
+          <li>
+            <span className="legend-shape legend-wide">
+              <span className="legend-report" />
+            </span>
+            Reporting line
+          </li>
+          <li>
+            <span className="legend-shape legend-wide">
               <span className="legend-line" />
             </span>
             Message between agents
