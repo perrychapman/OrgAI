@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { baseName, installTitle, isCdSegment, isHiddenCommand, mergeTitle, oneLine, permissionTitle, proposalTitle, questionTitle, rulesTitle, shellAction, shellSegments } from './decisionTitle'
+import { baseName, installTitle, isCdSegment, isHiddenCommand, mergeTitle, oneLine, permissionTitle, proposalKindLabel, proposalTitle, questionTitle, rulesTitle, shellAction, shellSegments } from './decisionTitle'
 
 describe('decisionTitle', () => {
   it('names the action for a shell command and uses the first line', () => {
@@ -82,5 +82,11 @@ describe('decisionTitle', () => {
     expect(proposalTitle('orgChart')).toBe('Approve org chart proposal')
     expect(mergeTitle('engineer-1')).toBe("Merge engineer-1's changes")
     expect(installTitle('docs')).toBe('Install docs')
+  })
+  it('labels the architecture proposal per project kind', () => {
+    expect(proposalKindLabel('architecture', 'engagement')).toBe('Engagement plan')
+    expect(proposalKindLabel('architecture', 'code')).toBe('Architecture')
+    expect(proposalKindLabel('architecture')).toBe('Architecture')
+    expect(proposalKindLabel('orgChart', 'engagement')).toBe('Org chart')
   })
 })

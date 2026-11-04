@@ -1,5 +1,5 @@
-// SPENDS TOKENS. Drives the AI-driven setup flow against a fixture repo: create the project in "Existing repository"
-// mode (or "New idea" with --new), approve the architecture, send the org chart back once with feedback, approve the
+// SPENDS TOKENS. Drives the AI-driven setup flow against a fixture repo: create a Code project (createProject picks the
+// "Code project" kind card first) in "Existing code" mode (or "New idea" with --new), approve the architecture, send the org chart back once with feedback, approve the
 // rest, then check what was applied to the project and the repository. Usage: node e2e/setup.mjs --yes [--new]
 import * as fs from 'node:fs'
 import * as path from 'node:path'
