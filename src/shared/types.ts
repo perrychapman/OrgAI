@@ -4355,14 +4355,19 @@ export interface McpServerSpec {
    * project key `mcp:<projectId>:<serverId>:{env|header}:<name>`; the entry's own values are never used for those
    * links (no fallback: one client's credential never reaches another client's runs). Missing = the link uses the
    * entry's values (unchanged behaviour). OAuth tokens stay with the entry either way. Refused on connector entries.
-   * Proposals and installs never set or clear it (an approved redefinition keeps the stored value).
+   * Proposals and installs never set or clear it (an approved redefinition keeps the stored value). On
+   * mcpLibrary:upsert: true sets it, false clears it, absent KEEPS the stored value (a form that does not know the
+   * field never turns it off). Stored and returned only as true. While set, the entry takes no env / header values of
+   * its own (mcpLibrary:setSecret and library-scope proposal secrets refuse them; turning it on deletes any stored
+   * ones) and its McpLibraryInfo.missingSecrets is empty (see projectSecrets).
    */
-  perProjectSecrets?: true
+  perProjectSecrets?: boolean
   /**
    * Library entries only (user-set, like perProjectSecrets): names of NON-secret env vars (stdio) or headers (http /
    * sse) a linking project may override, e.g. a tenant base URL. At most MCP_PER_PROJECT_ENV_MAX valid env / header
    * names, none a secret slot, none credential-like (authorization, cookie, *token*, *secret*, *password*, *key*...)
-   * and none that changes what runs (NODE_OPTIONS, PATH, LD_*, *_PROXY ...). Refused on connector entries.
+   * and none that changes what runs (NODE_OPTIONS, PATH, LD_*, *_PROXY ...). Refused on connector entries. On
+   * mcpLibrary:upsert: absent KEEPS the stored list, [] clears it.
    */
   perProjectEnv?: string[]
   /**
