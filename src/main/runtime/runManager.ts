@@ -46,7 +46,7 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
@@ -70,11 +70,11 @@ import { projectRulesFile, readEngagementDocument } from '../store/projectData'
 /**
  * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
  * engagement isolates (git worktrees) only on an explicit true; a code project is on unless explicitly false.
- * (Mirrors shared isolateWritersOn; swap at merge.)
+ * Code projects pass through untouched; engagements get the explicit isolateWritersOn value.
  */
 function noFolderWrites(p: Project): Project {
   if (writesToProjectFolder(p)) return p
-  const on = p.isolateWriters === true
+  const on = isolateWritersOn(p)
   return p.isolateWriters === on ? p : { ...p, isolateWriters: on }
 }
 import { allowedDirectoryRisk } from './allowedDirectories'
