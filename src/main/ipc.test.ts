@@ -18,6 +18,19 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs'
 const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
+const { mcpCopyArgs } = await import('./ipc')
+
+describe('mcpCopyArgs (mcp:copyFromLibrary)', () => {
+  it('rebuilds the three fields and drops the rest', () => {
+    expect(mcpCopyArgs({ projectId: 'p_1', serverId: 'mcp-1', copySecrets: false, extra: 'x', roles: ['a'] })).toEqual({ projectId: 'p_1', serverId: 'mcp-1', copySecrets: false })
+  })
+  it('refuses a wrong shape', () => {
+    for (const bad of [null, undefined, 'x', [], {}, { projectId: 'p', serverId: 's' }, { projectId: 'p', serverId: 's', copySecrets: 'true' }, { projectId: '../x', serverId: 's', copySecrets: true }, { projectId: 'p', serverId: '', copySecrets: true }, { projectId: 5, serverId: 's', copySecrets: true }]) {
+      expect(() => mcpCopyArgs(bad), JSON.stringify(bad)).toThrow('Invalid copy request.')
+    }
+  })
+})
+
 describe('openPathRefusal (app:openPath)', () => {
   const root = mkdtempSync(join(tmpdir(), 'orgai-open-'))
   const data = join(root, 'data')

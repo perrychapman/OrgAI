@@ -91,6 +91,8 @@ import type {
   TeamReviewInput
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
+import type { McpCopyFromLibraryInput } from '@shared/types'
+import { MCP_SCOPE_IPC } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
@@ -835,6 +837,9 @@ function registerMcpIpc(
   ipcMain.handle(IPC.connectorsSetToken, (_e, input: unknown): McpLibraryInfo => mcp.connectorsSetToken(connectorArgs.setToken(input)))
   ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
   ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
+
+  // ---- MCP per-project secrets and custom connector presets ----
+  ipcMain.handle(MCP_SCOPE_IPC.mcpCopyFromLibrary, (_e, input: unknown) => mcp.copyFromLibrary(mcpCopyArgs(input)))
 }
 
 /**
@@ -1000,6 +1005,17 @@ export const connectorArgs = {
     if (i.token.length > CONNECTOR_TOKEN_MAX_CHARS) throw new Error(`The token is too long (at most ${CONNECTOR_TOKEN_MAX_CHARS} characters).`)
     return { connectorId: i.connectorId, token: i.token }
   }
+}
+
+/**
+ * mcp:copyFromLibrary input rebuilt field by field: a plain object with projectId and serverId matching SAFE_ID and a
+ * boolean copySecrets; extra fields are dropped, anything else is refused. Exported for tests.
+ */
+export function mcpCopyArgs(input: unknown): McpCopyFromLibraryInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid copy request.')
+  const i = input as Record<string, unknown>
+  if (!isSafeId(i.projectId) || !isSafeId(i.serverId) || typeof i.copySecrets !== 'boolean') throw new Error('Invalid copy request.')
+  return { projectId: i.projectId, serverId: i.serverId, copySecrets: i.copySecrets }
 }
 
 /** Longest permission rule accepted over IPC (permissions:add / permissions:remove). */
