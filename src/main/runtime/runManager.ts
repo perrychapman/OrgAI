@@ -1180,6 +1180,14 @@ export class RunManager {
         const r = resolveAllowedDirectories(live.referenceDirectories, { projectPath: live.path, dataDir: this.options.dataDir })
         // A folder that is also an allowed folder stays writable: it is only in allowedDirectories().
         refDirs = r.dirs.filter((d) => !allowedDirs.some((a) => samePath(a, d)))
+        for (const ref of refDirs) {
+          for (const a of allowedDirs) {
+            const key = `contains:${a}|${ref}`
+            if (warnedMissing.has(key) || !isInsideEither(a, ref)) continue
+            warnedMissing.add(key)
+            log.info(`Run ${summary.id}: ${a} contains reference folder ${ref}; edits there stay refused.`)
+          }
+        }
         for (const m of r.missing) {
           if (warnedMissing.has(m)) continue
           warnedMissing.add(m)

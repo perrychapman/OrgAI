@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { PROFILE_DOCUMENTS_MAX, type ProjectProfile } from '@shared/types'
@@ -42,6 +42,32 @@ describe('profileRepo', () => {
     const p = await profileRepo(root)
     expect(p.agentDefinitions).toEqual(['.orgai/org.json', '.claude/agents', '.codex/agents'])
     expect(renderProfile(p)).toContain('Agent definitions present: .orgai/org.json, .claude/agents, .codex/agents.')
+  })
+
+  it('skips symlinks and junctions and reads key files with a bound', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'orgai-profile-out-'))
+    try {
+      writeFileSync(join(outside, 'secret-notes.md'), 'outside secret')
+      put('README.md', 'x'.repeat(50_000))
+      let linked = true
+      try {
+        symlinkSync(outside, join(root, 'linked'), 'junction')
+        symlinkSync(join(outside, 'secret-notes.md'), join(root, 'brief-link.md'))
+      } catch {
+        linked = false
+      }
+      const p = await profileRepo(root, 'engagement')
+      if (linked) {
+        expect(p.tree).not.toContain('linked')
+        expect(p.tree).not.toContain('brief-link')
+        expect(p.keyFiles.some((f) => f.content.includes('outside secret'))).toBe(false)
+      }
+      const readme = (await profileRepo(root)).keyFiles.find((f) => f.path === 'README.md')
+      expect(readme?.content.length).toBeLessThan(6100)
+      expect(readme?.content).toContain('(truncated)')
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('treats a file path like a missing directory', async () => {

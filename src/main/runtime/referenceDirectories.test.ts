@@ -65,6 +65,7 @@ describe('referenceEditDenial', () => {
   it('fails closed on a missing or non-string path when reference folders exist', () => {
     expect(referenceEditDenial('Edit', {}, [ref])).toContain('reference folder')
     expect(referenceEditDenial('Write', { file_path: 42 }, [ref])).toContain('names no file path')
+    expect(referenceEditDenial('Write', { file_path: `${join(work, 'a.md')}\0x` }, [ref])).toContain('NUL')
     expect(referenceEditDenial('MultiEdit', null, [ref])).toContain('reference folder')
   })
   it('reads notebook_path for NotebookEdit', () => {

@@ -155,12 +155,13 @@ export function checkProjectPath(path: unknown, fs: PathFs = nodeFs): ProjectPat
  * Why projects:create must refuse this input, or null. A path must be given and must not be a file; an
  * existing-repository project needs a folder that exists. A new idea may name a folder that does not exist yet.
  */
-export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupKind'>, check: ProjectPathCheck): string | null {
+export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupKind'> & { kind?: unknown }, check: ProjectPathCheck): string | null {
   const path = cleanProjectPath(input.path)
   if (!path) return 'Choose a folder for the project.'
   if (!isAbsolute(path) && !/^[a-zA-Z]:[\\/]/.test(path)) return `Use a full path, for example ${process.platform === 'win32' ? 'C:\\Projects\\shop' : '/Users/you/projects/shop'}.`
   if (check.exists && !check.isDirectory) return `${path} is a file, not a folder. Choose the project's folder.`
   if (input.setupKind === 'existing' && !check.exists) return `There is no folder at ${path}. Check the path, or choose "New idea" to start in a new folder.`
+  if (input.kind === 'engagement' && !check.exists) return "Choose an existing folder for the engagement's working files."
   return null
 }
 
@@ -281,7 +282,7 @@ export function cleanClient(raw: unknown): string | undefined {
   }
   let text = raw.trim()
   if (!text) return undefined
-  if (hiddenCharIn(text, { prose: true })) {
+  if (hiddenCharIn(text) || /[\r\n\t\u2028\u2029]/.test(text)) {
     console.debug('client: dropped a value with a hidden character')
     return undefined
   }
@@ -479,6 +480,9 @@ export class ProjectStore {
     const stored = this.get(project.id)
     if (!stored) throw new Error('Project not found')
     const next: Project = reconcileNearLimitProject(stored, { ...project })
+    // A renderer may never change a project's kind (it selects the rules file and where OrgAI writes).
+    if (stored.kind !== undefined) next.kind = stored.kind
+    else delete next.kind
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers
     if (stored.plugins !== undefined) next.plugins = stored.plugins
