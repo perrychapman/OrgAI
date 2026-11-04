@@ -1,4 +1,4 @@
-import type { Project, ProjectKind, QuickRunInfo, Role } from '@shared/types'
+import type { Project, ProjectKind, QuickRunInfo, Role, RunTeam } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { CHAT_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
@@ -55,6 +55,12 @@ export interface PromptFlags {
    * (user-approved content, not untrusted data). Missing = none.
    */
   engagementDocument?: string
+  /**
+   * Single-agent work run of a stored project (RunSummary.team 'single'). Adapters pass
+   * `...(ctx.run.team ? { team: ctx.run.team } : {})`. The root gets the single-assistant paragraph instead of the
+   * org-chart ones (org changes, cross-run messaging, MCP installs, skill configuration). Missing = the org chart.
+   */
+  team?: RunTeam
 }
 
 /** The roles this role may delegate to. */

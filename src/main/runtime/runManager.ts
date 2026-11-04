@@ -31,6 +31,7 @@ import type {
   SkillContent,
   EngagementNote,
   EngagementNoteContent,
+  RunTeam,
   Proposal,
   ProposalDecision,
   ProposalOutcome,
@@ -618,6 +619,11 @@ export interface StartInput {
   quick?: QuickRunInfo
   /** MCP assistant runs with allowBuild: the per-run scratch dir the session works in (RunSummary.buildWorkspace). */
   buildWorkspace?: string
+  /**
+   * Work runs of a stored project only: 'single' runs one assistant built from the project (RunSummary.team).
+   * Refused on setup-like runs, quick runs and virtual projects. Continuations carry it from the run they continue.
+   */
+  team?: RunTeam
 }
 
 /**
