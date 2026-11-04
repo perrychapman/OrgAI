@@ -26,6 +26,12 @@ const noHScroll = async (what) => {
   check(ov.sw <= ov.cw, `no horizontal scroll: ${what}`, JSON.stringify(ov))
 }
 const focused = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName ?? '')
+/** True once focus is on the element with this test id (bounded wait: focus moves in a timer or frame after the render). The check still fails when it never arrives. */
+const focusOn = (testid, ms = 5_000) =>
+  page.waitForFunction((t) => document.activeElement?.getAttribute('data-testid') === t, testid, { timeout: ms }).then(
+    () => true,
+    () => false
+  )
 async function openPane() {
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
@@ -67,14 +73,14 @@ try {
   // ---- add a remote preset ----
   await page.locator('[data-testid=preset-add]').click()
   await form().waitFor({ timeout: 10_000 })
-  check((await focused()) === 'preset-name', 'the form opens on the Name field', await focused())
+  check(await focusOn('preset-name'), 'the form opens on the Name field', await focused())
   await form().locator('[data-testid=preset-save]').click()
   check((await field('preset-name').getAttribute('aria-invalid')) === 'true', 'saving without a name marks the Name field invalid')
   // The form moves focus in a setTimeout(0) after the render that sets aria-invalid, so wait for it (slow runners).
   await page
     .waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'preset-name', null, { timeout: 5_000 })
     .catch(() => {})
-  check((await focused()) === 'preset-name', 'focus goes to the first invalid field', await focused())
+  check(await focusOn('preset-name'), 'focus goes to the first invalid field', await focused())
   await field('preset-name').fill('Acme CRM')
   await field('preset-description').fill('Customer records from the Acme system')
   await form().locator('[data-testid=preset-category] select').selectOption('crm')
@@ -149,7 +155,7 @@ try {
   await form().waitFor({ state: 'detached', timeout: 10_000 })
   await sleep(300)
   check(((await tile('acme-crm').locator('.connector-desc').textContent()) ?? '').includes('edited'), 'the tile shows the edited description')
-  check((await focused()) === 'connector-action', 'focus returns to the tile button after the form closes', await focused())
+  check(await focusOn('connector-action'), 'focus returns to the tile button after the form closes', await focused())
 
   // ---- edit from the section: unsaved changes ask first ----
   await r.locator('[data-testid=preset-edit]').click()
@@ -240,12 +246,12 @@ try {
   await row('local-notes').locator('[data-testid=preset-edit]').focus()
   await page.keyboard.press('Enter')
   await form().waitFor({ timeout: 10_000 })
-  check((await focused()) === 'preset-name', 'Enter on Edit opens the form on the Name field', await focused())
+  check(await focusOn('preset-name'), 'Enter on Edit opens the form on the Name field', await focused())
   await page.keyboard.press('Tab')
-  check((await focused()) === 'preset-description', 'Tab moves to What it does', await focused())
+  check(await focusOn('preset-description'), 'Tab moves to What it does', await focused())
   await closeFormWithEscape()
   await form().waitFor({ state: 'detached', timeout: 10_000 })
-  check((await focused()) === 'preset-edit', 'focus returns to Edit after the form closes', await focused())
+  check(await focusOn('preset-edit'), 'focus returns to Edit after the form closes', await focused())
 
   // ---- clean up: remove the added service, then the presets ----
   await tile('acme-crm').locator('[data-testid=connector-action]').click()
@@ -257,11 +263,11 @@ try {
   await confirmTop('Remove preset')
   await row('acme-crm').waitFor({ state: 'detached', timeout: 10_000 })
   check(true, 'after removing the service the preset can be removed')
-  check((await focused()) === 'preset-edit', 'focus lands on the next row\'s Edit after a removal', await focused())
+  check(await focusOn('preset-edit'), 'focus lands on the next row\'s Edit after a removal', await focused())
   await removePreset('local-notes')
   await confirmTop('Remove preset')
   await page.locator('[data-testid=presets-empty]').waitFor({ timeout: 10_000 })
-  check((await focused()) === 'preset-add', 'focus lands on "Add a preset" when none are left', await focused())
+  check(await focusOn('preset-add'), 'focus lands on "Add a preset" when none are left', await focused())
   check((await chip('custom').count()) === 0, 'the Yours chip goes with the last preset')
 } catch (e) {
   check(false, 'presets flow ran without throwing', e.stack ?? String(e))

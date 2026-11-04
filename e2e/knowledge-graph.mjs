@@ -210,7 +210,7 @@ try {
   await shot('graph-legend-1600-dark')
   await page.keyboard.press('Escape')
   await sleep(300)
-  check((await activeTestId()) === 'knowledge-graph-legend-trigger', 'Esc closes the legend and focus returns to its button', await activeTestId())
+  check(await until(async () => (await activeTestId()) === 'knowledge-graph-legend-trigger'), 'Esc closes the legend and focus returns to its button', await activeTestId())
 
   // ======== 4. Show all ========
   const all = page.locator('[data-testid=knowledge-graph-all]')
