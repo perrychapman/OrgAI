@@ -229,6 +229,26 @@ export interface RuntimeContext {
    */
   allowedRules?(): string[]
   /**
+   * The project's saved allow rules alone (no run grants), re-read at each call from wherever the project keeps them
+   * (store/projectData.ts projectRulesFile: .claude/settings.local.json for code projects, OrgAI's data folder for
+   * engagements). Adapters use it instead of `listRules(ctx.project.path)` (Claude options.allowedTools, Codex and
+   * mock fallbacks). Missing on trust-restricted runs = none.
+   */
+  savedRules?(): string[]
+  /**
+   * Save "Always allow for project" rules where the project keeps them (see savedRules); returns the full list and
+   * the rules that were new (permissionRules.ts addRulesReport). permissionRules.ts applyAllowScope calls it through
+   * AllowScopePersist, so adapters pass it with allowDirectories / acceptEditsForProject. Missing on
+   * trust-restricted runs: nothing persists.
+   */
+  saveProjectRules?(rules: string[]): { rules: string[]; added: string[] }
+  /**
+   * Engagements: the approved engagement document's text (store/projectData.ts readEngagementDocument, at most
+   * ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS plus a truncation note), read at call time; undefined for code projects or
+   * before one is approved. Adapters pass it as PromptFlags.engagementDocument.
+   */
+  engagementDocument?(): string | undefined
+  /**
    * Extra folders agents may read and edit like the project folder: Project.allowedDirectories resolved by RunManager
    * at run start (existing directories only, canonical, never touching OrgAI's data folder in either direction, never
    * the project folder or a folder inside it). Live: folders added during the run through allowDirectories appear at

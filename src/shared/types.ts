@@ -451,11 +451,22 @@ export const PROJECT_ALLOWED_DIRECTORY_MAX_CHARS = 1024
 export const PROJECT_REFERENCE_DIRECTORIES_MAX = PROJECT_ALLOWED_DIRECTORIES_MAX
 /** Longest path accepted in `Project.referenceDirectories`. */
 export const PROJECT_REFERENCE_DIRECTORY_MAX_CHARS = PROJECT_ALLOWED_DIRECTORY_MAX_CHARS
+/** Longest `Project.client` kept. */
+export const PROJECT_CLIENT_MAX_CHARS = 120
+/** Most characters of the engagement document put into each agent's prompt (a truncation note follows). */
+export const ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS = 16_000
+
+/** Where a project's saved "always allow" rules live: the project folder's .claude/settings.local.json, or OrgAI's data folder. */
+export type ProjectRulesLocation = 'folder' | 'app'
 
 /**
  * What a project is for. 'code': a software repository (the original OrgAI project). 'engagement': client or
  * practice work in any field: a working folder for deliverables (often not git), read-only reference folders, and
- * the Architect specialises the neutral engagement chart from its interview. Industry-neutral by design: no built-in
+ * the Architect specialises the neutral engagement chart from its interview. OrgAI writes nothing into an engagement's
+ * working folder (it is often a share the client can see): the engagement document lives at
+ * `<data>/projects/<id>/ENGAGEMENT.md` and reaches agents through their prompt, saved rules at
+ * `<data>/projects/<id>/permission-rules.json`, no CLAUDE.md, no .orgai/, and writers never run in git worktrees
+ * (no .git/info/exclude edit). Industry-neutral by design: no built-in
  * role, prompt or label names a field of work. Read it only through defaults.ts `projectKindOf` (missing = 'code').
  */
 export type ProjectKind = 'code' | 'engagement'
@@ -485,6 +496,13 @@ export interface Project {
    * duplicates collapse); a folder listed in both lists stays only in allowedDirectories. The folders need not exist.
    */
   referenceDirectories?: string[]
+  /**
+   * Engagements: who the work is for, in the user's own words (plain text, no category list), so the renderer can
+   * group engagements by client. At most PROJECT_CLIENT_MAX_CHARS; ProjectStore trims it on save and read, drops it
+   * when empty, not a string or holding control, zero-width, bidi or other hidden characters. The engagement
+   * Architect asks for it and propose_settings may set it.
+   */
+  client?: string
   /**
    * Extra folders, absolute paths, that agents may read and edit like the project folder (passed to the provider as
    * additional working directories; edits there follow the project's permission mode). At most
@@ -1771,7 +1789,10 @@ export interface ProjectSetup {
   state: SetupState
   profile?: ProjectProfile
   architecture?: ArchitectureSpec
-  /** Repo-relative path of the architecture document written on approval. */
+  /**
+   * Repo-relative path of the architecture document written on approval (code projects). Unset for engagements: their
+   * document is in OrgAI's data folder (`<data>/projects/<id>/ENGAGEMENT.md`) and is never written to the folder.
+   */
   architecturePath?: string
   /** The Architect's closing summary. */
   summary?: string
@@ -1800,8 +1821,14 @@ export interface SettingsProposalPayload {
   autoContinue?: boolean
   /** Automatic continues allowed per run. */
   maxAutoContinues?: number
-  /** Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Merged into .claude/settings.local.json. */
+  /**
+   * Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Saved where the project keeps its rules
+   * (defaults.ts `projectRulesLocation`): .claude/settings.local.json for code projects, OrgAI's data folder for
+   * engagements.
+   */
   allowRules?: string[]
+  /** Engagements: the client's name in the user's own words (Project.client rules; '' clears it). */
+  client?: string
   rationale: string
 }
 

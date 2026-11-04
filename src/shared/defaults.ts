@@ -15,6 +15,7 @@ import type {
   PermissionMode,
   Project,
   ProjectKind,
+  ProjectRulesLocation,
   ProviderAuth,
   ProviderConnections,
   ProviderId,
@@ -56,9 +57,26 @@ export function projectKindLabel(kind: ProjectKind): string {
   return kind === 'engagement' ? 'Engagement' : 'Project'
 }
 
-/** Project-relative path of the charter document the harness writes on approval: ARCHITECTURE.md or ENGAGEMENT.md. */
+/**
+ * The charter document the harness writes on approval. Code: '.orgai/ARCHITECTURE.md', relative to the project folder.
+ * Engagement: 'ENGAGEMENT.md', the file name inside `<data>/projects/<id>/` (main: store/projectData.ts
+ * `engagementDocumentFile`); nothing is written to an engagement's folder.
+ */
 export function projectDocumentPath(kind: ProjectKind): string {
-  return kind === 'engagement' ? '.orgai/ENGAGEMENT.md' : '.orgai/ARCHITECTURE.md'
+  return kind === 'engagement' ? 'ENGAGEMENT.md' : '.orgai/ARCHITECTURE.md'
+}
+
+/**
+ * Whether OrgAI may write its own files into the project folder (.orgai/, CLAUDE.md, .claude/settings.local.json,
+ * .git/info/exclude, git worktrees). False for engagements: their folder is often a share the client can see.
+ */
+export function writesToProjectFolder(project: { kind?: unknown } | null | undefined): boolean {
+  return projectKindOf(project) !== 'engagement'
+}
+
+/** Where the project's saved allow rules live: 'folder' (.claude/settings.local.json) or 'app' (OrgAI's data folder). */
+export function projectRulesLocation(project: { kind?: unknown } | null | undefined): ProjectRulesLocation {
+  return writesToProjectFolder(project) ? 'folder' : 'app'
 }
 
 /** How prompts name that document: "the architecture document" / "the engagement document". */

@@ -49,6 +49,12 @@ export interface PromptFlags {
    * setup, not quick) gain one sentence naming them, for writing and reading roles alike. Missing or empty = none.
    */
   referenceDirectories?: string[]
+  /**
+   * Engagements: the approved engagement document's text (RuntimeContext.engagementDocument()). Adapters pass
+   * `engagementDocument: ctx.engagementDocument?.()`. Work-run prompts include it as the agreed engagement document
+   * (user-approved content, not untrusted data). Missing = none.
+   */
+  engagementDocument?: string
 }
 
 /** The roles this role may delegate to. */
