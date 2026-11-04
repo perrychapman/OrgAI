@@ -787,6 +787,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Keyboard zoom while the canvas has focus: + / - and 0 to fit (the toolbar buttons do the same).
   const onCanvasKey = (e: React.KeyboardEvent): void => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
+    // Enter / Space on a focused node select it even when it already looks selected (a done group holding the
+    // selected agent): React Flow only emits a 'select' change for an unselected node. Buttons inside a node keep the key.
+    const target = e.target as HTMLElement
+    if ((e.key === 'Enter' || e.key === ' ') && target.classList.contains('react-flow__node')) {
+      const nodeId = target.getAttribute('data-id')
+      if (nodeId && useAppStore.getState().selectedAgentId !== nodeId) selectAgent(nodeId)
+      return
+    }
     if (e.key === '+' || e.key === '=') void zoomIn({ duration: reducedMotion ? 0 : 150 })
     else if (e.key === '-' || e.key === '_') void zoomOut({ duration: reducedMotion ? 0 : 150 })
     else if (e.key === '0' && !stageHidden()) void fitView(fitOpts({ duration: reducedMotion ? 0 : 150 }))

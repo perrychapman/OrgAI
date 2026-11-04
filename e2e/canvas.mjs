@@ -346,6 +346,29 @@ try {
   const pills = await page.locator(`${STAGE} .agent-node`).evaluateAll((els) => els.map((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })))
   check(pills.length === 4 && pills.every((p) => p.s === 'compact' && Math.abs(p.w - 160) <= 1 && Math.abs(p.h - 40) <= 1), 'name tags are data-style=compact and 160 x 40', JSON.stringify(pills))
   check(!!(await page.locator(`${STAGE} .agent-node`).first().getAttribute('title')), 'a name tag carries the card text in its tooltip')
+  // H1 (ux-review-canvas-themes-2): the tag shows the handle (the tooltip's first line), so two reports of one role differ.
+  const tags = await page.locator(`${STAGE} .react-flow__node`).evaluateAll((els) =>
+    els
+      .filter((e) => (e.getAttribute('data-id') ?? '').startsWith('mock-lead-report'))
+      .map((e) => {
+        const n = e.querySelector('.agent-node .name')
+        return { text: (n?.textContent ?? '').replace(/\s+/g, ''), first: (e.querySelector('.agent-node')?.getAttribute('title') ?? '').split('\n')[0] }
+      })
+  )
+  check(
+    tags.length === 2 && tags[0].text !== tags[1].text && tags.every((t) => t.text.split('…').every((part) => t.first.includes(part))),
+    'name tags show each report\'s handle, so two reports of one role read differently',
+    JSON.stringify(tags)
+  )
+  // H1: Enter on a focused node selects it (keyboard users reach the side panel).
+  await page.locator(`${STAGE} .react-flow__node[data-id="mock-lead"]`).focus()
+  await page.keyboard.press('Enter')
+  await sleep(300)
+  check((await page.locator(`${STAGE} .react-flow__node[data-id="mock-lead"] .agent-node.selected`).count()) === 1, 'Enter on a focused name tag selects it')
+  await page.locator(`${STAGE} .react-flow__node[data-id="${rootId}"]`).focus()
+  await page.keyboard.press('Space')
+  await sleep(300)
+  check((await page.locator(`${STAGE} .react-flow__node[data-id="${rootId}"] .agent-node.selected`).count()) === 1, 'Space on a focused name tag selects it')
   await fold.click()
   await sleep(900)
   const grp = await page.locator(`${STAGE} [data-testid=done-group]`).first().evaluate((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })).catch(() => null)

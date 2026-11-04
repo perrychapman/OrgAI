@@ -251,8 +251,8 @@ light) and the edge in `--canvas-edge-group`; "3 done", " · 1 failed" (`--dange
 
 Team editor role node: the same tile with initials and the role name.
 
-Open question (hex): a selected root differs from an unselected root only by the drop shadow, which is weak on the dark
-backdrops. If the UX walk finds it hard to see, give the selected root's name the selected pill treatment.
+Resolved (hex selected root): no shadow token fits a clipped tile, so selection grows the fill inset instead: 3 px
+normally, 5 px for the root, 7 px when selected (root included), which reads as a thicker edge on every backdrop.
 
 ### 4d. Adding styles
 
@@ -351,10 +351,12 @@ select, Home / End jump. Grid `repeat(auto-fill, minmax(220px, 1fr))`. Each opti
   (`CanvasPreview`) uses the real station and hex nodes and lines.
 - Label (`--text-title-sm`, 600) and the preset's `description` (`--text-small`, `--text-secondary`, two lines max).
 - Checked: 2 px `--accent-text` border and a check icon at the top right. Focus: the standard `:focus-visible` ring.
-- Options are `AVAILABLE_PRESETS` in contract order (phase B: Blueprint, Constellation, Subway, Mission control,
-  Paper, Hive).
-  Picking one calls `applyCanvasPreset` (the minimap is kept), applies at once through `setAppearance` and saves.
-- "Custom" (`data-preset="custom"`) is rendered, checked, only when `shownPreset()` is undefined. Its thumbnail has no
+- Options are "Default" first (`data-preset="default"`, renderer-only: the `DEFAULT_APPEARANCE` canvas, checked when
+  pattern, edges, layout, node style and tint equal it; added after `ux-review-canvas-themes-2.md` M2), then
+  `AVAILABLE_PRESETS` in contract order (phase B: Blueprint, Constellation, Subway, Mission control, Paper, Hive).
+  Picking one calls `applyCanvasStyle` (`applyCanvasPreset` or `applyDefaultCanvas`; the minimap is kept), applies at
+  once through `setAppearance` and saves.
+- "Custom" (`data-preset="custom"`) is rendered, checked, only when `shownStyle()` is undefined. Its thumbnail has no
   `data-canvas-thumb` (it shows the current settings). Description: "Your own mix. Change it under Customise."
 
 Customise: a disclosure button "Customise" (`data-testid="canvas-customise"`, `aria-expanded`, `aria-controls`),
@@ -500,8 +502,9 @@ the hex tile edge paint the raw role colour, not the `edgeStroke` mix. Against l
 (`#a3e635`) is about 1.4:1 on `--canvas-bg` (light Dots `#f4f5f9`) and about 1.5:1 on a white `--canvas-node-bg`,
 under the 3:1 target for graphical objects. The name pill, the badges and the line (3:1 through the mix) still
 identify the node and its state, so nothing is lost by colour alone, but the shape edge itself is faint. Dark is fine:
-the darkest role colour (`#7c5cff`) is about 4.0:1 on dark Blueprint and 4.5:1 on dark Dots. Proposed for the UX walk to
-confirm: paint these shapes with `edgeStroke(role)` as the lines do.
+the darkest role colour (`#7c5cff`) is about 4.0:1 on dark Blueprint and 4.5:1 on dark Dots. Resolved in the build:
+these shapes paint `--role-ink` (`color-mix(in srgb, var(--role) var(--canvas-edge-role-mix), var(--canvas-edge-ink))`,
+the same mix as the lines), so the line ratios above apply to them. Not measured in the app.
 
 ## 10. Implementation notes (phase A, UI Lead)
 
@@ -522,6 +525,36 @@ Not checked: custom accents other than the default (the focus ring follows `--ac
 derives per theme), custom role colours, and oklab vs sRGB rounding in the browser (the edge mix is specified in sRGB
 so the numbers above are what renders).
 
-## 11. Implementation notes (phase B)
+## 11. Implementation notes (phase B, UI Lead)
 
-Filled by the UI Lead after the build.
+- Numbers live in `lib/canvas.ts` (`stationGeometry`, `stationHandleStyle`, `HEX_TILE`, `HEX_GAP`, `ringStepFor`,
+  `reportingLineRole`); radial clipping and message sides in `lib/canvasShapes.ts`; `honeycombSnap` in `lib/layout.ts`
+  (flat-top lattice, cell (0,0) is the root, odd columns shifted down half a row; `radialLayout` gets a `packed` option
+  for hex so ring 1 lands on the neighbour cells instead of ring 2).
+- Station and hex share one block in `styles/run.css` (agent, group and role nodes); `editor.css` only resets the role
+  node's own box. Shapes use `--role-ink` (section 9). Root nodes carry `is-root`; stations carry `data-label`.
+- Done-group station handles meet the terminus bar's edge, not a 16 px circle.
+- The minimap still covers the bottom-left tile in the Team editor at 1024 x 640 (phase A note above, unchanged).
+- Station names are small at fit zoom in the Team editor at 1024 x 640 (open Low, as for cards in the re-walk).
+
+Fixes from `ux-review-canvas-themes-2.md`:
+
+- H1: every non-card style shows `agentLabel` (handle first) with a middle clip (`splitLabelTail`) so two reports of one
+  role read differently; the tooltip leads with the handle then the role name; the accessible name is "handle, role".
+  Enter and Space on a focused Live node select it (React Flow's 'select' NodeChange now calls `selectAgent`; the
+  done-group chevron stops the key so it expands instead). The Team editor already selected on both keys. e2e checks
+  the tag text and both keys on name tags.
+- H2: nodes carry hidden message handles on all four sides (`msg-out-<side>`, `msg-in-<side>`); `messageSides` picks the
+  pair facing each other along the axis with the most room between the boxes (a parent and child use the axis their
+  reporting line does not). Unit-tested and seen in the settings sample; the mock sends no agent messages, so a live
+  run's message edge is unverified, as is a radial message.
+- M1: `selected` wins over every state colour; a selected card gets a 4 px leading bar, a name tag a 3 px border, a done
+  group a solid border, role nodes the same, so selection never reads as the focus outline whatever the role colour.
+  Stations and hex tiles keep their state colour when selected (waiting, failed and finished stay readable on the
+  shape); their selection cue is shape-only: the name pill's role border on a station, a 7 px fill inset on a tile.
+- Enter / Space also select a node that already looks selected (a done group holding the selected agent), through the
+  canvas `onKeyDown` in LiveRunView, because React Flow emits no 'select' change for a selected node (review M-1).
+- M2: the "Default" gallery entry (section 7.1).
+- M3: in the one-column layout the preview is sticky at the top of the settings scroller (opaque, `--z-sticky`), and
+  the scroller has `scroll-padding-top` so a focused control is never under it. Two columns are unchanged.
+- M4: radial with cards fits no lower than zoom 0.7 (`lib/canvasFit.ts` `fitOptions`); the chart pans.

@@ -275,8 +275,8 @@ lib/theme.ts applies AppSettings.appearance to <html>. initTheme() runs in main.
 
 ### Canvas (themes, layouts, node styles)
 
-Spec `docs/design/canvas-themes.md` (phase A: node styles card and compact; station / hex and the Subway / Hive presets
-are phase B). Every React Flow canvas (Live run, Team editor, the settings sample) reads `useCanvasOptions()` and
+Spec `docs/design/canvas-themes.md` (phase A: node styles card and compact; phase B: station and hex, so every preset,
+Subway and Hive included, shows, plus a renderer-only "Default" gallery entry). Every React Flow canvas (Live run, Team editor, the settings sample) reads `useCanvasOptions()` and
 nothing else, draws `CanvasBackdrop` and `CanvasMinimap` inside `<ReactFlow>`, passes `data-layout` and
 `edgeTypes={CANVAS_EDGE_TYPES}`, lays out through `layoutCanvas`, and its node components call `useHandleRefresh`
 (React Flow re-measures handles only on resize, so a layout switch would leave edges on the old sides).
@@ -284,13 +284,24 @@ nothing else, draws `CanvasBackdrop` and `CanvasMinimap` inside `<ReactFlow>`, p
 - `src/renderer/src/lib/canvas.ts`: `useCanvasOptions`, `AVAILABLE_NODE_STYLES`, `AVAILABLE_PRESETS`, `shownPreset`,
   `effectiveNodeStyle`, `handlesFor`, `AGENT_NODE_SIZE` / `GROUP_NODE_SIZE`, `edgeStroke` (sRGB role/ink mix to hex),
   `minimapSize`, `useNodeDims` (controlled nodes keep measured sizes for the minimap), `useHandleRefresh`,
-  `ringStepFor`, `useReducedMotion`, `EDGE_TYPE`
-- `src/renderer/src/lib/layout.ts`: `layoutCanvas` (dagre TB / LR or `radialLayout` with ring guides)
-- `src/renderer/src/lib/canvasSample.ts` (the preview's sample graph) and `lib/canvasSettings.ts` (`canvasAfterPreset`,
-  `canvasAnnouncement`, `saveCanvas` for the toolbar popover)
+  `ringStepFor`, `useReducedMotion`, `EDGE_TYPE`; phase B: `stationGeometry(layout)` (top down 160 x 40, name beside;
+  else 120 x 64, name below; circle radius `STATION_RADIUS` 16), `stationHandleStyle` (handles on the circle edge),
+  `HEX_TILE` 120 x 104 / `HEX_GAP`, `agentNodeSize(style, layout)` / `groupNodeSize`, `reportingLineRole` (a station
+  line takes its lead's colour); the gallery's Default entry: `DEFAULT_STYLE_ID`, `CANVAS_STYLE_OPTIONS`, `shownStyle`,
+  `applyCanvasStyle`, `applyDefaultCanvas`, `styleLabel`
+- `src/renderer/src/lib/layout.ts`: `layoutCanvas` (dagre TB / LR or `radialLayout` with ring guides; with
+  `honeycomb` in radial, `honeycombSnap` snaps centres to a flat-top hex lattice and draws no rings)
+- `src/renderer/src/lib/canvasShapes.ts`: `exitPoint` (box, circle or hexagon clipping for RadialEdge), station line
+  constants, message handle ids (`msgHandleId`, `msg-out-<side>` / `msg-in-<side>`) and `messageSides` (each message
+  leaves and enters on the sides facing the other node); `lib/canvasFit.ts` `fitOptions` (radial cards fit no lower
+  than zoom 0.7)
+- `src/renderer/src/lib/canvasSample.ts` (the preview's sample graph) and `lib/canvasSettings.ts` (`canvasAnnouncement`,
+  `saveCanvas` for the toolbar popover)
 - `src/renderer/src/components/canvas/`: `CanvasBackdrop`, `CanvasMinimap`, `RadialEdge`, `CanvasPreview`,
   `CanvasThumb`, `CanvasPresetGroup`, `CanvasStyleButton`
-- `src/renderer/src/components/settings/CanvasSection.tsx`; styles `styles/canvas.css`, `styles/canvas-settings.css`
+- `src/renderer/src/components/settings/CanvasSection.tsx`; styles `styles/canvas.css`, `styles/canvas-settings.css`;
+  station and hex node styles live in `styles/run.css` (shared by agent, group and role nodes; shapes use `--role-ink`,
+  the role colour through the edge mix, for 3:1 on every backdrop)
 
 ### UI primitives
 
@@ -501,6 +512,7 @@ components/layout:
 
 ## Risks and gaps
 
+- Canvas phase B (review of 2026-11-03, open Lows): the settings scroller's `scroll-padding-top` repeats the preview's 160 px and applies in the two-column layout too; `honeycombSnap` rescans the whole square per ring (O(k^3), capped at 400 rings); adjacent honeycomb tiles leave an edge shorter than its arrow marker; a Live click calls `selectAgent` twice (idempotent). Message edges, radial messages and the `--role-ink` contrast are unverified in a live run (the mock sends no agent messages).
 - Application menu (ux-review-menu-2.md, open Mediums): M1 Go to decision only looks at the current project's run; M2 Team / Project settings on assistants, Org retrospective on live runs and Save chat as project on scratch chats announce instead of greying; M3 Ctrl+. works only on the Live view; M5 App settings counts as "no project" (sections greyed, Ctrl+T says "Open a project first.").
 - `useProjectSkills` keys its reload on skill ids, links, enabled flags and grants, so a store replace that changes only a skill's name or description does not refetch (a remount does); a mutation resolving after a project switch no longer applies to the wrong list.
 - Codex:
