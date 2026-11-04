@@ -13,9 +13,11 @@ asarUnpack:
   # The Codex app-server binary (resolveCodexBinary rewrites app.asar to app.asar.unpacked).
   - node_modules/@openai/codex-*/**
 npmRebuild: false
-# build/icon.png (512x512, from `npm run icon`) is converted to ICO/ICNS by electron-builder.
+# build/icon.png, icon.ico and icon.icns are generated together by `npm run icon` and committed. The top-level
+# PNG (1024) is the Linux icon; win and mac name their own multi-size files.
 icon: build/icon.png
 win:
+  icon: build/icon.ico
   target:
     - nsis
     - portable
@@ -45,7 +47,7 @@ mac:
   # Per-arch names so the arm64 and x64 jobs never collide: OrgAI-<version>-arm64.dmg, OrgAI-<version>-x64.zip.
   artifactName: ${productName}-${version}-${arch}.${ext}
   category: public.app-category.developer-tools
-  icon: build/icon.png
+  icon: build/icon.icns
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist

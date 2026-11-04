@@ -228,7 +228,8 @@ npm run dist:win    # build + electron-builder --win -> release/ (NSIS installer
 ```
 
 Output lands in `release/` (gitignored). If winCodeSign extraction fails for lack of symlink rights (Developer Mode
-off), set `signAndEditExecutable: false` in `electron-builder.yml`; the exe then keeps Electron's icon. Launch the
+off), set `signAndEditExecutable: false` in `electron-builder.yml`; the exe then keeps Electron's icon (it only gets
+the OrgAI icon from `build/icon.ico` while signAndEditExecutable is on and winCodeSign extracts). Launch the
 unpacked `OrgAI.exe`, create a project and confirm `claude` is found (the SDK's native CLI is in `asarUnpack`). No e2e
 covers the packaged app. macOS: [macos-testing.md](macos-testing.md) (untested on a Mac).
 

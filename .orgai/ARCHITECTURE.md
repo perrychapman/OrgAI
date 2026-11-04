@@ -260,8 +260,8 @@ Team assistant: window.orgai.capabilities.discover / recommend / cancel / apply 
 ### Brand assets
 
 - `src/renderer/src/assets/brand/`
-- `build/icon.png`
-- `scripts/make-icon.mjs`
+- `build/icon.png` (1024), `build/icon.ico` (16-256, Windows) and `build/icon.icns` (macOS, mark inset to ~80%), all committed
+- `scripts/make-icon.mjs` and `scripts/lib/icon.mjs` (SDF rasterizer, PNG/ICO/ICNS encoders; tested in `src/main/icon/makeIcon.test.ts`)
 
 ### Theme layer
 
@@ -332,7 +332,7 @@ components/layout:
 ### Scripts, e2e and packaging
 
 - SDK and provider smoke tests. They spend tokens, except smoke-litellm without --yes.
-- Icon generation.
+- Icon generation (`npm run icon`): writes `build/icon.png`, `build/icon.ico` and `build/icon.icns`, each size rendered natively and byte-reproducible. Commit all three together; electron-builder uses them as is (win.icon ico, mac.icon icns, linux png).
 - Electron e2e flows run against out/. e2e:free (package.json) runs layout, runs, proposals, maintenance, connections, connectors, import, skills, usage, team, assistants and permissions; none spends tokens.
 - electron-builder config, macOS entitlements, and the macOS first-test checklist.
 - electron-builder.yml mac targets carry no arch list (in electron-builder 26 an arch list overrides the --arm64/--x64 CLI flags). Mac artifacts are ${productName}-${version}-${arch}.${ext}.
