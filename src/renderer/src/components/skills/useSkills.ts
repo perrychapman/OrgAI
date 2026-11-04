@@ -18,6 +18,14 @@ export interface ProjectSkills {
   apply: (result: SkillMutationResult) => void
 }
 
+/** Value key over what the skills list depends on: skill ids, links, enabled flags and each role's skill grants. */
+function skillsKey(p: { skills?: { id: string; libraryId?: string; enabled?: boolean }[]; roles?: { id: string; skills?: string[] }[] } | undefined): string {
+  if (!p) return ''
+  const skills = (p.skills ?? []).map((k) => `${k.id}|${k.libraryId ?? ''}|${k.enabled === false ? 0 : 1}`).join(',')
+  const roles = (p.roles ?? []).map((r) => `${r.id}:${(r.skills ?? []).join('+')}`).join(',')
+  return `${skills};${roles}`
+}
+
 /** The skills of one project with their grants. Mutations also push the saved project (Role.skills changed) into the store. */
 export function useProjectSkills(projectId: string): ProjectSkills {
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -25,19 +33,20 @@ export function useProjectSkills(projectId: string): ProjectSkills {
   const [error, setError] = useState<string | null>(null)
   const seq = useRef(0)
 
-  // The store's copy of this project: a change to its skills or roles (an approved proposal, a grant, a library refresh) reloads the list.
-  const storeSkills = useAppStore((s) => s.projects.find((p) => p.id === projectId)?.skills)
-  const storeRoles = useAppStore((s) => s.projects.find((p) => p.id === projectId)?.roles)
-  const seen = useRef({ skills: storeSkills, roles: storeRoles })
-  /** References our own apply() pushed into the store: not a change to react to. */
-  const applied = useRef<{ skills: unknown; roles: unknown } | null>(null)
+  // The store's copy of this project, reduced to a value key (skill ids, links, enabled flags and role grants). Any change to
+  // skills or grants reloads the list (an approved proposal, a library refresh, a grant edit in the role inspector), while
+  // unrelated chart edits such as node drags leave the key, and so the selector result, unchanged.
+  const storeKey = useAppStore((s) => skillsKey(s.projects.find((p) => p.id === projectId)))
+  const seen = useRef<{ projectId: string; key: string }>({ projectId, key: storeKey })
+  /** The key of the project our own apply() pushed into the store: not a change to react to. */
+  const applied = useRef<string | null>(null)
 
   const apply = useCallback((result: SkillMutationResult): void => {
     seq.current++
     setSkills(result.skills)
     setError(null)
     setLoading(false)
-    applied.current = { skills: result.project.skills, roles: result.project.roles }
+    applied.current = skillsKey(result.project)
     useAppStore.getState().replaceProject(result.project)
   }, [])
 
@@ -66,13 +75,13 @@ export function useProjectSkills(projectId: string): ProjectSkills {
 
   useEffect(() => {
     const prev = seen.current
-    seen.current = { skills: storeSkills, roles: storeRoles }
-    if (prev.skills === storeSkills && prev.roles === storeRoles) return
-    const mine = applied.current
-    if (mine && mine.skills === storeSkills && mine.roles === storeRoles) return
+    seen.current = { projectId, key: storeKey }
+    // A project switch is fetched by the effect above, once.
+    if (prev.projectId !== projectId || prev.key === storeKey) return
+    if (applied.current === storeKey) return
     // Background reload: keeps the list and `loading` as they are.
     void reload()
-  }, [storeSkills, storeRoles, reload])
+  }, [projectId, storeKey, reload])
 
   const mutate = useCallback(
     async (fn: () => Promise<SkillMutationResult>): Promise<SkillMutationResult> => {
