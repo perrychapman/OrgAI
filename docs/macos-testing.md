@@ -20,7 +20,7 @@ npm run typecheck && npm test && npm run build
 
 ## 3. Dev smoke
 
-`npm run dev` from Terminal, then check: the window opens, the menu bar shows OrgAI / Edit / View / Window, Cmd+C / Cmd+V / Cmd+A work in a text field, Cmd+Q quits, closing the window keeps the app in the Dock and clicking the Dock icon reopens it, and the dark and light themes both render.
+`npm run dev` from Terminal, then check: the window opens, the menu bar shows OrgAI / Edit / View / Window, Cmd+C / Cmd+V / Cmd+A work in a text field, Cmd+Q quits, closing the window keeps the app in the Dock and clicking the Dock icon reopens it, and the dark and light themes both render. The Dock shows the OrgAI mark (set at startup with `app.dock.setIcon` from `build/icon.png`, dev only), not Electron's icon.
 
 Dev runs use the app name OrgAI, so dev logs land in `~/Library/Logs/OrgAI`. To test against a scratch data dir instead of your real one, set `ORGAI_DATA_DIR`: when set, user data and logs live under that directory.
 
@@ -36,6 +36,8 @@ open release/
 ```
 
 Open the `.dmg`, drag OrgAI to Applications, then right-click the app and choose Open (needed for an unsigned build; if macOS says it is damaged, run `xattr -dr com.apple.quarantine /Applications/OrgAI.app`). Launch it from Finder or the Dock, not from a terminal: that is the case where PATH is minimal.
+
+Icon checks: Finder shows the OrgAI mark (from `build/icon.icns`, with its margin) on OrgAI.app and on the dmg volume/file, and the running app's Dock icon is the same mark, not Electron's.
 
 ## 5. PATH discovery (packaged app, launched from Finder)
 
