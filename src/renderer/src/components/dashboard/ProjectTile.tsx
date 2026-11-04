@@ -42,7 +42,17 @@ function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
  * One project on the Dashboard. The name is a native button whose ::after covers the whole tile (the tile is one
  * click target); the More button sits in the tile's own grid above that cover, never over the text.
  */
-export function ProjectTile({ model, onOpen, onDelete }: { model: TileModel; onOpen: () => void; onDelete: () => void }): ReactElement {
+export function ProjectTile({
+  model,
+  onOpen,
+  onDelete,
+  onAnnounce
+}: {
+  model: TileModel
+  onOpen: () => void
+  onDelete: () => void
+  onAnnounce?: (text: string) => void
+}): ReactElement {
   const { project, decisions, live, statusLine, newestRun, weekCost } = model
   const [error, setError] = useState<string | null>(null)
   const folder = folderName(project.path)
@@ -56,9 +66,15 @@ export function ProjectTile({ model, onOpen, onDelete }: { model: TileModel; onO
     window.orgai.app
       .openPath(project.path)
       .then((err) => {
-        if (err) setError(err)
+        if (!err) return
+        setError(err)
+        onAnnounce?.(err)
       })
-      .catch(() => setError('OrgAI could not open the folder.'))
+      .catch(() => {
+        const text = 'OrgAI could not open the folder.'
+        setError(text)
+        onAnnounce?.(text)
+      })
   }
 
   return (
@@ -151,7 +167,7 @@ export function ProjectTile({ model, onOpen, onDelete }: { model: TileModel; onO
         )}
       </p>
       {error && (
-        <p className="project-tile-error" data-testid="project-tile-error" role="alert">
+        <p className="project-tile-error" data-testid="project-tile-error">
           {error}
         </p>
       )}

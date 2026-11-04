@@ -129,7 +129,7 @@ function ConnectionsCard(): ReactElement {
     <section className="dash-fact card-fact" data-testid="dash-connections" aria-labelledby={headingId}>
       <h2 id={headingId}>Connections</h2>
       {connections === null || (defaultConnection !== null && !def) ? (
-        <p className="dash-fact-note" role="status">
+        <p className="dash-fact-note">
           Checking connections…
         </p>
       ) : (

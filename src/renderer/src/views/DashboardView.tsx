@@ -4,7 +4,7 @@ import { MessageSquare, Plus } from 'lucide-react'
 import { openNewChat, useAppStore } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
 import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
-import { HeroBand } from '../components/dashboard/HeroBand'
+import { HeroBand, type DashboardAnnouncement } from '../components/dashboard/HeroBand'
 import { AttentionColumn } from '../components/dashboard/AttentionColumn'
 import { useLastSeen } from '../components/dashboard/useLastSeen'
 import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
@@ -25,7 +25,8 @@ export default function DashboardView(): ReactElement {
   const { lastSeen, markAllSeen } = useLastSeen()
   // A form parked by its connection link comes back open.
   const [formOpen, setFormOpen] = useState(() => hasParkedDraft())
-  const [announce, setAnnounce] = useState<string | null>(null)
+  const [announce, setAnnounce] = useState<DashboardAnnouncement | null>(null)
+  const say = (text: string): void => setAnnounce((a) => ({ text, seq: (a?.seq ?? 0) + 1 }))
 
   useEffect(() => {
     void loadAppInfo()
@@ -67,7 +68,7 @@ export default function DashboardView(): ReactElement {
           ) : (
             <>
               <AttentionColumn lastSeen={lastSeen} onMarkAllSeen={markAllSeen} />
-              <ProjectsGrid onDeleted={(name) => setAnnounce(`Deleted ${name}.`)} />
+              <ProjectsGrid onAnnounce={say} />
               <FactsCards />
             </>
           )}

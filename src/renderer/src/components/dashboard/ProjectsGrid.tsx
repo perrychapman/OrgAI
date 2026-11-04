@@ -55,9 +55,9 @@ const tileSelector = (id: string): string => `[data-testid=project-tile][data-id
 
 /**
  * The Dashboard's project tiles, most urgent first (decisions, open runs, newest run, name). Opening, "Open folder" and
- * "Delete project…" live here; the Lead announces a delete through `onDeleted`.
+ * "Delete project…" live here; deletes and errors speak through `onAnnounce` (the page's one live region).
  */
-export function ProjectsGrid({ onDeleted }: { onDeleted: (name: string) => void }): ReactElement {
+export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => void }): ReactElement {
   const headingId = useId()
   const projects = useAppStore((s) => s.projects)
   const runs = useAppStore((s) => s.runs)
@@ -121,12 +121,14 @@ export function ProjectsGrid({ onDeleted }: { onDeleted: (name: string) => void 
     try {
       await removeProject(project.id)
     } catch (err) {
-      setDeleteError({ id: project.id, text: cleanIpcError(err) })
+      const text = cleanIpcError(err)
+      setDeleteError({ id: project.id, text })
+      onAnnounce(`Could not delete ${project.name}: ${text}`)
       focusLater(() => document.querySelector<HTMLElement>(`${tileSelector(project.id)} [data-testid=project-tile-more]`))
       return
     }
     setDeleteError(null)
-    onDeleted(project.name)
+    onAnnounce(`Deleted ${project.name}.`)
     focusLater(
       () =>
         (next ? document.querySelector<HTMLElement>(`${tileSelector(next)} [data-testid=project-tile-main]`) : null) ??
@@ -147,7 +149,7 @@ export function ProjectsGrid({ onDeleted }: { onDeleted: (name: string) => void 
         </div>
       )}
       {deleteError && (
-        <p className="project-tile-error" role="alert">
+        <p className="project-tile-error">
           Could not delete {projects.find((p) => p.id === deleteError.id)?.name ?? 'the project'}: {deleteError.text}
         </p>
       )}
@@ -156,7 +158,7 @@ export function ProjectsGrid({ onDeleted }: { onDeleted: (name: string) => void 
       ) : (
         <ul className="dash-projects-grid" aria-labelledby={headingId}>
           {models.map((m) => (
-            <ProjectTile key={m.project.id} model={m} onOpen={() => open(m.project.id)} onDelete={() => void remove(m)} />
+            <ProjectTile key={m.project.id} model={m} onOpen={() => open(m.project.id)} onDelete={() => void remove(m)} onAnnounce={onAnnounce} />
           ))}
         </ul>
       )}
