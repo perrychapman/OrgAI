@@ -6,6 +6,7 @@ import { setupPending } from '@shared/setup'
 import { projectKindOf } from '@shared/defaults'
 import { clientOf } from '../../lib/clientGroups'
 import { costView, type CostInput } from '../../lib/cost'
+import { tileRemoveLabel } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
 import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
@@ -150,7 +151,7 @@ export function ProjectTile({
                   }}
                 >
                   <Icon icon={Trash2} size="sm" />
-                  Delete project…
+                  {tileRemoveLabel(projectKindOf(project))}
                 </button>
               </div>
             )}

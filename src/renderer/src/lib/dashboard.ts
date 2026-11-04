@@ -1,4 +1,4 @@
-import type { RunStatus } from '@shared/types'
+import type { ProjectKind, ProjectRemoveResult, RunStatus } from '@shared/types'
 import { chainGroups, isOpenStatus } from './runChains'
 import { waitingItems, type WaitRun } from './needsYou'
 
@@ -278,6 +278,63 @@ export function heroSublineParts(input: { projects: number; openRuns: number; cl
 }
 
 export const FIRST_LAUNCH_LINE = 'Start a project or just chat. Nothing runs until you say so.'
+
+// ---------------------------------------------------------------- forget an engagement (engagement-2 spec 6)
+
+/** The tile menu item: an engagement is forgotten, a code project deleted. */
+export function tileRemoveLabel(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'Forget engagement…' : 'Delete project…'
+}
+
+/** The confirm button of the same action. */
+export function removeConfirmLabel(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'Forget engagement' : 'Delete project'
+}
+
+export interface ForgetConfirmText {
+  /** One list row each; counts of zero are left out. Empty when the counts are unavailable. */
+  lines: string[]
+  /** Set when the dry run was unavailable: the kinds are named without numbers. */
+  uncounted: string | null
+  stays: string
+}
+
+/**
+ * The forget confirm's list from the dry-run counts (null = unavailable). `openRuns` is how many runs of the
+ * engagement are open now (the preview does not say); `folder` names the working folder.
+ */
+export function forgetConfirmText(preview: ProjectRemoveResult | null, openRuns: number, folder: string): ForgetConfirmText {
+  const stays = `Stays: files in ${folder || 'the working folder'} and in the reference folders, your library skills, custom servers and connected services.`
+  if (!preview) {
+    return { lines: [], uncounted: 'its plan, context notes, saved rules, runs and costs', stays }
+  }
+  const lines: string[] = []
+  if (preview.documentRemoved) lines.push('The engagement plan')
+  if (preview.notesRemoved > 0) lines.push(plural(preview.notesRemoved, 'context note', 'context notes'))
+  if (preview.rulesRemoved) lines.push('Saved permission rules')
+  const open = Math.max(0, Math.floor(openRuns))
+  if (preview.runsRemoved > 0) {
+    const runs = `${plural(preview.runsRemoved, 'run', 'runs')} with ${preview.runsRemoved === 1 ? 'its' : 'their'} transcripts and costs`
+    lines.push(open > 0 ? `Ends ${plural(open, 'open run', 'open runs')} and deletes ${runs}` : runs.charAt(0).toUpperCase() + runs.slice(1))
+  } else if (open > 0) {
+    lines.push(`Ends ${plural(open, 'open run', 'open runs')}`)
+  }
+  if (preview.skillsRemoved > 0) lines.push(`${plural(preview.skillsRemoved, 'skill copy', 'skill copies')} made for it`)
+  const review = (preview.teamReviewRemoved ? 1 : 0) + (preview.skillEvaluationRemoved ? 1 : 0)
+  if (review > 0) lines.push(plural(review, 'team review file', 'team review files'))
+  return { lines, uncounted: null, stays }
+}
+
+/** The Dashboard notice after a forget: "Forgot Acme. Deleted the plan, 12 notes, its saved rules, 23 runs." */
+export function forgetNoticeText(name: string, result: ProjectRemoveResult): string {
+  const parts: string[] = []
+  if (result.documentRemoved) parts.push('the plan')
+  if (result.notesRemoved > 0) parts.push(plural(result.notesRemoved, 'note', 'notes'))
+  if (result.rulesRemoved) parts.push('its saved rules')
+  if (result.runsRemoved > 0) parts.push(plural(result.runsRemoved, 'run', 'runs'))
+  if (result.skillsRemoved > 0) parts.push(plural(result.skillsRemoved, 'skill copy', 'skill copies'))
+  return parts.length === 0 ? `Forgot ${name}.` : `Forgot ${name}. Deleted ${parts.join(', ')}.`
+}
 
 /** What deleting a project removes, in the confirm dialog (spec 5.1). `historyRuns` is every saved run, open ones included. */
 export function deleteProjectBody(input: { openRuns: number; historyRuns: number }): string {
