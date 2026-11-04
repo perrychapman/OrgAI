@@ -325,6 +325,11 @@
 }
 
 /* Toolbar notes: what Add role will do, and the short-lived undo row. */
+/* The Canvas style icon button (28 px) sits in the row of small buttons (about 27 px): a small negative block margin
+   keeps it from setting the row height, so the wrapped toolbar takes no extra room from the Team assistant tray. */
+.editor .frame-toolbar > .popover-wrap {
+  margin-block: -2px;
+}
 .toolbar-note {
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
