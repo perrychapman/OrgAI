@@ -4,9 +4,18 @@ import { CLIENT_GROUPS_KEY, groupByClient, readCollapsedClients, writeCollapsedC
 const eng = (id: string, client?: string): { id: string; kind: string; client?: string } => ({ id, kind: 'engagement', client })
 
 describe('groupByClient', () => {
-  it('shows no headers with fewer than two clients', () => {
-    const g = groupByClient([eng('a', 'Acme'), eng('b', 'acme'), eng('c'), { id: 'd' }])
-    expect(g.showHeaders).toBe(false)
+  it('shows no headers for engagements of one client only, or for code projects only', () => {
+    expect(groupByClient([eng('a', 'Acme'), eng('b', 'acme')]).showHeaders).toBe(false)
+    expect(groupByClient([{ id: 'd' }, { id: 'e' }]).showHeaders).toBe(false)
+    expect(groupByClient([eng('c'), eng('d')]).showHeaders).toBe(false)
+  })
+  it('shows headers when engagements and code projects are both listed, even with one client', () => {
+    const one = groupByClient([eng('a', 'Acme'), { id: 'code' }])
+    expect(one.showHeaders).toBe(true)
+    expect(one.groups.map((x) => x.label)).toEqual(['Acme', 'Code'])
+    const none = groupByClient([{ id: 'code' }, eng('n')])
+    expect(none.showHeaders).toBe(true)
+    expect(none.groups.map((x) => x.label)).toEqual(['Engagements', 'Code'])
   })
   it('groups case-insensitively with the first spelling, then Other, then Code', () => {
     const g = groupByClient([{ id: 'code' }, eng('a', ' Acme '), eng('n'), eng('b', 'Globex'), eng('c', 'ACME')])

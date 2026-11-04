@@ -21,7 +21,7 @@ export interface ClientGroup<T extends ClientGroupItem> {
 }
 
 export interface ClientGrouping<T extends ClientGroupItem> {
-  /** Headers show only with two or more distinct real client names. */
+  /** Headers show with two or more distinct client names, or when the list holds both engagements and code projects. */
   showHeaders: boolean
   groups: ClientGroup<T>[]
 }
@@ -61,9 +61,11 @@ export function groupByClient<T extends ClientGroupItem>(items: T[]): ClientGrou
     else clients.set(key, { key, label: name, type: 'client', items: [it] })
   }
   const groups: ClientGroup<T>[] = [...clients.values()]
-  if (other.length > 0) groups.push({ key: OTHER_GROUP_KEY, label: 'Other', type: 'other', items: other })
+  // Engagements with no client name at all form one group named for what they are; beside client groups it stays "Other".
+  const otherLabel = clients.size === 0 ? 'Engagements' : 'Other'
+  if (other.length > 0) groups.push({ key: OTHER_GROUP_KEY, label: otherLabel, type: 'other', items: other })
   if (code.length > 0) groups.push({ key: CODE_GROUP_KEY, label: 'Code', type: 'code', items: code })
-  return { showHeaders: clients.size >= 2, groups }
+  return { showHeaders: clients.size >= 2 || (code.length > 0 && clients.size + other.length > 0), groups }
 }
 
 /** Read the collapsed keys; junk gives an empty set. */
