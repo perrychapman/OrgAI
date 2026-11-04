@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,13 @@ import { CodexAdapter, codexModelFor, codexWritableRoots, offerableByRealPath, t
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
+import { buildRolePrompt } from './prompts'
+
+// buildRolePrompt is the real one, wrapped so tests can read the flags an adapter passes.
+vi.mock('./prompts', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./prompts')>()
+  return { ...orig, buildRolePrompt: vi.fn(orig.buildRolePrompt) }
+})
 
 /** A scripted app-server: records requests, answers them, and lets the test push notifications and server requests. */
 class FakeServer implements CodexServerLike {
@@ -253,6 +260,48 @@ describe('CodexAdapter session', () => {
     s.push('item/completed', agentMessage('th-2', 'm1', 'Nothing to change'))
     s.push('turn/completed', turnDone('th-2', 'tu-2'))
     await vi.waitFor(() => expect(agentOf().worktree?.status).toBe('empty'), { timeout: 5000 })
+  })
+
+  it('an engagement isolates writers only with an explicit isolateWriters: true (isolateWritersOn)', async () => {
+    const run = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' })
+    run('init', '-q')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    writeFileSync(join(dir, 'a.txt'), 'a')
+    run('add', '.')
+    run('commit', '-q', '-m', 'init')
+    const spawnCwd = async (over: Partial<ReturnType<typeof project>>): Promise<string> => {
+      const { adapter, servers } = setup()
+      const ctx = fakeCtx({ project: project({ path: dir, kind: 'engagement', ...over }), continuationDelayMs: 5 })
+      session = await adapter.start(ctx)
+      await vi.waitFor(() => expect(servers[0]?.turnStarts('th-1')).toHaveLength(1), { timeout: 5000 })
+      const s = servers[0]!
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
+      const cwd = s.of('thread/start')[1].params.cwd as string
+      await session.stop()
+      session = undefined
+      return cwd
+    }
+    // Unset on an engagement: off (the code default would be on).
+    expect(await spawnCwd({ isolateWriters: undefined })).toBe(dir)
+    expect(await spawnCwd({ isolateWriters: true })).toMatch(/[\\/]\.claude[\\/]worktrees[\\/]agent-cx_/)
+  })
+
+  it('passes ctx.engagementDocument as the engagementDocument prompt flag, read when each thread starts', async () => {
+    let doc: string | undefined = 'Engagement doc v1'
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ project: project({ path: dir, isolateWriters: false, kind: 'engagement' }), engagementDocument: () => doc })
+    vi.mocked(buildRolePrompt).mockClear()
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ engagementDocument: 'Engagement doc v1' })
+    doc = 'Engagement doc v2'
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'x' } })
+    expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ engagementDocument: 'Engagement doc v2' })
+    doc = undefined
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'y' } })
+    expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
   })
 
   it('steers the running turn when a message arrives mid-turn, and falls back to a new turn', async () => {
@@ -609,6 +658,35 @@ describe('CodexAdapter session', () => {
         refs.length = 0
         await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none' })
         expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+    })
+
+    describe('rules kept outside the folder (engagements)', () => {
+      const folderRules = (rules: string[]) => {
+        mkdirSync(join(dir, '.claude'), { recursive: true })
+        writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: rules } }))
+      }
+
+      it('reads ctx.savedRules instead of the folder file when allowedRules is absent (commands and file changes)', async () => {
+        folderRules(['Bash(ls:*)', 'Edit'])
+        const { ctx, s } = await started('default', { savedRules: () => ['Bash(npm test:*)'] })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        // The folder's own rules are not read when the project keeps its rules elsewhere.
+        await s.ask('item/commandExecution/requestApproval', cmd('ls'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f1', status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: null }, diff: '' }] } })
+        await s.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('a project-scope grant goes through ctx.saveProjectRules and writes nothing into the folder', async () => {
+        const saveProjectRules = vi.fn((rules: string[]) => ({ rules, added: rules }))
+        const { ctx, s } = await started('default', { savedRules: () => [], saveProjectRules })
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'project' })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'acceptForSession' })
+        expect(saveProjectRules).toHaveBeenCalledWith(['Bash(npm test:*)'])
+        expect(existsSync(join(dir, '.claude'))).toBe(false)
       })
     })
 

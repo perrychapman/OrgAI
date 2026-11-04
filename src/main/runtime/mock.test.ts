@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -174,6 +174,23 @@ describe('mock adapter harness transcript rows', () => {
     const text = (row?.block as { text: string }).text
     expect(text).not.toBe(full)
     expect(text.length).toBeLessThan(full.length)
+  })
+
+  it('nudges an engagement with the engagement wording (review the deliverables), a code project with verification', async () => {
+    const nudgeFor = async (kind: 'engagement' | 'code'): Promise<string> => {
+      const ctx = fakeCtx({ autoContinue: true, continuationDelayMs: 1, project: project({ kind }) })
+      const session = (await new MockAdapter({
+        script: { delayMs: 0, work: [{ type: 'plan', goal: 'G', steps: ['A', 'B'] }, { type: 'text', text: 'Step one.' }] }
+      }).start(ctx)) as MockSession
+      await waitFor(() => session.harnessMessages.length > 0)
+      await session.stop()
+      await session.finished
+      return session.harnessMessages[0] ?? ''
+    }
+    const engagement = await nudgeFor('engagement')
+    expect(engagement).toContain('review the deliverables against the brief')
+    expect(engagement).not.toContain('verification')
+    expect(await nudgeFor('code')).toContain("run the project's verification")
   })
 
   it('marks tellUser lines as harness rows', async () => {
@@ -726,6 +743,29 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
     expect(logs.filter((m) => m.startsWith('Saved permission rule'))).toEqual(['Saved permission rule for this project: Bash(npm test:*)'])
     expect(logs.some((m) => m.includes('do not cover this command'))).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('engagement rules: a project-scope grant goes through ctx.saveProjectRules, is read back through ctx.savedRules, and the folder stays untouched', async () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-mock-engagement-')))
+    addRules(dir, ['Bash(git status)'])
+    let store: string[] = []
+    const saveProjectRules = vi.fn((rules: string[]) => {
+      const added = rules.filter((r) => !store.includes(r))
+      store = [...store, ...added]
+      return { rules: store, added }
+    })
+    const step = (command: string) => ({ type: 'tool' as const, name: 'Bash', input: { command }, ask: true, result: 'ok' })
+    const { ctx, cards } = await play(
+      { project: project({ path: dir, kind: 'engagement' }), savedRules: () => store, saveProjectRules },
+      () => ({ behavior: 'allow', scope: 'project' }),
+      { work: [step('npm test'), step('npm test'), step('git status')] }
+    )
+    expect(saveProjectRules).toHaveBeenCalledWith(['Bash(npm test:*)'])
+    // The second npm test rides on the rule saved through the context; the folder's git status rule is not read.
+    expect(cards.map((c) => (c as { input: { command: string } }).input.command)).toEqual(['npm test', 'git status'])
+    expect(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')).not.toContain('npm')
+    expect(ctx.events.some((e) => e.type === 'log' && e.message === 'Saved permission rule for this project: Bash(npm test:*)')).toBe(true)
     rmSync(dir, { recursive: true, force: true })
   })
 

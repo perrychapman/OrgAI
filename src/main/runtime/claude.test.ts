@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -94,7 +95,14 @@ import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHel
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
 import { refreshRoleGrants } from './runManager'
-import { claudeAdditionalDirectories } from './claude'
+import { allowScopePersist, claudeAdditionalDirectories } from './claude'
+import { buildRolePrompt } from './prompts'
+
+// buildRolePrompt is the real one, wrapped so tests can read the flags the adapter passes.
+vi.mock('./prompts', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./prompts')>()
+  return { ...orig, buildRolePrompt: vi.fn(orig.buildRolePrompt) }
+})
 
 function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpServerSpec {
   return { transport: 'stdio', enabled: true, source: 'user', addedAt: '2026-01-01T00:00:00.000Z', ...over }
@@ -1518,6 +1526,79 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
     expect(logs.filter((m) => m.startsWith('Saved permission rule'))).toEqual(['Saved permission rule for this project: Bash(npm test:*)'])
     expect(logs.some((m) => m.includes('do not cover this command'))).toBe(false)
+  })
+
+  it('engagement rules: options.allowedTools and the hook read ctx.savedRules, never the folder file', async () => {
+    const { dir } = start({ savedRules: () => ['Read', 'Bash(npm test:*)'] })
+    addRules(dir, ['Glob', 'Bash(git status)'])
+    const q = await firstQuery()
+    expect(q.options.allowedTools).toEqual(['Read'])
+    expect((await bash(q, 'npm test')).hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect(await bash(q, 'git status')).toEqual({})
+  })
+
+  it('engagement rules: a project-scope grant goes through ctx.saveProjectRules and writes nothing into the folder', async () => {
+    const saveProjectRules = vi.fn((rules: string[]) => ({ rules, added: rules }))
+    const { ctx, dir } = start({ savedRules: () => [], saveProjectRules })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'project' })
+    const q = await firstQuery()
+    await canUseTool(q)('Bash', { command: 'npm test' }, { signal: signal() })
+    expect(saveProjectRules).toHaveBeenCalledWith(['Bash(npm test:*)'])
+    expect(existsSync(join(dir, '.claude'))).toBe(false)
+    const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    expect(logs).toContain('Saved permission rule for this project: Bash(npm test:*)')
+  })
+
+  it('allowScopePersist passes saveProjectRules only when the context has it', () => {
+    const saveProjectRules = vi.fn((rules: string[]) => ({ rules, added: [] }))
+    expect('saveProjectRules' in allowScopePersist(fakeCtx())).toBe(false)
+    allowScopePersist(fakeCtx({ saveProjectRules })).saveProjectRules!(['Read'])
+    expect(saveProjectRules).toHaveBeenCalledWith(['Read'])
+  })
+
+  it('claudeSavedRules: ctx.savedRules wins over the folder, and a restricted run gets none even with it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-saved-'))
+    addRules(dir, ['Glob'])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: dir }) }))).toEqual(['Glob'])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: dir }), savedRules: () => ['Read'] }))).toEqual(['Read'])
+    const quick = runSummary({ projectId: 'quick', quick: { folder: dir, team: 'single', allowEdits: true, gitRepo: false } })
+    expect(claudeSavedRules(fakeCtx({ run: quick, project: project({ path: dir }), savedRules: () => ['Read'] }))).toEqual([])
+  })
+
+  it('passes ctx.engagementDocument as the engagementDocument prompt flag to every role, read at build time', () => {
+    let doc: string | undefined = 'Engagement doc v1'
+    const ctx = fakeCtx({ project: project({ kind: 'engagement' }), engagementDocument: () => doc })
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(ctx, [], false)
+    const flags = vi.mocked(buildRolePrompt).mock.calls.map((c) => c[3])
+    expect(flags.length).toBe(ctx.roles.length)
+    for (const f of flags) expect(f).toMatchObject({ engagementDocument: 'Engagement doc v1' })
+    doc = 'Engagement doc v2'
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(ctx, [], false)
+    expect(vi.mocked(buildRolePrompt).mock.calls[0]![3]).toMatchObject({ engagementDocument: 'Engagement doc v2' })
+    doc = undefined
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(ctx, [], false)
+    expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls[0]![3]!).toBe(false)
+  })
+
+  it('isolation follows isolateWritersOn: an engagement isolates only with an explicit true', async () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-iso-')))
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' })
+    git('init', '-q')
+    const isolation = async (over: Partial<Project>): Promise<boolean> => {
+      const before = sdk.queries.length
+      const s = new ClaudeSession(fakeCtx({ project: project({ path: dir, ...over }), autoContinue: false }))
+      // Let the session reach its query before stopping it, so no late query leaks into the next test.
+      await vi.waitFor(() => expect(sdk.queries.length).toBe(before + 1))
+      await s.stop()
+      return (s as unknown as { isolation: boolean }).isolation
+    }
+    expect(await isolation({ kind: 'engagement', isolateWriters: undefined })).toBe(false)
+    expect(await isolation({ kind: 'engagement', isolateWriters: true })).toBe(true)
+    expect(await isolation({ isolateWriters: undefined })).toBe(true)
+    expect(await isolation({ isolateWriters: false })).toBe(false)
   })
 
   it('a quick run gets no setMode suggestion on the card or in updatedPermissions', async () => {

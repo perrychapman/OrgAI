@@ -28,7 +28,7 @@ import {
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, mcpServersForRole, newId, planGuardEngaged, planGuardOf, settingTier, tierForModel } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -547,6 +547,7 @@ export function buildAgents(
   skills: Map<string, RunSkill> = new Map()
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
+  const engagementDocument = ctx.engagementDocument?.()
   const agents: Record<string, AgentDefinition> = {}
   for (const role of ctx.roles) {
     const tools: string[] = [...role.tools]
@@ -571,6 +572,8 @@ export function buildAgents(
         ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
         // Read-only reference folders, so agents read them and never try to change them.
         ...(ctx.referenceDirectories?.().length ? { referenceDirectories: ctx.referenceDirectories() } : {}),
+        // Engagements: the approved engagement document, read now (a restart rebuilds agents and re-reads it).
+        ...(engagementDocument ? { engagementDocument } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -612,9 +615,13 @@ export function claudeSettingSources(ctx: RuntimeContext): Options['settingSourc
   return isTrustRestrictedRun(ctx.run) ? [] : ['project']
 }
 
-/** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
+/**
+ * Saved "always allow" rules: ctx.savedRules() (wherever the project keeps them; OrgAI's data folder for engagements),
+ * else the project folder's file; none for a trust-restricted run (its grants come from allowedRules()).
+ */
 export function claudeSavedRules(ctx: RuntimeContext): string[] {
-  return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
+  if (isTrustRestrictedRun(ctx.run)) return []
+  return ctx.savedRules ? ctx.savedRules() : listRules(ctx.project.path)
 }
 
 /**
@@ -794,7 +801,8 @@ export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDi
 export function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
   return {
     ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
-    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {}),
+    ...(ctx.saveProjectRules ? { saveProjectRules: (rules: string[]) => ctx.saveProjectRules!(rules) } : {})
   }
 }
 
@@ -1082,7 +1090,7 @@ export class ClaudeSession implements RuntimeSession {
     if (!root) throw new Error('Project has no roles')
     this.root = root
     this.isSetup = isSetupLikeRun(ctx.run.kind)
-    this.isolation = !this.isSetup && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
+    this.isolation = !this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
     // A proxy connection (LiteLLM) has no subscription plan windows: treat it like an API key.
     this.authMode = usesProxy(ctx) || ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
@@ -1098,6 +1106,7 @@ export class ClaudeSession implements RuntimeSession {
     })
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
+      projectKind: projectKindOf(ctx.project),
       autoContinue: ctx.autoContinue,
       maxAutoContinues: ctx.maxAutoContinues,
       delayMs: ctx.continuationDelayMs,
