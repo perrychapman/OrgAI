@@ -24,6 +24,7 @@ import {
   neighbourhood,
   nodeCountsLine,
   nodeSpokenName,
+  relationHandles,
   relationTexts,
   retiredGroupId,
   retiredGroupLabel,
@@ -272,6 +273,20 @@ describe('sizes, layout items and keys', () => {
     expect(key).toContain('kn_acme>kn_jane')
     expect(key).toContain('retired:kn_acme>kn_acme:1')
     expect(topologyKey(drawnGraph({ graph: fixture(), filter: EMPTY_FILTER, depth: 2, showAll: false, selectedId: 'kn_jane' }))).toBe(key)
+  })
+})
+
+describe('relationHandles', () => {
+  const box = (x: number, y: number) => ({ x, y, width: 220, height: 96 })
+  it('source above the target leaves by the bottom and enters by the top', () => {
+    expect(relationHandles(box(0, 0), box(0, 200))).toEqual({ sourceHandle: 'msg-out-bottom', targetHandle: 'msg-in-top' })
+  })
+  it('source below the target (against the layout) leaves by the top and enters by the bottom', () => {
+    expect(relationHandles(box(0, 200), box(130, 0))).toEqual({ sourceHandle: 'msg-out-top', targetHandle: 'msg-in-bottom' })
+  })
+  it('side by side uses right to left or left to right', () => {
+    expect(relationHandles(box(0, 0), box(400, 20))).toEqual({ sourceHandle: 'msg-out-right', targetHandle: 'msg-in-left' })
+    expect(relationHandles(box(400, 20), box(0, 0))).toEqual({ sourceHandle: 'msg-out-left', targetHandle: 'msg-in-right' })
   })
 })
 

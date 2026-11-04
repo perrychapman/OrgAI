@@ -371,6 +371,62 @@ try {
     await shot(`graph-style-${style}-1600-dark`)
   }
 
+  // Edge geometry (M3): every relation path stays inside the drawn nodes' bounding box, and each path ends on the side of
+  // its target that faces its source. Screen coordinates; the box is grown by a few px for stroke and arrow.
+  const edgeGeometry = () =>
+    page.evaluate((sel) => {
+      const root = document.querySelector(sel)
+      const rects = new Map([...root.querySelectorAll('[data-testid=knowledge-node]')].map((n) => [n.getAttribute('data-id'), n.getBoundingClientRect()]))
+      const all = [...rects.values()]
+      const box = { l: Math.min(...all.map((r) => r.left)), t: Math.min(...all.map((r) => r.top)), r: Math.max(...all.map((r) => r.right)), b: Math.max(...all.map((r) => r.bottom)) }
+      const edges = [...root.querySelectorAll('.react-flow__edge.knowledge-edge-retired, .react-flow__edge')].filter((e, i, a) => a.indexOf(e) === i).map((e) => {
+        const path = e.querySelector('.react-flow__edge-path')
+        const len = path.getTotalLength()
+        const m = path.getScreenCTM()
+        const pt = (at) => {
+          const p = path.getPointAtLength(at)
+          return { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f }
+        }
+        const pts = Array.from({ length: 41 }, (_, i) => pt((len * i) / 40))
+        return { relation: e.querySelector('.knowledge-edge')?.getAttribute('data-relation') ?? '', title: e.querySelector('title')?.textContent ?? '', pts, end: pt(len), start: pt(0) }
+      })
+      return { box, edges, rects: [...rects.entries()].map(([id, r]) => ({ id, name: document.querySelector(`${sel} [data-testid=knowledge-node][data-id="${id}"] .knowledge-name-text, ${sel} [data-testid=knowledge-node][data-id="${id}"] .hex-name`)?.textContent ?? '', l: r.left, t: r.top, r: r.right, b: r.bottom })) }
+    }, GRAPH)
+  const checkEdges = async (tag) => {
+    const g = await edgeGeometry()
+    const pad = 6
+    const out = g.edges.filter((e) => e.pts.some((p) => p.x < g.box.l - pad || p.x > g.box.r + pad || p.y < g.box.t - pad || p.y > g.box.b + pad))
+    check(g.edges.length >= 2 && out.length === 0, `no edge leaves the drawn nodes' bounding box at ${tag}`, JSON.stringify({ n: g.edges.length, out: out.map((e) => e.title) }))
+    const jane = g.rects.find((r) => r.name === JANE)
+    const decided = g.edges.find((e) => e.relation === 'decided by')
+    check(!!decided && !!jane, `the "decided by" edge is drawn at ${tag}`, JSON.stringify(g.edges.map((e) => e.relation)))
+    return { g, jane, decided }
+  }
+  const checkSkipLinks = async (tag) => {
+    await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+    const hit = await page.evaluate(() => {
+      const bar = document.querySelector('[data-testid=knowledge-graph-toolbar]').getBoundingClientRect()
+      const hits = []
+      for (let y = Math.floor(bar.top) + 1; y < bar.bottom; y += 4) {
+        for (let x = Math.floor(bar.left) + 1; x < bar.right; x += 8) {
+          const el = document.elementFromPoint(x, y)
+          if (el?.closest('.knowledge-skip')) hits.push([x, y])
+        }
+      }
+      const above = []
+      for (let y = Math.max(0, Math.floor(bar.top) - 60); y < bar.top; y += 4) for (let x = 0; x < innerWidth; x += 16) if (document.elementFromPoint(x, y)?.closest('.knowledge-skip')) above.push([x, y])
+      return { hits: hits.length, above: above.length }
+    })
+    check(hit.hits === 0 && hit.above === 0, `unfocused skip links are never under the pointer at ${tag}`, JSON.stringify(hit))
+    for (const id of ['knowledge-skip-list', 'knowledge-skip-detail']) {
+      await page.locator(`[data-testid=${id}]`).focus()
+      const r = await page.locator(`[data-testid=${id}]`).boundingBox()
+      const vis = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }))
+      check(!!r && r.width > 40 && r.height > 12 && r.x >= 0 && r.y >= 0 && r.x + r.width <= vis.w && r.y + r.height <= vis.h, `${id} is fully visible when focused at ${tag}`, JSON.stringify(r))
+    }
+    await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+  }
+
   // ======== 10. Both sizes and themes: no page scroll, the window did not shift ========
   for (const [w, h] of [[1600, 1000], [1024, 640]]) {
     for (const theme of ['dark', 'light']) {
@@ -379,6 +435,15 @@ try {
       await sleep(400)
       const tag = `${w}x${h} ${theme}`
       check(await waitNodes(3), `graph drawn at ${tag}`, String(await nodeCount()))
+      await sleep(600)
+      {
+        const { jane, decided } = await checkEdges(tag)
+        if (jane && decided) {
+          const e = decided.end
+          check(Math.abs(e.y - jane.b) <= 8 && e.x >= jane.l && e.x <= jane.r, `"decided by" enters Jane Doe from below at ${tag}`, JSON.stringify({ end: e, jane }))
+        }
+        await checkSkipLinks(tag)
+      }
       await fitsWindow(`graph ${tag}`)
       const ws = await windowShift(page)
       check(ws.ok, `the window did not shift at ${tag}`, JSON.stringify(ws))
@@ -391,6 +456,35 @@ try {
   }
   await setSize(1600, 1000)
   await setTheme('dark')
+
+  // ======== 11. Left to right: the same edge rules, and every node style still connects ========
+  await setAppearance({ canvas: { layout: 'left-right' } })
+  await sleep(800)
+  check(await waitNodes(3), 'left to right draws 3 nodes', String(await nodeCount()))
+  {
+    const { g, jane, decided } = await checkEdges('left to right')
+    if (jane && decided) {
+      const e = decided.end
+      const onSide = Math.abs(e.x - jane.l) <= 8 || Math.abs(e.x - jane.r) <= 8 || Math.abs(e.y - jane.b) <= 8 || Math.abs(e.y - jane.t) <= 8
+      check(onSide && e.x >= jane.l - 8 && e.x <= jane.r + 8 && e.y >= jane.t - 8 && e.y <= jane.b + 8, 'left to right: "decided by" ends on Jane Doe\'s outline', JSON.stringify({ end: e, jane }))
+    }
+    await shot('graph-left-right-1600-dark')
+    void g
+  }
+  for (const style of ['compact', 'station', 'hex', 'card']) {
+    await setAppearance({ canvas: { nodeStyle: style } })
+    await sleep(800)
+    check(await waitNodes(3), `left to right ${style} draws 3 nodes`, String(await nodeCount()))
+    await checkEdges(`left to right ${style}`)
+  }
+  await setAppearance({ canvas: { layout: 'top-down' } })
+  await sleep(600)
+  for (const style of ['compact', 'station', 'hex', 'card']) {
+    await setAppearance({ canvas: { nodeStyle: style } })
+    await sleep(800)
+    check(await waitNodes(3), `top down ${style} draws 3 nodes`, String(await nodeCount()))
+    await checkEdges(`top down ${style}`)
+  }
 } catch (e) {
   check(false, 'script error', String(e?.stack ?? e))
 } finally {
