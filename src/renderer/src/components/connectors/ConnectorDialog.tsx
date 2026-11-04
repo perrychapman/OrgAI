@@ -106,6 +106,10 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
     try {
       // An entry that is not connected is rewritten in place to the chosen variant.
       const lib = entry && entry.entry.connectorVariant === variantId ? entry : await window.orgai.connectors.add({ connectorId: def.id, variant: variantId })
+      if (lib.entry.connectorVariant !== variantId) {
+        setError('This service was connected with a different access level. Close and open it again.')
+        return
+      }
       const id = lib.entry.id
       libraryId.current = id
       let failure: string | undefined
@@ -194,32 +198,43 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const notes = connected ? [] : noteForUser(def.notes, def.name)
   /** A token service leads with the token field; the access choice and notes come after it. */
   const tokenFirst = form && auth.kind === 'token'
+  const lockedId = `${ids}-locked`
+  const mixedAuth = new Set(def.variants.map((v) => v.auth.kind)).size > 1
+  const pickVariant = (id: string): void => {
+    setVariantId(id)
+    setToken('')
+    setClientId('')
+    setClientSecret('')
+  }
+  // One stable slot (always before the form), so a change between a token and an own-app variant keeps the focused radio mounted.
+  const variantsBlock = multi ? (
+    <fieldset className="connector-variants" disabled={connected || busy} aria-describedby={connected ? lockedId : undefined}>
+      <legend>{mixedAuth ? 'Access and sign-in' : 'What agents can do'}</legend>
+      {def.variants.map((v) => (
+        <label key={v.id} data-testid="connector-variant" data-variant={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
+          <input type="radio" name={`${ids}-variant`} value={v.id} checked={v.id === variant.id} onChange={() => pickVariant(v.id)} />
+          <span className="connector-variant-text">
+            <strong>
+              {v.label} <span className="muted">· {accessWords(v)}</span>
+            </strong>
+            <span className="muted">
+              {v.description ? `${v.description} ` : ''}
+              {variantExplain(v)}
+            </span>
+          </span>
+        </label>
+      ))}
+      {connected && (
+        <p id={lockedId} className="muted connector-locked" data-testid="connector-locked">
+          {auth.kind === 'none'
+            ? 'Access was chosen when you added this service. Remove the service and add it again to change it.'
+            : 'Access was chosen when you connected this service. Disconnect it to change it.'}
+        </p>
+      )}
+    </fieldset>
+  ) : null
   const extras = (
     <>
-      {multi && (
-        <fieldset className="connector-variants" disabled={connected || busy}>
-          <legend>What agents can do</legend>
-          {def.variants.map((v) => (
-            <label key={v.id} data-testid="connector-variant" data-variant={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
-              <input type="radio" name={`${ids}-variant`} value={v.id} checked={v.id === variant.id} onChange={() => setVariantId(v.id)} />
-              <span className="connector-variant-text">
-                <strong>
-                  {v.label} <span className="muted">· {accessWords(v)}</span>
-                </strong>
-                <span className="muted">
-                  {v.description ? `${v.description} ` : ''}
-                  {variantExplain(v)}
-                </span>
-              </span>
-            </label>
-          ))}
-          {connected && (
-            <p className="muted connector-locked" data-testid="connector-locked">
-              Access was chosen when you connected this service. Disconnect it to change it.
-            </p>
-          )}
-        </fieldset>
-      )}
       {!multi && (
         <p className="muted connector-access">
           <Icon icon={ShieldCheck} size="xs" /> {accessLine(def, variant)}
@@ -317,6 +332,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
             I already have a client ID
           </button>
         )}
+        {variantsBlock}
         {!tokenFirst && extras}
 
         {form && (
