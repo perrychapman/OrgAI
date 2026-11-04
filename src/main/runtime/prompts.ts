@@ -42,6 +42,12 @@ export interface PromptFlags {
    * not quick) gain one sentence naming them. Missing or empty = no sentence.
    */
   allowedDirectories?: string[]
+  /**
+   * Read-only reference folders (RuntimeContext.referenceDirectories()). Adapters pass
+   * `referenceDirectories: ctx.referenceDirectories?.()` wherever they pass allowedDirectories. Missing or empty = no
+   * sentence.
+   */
+  referenceDirectories?: string[]
 }
 
 /** The roles this role may delegate to. */
