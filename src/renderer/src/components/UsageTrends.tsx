@@ -100,7 +100,8 @@ export default function UsageTrends({ projectId }: { projectId: string }): React
     setCsvBusy(true)
     try {
       const csv = await window.orgai.runs.usageCsv(queryFor(projectId, range, Date.now()))
-      await navigator.clipboard.writeText(csv)
+      // No BOM on the clipboard: pasted text would start with an invisible character.
+      await navigator.clipboard.writeText(csv.replace(/^﻿/, ''))
       setCsvStatus({ text: copiedText(csvRowCount(csv)), failed: false })
     } catch (e) {
       setCsvStatus({ text: `Could not copy: ${cleanIpcError(e)}`, failed: true })
@@ -113,8 +114,8 @@ export default function UsageTrends({ projectId }: { projectId: string }): React
     setCsvBusy(true)
     try {
       const csv = await window.orgai.runs.usageCsv(queryFor(projectId, range, Date.now()))
-      // A BOM keeps spreadsheet apps from misreading non-ASCII titles.
-      const url = URL.createObjectURL(new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' }))
+      // Exactly one BOM (main already writes one) keeps spreadsheet apps from misreading non-ASCII titles.
+      const url = URL.createObjectURL(new Blob(['﻿', csv.replace(/^﻿/, '')], { type: 'text/csv;charset=utf-8' }))
       const a = document.createElement('a')
       a.href = url
       a.download = csvFileName(projectName, range)
