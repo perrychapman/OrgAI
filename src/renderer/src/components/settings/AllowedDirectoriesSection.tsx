@@ -11,7 +11,7 @@ import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
-import { droppedFolderNotice, droppedFolders } from '../../lib/permissionCopy'
+import { droppedFolderNotice, droppedFolders, pathKey } from '../../lib/permissionCopy'
 import { folderConflict, folderDraftProblem, moveConfirmCopy, moveFolder, type FolderListKind } from '../../lib/folderLists'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -135,9 +135,11 @@ export function FolderListSection({ project, kind }: { project: Project; kind: F
     movedTo.current = null
     if (moved) {
       const prefix = COPY[moved.kind].prefix
-      const row = [...document.querySelectorAll<HTMLElement>(`[data-testid=${prefix}-row]`)].find((r) => r.dataset.path === moved.path)
+      const movedKey = pathKey(moved.path)
+      const row = [...document.querySelectorAll<HTMLElement>(`[data-testid=${prefix}-row]`)].find((r) => pathKey(r.dataset.path ?? '') === movedKey)
       const back = row?.querySelector<HTMLElement>(`[data-testid=${moved.kind === 'allowed' ? `${prefix}-make-readonly` : `${prefix}-allow-changes`}]`)
-      if (back) {
+      // A disabled control (the list it would move to is full) cannot take focus: fall through to the old focus.
+      if (back && !(back as HTMLButtonElement).disabled) {
         back.focus()
         return
       }

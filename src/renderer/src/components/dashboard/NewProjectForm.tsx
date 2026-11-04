@@ -540,9 +540,9 @@ export function NewProjectForm({
       <div className="row form-submit">
         {/* A blocked submit stays focusable (aria-disabled) so the keyboard reaches it and hears the reason; submit() ignores it. */}
         {!pending && blocker && !busy ? (
-          <button type="submit" className="btn primary" aria-disabled="true" aria-describedby={ids.why} data-testid="new-project-submit" onClick={(e) => e.preventDefault()}>
+          <Button type="submit" variant="primary" inert ariaDescribedBy={ids.why} testId="new-project-submit">
             {existingId ? `Open ${current?.existingProjectName ?? 'project'}` : setupSubmitLabel(choice, busy, projectKind ?? 'code')}
-          </button>
+          </Button>
         ) : (
           <Button type="submit" variant="primary" loading={busy} testId="new-project-submit">
             {pending
