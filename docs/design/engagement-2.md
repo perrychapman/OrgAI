@@ -638,3 +638,39 @@ Order: B1 and B2 in parallel; B3 and B4 in parallel; B5, B6 in parallel; B7 last
 B1 and B2 both read `lib/connectors.ts`; only B2 edits it. B1 adds `projectNoun` to `lib/projectKindCopy.ts`
 first (a one-function change the others only import); B4 and B5 start after B1 merges or inline the two words and
 switch later. B3's `TemplatesSection` is mounted by B7, so B7 starts after B3 merges.
+
+## Implementation notes (UI Lead, 2026-11-04)
+
+Built against the merged contracts; where they differ from section 0 the contract wins:
+
+- Templates (3): name cap 80 and description cap 500 (`ORG_TEMPLATE_*`); dates use `updatedAt`. The template notice is
+  the project's `importNotices` entry with `source: 'template'` (one notice per chart; Undo through `undoImport`). Under
+  700 px frame width the Templates button drops its icons (label kept). A taken name is detected from main's refusal
+  text or the loaded list. `team-templates-menu`, `template-save-error`, `template-apply-error` added.
+- Ask (4): `run-kind[data-kind]` wraps every kind chip in History; `run-meta-ask` added. The History "Run" filter now
+  means team runs only.
+- Plan and notes (5): the plan cap is `ENGAGEMENT_DOCUMENT_MAX_CHARS` (100,000). Note rows show no first-line excerpt
+  (the index has none). Leaving the pane with unsaved plan edits does not ask (Cancel does). Edit / Review are
+  `aria-disabled` with the visible reason while a setup run is live; one always-mounted `engagement-plan-status`.
+- Forget (6): the preview has no rule count (boolean), so the confirm says "Saved permission rules"; open runs are
+  counted from the store. `forget-confirm` sits on a wrapper inside the ConfirmDialog body.
+- Trends (7): columns are main's `USAGE_CSV_COLUMNS`. There is no main save dialog: "Save CSV..." downloads a Blob
+  (Electron's save dialog; exactly one BOM) and shows nothing on success. The copy has no BOM. Run rows carry no
+  `team`, so the By kind table labels Ask from the loaded summaries (unknown ones read Work); the CSV `kind` column
+  says `work` for Ask runs. `trends-month` is a native select.
+- Per-project values (1): `perProjectSecrets` is one entry-level flag (`mcp-per-project-secrets`), not per row;
+  "Per project" (`mcp-var-per-project`) applies to non-secret names (`perProjectEnv`). Turning it on for an entry with
+  stored secrets asks first (they are deleted). Override saves are serialized (`serialQueue.ts`) because main replaces
+  the whole map. The role inspector shows a "Needs values" list with Fill in under Connections (`role-needs-values`);
+  `lib/roleCapabilities.ts` `needsSignIn` still also shows "Needs sign in" for such servers (open).
+- Presets (2): at most 5 access options; vendor stored as "You"; "Fixed values" are non-secret only. Editing merges onto
+  the stored preset; a preset the form cannot represent opens those parts read-only. The connector dialog shows the
+  added entry's command when one exists. Removing an added preset shows main's refusal (remove it from the library
+  first).
+- Kit (8): export picks the path through main first, sends ticked ids (never 'all'); `kit-missing-deps` dropped
+  (templates carry no grants); connector entries are left out with a note. Import shows template roles with elevated
+  grants and prompts when main sends `roles`. Stale preview = main's "The kit file changed since the preview.".
+- Mirrors: `lib/mcpScope.ts` and `lib/kitApi.ts` stand in for contracts merged on dev after this branch; switch to
+  `@shared/types` after the merge. `e2e/per-project.mjs`, `e2e/presets.mjs` and the kit block of `e2e/engagement2.mjs`
+  print SKIP until the runtime side is present, so their checks have not run yet.
+- e2e: one `e2e/engagement2.mjs` replaces the per-brief templates / ask / engagement-plan scripts.
