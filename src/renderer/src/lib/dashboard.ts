@@ -1,5 +1,5 @@
 import type { RunStatus } from '@shared/types'
-import { isOpenStatus } from './runChains'
+import { chainGroups, isOpenStatus } from './runChains'
 import { waitingItems, type WaitRun } from './needsYou'
 
 /** Pure helpers for the Dashboard. They take plain data and never touch the store. */
@@ -65,7 +65,7 @@ export function buildAttentionCtx(
 
 // ---------------------------------------------------------------- since you last looked
 
-export const LAST_SEEN_KEY = 'orgai.dashboardLastSeen'
+export const LAST_SEEN_KEY = 'orgai.dashboardSeenAt'
 
 /** Reads the saved timestamp; null when absent, unreadable or not a positive finite number. */
 export function readLastSeen(storage: Pick<Storage, 'getItem'> | null | undefined): number | null {
@@ -96,6 +96,11 @@ export interface EndedRunLike {
   id: string
   status: RunStatus
   startedAt: number
+  /** Chain links (see lib/runChains): one row per chain. */
+  sessionId?: string
+  resumedFrom?: string
+  /** Only 'work' runs count (quick runs are 'work' too); absent counts as work. */
+  kind?: string
   endedAt?: number
   endedBy?: 'user' | 'app'
   endedWhile?: 'working' | 'waiting'
@@ -119,34 +124,61 @@ export function endedKind(run: EndedRunLike): EndedKind | null {
   return 'finished'
 }
 
-export const FIRST_VISIT_WINDOW_MS = DAY
-export const SINCE_LAST_SEEN_CAP = 5
+export const SINCE_WINDOW_MS = 7 * DAY
+/** Row caps of the attention column sections (spec 4). */
+export const NEEDS_CAP = 5
+export const RUNNING_CAP = 6
+export const SINCE_LAST_SEEN_CAP = 6
+export const PAUSED_CAP = 6
+
+/** Each run once (a run listed in both the live store and history counts once; the first copy wins), chain newest members only. */
+function chainNewest<T extends EndedRunLike>(summaries: readonly T[]): T[] {
+  const seen = new Set<string>()
+  const unique: T[] = []
+  for (const s of summaries) {
+    if (seen.has(s.id)) continue
+    seen.add(s.id)
+    unique.push(s)
+  }
+  return chainGroups(unique).map((g) => g.newest)
+}
 
 /**
- * Runs that ended after `lastSeen`, newest first, live runs excluded. With no `lastSeen` (first visit) the last 24 hours.
- * A run listed twice (live store and history) counts once. `more` is how many the cap cut.
+ * Spec 4.3: one row per chain (its newest member) that finished or failed after `lastSeen` and at most 7 days ago,
+ * kind work (quick runs included), newest first. `more` is how many the cap cut.
  */
 export function sinceLastSeen<T extends EndedRunLike>(
   summaries: readonly T[],
-  lastSeen: number | null,
+  lastSeen: number,
   now: number,
   opts: { cap?: number } = {}
 ): { items: EndedItem<T>[]; more: number } {
-  const since = lastSeen ?? now - FIRST_VISIT_WINDOW_MS
   const cap = Math.max(0, opts.cap ?? SINCE_LAST_SEEN_CAP)
-  const seen = new Set<string>()
   const all: EndedItem<T>[] = []
-  for (const run of summaries) {
-    if (seen.has(run.id)) continue
-    seen.add(run.id)
+  for (const run of chainNewest(summaries)) {
+    if (run.status !== 'finished' && run.status !== 'error') continue
+    if (run.kind !== undefined && run.kind !== 'work') continue
     const kind = endedKind(run)
-    if (!kind) continue
+    if (!kind || kind === 'paused') continue
     const endedAt = run.endedAt ?? run.startedAt
-    if (endedAt <= since) continue
+    if (endedAt <= lastSeen || endedAt < now - SINCE_WINDOW_MS) continue
     all.push({ run, kind, endedAt })
   }
   all.sort((a, b) => b.endedAt - a.endedAt || b.run.startedAt - a.run.startedAt || a.run.id.localeCompare(b.run.id))
   return { items: all.slice(0, cap), more: Math.max(0, all.length - cap) }
+}
+
+/** Spec 4.4: chains whose newest member is paused, newest start first. */
+export function pausedRuns<T extends EndedRunLike>(summaries: readonly T[]): T[] {
+  return chainNewest(summaries)
+    .filter((r) => r.status === 'paused')
+    .sort((a, b) => b.startedAt - a.startedAt || a.id.localeCompare(b.id))
+}
+
+/** The first line of an error text, cut at `max` characters with an ellipsis. */
+export function errorFirstLine(error: string | undefined, max = 100): string {
+  const line = (error ?? '').split(/\r?\n/).find((l) => l.trim() !== '')?.trim() ?? ''
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line
 }
 
 // ---------------------------------------------------------------- week cost
@@ -206,38 +238,51 @@ export function elapsedLabel(startMs: number, now: number): string {
   return `${Math.floor(ms / DAY)} d`
 }
 
-/** "Step 3 of 7" for the first step not yet done, "All 7 steps done", or null without a plan or steps. */
-export function planStepLabel(plan: { steps: readonly { status: string }[] } | null | undefined): string | null {
-  const steps = plan?.steps
-  if (!steps || steps.length === 0) return null
-  const open = steps.findIndex((s) => s.status !== 'done' && s.status !== 'skipped')
-  if (open < 0) return steps.length === 1 ? 'All 1 step done' : `All ${steps.length} steps done`
-  return `Step ${open + 1} of ${steps.length}`
+/**
+ * Spec 4.2 plan line: "Plan blocked", "Plan done", else "Step 3 of 7" (total = steps not skipped, current = 1 + the
+ * first step not done among them). Null without a plan or counted steps.
+ */
+export function planStepLabel(plan: { status?: string; steps: readonly { status: string }[] } | null | undefined): string | null {
+  if (!plan) return null
+  if (plan.status === 'blocked') return 'Plan blocked'
+  if (plan.status === 'done') return 'Plan done'
+  const steps = plan.steps.filter((s) => s.status !== 'skipped')
+  if (steps.length === 0) return null
+  const open = steps.findIndex((s) => s.status !== 'done')
+  return `Step ${(open < 0 ? steps.length - 1 : open) + 1} of ${steps.length}`
 }
 
-/** The Dashboard's one big figure and the line under it. */
-export function heroFigure(input: { decisions: number; running: number }): { figure: string; caption: string } {
-  const { decisions, running } = input
-  if (decisions > 0) {
-    return {
-      figure: decisions === 1 ? '1 needs you' : `${decisions} need you`,
-      caption: decisions === 1 ? 'decision waiting' : 'decisions waiting'
-    }
-  }
-  if (running > 0) return { figure: `${running} running`, caption: running === 1 ? 'run in progress' : 'runs in progress' }
-  return { figure: 'All quiet', caption: 'Nothing is running or waiting for you' }
+/** The Dashboard's one big figure (spec 3): decisions, then live runs, then paused, else quiet; no projects is a welcome. */
+export function heroFigure(input: { decisions: number; running: number; paused: number; projects: number }): { figure: string } {
+  const { decisions, running, paused, projects } = input
+  if (projects === 0 && decisions === 0 && running === 0 && paused === 0) return { figure: 'Welcome to OrgAI' }
+  if (decisions > 0) return { figure: decisions === 1 ? '1 needs you' : `${decisions} need you` }
+  if (running > 0) return { figure: `${running} running` }
+  if (paused > 0) return { figure: `${paused} paused` }
+  return { figure: 'All quiet' }
 }
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
-/** What deleting a project removes, in the confirm dialog. `historyRuns` is every saved run, open ones included. */
+/** The text parts of the hero subline before the cost: "3 projects", "2 runs open". Empty parts are left out. */
+export function heroSublineParts(input: { projects: number; openRuns: number }): string[] {
+  const parts: string[] = []
+  if (input.projects > 0) parts.push(plural(input.projects, 'project', 'projects'))
+  if (input.openRuns > 0) parts.push(`${plural(input.openRuns, 'run', 'runs')} open`)
+  return parts
+}
+
+export const FIRST_LAUNCH_LINE = 'Start a project or just chat. Nothing runs until you say so.'
+
+/** What deleting a project removes, in the confirm dialog (spec 5.1). `historyRuns` is every saved run, open ones included. */
 export function deleteProjectBody(input: { openRuns: number; historyRuns: number }): string {
   const open = Math.max(0, Math.floor(input.openRuns))
   const hist = Math.max(0, Math.floor(input.historyRuns))
   const files = 'Files in its folder are untouched.'
-  if (open === 0 && hist === 0) return `Deletes the project from OrgAI. It has no runs. ${files}`
+  const also = 'Its project skills and saved service secrets go too.'
+  if (open === 0 && hist === 0) return `Removes the project from OrgAI. ${files}`
   const wipe = `the history, transcripts and costs of ${plural(hist, 'run', 'runs')}`
-  if (open === 0) return `Deletes ${wipe}. ${files}`
-  if (hist === 0) return `Ends ${plural(open, 'open run', 'open runs')} and deletes the project from OrgAI. ${files}`
-  return `Ends ${plural(open, 'open run', 'open runs')} and deletes ${wipe}. ${files}`
+  if (open === 0) return `Deletes ${wipe}. ${also} ${files}`
+  if (hist === 0) return `Ends ${plural(open, 'open run', 'open runs')}. ${also} ${files}`
+  return `Ends ${plural(open, 'open run', 'open runs')} and deletes ${wipe}. ${also} ${files}`
 }
