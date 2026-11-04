@@ -863,7 +863,10 @@ export interface ConnectorInfo {
 /** connectors:add input. The renderer names a preset; main builds the URL, headers and auth from the catalog. */
 export interface ConnectorAddInput {
   connectorId: string
-  /** A ConnectorVariant id; missing or unknown = the connector's defaultVariant. */
+  /**
+   * A ConnectorVariant id; missing or unknown = the connector's defaultVariant for a new entry. For an existing entry
+   * that is not connected, a different valid id switches the entry to that variant; a connected entry keeps its own.
+   */
   variant?: string
 }
 
@@ -3765,8 +3768,10 @@ export interface OrgAIApi {
     list(): Promise<ConnectorInfo[]>
     /**
      * Create the library entry from the preset (main builds url, headers and secret slots; nothing else is taken
-     * from the renderer). Idempotent: an existing entry for that connector is returned unchanged, whatever the
-     * variant (remove it first to switch). Broadcasts mcpLibrary:changed when it creates one.
+     * from the renderer). Idempotent: an existing entry for that connector is returned unchanged, except that while
+     * it is not connected a different valid variant switches it in place (the old variant's token or OAuth state is
+     * dropped); a connected entry keeps its variant until disconnected. Broadcasts mcpLibrary:changed when it
+     * creates or switches one.
      */
     add(input: ConnectorAddInput): Promise<McpLibraryInfo>
     /** 'token' connectors: store (or clear) the token as the entry's secret header. Rejects before add. */

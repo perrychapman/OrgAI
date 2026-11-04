@@ -82,14 +82,61 @@ describe('connectors:list and connectors:add', () => {
     expect(card.library!.entry.id).toBe(info.entry.id)
   })
 
-  it('is idempotent per connector, whatever the variant', () => {
+  it('is idempotent per connector for the same, missing or unknown variant', () => {
     const svc = build()
     const a = svc.connectorsAdd({ connectorId: 'linear' })
-    const b = svc.connectorsAdd({ connectorId: 'linear', variant: 'full' })
-    expect(b.entry.id).toBe(a.entry.id)
-    expect(b.entry.url).toBe('https://mcp.linear.app/mcp/readonly')
+    const b = svc.connectorsAdd({ connectorId: 'linear' })
+    const c = svc.connectorsAdd({ connectorId: 'linear', variant: 'readonly' })
+    const d = svc.connectorsAdd({ connectorId: 'linear', variant: 'nope' })
+    for (const x of [b, c, d]) expect(x.entry).toEqual(a.entry)
     expect(library.list()).toHaveLength(1)
     expect(libEvents).toHaveLength(1)
+  })
+
+  it('switches an unconnected token connector to another variant in place', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'github' })
+    expect(a.entry.headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    const b = svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(b.entry.id).toBe(a.entry.id)
+    expect(b.entry.name).toBe(a.entry.name)
+    expect(b.entry.addedAt).toBe(a.entry.addedAt)
+    expect(b.entry.connectorVariant).toBe('full')
+    expect(b.entry.headers?.['X-MCP-Readonly']).toBeUndefined()
+    expect(b.entry.secretHeaders).toEqual(['Authorization'])
+    expect(b.entry.connectedAt).toBeUndefined()
+    expect(secrets.get(mcpLibrarySecretKey(a.entry.id, 'header', 'Authorization'))).toBeUndefined()
+    expect(b.missingSecrets).toEqual(['Authorization'])
+    expect(library.list()).toHaveLength(1)
+    expect(svc.connectorsList().find((c) => c.connector.id === 'github')!.variant).toBe('full')
+    // Unknown id: untouched.
+    expect(svc.connectorsAdd({ connectorId: 'github', variant: 'nope' }).entry).toEqual(b.entry)
+  })
+
+  it('locks the variant while connected and unlocks it on Disconnect', () => {
+    const svc = build()
+    svc.connectorsAdd({ connectorId: 'github' })
+    svc.connectorsSetToken({ connectorId: 'github', token: 'ghp_1' })
+    const locked = svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(locked.entry.connectorVariant).toBe('readonly')
+    expect(locked.entry.headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    svc.connectorsSetToken({ connectorId: 'github', token: null })
+    const switched = svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(switched.entry.connectorVariant).toBe('full')
+    expect(switched.entry.id).toBe(locked.entry.id)
+  })
+
+  it('switching an OAuth connector variant drops its OAuth state and tokens', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'cloudflare', variant: 'token' })
+    const o = svc.connectorsAdd({ connectorId: 'cloudflare', variant: 'oauth' })
+    expect(o.entry.id).toBe(a.entry.id)
+    secrets.set(mcpLibraryOAuthKey(o.entry.id, 'clientSecret'), 'CS-stale')
+    library.save({ ...library.get(o.entry.id)!, oauth: { resource: 'https://mcp.cloudflare.com/mcp', authorizationServer: 'https://x.example', hasClientSecret: false } })
+    const t = svc.connectorsAdd({ connectorId: 'cloudflare', variant: 'token' })
+    expect(t.entry.connectorVariant).toBe('token')
+    expect(t.entry.oauth).toBeUndefined()
+    expect(secrets.get(mcpLibraryOAuthKey(o.entry.id, 'clientSecret'))).toBeUndefined()
   })
 
   it('rejects unknown connectors and avoids a custom entry name clash', () => {
