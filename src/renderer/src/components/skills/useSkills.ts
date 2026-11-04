@@ -32,6 +32,8 @@ export function useProjectSkills(projectId: string): ProjectSkills {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const seq = useRef(0)
+  const projectIdRef = useRef(projectId)
+  projectIdRef.current = projectId
 
   // The store's copy of this project, reduced to a value key (skill ids, links, enabled flags and role grants). Any change to
   // skills or grants reloads the list (an approved proposal, a library refresh, a grant edit in the role inspector), while
@@ -42,10 +44,12 @@ export function useProjectSkills(projectId: string): ProjectSkills {
   const applied = useRef<string | null>(null)
 
   const apply = useCallback((result: SkillMutationResult): void => {
-    seq.current++
-    setSkills(result.skills)
-    setError(null)
-    setLoading(false)
+    if (result.project.id === projectIdRef.current) {
+      seq.current++
+      setSkills(result.skills)
+      setError(null)
+      setLoading(false)
+    }
     applied.current = skillsKey(result.project)
     useAppStore.getState().replaceProject(result.project)
   }, [])
@@ -78,7 +82,9 @@ export function useProjectSkills(projectId: string): ProjectSkills {
     seen.current = { projectId, key: storeKey }
     // A project switch is fetched by the effect above, once.
     if (prev.projectId !== projectId || prev.key === storeKey) return
-    if (applied.current === storeKey) return
+    const own = applied.current === storeKey
+    applied.current = null
+    if (own) return
     // Background reload: keeps the list and `loading` as they are.
     void reload()
   }, [projectId, storeKey, reload])
