@@ -1,27 +1,65 @@
 import { describe, expect, it, vi } from 'vitest'
 
+const electronMock = vi.hoisted(() => ({
+  focused: null as { id: number } | null,
+  setApplicationMenu: vi.fn(),
+  buildFromTemplate: vi.fn((t: unknown) => t),
+  focusHandlers: [] as ((e: unknown, win: { id: number }) => void)[]
+}))
+
 vi.mock('electron', () => ({
-  app: { name: 'OrgAI', isPackaged: false },
-  Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn() },
+  app: {
+    name: 'OrgAI',
+    isPackaged: false,
+    getPath: () => '/data',
+    on: (event: string, h: (e: unknown, win: { id: number }) => void) => {
+      if (event === 'browser-window-focus') electronMock.focusHandlers.push(h)
+    }
+  },
+  Menu: { setApplicationMenu: electronMock.setApplicationMenu, buildFromTemplate: electronMock.buildFromTemplate },
   shell: { openExternal: vi.fn(), openPath: vi.fn() },
-  BrowserWindow: {}
+  BrowserWindow: { getFocusedWindow: () => electronMock.focused }
 }))
 vi.mock('./log', () => ({ logsDir: () => '/logs' }))
 
 import type { MenuItemConstructorOptions } from 'electron'
-import { DOCS_URL, ISSUES_URL, RUN_SCOPED_MENU_ACTIONS, buildMenuTemplate, menuActionSender, openHelpUrl } from './appMenu'
-import { IPC, MENU_ACTIONS } from '../shared/types'
-import type { MenuAction } from '../shared/types'
+import {
+  DOCS_URL,
+  ISSUES_URL,
+  buildMenuTemplate,
+  cleanMenuState,
+  installAppMenu,
+  menuActionSender,
+  menuActionTarget,
+  menuItemEnabled,
+  openHelpUrl,
+  setMenuState
+} from './appMenu'
+import { EMPTY_MENU_STATE, IPC, MENU_ACTIONS } from '../shared/types'
+import type { MenuAction, MenuState } from '../shared/types'
 
 type Item = MenuItemConstructorOptions
+
+const FULL: MenuState = { hasProject: true, hasRun: true, runLive: true, chatRun: true, hasDecision: true }
 
 const build = (platform: string, isDev = false, extra: Partial<Parameters<typeof buildMenuTemplate>[0]> = {}) => {
   const send = vi.fn()
   const openExternal = vi.fn()
   const openLogs = vi.fn()
+  const openDataFolder = vi.fn()
   const closeWindow = vi.fn()
-  const template = buildMenuTemplate({ platform, appName: 'OrgAI', isDev, send, openExternal, openLogs, closeWindow, ...extra })
-  return { template, send, openExternal, openLogs, closeWindow }
+  const template = buildMenuTemplate({
+    platform,
+    appName: 'OrgAI',
+    isDev,
+    send,
+    openExternal,
+    openLogs,
+    openDataFolder,
+    closeWindow,
+    ...extra
+  })
+  return { template, send, openExternal, openLogs, openDataFolder, closeWindow }
 }
 
 const walk = (items: Item[]): Item[] =>
@@ -34,13 +72,43 @@ const find = (t: Item[], id: string): Item => {
   return it
 }
 const roles = (t: Item[]): string[] => walk(t).flatMap((i) => (i.role ? [String(i.role)] : []))
+const labels = (items: Item[]): string[] => items.map((i) => (i.type === 'separator' ? '-' : (i.label ?? `role:${String(i.role)}`)))
 
 describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform) => {
   const mac = platform === 'darwin'
 
   it('has the expected top-level menus in order', () => {
-    const labels = build(platform).template.map((m) => m.label)
-    expect(labels).toEqual([...(mac ? ['OrgAI'] : []), 'File', 'Edit', 'View', 'Run', 'Window', 'Help'])
+    expect(build(platform).template.map((m) => m.label)).toEqual([
+      ...(mac ? ['OrgAI'] : []), 'File', 'Edit', 'View', 'Run', 'Window', 'Help'
+    ])
+  })
+
+  it('lays out File, View, Run and Help', () => {
+    const { template } = build(platform)
+    expect(labels(menu(template, 'File'))).toEqual([
+      'New project', 'New chat', '-', 'Assistants', '-', 'Close tab', '-',
+      ...(mac ? [] : ['App settings']),
+      'Connections', 'Connectors', 'Skill library',
+      ...(mac ? [] : ['-', 'role:quit'])
+    ])
+    expect(labels(menu(template, 'View')).slice(0, 7)).toEqual([
+      'Live', 'History', 'Team', 'Project settings', '-', 'Toggle sidebar', 'Canvas'
+    ])
+    const canvas = menu(menu(template, 'View'), 'Canvas')
+    expect(labels(canvas)).toEqual(['Show conversation', 'Hide finished agents', '-', 'Zoom in', 'Zoom out', 'Fit canvas'])
+    expect(canvas.every((i) => i.accelerator === undefined)).toBe(true)
+    expect(labels(menu(template, 'Run'))).toEqual([
+      'New run', 'Open in new window', '-', 'Go to decision', 'Show what needs you', '-',
+      'Interrupt turn', 'End session', '-', 'Save chat as project', 'Org retrospective'
+    ])
+    expect(labels(menu(template, 'Help'))).toEqual([
+      'Documentation', 'Report an issue', 'Keyboard shortcuts', '-', 'Open logs folder', 'Open data folder', '-', 'About OrgAI'
+    ])
+    if (mac) {
+      expect(labels(menu(template, 'OrgAI'))).toEqual([
+        'role:about', '-', 'Settings…', '-', 'role:hide', 'role:hideOthers', 'role:unhide', '-', 'role:quit'
+      ])
+    }
   })
 
   it('routes each id-bearing item to send with exactly its id, and covers every action once', () => {
@@ -58,38 +126,53 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
 
   it('sets the accelerators of the keyed items', () => {
     const { template } = build(platform)
-    expect(find(template, 'toggle-sidebar').accelerator).toBe('CmdOrCtrl+B')
-    expect(find(template, 'new-chat').accelerator).toBe('CmdOrCtrl+Shift+N')
-    expect(find(template, 'new-run').accelerator).toBe('CmdOrCtrl+T')
-    expect(find(template, 'new-project').accelerator).toBe('CmdOrCtrl+N')
-    expect(find(template, 'open-app-settings').accelerator).toBe('CmdOrCtrl+,')
+    const keys: Record<string, string> = {
+      'toggle-sidebar': 'CmdOrCtrl+B',
+      'new-chat': 'CmdOrCtrl+Shift+N',
+      'new-run': 'CmdOrCtrl+T',
+      'close-tab': 'CmdOrCtrl+W',
+      'go-to-decision': 'CmdOrCtrl+.',
+      'new-project': 'CmdOrCtrl+N',
+      'open-app-settings': 'CmdOrCtrl+,',
+      'show-live': 'CmdOrCtrl+1',
+      'show-history': 'CmdOrCtrl+2',
+      'show-team': 'CmdOrCtrl+3',
+      'show-project-settings': 'CmdOrCtrl+4'
+    }
+    for (const [id, key] of Object.entries(keys)) expect(find(template, id).accelerator).toBe(key)
+    const withKey = walk(template).filter((i) => i.id && i.accelerator).map((i) => i.id).sort()
+    expect(withKey).toEqual(Object.keys(keys).sort())
   })
 
   it('leaves the keys the renderer handles unregistered off macOS only', () => {
     const { template } = build(platform)
-    for (const id of ['toggle-sidebar', 'new-chat', 'new-run']) {
+    for (const id of ['toggle-sidebar', 'new-chat', 'new-run', 'close-tab', 'go-to-decision']) {
       if (mac) expect(find(template, id).registerAccelerator).not.toBe(false)
       else expect(find(template, id).registerAccelerator).toBe(false)
     }
-    expect(find(template, 'new-project').registerAccelerator).toBeUndefined()
-    expect(find(template, 'open-app-settings').registerAccelerator).toBeUndefined()
-  })
-
-  it('has no Ctrl/Cmd+W anywhere, role defaults included', () => {
-    const { template } = build(platform, true)
-    for (const it of walk(template)) {
-      expect(String(it.accelerator ?? '')).not.toMatch(/W$/i)
-      expect(it.role).not.toBe('close')
+    for (const id of ['new-project', 'open-app-settings', 'show-live', 'show-history', 'show-team', 'show-project-settings']) {
+      expect(find(template, id).registerAccelerator).toBeUndefined()
     }
   })
 
-  it('has the quit role only off macOS in File, and in the app menu on macOS', () => {
+  it('has only close-tab on W, and no window-closing item with a W accelerator', () => {
+    const { template } = build(platform, true)
+    const w = walk(template).filter((i) => /W$/i.test(String(i.accelerator ?? '')))
+    expect(w.map((i) => i.id)).toEqual(['close-tab'])
+    for (const it of walk(template)) expect(it.role).not.toBe('close')
+    const closeWin = walk(template).find((i) => i.label === 'Close window')
+    if (closeWin) expect(closeWin.accelerator).toBeUndefined()
+  })
+
+  it('has the quit role only off macOS in File, and in the app menu on macOS; Ctrl+Q on linux only', () => {
     const { template } = build(platform)
     if (mac) {
       expect(roles(menu(template, 'OrgAI'))).toContain('quit')
       expect(roles(menu(template, 'File'))).not.toContain('quit')
     } else {
-      expect(roles(menu(template, 'File'))).toContain('quit')
+      const quit = menu(template, 'File').find((i) => i.role === 'quit')!
+      expect(quit).toBeDefined()
+      expect(quit.accelerator).toBe(platform === 'linux' ? 'Ctrl+Q' : undefined)
     }
   })
 
@@ -100,14 +183,16 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
     expect(roles(menu(build(platform, false).template, 'View'))).not.toContain('toggleDevTools')
   })
 
-  it('opens only the two fixed URLs and the logs folder from Help', () => {
-    const { template, openExternal, openLogs } = build(platform)
+  it('opens only the two fixed URLs, the logs folder and the data folder from Help', () => {
+    const { template, openExternal, openLogs, openDataFolder } = build(platform)
     const help = menu(template, 'Help')
     ;(help.find((i) => i.label === 'Documentation')!.click as () => void)()
     ;(help.find((i) => i.label === 'Report an issue')!.click as () => void)()
     expect(openExternal.mock.calls).toEqual([[DOCS_URL], [ISSUES_URL]])
     ;(help.find((i) => i.label === 'Open logs folder')!.click as () => void)()
     expect(openLogs).toHaveBeenCalledTimes(1)
+    ;(help.find((i) => i.label === 'Open data folder')!.click as () => void)()
+    expect(openDataFolder).toHaveBeenCalledTimes(1)
   })
 
   it('has the right Window entries', () => {
@@ -119,6 +204,79 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
       expect(close.role).toBeUndefined()
     }
   })
+
+  it('enables items from the state', () => {
+    const empty = walk(build(platform).template).filter((i) => i.id)
+    for (const it of empty) expect(it.enabled).toBe(menuItemEnabled(it.id as MenuAction, EMPTY_MENU_STATE))
+    const enabledEmpty = empty.filter((i) => i.enabled).map((i) => i.id).sort()
+    expect(enabledEmpty).toEqual(
+      MENU_ACTIONS.filter((a) => menuItemEnabled(a, EMPTY_MENU_STATE)).sort()
+    )
+    expect(enabledEmpty).toContain('new-project')
+    expect(enabledEmpty).not.toContain('new-run')
+    const full = walk(build(platform, false, { state: FULL }).template).filter((i) => i.id)
+    expect(full.every((i) => i.enabled === true)).toBe(true)
+  })
+})
+
+describe('menuItemEnabled', () => {
+  const only = (k: keyof MenuState): MenuState => ({ ...EMPTY_MENU_STATE, [k]: true })
+  const enabledFor = (state: MenuState) => MENU_ACTIONS.filter((a) => menuItemEnabled(a, state)).sort()
+
+  it('follows the rule table', () => {
+    const always = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant',
+      'open-app-settings', 'open-connections', 'open-connectors', 'open-skill-library', 'open-about',
+      'toggle-sidebar', 'keyboard-shortcuts']
+    expect(enabledFor(EMPTY_MENU_STATE)).toEqual([...always].sort())
+    expect(enabledFor(only('hasProject'))).toEqual(
+      [...always, 'show-live', 'show-history', 'show-team', 'show-project-settings', 'new-run'].sort()
+    )
+    expect(enabledFor(only('hasRun'))).toEqual(
+      [...always, 'close-tab', 'open-run-window', 'toggle-conversation', 'toggle-hide-finished', 'canvas-fit',
+        'canvas-zoom-in', 'canvas-zoom-out', 'org-retrospective'].sort()
+    )
+    expect(enabledFor(only('runLive'))).toEqual([...always, 'interrupt-run', 'end-session'].sort())
+    expect(enabledFor(only('chatRun'))).toEqual([...always, 'save-chat-as-project'].sort())
+    expect(enabledFor(only('hasDecision'))).toEqual([...always, 'go-to-decision', 'show-needs-you'].sort())
+    expect(enabledFor(FULL)).toEqual([...MENU_ACTIONS].sort())
+  })
+})
+
+describe('cleanMenuState', () => {
+  it('keeps only exact true booleans of the five fields', () => {
+    expect(cleanMenuState({ hasProject: true, hasRun: true, runLive: false, chatRun: 1, hasDecision: 'true', extra: true })).toEqual({
+      hasProject: true, hasRun: true, runLive: false, chatRun: false, hasDecision: false
+    })
+    expect(cleanMenuState(FULL)).toEqual(FULL)
+  })
+
+  it('answers empty for junk', () => {
+    for (const junk of [null, undefined, 5, 'x', true, [], [true], () => ({}), new Map(), Object.create({ hasRun: true })]) {
+      expect(cleanMenuState(junk)).toEqual(EMPTY_MENU_STATE)
+    }
+    expect(cleanMenuState({})).toEqual(EMPTY_MENU_STATE)
+    expect(Object.keys(cleanMenuState({ hasRun: true, evil: 'x' })).sort()).toEqual(
+      ['chatRun', 'hasDecision', 'hasProject', 'hasRun', 'runLive']
+    )
+    expect(cleanMenuState(Object.assign(Object.create(null), { hasRun: true })).hasRun).toBe(true)
+  })
+
+  it('does not return the shared empty object', () => {
+    expect(cleanMenuState(null)).not.toBe(EMPTY_MENU_STATE)
+  })
+})
+
+describe('menuActionTarget', () => {
+  it('classifies every action', () => {
+    const main = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant', 'open-app-settings',
+      'open-connections', 'open-connectors', 'open-skill-library', 'open-about', 'show-live', 'show-history', 'show-team',
+      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts']
+    const focused = ['new-run', 'close-tab', 'interrupt-run', 'end-session', 'go-to-decision', 'show-needs-you',
+      'org-retrospective', 'save-chat-as-project', 'open-run-window', 'toggle-conversation', 'toggle-hide-finished',
+      'canvas-fit', 'canvas-zoom-in', 'canvas-zoom-out']
+    for (const a of MENU_ACTIONS) expect(menuActionTarget(a)).toBe(main.includes(a) ? 'main' : 'focused')
+    expect([...main, ...focused].sort()).toEqual([...MENU_ACTIONS].sort())
+  })
 })
 
 describe('menuActionSender', () => {
@@ -127,11 +285,15 @@ describe('menuActionSender', () => {
     isMinimized: vi.fn(() => minimized),
     restore: vi.fn(),
     focus: vi.fn(),
-    webContents: { isDestroyed: () => contentsDestroyed, send: vi.fn() }
+    webContents: {
+      isDestroyed: () => contentsDestroyed,
+      send: vi.fn(),
+      once: vi.fn((_e: string, _l: () => void) => undefined)
+    }
   })
   const RUN = { projectId: 'p', runId: 'r' }
 
-  it('sends { action } on menu:action to a focused main window', () => {
+  it('sends { action } on menu:action to the focused window for a run action', () => {
     const a = win()
     const b = win()
     menuActionSender(() => a, () => [[b, undefined], [a, undefined]])('new-run')
@@ -141,7 +303,7 @@ describe('menuActionSender', () => {
     expect(a.focus).not.toHaveBeenCalled()
   })
 
-  it('sends a run-scoped action to a focused run window', () => {
+  it('sends a run action to a focused run window', () => {
     const main = win()
     const run = win()
     menuActionSender(() => run, () => [[main, undefined], [run, RUN]])('interrupt-run')
@@ -149,7 +311,18 @@ describe('menuActionSender', () => {
     expect(main.webContents.send).not.toHaveBeenCalled()
   })
 
-  it('routes an app-level action from a run window to the main window and focuses it', () => {
+  it('sends a run action to the main window when nothing is focused, else the first live window', () => {
+    const main = win()
+    const run = win()
+    menuActionSender(() => null, () => [[run, RUN], [main, undefined]])('close-tab')
+    expect(main.webContents.send).toHaveBeenCalledTimes(1)
+    expect(run.webContents.send).not.toHaveBeenCalled()
+    const r2 = win()
+    menuActionSender(() => null, () => [[r2, RUN]])('close-tab')
+    expect(r2.webContents.send).toHaveBeenCalled()
+  })
+
+  it('routes a navigation action from a run window to the main window, restoring and focusing it', () => {
     const main = win(false, false, true)
     const run = win()
     menuActionSender(() => run, () => [[run, RUN], [main, undefined]])('open-app-settings')
@@ -159,7 +332,14 @@ describe('menuActionSender', () => {
     expect(main.focus).toHaveBeenCalled()
   })
 
-  it('sends to the main window and focuses it when nothing is focused', () => {
+  it('does not refocus a focused main window for a navigation action', () => {
+    const main = win()
+    menuActionSender(() => main, () => [[main, undefined]])('show-live')
+    expect(main.webContents.send).toHaveBeenCalled()
+    expect(main.focus).not.toHaveBeenCalled()
+  })
+
+  it('focuses the main window when nothing is focused', () => {
     const main = win()
     menuActionSender(() => null, () => [[main, undefined]])('show-live')
     expect(main.webContents.send).toHaveBeenCalled()
@@ -167,7 +347,38 @@ describe('menuActionSender', () => {
     expect(main.restore).not.toHaveBeenCalled()
   })
 
-  it('falls back to the focused run window, else the first live window, without a main window', () => {
+  it('creates the main window for a navigation action and sends once it has loaded', () => {
+    const run = win()
+    const created = win()
+    const createMain = vi.fn(() => created)
+    menuActionSender(() => run, () => [[run, RUN]], createMain)('open-about')
+    expect(createMain).toHaveBeenCalledTimes(1)
+    expect(created.webContents.send).not.toHaveBeenCalled()
+    expect(run.webContents.send).not.toHaveBeenCalled()
+    expect(created.webContents.once).toHaveBeenCalledWith('did-finish-load', expect.any(Function))
+    ;(created.webContents.once.mock.calls[0][1] as () => void)()
+    expect(created.webContents.send).toHaveBeenCalledTimes(1)
+    expect(created.webContents.send).toHaveBeenCalledWith('menu:action', { action: 'open-about' })
+  })
+
+  it('does not create a main window for a run action or when one exists', () => {
+    const main = win()
+    const createMain = vi.fn(() => win())
+    menuActionSender(() => null, () => [[main, undefined]], createMain)('show-team')
+    menuActionSender(() => null, () => [], createMain)('new-run')
+    expect(createMain).not.toHaveBeenCalled()
+  })
+
+  it('does not send to a window destroyed before the load finished', () => {
+    let destroyed = false
+    const created = { ...win(), isDestroyed: () => destroyed }
+    menuActionSender(() => null, () => [], () => created)('show-team')
+    destroyed = true
+    ;(created.webContents.once.mock.calls[0][1] as () => void)()
+    expect(created.webContents.send).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the focused run window, else the first live window, without a main window and no factory', () => {
     const run = win()
     const other = win()
     menuActionSender(() => run, () => [[other, RUN], [run, RUN]])('show-team')
@@ -194,12 +405,6 @@ describe('menuActionSender', () => {
     menuActionSender(() => live, () => [[live, undefined]])('bogus' as MenuAction)
     expect(live.webContents.send).not.toHaveBeenCalled()
   })
-
-  it('lists exactly the run-scoped actions', () => {
-    expect([...RUN_SCOPED_MENU_ACTIONS]).toEqual([
-      'interrupt-run', 'end-session', 'org-retrospective', 'canvas-fit', 'toggle-hide-finished', 'keyboard-shortcuts'
-    ])
-  })
 })
 
 describe('openHelpUrl', () => {
@@ -211,6 +416,54 @@ describe('openHelpUrl', () => {
     expect(openHelpUrl(DOCS_URL + '/', open)).toBe(false)
     expect(openHelpUrl('file:///C:/Windows/System32/calc.exe', open)).toBe(false)
     expect(open.mock.calls).toEqual([[DOCS_URL], [ISSUES_URL]])
+    warn.mockRestore()
+  })
+})
+
+describe('installAppMenu and setMenuState', () => {
+  const enabledOf = (template: unknown, id: string): boolean | undefined =>
+    walk(template as Item[]).find((i) => i.id === id)?.enabled
+
+  it('rebuilds on focus with the focused window state, and on setMenuState only for the focused window', () => {
+    const { setApplicationMenu, buildFromTemplate, focusHandlers } = electronMock
+    installAppMenu(vi.fn())
+    expect(setApplicationMenu).toHaveBeenCalledTimes(1)
+    expect(enabledOf(buildFromTemplate.mock.results[0].value, 'new-run')).toBe(false)
+
+    const winA = { id: 1, once: vi.fn() }
+    const winB = { id: 2, once: vi.fn() }
+    electronMock.focused = winA
+    setApplicationMenu.mockClear()
+    setMenuState(winB, { ...EMPTY_MENU_STATE, hasProject: true })
+    expect(setApplicationMenu).not.toHaveBeenCalled()
+    setMenuState(winA, { ...EMPTY_MENU_STATE, hasRun: true })
+    expect(setApplicationMenu).toHaveBeenCalledTimes(1)
+    const last = () => buildFromTemplate.mock.results[buildFromTemplate.mock.results.length - 1].value
+    expect(enabledOf(last(), 'close-tab')).toBe(true)
+    expect(enabledOf(last(), 'new-run')).toBe(false)
+
+    // Focus moves to B: its stored state drives the menu.
+    focusHandlers[0]({}, winB)
+    expect(enabledOf(last(), 'new-run')).toBe(true)
+    expect(enabledOf(last(), 'close-tab')).toBe(false)
+    // A window with no state gets the empty one.
+    focusHandlers[0]({}, { id: 99 })
+    expect(enabledOf(last(), 'new-run')).toBe(false)
+
+    // Closing a window forgets its state.
+    const closed = winA.once.mock.calls.find((c) => c[0] === 'closed')![1] as () => void
+    closed()
+    focusHandlers[0]({}, winA)
+    expect(enabledOf(last(), 'close-tab')).toBe(false)
+    electronMock.focused = null
+  })
+
+  it('survives a failing Menu build', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    electronMock.buildFromTemplate.mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+    expect(() => installAppMenu(vi.fn())).not.toThrow()
     warn.mockRestore()
   })
 })
