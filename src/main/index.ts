@@ -296,6 +296,7 @@ app.whenReady().then(() => {
     projects,
     secrets,
     library: new McpLibraryStore(dataDir),
+    dataDir,
     openExternal: (url) => shell.openExternal(url),
     // ORGAI_MOCK=1 only: connector entries authorize and test without network (walkthroughs, e2e).
     mock: mockAdapter,
