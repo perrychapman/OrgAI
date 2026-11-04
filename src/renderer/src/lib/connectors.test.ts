@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectorInfo } from '@shared/types'
 import { CONNECTORS, connectorEase } from '@shared/connectors'
+import type { UserConnectorDef } from './mcpScope'
 import {
   accessOptionCount,
   accessWords,
@@ -17,6 +18,7 @@ import {
   newVariantDraft,
   presetErrorOrder,
   presetKindWord,
+  presetLocked,
   sameDraft,
   validatePreset,
   variantCommandLine,
@@ -312,6 +314,56 @@ describe('preset draft', () => {
     ])
     expect(back.variants.find((v) => v.rid === back.defaultRid)?.label).toBe('Read only')
     expect(draftToDef(back, 'acme-crm')).toEqual(def)
+  })
+  it('editing keeps every field the form does not hold', () => {
+    const def: UserConnectorDef = {
+      id: 'acme-crm',
+      name: 'Acme CRM',
+      vendor: 'Acme Inc',
+      publisher: 'user',
+      category: 'data',
+      description: 'Customers',
+      status: 'preview',
+      docsUrl: 'https://acme.test/docs',
+      variants: [
+        { id: 'full', label: 'Full', description: 'All of it', transport: 'sse', url: 'https://crm.acme.test/sse', readOnly: false, auth: { kind: 'token', header: 'Authorization', prefix: 'Bearer', label: 'Acme key', help: 'Find it in Account', link: 'https://acme.test/k' } },
+        { id: 'ro', label: 'Read only', description: 'Reads', transport: 'sse', url: 'https://crm.acme.test/ro', readOnly: true, auth: { kind: 'token', header: 'Authorization', prefix: 'Bearer', label: 'Acme key', help: 'Find it in Account', link: 'https://acme.test/k' } }
+      ],
+      defaultVariant: 'full',
+      setup: ['Open Account'],
+      notes: ['Beta'],
+      aliases: ['crm'],
+      verified: false
+    }
+    expect(presetLocked(def)).toBe(false)
+    expect(draftToDef(defToDraft(def), def.id, undefined, def)).toEqual(def)
+    const oauth: UserConnectorDef = { ...def, variants: def.variants.map((v) => ({ ...v, auth: { kind: 'oauth' as const, scopes: ['read', 'write'] } })) }
+    expect(draftToDef(defToDraft(oauth), oauth.id, undefined, oauth)).toEqual(oauth)
+    const edited = draftToDef({ ...defToDraft(def), name: 'Acme CRM 2' }, def.id, undefined, def)
+    expect(edited.vendor).toBe('Acme Inc')
+    expect(edited.variants[0].description).toBe('All of it')
+    expect(edited.variants[0].auth).toMatchObject({ label: 'Acme key', help: 'Find it in Account', prefix: 'Bearer' })
+  })
+  it('a preset with divergent options is locked and round trips exactly', () => {
+    const def: UserConnectorDef = {
+      id: 'local-db',
+      name: 'Local DB',
+      vendor: 'You',
+      publisher: 'user',
+      category: 'data',
+      description: 'DB',
+      variants: [
+        { id: 'a', label: 'A', transport: 'stdio', command: 'npx', args: ['-y', 'db@1'], readOnly: false, auth: { kind: 'none' } },
+        { id: 'b', label: 'B', transport: 'stdio', command: 'npx', args: ['--other', 'db@2'], env: { X: '1' }, readOnly: true, auth: { kind: 'none' } }
+      ],
+      defaultVariant: 'a',
+      verified: false
+    }
+    expect(presetLocked(def)).toBe(true)
+    expect(draftToDef(defToDraft(def), def.id, undefined, def)).toEqual(def)
+    const renamed = draftToDef({ ...defToDraft(def), description: 'Other' }, def.id, undefined, def)
+    expect(renamed.variants[1].args).toEqual(['--other', 'db@2'])
+    expect(renamed.variants[1].env).toEqual({ X: '1' })
   })
   it('keeps a kit origin and drops it on a duplicate name', () => {
     const def = draftToDef(remote(), 'acme-crm', 'kit')

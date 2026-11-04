@@ -28,6 +28,7 @@ import {
   newRid,
   newVariantDraft,
   presetErrorOrder,
+  presetLocked,
   sameDraft,
   validatePreset
 } from '../../lib/connectors'
@@ -118,6 +119,7 @@ export default function PresetForm({
   const errors = validatePreset(draft)
   const err = (key: string): string | undefined => (shown ? errors[key] : undefined)
   const stdio = draft.transport === 'stdio'
+  const locked = useMemo(() => (preset ? presetLocked(preset) : false), [preset])
   const formId = `${ids}-form`
   const fid = (key: string): string => `${ids}-${key}`
 
@@ -150,6 +152,10 @@ export default function PresetForm({
 
   const save = async (): Promise<void> => {
     if (busy) return
+    if (preset && !dirty) {
+      onClose()
+      return
+    }
     setShown(true)
     const first = presetErrorOrder(draft).find((k) => errors[k])
     if (first) {
@@ -162,7 +168,7 @@ export default function PresetForm({
       return
     }
     const id = preset?.id ?? kebabId(draft.name, new Set(takenIds))
-    const def = draftToDef(draft, id, preset?.origin)
+    const def = draftToDef(draft, id, preset?.origin, preset)
     setBusy(true)
     setSaveError(null)
     try {
@@ -216,6 +222,12 @@ export default function PresetForm({
         {preset && added && (
           <p className="muted" data-testid="preset-added-note">
             {PRESET_ADDED_NOTE}
+          </p>
+        )}
+
+        {locked && (
+          <p className="muted" data-testid="preset-locked-note">
+            This preset has settings this form cannot edit; they are kept as they are.
           </p>
         )}
 
@@ -274,15 +286,19 @@ export default function PresetForm({
             How it connects
           </span>
           <div data-testid="preset-transport">
-            <SegmentedControl
-              label="How it connects"
-              value={draft.transport}
-              options={[
-                { value: 'http', label: 'Remote address' },
-                { value: 'stdio', label: 'Program on this computer' }
-              ]}
-              onChange={setTransport}
-            />
+            {locked ? (
+              <p className="muted">{stdio ? 'Program on this computer' : 'Remote address'}</p>
+            ) : (
+              <SegmentedControl
+                label="How it connects"
+                value={draft.transport}
+                options={[
+                  { value: 'http', label: 'Remote address' },
+                  { value: 'stdio', label: 'Program on this computer' }
+                ]}
+                onChange={setTransport}
+              />
+            )}
           </div>
         </div>
         {stdio ? (
@@ -294,6 +310,7 @@ export default function PresetForm({
                   mono
                   data-testid="preset-command"
                   value={draft.command}
+                  readOnly={locked}
                   placeholder="npx"
                   autoComplete="off"
                   spellCheck={false}
@@ -311,6 +328,7 @@ export default function PresetForm({
                   rows={3}
                   data-testid="preset-args"
                   value={draft.args}
+                  readOnly={locked}
                   placeholder={'-y\n@acme/server@1.2.3'}
                   spellCheck={false}
                   invalid={!!err('args')}
@@ -328,6 +346,7 @@ export default function PresetForm({
                 mono
                 data-testid="preset-url"
                 value={draft.url}
+                readOnly={locked}
                 placeholder="https://example.com/mcp"
                 autoComplete="off"
                 spellCheck={false}
@@ -339,7 +358,7 @@ export default function PresetForm({
           </Field>
         )}
 
-        <fieldset className="preset-set" data-testid="preset-auth" data-auth={draft.auth}>
+        <fieldset className="preset-set" data-testid="preset-auth" data-auth={draft.auth} disabled={locked}>
           <legend>Sign-in</legend>
           <label className="preset-radio">
             <input id={fid('auth')} type="radio" name={`${ids}-auth`} checked={draft.auth === 'none'} onChange={() => setAuth('none')} />
@@ -418,7 +437,7 @@ export default function PresetForm({
           )}
         </fieldset>
 
-        <fieldset className="preset-set" data-testid="preset-fixed">
+        <fieldset className="preset-set" data-testid="preset-fixed" disabled={locked}>
           <legend>{stdio ? 'Other variables' : 'Other headers'}</legend>
           {draft.rows.length === 0 && <p className="muted">{stdio ? 'No other variables.' : 'No other headers.'}</p>}
           {draft.rows.map((r, i) => (
@@ -492,6 +511,7 @@ export default function PresetForm({
                       mono
                       rows={1}
                       value={v.extra}
+                      readOnly={locked}
                       placeholder="One per line"
                       spellCheck={false}
                       onChange={(val) => patchVariant(v.rid, { extra: val })}
@@ -501,6 +521,7 @@ export default function PresetForm({
                       id={fid(`extra:${v.rid}`)}
                       mono
                       value={v.extra}
+                      readOnly={locked}
                       placeholder="Uses the address above"
                       autoComplete="off"
                       spellCheck={false}
