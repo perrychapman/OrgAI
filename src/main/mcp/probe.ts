@@ -20,17 +20,22 @@ interface RpcClient {
   close(): Promise<void>
 }
 
-/** Every non-trivial secret value the server was given, to scrub from output. */
+/**
+ * Every non-trivial secret value the server was given, to scrub from output: the declared secret env and header
+ * slots plus any Authorization header whatever its declaration, since McpService.resolve injects an OAuth bearer
+ * there without naming the header in secretHeaders.
+ */
 function secretValues(r: ResolvedMcpServer): string[] {
-  const out: string[] = []
-  for (const n of r.spec.secretEnv ?? []) if (r.env[n]) out.push(r.env[n])
-  for (const n of r.spec.secretHeaders ?? []) if (r.headers[n]) out.push(r.headers[n])
+  const out = new Set<string>()
+  for (const n of r.spec.secretEnv ?? []) if (r.env[n]) out.add(r.env[n])
+  for (const n of r.spec.secretHeaders ?? []) if (r.headers[n]) out.add(r.headers[n])
+  for (const [h, v] of Object.entries(r.headers)) if (h.toLowerCase() === 'authorization' && v) out.add(v)
   // A bearer header value also appears as its token alone in logs.
   for (const v of [...out]) {
     const m = /^(?:Bearer|Basic|Token)\s+(.+)$/i.exec(v)
-    if (m) out.push(m[1])
+    if (m) out.add(m[1])
   }
-  return out.filter((v) => v.length >= 3).sort((a, b) => b.length - a.length)
+  return [...out].filter((v) => v.length >= 3).sort((a, b) => b.length - a.length)
 }
 
 export function redact(text: string, secrets: string[]): string {
@@ -47,11 +52,19 @@ interface CauseLink {
   message?: string
 }
 
-/** The thrown error and up to CAUSE_DEPTH nested causes, each reduced to its string `code` and `message`. */
+/**
+ * The thrown error and up to CAUSE_DEPTH nested causes, each reduced to its string `code` and `message`. A string
+ * cause (`new TypeError('fetch failed', { cause: 'other side closed' })`) is the chain's last link, as a message.
+ */
 function causeChain(e: unknown): CauseLink[] {
   const out: CauseLink[] = []
   let cur: unknown = e
-  for (let i = 0; i <= CAUSE_DEPTH && cur && typeof cur === 'object'; i++) {
+  for (let i = 0; i <= CAUSE_DEPTH && cur; i++) {
+    if (typeof cur === 'string') {
+      if (cur) out.push({ message: cur })
+      break
+    }
+    if (typeof cur !== 'object') break
     const o = cur as { code?: unknown; message?: unknown; cause?: unknown }
     out.push({
       ...(typeof o.code === 'string' && o.code ? { code: o.code } : {}),
@@ -73,8 +86,12 @@ export function hostOfUrl(url: string | undefined): string {
 }
 
 const DNS_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NONAME'])
-const CONNECT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE'])
+const CONNECT_CODES = new Set(['ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE'])
+/** The other side closed or reset the socket before answering (undici's UND_ERR_SOCKET, a TCP reset). */
+const CLOSED_SOCKET_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET'])
 const ANSWER_TIMEOUT_CODES = new Set(['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'])
+/** The longest "fetch failed: <detail>" fallback; a cause message is untrusted text of any length. */
+const FALLBACK_DETAIL_MAX = 300
 
 function isCertificateCode(code: string): boolean {
   return code.includes('CERT') || code.startsWith('ERR_TLS') || code.startsWith('SELF_SIGNED') || code.startsWith('UNABLE_TO_VERIFY')
@@ -83,7 +100,7 @@ function isCertificateCode(code: string): boolean {
 /** True for undici's "fetch failed" whose cause is a socket the other side closed or reset before answering. */
 export function isClosedSocketFailure(e: unknown): boolean {
   for (const { code, message } of causeChain(e)) {
-    if (code === 'UND_ERR_SOCKET' || code === 'ECONNRESET') return true
+    if (code && CLOSED_SOCKET_CODES.has(code)) return true
     if (message && /other side closed/i.test(message)) return true
   }
   return false
@@ -92,7 +109,8 @@ export function isClosedSocketFailure(e: unknown): boolean {
 /**
  * Plain words for undici's bare `TypeError: fetch failed`, whose reason sits in `error.cause` (at most CAUSE_DEPTH
  * levels are read). Null when the error is neither "fetch failed" nor carries a cause, so other errors keep their
- * own message. `host` names the server; the caller still redacts the result.
+ * own message. `host` names the server; the caller still redacts the result. A sentence that already starts with
+ * "Could not" needs no "Could not reach the server:" prefix (see `reachabilityMessage`).
  */
 export function describeFetchFailure(e: unknown, host = 'the server'): string | null {
   if (!e || typeof e !== 'object') return null
@@ -111,11 +129,16 @@ export function describeFetchFailure(e: unknown, host = 'the server'): string | 
       return `The TLS certificate of ${host} could not be verified${code ? ` (${code})` : ''}. A proxy, VPN or antivirus that inspects HTTPS can cause this.`
     }
     if (message && /unexpected redirect/i.test(message)) return `${host} redirected the request; OrgAI does not follow redirects for MCP servers. Check the URL.`
-    if (code === 'UND_ERR_SOCKET' || (message && /other side closed/i.test(message))) return `${host} closed the connection before answering.`
+    if ((code && CLOSED_SOCKET_CODES.has(code)) || (message && /other side closed/i.test(message))) return `${host} closed the connection before answering.`
     if (code && ANSWER_TIMEOUT_CODES.has(code)) return `${host} did not answer in time (${code}).`
   }
   const detail = causes.map((c) => c.code).find((c) => c) ?? [...causes].reverse().map((c) => c.message).find((m) => m && m !== 'fetch failed')
-  return `fetch failed: ${detail ?? 'no further detail'}.`
+  return `fetch failed: ${(detail ?? 'no further detail').slice(0, FALLBACK_DETAIL_MAX)}.`
+}
+
+/** The test's error text for a described network failure: one "Could not" at the front, never two. */
+export function reachabilityMessage(described: string): string {
+  return described.startsWith('Could not') ? described : `Could not reach the server: ${described}`
 }
 
 /** A 401 from a remote server: carries the WWW-Authenticate header for the result. */
@@ -421,8 +444,10 @@ export async function testServer(resolved: ResolvedMcpServer, timeoutMs = 20_000
       const authorizationServer = found ? redact(found, secrets) : undefined
       return { ok: false, needsAuthorization: true, ...(authorizationServer ? { authorizationServer } : {}), error: e.message, durationMs: Date.now() - started }
     }
+    // A fetch may throw a non-Error (a string, null): the test still answers { ok: false } with what was thrown.
+    const raw = e instanceof Error ? e.message : String(e)
     const described = spec.transport === 'stdio' ? null : describeFetchFailure(e, hostOfUrl(spec.url))
-    let message = redact(described ? `Could not reach the server: ${described}` : (e as Error).message, secrets)
+    let message = redact(described ? reachabilityMessage(described) : raw, secrets)
     const tail = stdio?.stderrTail()
     if (tail) message += `\n${tail}`
     return {

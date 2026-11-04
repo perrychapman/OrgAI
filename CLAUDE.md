@@ -1059,13 +1059,21 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     the tests use a fixture, and registry content is untrusted data.
   - `mcp:test` (`src/main/mcp/probe.ts`) runs initialize + tools/list without a run. It covers stdio and streamable
     HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests. Network failures name their
-    cause (`describeFetchFailure` reads undici's `error.cause`, at most 3 levels: DNS, connection, certificate,
-    redirect, closed socket, answer timeout, else "fetch failed: <code or message>", prefixed "Could not reach the
-    server:" and naming only the URL's host), initialize and tools/list are retried once on a fresh request after a
-    closed or reset socket (never a notification), and a failed library or project test (not a needsAuthorization
-    one) is logged at warn in main.log with the redacted error (`McpService.noteTestResult`); verified by unit tests
-    with a fake fetch only (the GitHub "fetch failed" report of 2026-11-04 could not be reproduced: the user's stored
-    token tested ok through the app).
+    cause (`describeFetchFailure` reads undici's `error.cause`, at most 3 levels, a string cause counting as the last
+    link: DNS "Could not look up <host>...", connection "Could not connect to <host> (<code>)...", certificate,
+    redirect, closed socket "<host> closed the connection before answering." (UND_ERR_SOCKET, ECONNRESET, "other
+    side closed"), answer timeout, else "fetch failed: <code or message>" with the detail cut at 300 chars; a
+    sentence not starting with "Could not" gets the prefix "Could not reach the server: " (`reachabilityMessage`),
+    never two; only the URL's host is named), initialize and tools/list are retried once on a fresh request with the
+    same Mcp-Session-Id after a closed or reset socket (never a notification, never once the request signal is
+    aborted), a non-Error throw (null, a string) still answers `{ ok: false }`, and the probe scrubs every declared
+    secret slot plus any Authorization header value (the OAuth bearer `resolve()` injects is not in
+    `secretHeaders`) from the error. A failed library or project test (not a needsAuthorization one) is logged at
+    warn in main.log (`McpService.noteTestResult`): the line never carries headers or env values and names only the
+    URL's host; a stdio test's `error` carries the redacted stderr tail after its first line and only that first
+    line is logged. Verified by unit tests with a fake fetch only (the GitHub "fetch failed" report of 2026-11-04
+    could not be reproduced: the user's stored token tested ok through the app); the log line itself has no unit
+    test.
   - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
     and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
   - A server with any unset `secretEnv` / `secretHeaders` slot never starts: `McpService.enabledServers` skips it and
