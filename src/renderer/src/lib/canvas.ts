@@ -148,6 +148,25 @@ export function agentNodeSize(style: CanvasNodeStyle): { width: number; height: 
   return style === 'compact' ? AGENT_NODE_SIZE.compact : AGENT_NODE_SIZE.card
 }
 
+/**
+ * Edge colour (docs/design/canvas-themes.md section 5): the role colour mixed toward `ink` in sRGB, keeping `mix`
+ * percent of the role colour, as '#rrggbb'. Inputs are hex; `mix` is a number 0-100 or a string like '50%'.
+ * SEAM: placeholder until the canvas-engine brief implements it (returns the role colour).
+ */
+export function edgeStroke(role: string, _mix: number | string, _ink: string): string {
+  return role
+}
+
+/**
+ * Minimap size for a stage (section 6): width clamp(120, round(0.18 * w), 200), height min(round(0.3 * h),
+ * round(0.75 * width)); null below 240 px high or 480 px wide. SEAM: the canvas-engine brief owns it and its tests.
+ */
+export function minimapSize(stageWidth: number, stageHeight: number): { width: number; height: number } | null {
+  if (stageHeight < 240 || stageWidth < 480) return null
+  const width = Math.min(200, Math.max(120, Math.round(0.18 * stageWidth)))
+  return { width, height: Math.min(Math.round(0.3 * stageHeight), Math.round(0.75 * width)) }
+}
+
 export function groupNodeSize(style: CanvasNodeStyle): { width: number; height: number } {
   return style === 'compact' ? GROUP_NODE_SIZE.compact : GROUP_NODE_SIZE.card
 }

@@ -1,4 +1,5 @@
 import dagre from '@dagrejs/dagre'
+import type { CanvasLayout } from '@shared/types'
 
 export interface LayoutItem {
   id: string
@@ -32,10 +33,42 @@ export function acyclicParents(items: LayoutItem[]): Map<string, string> {
   return parents
 }
 
-/** Top-down tree layout. Returns top-left positions keyed by id. */
-export function treeLayout(items: LayoutItem[], opts?: { nodesep?: number; ranksep?: number }): Record<string, { x: number; y: number }> {
+/** Ring guides of the radial layout, in flow coordinates (CanvasBackdrop draws them). */
+export interface RingGuides {
+  cx: number
+  cy: number
+  radii: number[]
+}
+
+export interface CanvasLayoutResult {
+  /** Top-left positions keyed by id. */
+  positions: Record<string, { x: number; y: number }>
+  /** Only for the radial layout. */
+  rings?: RingGuides
+}
+
+/**
+ * Radial layout (docs/design/canvas-themes.md section 3): root centre at (0, 0), depth d on ring d, children within
+ * their parent's angular sector. SEAM: placeholder until the canvas-engine brief implements it (falls back to a tree).
+ */
+export function radialLayout(items: LayoutItem[], _opts?: { ringStep?: number; gap?: number }): CanvasLayoutResult {
+  return { positions: treeLayout(items) }
+}
+
+/** The one entry point every canvas uses: the layout setting picks tree TB, tree LR or radial. */
+export function layoutCanvas(
+  layout: CanvasLayout,
+  items: LayoutItem[],
+  opts?: { nodesep?: number; ranksep?: number; ringStep?: number }
+): CanvasLayoutResult {
+  if (layout === 'radial') return radialLayout(items, { ringStep: opts?.ringStep })
+  return { positions: treeLayout(items, { nodesep: opts?.nodesep, ranksep: opts?.ranksep, rankdir: layout === 'left-right' ? 'LR' : 'TB' }) }
+}
+
+/** Tree layout, top-down ('TB', default) or left to right ('LR'). Returns top-left positions keyed by id. */
+export function treeLayout(items: LayoutItem[], opts?: { nodesep?: number; ranksep?: number; rankdir?: 'TB' | 'LR' }): Record<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph()
-  g.setGraph({ rankdir: 'TB', nodesep: opts?.nodesep ?? 48, ranksep: opts?.ranksep ?? 96, marginx: 20, marginy: 20 })
+  g.setGraph({ rankdir: opts?.rankdir ?? 'TB', nodesep: opts?.nodesep ?? 48, ranksep: opts?.ranksep ?? 96, marginx: 20, marginy: 20 })
   g.setDefaultEdgeLabel(() => ({}))
   const parents = acyclicParents(items)
   for (const item of items) g.setNode(item.id, { width: item.width, height: item.height })
