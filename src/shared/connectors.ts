@@ -40,8 +40,9 @@ const GOOGLE_OAUTH: ConnectorOAuthOverrides = {
 }
 
 // GitHub has no dynamic client registration: users sign in through their own OAuth App or GitHub App. 'replace'
-// builds the discovery from these endpoints and sets the expected RFC 9207 iss to the issuer below (GitHub sends
-// iss = https://github.com/login/oauth and advertises support). RFC 8707 resource indicators are not advertised.
+// builds the discovery from these endpoints and sets the expected RFC 9207 iss to the issuer below. A callback
+// that carries a different iss is refused, but 'replace' discovery never sets issParameterSupported, so a callback
+// with no iss at all is accepted. RFC 8707 resource indicators are not advertised.
 const GITHUB_OAUTH: ConnectorOAuthOverrides = {
   issuer: 'https://github.com/login/oauth',
   authorizationEndpoint: 'https://github.com/login/oauth/authorize',
@@ -350,7 +351,7 @@ export const CONNECTORS: readonly ConnectorDef[] = [
       {
         id: 'app-readonly',
         label: 'Read-only, sign in with your app',
-        description: 'Only the read tools (X-MCP-Readonly header), signed in through your own GitHub app.',
+        description: 'Only the read tools (X-MCP-Readonly header), signed in through your own GitHub app. The sign-in asks GitHub for the repo scope, which can also write, so read-only is enforced only by that header.',
         transport: 'http',
         url: 'https://api.githubcopilot.com/mcp/',
         headers: { 'X-MCP-Readonly': 'true' },

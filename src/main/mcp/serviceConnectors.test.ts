@@ -139,6 +139,45 @@ describe('connectors:list and connectors:add', () => {
     expect(secrets.get(mcpLibraryOAuthKey(o.entry.id, 'clientSecret'))).toBeUndefined()
   })
 
+  it('switching to a variant with no sign-in connects it at once', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'exa', variant: 'key' })
+    expect(a.entry.connectedAt).toBeUndefined()
+    const b = svc.connectorsAdd({ connectorId: 'exa', variant: 'free' })
+    expect(b.entry.id).toBe(a.entry.id)
+    expect(b.entry.connectedAt).toBe(NOW)
+    expect(svc.connectorsList().find((c) => c.connector.id === 'exa')!.state).toBe('connected')
+  })
+
+  it('a switch re-snapshots projects that link the entry', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'github' })
+    svc.linkLibrary({ projectId: pid, libraryId: a.entry.id })
+    expect(projects.get(pid)!.mcpServers![0].headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    const link = projects.get(pid)!.mcpServers![0]
+    expect(link.connectorVariant).toBe('full')
+    expect(link.headers?.['X-MCP-Readonly']).toBeUndefined()
+  })
+
+  it('a switch aborts an in-flight authorization for the entry', async () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'github', variant: 'app-readonly' })
+    let signal: AbortSignal | undefined
+    runAuthorization.mockImplementationOnce(
+      (input: AuthorizeFlowInput) =>
+        new Promise((_resolve, reject) => {
+          signal = input.signal
+          input.signal!.addEventListener('abort', () => reject(new Error('Authorization was cancelled.')))
+        })
+    )
+    const pending = svc.authorize({ libraryId: entry.id, clientId: 'gh', clientSecret: 'shh' })
+    await vi.waitFor(() => expect(runAuthorization).toHaveBeenCalledTimes(1))
+    svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(signal!.aborted).toBe(true)
+    expect((await pending).state).toBe('error')
+  })
+
   it('rejects unknown connectors and avoids a custom entry name clash', () => {
     const svc = build()
     expect(() => svc.connectorsAdd({ connectorId: 'nope' })).toThrow(/Unknown connector/)
