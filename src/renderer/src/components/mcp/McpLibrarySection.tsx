@@ -1,12 +1,13 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2 } from 'lucide-react'
+import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2, Users } from 'lucide-react'
 import type { McpLibraryInfo, McpTestResult } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { focusPaneHeading } from '../../lib/settingsTarget'
 import { scrollWithin } from '../../lib/scrollWithin'
 import { useAssistantRunsOn } from '../../lib/assistantModels'
+import { projectSecretsOf, scopeFields } from '../../lib/mcpScope'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -158,6 +159,9 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
   const secrets = secretStatuses(infoFromLibrary(info))
   const secretsSet = secrets.filter((s) => s.set).length
   const remote = entry.transport !== 'stdio'
+  const perProjectSecrets = scopeFields(entry).perProjectSecrets === true
+  const perEnv = scopeFields(entry).perProjectEnv ?? []
+  const missingIn = (projectSecretsOf(info) ?? []).filter((r) => r.missingSecrets.length > 0).map((r) => r.projectName)
 
   const guard = async (fn: () => Promise<void>): Promise<void> => {
     setError(null)
@@ -207,7 +211,27 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
           <Badge>{transportWords(entry.transport)}</Badge>
           <SourceBadge source={entry.source} />
           <AuthChip auth={auth} />
-          {secrets.length > 0 && (
+          {perProjectSecrets && secrets.length > 0 && (
+            <span className="mcp-link-static" data-testid="mcp-library-per-project">
+              <Icon icon={Users} size="xs" />
+              Secrets per project
+              {missingIn.length > 0 && (
+                <span className="muted">
+                  {' '}
+                  (still empty in {missingIn.slice(0, 3).join(', ')}
+                  {missingIn.length > 3 ? ` and ${missingIn.length - 3} more` : ''})
+                </span>
+              )}
+            </span>
+          )}
+          {perEnv.length > 0 && (
+            <span className="mcp-link-static">
+              <Icon icon={Users} size="xs" />
+              <span className="mono">{perEnv.slice(0, 3).join(', ')}</span>
+              {perEnv.length > 3 ? ` and ${perEnv.length - 3} more` : ''} per project
+            </span>
+          )}
+          {!perProjectSecrets && secrets.length > 0 && (
             <button type="button" className="mcp-link" aria-expanded={secretsOpen} aria-controls={secretsOpen ? panelId : undefined} onClick={() => setSecretsOpen((o) => !o)}>
               <Icon icon={KeyRound} size="xs" />
               Secrets: {secretsSet} of {secrets.length} set
