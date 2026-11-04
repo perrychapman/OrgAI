@@ -31,12 +31,20 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   File, Edit, View, Run, Window, Help (plus an app menu first on macOS, where App settings lives as "Settings…"). Contract:
   `MENU_ACTIONS` / `MenuAction` / `isMenuAction` and `IPC.menuAction` ('menu:action', payload `{ action }`) in types.ts,
   received through preload `onMenuAction(cb)`. `buildMenuTemplate` is pure; every renderer item goes through one helper
-  so `id === action`, and `menuActionSender` sends to the focused live window, else the first live one, re-checking the
-  action. Accelerators: new-project CmdOrCtrl+N and open-app-settings CmdOrCtrl+, register normally; toggle-sidebar
+  so `id === action`, and `menuActionSender(getFocused, liveWindowScopes)` routes by main's own window-scope map: a
+  focused main window gets every action; a focused run-scoped window gets only `RUN_SCOPED_MENU_ACTIONS`
+  (interrupt-run, end-session, org-retrospective, canvas-fit, toggle-hide-finished, keyboard-shortcuts); app-level
+  actions from a run window (or with no focus) go to the first live main window, which is restored and focused; with no
+  main window it falls back to the focused, else the first live window. The action is re-checked, destroyed windows are
+  skipped. Accelerators: new-project CmdOrCtrl+N and open-app-settings CmdOrCtrl+, register normally; toggle-sidebar
   (CmdOrCtrl+B), new-chat (CmdOrCtrl+Shift+N) and new-run (CmdOrCtrl+T) are keys the renderer already handles, so on
   win32 / linux they set `registerAccelerator: false` (hint shown, key not consumed, Playwright `keyboard.press` keeps
-  working) while darwin consumes key equivalents natively. There is no Ctrl/Cmd+W anywhere (RunTabs.tsx swallows it):
-  Window > Close window is a plain item, not the `close` role. Help opens only the fixed `DOCS_URL` / `ISSUES_URL`.
+  working) while darwin consumes key equivalents natively (`registerAccelerator` is win32 / linux only, so on darwin
+  Cmd+B / Cmd+Shift+N / Cmd+T arrive only as menu actions: the renderer router must handle toggle-sidebar, new-chat and
+  new-run on every platform; that the renderer keydown handler does not also fire on darwin is UNVERIFIED, see
+  docs/macos-testing.md). There is no Ctrl/Cmd+W anywhere (RunTabs.tsx swallows it):
+  Window > Close window is a plain item, not the `close` role. Help opens only the fixed `DOCS_URL` / `ISSUES_URL`
+  (the injected openExternal is guarded by `openHelpUrl`, which refuses any other string).
   Unit-tested only; the live Windows/Linux menu bar and the renderer router (lands with the UI Lead) are unverified until QA or a pack.
 - Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /

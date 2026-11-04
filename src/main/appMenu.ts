@@ -163,25 +163,57 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
   return [...appMenu, file, edit, view, run, windowMenu, help]
 }
 
-interface WindowLike {
+export interface WindowLike {
   isDestroyed(): boolean
+  isMinimized?(): boolean
+  restore?(): void
+  focus?(): void
+  show?(): void
   webContents: { isDestroyed(): boolean; send(channel: string, ...args: unknown[]): void }
 }
 
+/** The actions a run-scoped window (#/run/<pid>/<rid>) can handle itself; every other action needs the main window. */
+export const RUN_SCOPED_MENU_ACTIONS: readonly MenuAction[] = [
+  'interrupt-run',
+  'end-session',
+  'org-retrospective',
+  'canvas-fit',
+  'toggle-hide-finished',
+  'keyboard-shortcuts'
+]
+
 /**
- * Returns the sender the menu uses: the focused window if it is alive, else the first live window. Never sends to a
- * destroyed window, does nothing without one, and re-checks the action.
+ * Returns the sender the menu uses. A focused main window (scope undefined) gets every action. A focused run-scoped
+ * window gets only RUN_SCOPED_MENU_ACTIONS. Any other case (app-level action from a run window, no focused window)
+ * goes to the first live main window, which is restored and focused when it was not the focused one; with no live main
+ * window it falls back to the focused live window, else the first live window. Scope comes only from main's own map.
+ * Never sends to a destroyed window and re-checks the action.
  */
-export function menuActionSender(
-  getFocused: () => BrowserWindow | null,
-  getAll: () => BrowserWindow[]
+export function menuActionSender<W extends WindowLike>(
+  getFocused: () => W | null,
+  getWindows: () => [W, unknown][]
 ): (action: MenuAction) => void {
-  const live = (w: WindowLike | null | undefined): w is WindowLike => !!w && !w.isDestroyed() && !w.webContents.isDestroyed()
+  const live = (w: WindowLike | null | undefined): w is W => !!w && !w.isDestroyed() && !w.webContents.isDestroyed()
   return (action) => {
     if (!isMenuAction(action)) return
     try {
-      const focused = getFocused() as WindowLike | null
-      const target = live(focused) ? focused : (getAll() as WindowLike[]).find((w) => live(w))
+      const all = getWindows().filter(([w]) => live(w))
+      const focusedRaw = getFocused()
+      const focused = live(focusedRaw) ? focusedRaw : null
+      const scoped = focused ? all.find(([w]) => w === focused) : undefined
+      let target: W | undefined
+      if (focused && scoped && scoped[1] === undefined) target = focused
+      else if (focused && scoped && RUN_SCOPED_MENU_ACTIONS.includes(action)) target = focused
+      else {
+        const main = all.find(([, scope]) => scope === undefined)?.[0]
+        if (main) {
+          target = main
+          if (main !== focused) {
+            if (main.isMinimized?.()) main.restore?.()
+            main.focus?.()
+          }
+        } else target = focused ?? all[0]?.[0]
+      }
       if (!target) return
       const payload: MenuActionEvent = { action }
       target.webContents.send(IPC.menuAction, payload)
@@ -189,6 +221,16 @@ export function menuActionSender(
       console.warn(`Could not deliver menu action ${String(action)}: ${(e as Error).message}`)
     }
   }
+}
+
+/** Opens a Help URL only when it is exactly DOCS_URL or ISSUES_URL; anything else is refused with a warning. */
+export function openHelpUrl(url: string, open: (url: string) => void): boolean {
+  if (url !== DOCS_URL && url !== ISSUES_URL) {
+    console.warn('Refused to open a Help URL that is not one of the two fixed ones.')
+    return false
+  }
+  open(url)
+  return true
 }
 
 export function installAppMenu(send: (action: MenuAction) => void): void {
@@ -200,9 +242,10 @@ export function installAppMenu(send: (action: MenuAction) => void): void {
           appName: app.name || 'OrgAI',
           isDev: !app.isPackaged,
           send,
-          openExternal: (url) => {
-            shell.openExternal(url).catch((e: Error) => console.warn(`Could not open ${url}: ${e.message}`))
-          },
+          openExternal: (url) =>
+            openHelpUrl(url, (u) => {
+              shell.openExternal(u).catch((e: Error) => console.warn(`Could not open ${u}: ${e.message}`))
+            }),
           openLogs: () => {
             shell
               .openPath(logsDir())
