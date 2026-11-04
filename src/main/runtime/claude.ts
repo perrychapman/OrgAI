@@ -41,6 +41,7 @@ import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
+import { REFERENCE_EDIT_TOOLS, referenceEditDenial } from './referenceDirectories'
 import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
@@ -568,6 +569,8 @@ export function buildAgents(
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
         // The run's allowed directories, so agents know where a plain `cd` and edits need no approval.
         ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
+        // Read-only reference folders, so agents read them and never try to change them.
+        ...(ctx.referenceDirectories?.().length ? { referenceDirectories: ctx.referenceDirectories() } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -770,11 +773,18 @@ export function cliShellAskReason(toolName: string, input: unknown, settings: Cl
 }
 
 /**
- * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() read now (absent on trust-restricted
- * runs = none). The CLI treats them like the cwd for read-only `cd` and acceptEdits (docs; unverified live).
+ * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() plus referenceDirectories() read now,
+ * deduped (both absent on trust-restricted runs = none; a restricted run gets none here either way). The CLI treats
+ * them like the cwd for read-only `cd` and acceptEdits (docs; unverified live); reference folders are kept read-only
+ * by the PreToolUse reference gate, which runs before any allow path, acceptEdits included.
  */
-export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDirectories'>): string[] {
-  return (ctx.allowedDirectories?.() ?? []).filter((d) => typeof d === 'string' && d.length > 0)
+export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDirectories' | 'referenceDirectories' | 'run'>): string[] {
+  if (isTrustRestrictedRun(ctx.run)) return []
+  const out: string[] = []
+  for (const d of [...(ctx.allowedDirectories?.() ?? []), ...(ctx.referenceDirectories?.() ?? [])]) {
+    if (typeof d === 'string' && d.length > 0 && !out.includes(d)) out.push(d)
+  }
+  return out
 }
 
 /**
@@ -1438,6 +1448,20 @@ export class ClaudeSession implements RuntimeSession {
     return { from: model || 'its configured model', to }
   }
 
+  /** referenceDirectories.ts referenceEditDenial for a PreToolUse call; an unreadable list denies an edit tool. */
+  private referenceDenial(input: Pick<PreToolUseHookInput, 'tool_name' | 'tool_input' | 'cwd'>): string | null {
+    if (!REFERENCE_EDIT_TOOLS.has(input.tool_name) || !this.ctx.referenceDirectories) return null
+    let refs: string[]
+    try {
+      refs = this.ctx.referenceDirectories()
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.'
+    }
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
+    return referenceEditDenial(input.tool_name, input.tool_input, refs, cwd)
+  }
+
   private buildHooks(): Options['hooks'] {
     const hookAllow = (reason: string): HookJSONOutput => ({
       hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason }
@@ -1450,6 +1474,14 @@ export class ClaudeSession implements RuntimeSession {
       if (configDenial) {
         this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${configDenial}`)
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: configDenial } }
+      }
+      // Reference folders are read-only: edit tools under one (or naming no path while any exist) are denied before
+      // any allow path (saved rules, acceptEdits, auto). The list is live, read at call time; relative paths resolve
+      // against the calling agent's cwd (a worktree for isolated agents), else the project folder.
+      const referenceDenial = this.referenceDenial(input)
+      if (referenceDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${referenceDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: referenceDenial } }
       }
       // Per-role MCP grants on every MCP call, from the LIVE server list (run-scoped installs and the install card's
       // roles included), before any rule or hook-allow path. Whitelists alone do not restrict: def.mcpServers grants
@@ -2459,6 +2491,9 @@ export class ClaudeSession implements RuntimeSession {
         // The harness's own tools carry their approval inside the proposal round-trip.
         if (toolName.startsWith(ORGAI_TOOL_PREFIX)) return { behavior: 'allow', updatedInput: input }
         const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
+        // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder.
+        const refDenial = this.referenceDenial({ tool_name: toolName, tool_input: input, cwd: this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path })
+        if (refDenial) return { behavior: 'deny', message: refDenial }
         this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
         // A trust-restricted run never gets a setMode suggestion (it stays ask-only after "allow for session").
@@ -2485,7 +2520,8 @@ export class ClaudeSession implements RuntimeSession {
         return { behavior: 'deny', message: decision.message }
       }
     }
-    // Allowed directories (live: folders granted during the run join the next build, a config restart included).
+    // Allowed and reference directories (live: folders granted during the run join the next build, a config restart
+    // included). Reference folders are readable here and kept read-only by the PreToolUse reference gate.
     const dirs = claudeAdditionalDirectories(this.ctx)
     if (dirs.length) options.additionalDirectories = dirs
     if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
