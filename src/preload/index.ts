@@ -244,8 +244,9 @@ const api: OrgAIApi = {
     setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
   },
   // ---- MCP per-project secrets and custom connector presets ----
-  mcpCopy: {
-    fromLibrary: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpCopyFromLibrary, input)
+  mcpProject: {
+    copyFromLibrary: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpCopyFromLibrary, input),
+    setOverrides: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpSetProjectOverrides, input)
   },
   connectorPresets: {
     list: () => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsList),

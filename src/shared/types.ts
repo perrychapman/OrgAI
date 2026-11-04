@@ -4469,6 +4469,22 @@ export interface UserConnectorDef {
   /** Lowercase search words. */
   aliases?: string[]
   verified: false
+  /** Reserved for the practice-kit importer, which sets 'kit'. Kept as stored; connectorPresets:upsert drops any other value. */
+  origin?: 'kit'
+}
+
+/**
+ * mcp:setProjectOverrides input: this project's non-secret values for a linked server's perProjectEnv names (env for
+ * stdio, headers for http / sse). Each map given replaces the stored one (`{}` clears it; an omitted map is kept).
+ * Names outside the entry's perProjectEnv are dropped; a value with control or hidden characters, or longer than
+ * MCP_OVERRIDE_VALUE_MAX, is refused. Refused for a project-only server or a missing entry. Returns the saved project
+ * and refreshed list. (mcp:upsert on a linked server still accepts envOverrides / headerOverrides the same way.)
+ */
+export interface McpProjectOverridesInput {
+  projectId: string
+  serverId: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
 }
 
 export interface ConnectorInfo {
@@ -4481,7 +4497,14 @@ export interface ConnectorInfo {
   preset?: UserConnectorDef
 }
 
-/** connectorPresets:remove input. Refused while a library entry made from the preset exists. */
+/**
+ * Editing a custom preset (connectorPresets:upsert) never rewrites a library entry already added from it: the entry
+ * keeps its own definition and secrets, and the tile shows the current preset. When the entry's variant id is no
+ * longer in the preset, its card state is derived from the entry alone (secrets set and OAuth authorized if it uses
+ * OAuth = connected). connectors:add with a new variant follows the curated rules (a not-yet-connected entry switches).
+ *
+ * connectorPresets:remove input. Refused while a library entry made from the preset exists.
+ */
 export interface ConnectorPresetRemoveInput {
   id: string
 }
@@ -4489,21 +4512,24 @@ export interface ConnectorPresetRemoveInput {
 /** IPC channels of this section (kept apart from IPC so the two phase-2 branches merge cleanly). */
 export const MCP_SCOPE_IPC = {
   mcpCopyFromLibrary: 'mcp:copyFromLibrary',
+  mcpSetProjectOverrides: 'mcp:setProjectOverrides',
   connectorPresetsList: 'connectorPresets:list',
   connectorPresetsUpsert: 'connectorPresets:upsert',
   connectorPresetsRemove: 'connectorPresets:remove'
 } as const
 
 export interface OrgAIApi {
-  /** Linked MCP servers (see McpCopyFromLibraryInput). */
-  mcpCopy: {
-    /** Replace a linked server with a project-only copy. Rejects for a project-only server, a missing entry or a built server. */
-    fromLibrary(input: McpCopyFromLibraryInput): Promise<McpMutationResult>
+  /** Per-project handling of linked MCP servers. */
+  mcpProject: {
+    /** Replace a linked server with a project-only copy (McpCopyFromLibraryInput). Rejects for a project-only server, a missing entry or a built server. */
+    copyFromLibrary(input: McpCopyFromLibraryInput): Promise<McpMutationResult>
+    /** Set this project's non-secret values for the entry's perProjectEnv names (McpProjectOverridesInput). */
+    setOverrides(input: McpProjectOverridesInput): Promise<McpMutationResult>
   }
   /** Custom connector presets. Every mutation broadcasts mcpLibrary:changed (re-read connectors.list then). */
   connectorPresets: {
     list(): Promise<UserConnectorDef[]>
-    /** Add (new id) or replace one preset. Rejects with a readable message; changing variants is refused while it has a library entry. */
+    /** Add (new id) or replace one preset. Rejects with a readable message. Existing library entries made from it are never rewritten. */
     upsert(def: UserConnectorDef): Promise<UserConnectorDef[]>
     /** Rejects while a library entry made from it exists ("Remove <name> from the MCP library first."). */
     remove(input: ConnectorPresetRemoveInput): Promise<UserConnectorDef[]>
