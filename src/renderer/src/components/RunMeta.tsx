@@ -139,7 +139,12 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {auto.count} of {auto.max} auto-continues
         </span>
       )}
-      {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && !isVirtualProjectId(summary.projectId) && (
+      {summary.team === 'single' && !summary.quick && !isVirtualProjectId(summary.projectId) && (
+        <span className="run-meta-item" data-testid="run-meta-ask">
+          Ask · one assistant
+        </span>
+      )}
+      {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && (
         <span
           className="run-meta-item run-meta-unattended"
           title="Permission mode is auto: the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."

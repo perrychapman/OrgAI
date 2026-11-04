@@ -22,7 +22,7 @@ import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, runKind
 const TIP_CHARS = 300
 const memberRowId = (runId: string): string => `history-member-${runId}`
 
-type Filter = 'all' | 'work' | 'setup'
+type Filter = 'all' | 'work' | 'ask' | 'setup'
 type HistoryView = 'runs' | 'trends'
 
 /** History is the one place status is content: the shared status words in the Badge status tones. */
@@ -57,7 +57,11 @@ export default function RunHistory(): ReactElement {
 
   const groups = useMemo(() => chainGroups(summaries), [summaries])
   // The kind filter applies to a chain by its first member.
-  const shown = groups.filter((g) => filter === 'all' || (filter === 'work' ? g.first.kind === 'work' : g.first.kind === 'setup'))
+  const shown = groups.filter(
+    (g) =>
+      filter === 'all' ||
+      (filter === 'ask' ? g.first.team === 'single' : filter === 'work' ? g.first.kind === 'work' && g.first.team !== 'single' : g.first.kind === 'setup')
+  )
   const viewedKey = current ? groups.find((g) => g.members.some((m) => m.id === current.summary.id))?.key : undefined
 
   return (
@@ -81,6 +85,7 @@ export default function RunHistory(): ReactElement {
               options={[
                 { value: 'all', label: 'All' },
                 { value: 'work', label: RUN_KIND_LABELS.work },
+                { value: 'ask', label: 'Ask' },
                 { value: 'setup', label: RUN_KIND_LABELS.setup }
               ]}
               onChange={setFilter}
@@ -229,7 +234,9 @@ function HistoryChain({
           {relativeTime(last)}
         </td>
         <td className="col-kind">
-          <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(first)}</Badge>
+          <span data-testid="run-kind" data-kind={first.quick ? 'chat' : first.team === 'single' ? 'ask' : first.kind === 'work' ? 'work' : first.kind}>
+            <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(first)}</Badge>
+          </span>
         </td>
         {chat && (
           <td className="col-folder" data-testid="history-folder" title={first.quick?.scratch ? 'A private scratch folder' : first.quick?.folder}>

@@ -1,9 +1,11 @@
 import type { ReactElement } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
+import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { projectKindOf } from '@shared/defaults'
-import { newRunLead, projectKindCopy } from '../lib/projectKindCopy'
+import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy'
+import { SegmentedControl } from './ui/SegmentedControl'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
 import { promptLine, runTitle } from '../lib/runLabels'
 import { Button } from './ui/Button'
@@ -13,6 +15,16 @@ import McpAuthNotice from './mcp/McpAuthNotice'
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
+
+type NewRunMode = 'team' | 'ask'
+const newRunModeKey = (projectId: string): string => `orgai.newRunMode.${projectId}`
+function readNewRunMode(projectId: string): NewRunMode {
+  try {
+    return localStorage.getItem(newRunModeKey(projectId)) === 'ask' ? 'ask' : 'team'
+  } catch {
+    return 'team'
+  }
+}
 
 /**
  * The blank page behind "+": a draft of a new run. Nothing of any other run shows here; Start can only start a new
@@ -39,6 +51,21 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const kind = projectKindOf(project)
   const engagement = kind === 'engagement'
   const rootName =project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
+  const canChooseMode = !needsSetup && !isVirtualProjectId(project.id)
+  const [mode, setModeState] = useState<NewRunMode>(() => readNewRunMode(project.id))
+  useEffect(() => setModeState(readNewRunMode(project.id)), [project.id])
+  const ask = canChooseMode && mode === 'ask'
+  const setMode = (m: NewRunMode): void => {
+    setModeState(m)
+    try {
+      localStorage.setItem(newRunModeKey(project.id), m)
+    } catch {
+      /* storage unavailable: the choice lasts for this page only */
+    }
+  }
+  const noun = projectNoun(kind)
+  const hasReferences = (project.referenceDirectories?.length ?? 0) > 0
+  const askLead = `One assistant answers here as a conversation. It can use this ${noun}'s folders, services and skills, with the same permissions. No team members start.${hasReferences ? ' It can read the reference folders but not change them.' : ''}`
 
   const beginSetup = async (): Promise<void> => {
     setSetupBusy(true)
@@ -76,6 +103,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               </Button>
             }
           />
+        ) : ask ? (
+          <EmptyState title="Ask one assistant" description={<span data-testid="new-run-ask-lead">{askLead}</span>} />
         ) : (
           <EmptyState
             title={`Give ${rootName} something to do`}
@@ -99,13 +128,34 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
 
         <Composer
           draftKey={newRunDraftKey(project.id)}
-          modeLabel={others.length > 0 ? `New run: ${others.length} other run${others.length === 1 ? '' : 's'} keep${others.length === 1 ? 's' : ''} going` : 'New run'}
-          primaryLabel="Start"
-          placeholder={needsSetup ? 'Describe the task (setup is not finished)' : 'Describe the task'}
+          modeLabel={
+            ask
+              ? 'New conversation with one assistant'
+              : others.length > 0
+                ? `New run: ${others.length} other run${others.length === 1 ? '' : 's'} keep${others.length === 1 ? 's' : ''} going`
+                : 'New run'
+          }
+          primaryLabel={ask ? 'Ask' : 'Start'}
+          placeholder={ask ? 'Ask a question or give a small task' : needsSetup ? 'Describe the task (setup is not finished)' : 'Describe the task'}
+          modeSwitch={
+            canChooseMode ? (
+              <span data-testid="new-run-mode">
+                <SegmentedControl<NewRunMode>
+                  label="Who works on it"
+                  value={mode}
+                  options={[
+                    { value: 'team', label: 'Team' },
+                    { value: 'ask', label: 'Ask' }
+                  ]}
+                  onChange={setMode}
+                />
+              </span>
+            ) : undefined
+          }
           autoFocus
           focusToken={focusToken}
           onSubmit={async (text, images) => {
-            await startRun(text, images ? { images } : undefined)
+            await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}) })
           }}
         />
 

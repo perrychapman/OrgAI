@@ -24,7 +24,7 @@ export function assistantModeLabel(i: { status: RunSummary['status']; openCards:
 }
 
 /** Whether the composer says "assistant": virtual projects, and the single-agent runs (including Skill assist on a real project). */
-export function speaksAsAssistant(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>): boolean {
+export function speaksAsAssistant(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'> & Partial<Pick<RunSummary, 'team'>>): boolean {
   return isVirtualProjectId(summary.projectId) || isSingleAgentRun(summary)
 }
 
@@ -43,8 +43,10 @@ export function displayProject(id: VirtualProjectId): Project {
 }
 
 /** The kind word of a run: "Chat" for a quick run, else the shared kind label ("Run", "Setup", ...). */
-export function runKindLabel(summary: Pick<RunSummary, 'kind' | 'quick'>): string {
-  return summary.quick ? 'Chat' : RUN_KIND_LABELS[summary.kind]
+export function runKindLabel(summary: Pick<RunSummary, 'kind' | 'quick'> & Partial<Pick<RunSummary, 'team'>>): string {
+  if (summary.quick) return 'Chat'
+  if (summary.kind === 'work' && summary.team === 'single') return 'Ask'
+  return RUN_KIND_LABELS[summary.kind]
 }
 
 /** "Scratch" or the folder's name. */
@@ -102,8 +104,8 @@ export const START_PAGE_COPY: Record<VirtualProjectId, { title: string; descript
 export const newSessionLabel = (id: VirtualProjectId): string => (id === 'quick' ? 'New chat' : 'New session')
 
 /** Whether a run offers the Org retrospective: a finished work run of a real project, never a Chat or assistant run. */
-export function offersRetro(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId' | 'status'>): boolean {
-  return summary.kind === 'work' && !summary.quick && !isVirtualProjectId(summary.projectId) && (summary.status === 'finished' || summary.status === 'error')
+export function offersRetro(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId' | 'status'> & Partial<Pick<RunSummary, 'team'>>): boolean {
+  return summary.kind === 'work' && summary.team !== 'single' && !summary.quick && !isVirtualProjectId(summary.projectId) && (summary.status === 'finished' || summary.status === 'error')
 }
 
 /** Trimmed project name for Save as project, or an error message when it is empty or too long. */
@@ -123,13 +125,14 @@ export type RunLayout = 'conversation' | 'canvas'
  * Whether a run is single-agent by design: a Chat with team 'single', an MCP assistant or a Skill assistant run.
  * A Chat on the default team, work runs and setup runs are team runs.
  */
-export function isSingleAgentRun(summary: Pick<RunSummary, 'kind' | 'quick'>): boolean {
+export function isSingleAgentRun(summary: Pick<RunSummary, 'kind' | 'quick'> & Partial<Pick<RunSummary, 'team'>>): boolean {
+  if (summary.team === 'single') return true
   if (summary.quick) return summary.quick.team === 'single'
   return summary.kind === 'mcp-assist' || summary.kind === 'skill-assist'
 }
 
 /** The layout a run gets: the user's choice for that run, else conversation for single-agent runs, else canvas. */
-export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'>, chosen?: RunLayout, opts?: { endedNarrow?: boolean }): RunLayout {
+export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'> & Partial<Pick<RunSummary, 'team'>>, chosen?: RunLayout, opts?: { endedNarrow?: boolean }): RunLayout {
   // `endedNarrow` (M6): an ended, continuable work run opened in a window under 1100 px reads as a conversation, so the
   // composer and the feed fit; the user's own choice always wins.
   return chosen ?? (isSingleAgentRun(summary) || opts?.endedNarrow ? 'conversation' : 'canvas')
