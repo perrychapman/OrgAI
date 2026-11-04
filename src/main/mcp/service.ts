@@ -900,7 +900,7 @@ export class McpService {
       const entries = lib.list()
       const built = buildConnectorEntry(def, wanted, existing.id, [], new Date(this.now()))
       const { headers: _h, secretHeaders: _s, oauth: _o, connectedAt: _c, buildDigest: _b, ...keep } = existing
-      const next: McpLibraryEntry = {
+      const rewritten: McpLibraryEntry = {
         ...keep,
         transport: built.transport,
         url: built.url,
@@ -909,6 +909,8 @@ export class McpService {
         description: built.description,
         connectorVariant: built.connectorVariant
       }
+      // Nothing to sign in to: connected as soon as it is the variant (as in the fresh-add path).
+      const next = wanted.auth.kind === 'none' ? withConnectedAt(rewritten, this.now()) : rewritten
       assertValidLibraryEntry(next, entries.filter((e) => e.id !== existing.id))
       const key = mcpOwnerPrefix({ libraryId: existing.id })
       this.flows.get(key)?.abort()
@@ -916,6 +918,7 @@ export class McpService {
       this.secrets.deletePrefix(`${key}header:`)
       this.secrets.deletePrefix(`${key}oauth:`)
       const saved = lib.save(next)
+      this.relinkProjects(saved)
       this.notifyLibrary()
       return this.libraryInfo(saved, this.projects.list())
     }

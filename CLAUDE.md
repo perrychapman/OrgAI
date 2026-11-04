@@ -852,15 +852,15 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     (`oauth.ts` `presetIssuerFailure`): an issuer-only preset (Asana, HubSpot, Box, Zoom) refuses a sign-in whose
     discovered issuer differs (trailing slash aside) or whose authorization, token or registration endpoint is off the
     issuer's domain, before any secret is sent; a preset with endpoints (Slack 'fallback') falls back to its own
-    endpoints when the discovered issuer is off its domain; 'replace' (Google) skips discovery. "Domain" is the last
+    endpoints when the discovered issuer is off its domain; 'replace' (Google, GitHub) skips discovery. "Domain" is the last
     two DNS labels (`registrableHost`, no public-suffix list), so preset issuers must be simple vendor hosts, never
     under a multi-label suffix such as co.uk. All of this is unit-tested only; no live sign-in has checked it.
 - Connectors (`src/shared/connectors.ts` catalog, `src/main/mcp/connectors.ts`, `McpService.connectors*`): curated
   presets for official remote MCP servers that become library entries (`McpLibraryEntry.connectorId`, written only by
   `connectors:add`, which takes only `{ connectorId, variant? }` and is idempotent except that a different variant
   rewrites a not-yet-connected entry in place: secrets, OAuth state and connectedAt dropped, an in-flight
-  authorization aborted; a connected or 'none'-auth entry keeps its variant until disconnected. Checked by unit tests
-  and e2e/connectors.mjs). GitHub has own-app sign-in variants `app-readonly` / `app-full` (oauthClient, issuer
+  authorization aborted; a connected or 'none'-auth entry keeps its variant until disconnected (or removed, for a service with no sign-in, which has no Disconnect). Checked by unit tests
+  and e2e/connectors.mjs (Disconnect, pick the other access, Connect again)). GitHub has own-app sign-in variants `app-readonly` / `app-full` (oauthClient, issuer
   `https://github.com/login/oauth`, endpoints replaced so the RFC 9207 iss check expects exactly that issuer, no
   `resource`, scopes repo, read:org, read:user, read-only through the X-MCP-Readonly header, client secret required).
   Checked by reading docs.github.com and GitHub's live authorization server metadata plus unit tests; no sign-in was
@@ -869,7 +869,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   (`ConnectorInfo`), `connectors:add`, `connectors:setToken` (token connectors; prefix added in main); ipc.ts
   `connectorArgs` rebuilds both inputs (kebab-case ids at most 64 chars, a token string of at most 4,000 chars or null,
   every other shape refused, extra fields dropped; `ipc.test.ts`); everything else
-  reuses mcp:* / mcpLibrary:*. `oauthClient` connectors (Google, Slack) use the user's own client and the fixed
+  reuses mcp:* / mcpLibrary:*. `oauthClient` connectors (Google, Slack, GitHub) use the user's own client and the fixed
   redirect `http://127.0.0.1:38917/callback` (`CONNECTOR_REDIRECT_URI`, strict listen, no ephemeral fallback).
   ORGAI_MOCK=1 makes connector authorize/test network-free (mock@example.com, fake tools); the stand-in token is
   ignored outside mock mode. Unverified, every preset (`verified: false`): Google accepting a 127.0.0.1 redirect on a
