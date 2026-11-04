@@ -607,6 +607,16 @@
   border-radius: var(--radius-md);
   color: var(--canvas-node-text);
 }
+/* Station and hex shapes carry the role colour as their only mark, so they take the edge mix (section 5): 3:1 on
+ * every backdrop for every ROLE_COLORS entry, like the lines (raw lime is about 1.4:1 on light backdrops). */
+.agent-node[data-style='station'],
+.agent-node[data-style='hex'],
+.done-group[data-style='station'],
+.done-group[data-style='hex'],
+.role-node[data-style='station'],
+.role-node[data-style='hex'] {
+  --role-ink: color-mix(in srgb, var(--role) var(--canvas-edge-role-mix), var(--canvas-edge-ink));
+}
 .agent-node[data-style='hex'],
 .done-group[data-style='hex'] {
   width: 120px;
@@ -620,7 +630,7 @@
   width: 32px;
   height: 32px;
   border-radius: var(--radius-full);
-  border: 4px solid var(--role);
+  border: 4px solid var(--role-ink);
   background: var(--canvas-node-bg);
   transition: border-color var(--dur-base), background-color var(--dur-base), box-shadow var(--dur-base);
 }
@@ -641,7 +651,7 @@
   border-color: var(--danger);
 }
 .agent-node[data-style='station'].state-done > .station {
-  background: var(--role);
+  background: var(--role-ink);
 }
 .agent-node[data-style='station'].no-result > .station {
   border-style: dashed;
@@ -651,10 +661,10 @@
 }
 /* Interchange: the root has a second ring inside the first. */
 [data-style='station'].is-root > .station {
-  box-shadow: inset 0 0 0 3px var(--canvas-node-bg), inset 0 0 0 5px var(--role);
+  box-shadow: inset 0 0 0 3px var(--canvas-node-bg), inset 0 0 0 5px var(--role-ink);
 }
 [data-style='station'].is-root.selected > .station {
-  box-shadow: inset 0 0 0 3px var(--canvas-node-bg), inset 0 0 0 5px var(--role), var(--elev-2);
+  box-shadow: inset 0 0 0 3px var(--canvas-node-bg), inset 0 0 0 5px var(--role-ink), var(--elev-2);
 }
 [data-style='station'] > .station-name {
   position: absolute;
@@ -686,8 +696,8 @@
   max-width: 100%;
 }
 [data-style='station'].selected > .station-name {
-  border-color: var(--role);
-  box-shadow: inset 0 0 0 1px var(--role);
+  border-color: var(--role-ink);
+  box-shadow: inset 0 0 0 1px var(--role-ink);
 }
 /* A folded group: a terminus bar instead of the circle, the count and the chevron in the pill. */
 .done-group[data-style='station'] > .station-name {
@@ -709,7 +719,7 @@
   width: 28px;
   height: 10px;
   border-radius: var(--radius-full);
-  background: var(--role);
+  background: var(--role-ink);
 }
 .done-group[data-style='station'].earlier > .station-terminus {
   background: var(--canvas-edge-group);
@@ -720,7 +730,7 @@
   position: absolute;
   inset: 0;
   clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
-  background: var(--hex-edge, var(--role));
+  background: var(--hex-edge, var(--role-ink));
   transition: background-color var(--dur-base);
 }
 [data-style='hex'] > .hex-tile > .hex-fill {
@@ -751,7 +761,7 @@
 }
 .done-group[data-style='hex'].selected,
 .done-group[data-style='hex']:hover {
-  --hex-edge: var(--role);
+  --hex-edge: var(--role-ink);
 }
 [data-style='hex'] > .hex-content {
   position: absolute;
