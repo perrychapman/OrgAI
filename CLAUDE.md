@@ -1022,7 +1022,12 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     (`envOverrides` / `headerOverrides` via `mcp:setProjectOverrides` or mcp:upsert on the link; validate.ts
     `cleanOverrides` / `perProjectEnvProblems`: unlisted names dropped, hidden characters and long values refused,
     credential-like and launch-changing names refused), merged at resolve (secrets win). User-only fields: proposals
-    and installs never set or clear them; refused on connector entries. Retarget (`sameLaunch`) clears the links'
+    and installs never set or clear them; refused on connector entries. On mcpLibrary:upsert an absent field keeps
+    the stored value (`perProjectSecrets: false` / `perProjectEnv: []` clear); while the flag is set the entry holds
+    no env / header values of its own (turning it on deletes them, mcpLibrary:setSecret and library-session proposal
+    secrets refuse them, its missingSecrets is empty). A new server id never inherits keys left under that id (the
+    prefix is cleared on every removal and before every add). mcp:setSecret / mcpLibrary:setSecret inputs are rebuilt
+    (`mcpSecretArgs`). Preset env / headers refuse credential-like and launch-changing names. Retarget (`sameLaunch`) clears the links'
     project values too; removing a link or its entry deletes them. `mcp:copyFromLibrary({ projectId, serverId,
     copySecrets })` replaces a link with a project-only copy (overrides baked in, grants moved, OAuth never copied,
     built servers refused). Renderer API: `window.orgai.mcpProject`; no renderer uses it yet. Not covered: a
