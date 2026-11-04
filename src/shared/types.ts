@@ -2893,6 +2893,47 @@ export interface FocusRunTarget {
   runId: string
 }
 
+/**
+ * Application menu items that the renderer handles. Main pushes `{ action }` on `menu:action` (IPC.menuAction) to
+ * the focused window (else the first live one); the renderer routes on the name. A fixed enum: main never puts a
+ * renderer-supplied string into the menu, and the renderer must ignore names it does not know.
+ */
+export const MENU_ACTIONS = [
+  'new-project',
+  'new-chat',
+  'open-chat',
+  'open-mcp-assistant',
+  'open-skill-assistant',
+  'new-run',
+  'interrupt-run',
+  'end-session',
+  'org-retrospective',
+  'show-live',
+  'show-history',
+  'show-team',
+  'show-project-settings',
+  'open-app-settings',
+  'open-connections',
+  'open-connectors',
+  'open-skill-library',
+  'open-about',
+  'toggle-sidebar',
+  'toggle-hide-finished',
+  'canvas-fit',
+  'keyboard-shortcuts'
+] as const
+
+export type MenuAction = (typeof MENU_ACTIONS)[number]
+
+/** Payload of the main -> renderer `menu:action` push. Structured-clone safe. */
+export interface MenuActionEvent {
+  action: MenuAction
+}
+
+export function isMenuAction(value: unknown): value is MenuAction {
+  return typeof value === 'string' && (MENU_ACTIONS as readonly string[]).includes(value)
+}
+
 /** Hash prefix of a run-scoped window: `#/run/<projectId>/<runId>`. The main (unscoped) window has no hash. */
 export const RUN_WINDOW_HASH_PREFIX = '#/run/'
 
@@ -3961,6 +4002,11 @@ export interface OrgAIApi {
   onRunEvent(cb: (event: RunEvent) => void): () => void
   /** A clicked OS notification asks the renderer to show this run. */
   onFocusRun(cb: (target: FocusRunTarget) => void): () => void
+  /**
+   * An application menu item routed to the renderer was chosen (File / View / Run / Help ...). Only names in
+   * MENU_ACTIONS are delivered. Returns an unsubscribe function.
+   */
+  onMenuAction(cb: (action: MenuAction) => void): () => void
   usage: {
     /** Read plan usage now, without a run. null when the provider cannot report it. */
     refresh(): Promise<UsageStatus | null>
@@ -4054,6 +4100,8 @@ export const IPC = {
   settingsChanged: 'settings:changed',
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
+  /** main -> renderer push of MenuActionEvent when a renderer-routed application menu item is chosen. */
+  menuAction: 'menu:action',
   appSetNotifications: 'app:setNotifications',
   usageRefresh: 'usage:refresh',
   appOpenLogs: 'app:openLogs',
