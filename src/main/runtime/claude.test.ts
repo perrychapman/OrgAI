@@ -1803,6 +1803,62 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
       expect(req.suggestions).toBeUndefined()
     })
 
+    it('L1: folder lists that throw on the second read ask a shell call, give other tools no rule allow, and never reject', async () => {
+      let reads = 0
+      let armed = false
+      const { ctx, dir } = start({
+        allowedRules: () => ['Bash(npm test:*)', 'WebSearch'],
+        referenceDirectories: () => {
+          if (armed && ++reads >= 2) throw new Error('boom')
+          return []
+        }
+      })
+      const q = await firstQuery()
+      vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+      armed = true
+      // The shell touch check reads the list fine (none); matchOptionsFor's read throws: asked, not allowed by the rule.
+      const out = (await refHook(q, 'Bash', { command: 'npm test' }, dir)).hookSpecificOutput
+      expect(out).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: "OrgAI could not check the run's folders, so this command needs your approval." })
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's folders for Bash"))).toBe(true)
+      // canUseTool: no suggestions and an allow grants that call only.
+      expect(await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal })).toEqual({ behavior: 'allow', updatedInput: { command: 'npm test' } })
+      const req = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+      expect(req.suggestions).toBeUndefined()
+      expect(req.referenceFolder).toBeUndefined()
+      // Another tool: the saved WebSearch rule is not used by the hook ({}: the normal permission flow decides) ...
+      reads = 1
+      expect(await refHook(q, 'WebSearch', { query: 'x' }, dir)).toEqual({})
+      // ... and canUseTool's card has no suggestions; a session allow keeps nothing.
+      reads = 1
+      const web = await canUseTool(q)('WebSearch', { query: 'x' }, { signal: new AbortController().signal, suggestions: [{ type: 'addRules', rules: [{ toolName: 'WebSearch' }], behavior: 'allow', destination: 'session' }] })
+      expect(web).toEqual({ behavior: 'allow', updatedInput: { query: 'x' } })
+      expect(vi.mocked(ctx.requestPermission).mock.calls[1]![0].suggestions).toBeUndefined()
+    })
+
+    it('L6: the hook finding is keyed by tool_use id, so identical calls from different agents keep their own folder', async () => {
+      const ref = newRef()
+      const { ctx, dir, session } = start({ referenceDirectories: () => [ref] })
+      const q = await firstQuery()
+      const hook = q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>
+      const call = (agent: string, id: string, cwd: string) =>
+        hook({ hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd, tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: id, agent_id: agent, agent_type: 'lead' }, 'x', {})
+      // Agent a1 runs npm test inside the reference folder (asked); a2 runs the same command in the project.
+      expect((await call('a1', 'tu-a1', join(ref, 'sub'))).hookSpecificOutput?.permissionDecision).toBe('ask')
+      await call('a2', 'tu-a2', dir)
+      // canUseTool for a2's call first: no reference folder (a key-only stash would have handed it a1's finding).
+      await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal, toolUseID: 'tu-a2' })
+      const first = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+      expect(first.referenceFolder).toBeUndefined()
+      expect(first.suggestions?.length).toBeGreaterThan(0)
+      // a1's call still gets its own finding.
+      await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal, toolUseID: 'tu-a1' })
+      const second = vi.mocked(ctx.requestPermission).mock.calls[1]![0]
+      expect(second.referenceFolder).toBe(ref)
+      expect(second.suggestions).toBeUndefined()
+      // Taken once: the stash is empty again.
+      expect((session as unknown as { referenceTouches: Map<string, unknown> }).referenceTouches.size).toBe(0)
+    })
+
     it('a Read / Grep card under a reference folder carries referenceFolder and no suggestions (M2)', async () => {
       const ref = newRef()
       const { ctx, dir } = start({ referenceDirectories: () => [ref] })

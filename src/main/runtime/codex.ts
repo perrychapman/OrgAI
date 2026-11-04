@@ -880,11 +880,25 @@ class CodexSession implements RuntimeSession {
   }
 
   /**
-   * MatchOptions right now: the project, the allowed folders (live) and the folders granted for this session. On
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * callers then ask with no rule allow and no suggestions, and an allow accepts that one call.
+   */
+  private safeMatchOptions(): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders, so this needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /**
+   * MatchOptions right now (null: see safeMatchOptions): the project, the allowed folders (live) and the folders granted for this session. On
    * win32 Codex runs commands through PowerShell, so MSYS `/c/...` cd targets are never free (review re-check L7).
    */
-  private matchOpts(cwd?: string): MatchOptions {
-    const base = matchOptionsFor(this.ctx)
+  private matchOpts(cwd?: string): MatchOptions | null {
+    const base = this.safeMatchOptions()
+    if (!base) return null
     return {
       ...base,
       ...(cwd && isAbsolute(cwd) ? { cwd, effectiveCwd: cwd } : {}),
@@ -910,6 +924,7 @@ class CodexSession implements RuntimeSession {
       }
     }
     const opts = this.matchOpts()
+    if (!opts) return false
     return paths.every((p) => {
       if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
       if (refs.length && referenceFolderOf(p, refs, this.ctx.project.path)) return false
@@ -942,7 +957,8 @@ class CodexSession implements RuntimeSession {
     this.setState(agentId, 'waiting', `Needs approval: ${summary}`)
     const restricted = isTrustRestrictedRun(this.ctx.run)
     const touching = referenceFolder !== undefined
-    const callOpts = touching ? undefined : this.matchOpts(cwd)
+    // Unreadable folder lists (null) ask like a touching call: no suggestions, and an allow accepts this call only.
+    const callOpts = touching ? undefined : (this.matchOpts(cwd) ?? undefined)
     const chosen = callOpts ? chooseSuggestions(toolName, input, undefined, false, callOpts) : []
     // A restricted run never turns on accept-edits: its folder is not the user's project.
     const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
@@ -969,10 +985,10 @@ class CodexSession implements RuntimeSession {
         if (scoped) {
           granted = true
           this.sessionRules.push(...allowRuleStrings(scoped))
-          const offer = matchOptionsFor(this.ctx)
+          const offer = this.safeMatchOptions()
           for (const s of scoped) {
             if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
-            if (s.type === 'addDirectories') {
+            if (s.type === 'addDirectories' && offer) {
               // Checked as written and by real path (reviewer-3 M3: a link or another case spelling of ~/.ssh).
               for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer) && offerableByRealPath(d, offer)) this.sessionDirs.push(d)
             }
@@ -1008,10 +1024,25 @@ class CodexSession implements RuntimeSession {
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
     const rules = [...(this.ctx.allowedRules?.() ?? this.savedRules()), ...this.sessionRules]
     const opts = this.matchOpts(req.cwd)
+    if (!opts) {
+      // The folder lists could not be read (review L1): asked like an unreadable reference list, this command only.
+      const { decision } = await this.ask(agentId, 'Bash', input, req.cwd, null)
+      return { decision: decision.behavior === 'allow' ? 'accept' : 'decline' }
+    }
     if (req.command && matchesBashRule(req.command, rules, opts)) return { decision: 'accept' }
     const { decision, granted } = await this.ask(agentId, 'Bash', input, req.cwd)
     if (decision.behavior === 'deny') return { decision: 'decline' }
-    return { decision: granted ? 'acceptForSession' : 'accept' }
+    return { decision: this.sessionDecision(granted) }
+  }
+
+  /**
+   * The approval answer for an allowed card. 'acceptForSession' only when the run has no reference folders (read live;
+   * an unreadable list counts as having some): Codex would otherwise reuse its cached approval for a later call whose
+   * cwd or paths sit inside a reference folder, without asking OrgAI (review M4). With reference folders the grant is
+   * kept only in this session's own rules (sessionRules, matched by OrgAI per call after the reference check).
+   */
+  private sessionDecision(granted: boolean): 'accept' | 'acceptForSession' {
+    return granted && !this.hasReferenceFolders() ? 'acceptForSession' : 'accept'
   }
 
   /**
@@ -1122,7 +1153,7 @@ class CodexSession implements RuntimeSession {
     }
     const { decision, granted } = await this.ask(agentId, 'Edit', input)
     if (decision.behavior === 'deny') return { decision: 'decline' }
-    return { decision: granted ? 'acceptForSession' : 'accept' }
+    return { decision: this.sessionDecision(granted) }
   }
 
   private async onPermissionsApproval(params: unknown): Promise<unknown> {

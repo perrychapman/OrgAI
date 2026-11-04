@@ -1084,11 +1084,12 @@ export class ClaudeSession implements RuntimeSession {
    */
   private sessionRules = new Set<string>()
   /**
-   * permissionKey -> the reference folder touch the PreToolUse hook found for a shell call it asked about (null folder:
-   * the list could not be read), so canUseTool's card names the folder even when the hook's cwd differs from the
-   * fallback cwd canUseTool has. Taken by canUseTool, dropped at PostToolUse.
+   * tool_use id (and permissionKey + agent as the fallback) -> the reference folder touch the PreToolUse hook found for
+   * a shell call it asked about (null folder: the list could not be read), so canUseTool's card names the folder even
+   * when the hook's cwd differs from the fallback cwd canUseTool has. Taken by canUseTool, dropped at PostToolUse
+   * (review L6: identical calls from different agents never take each other's finding). At most 100 entries.
    */
-  private referenceTouches = new Map<string, { folder: string | null }>()
+  private referenceTouches = new Map<string, { folder: string | null; alt?: string; id?: string }>()
   /** permissionKey -> edit calls the PreToolUse hook refused under a reference folder (their refusal row is written). */
   private refusedEdits = new Map<string, number>()
   /** Open non-subagent tasks (task_started with another task_type) until their notification: restart blockers. */
@@ -1499,6 +1500,52 @@ export class ClaudeSession implements RuntimeSession {
     }
   }
 
+  /**
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * the hook then asks for a shell call and gives other tools no rule allow, and canUseTool's card has no suggestions
+   * (shell: an allow grants this call only). Never a rejected promise.
+   */
+  private safeMatchOptions(toolName: string): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders for ${toolName}, so it needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /**
+   * Where the hook stashes a reference finding: the tool_use id when the SDK gives one (canUseTool's
+   * permOptions.toolUseID is the same id; sdk.d.ts 0.3.312 CanUseTool options, typings only), else the call's
+   * permissionKey plus the agent.
+   */
+  private referenceTouchKey(permKey: string, agentId: string): string {
+    return `key\u0000${permKey}\u0000${agentId}`
+  }
+
+  /** Stash a hook finding for canUseTool, under the tool_use id and the key + agent fallback (newest 100 calls kept). */
+  private stashReferenceTouch(toolUseId: string | undefined, permKey: string, agentId: string, folder: string | null): void {
+    const alt = this.referenceTouchKey(permKey, agentId)
+    const id = typeof toolUseId === 'string' && toolUseId ? `id\u0000${toolUseId}` : undefined
+    for (const k of [id, alt]) {
+      if (!k) continue
+      this.referenceTouches.delete(k)
+      while (this.referenceTouches.size >= 100) this.referenceTouches.delete(this.referenceTouches.keys().next().value!)
+      this.referenceTouches.set(k, { folder, ...(k === id ? { alt } : id ? { id } : {}) })
+    }
+  }
+
+  /** Take (and drop) the stashed finding for a call: by tool_use id when given, else by key + agent. */
+  private takeReferenceTouch(toolUseId: string | undefined, permKey: string, agentId: string): { folder: string | null } | undefined {
+    const k = typeof toolUseId === 'string' && toolUseId ? `id\u0000${toolUseId}` : this.referenceTouchKey(permKey, agentId)
+    const hit = this.referenceTouches.get(k)
+    if (!hit) return undefined
+    this.referenceTouches.delete(k)
+    if (hit.alt) this.referenceTouches.delete(hit.alt)
+    if (hit.id) this.referenceTouches.delete(hit.id)
+    return { folder: hit.folder }
+  }
+
   /** The working folder of an agent when the provider does not say: its worktree, else the project folder. */
   private agentCwd(agentId: string): string {
     return this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
@@ -1545,12 +1592,14 @@ export class ClaudeSession implements RuntimeSession {
    * call (its cwd is the real one) wins; otherwise recomputed from the agent's worktree or the project folder.
    * `{ folder: null }`: the list could not be read. null: no reference folder involved.
    */
-  private cardReferenceTouch(key: string, toolName: string, input: Record<string, unknown>, cwd: string): { folder: string | null } | null {
-    const stashed = this.referenceTouches.get(key)
-    if (stashed) {
-      this.referenceTouches.delete(key)
-      return stashed
-    }
+  private cardReferenceTouch(
+    call: { key: string; agentId: string; toolUseId?: string },
+    toolName: string,
+    input: Record<string, unknown>,
+    cwd: string
+  ): { folder: string | null } | null {
+    const stashed = this.takeReferenceTouch(call.toolUseId, call.key, call.agentId)
+    if (stashed) return stashed
     if (!SHELL_TOOLS.has(toolName) && toolName !== 'Read' && toolName !== 'Glob' && toolName !== 'Grep') return null
     const refs = this.referenceList()
     if (refs === undefined || (Array.isArray(refs) && !refs.length)) return null
@@ -1703,7 +1752,7 @@ export class ClaudeSession implements RuntimeSession {
       if (SHELL_TOOLS.has(input.tool_name)) {
         const touch = this.shellReferenceTouch(input.tool_name, toolInput, hookCwd)
         if (touch) {
-          this.referenceTouches.set(key, { folder: touch.folder })
+          this.stashReferenceTouch(input.tool_use_id, key, agentId, touch.folder)
           const reason = touch.folder
             ? referenceCommandMessage(touch.folder, touch.how ?? 'names')
             : 'OrgAI could not check the reference folders, so this command needs your approval.'
@@ -1711,7 +1760,16 @@ export class ClaudeSession implements RuntimeSession {
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
         }
       }
-      const matchOpts: MatchOptions = { ...matchOptionsFor(this.ctx), effectiveCwd: hookCwd }
+      const baseOpts = this.safeMatchOptions(input.tool_name)
+      if (!baseOpts) {
+        // The folder lists could not be read (review L1): a shell call is asked (its card names no folder and an allow
+        // grants this call only, like an unreadable reference list); other tools get no rule allow and go to the
+        // normal permission flow.
+        if (!SHELL_TOOLS.has(input.tool_name)) return {}
+        this.stashReferenceTouch(input.tool_use_id, key, agentId, null)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'OrgAI could not check the run\'s folders, so this command needs your approval.' } }
+      }
+      const matchOpts: MatchOptions = { ...baseOpts, effectiveCwd: hookCwd }
       // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
       // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
       // Allow sources: RunManager's allowedRules (saved settings.local.json rules plus run grants; the run's grants only
@@ -1752,7 +1810,8 @@ export class ClaudeSession implements RuntimeSession {
       // Calls that never needed a permission prompt still leave an issuer queued; drop it now.
       const doneKey = permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
       this.takeIssuer(doneKey, agentId)
-      this.referenceTouches.delete(doneKey)
+      this.takeReferenceTouch(input.tool_use_id, doneKey, agentId)
+      this.takeReferenceTouch(undefined, doneKey, agentId)
       const archPath = this.ctx.project.setup?.architecturePath
       if (!this.isSetup && archPath && (input.tool_name === 'Edit' || input.tool_name === 'Write')) {
         const filePath = ((input.tool_input ?? {}) as Record<string, unknown>).file_path
@@ -1879,14 +1938,16 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Match options plus the user's MCP servers (server-level card rules) for chooseSuggestions. */
-  private suggestOptions(effectiveCwd?: string): SuggestOptions {
+  private suggestOptions(toolName: string, effectiveCwd?: string): SuggestOptions | null {
+    const base = this.safeMatchOptions(toolName)
+    if (!base) return null
     let live: McpServerSpec[] = []
     try {
       live = this.liveMcpServers()
     } catch {
       /* no server-level offers */
     }
-    return { ...matchOptionsFor(this.ctx), ...(effectiveCwd ? { effectiveCwd } : {}), userMcpServers: userMcpServerNames(live, this.agentInstalledMcp()) }
+    return { ...base, ...(effectiveCwd ? { effectiveCwd } : {}), userMcpServers: userMcpServerNames(live, this.agentInstalledMcp()) }
   }
 
   /** Servers agents installed during this run (attached mid-run, or run-scoped 'agent' installs): no server-level rule approves them. */
@@ -2628,11 +2689,18 @@ export class ClaudeSession implements RuntimeSession {
         }
         // A shell, Read, Glob or Grep call touching a reference folder: the card names the folder, offers no rule
         // (RunManager narrows any allow to 'once'), and an allow grants this call only.
-        const ref = this.cardReferenceTouch(key, toolName, input, cwd)
+        // The hook's finding for this exact call: keyed by tool_use id (permOptions.toolUseID, 0.3.312 typings), else
+        // permissionKey + agent (review L6).
+        const toolUseId = typeof permOptions.toolUseID === 'string' && permOptions.toolUseID ? permOptions.toolUseID : undefined
+        let ref = this.cardReferenceTouch({ key, agentId, ...(toolUseId ? { toolUseId } : {}) }, toolName, input, cwd)
+        // Folder lists unreadable now (review L1): no suggestions; a shell call is asked like an unreadable reference
+        // list (an allow grants this call only).
+        const suggestOpts = ref ? null : this.suggestOptions(toolName, cwd)
+        if (!ref && !suggestOpts && SHELL_TOOLS.has(toolName)) ref = { folder: null }
         this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
         // A trust-restricted run never gets a setMode suggestion (it stays ask-only after "allow for session").
-        const suggestions = ref
+        const suggestions = !suggestOpts
           ? []
           : restrictedSafeSuggestions(
               this.ctx,
@@ -2641,7 +2709,7 @@ export class ClaudeSession implements RuntimeSession {
                 input,
                 permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
                 !!permOptions.suppressAlwaysAllowRule,
-                this.suggestOptions(cwd)
+                suggestOpts
               )
             )
         const decision = await this.ctx.requestPermission({
@@ -2702,13 +2770,16 @@ export class ClaudeSession implements RuntimeSession {
     input: Record<string, unknown>,
     toolName: string
   ): PermissionResult {
+    // Folder lists unreadable now (review L1): this call only, no rule kept.
+    const opts = suggestions.length ? this.safeMatchOptions(toolName) : null
+    if (!opts) return { behavior: 'allow', updatedInput: input }
     const granted = applyAllowScope(
       this.ctx.project.path,
       quickSafeDecision(this.ctx, decision),
       suggestions,
       (level, message) => this.log(level, message),
       allowScopePersist(this.ctx),
-      { toolName, input, opts: matchOptionsFor(this.ctx) }
+      { toolName, input, opts }
     )
     if (!granted) return { behavior: 'allow', updatedInput: input }
     for (const r of allowRuleStrings(granted)) this.sessionRules.add(r)

@@ -992,6 +992,37 @@ describe('mock reference shell guard', () => {
     expect(vi.mocked(ctx.requestPermission).mock.calls[0]![0].referenceFolder).toBeUndefined()
     await session.stop()
   })
+
+  it('L1: a list that throws on the second read asks with no suggestions, keeps no grant, and never rejects', async () => {
+    // Every second read throws: the step's reference check reads fine, matchOptionsFor's read throws.
+    let reads = 0
+    const ctx = fakeCtx({
+      autoContinue: false,
+      allowedRules: () => ['Bash(npm test:*)', 'Read'],
+      referenceDirectories: () => {
+        if (++reads % 2 === 0) throw new Error('boom')
+        return []
+      }
+    })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const work = [
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'first' },
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'second' },
+      { type: 'tool' as const, name: 'Read', input: { file_path: join(tmpdir(), 'elsewhere', 'a.md') }, ask: true, result: 'read' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    await idle(ctx)
+    const cards = vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0])
+    // Neither the saved rules nor a session grant allowed anything: three cards, none with suggestions or a folder.
+    expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Bash', 'Read'])
+    for (const c of cards) {
+      expect(c.suggestions).toBeUndefined()
+      expect(c.referenceFolder).toBeUndefined()
+    }
+    expect(results(ctx).map((r) => r.content)).toEqual(['first', 'second', 'read'])
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's folders for Bash"))).toBe(true)
+    await session.stop()
+  })
 })
 
 describe('mock [mock:deep-tree]', () => {

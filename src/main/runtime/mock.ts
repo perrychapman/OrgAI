@@ -865,12 +865,14 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_EDIT_TOKEN)) {
-      const ref = this.ctx.referenceDirectories?.()[0]
+      const list = this.referenceList()
+      const ref = Array.isArray(list) ? list[0] : undefined
       if (!ref) this.log('info', 'Mock [mock:reference-edit]: this run has no reference folder, so the edit step is skipped.')
       return referenceEditSteps(ref)
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_SHELL_TOKEN)) {
-      const ref = this.ctx.referenceDirectories?.()[0]
+      const list = this.referenceList()
+      const ref = Array.isArray(list) ? list[0] : undefined
       if (!ref) this.log('info', 'Mock [mock:reference-shell]: this run has no reference folder, so the command step is skipped.')
       return referenceShellSteps(ref)
     }
@@ -1073,9 +1075,12 @@ export class MockSession implements RuntimeSession {
       let preApproved = false
       let opts: MatchOptions | undefined
       // A touching shell command skips every allow path (and never reads matchOptionsFor, which an unreadable list breaks).
-      if (!ref?.forced) {
+      // When the folder lists cannot be read now (safeMatchOptions null, review L1) the call is asked with no suggestions
+      // and no rule allow, and an allow grants this call only (same as the Claude adapter).
+      const base = ref?.forced ? null : this.safeMatchOptions(step.name)
+      if (base) {
         const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : undefined
-        opts = { ...matchOptionsFor(this.ctx), ...(cwd ? { effectiveCwd: cwd } : {}) }
+        opts = { ...base, ...(cwd ? { effectiveCwd: cwd } : {}) }
         // Same as the Claude adapter: server-level rules are offered for the user's MCP servers only (never one an agent
         // installed this run, never orgai), and a trust-restricted run never gets a setMode suggestion.
         const installedAll = agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name))
@@ -1148,6 +1153,19 @@ export class MockSession implements RuntimeSession {
     this.setState(agentId, 'thinking', 'Thinking…')
   }
 
+  /**
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * the caller then asks, with no rule allow and no suggestions. Same as the Claude and Codex adapters.
+   */
+  private safeMatchOptions(toolName: string): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders for ${toolName}, so it needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
   /** The run's reference folders now (live): undefined when the run has no list, 'unreadable' when reading it throws. */
   private referenceList(): string[] | 'unreadable' | undefined {
     if (!this.ctx.referenceDirectories) return undefined
@@ -1212,7 +1230,8 @@ export class MockSession implements RuntimeSession {
     if (!acceptEdits) return false
     const target = editTargetOf(input)
     if (!target) return false
-    const opts = matchOptionsFor(this.ctx)
+    const opts = this.safeMatchOptions(toolName)
+    if (!opts) return false
     return isFreeCdTarget(target, { ...opts, freeDirs: [...(opts.freeDirs ?? []), ...this.sessionDirs] })
   }
 
