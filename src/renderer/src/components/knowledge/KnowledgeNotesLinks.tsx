@@ -77,7 +77,7 @@ export function KnowledgeNotesLinks({
               <button type="button" className="link-btn knowledge-note-link" data-testid="knowledge-note-link" disabled={!n} onClick={() => onOpenNote(id)}>
                 {title}
               </button>
-              <IconButton icon={Unlink} size="sm" label={`Unlink the note ${title}`} testId="knowledge-note-unlink" onClick={() => void save(linked.filter((x) => x !== id), `Unlinked the note ${title}.`)} />
+              <IconButton icon={Unlink} size="sm" label={`Unlink the note ${title}`} testId="knowledge-note-unlink" onClick={() => void save(linked.filter((x) => x !== id), `Unlinked the note ${title}.`).then(focusLinkAdd)} />
             </li>
           )
         })}

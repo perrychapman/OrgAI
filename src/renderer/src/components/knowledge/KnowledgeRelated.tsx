@@ -8,6 +8,7 @@ import { relationCandidates, relationsInUse } from '../../lib/knowledgeList'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { cleanIpcError } from '../../lib/ipcError'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
 import { Popover } from '../ui/Popover'
@@ -53,7 +54,7 @@ export function KnowledgeRelated({
       await fn()
       announce(done)
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e))
+      onError(cleanIpcError(e))
     }
   }
   return (
@@ -123,6 +124,7 @@ export function KnowledgeRelated({
                           void (async () => {
                             if (!(await confirm({ title: 'Remove this relation?', body: 'Agents and you can no longer see it.', confirmLabel: 'Remove', danger: true }))) return
                             await run(() => writes.removeEdge(r.edge.id), 'Removed the relation.')
+                            focusAdd()
                           })()
                         }}
                       >
@@ -206,7 +208,7 @@ function AddRelationForm({ node, graph, writes, onDone }: { node: KnowledgeNode;
       onDone(true)
     } catch (e) {
       setSaving(false)
-      setRelationError(e instanceof Error ? e.message : String(e))
+      setRelationError(cleanIpcError(e))
       document.getElementById(`${uid}-rel`)?.focus()
     }
   }
@@ -220,6 +222,13 @@ function AddRelationForm({ node, graph, writes, onDone }: { node: KnowledgeNode;
       onSubmit={(e) => {
         e.preventDefault()
         void save()
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          onDone(false)
+        }
       }}
     >
       <div className="field">

@@ -83,9 +83,8 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       const run = (what === 'graph' ? window.orgai.knowledge.get(projectId).then((g) => setGraph(g)) : window.orgai.engagement.listNotes(projectId).then((n) => setNotes(n)))
         .then(() => setLoadError(null))
         .catch((e) => {
+          // A failed first load keeps the view in its loading state (the Banner offers Retry); later failures keep the data shown.
           setLoadError(cleanIpcError(e))
-          if (what === 'graph') setGraph((g) => g ?? emptyKnowledgeGraph())
-          else setNotes((n) => n ?? [])
         })
         .finally(() => {
           state[what] = undefined
@@ -421,7 +420,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           </Banner>
         )}
         {!loaded ? (
-          <p className="panel-note knowledge-loading">Looking…</p>
+          !loadError && <p className="panel-note knowledge-loading">Looking…</p>
         ) : view === 'graph' ? (
           <KnowledgeGraph projectId={projectId} graph={graph ?? emptyKnowledgeGraph()} filter={filter} selectedId={selectedId} onSelect={selectItem} onOpen={openItem} listDomId={filtersDomId} detailDomId="knowledge-detail-body" announce={announce} />
         ) : empty === 'none' || empty === 'none-runs' ? (

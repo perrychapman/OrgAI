@@ -204,7 +204,7 @@ export default function App(): ReactElement {
               {view === 'settings' ? (
                 <SettingsView project={project} />
               ) : view === 'knowledge' && hasKnowledge ? (
-                <KnowledgeView project={project} />
+                <KnowledgeView key={project.id} project={project} />
               ) : view === 'team' ? (
                 <TeamView project={project} />
               ) : view === 'history' ? (

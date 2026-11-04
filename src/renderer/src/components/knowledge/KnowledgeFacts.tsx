@@ -34,6 +34,10 @@ export function KnowledgeFacts({
   const [adding, setAdding] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
   const full = node.facts.length >= KNOWLEDGE_NODE_FACTS_MAX
+  /** Focus "Add a fact" (after a save, Esc or a removal that unmounted the focused row). */
+  const focusAdd = (): void => {
+    requestAnimationFrame(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-fact-add]')?.focus())
+  }
   return (
     <section ref={sectionRef} className="knowledge-section" aria-labelledby={`${uid}-h`} data-testid="knowledge-facts">
       <h3 id={`${uid}-h`} className="knowledge-section-title">
@@ -42,15 +46,16 @@ export function KnowledgeFacts({
       {facts.length === 0 && !adding && <p className="panel-note">No facts yet.</p>}
       <ul className="knowledge-fact-list">
         {facts.map((f, i) => (
-          <FactRow key={f.id} fact={f} index={i + 1} node={node} onSave={onSave} announce={announce} />
+          <FactRow key={f.id} fact={f} index={i + 1} node={node} onSave={onSave} announce={announce} onRemoved={focusAdd} />
         ))}
         {adding && (
           <li className="knowledge-fact" data-testid="knowledge-fact" data-id="new">
             <NewFact
-              onDone={(saved) => {
+              onDone={(saved, refocus) => {
                 setAdding(false)
                 if (saved) announce(`Saved ${node.name}.`)
-                requestAnimationFrame(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-fact-add]')?.focus())
+                // An empty blur drops the row and lets focus travel on; Esc and a save return to "Add a fact".
+                if (refocus) focusAdd()
               }}
               onSave={(text) => onSave(withNewFact(node.facts, text))}
             />
@@ -72,13 +77,16 @@ function FactRow({
   index,
   node,
   onSave,
-  announce
+  announce,
+  onRemoved
 }: {
   fact: KnowledgeFact
   index: number
   node: KnowledgeNode
   onSave: (facts: KnowledgeFactInput[]) => Promise<string | null>
   announce: (text: string) => void
+  /** Called after this row's fact was removed (the row unmounts, so the section moves focus). */
+  onRemoved: () => void
 }): ReactElement {
   const uid = useId()
   const [draft, setDraft] = useState(fact.text)
@@ -112,10 +120,13 @@ function FactRow({
       busy.current = false
     }
   }
-  const act = async (facts: KnowledgeFactInput[], done: string): Promise<void> => {
+  const act = async (facts: KnowledgeFactInput[], done: string, removed = false): Promise<void> => {
     const problem = await onSave(facts)
     if (problem) setError(problem)
-    else announce(done)
+    else {
+      announce(done)
+      if (removed) onRemoved()
+    }
   }
   return (
     <li className="knowledge-fact" data-testid="knowledge-fact" data-id={fact.id} data-retired={fact.retired ? 'true' : 'false'}>
@@ -181,7 +192,7 @@ function FactRow({
                 data-testid="knowledge-fact-remove"
                 onClick={() => {
                   close()
-                  void act(withoutFact(node.facts, fact.id), 'Removed the fact.')
+                  void act(withoutFact(node.facts, fact.id), 'Removed the fact.', true)
                 }}
               >
                 <Icon icon={Trash2} size="sm" />
@@ -201,7 +212,7 @@ function FactRow({
 }
 
 /** The empty new-fact input: saved on blur and Enter when it has text, dropped silently when empty, Esc drops it. */
-function NewFact({ onSave, onDone }: { onSave: (text: string) => Promise<string | null>; onDone: (saved: boolean) => void }): ReactElement {
+function NewFact({ onSave, onDone }: { onSave: (text: string) => Promise<string | null>; onDone: (saved: boolean, refocus: boolean) => void }): ReactElement {
   const uid = useId()
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -213,7 +224,7 @@ function NewFact({ onSave, onDone }: { onSave: (text: string) => Promise<string 
     if (busy.current) return
     const text = draft.replace(/\s+$/, '')
     if (!text.trim()) {
-      onDone(false)
+      onDone(false, fromKey)
       return
     }
     busy.current = true
@@ -222,7 +233,7 @@ function NewFact({ onSave, onDone }: { onSave: (text: string) => Promise<string 
       if (problem) {
         setError(problem)
         if (fromKey) document.getElementById(`${uid}-in`)?.focus()
-      } else onDone(true)
+      } else onDone(true, true)
     } finally {
       busy.current = false
     }
@@ -253,7 +264,7 @@ function NewFact({ onSave, onDone }: { onSave: (text: string) => Promise<string 
           } else if (e.key === 'Escape') {
             e.preventDefault()
             e.stopPropagation()
-            onDone(false)
+            onDone(false, true)
           }
         }}
       />
