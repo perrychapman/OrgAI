@@ -69,7 +69,8 @@ describe('spellings (M1)', () => {
     expect(w('dir Registry::HKEY_LOCAL_MACHINE\\x', 'powershell')).toBeNull()
     expect(w('dir Env:\\Path', 'powershell')).toBeNull()
     expect(w('dir Weird:\\x', 'powershell')).toBe(WREF)
-    expect(w('dir Weird::x', 'powershell')).toBe(WREF)
+    // `Name::x` is not a path (M-A: Foo::bar, std::fs); only FileSystem:: and `Name:\` forms are.
+    expect(w('dir Weird::x', 'powershell')).toBeNull()
   })
   it('unescapes backslashes in bash words', () => {
     expect(commandTouchesReference('cat /srv/\\acme/x', '/srv/proj', ['/srv/acme'], { platform: 'linux' })).toBe('/srv/acme')
@@ -101,8 +102,31 @@ describe('cwd tracking (M2)', () => {
       expect(commandReferenceTouch(`${cd} && rm sub/x`, '/srv/proj', ['/srv/acme'], { platform: 'linux' })?.folder).toBe('/srv/acme')
     }
     expect(w('Pop-Location; dir', 'powershell')).toBe(WREF)
-    // An absolute path outside the folders is still fine after an unknown cd.
-    expect(commandReferenceTouch('cd - && cat /srv/other/x', '/srv/proj', ['/srv/acme'], { platform: 'linux' })).toBeNull()
+    // Every later segment asks after an untracked cd (M-B), even one naming only an unrelated absolute path.
+    expect(commandReferenceTouch('cd - && cat /srv/other/x', '/srv/proj', ['/srv/acme'], { platform: 'linux' })?.folder).toBe('/srv/acme')
+    expect(commandReferenceTouch('cd - && rm -rf * 2>/dev/null', '/srv/proj', ['/srv/acme'], { platform: 'linux' })?.folder).toBe('/srv/acme')
+    expect(w('Push-Location $env:X; Remove-Item -Recurse *', 'powershell')).toBe(WREF)
+    // A tracked cd afterwards ends the unknown state.
+    expect(commandReferenceTouch('cd - && cd /srv/other && ls', '/srv/proj', ['/srv/acme'], { platform: 'linux' })).toBeNull()
+  })
+})
+
+describe('URLs and provider-looking words (M-A)', () => {
+  it('does not treat URLs or Foo::bar as touching', () => {
+    for (const shell of ['bash', 'powershell'] as const) {
+      expect(w('git clone https://github.com/x/y', shell)).toBeNull()
+      expect(w('curl https://a.b/c', shell)).toBeNull()
+      expect(w('rg "Foo::bar"', shell)).toBeNull()
+      expect(w('rg std::fs', shell)).toBeNull()
+    }
+    expect(w('Remove-Item FileSystem::C:\\Clients\\Acme\\x', 'powershell')).toBe(WREF)
+  })
+})
+
+describe('refusal row cleaner (L-e)', () => {
+  it('strips supplementary variation selectors and tag characters', () => {
+    const e = referenceRefusalEntry('/srv/acme/a\u{e0100}b\u{e01ef}c\u{e0041}.md', '/srv/acme')
+    expect(e.detail.split('\n')[0]).toBe('/srv/acme/abc.md')
   })
 })
 
