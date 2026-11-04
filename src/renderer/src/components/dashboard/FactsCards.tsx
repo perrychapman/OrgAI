@@ -4,7 +4,7 @@ import type { ConnectionId, UsageStatus } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { locationLabel } from '../../lib/assistants'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
-import { CONNECTION_LABEL, connectionsInUse, spendText } from '../../lib/usage'
+import { CONNECTION_LABEL, connectionsInUse, periodText, periodsCaption, spendSentence, spendText } from '../../lib/usage'
 import { Cost } from '../ui/Cost'
 import { ConnectionStatusBadge } from '../ui/ConnectionStatusBadge'
 import { SpendBar, tightestWindow, UsageBar } from '../UsageMeter'
@@ -43,17 +43,25 @@ function UsageCard(): ReactElement {
           const usage = byConnection[id]
           const tight = id === 'litellm' ? null : tightestWindow(usage)
           const spend = id === 'litellm' && usage?.available ? usage.spend : undefined
+          // LiteLLM: the same one figure as the account row (today's spend when periods are reported, else the budget
+          // text), the budget bar, then this week and this month as a caption; the whole sentence in the tooltip.
+          const caption = spend ? periodsCaption(spend) : ''
           return (
-            <li key={id} className="dash-usage-row" data-testid="dash-usage-row" data-connection={id}>
+            <li key={id} className="dash-usage-row" data-testid="dash-usage-row" data-connection={id} title={spend ? spendSentence(spend) : undefined}>
               <span className="dash-usage-name">{CONNECTION_LABEL[id]}</span>
               {id === 'litellm' ? (
                 spend ? (
                   <>
-                    <span className="dash-fact-line mono">{spendText(spend)}</span>
+                    <span className="dash-fact-line mono">{spend.periods ? periodText(spend.periods.day.usd, 'day') : spendText(spend)}</span>
                     <SpendBar spend={spend} />
+                    {caption && (
+                      <span className="dash-fact-line" data-testid="dash-usage-periods">
+                        {caption}
+                      </span>
+                    )}
                   </>
                 ) : (
-                  <span className="dash-fact-line">No usage reported yet.</span>
+                  <span className="dash-fact-line">No spend reported yet.</span>
                 )
               ) : usage?.authMode === 'apiKey' ? (
                 <span className="dash-fact-line">Billed per token. No plan windows.</span>
