@@ -2,9 +2,10 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
-import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
+import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
+import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
+import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
 import { authFailureMessage } from './activity'
@@ -1114,5 +1115,164 @@ describe('mock [mock:deep-tree]', () => {
       ['mock-lead', 'Second half done.'],
       [ROOT_AGENT_ID, 'Both halves done by mock-lead-report-1 and mock-lead-report-2.']
     ])
+  })
+})
+
+describe('mock [mock:knowledge]', () => {
+  type Knowledge = NonNullable<RuntimeContext['knowledge']>
+  type Notes = NonNullable<RuntimeContext['engagementNotes']>
+  const source: KnowledgeSource = { by: 'agent', at: 1 }
+
+  /**
+   * An in-memory RuntimeContext.knowledge: upserts create nodes (facts get `kf_` ids unless `keepFacts` is false),
+   * links create edges, retire only records; `calls` lists every write in order with its caller.
+   */
+  function fakeKnowledge(keepFacts = true) {
+    const graph: KnowledgeGraph = { version: 1, nodes: [], edges: [] }
+    const calls: { fn: 'upsertNode' | 'link' | 'retire'; input: unknown; caller: KnowledgeCaller }[] = []
+    let seq = 0
+    const kg: Knowledge & { calls: typeof calls } = {
+      calls,
+      graph: () => graph,
+      upsertNode: (input, caller) => {
+        calls.push({ fn: 'upsertNode', input, caller })
+        const node: KnowledgeNode = {
+          id: `kn_${++seq}`,
+          kind: input.kind,
+          name: input.name,
+          ...(input.aliases ? { aliases: input.aliases } : {}),
+          ...(input.summary !== undefined ? { summary: input.summary } : {}),
+          facts: keepFacts ? (input.facts ?? []).map((text) => ({ id: `kf_${++seq}`, text, source })) : [],
+          source,
+          createdAt: 1,
+          updatedAt: 1
+        }
+        graph.nodes.push(node)
+        return { node, created: true }
+      },
+      link: (input, caller) => {
+        calls.push({ fn: 'link', input, caller })
+        const edge: KnowledgeEdge = { id: `ke_${++seq}`, from: input.from, to: input.to, relation: input.relation, ...(input.note !== undefined ? { note: input.note } : {}), source, createdAt: 1 }
+        graph.edges.push(edge)
+        return { edge, created: true }
+      },
+      retire: (input, caller) => {
+        calls.push({ fn: 'retire', input, caller })
+        return { item: 'fact', id: input.factId ?? '', label: 'fact', alreadyRetired: false }
+      }
+    }
+    return kg
+  }
+
+  function fakeNotes() {
+    const save = vi.fn((input: { noteId?: string; title: string; text: string }, _caller: KnowledgeCaller): EngagementNote => ({ id: 'n1', title: input.title, excerpt: input.text.split('\n')[0]!, createdAt: 1, updatedAt: 1, chars: input.text.length }))
+    const notes: Notes & { save: typeof save } = { list: () => [], read: () => null, save }
+    return notes
+  }
+
+  async function play(over: Parameters<typeof fakeCtx>[0] = {}) {
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Record the kickoff ${KNOWLEDGE_TOKEN}`, project: project({ kind: 'engagement' }), ...over })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    expect(statuses()).toContain('idle')
+    await session.stop()
+    await session.finished
+    expect(statuses().at(-1)).toBe('finished')
+    return ctx
+  }
+  const rootCalls = (ctx: ReturnType<typeof fakeCtx>) =>
+    ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'tool_use' ? [{ name: e.entry.block.name, input: e.entry.block.input }] : []))
+  const knowledgeCalls = (ctx: ReturnType<typeof fakeCtx>) => rootCalls(ctx).filter((c) => c.name === KNOWLEDGE_TOOL || c.name === ENGAGEMENT_CONTEXT_TOOL)
+  const rootTexts = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
+  const rootResults = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+  const caller = { agentId: ROOT_AGENT_ID, roleId: 'r-lead' }
+
+  it('makes the knowledge and note calls in order through the real harness tools, then plays the default script', async () => {
+    const kg = fakeKnowledge()
+    const notes = fakeNotes()
+    const ctx = await play({ knowledge: kg, engagementNotes: notes })
+    const byName = (name: string) => kg.graph().nodes.find((n) => n.name === name)!
+    const acme = byName(MOCK_KNOWLEDGE.client)
+    const jane = byName(MOCK_KNOWLEDGE.sponsor)
+    const decision = byName(MOCK_KNOWLEDGE.decision)
+    const factId = acme.facts.find((f) => f.text === MOCK_KNOWLEDGE.retiredFact)!.id
+    expect(factId).toMatch(/^kf_/)
+    const kgCall = (input: Record<string, unknown>) => ({ name: KNOWLEDGE_TOOL, input })
+    expect(knowledgeCalls(ctx)).toEqual([
+      kgCall({ action: 'vocabulary' }),
+      kgCall({ action: 'upsert_node', kind: 'organisation', name: 'Acme Corp', aliases: ['Acme'], summary: 'The client. Mid-size manufacturer moving its billing off a legacy system.', facts: ['Headquartered in Leeds', 'Fiscal year ends in March'] }),
+      kgCall({ action: 'upsert_node', kind: 'person', name: 'Jane Doe', aliases: ['J. Doe'], summary: 'Chief Financial Officer at Acme Corp and the engagement sponsor.', facts: ['Role: CFO', 'Prefers written summaries before meetings'] }),
+      kgCall({ action: 'link', from: 'Jane Doe', to: 'Acme Corp', relation: 'works-at' }),
+      kgCall({ action: 'upsert_node', kind: 'decision', name: 'Migrate billing to Stripe', facts: ['Agreed at the kickoff call'] }),
+      kgCall({ action: 'link', from: 'Migrate billing to Stripe', to: 'Jane Doe', relation: 'decided-by', note: 'Sponsor sign-off' }),
+      kgCall({ action: 'upsert_node', kind: 'risk', name: 'Legacy export format undocumented', facts: ['No one at Acme owns the export spec'] }),
+      { name: ENGAGEMENT_CONTEXT_TOOL, input: { action: 'save', title: 'Kickoff call summary', text: 'Kickoff call with Jane Doe (CFO).\n\nAgreed to migrate billing to Stripe before the March year end. Open risk: the legacy export format is undocumented.' } },
+      kgCall({ action: 'search', query: 'Acme' }),
+      kgCall({ action: 'get', name: 'Acme Corp' }),
+      kgCall({ action: 'retire', factId, reason: 'Corrected: fiscal year ends in April' })
+    ])
+    // The writes reached the context with the root as caller, names resolved to ids for the links.
+    expect(kg.calls.map((c) => c.fn)).toEqual(['upsertNode', 'upsertNode', 'link', 'upsertNode', 'link', 'upsertNode', 'retire'])
+    expect(kg.calls.every((c) => c.caller.agentId === caller.agentId && c.caller.roleId === caller.roleId)).toBe(true)
+    expect(kg.calls[2]!.input).toEqual({ from: jane.id, to: acme.id, relation: 'works-at' })
+    expect(kg.calls[4]!.input).toEqual({ from: decision.id, to: jane.id, relation: 'decided-by', note: 'Sponsor sign-off' })
+    expect(kg.calls[6]!.input).toEqual({ factId, reason: 'Corrected: fiscal year ends in April' })
+    expect(notes.save).toHaveBeenCalledTimes(1)
+    expect(notes.save.mock.calls[0]![0]).toEqual({ title: 'Kickoff call summary', text: expect.stringContaining('Kickoff call with Jane Doe (CFO).') })
+    expect(notes.save.mock.calls[0]![1]).toEqual(caller)
+    // No call failed and no refusal came back; the search found the client.
+    expect(rootResults(ctx).every((r) => !r.isError && !r.content.startsWith('REFUSED'))).toBe(true)
+    expect(rootResults(ctx).find((r) => r.content.includes('entities matching Acme') || r.content.includes('entity matching Acme'))?.content).toContain('Acme Corp')
+    // The done sentence, then the default script (its planning line and its last line).
+    const texts = rootTexts(ctx)
+    const done = texts.indexOf(MOCK_KNOWLEDGE_DONE)
+    expect(done).toBeGreaterThanOrEqual(0)
+    expect(texts.indexOf('Planning the work: I will read the project, delegate the change and review the result.')).toBeGreaterThan(done)
+    expect(texts.at(-1)).toBe('The report finished: src/example.ts was updated. Anything else?')
+    expect(texts).not.toContain(MOCK_KNOWLEDGE_NONE)
+  })
+
+  it('skips the retire (never fails) when the fact cannot be read back', async () => {
+    const kg = fakeKnowledge(false)
+    const ctx = await play({ knowledge: kg, engagementNotes: fakeNotes() })
+    const actions = knowledgeCalls(ctx).map((c) => (c.input as { action?: string }).action)
+    expect(actions).toContain('get')
+    expect(actions).not.toContain('retire')
+    expect(kg.calls.map((c) => c.fn)).not.toContain('retire')
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes('retire step is skipped'))).toBe(true)
+    expect(rootTexts(ctx)).toContain(MOCK_KNOWLEDGE_DONE)
+  })
+
+  it('says no knowledge graph is available on a code project (or without ctx.knowledge) and plays the default script', async () => {
+    const code = await play({ project: project() })
+    expect(rootTexts(code)[0]).toBe(MOCK_KNOWLEDGE_NONE)
+    expect(knowledgeCalls(code)).toEqual([])
+    expect(code.events.some((e) => e.type === 'log' && e.message.includes('no knowledge graph'))).toBe(true)
+    expect(rootTexts(code).at(-1)).toBe('The report finished: src/example.ts was updated. Anything else?')
+
+    const noGraph = await play({ engagementNotes: fakeNotes() })
+    expect(rootTexts(noGraph)[0]).toBe(MOCK_KNOWLEDGE_NONE)
+    expect(knowledgeCalls(noGraph)).toEqual([])
+  })
+
+  it('the default script without the marker makes no knowledge or note call', async () => {
+    const kg = fakeKnowledge()
+    const notes = fakeNotes()
+    const ctx = await play({ prompt: 'Record the kickoff', knowledge: kg, engagementNotes: notes })
+    expect(knowledgeCalls(ctx)).toEqual([])
+    expect(kg.calls).toEqual([])
+    expect(notes.save).not.toHaveBeenCalled()
+    expect(rootTexts(ctx)).not.toContain(MOCK_KNOWLEDGE_DONE)
+    expect(rootTexts(ctx)).not.toContain(MOCK_KNOWLEDGE_NONE)
+  })
+
+  it('knowledgeFactId reads a live fact id from a get result and ignores retired, missing or foreign lines', () => {
+    const result = ['Entity Acme Corp (data).', '<<<', 'kn_1 | organisation | Acme Corp', 'summary: x', 'facts:', '  kf_a1 | Headquartered in Leeds', '  kf_b2 | Fiscal year ends in March | retired', '  kf_c3 | Fiscal year ends in March', 'relations:', '  ke_9 | this -> works-at -> person Jane', '>>>'].join('\n')
+    expect(knowledgeFactId(result, 'Fiscal year ends in March')).toBe('kf_c3')
+    expect(knowledgeFactId(result, 'Headquartered in Leeds')).toBe('kf_a1')
+    expect(knowledgeFactId(result, 'Not there')).toBeUndefined()
+    expect(knowledgeFactId('No entity with id or name Acme Corp.', 'Headquartered in Leeds')).toBeUndefined()
+    expect(knowledgeFactId('REFUSED: get needs a nodeId or a name.', 'Headquartered in Leeds')).toBeUndefined()
   })
 })
