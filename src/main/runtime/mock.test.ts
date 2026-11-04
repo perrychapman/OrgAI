@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -658,8 +658,9 @@ describe('mock adapter MCP server-level suggestions (issue #14 C)', () => {
 })
 
 describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
-  // Never created on disk: the script only names these folders.
-  const base = join(tmpdir(), `orgai-fatigue-${process.pid}`)
+  // Never created on disk: the script only names these folders. tmpdir() is resolved to its real path because the
+  // runners' tmpdir is an 8.3 name (Windows) or under /var -> /private/var (macOS).
+  const base = join(realpathSync.native(tmpdir()), `orgai-fatigue-${process.pid}`)
   const projPath = join(base, 'proj')
   const sibling = join(base, 'sibling-notes')
   type Decide = (req: { toolName: string }) => { behavior: 'allow'; scope?: 'once' | 'session' | 'project' }
@@ -717,7 +718,7 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
   })
 
   it('a project-scope grant logs Saved only for new rules and the second identical command needs no card', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-saved-'))
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-mock-saved-')))
     const command = `cd ${join(dir, 'sub')} && npm test`
     const step = { type: 'tool' as const, name: 'Bash', input: { command }, ask: true, result: 'ok' }
     const { ctx, cards } = await play({ project: project({ path: dir }) }, () => ({ behavior: 'allow', scope: 'project' }), { work: [step, step] })
@@ -729,7 +730,7 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
   })
 
   it('H-A parity: a command a saved Bash(npm test:*) seems to cover but the matcher refuses raises a card; plain npm test does not', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'orgai-mock-refused-'))
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-mock-refused-')))
     addRules(dir, ['Bash(npm test:*)'])
     const bashStep = (command: string) => ({
       type: 'tool' as const,

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -1201,7 +1201,8 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     sdk.autoEnd = true
   })
   function start(over: Partial<RuntimeContext> = {}) {
-    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-fatigue-'))
+    // Real path: the runners' tmpdir is an 8.3 name (Windows) or under /var -> /private/var (macOS).
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-fatigue-')))
     const ctx = fakeCtx({ project: project({ path: dir }), autoContinue: false, ...over })
     const session = new ClaudeSession(ctx)
     sessions.push(session)
