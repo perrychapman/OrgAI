@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
-import { HARNESS_PROJECT_ID, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isVirtualProjectId } from '@shared/types'
+import { HARNESS_PROJECT_ID, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
 import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
@@ -204,6 +204,16 @@ function allowedDirectoryProblem(text: string, p: PlatformPath): string | null {
  * Rejected entries are dropped silently (logged at debug). A non-array gives undefined. Existence is not required.
  */
 export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts = {}): string[] | undefined {
+  return cleanDirectoryList(raw, dataDir, opts, 'allowedDirectories')
+}
+
+/** Normalize `Project.referenceDirectories`: the same rules as cleanAllowedDirectories (cap, length, risk), own log prefix. */
+export function cleanReferenceDirectories(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts = {}): string[] | undefined {
+  return cleanDirectoryList(raw, dataDir, opts, 'referenceDirectories')
+}
+
+/** The shared cleaner behind cleanAllowedDirectories and cleanReferenceDirectories; `label` prefixes the debug logs. */
+function cleanDirectoryList(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts, label: string): string[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const p = opts.path ?? (process.platform === 'win32' ? win32 : posix)
   const platform: NodeJS.Platform = p === win32 ? 'win32' : process.platform === 'win32' ? 'linux' : process.platform
@@ -229,28 +239,28 @@ export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: All
   const out: string[] = []
   for (const entry of raw.slice(0, ALLOWED_DIRECTORIES_SCAN_MAX)) {
     if (out.length >= PROJECT_ALLOWED_DIRECTORIES_MAX) {
-      console.debug('allowedDirectories: over the limit, dropping the rest')
+      console.debug(`${label}: over the limit, dropping the rest`)
       break
     }
     if (typeof entry !== 'string') {
-      console.debug('allowedDirectories: dropped a non-string entry')
+      console.debug(`${label}: dropped a non-string entry`)
       continue
     }
     const text = entry.trim()
     const problem = allowedDirectoryProblem(text, p)
     if (problem) {
-      console.debug(`allowedDirectories: dropped an entry (${problem})`)
+      console.debug(`${label}: dropped an entry (${problem})`)
       continue
     }
     let dir = p.normalize(text)
     if (dir.length > p.parse(dir).root.length) dir = dir.replace(/[\\/]+$/, '')
     if (touchesData(dir)) {
-      console.debug("allowedDirectories: dropped an entry (OrgAI's data folder)")
+      console.debug(`${label}: dropped an entry (OrgAI's data folder)`)
       continue
     }
     const risk = allowedDirectoryRisk(dir, { platform, home: opts.home ?? '', ...(opts.projectPath ? { projectPath: opts.projectPath } : {}) })
     if (risk) {
-      console.debug(`allowedDirectories: dropped an entry (${risk === 'project' ? 'the project folder or inside it' : 'too broad or sensitive'})`)
+      console.debug(`${label}: dropped an entry (${risk === 'project' ? 'the project folder or inside it' : 'too broad or sensitive'})`)
       continue
     }
     if (out.some((d) => same(d, dir))) continue
@@ -259,15 +269,56 @@ export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: All
   return out
 }
 
-/** The project with allowedDirectories normalized (removed when it is not an array); `changed` when it differs. */
+/**
+ * The project with allowedDirectories and referenceDirectories normalized (each removed when it is not an array), a
+ * reference entry that names the same place as an allowed one dropped (the folder stays writable), and a non-ProjectKind
+ * `kind` removed (missing = 'code'); `changed` when anything differs.
+ */
 function withCleanAllowedDirectories(project: Project, dataDir: string, home: string): { project: Project; changed: boolean } {
-  if (!project || typeof project !== 'object' || !('allowedDirectories' in project)) return { project, changed: false }
+  if (!project || typeof project !== 'object') return { project, changed: false }
+  let next = project
+  let changed = false
+  if ('kind' in project && !isProjectKind(project.kind)) {
+    console.debug('project kind: dropped a value that is not a project kind')
+    next = { ...next }
+    delete next.kind
+    changed = true
+  }
+  const hasAllowed = 'allowedDirectories' in project
+  const hasRefs = 'referenceDirectories' in project
+  if (!hasAllowed && !hasRefs) return { project: next, changed }
   const projectPath = typeof project.path === 'string' && project.path ? project.path : undefined
-  const clean = cleanAllowedDirectories(project.allowedDirectories, dataDir, { home, ...(projectPath ? { projectPath } : {}) })
-  const next = { ...project }
-  if (clean === undefined) delete next.allowedDirectories
-  else next.allowedDirectories = clean
-  return { project: next, changed: JSON.stringify(clean) !== JSON.stringify(project.allowedDirectories) }
+  const opts: AllowedDirectoryOpts = { home, ...(projectPath ? { projectPath } : {}) }
+  next = { ...next }
+  let allowed: string[] | undefined
+  if (hasAllowed) {
+    allowed = cleanAllowedDirectories(project.allowedDirectories, dataDir, opts)
+    if (allowed === undefined) delete next.allowedDirectories
+    else next.allowedDirectories = allowed
+    if (JSON.stringify(allowed) !== JSON.stringify(project.allowedDirectories)) changed = true
+  }
+  if (hasRefs) {
+    let refs = cleanReferenceDirectories(project.referenceDirectories, dataDir, opts)
+    const writable = Array.isArray(next.allowedDirectories) ? next.allowedDirectories : []
+    if (refs && writable.length) {
+      const before = refs.length
+      refs = refs.filter((r) => !writable.some((a) => sameFolder(a, r)))
+      if (refs.length !== before) console.debug('referenceDirectories: dropped an entry (also an allowed folder)')
+    }
+    if (refs === undefined) delete next.referenceDirectories
+    else next.referenceDirectories = refs
+    if (JSON.stringify(refs) !== JSON.stringify(project.referenceDirectories)) changed = true
+  }
+  return { project: next, changed }
+}
+
+function sameFolder(a: string, b: string): boolean {
+  if (pathKey(a) === pathKey(b)) return true
+  try {
+    return samePath(a, b)
+  } catch {
+    return false
+  }
 }
 
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
@@ -356,7 +407,7 @@ export class ProjectStore {
     const error = createPathError(input, checkProjectPath(input.path, opts.fs))
     if (error) throw new Error(error)
     if (input.mock && !opts.mockAvailable) throw new Error('The mock adapter is not available. Start OrgAI with ORGAI_MOCK=1 to use it.')
-    let project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind }, settings)
+    let project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind, kind: input.kind }, settings)
     // Mock projects stay on the anthropic defaults and the mock adapter; others take the default connection.
     if (input.mock) project.provider = { ...project.provider, id: 'mock' }
     else if (opts.prepare) project = opts.prepare(project)

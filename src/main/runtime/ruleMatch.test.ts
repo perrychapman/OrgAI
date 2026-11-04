@@ -307,6 +307,15 @@ describe('free cd segments', () => {
     expect(matchOptionsFor({ project: { path: '/p' } as never })).toEqual({ cwd: '/p', freeDirs: ['/p'] })
     expect(matchOptionsFor({ project: { path: '/p' } as never, protectedDirectories: () => ['/data'] }).deniedDirs).toEqual(['/data'])
   })
+
+  it('matchOptionsFor makes a cd into a reference folder free', () => {
+    const ctx = { project: { path: '/home/u/proj' } as never, allowedDirectories: () => ['/x'], referenceDirectories: () => ['/home/u/refs'] }
+    const opts = { ...matchOptionsFor(ctx), platform: 'linux' as const }
+    expect(opts.freeDirs).toEqual(['/home/u/proj', '/x', '/home/u/refs'])
+    expect(isFreeCdTarget('/home/u/refs/sub', opts)).toBe(true)
+    expect(isFreeCdTarget('/home/u/other', opts)).toBe(false)
+    expect(matchingRule('Bash', { command: 'cd /home/u/refs' }, [], opts)).toBeTruthy()
+  })
 })
 
 describe('reviewer-3: program options that run another program (programRunsProgram)', () => {
