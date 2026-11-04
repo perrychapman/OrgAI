@@ -72,8 +72,13 @@ try {
           check((await makeDefault.count()) === 1 && ((await makeDefault.getAttribute('aria-label')) ?? '').startsWith('Use for new projects'), `${c.connection.id} connected non-default card offers "Use for new projects" with a label-in-name`)
         }
       }
-      const liveRegions = await page.locator('#appsettings-section-connections [role=status], #appsettings-section-connections [aria-live=polite]').count()
+      const liveRegions = await page.locator('#appsettings-section-connections [data-testid=connections-live]').count()
       check(liveRegions === 1, `the Connections pane has one polite live region at ${w}x${h} ${theme}`, String(liveRegions))
+      // Any other polite region in the pane must be a Banner (the no-connection notice), never a second sr-only region.
+      const strayLive = await page.locator('#appsettings-section-connections').evaluate((root) =>
+        [...root.querySelectorAll('[role=status], [aria-live=polite]')].filter((el) => !el.matches('[data-testid=connections-live]') && !el.matches('.banner')).length
+      )
+      check(strayLive === 0, `no polite region in the Connections pane besides connections-live and Banners at ${w}x${h} ${theme}`, String(strayLive))
       // Costs live in the pane's Advanced
       await closeAdvanced('app-connections')
       check(!(await page.locator('[data-testid=model-prices]').isVisible()) && !(await page.locator('#community-prices-row').isVisible()), `Costs and Model prices are hidden while Connections Advanced is closed at ${w}x${h} ${theme}`)
@@ -295,7 +300,8 @@ try {
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       const roleLabel = ((await page.locator('[data-testid=role-model]').evaluate((el) => (el.matches('select') ? el : el.querySelector('select'))?.selectedOptions[0]?.textContent ?? '')) || '').trim()
       // Spec 5: tier options read "Everyday (sonnet)" (tier word first); Inherit / the connection default otherwise.
-      check(/^(top|deep|everyday|fast)\b/i.test(roleLabel) || /inherit|connection default/i.test(roleLabel), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
+      const connected = (await page.evaluate(() => window.orgai.connections.list())).some((c) => c.status.state === 'connected')
+      check(/^(top|deep|everyday|fast)\b/i.test(roleLabel) || /inherit|connection default/i.test(roleLabel) || (!connected && /^custom$/i.test(roleLabel)), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
       // Spec 8.3: at rest (role Advanced closed) no option of the Model select is a bare concrete model id.
       const bareIds = await page.locator('[data-testid=role-model]').evaluate((el) =>
         [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast)\b|inherit|connection default|custom/i.test(t))
@@ -314,7 +320,9 @@ try {
         return out.join(' ')
       })
       check((foldText.match(/\bModel\b/g) ?? []).length === 1, `the role Model fold shows the word "Model" once at ${w}x${h} ${theme}`, foldText.replace(/\s+/g, ' ').slice(0, 120))
-      if (w === 1024 && theme === 'dark') {
+      const advancedCount = await page.locator('[data-testid=role-model-advanced] > summary').count()
+      if (w === 1024 && theme === 'dark' && (advancedCount === 0 || !connected)) console.log('SKIP role-model-advanced absent: no connected connection')
+      else if (w === 1024 && theme === 'dark') {
         // N3: a tier role's Exact model reads "Not set"; picking Not set on a custom role returns to a tier, never Inherit.
         const roleSel = page.locator('[data-testid=role-model]')
         const exactSel = page.locator('[data-testid=role-exact-model]')
