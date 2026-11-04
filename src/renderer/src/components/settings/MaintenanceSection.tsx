@@ -79,7 +79,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
       title: 'Clear everything the team recorded?',
       body: (
         <p data-testid="knowledge-clear-body">
-          Deletes {clearCountsLine(graph ?? { nodes: [], edges: [] })}. Context notes stay. Agents and you can no longer see them. Retire items on the Knowledge tab to keep records instead.
+          Deletes {clearCountsLine(graph ?? { nodes: [], edges: [] })}. Agents and you can no longer see these. Context notes stay. Retire items on the Knowledge tab to keep records instead.
         </p>
       ),
       confirmLabel: 'Clear everything',

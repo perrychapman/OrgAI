@@ -9,6 +9,8 @@ import {
   isKnowledgeWriteRow,
   noteTitleOfResult,
   parseBreakdownKey,
+  parseBreakdownPartial,
+  recordedTitle,
   recordedBreakdown,
   recordedBreakdownText,
   recordedCount,
@@ -64,6 +66,14 @@ describe('recordedCount', () => {
     expect(recordedBreakdownText({ items: 0, updates: 1, relations: 0, notes: 0, retired: 0 })).toBe('1 update')
     expect(recordedLabel(8)).toBe('Recorded 8 changes')
     expect(recordedLabel(1)).toBe('Recorded 1 change')
+    expect(recordedLabel(8, true)).toBe('Recorded 8+ changes')
+    const b = { items: 4, updates: 0, relations: 2, notes: 1, retired: 1 }
+    expect(parseBreakdownKey(breakdownKey(b, true))).toEqual(b)
+    expect(parseBreakdownPartial(breakdownKey(b, true))).toBe(true)
+    expect(parseBreakdownPartial(breakdownKey(b))).toBe(false)
+    expect(parseBreakdownPartial('')).toBe(false)
+    expect(recordedTitle('1 item', 1, false)).toBe('What the team recorded this run: 1 item. Opens Knowledge.')
+    expect(recordedTitle('1 item', 3, true)).toContain('this conversation (at least')
   })
 })
 

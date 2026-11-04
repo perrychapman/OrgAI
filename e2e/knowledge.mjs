@@ -262,6 +262,23 @@ try {
   check(await until(async () => (await nodeNamed(eng.id, RISK))?.retired !== true), 'Undo makes the node live again')
   check(await until(async () => (await notice.count()) === 0), 'the notice clears after Undo')
   check(await until(async () => (await rowName()) === RISK), 'after Undo focus is on the restored row', `${await active()} ${await rowName()}`)
+  // Retire, rename in the pane, Undo: the new name survives and the item is live (Undo uses the live item, not the retire-time snapshot).
+  const RENAMED = `${RISK} (renamed)`
+  await openRow(RISK)
+  await detail.locator('[data-testid=knowledge-retire]').click()
+  await notice.waitFor({ state: 'visible' })
+  await detail.locator('[data-testid=knowledge-name]').click()
+  await detail.locator('[data-testid=knowledge-name-input]').fill(RENAMED)
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await nodeNamed(eng.id, RENAMED)) != null), 'the rename after the retire is saved', RENAMED)
+  await page.locator('[data-testid=knowledge-notice-undo]').click()
+  check(await until(async () => { const n = await nodeNamed(eng.id, RENAMED); return !!n && n.retired !== true }), 'Undo keeps the new name and makes the item live')
+  check((await nodeNamed(eng.id, RISK)) == null, 'Undo did not bring the old name back')
+  await until(async () => (await notice.count()) === 0)
+  await detail.locator('[data-testid=knowledge-name]').click()
+  await detail.locator('[data-testid=knowledge-name-input]').fill(RISK)
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await nodeNamed(eng.id, RISK))?.retired !== true && (await nodeNamed(eng.id, RISK)) != null), 'the name is put back for the checks below')
   // Dismiss clears the notice and lands focus on a row.
   await openRow(RISK)
   await detail.locator('[data-testid=knowledge-retire]').click()
