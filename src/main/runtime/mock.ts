@@ -6,6 +6,7 @@ import { mcpServersForRole, newId } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
+import { referenceEditDenial } from './referenceDirectories'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
@@ -28,7 +29,8 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * runs `cd <project>/.claude/worktrees/agent-x && npm test` with a provider-style compound rule suggestion (the card
  * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
  * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
- * granted; the free cd needs no rule).
+ * granted; the free cd needs no rule). [mock:reference-edit] (referenceEditSteps): a report tries an Edit under the
+ * run's first reference folder and gets the reference gate's refusal; the run goes on to its usual end.
  *
  * Permission asks follow the Claude adapter: saved, session and live rules (matchingRule with matchOptionsFor, so a
  * `cd` into the project or an allowed directory needs no rule), and an edit is pre-approved when its file is inside
@@ -314,6 +316,31 @@ export function fatigueSteps(projectPath: string): MockStep[] {
     { type: 'finish', id: MOCK_FATIGUE_REPORT, result: 'Updated the sibling notes. Files touched: ../sibling-notes/README.md' },
     { type: 'tool', name: 'Bash', input: { command: last }, ask: true, suggestions: bashRule(last), result: 'Tests passed.' },
     { type: 'text', text: 'Mock: the fatigue script is done.' }
+  ]
+}
+
+/** Trigger token (work runs, default script): a report tries to edit a file in the first reference folder (referenceEditSteps). */
+export const REFERENCE_EDIT_TOKEN = '[mock:reference-edit]'
+/** The report the [mock:reference-edit] script spawns. */
+export const MOCK_REFERENCE_REPORT = 'mock-reference-report'
+
+/**
+ * The [mock:reference-edit] turn: a report reads, then tries an Edit under `ref` (the run's first reference folder),
+ * which the reference gate refuses with referenceFolderMessage (the denial is the tool result), then finishes and the
+ * root wraps up as usual. Without a reference folder the edit step is left out. Nothing touches the disk.
+ */
+export function referenceEditSteps(ref: string | undefined): MockStep[] {
+  return [
+    { type: 'text', text: 'Checking the client material.' },
+    { type: 'spawn', id: MOCK_REFERENCE_REPORT, description: 'Review the client material' },
+    ...(ref
+      ? ([
+          { type: 'tool', agent: MOCK_REFERENCE_REPORT, name: 'Read', input: { file_path: join(ref, 'brief.md') }, result: '# Client brief\n' },
+          { type: 'tool', agent: MOCK_REFERENCE_REPORT, name: 'Edit', input: { file_path: join(ref, 'brief.md'), old_string: 'old', new_string: 'new' }, ask: true, result: 'File updated.' }
+        ] satisfies MockStep[])
+      : []),
+    { type: 'finish', id: MOCK_REFERENCE_REPORT, result: 'Reviewed the client material; it is read-only, so notes go in the project folder.' },
+    { type: 'text', text: 'Mock: the reference-edit script is done.' }
   ]
 }
 
@@ -802,6 +829,11 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_EDIT_TOKEN)) {
+      const ref = this.ctx.referenceDirectories?.()[0]
+      if (!ref) this.log('info', 'Mock [mock:reference-edit]: this run has no reference folder, so the edit step is skipped.')
+      return referenceEditSteps(ref)
+    }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
@@ -955,6 +987,15 @@ export class MockSession implements RuntimeSession {
         this.setState(agentId, 'thinking', 'Thinking…')
         return
       }
+    }
+    // Same reference-folder gate as the Claude adapter's PreToolUse: edit tools under a reference folder (or naming no
+    // path while any exist) are refused before any rule, mode or card. The list is live; the mock's cwd is the project.
+    const refDenial = this.ctx.referenceDirectories ? referenceEditDenial(step.name, input, this.ctx.referenceDirectories(), this.ctx.project.path) : null
+    if (refDenial) {
+      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: refDenial, isError: true })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
     }
     // Same per-role MCP grant gate as the Claude adapter's PreToolUse, from the live server list; the MCP resource
     // tools are gated on input.server.

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
-import { CodexAdapter, codexModelFor, offerableByRealPath, type CodexServerLike } from './codex'
+import { CodexAdapter, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
@@ -538,6 +538,77 @@ describe('CodexAdapter session', () => {
         await s.ask('item/fileChange/requestApproval', edit)
         expect(allowDirectories).toHaveBeenCalledWith([expect.stringContaining(other.slice(-12))])
         expect(acceptEditsForProject).toHaveBeenCalledTimes(1)
+      })
+    })
+
+    describe('reference folders', () => {
+      const edit = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 }
+      const change = (s: FakeServer, paths: string[], id = 'f1') =>
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: paths.map((path) => ({ path, kind: { type: 'update', move_path: null }, diff: '' })) } })
+      let ref = ''
+      let other = ''
+      beforeEach(() => {
+        ref = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-ref-')))
+        other = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-other-')))
+      })
+      afterEach(() => {
+        rmSync(ref, { recursive: true, force: true })
+        rmSync(other, { recursive: true, force: true })
+      })
+      const msg = () => `${ref} is a reference folder: agents may read it, not change it`
+      const harnessRows = (ctx: { events: RunEvent[] }) =>
+        ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.source === 'harness' && e.entry.block.text.includes('reference folder'))
+
+      it('never puts a reference folder in writable_roots, even when it is also an allowed folder', async () => {
+        const { s } = await started('default', { allowedDirectories: () => [other, ref], referenceDirectories: () => [ref] })
+        expect(s.options.config).toContain(`sandbox_workspace_write.writable_roots=${JSON.stringify([other])}`)
+        const only = await started('default', { referenceDirectories: () => [ref] })
+        expect((only.s.options.config ?? []).join('\n')).not.toContain('writable_roots')
+        // Pure: an allowed folder inside or containing a reference folder is left out; restricted runs get none.
+        expect(codexWritableRoots({ run: runSummary({}), allowedDirectories: () => [join(ref, 'sub'), other], referenceDirectories: () => [ref] })).toEqual([other])
+        expect(codexWritableRoots({ run: runSummary({}), allowedDirectories: () => [tmpdir(), other], referenceDirectories: () => [ref] })).toEqual([other])
+        expect(codexWritableRoots({ run: runSummary({ quick: { folder: dir } as never }), allowedDirectories: () => [other] })).toEqual([])
+      })
+
+      it('declines a change under a reference folder without a card, with a warn log and a harness row, even in acceptEdits with a blanket rule', async () => {
+        for (const mode of ['default', 'acceptEdits'] as const) {
+          const { ctx, s } = await started(mode, { referenceDirectories: () => [ref], allowedRules: () => ['Edit', 'Write'] })
+          change(s, [join(dir, 'ok.ts'), join(ref, 'brief.md')])
+          expect(await s.ask('item/fileChange/requestApproval', edit), mode).toEqual({ decision: 'decline' })
+          expect(ctx.requestPermission).not.toHaveBeenCalled()
+          expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg()))).toBe(true)
+          expect(harnessRows(ctx)).toHaveLength(1)
+          expect(harnessRows(ctx)[0]).toMatchObject({ entry: { block: { text: msg() } } })
+          await session?.stop()
+        }
+      })
+
+      it('declines a grantRoot under or above a reference folder, and a change with no paths (fails closed)', async () => {
+        const { ctx, s } = await started('default', { referenceDirectories: () => [ref] })
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-1', grantRoot: join(ref, 'sub') })).toEqual({ decision: 'decline' })
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-2', grantRoot: tmpdir() })).toEqual({ decision: 'decline' })
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-3' })).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        expect(harnessRows(ctx)).toHaveLength(3)
+      })
+
+      it('a change elsewhere follows the old path, and the list is read live', async () => {
+        const refs: string[] = []
+        const { ctx, s } = await started('acceptEdits', { referenceDirectories: () => refs })
+        change(s, [join(dir, 'a.ts')])
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        change(s, [join(ref, 'a.md')], 'f2')
+        // Not a reference folder yet: outside every free folder, so it asks.
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        refs.push(ref)
+        change(s, [join(ref, 'a.md')], 'f3')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f3' })).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        // With no reference folders at all, a change without paths still goes to the card as before.
+        refs.length = 0
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
       })
     })
 

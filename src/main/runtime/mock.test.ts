@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -811,6 +811,55 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit'])
     expect(allowDirectories).not.toHaveBeenCalled()
     expect(acceptEditsForProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('mock [mock:reference-edit]', () => {
+  async function play(referenceDirectories?: () => string[]) {
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Review the brief ${REFERENCE_EDIT_TOKEN}`, project: project({ roles: defaultRoles(), permissionMode: 'acceptEdits' }), allowedRules: () => ['Edit'], ...(referenceDirectories ? { referenceDirectories } : {}) })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    return { ctx, session, statuses }
+  }
+
+  it('a report edit under the first reference folder is denied without a card, and the run goes on to its end', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-ref-'))
+    const { ctx, session, statuses } = await play(() => [ref])
+    const msg = `${ref} is a reference folder: agents may read it, not change it`
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.agentId === MOCK_REFERENCE_REPORT ? [e.entry.block] : []))
+    expect(results).toEqual([expect.objectContaining({ content: '# Client brief\n' }), expect.objectContaining({ content: msg, isError: true })])
+    // Denied before the saved Edit rule, acceptEdits or a card.
+    expect(ctx.requestPermission).not.toHaveBeenCalled()
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg))).toBe(true)
+    expect(statuses()).toContain('idle')
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'Mock: the reference-edit script is done.')).toBe(true)
+    await session.stop()
+    await session.finished
+    expect(statuses().at(-1)).toBe('finished')
+  })
+
+  it('skips the edit with a log line when the run has no reference folder', async () => {
+    const { ctx, session } = await play()
+    expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('no reference folder'))).toBe(true)
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_use' && e.entry.block.name === 'Edit')).toBe(false)
+    await session.stop()
+  })
+
+  it('the edit gate fails closed on a missing path and leaves other edits alone', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-ref-'))
+    const ctx = fakeCtx({ autoContinue: false, referenceDirectories: () => [ref] })
+    const work = [
+      { type: 'tool' as const, name: 'Write', input: {}, ask: true, result: 'written' },
+      { type: 'tool' as const, name: 'Edit', input: { file_path: join(ctx.project.path, 'a.md') }, ask: true, result: 'edited' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+    expect(results[0]).toMatchObject({ isError: true, content: expect.stringContaining('names no file path') })
+    expect(results[1]).toMatchObject({ content: 'edited' })
+    expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    await session.stop()
   })
 })
 

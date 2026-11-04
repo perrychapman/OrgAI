@@ -51,9 +51,23 @@ import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
-import { dirname, isAbsolute } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { referenceFolderMessage, referenceFolderOf } from './referenceDirectories'
+
+/**
+ * sandbox_workspace_write.writable_roots for a run: the allowed folders only, never on a trust-restricted run, and
+ * never a reference folder: an allowed folder that is, is inside or contains a reference folder is left out (writes
+ * inside writable roots need no approval, so the reference gate in onFileApproval would never see them).
+ */
+export function codexWritableRoots(ctx: Pick<RuntimeContext, 'allowedDirectories' | 'referenceDirectories' | 'run'>): string[] {
+  if (isTrustRestrictedRun(ctx.run)) return []
+  const allowed = (ctx.allowedDirectories?.() ?? []).filter((d) => typeof d === 'string' && d.length > 0)
+  const refs = (ctx.referenceDirectories?.() ?? []).filter((r) => typeof r === 'string' && r.length > 0)
+  if (!refs.length) return allowed
+  return allowed.filter((d) => !referenceFolderOf(d, refs) && !refs.some((r) => referenceFolderOf(r, [d])))
+}
 
 const PROTECTED_SEGMENTS = new Set(['.git', '.codex', '.agents', '.claude'])
 /** True when a path has a .git, .codex, .agents or .claude segment (case-insensitive, either separator). */
@@ -443,7 +457,7 @@ class CodexSession implements RuntimeSession {
     const isSetup = this.setupLike
     const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
     const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}),...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -570,7 +584,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
-      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: isTrustRestrictedRun(ctx.run) ? [] : (ctx.allowedDirectories?.() ?? []) })
+      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: codexWritableRoots(ctx) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       this.server = this.createServer(this.launch)
@@ -932,6 +946,37 @@ class CodexSession implements RuntimeSession {
     return { decision: granted ? 'acceptForSession' : 'accept' }
   }
 
+  /**
+   * Why a file-change approval must be declined because of a reference folder, or null. Only when the run has
+   * reference folders (read live): a changed path under one, a grantRoot under one or containing one, a change with no
+   * usable path, or a request naming neither changes nor a grantRoot (fails closed). Relative paths resolve against
+   * the agent's worktree, else the project folder.
+   */
+  private referenceChangeDenial(agentId: string, changes: ReadonlyArray<{ path: string }>, grantRoot: string | undefined): string | null {
+    if (!this.ctx.referenceDirectories) return null
+    let refs: string[]
+    try {
+      refs = this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'OrgAI could not check the reference folders, so this change was declined.'
+    }
+    if (!refs.length) return null
+    const cwd = this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
+    const unnamed = `${referenceFolderMessage(refs[0]!)}; this change names no file path, so it was declined`
+    if (!changes.length && !grantRoot) return unnamed
+    for (const c of changes) {
+      if (typeof c.path !== 'string' || !c.path) return unnamed
+      const hit = referenceFolderOf(c.path, refs, cwd)
+      if (hit) return referenceFolderMessage(hit)
+    }
+    if (grantRoot) {
+      const hit = referenceFolderOf(grantRoot, refs, cwd) ?? refs.find((r) => referenceFolderOf(r, [isAbsolute(grantRoot) ? grantRoot : join(cwd, grantRoot)]))
+      if (hit) return referenceFolderMessage(hit)
+    }
+    return null
+  }
+
   private async onFileApproval(params: unknown): Promise<unknown> {
     const req = parseFileApproval(params)
     if (!req) return { decision: 'decline' }
@@ -940,6 +985,13 @@ class CodexSession implements RuntimeSession {
     if (policy?.denyApprovals) return { decision: 'decline' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
+    const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
+    if (refDenial) {
+      this.log('warn', `Declined a file change by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
+      this.transcript(agentId, { kind: 'system', text: refDenial }, { source: 'harness' })
+      return { decision: 'decline' }
+    }
     const buildWorkspace = this.ctx.run.buildWorkspace
     if (buildWorkspace && (changes.length ? changes.some((c) => isWorkspaceConfigPath(buildWorkspace, c.path)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
       this.log('warn', 'Declined a change under .claude/ in the build workspace.')
@@ -1120,7 +1172,7 @@ class CodexSession implements RuntimeSession {
       const servers = await this.ctx.resolvedMcpServers!()
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
         noProjectDocs: isTrustRestrictedRun(this.ctx.run),
-        writableRoots: isTrustRestrictedRun(this.ctx.run) ? [] : (this.ctx.allowedDirectories?.() ?? [])
+        writableRoots: codexWritableRoots(this.ctx)
       })
       const old = this.server
       this.unwire()

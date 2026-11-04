@@ -94,6 +94,7 @@ import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHel
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
 import { refreshRoleGrants } from './runManager'
+import { claudeAdditionalDirectories } from './claude'
 
 function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpServerSpec {
   return { transport: 'stdio', enabled: true, source: 'user', addedAt: '2026-01-01T00:00:00.000Z', ...over }
@@ -1546,6 +1547,87 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(vi.mocked(ctx.requestPermission)).toHaveBeenCalledTimes(1)
     expect(allowDirectories).not.toHaveBeenCalled()
     expect(acceptEditsForProject).not.toHaveBeenCalled()
+  })
+
+  describe('reference folders', () => {
+    const refHook = async (q: Fake, tool: string, input: Record<string, unknown>, cwd = '/repo'): Promise<HookOut> =>
+      (q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>)(
+        { hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd, tool_name: tool, tool_input: input, tool_use_id: `tu-${Math.random()}` },
+        'x',
+        {}
+      )
+    const newRef = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-ref-')))
+
+    it('additionalDirectories holds the allowed and the reference folders, deduped, and none on a restricted run', async () => {
+      const allowed = mkdtempSync(join(tmpdir(), 'orgai-claude-extra-'))
+      const ref = newRef()
+      start({ allowedDirectories: () => [allowed], referenceDirectories: () => [ref, allowed] })
+      expect((await firstQuery()).options.additionalDirectories).toEqual([allowed, ref])
+      const quick = runSummary({ projectId: 'quick', quick: { folder: '/f', team: 'single', allowEdits: true, gitRepo: false } })
+      expect(claudeAdditionalDirectories({ run: quick, allowedDirectories: () => [allowed], referenceDirectories: () => [ref] })).toEqual([])
+      expect(claudeAdditionalDirectories({ run: runSummary({}), referenceDirectories: () => [ref] })).toEqual([ref])
+    })
+
+    it('PreToolUse denies each edit tool under a reference folder with the exact message, and a missing path', async () => {
+      const ref = newRef()
+      const { ctx } = start({ referenceDirectories: () => [ref] })
+      const q = await firstQuery()
+      const msg = `${ref} is a reference folder: agents may read it, not change it`
+      for (const tool of ['Edit', 'Write', 'MultiEdit']) {
+        expect((await refHook(q, tool, { file_path: join(ref, 'sub', 'a.md') })).hookSpecificOutput, tool).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: msg })
+      }
+      expect((await refHook(q, 'NotebookEdit', { notebook_path: join(ref, 'n.ipynb') })).hookSpecificOutput?.permissionDecisionReason).toBe(msg)
+      // A relative path resolves against the calling agent's cwd.
+      expect((await refHook(q, 'Edit', { file_path: join('sub', 'a.md') }, ref)).hookSpecificOutput?.permissionDecision).toBe('deny')
+      // Fails closed: no path at all while reference folders exist.
+      const missing = (await refHook(q, 'Write', {})).hookSpecificOutput
+      expect(missing?.permissionDecision).toBe('deny')
+      expect(missing?.permissionDecisionReason).toContain(msg)
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg))).toBe(true)
+      // Reads in the folder and edits elsewhere are untouched by the gate.
+      expect(await refHook(q, 'Read', { file_path: join(ref, 'a.md') })).toEqual({})
+      expect((await refHook(q, 'Edit', { file_path: join(ctx.project.path, 'a.md') })).hookSpecificOutput?.permissionDecision).not.toBe('deny')
+    })
+
+    it('the deny wins over a saved rule, a run grant, acceptEdits and auto; canUseTool never shows a card for it', async () => {
+      for (const permissionMode of ['acceptEdits', 'auto'] as const) {
+        const ref = newRef()
+        const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-refmode-')))
+        addRules(dir, ['Edit', 'Write'])
+        const ctx = fakeCtx({ project: project({ path: dir, permissionMode }), autoContinue: false, allowedRules: () => ['Edit', 'Write'], referenceDirectories: () => [ref] })
+        const session = new ClaudeSession(ctx)
+        sessions.push(session)
+        const q = await firstQuery()
+        expect((await refHook(q, 'Edit', { file_path: join(ref, 'a.md') })).hookSpecificOutput?.permissionDecision, permissionMode).toBe('deny')
+        const out = await canUseTool(q)('Write', { file_path: join(ref, 'b.md') }, { signal: new AbortController().signal })
+        expect(out).toMatchObject({ behavior: 'deny', message: `${ref} is a reference folder: agents may read it, not change it` })
+        expect(vi.mocked(ctx.requestPermission)).not.toHaveBeenCalled()
+        await sessions.pop()!.stop()
+        sdk.queries.length = 0
+      }
+    })
+
+    it('reads the list live and keeps the gate and the folders on a restarted query', async () => {
+      const ref = newRef()
+      const later = newRef()
+      const refs = [ref]
+      const servers: McpServerSpec[] = []
+      const { session } = start({ referenceDirectories: () => refs, mcpServers: () => servers, resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} })) })
+      const q1 = await firstQuery()
+      expect(await refHook(q1, 'Edit', { file_path: join(later, 'a.md') })).not.toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+      refs.push(later)
+      expect((await refHook(q1, 'Edit', { file_path: join(later, 'a.md') })).hookSpecificOutput?.permissionDecision).toBe('deny')
+      q1.emit({ type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] })
+      await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+      servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['lead'], secretEnv: [] }))
+      sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+      await (session as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(servers[0]!)
+      q1.emit({ type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} })
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+      const q2 = sdk.queries[1]!
+      expect(q2.options.additionalDirectories).toEqual([ref, later])
+      expect((await refHook(q2, 'Write', { file_path: join(ref, 'x.md') })).hookSpecificOutput?.permissionDecisionReason).toBe(`${ref} is a reference folder: agents may read it, not change it`)
+    }, 10_000)
   })
 })
 
