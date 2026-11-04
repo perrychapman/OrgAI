@@ -143,6 +143,11 @@ export function encodePng(rgba, size) {
 
 /** images: [{ size, png }]. PNG-in-ICO (Vista and later); a width or height of 256 is stored as 0. */
 export function encodeIco(images) {
+  for (const { size } of images) {
+    if (!Number.isInteger(size) || size < 1 || size > 256) {
+      throw new Error(`ICO sizes must be integers from 1 to 256 (got ${size})`)
+    }
+  }
   const header = Buffer.alloc(6)
   header.writeUInt16LE(0, 0)
   header.writeUInt16LE(1, 2)

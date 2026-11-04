@@ -6,6 +6,12 @@ const png = (size: number, inset = false): Buffer => encodePng(renderIcon(size, 
 const alphaAt = (rgba: Buffer, size: number, x: number, y: number): number => rgba[(y * size + x) * 4 + 3]
 
 describe('icon pipeline', () => {
+  it('refuses ICO sizes outside 1..256', () => {
+    for (const size of [0, 257, 1.5, NaN]) {
+      expect(() => encodeIco([{ size, png: Buffer.alloc(8) }])).toThrow(/ICO sizes/)
+    }
+  })
+
   it('encodes an ICO whose directory parses back to the written sizes and offsets', () => {
     const sizes = [16, 32, 256]
     const images = sizes.map((size) => ({ size, png: png(size) }))
