@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
-import { BellRing, ChevronDown, ChevronRight, LayoutGrid, MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BellRing, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
@@ -317,12 +317,12 @@ export default function Sidebar({
           type="button"
           className={`nav-item ${view === 'projects' ? 'active' : ''}`}
           aria-current={view === 'projects' ? 'page' : undefined}
-          aria-label={rail ? 'All projects' : undefined}
-          title={rail ? 'All projects' : undefined}
+          aria-label={rail ? 'Dashboard' : undefined}
+          title={rail ? 'Dashboard' : undefined}
           onClick={() => setView('projects')}
         >
-          <Icon icon={LayoutGrid} size="sm" />
-          {!rail && 'Projects'}
+          <Icon icon={LayoutDashboard} size="sm" />
+          {!rail && 'Dashboard'}
         </button>
         {items.length > 0 && (
           <Popover

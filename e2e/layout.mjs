@@ -264,7 +264,7 @@ try {
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
-  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Projects.
+  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Dashboard.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1600, 1000))
   await sleep(300)
   await page.reload()
@@ -276,7 +276,7 @@ try {
     if (i > 0) await page.keyboard.press('Tab')
     stops.push(await page.evaluate(() => (document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent || '').trim()))
   }
-  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Projects/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Projects', JSON.stringify(stops))
+  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Dashboard/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Dashboard', JSON.stringify(stops))
 
   // Ctrl/Cmd+B toggles the sidebar between the 232 px column and the 56 px rail, and the choice survives a reload.
   const sideW = () => page.evaluate(() => Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0))

@@ -338,7 +338,7 @@
   --gradient-ui: linear-gradient(90deg, var(--brand-ui-from), var(--brand-ui-to));
 
   /* Text on the fixed brand gradient. --text-on-role is retired (.avatar is tinted); the alias stays only for the
-     saturated chips in projects.css .roles until brief 3B restyles them. */
+     saturated chips in dashboard.css .roles until brief 3B restyles them. */
   --text-on-brand: #ffffff;
   --text-on-role: #ffffff;
 }
