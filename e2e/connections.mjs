@@ -371,7 +371,7 @@ try {
     await form.getByLabel('Arguments').fill('-y\ne2e-lib-server@1.0.0')
     await form.getByRole('button', { name: 'Add variable' }).click()
     await form.getByLabel('Name of variable 1').fill('E2E_TOKEN')
-    await form.getByRole('checkbox', { name: 'Secret' }).check()
+    await form.getByRole('checkbox', { name: 'Secret', exact: true }).check()
     await form.getByRole('button', { name: 'Add server' }).click()
     await form.waitFor({ state: 'detached', timeout: 10_000 })
     const row = libSec.locator('[data-testid=mcp-library-row][data-server=e2e-lib-server]')

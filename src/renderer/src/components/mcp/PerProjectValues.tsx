@@ -6,6 +6,7 @@ import { cleanIpcError } from '../../lib/ipcError'
 import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
 import { nextOverrides, perProjectState } from './mcpHelpers'
+import { createSerialQueue } from './serialQueue'
 
 /**
  * "For this <noun>": the values this project enters for a linked library server. Plain values save on blur and Enter
@@ -34,39 +35,48 @@ export default function PerProjectValues({
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [status, setStatus] = useState('')
   const timer = useRef<number | undefined>(undefined)
-  // Values changed elsewhere (a refresh, a copy) replace the drafts.
+  const saved = Object.fromEntries(state.plain.filter((p) => p.value !== '').map((p) => [p.name, p.value]))
+  // The last map main confirmed (seeded from props). Every save builds its full map from this, one at a time,
+  // because main replaces the whole map and a second save must not drop the first one's value.
+  const confirmed = useRef<Record<string, string>>(saved)
+  const queue = useRef(createSerialQueue())
+  // Values changed elsewhere (a refresh, a copy) replace the drafts, and the confirmed map unless a save is in flight.
   useEffect(() => {
     setDrafts(Object.fromEntries(state.plain.map((p) => [p.name, p.value])))
+    if (!queue.current.busy()) confirmed.current = Object.fromEntries(state.plain.filter((p) => p.value !== '').map((p) => [p.name, p.value]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedKey])
   useEffect(() => () => window.clearTimeout(timer.current), [])
 
   if (!state.declared) return null
 
-  const saved = Object.fromEntries(state.plain.filter((p) => p.value !== '').map((p) => [p.name, p.value]))
   const remote = spec.transport !== 'stdio'
 
-  const commit = async (name: string): Promise<void> => {
+  const commit = (name: string): Promise<void> => {
     const value = (drafts[name] ?? '').trim()
-    if ((saved[name] ?? '') === value || !api) return
+    if (!api) return Promise.resolve()
     if (value.length > MCP_OVERRIDE_VALUE_MAX) {
       setErrors((e) => ({ ...e, [name]: `Use at most ${MCP_OVERRIDE_VALUE_MAX} characters.` }))
-      return
+      return Promise.resolve()
     }
     setErrors((e) => {
       const { [name]: _gone, ...rest } = e
       return rest
     })
-    try {
-      const map = nextOverrides(saved, name, value)
-      const result = await api.setOverrides({ projectId, serverId: spec.id, ...(remote ? { headers: map } : { env: map }) })
-      onResult(result)
-      setStatus(`Saved ${name}`)
-      window.clearTimeout(timer.current)
-      timer.current = window.setTimeout(() => setStatus(''), 2000)
-    } catch (e) {
-      setErrors((x) => ({ ...x, [name]: cleanIpcError(e) }))
-    }
+    return queue.current.enqueue(async () => {
+      if ((confirmed.current[name] ?? '') === value) return
+      try {
+        const map = nextOverrides(confirmed.current, name, value)
+        const result = await api.setOverrides({ projectId, serverId: spec.id, ...(remote ? { headers: map } : { env: map }) })
+        confirmed.current = map
+        onResult(result)
+        setStatus(`Saved ${name}`)
+        window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(() => setStatus(''), 2000)
+      } catch (e) {
+        setErrors((x) => ({ ...x, [name]: cleanIpcError(e) }))
+      }
+    })
   }
 
   return (
