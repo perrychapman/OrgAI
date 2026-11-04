@@ -353,8 +353,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   facts `kf_`; free-form `kind` / `relation` normalised to `KNOWLEDGE_KEY_RE`; identity by id, else (kind, name) /
   (kind, alias) case-insensitive; edges unique per (from, to, relation); removing a node removes its edges; every item
   carries a `KnowledgeSource` main fills. Caps KNOWLEDGE_NODES_MAX 2000, _EDGES_MAX 5000, _NODE_FACTS_MAX 50,
-  _RUN_WRITES_MAX 500 (per run, notes included; checked before the store call), _SEARCH_LIMIT 50; hidden characters
-  and over-long strings refused, never cut. IPC `knowledge:get / saveNode / removeNode / saveEdge / removeEdge / clear`
+  _RUN_WRITES_MAX 500 (per run, notes included; checked before the store call), _SEARCH_LIMIT 50, _FILE_MAX_BYTES
+  64 MB (compact JSON; a write past it is refused, and a file that exists but did not parse to a graph reads empty
+  and refuses every write so it is never overwritten; review H1); hidden characters and over-long strings refused,
+  never cut; an agent never replaces a user-created entity's summary (appended as a fact, `summaryKept`; review M1).
+  IPC `knowledge:get / saveNode / removeNode / saveEdge / removeEdge / clear`
   (`KNOWLEDGE_IPC`, preload `window.orgai.knowledge`, inputs rebuilt by ipc.ts `knowledgeArgs`, writes on engagements
   only, every write pushes `projects:engagementChanged` `what: 'knowledge'` with `ids`). Harness tools:
   `engagement_context` gained `action: 'list' | 'read' | 'save'` (agents create notes and replace only agent-written
