@@ -97,7 +97,7 @@ export function searchKnowledge(graph: Pick<KnowledgeGraph, 'nodes' | 'edges'>, 
   const text = knowledgeNameKey(q.query ?? '')
   const kind = q.kind === undefined || q.kind === '' ? undefined : q.kind
   const limit = knowledgeSearchLimit(q.limit)
-  const hits: KnowledgeSearchHit[] = []
+  const matched: { node: KnowledgeNode; nameHit: boolean }[] = []
   for (const node of graph.nodes) {
     if (node.retired && !q.includeRetired) continue
     if (kind !== undefined && node.kind !== kind) continue
@@ -109,8 +109,20 @@ export function searchKnowledge(graph: Pick<KnowledgeGraph, 'nodes' | 'edges'>, 
         ((node.summary !== undefined && knowledgeNameKey(node.summary).includes(text)) || node.facts.some((f) => !f.retired && knowledgeNameKey(f.text).includes(text)))
       if (!nameHit && !other) continue
     }
-    hits.push({ node, nameHit, edgeCount: knowledgeEdgesOf(graph, node.id, true).length })
+    matched.push({ node, nameHit })
   }
-  hits.sort((a, b) => Number(b.nameHit) - Number(a.nameHit) || b.node.updatedAt - a.node.updatedAt || a.node.name.localeCompare(b.node.name))
-  return hits.slice(0, limit)
+  matched.sort((a, b) => Number(b.nameHit) - Number(a.nameHit) || b.node.updatedAt - a.node.updatedAt || a.node.name.localeCompare(b.node.name))
+  // Edge counts only for the hits returned, through one pass over the edges (a full graph is 2,000 x 5,000 otherwise).
+  const top = matched.slice(0, limit)
+  const counts = new Map<string, number>(top.map((h) => [h.node.id, 0]))
+  for (const e of graph.edges) {
+    if (e.retired) continue
+    const f = counts.get(e.from)
+    if (f !== undefined) counts.set(e.from, f + 1)
+    if (e.to !== e.from) {
+      const t = counts.get(e.to)
+      if (t !== undefined) counts.set(e.to, t + 1)
+    }
+  }
+  return top.map((h) => ({ ...h, edgeCount: counts.get(h.node.id) ?? 0 }))
 }

@@ -161,6 +161,24 @@ describe('searchKnowledge', () => {
     expect(searchKnowledge(many)).toHaveLength(KNOWLEDGE_SEARCH_LIMIT)
   })
 
+  it('counts edges only for the hits it returns, both directions, retired edges left out', () => {
+    const g2 = graph(
+      [node({ id: 'kn_1', name: 'A', updatedAt: 3 }), node({ id: 'kn_2', name: 'B', updatedAt: 2 }), node({ id: 'kn_3', name: 'C', updatedAt: 1 })],
+      [
+        edge({ id: 'e1', from: 'kn_1', to: 'kn_2' }),
+        edge({ id: 'e2', from: 'kn_3', to: 'kn_1', relation: 'knows' }),
+        edge({ id: 'e3', from: 'kn_2', to: 'kn_3', relation: 'knows' }),
+        edge({ id: 'e4', from: 'kn_1', to: 'kn_3', relation: 'zz', retired: true })
+      ]
+    )
+    expect(searchKnowledge(g2, { limit: 1 }).map((h) => [h.node.id, h.edgeCount])).toEqual([['kn_1', 2]])
+    expect(searchKnowledge(g2).map((h) => [h.node.id, h.edgeCount])).toEqual([
+      ['kn_1', 2],
+      ['kn_2', 2],
+      ['kn_3', 2]
+    ])
+  })
+
   it('knowledgeEdgesOf lists both directions and can drop retired edges', () => {
     expect(knowledgeEdgesOf(g, 'kn_1').map((e) => e.id)).toEqual(['e1', 'e2'])
     expect(knowledgeEdgesOf(g, 'kn_1', true).map((e) => e.id)).toEqual(['e1'])

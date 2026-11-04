@@ -2062,6 +2062,9 @@ export const knowledgeTool = defineTool({
         const factId = args.factId?.trim() || undefined
         const given = [nodeId, edgeId, factId].filter(Boolean).length
         if (given !== 1) return 'REFUSED: retire needs exactly one of nodeId, edgeId or factId.'
+        // The reason lands in the run transcript, so it gets the same hidden-character gate as every stored string.
+        const reasonProblem = args.reason === undefined ? null : hiddenCharProblem('The reason', args.reason)
+        if (reasonProblem) return `REFUSED: ${reasonProblem}`
         try {
           const r = kg.retire({ ...(nodeId ? { nodeId } : {}), ...(edgeId ? { edgeId } : {}), ...(factId ? { factId } : {}), ...(args.reason?.trim() ? { reason: args.reason.trim() } : {}) }, who)
           const label = `${r.item} ${datum(r.label, 240)} (${datum(r.id, 80)})`
