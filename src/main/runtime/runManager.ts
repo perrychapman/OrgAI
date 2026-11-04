@@ -1632,8 +1632,11 @@ export class RunManager {
   }
 
   /** runs:usageCsv: usageStats rows as CSV (USAGE_CSV_COLUMNS), limit USAGE_STATS_MAX_LIMIT (runUsage.ts buildUsageCsv). */
-  usageCsv(raw: UsageStatsQuery): string {
-    return buildUsageCsv(this.usageStats({ ...(raw && typeof raw === 'object' ? raw : {}), limit: USAGE_STATS_MAX_LIMIT } as UsageStatsQuery))
+  usageCsv(raw: UsageStatsQuery, names: { project?: string; client?: string } = {}): string {
+    return buildUsageCsv(this.usageStats({ ...(raw && typeof raw === 'object' ? raw : {}), limit: USAGE_STATS_MAX_LIMIT } as UsageStatsQuery), {
+      project: typeof names.project === 'string' ? names.project : '',
+      client: typeof names.client === 'string' ? names.client : ''
+    })
   }
 
   /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */

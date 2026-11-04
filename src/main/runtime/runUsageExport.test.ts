@@ -14,6 +14,8 @@ function row(over: Partial<RunUsageRow> = {}): RunUsageRow {
   return { runId: 'r1', kind: 'work', status: 'finished', prompt: 'Do it', startedAt: Date.UTC(2026, 10, 3, 12, 0, 0), usage: usage(), ...over }
 }
 
+const UTC0 = { offsetMinutes: () => 0 }
+
 function stats(runs: RunUsageRow[]): UsageStats {
   const totals = usage({ tokens: emptyTokens() })
   return { projectId: 'p1', runs, roles: [], trend: [], totals, generatedAt: 0 }
@@ -57,20 +59,40 @@ describe('monthRange', () => {
 
 describe('buildUsageCsv', () => {
   it('writes the header and one CRLF-separated row per run', () => {
-    const csv = buildUsageCsv(stats([row({ endedAt: Date.UTC(2026, 10, 3, 12, 5, 0), title: 'Fix it' }), row({ runId: 'r2' })]))
+    const csv = buildUsageCsv(stats([row({ endedAt: Date.UTC(2026, 10, 3, 12, 5, 0), title: 'Fix it' }), row({ runId: 'r2' })]), { ...UTC0, project: 'Acme site', client: 'Acme' })
     const lines = csv.split('\r\n')
     expect(lines[0]).toBe('﻿' + USAGE_CSV_COLUMNS.join(','))
+    expect(lines[0]!.slice(1).split(',').slice(0, 5)).toEqual(['project', 'client', 'started', 'started_utc', 'ended'])
     expect(lines).toHaveLength(3)
-    expect(lines[1]).toBe('2026-11-03T12:00:00.000Z,2026-11-03T12:05:00.000Z,work,finished,Fix it,0,10,20,30,40,0.500000,')
-    expect(lines[2]!.split(',')[1]).toBe('')
-    expect(lines[2]!.split(',')[4]).toBe('Do it')
+    expect(lines[1]).toBe(
+      'Acme site,Acme,2026-11-03T12:00:00+00:00,2026-11-03T12:00:00.000Z,2026-11-03T12:05:00+00:00,work,finished,Fix it,0,10,20,30,40,0.500000,'
+    )
+    expect(lines[2]!.split(',')[4]).toBe('')
+    expect(lines[2]!.split(',')[7]).toBe('Do it')
+  })
+
+  it('writes local times with the UTC offset, keeping started_utc', () => {
+    const t = Date.UTC(2026, 10, 4, 14, 15, 0)
+    const at = (offsetMinutes: number): string[] =>
+      buildUsageCsv(stats([row({ startedAt: t, endedAt: t + 3600000 })]), { offsetMinutes: () => offsetMinutes }).split('\r\n')[1]!.split(',')
+    expect(at(-300).slice(2, 5)).toEqual(['2026-11-04T09:15:00-05:00', '2026-11-04T14:15:00.000Z', '2026-11-04T10:15:00-05:00'])
+    expect(at(330)[2]).toBe('2026-11-04T19:45:00+05:30')
+    expect(at(0)[2]).toBe('2026-11-04T14:15:00+00:00')
+    expect(at(-570)[2]).toBe('2026-11-04T04:45:00-09:30')
+  })
+
+  it('leaves project and client blank when not given, and prefixes a client starting with =', () => {
+    const plain = buildUsageCsv(stats([row()]), UTC0).split('\r\n')[1]!.split(',')
+    expect(plain.slice(0, 2)).toEqual(['', ''])
+    const csv = buildUsageCsv(stats([row()]), { ...UTC0, project: '+Plan', client: '=HYPERLINK("x")' })
+    expect(csv.split('\r\n')[1]).toMatch(/^'\+Plan,"'=HYPERLINK\(""x""\)",/)
   })
 
   it('writes kind ask for a single-team work row and keeps work otherwise', () => {
     const lines = buildUsageCsv(stats([row({ team: 'single' }), row({ runId: 'r2' }), row({ runId: 'r3', kind: 'setup', team: 'single' })])).split('\r\n')
-    expect(lines[1]!.split(',')[2]).toBe('ask')
-    expect(lines[2]!.split(',')[2]).toBe('work')
-    expect(lines[3]!.split(',')[2]).toBe('setup')
+    expect(lines[1]!.split(',')[5]).toBe('ask')
+    expect(lines[2]!.split(',')[5]).toBe('work')
+    expect(lines[3]!.split(',')[5]).toBe('setup')
   })
 
   it('is only the header for no runs', () => {
@@ -81,7 +103,7 @@ describe('buildUsageCsv', () => {
     const csv = buildUsageCsv({ ...stats([row({ usage: usage({ costUsd: 0.0000001 }) })]), truncated: true } as UsageStats)
     const lines = csv.split('\r\n')
     expect(lines).toHaveLength(2)
-    expect(lines[1]!.split(',')[10]).toBe('0.000000')
+    expect(lines[1]!.split(',')[13]).toBe('0.000000')
     expect(csv).not.toMatch(/e-/)
   })
 
@@ -95,7 +117,7 @@ describe('buildUsageCsv', () => {
   it('counts roles', () => {
     const roles = [{ roleId: 'a' }, { roleId: 'b' }] as unknown as RunUsage['roles']
     const cells = buildUsageCsv(stats([row({ usage: usage({ roles }) })])).split('\r\n')[1]!.split(',')
-    expect(cells[5]).toBe('2')
+    expect(cells[8]).toBe('2')
   })
 
   it('quotes commas, quotes and line breaks, doubling inner quotes', () => {
@@ -122,6 +144,6 @@ describe('buildUsageCsv', () => {
 
   it('falls back to the prompt and survives a missing end', () => {
     const csv = buildUsageCsv(stats([row({ prompt: 'only prompt', title: '' })]))
-    expect(csv.split('\r\n')[1]!.split(',')[4]).toBe('only prompt')
+    expect(csv.split('\r\n')[1]!.split(',')[7]).toBe('only prompt')
   })
 })

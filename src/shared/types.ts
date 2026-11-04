@@ -4417,11 +4417,17 @@ export interface UsageStatsRange {
 
 /**
  * runs:usageCsv columns, in order. One row per run (UsageStats.runs, newest first, at most USAGE_STATS_MAX_LIMIT rows);
- * started / ended as ISO 8601 UTC, cost blank when unknown, cost_partial 'true' / ''. RFC 4180 quoting (CRLF line
- * ends, a header row); a cell starting with = + - @ (or tab / CR) gets a leading single quote (formula injection).
+ * project is the project name and client is Project.client (blank for code projects), the same on every row (the
+ * query is one project). started / ended are local time as ISO 8601 with the UTC offset (2026-11-04T09:15:00-05:00),
+ * started_utc is the start as ISO 8601 UTC; cost blank when unknown, cost_partial 'true' / ''. RFC 4180 quoting (CRLF
+ * line ends, a header row); a cell starting with = + - @ (or tab / CR) gets a leading single quote (formula injection).
+ * There is no run id column.
  */
 export const USAGE_CSV_COLUMNS = [
+  'project',
+  'client',
   'started',
+  'started_utc',
   'ended',
   'kind',
   'status',
