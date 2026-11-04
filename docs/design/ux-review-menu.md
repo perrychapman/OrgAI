@@ -222,6 +222,7 @@ bar shown (26 px, not 20, at 100% scaling; more at 125-150%). e2e is unaffected 
 Owner: src/main/index.ts (`minHeight: 680`).
 Fix (checkable): on win/linux with a visible bar raise `minHeight` by the bar height (680 -> 706) so the minimum
 content stays at least 640 px; check `getContentSize()[1] >= 640` after `setSize(1024, minHeight)`.
+Status: the 706 proposal was tried and reverted because `minHeight` is an outer size and the e2e content size of 640 clamps (kept at 680; open).
 
 ### M2. Shortcuts are invisible today; only two are named in the UI
 
