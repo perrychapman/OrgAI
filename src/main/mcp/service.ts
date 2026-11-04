@@ -508,7 +508,8 @@ export class McpService {
     if (prev?.connectorId && !sameDefinition(prev, entry)) {
       throw new Error(`${prev.name} is a connector: its address, headers and secret slots come from the preset. Remove it and add a custom server to change them.`)
     }
-    if (prev?.connectorId && (entry.perProjectSecrets !== undefined || entry.perProjectEnv !== undefined)) {
+    // The explicit clear values (false, []) are fine on a connector; only setting them is refused.
+    if (prev?.connectorId && (entry.perProjectSecrets === true || (Array.isArray(entry.perProjectEnv) && entry.perProjectEnv.length > 0))) {
       throw new Error('Per-project values are not available for connectors yet; add a custom server instead.')
     }
     const saved = this.commitEntry(entry)
