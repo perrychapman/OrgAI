@@ -413,14 +413,22 @@ Presets (swatches in Appearance): Violet `#7c5cff` (default), Blue `#3b82f6`, Te
 
 ### 6.1 Canvas options (`AppearanceSettings.canvas`)
 
+The canvas options, their backdrops, layouts, node styles, edges, minimap, the Canvas settings section and every
+canvas token are specified in `docs/design/canvas-themes.md`, which supersedes the canvas rows here and in 6.3 (edge
+and done-group styling). Summary:
+
 | Option | Values (default first) | Effect |
 | --- | --- | --- |
-| `pattern` | `dots`, `grid`, `none` | React Flow `Background` variant (`dots`, `lines`, none) at `gap 22` (dots size 1.2). |
-| `tint` | `true` / `false` | When true, a radial wash of `--accent` at 6% (dark) / 5% (light) at the top center (replaces the hard-coded purple radial at `global.css:483-486`). |
-| `edges` | `curved` (bezier) / `orthogonal` (`smoothstep`, radius 10) / `straight` | Edge `type` on both the editor and the live graph. Default stays bezier to avoid changing the current look unless D6 approves orthogonal. |
-| `minimap` | `false` / `true` | Mounts React Flow `MiniMap` themed with `--surface-2` and `--border-default`. Off by default; helpful for large runs. |
+| `pattern` | `dots`, `grid`, `none`, `blueprint`, `paper`, `isometric`, `circuit`, `terminal`, `starfield` | Drawn by `CanvasBackdrop` (an SVG pattern that pans and zooms with the canvas); dots r 1.2 on a 22 tile. |
+| `tint` | `true` / `false` | A radial wash of `--accent` at 10% (dark) / 7% (light) at the top centre of the stage. |
+| `edges` | `curved` / `orthogonal` / `straight` | Edge `type` on both canvases; radial draws right angles straight. |
+| `layout` | `top-down` / `left-right` / `radial` | dagre TB, dagre LR, or rings around the root. |
+| `nodeStyle` | `card` / `compact` (`station`, `hex` in phase B) | Card or a 160 x 40 name tag, on both canvases. |
+| `minimap` | `false` / `true` | React Flow `MiniMap` on both canvases, bottom left, sized to the stage. |
 
-Canvas tokens: `--canvas-bg` (= `--surface-0`), `--canvas-pattern` (dark `#1f2432`, light `#d3d8e4`), `--canvas-pattern-gap 22`, `--canvas-wash-opacity` (set by the tint option).
+Presets (Blueprint, Constellation, Subway, Mission control, Paper, Hive) set five of these at once and are never
+stored. Canvas tokens (`--canvas-*`, `--edge-message`, `--node-bg`) live in every theme block of tokens.css, with
+per-backdrop overrides in its section 7.
 
 ### 6.2 Wiring React Flow to tokens
 
