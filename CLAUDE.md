@@ -900,6 +900,15 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     (500 without the proxy DB, 403, junk) is null. It is a keyed `UsageMonitor` extra probe ('litellm', boot / idle /
     usage:refresh), and index.ts re-reads it 15 s after a LiteLLM run ends (`RunSummary.connection`). Only the key's own
     budget is read, never a team budget. The renderer must keep the latest usage report per `connection`.
+    - Spend by period (2026-11-04): `fetchLiteLLMSpend` (litellm.ts) reads /key/info (now also `info.total_spend` ->
+      `UsageSpend.totalUsd`), then `GET /user/daily/activity/aggregated?start_date&end_date&api_key=<sha256 hex of the
+      raw key>` (404 / 405: the paginated `/user/daily/activity`, one page only) and sums UTC calendar periods
+      (`periodBounds` / `spendPeriods`: day of `updatedAt`, ISO week from Monday 00:00 UTC, calendar month; never
+      rolling) into `UsageSpend.periods`; `parseDailyActivity` prefers `breakdown.api_keys[<hash>]`, counts 0 when
+      only other hashes are listed, and falls back to `metrics.spend`. A daily failure never nulls the probe: it sets
+      one of `SPEND_PERIOD_NOTES` (`noUser` 403, `unsupported` 404 / 405 on both or `has_more`, `failed` anything
+      else). Routes, shapes and the hash filter come from LiteLLM v1.108.0 source; unit-tested with fixtures only,
+      nothing verified live.
   - Run cost: `/model/info` `model_info.{input,output}_cost_per_token`, `cache_read_input_token_cost` and
     `cache_creation_input_token_cost` become `ProviderModel.price` (+ `upstream` = litellm_params.model) in models.json;
     `runConnection` passes them as `RunConnection.pricing` (`pricing.ts` `pricingFromCatalog`, `priceFor` matches

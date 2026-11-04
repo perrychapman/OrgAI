@@ -1,0 +1,63 @@
+{
+  "_comment": "GET /user/daily/activity/aggregated answer for the key 'sk-secret' (hash 746b4ad1...938e), shape read from LiteLLM v1.108.0 source, UNVERIFIED live. 2026-10-31 is a Saturday, 2026-11-01 a Sunday that starts the month, 2026-11-02 a Monday; 2026-11-05 is in the future for a probe at 2026-11-04T15:00Z. The 11-03 row lists another key's hash with a different spend and a metrics.spend that is the sum, so the breakdown entry for our hash must win.",
+  "results": [
+    {
+      "date": "2026-10-31",
+      "metrics": { "spend": 8, "prompt_tokens": 1000, "completion_tokens": 2000, "total_tokens": 3000, "api_requests": 4 },
+      "breakdown": {
+        "models": {},
+        "providers": {},
+        "api_keys": { "746b4ad1ca9129e1caf080bf9406d43531b8bbf97f42cc1597ee4f3d4663938e": { "metrics": { "spend": 8 }, "metadata": { "key_alias": "team-a", "key_exists": true } } }
+      }
+    },
+    {
+      "date": "2026-11-01",
+      "metrics": { "spend": 1.5, "prompt_tokens": 111, "completion_tokens": 1711, "total_tokens": 1822, "api_requests": 11 },
+      "breakdown": {
+        "models": {},
+        "providers": {},
+        "api_keys": { "746b4ad1ca9129e1caf080bf9406d43531b8bbf97f42cc1597ee4f3d4663938e": { "metrics": { "spend": 1.5 }, "metadata": { "key_alias": "team-a", "key_exists": true } } }
+      }
+    },
+    {
+      "date": "2026-11-02",
+      "metrics": { "spend": 2.25, "prompt_tokens": 500, "completion_tokens": 900, "total_tokens": 1400, "api_requests": 6 },
+      "breakdown": {
+        "models": {},
+        "providers": {},
+        "api_keys": { "746b4ad1ca9129e1caf080bf9406d43531b8bbf97f42cc1597ee4f3d4663938e": { "metrics": { "spend": 2.25 }, "metadata": { "key_alias": "team-a", "key_exists": true } } }
+      }
+    },
+    {
+      "date": "2026-11-03",
+      "metrics": { "spend": 103, "prompt_tokens": 9000, "completion_tokens": 9000, "total_tokens": 18000, "api_requests": 40 },
+      "breakdown": {
+        "models": {},
+        "providers": {},
+        "api_keys": {
+          "0000000000000000000000000000000000000000000000000000000000000000": { "metrics": { "spend": 99 }, "metadata": { "key_alias": "someone-else", "key_exists": true } },
+          "746b4ad1ca9129e1caf080bf9406d43531b8bbf97f42cc1597ee4f3d4663938e": { "metrics": { "spend": 4 }, "metadata": { "key_alias": "team-a", "key_exists": true } }
+        }
+      }
+    },
+    {
+      "date": "2026-11-04",
+      "metrics": { "spend": 0.5, "prompt_tokens": 50, "completion_tokens": 60, "total_tokens": 110, "api_requests": 1 },
+      "breakdown": {
+        "models": {},
+        "providers": {},
+        "api_keys": { "746b4ad1ca9129e1caf080bf9406d43531b8bbf97f42cc1597ee4f3d4663938e": { "metrics": { "spend": 0.5 }, "metadata": { "key_alias": "team-a", "key_exists": true } } }
+      }
+    },
+    {
+      "date": "2026-11-05",
+      "metrics": { "spend": 100, "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "api_requests": 1 },
+      "breakdown": {
+        "models": {},
+        "providers": {},
+        "api_keys": { "746b4ad1ca9129e1caf080bf9406d43531b8bbf97f42cc1597ee4f3d4663938e": { "metrics": { "spend": 100 }, "metadata": { "key_alias": "team-a", "key_exists": true } } }
+      }
+    }
+  ],
+  "metadata": { "total_spend": 215.25, "total_prompt_tokens": 10662, "total_completion_tokens": 13672, "total_tokens": 24334, "total_api_requests": 63 }
+}
