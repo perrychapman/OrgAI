@@ -21,7 +21,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
-import { CONNECTION_LABEL, currentConnection, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
+import { CONNECTION_LABEL, currentConnection, SPEND_ROW_PREFIX, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -479,7 +479,7 @@ export default function Sidebar({
               <span className="account-label">
                 {account.figure ? (
                   <>
-                    <span className="account-name">{`${CONNECTION_LABEL.litellm} · `}</span>
+                    <span className="account-name">{SPEND_ROW_PREFIX}</span>
                     {account.figure}
                   </>
                 ) : (
