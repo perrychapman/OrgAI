@@ -334,6 +334,16 @@ describe('engagement_knowledge: retire', () => {
     expect(await t.call({ action: 'retire' })).toBe('REFUSED: retire needs exactly one of nodeId, edgeId or factId.')
     expect(await t.call({ action: 'retire', nodeId: 'kn_1', factId: 'kf_1' })).toBe('REFUSED: retire needs exactly one of nodeId, edgeId or factId.')
   })
+
+  it('refuses a reason with a hidden character before the store is called (the reason lands in the transcript)', async () => {
+    const kg = seed()
+    const retire = vi.spyOn(kg.api, 'retire')
+    const t = tool(engagementCtx({ knowledge: kg.api }))
+    expect(await t.call({ action: 'retire', factId: 'kf_1', reason: 'super​seded' })).toBe('REFUSED: The reason contains a hidden character (U+200B, a control, zero-width, bidi or other invisible character); remove it.')
+    expect(await t.call({ action: 'retire', factId: 'kf_1', reason: 'done‮' })).toMatch(/^REFUSED: The reason contains a hidden character \(U\+202E/)
+    expect(retire).not.toHaveBeenCalled()
+    expect(await t.call({ action: 'retire', factId: 'kf_1', reason: 'plain reason' })).toBe('Retired fact Owns invoices (kf_1).')
+  })
 })
 
 describe('engagement_knowledge: content is data', () => {

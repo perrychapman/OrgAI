@@ -76,6 +76,7 @@ function fakeStore(graph: KnowledgeGraph = { version: 1, nodes: [], edges: [] })
       calls.push({ fn: 'retire', projectId, input, source })
       if (input.nodeId === 'kn_retired') return { item: 'node' as const, id: 'kn_retired', label: 'risk Gone', alreadyRetired: true }
       if (input.nodeId === 'kn_user') throw new Error('Only the user can change that.')
+      if (input.factId === 'kf_long') return { item: 'fact' as const, id: 'kf_long', label: `line one <x>\nline two ${'y'.repeat(300)}`, alreadyRetired: false }
       return { item: 'fact' as const, id: input.factId ?? 'kf_1', label: 'Owns invoices', alreadyRetired: false }
     })
   }
@@ -172,7 +173,9 @@ describe('RuntimeContext.knowledge: writes', () => {
       ['ghost-2', 'Lead'],
       ['ghost-3', 'Lead']
     ])
-    expect(rows().map((r) => r.agentId)).toEqual([ROOT_AGENT_ID, 'ghost', 'ghost-2', 'ghost-3'])
+    // The source keeps the adapter's agent id, but a row on an agent the record does not know would be invisible, so
+    // those rows fall back to the root (review L9).
+    expect(rows().map((r) => r.agentId)).toEqual([ROOT_AGENT_ID, ROOT_AGENT_ID, ROOT_AGENT_ID, ROOT_AGENT_ID])
     // A recorded agent whose slug no role knows keeps the slug as its role.
     ctxs[0].emit({ type: 'agent.upsert', runId: ctxs[0].run.id, agent: agentWith({ id: 'odd', roleSlug: 'contractor', roleId: null }) })
     kg.upsertNode({ kind: 'person', name: 'E' }, { agentId: 'odd' })
@@ -209,6 +212,12 @@ describe('RuntimeContext.knowledge: writes', () => {
     expect(rows()).toHaveLength(2)
     expect(engagementChanged).toHaveBeenCalledTimes(2)
     expect(knowledge.calls).toHaveLength(3)
+    // A fact's label is its text: the row is one line, brackets replaced, cut at 160 characters (review M2).
+    kg.retire({ factId: 'kf_long' }, {})
+    const long = rows().at(-1)?.text ?? ''
+    expect(long.startsWith('Retired fact line one ‹x› line two yyyy')).toBe(true)
+    expect(long).not.toContain('\n')
+    expect(long.length).toBe('Retired fact '.length + 160)
     await m.stopAll()
   })
 

@@ -1535,9 +1535,13 @@ export class RunManager {
     this.knowledgeRow(a, agentId, text)
   }
 
-  /** A quiet harness row (like a skill load) on the agent that wrote to the notes or the graph. */
+  /**
+   * A quiet harness row (like a skill load) on the agent that wrote to the notes or the graph. An agent id the run
+   * record does not know (an adapter quirk) would attach the row to no visible agent, so it falls back to the root.
+   */
   private knowledgeRow(a: ActiveRun, agentId: string, text: string): void {
-    a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
+    const shown = agentId === ROOT_AGENT_ID || a.record.agents[agentId] ? agentId : ROOT_AGENT_ID
+    a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: shown, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
   }
 
   /** Push projects:engagementChanged for an agent write (index.ts passes the broadcaster); never throws into the tool. */
@@ -1581,8 +1585,9 @@ export class RunManager {
         const source = this.knowledgeSource(a, caller, roles())
         const r = store.retire(projectId, input, source)
         if (r.alreadyRetired) return r
+        // A fact's label is its text (multi-line, up to 1,000 chars): one line, cut, like every other row value.
         const reason = input.reason?.trim() ? ` (${datum(input.reason, 120)})` : ''
-        this.countKnowledgeWrite(a, source.agentId, `Retired ${r.item} ${r.label}${reason}`)
+        this.countKnowledgeWrite(a, source.agentId, `Retired ${r.item} ${datum(r.label, 160)}${reason}`)
         this.engagementChanged(projectId, 'knowledge', [r.id])
         return r
       }
