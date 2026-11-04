@@ -36,6 +36,8 @@ import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
 import { registerIpc, harnessProjectFor, withEffectiveDefault } from './ipc'
 import { AgentImportService } from './setup/import/importer'
+import { TemplateService } from './setup/templates'
+import { listNotes, readNote } from './store/projectData'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging, log } from './log'
@@ -306,6 +308,13 @@ app.whenReady().then(() => {
     onLibraryChanged: broadcastSkillLibrary,
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
   })
+  const templates = new TemplateService({
+    dataDir,
+    projects,
+    modelContext: (id) => connections.importModelContext(id),
+    withAdapter: (project) => connections.withAdapter(project),
+    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
+  })
   const setup = new SetupService(projects, {
     dataDir,
     removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
@@ -314,7 +323,8 @@ app.whenReady().then(() => {
       applyProposal: (projectId, payload, opts) => mcp.applyProposal(projectId, payload, opts),
       applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
     },
-    skills: { applyProposal: (projectId, payload, opts) => skills.applyProposal(projectId, payload, opts) }
+    skills: { applyProposal: (projectId, payload, opts) => skills.applyProposal(projectId, payload, opts) },
+    templates: () => templates.list()
   })
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
@@ -366,6 +376,9 @@ app.whenReady().then(() => {
         ...(patch.acceptEdits && p.permissionMode === 'default' ? { permissionMode: 'acceptEdits' as const } : {})
       })),
     resolveProject: (projectId) => projectOrHarness(projectId),
+    // Context notes for engagement_context; propose_org_chart fromTemplate.
+    engagementNotes: { list: (projectId) => listNotes(dataDir, projectId), read: (projectId, noteId) => readNote(dataDir, projectId, noteId) },
+    orgTemplate: (templateId, project) => templates.forRun(templateId, project),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
     buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
@@ -477,7 +490,8 @@ app.whenReady().then(() => {
     skills,
     skillEvaluation,
     capabilities: caps,
-    quick
+    quick,
+    templates
   })
   connections.init()
   connections.startDiscovery()

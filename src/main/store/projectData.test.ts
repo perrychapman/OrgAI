@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -21,7 +21,10 @@ import {
   saveNote,
   skillEvaluationFile,
   teamReviewFile,
-  writeEngagementDocument
+  engagementMetaFile,
+  updateEngagementDocument,
+  writeEngagementDocument,
+  writeEngagementDocumentFromSetup
 } from './projectData'
 
 let dir: string
@@ -141,6 +144,49 @@ describe('engagement document (whole file)', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
+  })
+})
+
+describe('engagement document sidecar and stale saves', () => {
+  it('records who wrote it and when, for both writers', () => {
+    expect(updateEngagementDocument(dir, 'p1', 'mine', undefined)).toMatchObject({ text: 'mine', updatedBy: 'user' })
+    const a = readEngagementDocumentInfo(dir, 'p1')
+    expect(a.updatedAt).toBeGreaterThan(0)
+    expect(JSON.parse(readFileSync(engagementMetaFile(dir, 'p1'), 'utf8'))).toEqual({ updatedAt: a.updatedAt, updatedBy: 'user' })
+    writeEngagementDocumentFromSetup(dir, 'p1', '# Charter')
+    const b = readEngagementDocumentInfo(dir, 'p1')
+    expect(b).toMatchObject({ text: '# Charter', updatedBy: 'setup' })
+    expect(b.updatedAt!).toBeGreaterThan(a.updatedAt!)
+  })
+
+  it('falls back to the mtime and setup without a sidecar, and ignores a junk sidecar', () => {
+    writeDoc('old')
+    expect(readEngagementDocumentInfo(dir, 'p1')).toMatchObject({ text: 'old', updatedBy: 'setup' })
+    writeFileSync(engagementMetaFile(dir, 'p1'), '{ nope')
+    expect(readEngagementDocumentInfo(dir, 'p1').updatedBy).toBe('setup')
+    writeFileSync(engagementMetaFile(dir, 'p1'), JSON.stringify({ updatedAt: 5, updatedBy: 'robot' }))
+    expect(readEngagementDocumentInfo(dir, 'p1').updatedBy).toBe('setup')
+  })
+
+  it('refuses a stale or omitted expectedUpdatedAt and accepts the current one', () => {
+    expect(() => updateEngagementDocument(dir, 'p1', 'x', 123)).toThrow(/changed since you opened it/)
+    updateEngagementDocument(dir, 'p1', 'v1', 0)
+    expect(() => updateEngagementDocument(dir, 'p1', 'v2', undefined)).toThrow(/changed since/)
+    const t = readEngagementDocumentInfo(dir, 'p1').updatedAt!
+    expect(() => updateEngagementDocument(dir, 'p1', 'v2', t - 1)).toThrow(/changed since/)
+    updateEngagementDocument(dir, 'p1', 'v2', t)
+    expect(readEngagementDocumentInfo(dir, 'p1').text).toBe('v2')
+    // A setup write in between makes the editor's copy stale.
+    writeEngagementDocumentFromSetup(dir, 'p1', 'from setup')
+    expect(() => updateEngagementDocument(dir, 'p1', 'v3', t)).toThrow(/changed since/)
+    expect(readEngagementDocumentInfo(dir, 'p1').text).toBe('from setup')
+  })
+
+  it('deleting the document removes the sidecar so a new editor starts from 0', () => {
+    updateEngagementDocument(dir, 'p1', 'v1', 0)
+    updateEngagementDocument(dir, 'p1', '', readEngagementDocumentInfo(dir, 'p1').updatedAt)
+    expect(readEngagementDocumentInfo(dir, 'p1')).toEqual({ text: '' })
+    expect(() => updateEngagementDocument(dir, 'p1', 'again', undefined)).not.toThrow()
   })
 })
 

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { engagementDocumentFile, projectRulesFile } from '../store/projectData'
+import { projectRulesFile, writeEngagementDocumentFromSetup } from '../store/projectData'
 import type { ArchitectureSpec, OrgTemplateInfo, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Project, ProjectKind, Proposal, ProjectSetup, RunRecord, SkillsProposalPayload } from '@shared/types'
 import { describeServer, promptDatum } from '../mcp/assist'
 import { validateSpec } from '../mcp/validate'
@@ -403,11 +403,7 @@ function clamp(n: number, lo: number, hi: number): number {
 
 /** Write an engagement document into OrgAI's data folder (temp file + rename). Never touches the working folder. */
 function writeEngagementDocument(dataDir: string, project: Project, text: string): void {
-  const file = engagementDocumentFile(dataDir, project.id)
-  mkdirSync(dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, text, 'utf8')
-  renameSync(tmp, file)
+  writeEngagementDocumentFromSetup(dataDir, project.id, text)
 }
 
 /** Write the architecture document into the repo and make sure CLAUDE.md points at it. Returns the repo-relative path. */

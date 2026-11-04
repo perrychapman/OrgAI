@@ -117,7 +117,37 @@ import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { projectConnection } from '@shared/defaults'
 import { log, logPath, logsDir } from './log'
-import { projectRulesFile, removeProjectData } from './store/projectData'
+import {
+  appRulesExist,
+  engagementDocumentExists,
+  listNotes,
+  projectRulesFile,
+  readEngagementDocumentInfo,
+  readNote,
+  removeNote,
+  removeProjectData,
+  removeSkillEvaluation,
+  saveNote,
+  skillEvaluationFile,
+  teamReviewFile,
+  updateEngagementDocument
+} from './store/projectData'
+import type { TemplateService } from './setup/templates'
+import type {
+  EngagementChangedEvent,
+  EngagementDocumentInfo,
+  EngagementDocumentUpdate,
+  EngagementNote,
+  EngagementNoteContent,
+  EngagementNoteRef,
+  EngagementNoteSaveInput,
+  OrgTemplateApplyInput,
+  OrgTemplateInfo,
+  OrgTemplateSaveInput,
+  ProjectRemoveInput,
+  ProjectRemoveResult
+} from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { addRules, allowRuleRefusal, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
@@ -151,6 +181,8 @@ export interface IpcServices {
   capabilities: CapabilityServiceApi
   /** Chat (quick runs): start, promote, the project of a continued run and the display project (src/main/quick/quickRuns.ts). */
   quick: QuickRunService
+  /** Saved team templates (src/main/setup/templates.ts). */
+  templates: TemplateService
 }
 
 /** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
@@ -252,7 +284,7 @@ export function mcpAssistArgs(input: unknown): { library: boolean; projectId: st
   return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates }: IpcServices): void {
   const mock = adapterIds.includes('mock')
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
@@ -271,7 +303,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
       mockAvailable: adapterIds.includes('mock'),
       prepare: (p) => connections.prepareNewProject(p),
       // After prepare: imported models map to the connection the project was put on.
-      importRoles: (p, sources) => importer.rolesForNewProject(p, sources)
+      importRoles: (p, sources) => importer.rolesForNewProject(p, sources),
+      // Only when importAgents produced no roles; after prepare so the template's models map to the project's connection.
+      fromTemplate: (p, templateId) => templates.rolesForNewProject(p, templateId)
     })
   )
   // Never rejects: the agent scan and the existing-project lookup add fields only when they succeed.
@@ -290,14 +324,26 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     return projects.saveFromRenderer(project)
   })
-  ipcMain.handle(IPC.projectsRemove, async (_e, id: string) => {
-    if (typeof id === 'string' && isVirtualProjectId(id)) throw new Error('This assistant project cannot be removed.')
-    await runs.removeProject(id)
+  // A string id or ProjectRemoveInput. Facts are gathered before anything is deleted (removalFacts).
+  ipcMain.handle(IPC.projectsRemove, async (_e, input: unknown): Promise<ProjectRemoveResult> => {
+    const { projectId: id, removeRuns: asked } = projectRemoveArgs(input)
+    const stored = projects.get(id)
+    const removeRuns = effectiveRemoveRuns(projectKindOf(stored), asked)
+    const facts = removalFacts({ dataDir: settings.dataDir, project: stored, runCount: (pid) => runs.list(pid).length }, id, removeRuns)
+    const removed = await runs.removeProject(id, { removeRuns })
     mcp.removeProjectSecrets(id)
     skills.removeProjectFiles(id)
     capabilities.forgetProject(id)
     projects.remove(id)
     removeProjectData(settings.dataDir, id)
+    removeSkillEvaluation(settings.dataDir, id)
+    return { ...facts, runsRemoved: typeof removed === 'number' ? removed : facts.runsRemoved }
+  })
+  ipcMain.handle(IPC.projectsRemovePreview, (_e, input: unknown): ProjectRemoveResult => {
+    const { projectId: id, removeRuns: asked } = projectRemoveArgs(input)
+    const project = projects.get(id)
+    if (!project) throw new Error('Project not found')
+    return removalFacts({ dataDir: settings.dataDir, project, runCount: (pid) => runs.list(pid).length }, id, effectiveRemoveRuns(projectKindOf(project), asked))
   })
   ipcMain.handle(IPC.projectsPickDir, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
@@ -318,7 +364,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.runsStart, async (_e, input: StartRunInput) => {
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
-    return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images })
+    return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images, ...(input.team === 'single' ? { team: 'single' as const } : {}) })
   })
   ipcMain.handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
   // Chat: every field is rebuilt (quickArgs); the folder is validated in main (QuickRunService), never trusted here.
@@ -403,6 +449,12 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (!isValidId(q.projectId) || !projectOrHarness(q.projectId)) throw new Error('Project not found')
     return runs.usageStats(q)
   })
+  ipcMain.handle(IPC.runsUsageCsv, (_e, query: UsageStatsQuery): string => {
+    const q = query && typeof query === 'object' ? query : ({} as UsageStatsQuery)
+    if (!isValidId(q.projectId) || !projectOrHarness(q.projectId)) throw new Error('Project not found')
+    return runs.usageCsv(q)
+  })
+  registerTemplateEngagementIpc({ projects, templates, dataDir: settings.dataDir })
   ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
     const target = checkRunTarget(input, {
       project: (id) => projectOrHarness(id),
@@ -560,6 +612,166 @@ function rememberPickedFolder(sender: WebContents, path: string): void {
   sender.once('destroyed', () => {
     pickedFolders.forget(id)
     trackedSenders.delete(id)
+  })
+}
+
+// ---------- Team templates, engagement document and notes, project removal ----------
+
+/** A project id for a stored project: a valid id that is not virtual. */
+function storedIdArg(id: unknown): string {
+  if (!isSafeId(id) || isVirtualProjectId(id)) throw new Error('Project not found')
+  return id
+}
+
+/** projects:remove / projects:removePreview input: a bare id, or { projectId, removeRuns? } (extra fields dropped). */
+export function projectRemoveArgs(input: unknown): { projectId: string; removeRuns: boolean | undefined } {
+  if (typeof input === 'string') {
+    if (isVirtualProjectId(input)) throw new Error('This assistant project cannot be removed.')
+    return { projectId: storedIdArg(input), removeRuns: undefined }
+  }
+  const i = obj<Partial<ProjectRemoveInput>>(input)
+  if (typeof i.projectId === 'string' && isVirtualProjectId(i.projectId)) throw new Error('This assistant project cannot be removed.')
+  if (i.removeRuns !== undefined && typeof i.removeRuns !== 'boolean') throw new Error('Invalid removal options.')
+  return { projectId: storedIdArg(i.projectId), removeRuns: i.removeRuns }
+}
+
+/** Runs are removed by default; an engagement always removes them (false is ignored there). */
+export function effectiveRemoveRuns(kind: 'code' | 'engagement', asked: boolean | undefined): boolean {
+  return kind === 'engagement' ? true : asked !== false
+}
+
+export interface RemovalDeps {
+  dataDir: string
+  /** The stored project, or null when it is already gone. */
+  project: Project | null
+  /** Run records the project has (RunManager.list). */
+  runCount(projectId: string): number
+}
+
+/**
+ * What removing a project deletes, gathered before anything is deleted. projects:remove returns it (with the run
+ * count RunManager reports) and projects:removePreview returns it as is, so the two always agree. Best effort: a
+ * failing lookup counts as nothing. `removeRuns` is the effective value (effectiveRemoveRuns).
+ */
+export function removalFacts(deps: RemovalDeps, projectId: string, removeRuns: boolean): ProjectRemoveResult {
+  const safe = <T>(fn: () => T, fallback: T): T => {
+    try {
+      return fn()
+    } catch {
+      return fallback
+    }
+  }
+  const runs = safe(() => deps.runCount(projectId), 0)
+  const exists = (file: string | null): boolean => !!file && safe(() => existsSync(file), false)
+  return {
+    projectId,
+    kind: projectKindOf(deps.project),
+    runsRemoved: removeRuns ? runs : 0,
+    runsKept: removeRuns ? 0 : runs,
+    notesRemoved: safe(() => listNotes(deps.dataDir, projectId).length, 0),
+    skillsRemoved: deps.project?.skills?.length ?? 0,
+    documentRemoved: engagementDocumentExists(deps.dataDir, projectId),
+    rulesRemoved: appRulesExist(deps.dataDir, projectId),
+    teamReviewRemoved: exists(teamReviewFile(deps.dataDir, projectId)),
+    skillEvaluationRemoved: exists(skillEvaluationFile(deps.dataDir, projectId))
+  }
+}
+
+const NOTE_ID = /^note_[A-Za-z0-9_-]{1,100}$/
+
+/** Renderer input of the templates:* and engagement channels, rebuilt field by field (extra fields dropped). */
+export const templateEngagementArgs = {
+  projectId(input: unknown): string {
+    return storedIdArg(input)
+  },
+  templateId(input: unknown): string {
+    if (!isSafeId(input)) throw new Error('Template not found')
+    return input
+  },
+  saveTemplate(input: unknown): OrgTemplateSaveInput {
+    const i = obj<Record<string, unknown>>(input)
+    if (typeof i.name !== 'string') throw new Error('Give the template a name.')
+    if (i.description !== undefined && typeof i.description !== 'string') throw new Error('The template description must be text.')
+    return { projectId: storedIdArg(i.projectId), name: i.name, ...(typeof i.description === 'string' ? { description: i.description } : {}) }
+  },
+  applyTemplate(input: unknown): OrgTemplateApplyInput {
+    const i = obj<Record<string, unknown>>(input)
+    if (i.mode !== 'replace' && i.mode !== 'merge') throw new Error('Choose whether the template replaces the org chart or is added to it.')
+    return { projectId: storedIdArg(i.projectId), templateId: templateEngagementArgs.templateId(i.templateId), mode: i.mode }
+  },
+  updateDocument(input: unknown): EngagementDocumentUpdate {
+    const i = obj<Record<string, unknown>>(input)
+    if (typeof i.text !== 'string') throw new Error('The engagement document must be text.')
+    if (i.expectedUpdatedAt !== undefined && (typeof i.expectedUpdatedAt !== 'number' || !Number.isFinite(i.expectedUpdatedAt) || i.expectedUpdatedAt < 0)) {
+      throw new Error('Invalid document version.')
+    }
+    return { projectId: storedIdArg(i.projectId), text: i.text, ...(typeof i.expectedUpdatedAt === 'number' ? { expectedUpdatedAt: i.expectedUpdatedAt } : {}) }
+  },
+  noteRef(input: unknown): EngagementNoteRef {
+    const i = obj<Record<string, unknown>>(input)
+    if (typeof i.noteId !== 'string' || !NOTE_ID.test(i.noteId)) throw new Error('Note not found')
+    return { projectId: storedIdArg(i.projectId), noteId: i.noteId }
+  },
+  saveNote(input: unknown): EngagementNoteSaveInput {
+    const i = obj<Record<string, unknown>>(input)
+    if (typeof i.title !== 'string') throw new Error('The title must be text.')
+    if (typeof i.text !== 'string') throw new Error('The note must be text.')
+    let noteId: string | undefined
+    if (i.noteId !== undefined && i.noteId !== null) {
+      if (typeof i.noteId !== 'string' || !NOTE_ID.test(i.noteId)) throw new Error('Note not found')
+      noteId = i.noteId
+    }
+    return { projectId: storedIdArg(i.projectId), ...(noteId ? { noteId } : {}), title: i.title, text: i.text }
+  }
+}
+
+function broadcastEngagementChanged(event: EngagementChangedEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.projectsEngagementChanged, event)
+  }
+}
+
+function registerTemplateEngagementIpc({ projects, templates, dataDir }: { projects: ProjectStore; templates: TemplateService; dataDir: string }): void {
+  const stored = (id: string): Project => {
+    const p = projects.get(id)
+    if (!p) throw new Error('Project not found')
+    return p
+  }
+  ipcMain.handle(IPC.templatesList, (): OrgTemplateInfo[] => templates.list())
+  ipcMain.handle(IPC.templatesSaveFromProject, (_e, input: unknown): OrgTemplateInfo => templates.saveFromProject(templateEngagementArgs.saveTemplate(input)))
+  ipcMain.handle(IPC.templatesRemove, (_e, id: unknown): OrgTemplateInfo[] => templates.remove(templateEngagementArgs.templateId(id)))
+  ipcMain.handle(IPC.templatesApply, (_e, input: unknown): AgentImportApplyResult => templates.apply(templateEngagementArgs.applyTemplate(input)))
+
+  ipcMain.handle(IPC.projectsEngagementDocument, (_e, id: unknown): EngagementDocumentInfo => {
+    const project = stored(templateEngagementArgs.projectId(id))
+    return projectKindOf(project) === 'engagement' ? readEngagementDocumentInfo(dataDir, project.id) : { text: '' }
+  })
+  ipcMain.handle(IPC.projectsUpdateEngagementDocument, (_e, input: unknown): EngagementDocumentInfo => {
+    const i = templateEngagementArgs.updateDocument(input)
+    const project = stored(i.projectId)
+    if (projectKindOf(project) !== 'engagement') throw new Error('Only engagements keep their document in OrgAI.')
+    const info = updateEngagementDocument(dataDir, project.id, i.text, i.expectedUpdatedAt)
+    broadcastEngagementChanged({ projectId: project.id, what: 'document' })
+    return info
+  })
+  ipcMain.handle(IPC.projectsListNotes, (_e, id: unknown): EngagementNote[] => listNotes(dataDir, stored(templateEngagementArgs.projectId(id)).id))
+  ipcMain.handle(IPC.projectsGetNote, (_e, input: unknown): EngagementNoteContent => {
+    const ref = templateEngagementArgs.noteRef(input)
+    const note = readNote(dataDir, stored(ref.projectId).id, ref.noteId)
+    if (!note) throw new Error('Note not found')
+    return note
+  })
+  ipcMain.handle(IPC.projectsSaveNote, (_e, input: unknown): EngagementNote => {
+    const i = templateEngagementArgs.saveNote(input)
+    const note = saveNote(dataDir, stored(i.projectId).id, { noteId: i.noteId, title: i.title, text: i.text })
+    broadcastEngagementChanged({ projectId: i.projectId, what: 'notes' })
+    return note
+  })
+  ipcMain.handle(IPC.projectsRemoveNote, (_e, input: unknown): EngagementNote[] => {
+    const ref = templateEngagementArgs.noteRef(input)
+    const rest = removeNote(dataDir, stored(ref.projectId).id, ref.noteId)
+    broadcastEngagementChanged({ projectId: ref.projectId, what: 'notes' })
+    return rest
   })
 }
 

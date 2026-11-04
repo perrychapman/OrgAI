@@ -123,10 +123,61 @@ function readPlain(file: string): { text: string; mtimeMs: number } | null {
 export function readEngagementDocumentInfo(dataDir: string, projectId: string): EngagementDocumentInfo {
   try {
     const r = readPlain(engagementDocumentFile(dataDir, projectId))
-    return r ? { text: r.text, updatedAt: Math.round(r.mtimeMs) } : { text: '' }
+    if (!r) return { text: '' }
+    const meta = readMeta(dataDir, projectId)
+    // Without a sidecar (a document written before it existed) the file's mtime and 'setup' stand in.
+    return { text: r.text, updatedAt: meta ? meta.updatedAt : Math.round(r.mtimeMs), updatedBy: meta ? meta.updatedBy : 'setup' }
   } catch {
     return { text: '' }
   }
+}
+
+/** `<data>/projects/<id>/engagement.meta.json`: { updatedAt, updatedBy } of the document, written next to it. */
+export function engagementMetaFile(dataDir: string, projectId: string): string {
+  return join(projectDataDir(dataDir, projectId), 'engagement.meta.json')
+}
+
+function readMeta(dataDir: string, projectId: string): { updatedAt: number; updatedBy: 'user' | 'setup' } | null {
+  const raw = readPlain(engagementMetaFile(dataDir, projectId))
+  if (!raw) return null
+  try {
+    const j = JSON.parse(raw.text) as { updatedAt?: unknown; updatedBy?: unknown }
+    if (typeof j.updatedAt !== 'number' || !Number.isFinite(j.updatedAt) || j.updatedAt <= 0) return null
+    if (j.updatedBy !== 'user' && j.updatedBy !== 'setup') return null
+    return { updatedAt: Math.round(j.updatedAt), updatedBy: j.updatedBy }
+  } catch {
+    return null
+  }
+}
+
+/** Document first, then the sidecar. Timestamps never go backwards or repeat, so a stale editor is always detected. */
+function commitDocument(dataDir: string, projectId: string, text: string, by: 'user' | 'setup'): void {
+  ensurePlainDir(dataDir, projectId, projectDataDir(dataDir, projectId))
+  const before = readEngagementDocumentInfo(dataDir, projectId).updatedAt ?? 0
+  atomicWrite(engagementDocumentFile(dataDir, projectId), text)
+  atomicWrite(engagementMetaFile(dataDir, projectId), `${JSON.stringify({ updatedAt: Math.max(Date.now(), before + 1), updatedBy: by })}\n`)
+}
+
+/**
+ * The setup service's write of the approved engagement document ('setup'): atomic, no limits applied (the text is
+ * rendered by OrgAI from the approved charter), empty text is written as is.
+ */
+export function writeEngagementDocumentFromSetup(dataDir: string, projectId: string, text: string): void {
+  commitDocument(dataDir, projectId, text, 'setup')
+}
+
+/** The refusal text when the editor's copy is out of date. */
+export const ENGAGEMENT_STALE_MESSAGE = 'The engagement plan changed since you opened it. Reload it to see the latest version.'
+
+/**
+ * projects:updateEngagementDocument: the user's save. Refused with ENGAGEMENT_STALE_MESSAGE when the stored document's
+ * updatedAt differs from `expectedUpdatedAt` (a missing document matches undefined or 0; an omitted value while a
+ * document exists is refused too). Then writeEngagementDocument rules apply.
+ */
+export function updateEngagementDocument(dataDir: string, projectId: string, text: string, expectedUpdatedAt: number | undefined): EngagementDocumentInfo {
+  const current = readEngagementDocumentInfo(dataDir, projectId).updatedAt ?? 0
+  if (current !== (expectedUpdatedAt ?? 0)) throw new Error(ENGAGEMENT_STALE_MESSAGE)
+  return writeEngagementDocument(dataDir, projectId, text, 'user')
 }
 
 function checkedText(label: string, text: unknown, max: number): string {
@@ -143,15 +194,15 @@ function checkedText(label: string, text: unknown, max: number): string {
  * other than tab, LF and CR is refused, never cut. Empty (or blank) text DELETES the file: "no document" and an empty
  * one read the same everywhere (the prompt, the editor). Returns what is stored afterwards.
  */
-export function writeEngagementDocument(dataDir: string, projectId: string, text: string): EngagementDocumentInfo {
+export function writeEngagementDocument(dataDir: string, projectId: string, text: string, by: 'user' | 'setup' = 'user'): EngagementDocumentInfo {
   const file = engagementDocumentFile(dataDir, projectId)
   const clean = checkedText('The engagement document', text, ENGAGEMENT_DOCUMENT_MAX_CHARS)
   if (!clean.trim()) {
     if (isLink(file) || existsSync(file)) rmSync(file, { force: true })
+    rmSync(engagementMetaFile(dataDir, projectId), { force: true })
     return { text: '' }
   }
-  ensurePlainDir(dataDir, projectId, projectDataDir(dataDir, projectId))
-  atomicWrite(file, clean)
+  commitDocument(dataDir, projectId, clean, by)
   return readEngagementDocumentInfo(dataDir, projectId)
 }
 

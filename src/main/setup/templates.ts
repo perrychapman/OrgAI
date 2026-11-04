@@ -5,6 +5,7 @@ import {
   ORG_TEMPLATES_MAX,
   ORG_TEMPLATE_DESCRIPTION_MAX_CHARS,
   ORG_TEMPLATE_NAME_MAX_CHARS,
+  ORG_TEMPLATE_ROLE_NAMES_MAX,
   isProjectKind,
   isVirtualProjectId
 } from '@shared/types'
@@ -107,7 +108,10 @@ function cleanEntry(raw: unknown): OrgTemplateInfo | null {
     const roleCount = typeof e.roleCount === 'number' && Number.isFinite(e.roleCount) ? Math.max(0, Math.floor(e.roleCount)) : 0
     const createdAt = typeof e.createdAt === 'number' && Number.isFinite(e.createdAt) ? e.createdAt : 0
     const updatedAt = typeof e.updatedAt === 'number' && Number.isFinite(e.updatedAt) ? e.updatedAt : createdAt
-    return { id: e.id, name, description, kind: e.kind, roleCount, createdAt, updatedAt }
+    const roleNames = Array.isArray(e.roleNames)
+      ? e.roleNames.filter((n): n is string => typeof n === 'string' && !!n.trim() && n.length <= 80 && !hiddenCharProblem('n', n)).slice(0, ORG_TEMPLATE_ROLE_NAMES_MAX)
+      : []
+    return { id: e.id, name, description, kind: e.kind, roleCount, roleNames, createdAt, updatedAt }
   } catch {
     return null
   }
@@ -182,7 +186,12 @@ export class TemplateService {
     do id = newId('tpl')
     while (!isSafeId(id) || templates.some((t) => t.id === id))
     const now = Date.now()
-    const info: OrgTemplateInfo = { id, name, description, kind: projectKindOf(project), roleCount: project.roles.length, createdAt: now, updatedAt: now }
+    const ordered = [...project.roles.filter((r) => r.reportsTo === null), ...project.roles.filter((r) => r.reportsTo !== null)]
+    const roleNames = ordered
+      .map((r) => (typeof r.name === 'string' ? r.name.trim().slice(0, 80) : ''))
+      .filter((n) => n && !hiddenCharProblem('n', n))
+      .slice(0, ORG_TEMPLATE_ROLE_NAMES_MAX)
+    const info: OrgTemplateInfo = { id, name, description, kind: projectKindOf(project), roleCount: project.roles.length, roleNames, createdAt: now, updatedAt: now }
     ensurePlainDir(this.root())
     const dir = join(this.root(), id)
     ensurePlainDir(dir)

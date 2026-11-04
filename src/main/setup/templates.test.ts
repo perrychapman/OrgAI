@@ -56,6 +56,10 @@ describe('TemplateService save and list', () => {
     const info = svc.saveFromProject({ projectId: p.id, name: '  Starter team ', description: 'A\nsmall team' })
     expect(info).toMatchObject({ name: 'Starter team', description: 'A\nsmall team', kind: 'code', roleCount: p.roles.length })
     expect(info.id).toMatch(/^tpl_/)
+    const root = p.roles.find((r) => r.reportsTo === null)!
+    expect(info.roleNames[0]).toBe(root.name)
+    expect([...info.roleNames].sort()).toEqual(p.roles.map((r) => r.name).sort())
+    expect(info.roleNames.length).toBeLessThanOrEqual(40)
     expect(svc.list()).toEqual([info])
     const file = readFileSync(join(dataDir, 'org-templates', info.id, 'org.json'), 'utf8')
     const doc = JSON.parse(file)
@@ -111,7 +115,7 @@ describe('TemplateService save and list', () => {
     const file = join(dataDir, 'org-templates', 'templates.json')
     writeFileSync(file, '{ not json')
     expect(service().list()).toEqual([])
-    const good = { id: 'tpl_a1', name: 'Good', description: '', kind: 'code', roleCount: 2, createdAt: 1, updatedAt: 2 }
+    const good = { id: 'tpl_a1', name: 'Good', description: '', kind: 'code', roleCount: 2, roleNames: ['Lead', 'Dev'], createdAt: 1, updatedAt: 2 }
     writeFileSync(
       file,
       JSON.stringify({
