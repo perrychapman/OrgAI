@@ -631,12 +631,18 @@ export class McpService {
 
   /**
    * A failed test leaves one warn line in main.log so a user's report can be matched to its cause. The probe has
-   * already redacted secret values from `error`; the line never carries headers, env values or the URL.
+   * already redacted every secret value (declared slots and any Authorization header) from `error`; the line never
+   * carries headers or env values and names only the URL's host (through the probe's sentences), never the URL.
+   * A stdio test's `error` carries the redacted stderr tail after its first line, so for stdio only that first
+   * line is logged; an http error is one line already (an HTTP status with at most 300 chars of body, or the
+   * probe's network sentence).
    */
   private noteTestResult(target: { name: string; transport: string }, r: McpTestResult): McpTestResult {
     if (!r.ok && !r.needsAuthorization) {
       const oneLine = (s: string) => s.replace(/[\r\n]+/g, ' | ').slice(0, 1000)
-      log.warn(`MCP test failed for ${oneLine(target.name)} (${target.transport}): ${oneLine(r.error ?? 'no error text')}`)
+      const text = r.error ?? 'no error text'
+      const logged = target.transport === 'stdio' ? text.split(/\r?\n/, 1)[0] : oneLine(text)
+      log.warn(`MCP test failed for ${oneLine(target.name)} (${target.transport}): ${logged.slice(0, 1000)}`)
     }
     return r
   }

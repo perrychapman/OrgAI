@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { McpServerSpec } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
-import { describeFetchFailure, hostOfUrl, isClosedSocketFailure, parseSse, redact, testServer, usesWindowsShell } from './probe'
+import { describeFetchFailure, hostOfUrl, isClosedSocketFailure, parseSse, reachabilityMessage, redact, testServer, usesWindowsShell } from './probe'
 
 /** undici's shape: `TypeError: fetch failed` with the real reason in `cause`. */
 function fetchFailed(cause: unknown): TypeError {
@@ -150,8 +150,58 @@ describe('testServer (http)', () => {
     }) as unknown as typeof fetch
     const r = await testServer(http({ Authorization: 'Bearer tok-123' }), 5000, fake)
     expect(r.ok).toBe(false)
-    expect(r.error).toBe('Could not reach the server: Could not look up mcp.example.com. Check your internet connection, VPN or DNS.')
+    expect(r.error).toBe('Could not look up mcp.example.com. Check your internet connection, VPN or DNS.')
     expect(r.needsAuthorization).toBeUndefined()
+  })
+
+  it('never doubles the "Could not" prefix, and prefixes sentences that start otherwise', async () => {
+    const fail = (cause: Error) =>
+      testServer(http(), 5000, (async () => {
+        throw fetchFailed(cause)
+      }) as unknown as typeof fetch)
+    const refused = await fail(coded('connect ECONNREFUSED 1.2.3.4:443', 'ECONNREFUSED'))
+    expect(refused.error).toBe('Could not connect to mcp.example.com (ECONNREFUSED). Check your internet connection, VPN, firewall or proxy.')
+    expect(refused.error).not.toContain('Could not reach the server')
+    const reset = await fail(coded('read ECONNRESET', 'ECONNRESET'))
+    expect(reset.error).toBe('Could not reach the server: mcp.example.com closed the connection before answering.')
+    const timeout = await fail(coded('headers timeout', 'UND_ERR_HEADERS_TIMEOUT'))
+    expect(timeout.error).toBe('Could not reach the server: mcp.example.com did not answer in time (UND_ERR_HEADERS_TIMEOUT).')
+  })
+
+  it('scrubs an OAuth bearer injected as the Authorization header even when secretHeaders does not name it', async () => {
+    const oauth: ResolvedMcpServer = {
+      spec: { id: 'h', name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', enabled: true, source: 'user', addedAt: '' },
+      env: {},
+      headers: { Authorization: 'Bearer AT-oauth-1' }
+    }
+    expect(oauth.spec.secretHeaders).toBeUndefined()
+    const fake = (async () => new Response('upstream rejected AT-oauth-1 for this account', { status: 500, statusText: 'Internal Server Error' })) as unknown as typeof fetch
+    const r = await testServer(oauth, 5000, fake)
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('HTTP 500')
+    expect(r.error).toContain('[redacted]')
+    expect(JSON.stringify(r)).not.toContain('AT-oauth-1')
+    // The same through a cause message, and with a lower-case header name.
+    const lower: ResolvedMcpServer = { ...oauth, headers: { authorization: 'Bearer AT-oauth-2' } }
+    const fake2 = (async () => {
+      throw fetchFailed(coded('gateway dropped AT-oauth-2'))
+    }) as unknown as typeof fetch
+    const r2 = await testServer(lower, 5000, fake2)
+    expect(r2.error).toBe('Could not reach the server: fetch failed: gateway dropped [redacted].')
+    expect(JSON.stringify(r2)).not.toContain('AT-oauth-2')
+  })
+
+  it('answers { ok: false } when the fetch throws something that is not an Error', async () => {
+    const r = await testServer(http(), 5000, (async () => {
+      throw null
+    }) as unknown as typeof fetch)
+    expect(r.ok).toBe(false)
+    expect(r.error).toBe('null')
+    const r2 = await testServer(http({ Authorization: 'Bearer tok-123' }), 5000, (async () => {
+      throw 'proxy said no to tok-123'
+    }) as unknown as typeof fetch)
+    expect(r2.ok).toBe(false)
+    expect(r2.error).toBe('proxy said no to [redacted]')
   })
 
   it('never puts the token into the message when the cause text carries it', async () => {
@@ -179,24 +229,28 @@ describe('testServer (http)', () => {
 
   const closedSocket = () => fetchFailed(coded('other side closed', 'UND_ERR_SOCKET'))
 
-  /** A fake fetch that answers the handshake but throws `failures` times for `failMethod` first. */
-  function flaky(failMethod: string, failures: number, make: () => Error = closedSocket) {
+  /** A fake fetch that answers the handshake (with a session id) but throws `failures` times for `failMethod` first. */
+  function flaky(failMethod: string, failures: number, make: () => unknown = closedSocket) {
     const calls: string[] = []
+    const headersSeen: Record<string, string>[] = []
     let left = failures
     const fake = (async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body))
       calls.push(body.method)
+      headersSeen.push({ ...(init.headers as Record<string, string>) })
       if (body.method === failMethod && left > 0) {
         left--
         throw make()
       }
       if (body.method === 'initialize') {
-        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18' } }), { headers: { 'content-type': 'application/json' } })
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18' } }), {
+          headers: { 'content-type': 'application/json', 'mcp-session-id': 'sess-9' }
+        })
       }
       if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'issues' }] } }), { headers: { 'content-type': 'application/json' } })
     }) as unknown as typeof fetch
-    return { fake, calls }
+    return { fake, calls, headersSeen }
   }
 
   it('retries initialize once after a closed socket', async () => {
@@ -206,11 +260,37 @@ describe('testServer (http)', () => {
     expect(calls).toEqual(['initialize', 'initialize', 'notifications/initialized', 'tools/list'])
   })
 
-  it('retries tools/list once after a closed socket', async () => {
-    const { fake, calls } = flaky('tools/list', 1)
+  it('retries tools/list once after a closed socket, re-sending the same Mcp-Session-Id', async () => {
+    const { fake, calls, headersSeen } = flaky('tools/list', 1)
     const r = await testServer(http(), 5000, fake)
     expect(r).toMatchObject({ ok: true, tools: ['issues'] })
     expect(calls).toEqual(['initialize', 'notifications/initialized', 'tools/list', 'tools/list'])
+    expect(headersSeen[0]['Mcp-Session-Id']).toBeUndefined()
+    expect(headersSeen[2]['Mcp-Session-Id']).toBe('sess-9')
+    expect(headersSeen[3]['Mcp-Session-Id']).toBe('sess-9')
+    expect(headersSeen[3]['MCP-Protocol-Version']).toBe('2025-06-18')
+  })
+
+  it('retries after a string cause that says the other side closed', async () => {
+    const { fake, calls } = flaky('initialize', 1, () => new TypeError('fetch failed', { cause: 'other side closed' }))
+    const r = await testServer(http(), 5000, fake)
+    expect(r).toMatchObject({ ok: true, tools: ['issues'] })
+    expect(calls).toEqual(['initialize', 'initialize', 'notifications/initialized', 'tools/list'])
+  })
+
+  it('does not retry when the request signal is already aborted', async () => {
+    const calls: string[] = []
+    const fake = (async (_url: string, init: RequestInit) => {
+      calls.push(JSON.parse(String(init.body)).method)
+      const signal = init.signal!
+      // Throw the closed socket only once the test's own timeout has aborted the signal.
+      await new Promise<void>((resolve) => (signal.aborted ? resolve() : signal.addEventListener('abort', () => resolve(), { once: true })))
+      throw closedSocket()
+    }) as unknown as typeof fetch
+    const r = await testServer(http(), 20, fake)
+    expect(r.ok).toBe(false)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(calls).toEqual(['initialize'])
   })
 
   it('does not retry a notification', async () => {
@@ -233,7 +313,7 @@ describe('testServer (http)', () => {
     const { fake, calls } = flaky('initialize', 1, () => fetchFailed(coded('connect ECONNREFUSED 1.2.3.4:443', 'ECONNREFUSED')))
     const r = await testServer(http(), 5000, fake)
     expect(r.ok).toBe(false)
-    expect(r.error).toBe('Could not reach the server: Could not connect to mcp.example.com (ECONNREFUSED). Check your internet connection, VPN, firewall or proxy.')
+    expect(r.error).toBe('Could not connect to mcp.example.com (ECONNREFUSED). Check your internet connection, VPN, firewall or proxy.')
     expect(calls).toEqual(['initialize'])
   })
 })
@@ -258,7 +338,7 @@ describe('describeFetchFailure', () => {
   })
 
   it('names connection failures with their code', () => {
-    for (const code of ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH']) {
+    for (const code of ['ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE']) {
       expect(describeFetchFailure(fetchFailed(coded('connect', code)), host)).toBe(
         `Could not connect to mcp.example.com (${code}). Check your internet connection, VPN, firewall or proxy.`
       )
@@ -282,9 +362,33 @@ describe('describeFetchFailure', () => {
     )
   })
 
-  it('names a closed socket by code or by message', () => {
+  it('names a closed socket by code (UND_ERR_SOCKET, ECONNRESET), by message, or by a string cause', () => {
     expect(describeFetchFailure(fetchFailed(coded('other side closed', 'UND_ERR_SOCKET')), host)).toBe('mcp.example.com closed the connection before answering.')
+    expect(describeFetchFailure(fetchFailed(coded('read ECONNRESET', 'ECONNRESET')), host)).toBe('mcp.example.com closed the connection before answering.')
     expect(describeFetchFailure(fetchFailed(coded('other side closed')), host)).toBe('mcp.example.com closed the connection before answering.')
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause: 'other side closed' }), host)).toBe('mcp.example.com closed the connection before answering.')
+  })
+
+  it('reads a string cause as the last link and still falls back to it', () => {
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause: 'the proxy hung up' }), host)).toBe('fetch failed: the proxy hung up.')
+    expect(describeFetchFailure(fetchFailed(coded('outer', undefined, 'inner text')), host)).toBe('fetch failed: inner text.')
+    expect(isClosedSocketFailure(new TypeError('fetch failed', { cause: 'other side closed' }))).toBe(true)
+    expect(isClosedSocketFailure(new TypeError('fetch failed', { cause: 'something else' }))).toBe(false)
+  })
+
+  it('caps the fallback detail at 300 characters', () => {
+    const long = 'x'.repeat(1000)
+    const byMessage = describeFetchFailure(fetchFailed(coded(long)), host)!
+    expect(byMessage).toBe(`fetch failed: ${'x'.repeat(300)}.`)
+    const byCode = describeFetchFailure(fetchFailed(coded('odd', `E${'Y'.repeat(1000)}`)), host)!
+    expect(byCode.length).toBe('fetch failed: '.length + 300 + 1)
+    expect(byCode.endsWith('.')).toBe(true)
+  })
+
+  it('reachabilityMessage adds the prefix only to a sentence that does not start with "Could not"', () => {
+    expect(reachabilityMessage('Could not look up h. Check.')).toBe('Could not look up h. Check.')
+    expect(reachabilityMessage('h closed the connection before answering.')).toBe('Could not reach the server: h closed the connection before answering.')
+    expect(reachabilityMessage('fetch failed: EODD.')).toBe('Could not reach the server: fetch failed: EODD.')
   })
 
   it('names an answer that did not arrive in time', () => {
