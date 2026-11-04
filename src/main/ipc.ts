@@ -127,6 +127,7 @@ import {
   removeNote,
   removeProjectData,
   removeSkillEvaluation,
+  retainRunProject,
   saveNote,
   skillEvaluationFile,
   teamReviewFile,
@@ -328,7 +329,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.projectsRemove, async (_e, input: unknown): Promise<ProjectRemoveResult> => {
     const { projectId: id, removeRuns: asked } = projectRemoveArgs(input)
     const stored = projects.get(id)
+    if (!stored) throw new Error('Project not found')
     const removeRuns = effectiveRemoveRuns(projectKindOf(stored), asked)
+    if (!removeRuns) retainRunProject(settings.dataDir, id)
     const facts = removalFacts({ dataDir: settings.dataDir, project: stored, runCount: (pid) => runs.list(pid).length }, id, removeRuns)
     const removed = await runs.removeProject(id, { removeRuns })
     mcp.removeProjectSecrets(id)

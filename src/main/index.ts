@@ -37,7 +37,7 @@ import { MaintenanceService } from './maintenance'
 import { registerIpc, harnessProjectFor, withEffectiveDefault } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { TemplateService } from './setup/templates'
-import { listNotes, readNote } from './store/projectData'
+import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects } from './store/projectData'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging, log } from './log'
@@ -533,7 +533,7 @@ app.whenReady().then(() => {
   // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
   const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID])
   let dropped = 0
-  for (const projectId of new Set(runStore.allProjectIds())) if (!knownProjects.has(projectId)) dropped += runStore.removeProject(projectId)
+  for (const projectId of orphanRunProjects(runStore.allProjectIds(), knownProjects, readRetainedRunProjects(dataDir))) dropped += runStore.removeProject(projectId)
   dropped += runStore.prune(keepRunsFor)
   dropped += runStore.sweepOrphans()
   // Scratch dirs (Chat without a folder, MCP build workspaces) that no remaining run record points to.
