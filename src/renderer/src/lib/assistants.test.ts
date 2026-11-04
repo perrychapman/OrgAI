@@ -7,6 +7,8 @@ describe('run layout', () => {
   it('single-agent runs default to the conversation', () => {
     expect(isSingleAgentRun({ kind: 'work', quick: quick() })).toBe(true)
     expect(isSingleAgentRun({ kind: 'mcp-assist' })).toBe(true)
+    expect(isSingleAgentRun({ kind: 'work', team: 'single' })).toBe(true)
+    expect(speaksAsAssistant({ kind: 'work', projectId: 'p1', team: 'single' })).toBe(true)
     expect(isSingleAgentRun({ kind: 'skill-assist' })).toBe(true)
     expect(runLayoutFor({ kind: 'work', quick: quick() })).toBe('conversation')
   })
@@ -51,6 +53,7 @@ describe('assistants', () => {
   it('labels kinds', () => {
     expect(runKindLabel({ kind: 'work', quick: quick() })).toBe('Chat')
     expect(runKindLabel({ kind: 'work' })).toBe('Run')
+    expect(runKindLabel({ kind: 'work', team: 'single' })).toBe('Ask')
     expect(runKindLabel({ kind: 'skill-assist' })).toBe('Skill assistant')
   })
   it('labels folder and access', () => {
@@ -85,6 +88,7 @@ describe('assistants', () => {
     const base = { kind: 'work' as const, projectId: 'p1', status: 'finished' as const }
     expect(offersRetro(base)).toBe(true)
     expect(offersRetro({ ...base, quick: quick() })).toBe(false)
+    expect(offersRetro({ ...base, team: 'single' })).toBe(false)
     expect(offersRetro({ ...base, projectId: 'quick' })).toBe(false)
     expect(offersRetro({ ...base, kind: 'setup' })).toBe(false)
     expect(offersRetro({ ...base, status: 'running' })).toBe(false)

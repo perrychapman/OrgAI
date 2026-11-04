@@ -14,7 +14,7 @@ export function RunLabel({ runId, prefix = true }: { runId: string; prefix?: boo
   // "Run R2" for work runs; an assistant run names its kind ("Chat R1", "MCP assistant R1").
   const kindWord = useAppStore((s) => {
     const sum = s.runs[runId]?.summary
-    return sum && (sum.quick || sum.kind === 'mcp-assist' || sum.kind === 'skill-assist') ? runKindLabel(sum) : 'Run'
+    return sum && (sum.quick || sum.kind === 'mcp-assist' || sum.kind === 'skill-assist' || sum.team === 'single') ? runKindLabel(sum) : 'Run'
   })
   // A Team-tab Architect session has no run tab, so it has no R-index: name it for what it is.
   if (team) {

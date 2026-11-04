@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { RunStatus } from '@shared/types'
-import { adoptEndFacts, canContinue, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, chainIdsToLoad, earlierMembersToLoad, runBatched, statusEventEndFacts, chainOf, continuedBy, newestOf, predecessorOf, projectCounts, relativeTime, sessionOpenRunId } from './runChains'
+import { adoptEndFacts, endedComposerCopy, canContinue, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, chainIdsToLoad, earlierMembersToLoad, runBatched, statusEventEndFacts, chainOf, continuedBy, newestOf, predecessorOf, projectCounts, relativeTime, sessionOpenRunId } from './runChains'
 
 const r = (id: string, startedAt: number, extra: { sessionId?: string; resumedFrom?: string; status?: RunStatus; projectId?: string } = {}) => ({
   id,
@@ -168,6 +168,14 @@ describe('statusEventEndFacts', () => {
     expect(statusEventEndFacts({ status: 'stopping', endedBy: 'app' })).toEqual({})
     expect(statusEventEndFacts({ status: 'running', endedBy: 'user' })).toEqual({})
     expect(statusEventEndFacts({ status: 'finished' })).toEqual({})
+  })
+})
+
+describe('endedComposerCopy placeholder', () => {
+  const s = { id: 'a', startedAt: 1, status: 'finished' as const }
+  it('names the assistant for an Ask run and the orchestrator otherwise', () => {
+    expect(endedComposerCopy({ ...s, team: 'single' }, { continuable: true }).placeholder).toBe('Message the assistant')
+    expect(endedComposerCopy(s, { continuable: true }).placeholder).toBe('Message the orchestrator')
   })
 })
 
