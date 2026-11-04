@@ -123,7 +123,8 @@ export default function UsageTrends({ projectId }: { projectId: string }): React
       a.click()
       a.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
-      setCsvStatus(null)
+      // The renderer cannot see where or whether the download finishes, so the notice says only what is known.
+      setCsvStatus({ text: 'Your browser is saving the CSV.', failed: false })
     } catch (e) {
       setCsvStatus({ text: `Could not save: ${cleanIpcError(e)}`, failed: true })
     } finally {

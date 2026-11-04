@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { openConnectorSetup } from '../team/openConnectorSetup'
 import { serviceFor } from '../../lib/roleServices'
 import { capList } from '../../lib/connectors'
-import { accessLabel, grantedServers, needsSignIn, serverReadOnly } from '../../lib/roleCapabilities'
+import { accessLabel, grantedServers, needsSignIn, serverReadOnly, waitingLabel } from '../../lib/roleCapabilities'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
@@ -88,6 +88,7 @@ export default function RoleServices({
             const s = serviceFor(info.spec)
             const access = accessLabel(serverReadOnly(info.spec))
             const needs = needsSignIn(info)
+            const perProject = needs && waitingLabel(info) !== 'Needs sign in'
             return (
               <li key={info.spec.id} className="role-cap-row role-cap-service" tabIndex={-1} data-testid="role-service" data-name={s.label} data-cap-id={info.spec.id} data-library-id={info.spec.libraryId}>
                 {s.connectorId ? (
@@ -108,10 +109,10 @@ export default function RoleServices({
                   {needs && (
                     <>
                       <Badge tone="attention" testId="role-needs-signin">
-                        Needs sign in
+                        {waitingLabel(info)}
                       </Badge>
-                      <Button size="sm" icon={LogIn} ariaLabel={`Sign in to ${s.label}`} testId="role-signin" onClick={() => signIn(info)}>
-                        Sign in
+                      <Button size="sm" icon={LogIn} ariaLabel={perProject ? `Set values for ${s.label}` : `Sign in to ${s.label}`} testId="role-signin" onClick={() => signIn(info)}>
+                        {perProject ? 'Set value' : 'Sign in'}
                       </Button>
                     </>
                   )}
