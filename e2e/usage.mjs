@@ -80,6 +80,13 @@ try {
   const ov2 = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
   check(ov2.sw <= ov2.cw, 'no horizontal scroll on Trends', JSON.stringify(ov2))
   await shot('trends')
+  check(await page.locator('[data-testid=trends-kinds]').isVisible(), 'Trends has a By kind table')
+  check(await page.locator('[data-testid=trends-copy-csv]').isEnabled(), 'Copy as CSV is enabled with runs in range')
+  await page.locator('.trends-controls .seg label', { hasText: 'Month' }).click()
+  await page.locator('select[data-testid=trends-month]').waitFor({ timeout: 5000 })
+  check(/so far/.test(await page.locator('select[data-testid=trends-month] option').first().innerText()), 'the Month picker lists the current month first')
+  await page.waitForFunction(() => !document.querySelector('[data-testid=trends-loading]'), null, { timeout: 10_000 })
+  check(await page.locator('[data-testid=trends-totals]').isVisible(), 'the current month shows the run')
 
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Connections', exact: true }).click()
