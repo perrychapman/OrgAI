@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { connectionOrder, connectionsInUse, currentConnection, spendLabel, spendLevel, spendPct, spendText } from './usage'
+import type { UsageSpend } from '@shared/types'
+import { connectionOrder, connectionsInUse, currentConnection, lifetimeText, periodSince, periodText, periodsCaption, spendLabel, spendLevel, spendPct, spendRowLabel, spendSentence, spendText } from './usage'
 
 const all = (): boolean => true
-const s = (usd: number, budgetUsd: number | null) => ({ usd, budgetUsd, resetsAt: null, budgetDuration: null, keyAlias: null })
+const s = (usd: number, budgetUsd: number | null): UsageSpend => ({ usd, budgetUsd, resetsAt: null, budgetDuration: null, keyAlias: null })
+const PERIODS = {
+  day: { usd: 3.2, since: Date.UTC(2026, 10, 4) },
+  week: { usd: 12.4, since: Date.UTC(2026, 10, 2) },
+  month: { usd: 31, since: Date.UTC(2026, 10, 1) }
+}
+const withPeriods = (usd: number, budgetUsd: number | null): UsageSpend => ({ ...s(usd, budgetUsd), periods: PERIODS })
 
 describe('usage', () => {
   it('picks the project connection, then the default', () => {
@@ -13,6 +20,41 @@ describe('usage', () => {
   it('words spend', () => {
     expect(spendLabel(s(42.1, 50))).toBe('LiteLLM · $42.10 of $50.00')
     expect(spendText(s(42.1, null))).toBe('$42.10 spent')
+  })
+  it('words one period figure', () => {
+    expect(periodText(3.2, 'day')).toBe('$3.20 today')
+    expect(periodText(12.4, 'week')).toBe('$12.40 this week')
+    expect(periodText(31, 'month')).toBe('$31.00 this month')
+  })
+  it('shows one figure in the account row: today when periods are reported, else the budget text', () => {
+    expect(spendRowLabel(withPeriods(42.1, 50))).toBe('LiteLLM · $3.20 today')
+    expect(spendRowLabel(withPeriods(42.1, null))).toBe('LiteLLM · $3.20 today')
+    expect(spendRowLabel(s(42.1, 50))).toBe('LiteLLM · $42.10 of $50.00')
+    expect(spendRowLabel(s(42.1, null))).toBe('LiteLLM · $42.10 spent')
+  })
+  it('carries the whole sentence in the tooltip and the rail name', () => {
+    expect(spendSentence(withPeriods(42.1, 50))).toBe('LiteLLM spend: $3.20 today, $12.40 this week, $31.00 this month. $42.10 of $50.00 budget.')
+    expect(spendSentence(withPeriods(42.1, null))).toBe('LiteLLM spend: $3.20 today, $12.40 this week, $31.00 this month. No budget set.')
+    expect(spendSentence(s(42.1, 50))).toBe('LiteLLM spend: $42.10 of $50.00 budget.')
+    expect(spendSentence(s(42.1, null))).toBe('LiteLLM spend: $42.10. No budget set.')
+  })
+  it('captions the week and month for the Dashboard, nothing without periods', () => {
+    expect(periodsCaption(withPeriods(1, 50))).toBe('$12.40 this week · $31.00 this month')
+    expect(periodsCaption(s(1, 50))).toBe('')
+  })
+  it('prints a period start in UTC and says so', () => {
+    expect(periodSince(Date.UTC(2026, 10, 2), 'en-GB')).toBe('Since Mon 2 Nov (UTC)')
+    // A UTC midnight is the previous evening in the Americas; the UTC print never moves to Sunday.
+    expect(periodSince(Date.UTC(2026, 10, 2), 'en-US')).toBe('Since Mon, Nov 2 (UTC)')
+    expect(periodSince(Number.NaN)).toBe('')
+  })
+  it('shows a lifetime total only when it differs from the current period spend', () => {
+    expect(lifetimeText({ ...s(42.1, 50), totalUsd: 142.1 })).toBe('Lifetime $142.10')
+    expect(lifetimeText({ ...s(42.1, 50), totalUsd: 42.1 })).toBe('')
+    expect(lifetimeText({ ...s(42.1, 50), totalUsd: 42.104 })).toBe('')
+    expect(lifetimeText({ ...s(42.1, 50), totalUsd: null })).toBe('')
+    expect(lifetimeText(s(42.1, 50))).toBe('')
+    expect(lifetimeText({ ...s(42.1, 50), totalUsd: Number.POSITIVE_INFINITY })).toBe('')
   })
   it('levels', () => {
     expect(spendLevel(s(10, 50))).toBe('')
