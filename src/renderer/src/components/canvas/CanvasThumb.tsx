@@ -107,6 +107,7 @@ export function CanvasThumb({ spec, preset, width = W, height = H }: { spec: Thu
   const pid = `thumb-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`
   const pts = POINTS[spec.layout]
   const compact = spec.nodeStyle === 'compact'
+  const station = spec.nodeStyle === 'station'
   const nw = compact ? 14 : 18
   const nh = compact ? 5 : 10
   const def = patternDef(spec.pattern, pid)
@@ -128,11 +129,26 @@ export function CanvasThumb({ spec, preset, width = W, height = H }: { spec: Thu
           key={i}
           d={path(spec.layout, spec.edges, pts[0], pts[i])}
           fill="none"
-          strokeWidth="1.2"
-          style={{ stroke: `color-mix(in srgb, ${ROLE_COLORS[i]} var(--canvas-edge-role-mix), var(--canvas-edge-ink))` }}
+          strokeWidth={station ? 2.4 : 1.2}
+          strokeLinecap={station ? 'round' : undefined}
+          strokeLinejoin={station ? 'round' : undefined}
+          // Subway lines take the lead's (here the root's) colour; every other style colours a line by its report.
+          style={{ stroke: `color-mix(in srgb, ${ROLE_COLORS[station ? 0 : i]} var(--canvas-edge-role-mix), var(--canvas-edge-ink))` }}
         />
       ))}
-      {pts.map(([cx, cy], i) => (
+      {pts.map(([cx, cy], i) =>
+        station ? (
+          <circle key={i} cx={cx} cy={cy} r="3.2" fill="var(--canvas-node-bg)" stroke={ROLE_COLORS[i]} strokeWidth="1.6" />
+        ) : spec.nodeStyle === 'hex' ? (
+          <polygon
+            key={i}
+            points={`${cx - 7},${cy} ${cx - 3.5},${cy - 6} ${cx + 3.5},${cy - 6} ${cx + 7},${cy} ${cx + 3.5},${cy + 6} ${cx - 3.5},${cy + 6}`}
+            fill="var(--canvas-node-bg)"
+            stroke={ROLE_COLORS[i]}
+            strokeWidth="1"
+            strokeLinejoin="round"
+          />
+        ) : (
         <rect
           key={i}
           x={cx - nw / 2}
@@ -144,7 +160,8 @@ export function CanvasThumb({ spec, preset, width = W, height = H }: { spec: Thu
           stroke={ROLE_COLORS[i]}
           strokeWidth="1"
         />
-      ))}
+        )
+      )}
     </svg>
   )
 }

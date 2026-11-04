@@ -277,8 +277,8 @@ lib/theme.ts applies AppSettings.appearance to <html>. initTheme() runs in main.
 
 ### Canvas (themes, layouts, node styles)
 
-Spec `docs/design/canvas-themes.md` (phase A: node styles card and compact; station / hex and the Subway / Hive presets
-are phase B). Every React Flow canvas (Live run, Team editor, the settings sample) reads `useCanvasOptions()` and
+Spec `docs/design/canvas-themes.md` (phase A: node styles card and compact; phase B: station and hex, so every preset,
+Subway and Hive included, shows, plus a renderer-only "Default" gallery entry). Every React Flow canvas (Live run, Team editor, the settings sample) reads `useCanvasOptions()` and
 nothing else, draws `CanvasBackdrop` and `CanvasMinimap` inside `<ReactFlow>`, passes `data-layout` and
 `edgeTypes={CANVAS_EDGE_TYPES}`, lays out through `layoutCanvas`, and its node components call `useHandleRefresh`
 (React Flow re-measures handles only on resize, so a layout switch would leave edges on the old sides).
@@ -286,13 +286,24 @@ nothing else, draws `CanvasBackdrop` and `CanvasMinimap` inside `<ReactFlow>`, p
 - `src/renderer/src/lib/canvas.ts`: `useCanvasOptions`, `AVAILABLE_NODE_STYLES`, `AVAILABLE_PRESETS`, `shownPreset`,
   `effectiveNodeStyle`, `handlesFor`, `AGENT_NODE_SIZE` / `GROUP_NODE_SIZE`, `edgeStroke` (sRGB role/ink mix to hex),
   `minimapSize`, `useNodeDims` (controlled nodes keep measured sizes for the minimap), `useHandleRefresh`,
-  `ringStepFor`, `useReducedMotion`, `EDGE_TYPE`
-- `src/renderer/src/lib/layout.ts`: `layoutCanvas` (dagre TB / LR or `radialLayout` with ring guides)
-- `src/renderer/src/lib/canvasSample.ts` (the preview's sample graph) and `lib/canvasSettings.ts` (`canvasAfterPreset`,
-  `canvasAnnouncement`, `saveCanvas` for the toolbar popover)
+  `ringStepFor`, `useReducedMotion`, `EDGE_TYPE`; phase B: `stationGeometry(layout)` (top down 160 x 40, name beside;
+  else 120 x 64, name below; circle radius `STATION_RADIUS` 16), `stationHandleStyle` (handles on the circle edge),
+  `HEX_TILE` 120 x 104 / `HEX_GAP`, `agentNodeSize(style, layout)` / `groupNodeSize`, `reportingLineRole` (a station
+  line takes its lead's colour); the gallery's Default entry: `DEFAULT_STYLE_ID`, `CANVAS_STYLE_OPTIONS`, `shownStyle`,
+  `applyCanvasStyle`, `applyDefaultCanvas`, `styleLabel`
+- `src/renderer/src/lib/layout.ts`: `layoutCanvas` (dagre TB / LR or `radialLayout` with ring guides; with
+  `honeycomb` in radial, `honeycombSnap` snaps centres to a flat-top hex lattice and draws no rings)
+- `src/renderer/src/lib/canvasShapes.ts`: `exitPoint` (box, circle or hexagon clipping for RadialEdge), station line
+  constants, message handle ids (`msgHandleId`, `msg-out-<side>` / `msg-in-<side>`) and `messageSides` (each message
+  leaves and enters on the sides facing the other node); `lib/canvasFit.ts` `fitOptions` (radial cards fit no lower
+  than zoom 0.7)
+- `src/renderer/src/lib/canvasSample.ts` (the preview's sample graph) and `lib/canvasSettings.ts` (`canvasAnnouncement`,
+  `saveCanvas` for the toolbar popover)
 - `src/renderer/src/components/canvas/`: `CanvasBackdrop`, `CanvasMinimap`, `RadialEdge`, `CanvasPreview`,
   `CanvasThumb`, `CanvasPresetGroup`, `CanvasStyleButton`
-- `src/renderer/src/components/settings/CanvasSection.tsx`; styles `styles/canvas.css`, `styles/canvas-settings.css`
+- `src/renderer/src/components/settings/CanvasSection.tsx`; styles `styles/canvas.css`, `styles/canvas-settings.css`;
+  station and hex node styles live in `styles/run.css` (shared by agent, group and role nodes; shapes use `--role-ink`,
+  the role colour through the edge mix, for 3:1 on every backdrop)
 
 ### UI primitives
 
@@ -505,6 +516,7 @@ components/layout:
 
 ## Risks and gaps
 
+- Canvas phase B (review of 2026-11-03, open Lows): the settings scroller's `scroll-padding-top` repeats the preview's 160 px and applies in the two-column layout too; `honeycombSnap` rescans the whole square per ring (O(k^3), capped at 400 rings); adjacent honeycomb tiles leave an edge shorter than its arrow marker; a Live click calls `selectAgent` twice (idempotent). Message edges, radial messages and the `--role-ink` contrast are unverified in a live run (the mock sends no agent messages).
 - Application menu (ux-review-menu-2.md, open Mediums): M1 Go to decision only looks at the current project's run; M2 Team / Project settings on assistants, Org retrospective on live runs and Save chat as project on scratch chats announce instead of greying; M3 Ctrl+. works only on the Live view; M5 App settings counts as "no project" (sections greyed, Ctrl+T says "Open a project first.").
 - Engagement folders: OrgAI stops writing its own files there and Claude runs of an engagement use settingSources [] (review M4: a client share's `.claude/settings.json` hooks, rules and MCP never load); a CLAUDE.md the folder holds is therefore not loaded either. An engagement whose user opts into isolateWriters gets git worktrees and a .git/info/exclude line. The kind is fixed at creation (projects:save keeps the stored kind, review M1). The engagement profile's notes and names are untrusted client text and reach the Architect inside data framing (review M3); what the Architect then proposes is still shown to the user for approval. Rules saved in the app folder reach Claude only through options.allowedTools and the PreToolUse hook (the CLI never read settings.local.json under settingSources ['project'] anyway).
 - Reference folders (engagement kind): Bash and PowerShell commands that write inside a reference folder are NOT gated (only the edit tools and Codex file changes are); the project's permission mode still applies to shell calls, and a `cd` into a reference folder is free only in a command made of cds alone (review M2, partly fixed). OPEN (Medium): the rule matchers ignore the effective cwd, so on Claude a lone `cd <ref>` followed by a separate call matching a saved rule (e.g. `npm test`) runs inside the reference folder without asking, and a Codex command whose cwd is in one matches saved rules too (its sandbox blocks the writes). Fix: skip rule matching when Claude's `input.cwd` / Codex's `req.cwd` is inside a reference folder. Lows: isOfferableDirectory and Codex sessionDirs do not exclude reference folders; Codex referenceChangeDenial lets a NUL path through; the profiler opens key files without an isFile check and keeps walking after the tree is truncated. Hard links into a reference folder and MCP filesystem tools are not gated either. Codex: with reference folders, bypassPermissions (and auto) are downgraded to workspace-write with asking approvals so file changes reach the gate (review H1). The adapter denies are unit-tested only (fake query(), fake app-server, mock); that the Claude CLI reads `additionalDirectories` without granting writes beyond the hook, and that Codex workspace-write can read outside its writable roots, is unverified live.

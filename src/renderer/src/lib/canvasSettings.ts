@@ -1,14 +1,9 @@
 import type { AppearanceSettings } from '@shared/types'
-import { DEFAULT_APPEARANCE, applyCanvasPreset, type CanvasPresetId } from '@shared/defaults'
+import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { setAppearance } from './theme'
 
 /** Canvas settings are the `canvas` object of AppearanceSettings. */
 export type CanvasSettings = AppearanceSettings['canvas']
-
-/** Pure: the canvas after picking a preset (the minimap is kept). */
-export function canvasAfterPreset(canvas: CanvasSettings, id: CanvasPresetId): CanvasSettings {
-  return applyCanvasPreset(canvas, id)
-}
 
 /** Pure: "Canvas style: Blueprint." / "Canvas style: Custom." */
 export function canvasAnnouncement(label: string | undefined): string {

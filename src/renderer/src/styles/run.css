@@ -13,11 +13,7 @@
   transition: border-color var(--dur-base), box-shadow var(--dur-base), opacity var(--dur-base);
   position: relative;
 }
-/* Selected: role-colour border plus an inner 1px line (no layout shift). Keyboard focus is the outline below. */
-.agent-node.selected {
-  border-color: var(--role);
-  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
-}
+/* Keyboard focus is the outline (2 px, 3 px out). Selection is drawn after the state rules below, so it wins over them. */
 .react-flow__node:focus-visible > .agent-node,
 .react-flow__node:focus-visible > .done-group {
   outline: 2px solid var(--canvas-focus-ring);
@@ -46,6 +42,48 @@
 .agent-node.state-delegating,
 .agent-node.state-starting {
   box-shadow: var(--glow-working), var(--elev-1);
+}
+
+/* Selected beats every state colour (done, error, waiting, no result): a role-colour border plus an inner 1px line, and
+ * a shape cue that does not depend on colour, so it never reads as keyboard focus (the outline) even when the role
+ * colour equals the accent. Card: a 4 px bar on the leading edge, inside the padding. Name tag: a 3 px border. */
+.agent-node[data-style='card'].selected,
+.agent-node[data-style='compact'].selected {
+  border-color: var(--role);
+  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
+}
+.agent-node[data-style='card'].selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 4px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--role);
+  pointer-events: none;
+}
+.agent-node[data-style='compact'].selected {
+  box-shadow: inset 0 0 0 2px var(--role), var(--elev-2);
+}
+/* A waiting agent keeps its halo and a working one its glow under the selection line. */
+.agent-node[data-style='card'].selected.state-waiting {
+  box-shadow: inset 0 0 0 1px var(--role), var(--halo-warning), var(--elev-2);
+}
+.agent-node[data-style='card'].selected.state-thinking,
+.agent-node[data-style='card'].selected.state-tool,
+.agent-node[data-style='card'].selected.state-delegating,
+.agent-node[data-style='card'].selected.state-starting {
+  box-shadow: inset 0 0 0 1px var(--role), var(--glow-working), var(--elev-2);
+}
+.agent-node[data-style='compact'].selected.state-waiting {
+  box-shadow: inset 0 0 0 2px var(--role), var(--halo-warning), var(--elev-2);
+}
+.agent-node[data-style='compact'].selected.state-thinking,
+.agent-node[data-style='compact'].selected.state-tool,
+.agent-node[data-style='compact'].selected.state-delegating,
+.agent-node[data-style='compact'].selected.state-starting {
+  box-shadow: inset 0 0 0 2px var(--role), var(--glow-working), var(--elev-2);
 }
 
 .agent-node .head {
@@ -173,6 +211,21 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* A long handle clips in the middle so its end (the number that tells siblings apart) stays visible. */
+.agent-node .clip-label {
+  display: flex;
+  min-width: 0;
+}
+.agent-node .clip-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-node .clip-tail {
+  flex: none;
+  white-space: nowrap;
 }
 .agent-node .sub {
   display: flex;
@@ -512,6 +565,15 @@
   border-color: var(--role);
   color: var(--canvas-node-text);
 }
+/* Selected, not just hovered: a solid border with an inner line (the dashed fold alone reads as hover). */
+.done-group[data-style='card'].selected,
+.done-group[data-style='compact'].selected {
+  border-style: solid;
+  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
+}
+.done-group[data-style='compact'].selected {
+  box-shadow: inset 0 0 0 2px var(--role), var(--elev-2);
+}
 /* An earlier session's reports: same dashed fold, quieter dot, opaque canvas colour. */
 .done-group.earlier {
   background: var(--canvas-bg);
@@ -588,6 +650,236 @@
 .done-expand {
   display: inline-flex;
   flex: none;
+}
+
+/* ---------- Station and hex node styles (docs/design/canvas-themes.md section 4) ----------
+ * Shared by agent nodes, done groups and role nodes (editor.css resets the role node's own box). The root is a
+ * transparent box (its width / height come from lib/canvas.ts); the focus outline of the box stays the global rule. */
+
+.agent-node[data-style='station'],
+.agent-node[data-style='hex'],
+.done-group[data-style='station'],
+.done-group[data-style='hex'] {
+  box-sizing: border-box;
+  display: block;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-md);
+  color: var(--canvas-node-text);
+}
+/* Station and hex shapes carry the role colour as their only mark, so they take the edge mix (section 5): 3:1 on
+ * every backdrop for every ROLE_COLORS entry, like the lines (raw lime is about 1.4:1 on light backdrops). */
+.agent-node[data-style='station'],
+.agent-node[data-style='hex'],
+.done-group[data-style='station'],
+.done-group[data-style='hex'],
+.role-node[data-style='station'],
+.role-node[data-style='hex'] {
+  --role-ink: color-mix(in srgb, var(--role) var(--canvas-edge-role-mix), var(--canvas-edge-ink));
+}
+.agent-node[data-style='hex'],
+.done-group[data-style='hex'] {
+  width: 120px;
+  height: 104px;
+}
+
+/* Station: a circle on the line, its name in a pill. Top down puts the name beside it, the other layouts below. */
+[data-style='station'] > .station {
+  position: absolute;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  border: 4px solid var(--role-ink);
+  background: var(--canvas-node-bg);
+  transition: border-color var(--dur-base), background-color var(--dur-base), box-shadow var(--dur-base);
+}
+[data-style='station'] > .station > .ring {
+  inset: -8px;
+}
+[data-style='station'] > .station > .badge {
+  width: 14px;
+  height: 14px;
+  right: -6px;
+  bottom: -6px;
+  border-width: 1px;
+}
+.agent-node[data-style='station'].state-waiting > .station {
+  border-color: var(--warning);
+}
+.agent-node[data-style='station'].state-error > .station {
+  border-color: var(--danger);
+}
+.agent-node[data-style='station'].state-done > .station {
+  background: var(--role-ink);
+}
+.agent-node[data-style='station'].no-result > .station {
+  border-style: dashed;
+}
+[data-style='station'].selected > .station {
+  box-shadow: var(--elev-2);
+}
+/* Interchange: the root has a second ring inside the first. */
+[data-style='station'].is-root > .station {
+  box-shadow: inset 0 0 0 3px var(--canvas-node-bg), inset 0 0 0 5px var(--role-ink);
+}
+[data-style='station'].is-root.selected > .station {
+  box-shadow: inset 0 0 0 3px var(--canvas-node-bg), inset 0 0 0 5px var(--role-ink), var(--elev-2);
+}
+[data-style='station'] > .station-name {
+  position: absolute;
+  box-sizing: border-box;
+  display: block;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--canvas-node-bg);
+  color: var(--canvas-node-text);
+  font-family: var(--canvas-node-font);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-style='station'][data-label='beside'] > .station-name {
+  left: 42px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: calc(100% - 42px);
+}
+[data-style='station'][data-label='below'] > .station-name {
+  left: 50%;
+  top: 38px;
+  transform: translateX(-50%);
+  max-width: 100%;
+}
+[data-style='station'].selected > .station-name {
+  border-color: var(--role-ink);
+  box-shadow: inset 0 0 0 1px var(--role-ink);
+}
+/* A folded group: a terminus bar instead of the circle, the count and the chevron in the pill. */
+.done-group[data-style='station'] > .station-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-right: 2px;
+  color: var(--canvas-node-text-muted);
+}
+.done-group[data-style='station'].selected > .station-name,
+.done-group[data-style='station']:hover > .station-name {
+  color: var(--canvas-node-text);
+}
+.done-group[data-style='station'] > .station-name .done-group-main {
+  gap: var(--space-1);
+}
+[data-style='station'] > .station-terminus {
+  position: absolute;
+  width: 28px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--role-ink);
+}
+.done-group[data-style='station'].earlier > .station-terminus {
+  background: var(--canvas-edge-group);
+}
+
+/* Hex: a honeycomb tile. The outer clipped layer is the edge colour, the inner one the fill. */
+[data-style='hex'] > .hex-tile {
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: var(--hex-edge, var(--role-ink));
+  transition: background-color var(--dur-base);
+}
+[data-style='hex'] > .hex-tile > .hex-fill {
+  position: absolute;
+  inset: var(--hex-inset, 3px);
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: var(--hex-fill, var(--canvas-node-bg));
+  transition: inset var(--dur-base);
+}
+[data-style='hex'].is-root {
+  --hex-inset: 5px;
+}
+[data-style='hex'].selected {
+  --hex-inset: 7px;
+}
+.agent-node[data-style='hex'].state-waiting {
+  --hex-edge: var(--warning);
+}
+.agent-node[data-style='hex'].state-done {
+  --hex-edge: var(--state-done);
+}
+.agent-node[data-style='hex'].state-error {
+  --hex-edge: var(--danger);
+}
+.done-group[data-style='hex'] {
+  --hex-edge: var(--canvas-edge-group);
+  --hex-fill: var(--canvas-bg);
+}
+.done-group[data-style='hex'].selected,
+.done-group[data-style='hex']:hover {
+  --hex-edge: var(--role-ink);
+}
+[data-style='hex'] > .hex-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+[data-style='hex'] .avatar-wrap,
+[data-style='hex'] .avatar {
+  width: 28px;
+  height: 28px;
+}
+[data-style='hex'] .avatar {
+  font-size: var(--text-caption);
+}
+[data-style='hex'] .ring {
+  inset: -3px;
+}
+.agent-node[data-style='hex'] .badge {
+  width: 14px;
+  height: 14px;
+  right: -4px;
+  bottom: -4px;
+  border-width: 1px;
+}
+.agent-node[data-style='hex'].no-result .ring {
+  border-style: dashed;
+  border-color: var(--canvas-node-text-muted);
+}
+[data-style='hex'] .hex-name {
+  max-width: 84px;
+  text-align: center;
+  color: var(--canvas-node-text);
+  font-family: var(--canvas-node-font);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.done-group[data-style='hex'] > .hex-content {
+  color: var(--canvas-node-text-muted);
+}
+.done-group[data-style='hex'] .done-group-main {
+  flex: none;
+  flex-direction: column;
+  gap: 0;
+  overflow: visible;
 }
 
 /* ---------- Run strip helpers ---------- */

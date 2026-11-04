@@ -1,8 +1,7 @@
 import type { KeyboardEvent, ReactElement, Ref } from 'react'
 import { useId } from 'react'
 import { Check } from 'lucide-react'
-import type { CanvasPresetId } from '@shared/defaults'
-import { AVAILABLE_PRESETS, shownPreset } from '../../lib/canvas'
+import { CANVAS_STYLE_OPTIONS, shownStyle, type CanvasStyleId } from '../../lib/canvas'
 import type { CanvasSettings } from '../../lib/canvasSettings'
 import { Icon } from '../ui/Icon'
 import { CanvasThumb } from './CanvasThumb'
@@ -12,7 +11,7 @@ export const CUSTOM_DESCRIPTION = 'Your own mix. Change it under Customise.'
 /**
  * The "Canvas style" radio group shared by App settings > General > Canvas (gallery) and the toolbar popover (compact
  * rows). One tab stop (the checked option); arrow keys move and pick at once, Home / End jump to the first and last
- * preset. "Custom" is shown, checked, only when no available preset matches the canvas.
+ * entry (Default first). "Custom" is shown, checked, only when neither Default nor an available preset matches.
  */
 export function CanvasPresetGroup({
   canvas,
@@ -22,13 +21,13 @@ export function CanvasPresetGroup({
   label = 'Canvas style'
 }: {
   canvas: CanvasSettings
-  onPick: (id: CanvasPresetId) => void
+  onPick: (id: CanvasStyleId) => void
   variant: 'gallery' | 'compact'
   groupRef?: Ref<HTMLDivElement>
   label?: string
 }): ReactElement {
   const base = useId()
-  const shown = shownPreset(canvas)
+  const shown = shownStyle(canvas)
   const compact = variant === 'compact'
   const size = compact ? { width: 48, height: 32 } : { width: 72, height: 48 }
 
@@ -36,7 +35,7 @@ export function CanvasPresetGroup({
     if (e.altKey || e.ctrlKey || e.metaKey) return
     const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End']
     if (!keys.includes(e.key)) return
-    const options = AVAILABLE_PRESETS
+    const options = CANVAS_STYLE_OPTIONS
     if (options.length === 0) return
     const at = shown ? options.findIndex((p) => p.id === shown) : -1
     let to: number
@@ -59,7 +58,7 @@ export function CanvasPresetGroup({
       aria-label={label}
       onKeyDown={onKeyDown}
     >
-      {AVAILABLE_PRESETS.map((p) => {
+      {CANVAS_STYLE_OPTIONS.map((p) => {
         const checked = shown === p.id
         const descId = `${base}-${p.id}-desc`
         return (

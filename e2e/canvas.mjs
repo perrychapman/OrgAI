@@ -84,6 +84,33 @@ const flowBoxes = (scope) =>
 const centre = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 })
 const dist = (a, b) => Math.hypot(centre(a).x - centre(b).x, centre(a).y - centre(b).y)
 const intersects = (a, b) => !!a && !!b && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+/** A reporting line's drawn stroke, width and marker, with the stroke edgeStroke() gives the source node's role colour. */
+const edgeInfo = (scope, source, target) =>
+  page.evaluate(
+    ([sc, s, t]) => {
+      const rgbOf = (c) => {
+        const el = document.createElement('span')
+        el.style.color = c
+        document.body.appendChild(el)
+        const v = getComputedStyle(el).color
+        el.remove()
+        return (/(\d+),\s*(\d+),\s*(\d+)/.exec(v) ?? []).slice(1, 4).map(Number)
+      }
+      const stage = document.querySelector(sc)
+      const cs = getComputedStyle(stage)
+      const mix = Number.parseFloat(cs.getPropertyValue('--canvas-edge-role-mix'))
+      const ink = rgbOf(cs.getPropertyValue('--canvas-edge-ink').trim())
+      const node = stage.querySelector(`.react-flow__node[data-id="${s}"] .agent-node, .react-flow__node[data-id="${s}"] .role-node`)
+      const role = rgbOf(node?.style.getPropertyValue('--role') ?? '')
+      const t01 = Math.max(0, Math.min(100, mix)) / 100
+      const expected = `rgb(${role.map((v, i) => Math.round(v * t01 + ink[i] * (1 - t01))).join(', ')})`
+      const p = stage.querySelector(`[data-testid="rf__edge-e-${s}-${t}"] path.react-flow__edge-path`)
+      if (!p) return null
+      const ps = getComputedStyle(p)
+      return { stroke: ps.stroke, width: ps.strokeWidth, marker: p.getAttribute('marker-end'), expected, role: role.join(',') }
+    },
+    [scope, source, target]
+  )
 const minimapCounts = (scope) =>
   page.evaluate((sc) => ({
     mini: document.querySelectorAll(`${sc} .react-flow__minimap-node`).length,
@@ -110,7 +137,11 @@ try {
       })
       check(order, `General shows the Canvas section before Advanced settings at ${w}x${h} ${theme}`)
       check((await section.locator('[data-testid=canvas-preview] .react-flow').count()) === 1, `the preview draws a canvas at ${w}x${h} ${theme}`)
-      check((await section.locator('[data-preset=custom][aria-checked=true]').count()) === 1, `the default canvas shows Custom checked at ${w}x${h} ${theme}`)
+      check(
+        (await section.locator('[data-preset=default][aria-checked=true]').count()) === 1 && (await section.locator('[data-preset=custom]').count()) === 0,
+        `the default canvas shows Default checked and no Custom at ${w}x${h} ${theme}`
+      )
+      check((await section.locator('[data-preset=default] svg[data-canvas-thumb=dots]').count()) === 1, `the Default entry draws a dots thumbnail at ${w}x${h} ${theme}`)
       check((await section.locator('[role=radiogroup][aria-label="Canvas style"] [role=radio][tabindex="0"]').count()) === 1, `the style gallery is one tab stop at ${w}x${h} ${theme}`)
       // Two columns from 720 px of section width: the preview sits beside the gallery, else above it.
       const geo = await page.evaluate(() => {
@@ -138,7 +169,7 @@ try {
   await openAppSettings(page)
   const section = page.locator('[data-testid=canvas-section]')
   await section.waitFor({ timeout: 10_000 })
-  await section.locator('[data-preset=custom]').focus()
+  await section.locator('[data-preset=default]').focus()
   await page.keyboard.press('ArrowRight')
   await sleep(500)
   check((await html('data-canvas-pattern')) === 'blueprint', 'ArrowRight in the gallery applies Blueprint on <html>', String(await html('data-canvas-pattern')))
@@ -170,6 +201,57 @@ try {
   await sleep(300)
   check((await html('data-canvas-minimap')) === 'on', 'the Minimap switch applies on <html>')
   await shot('settings-customise')
+
+  // Phase B: Subway and Hive are in the gallery and apply by arrow keys.
+  for (const [preset, style] of [['subway', 'station'], ['hive', 'hex']]) {
+    check((await section.locator(`[data-preset=${preset}]`).count()) === 1, `the gallery lists ${preset}`)
+    await section.locator('[role=radio][tabindex="0"]').first().focus()
+    let reached = false
+    for (let i = 0; i < 16 && !reached; i++) {
+      await page.keyboard.press('ArrowRight')
+      await sleep(120)
+      reached = await page.evaluate((p) => document.activeElement?.getAttribute('data-preset') === p, preset)
+    }
+    await sleep(400)
+    check(reached && (await section.locator(`[data-preset=${preset}]`).getAttribute('aria-checked')) === 'true', `arrow keys reach and check ${preset}`)
+    check((await html('data-canvas-node-style')) === style, `${preset} sets data-canvas-node-style=${style}`, String(await html('data-canvas-node-style')))
+    check((await section.locator('[role=radio][tabindex="0"]').count()) === 1, `the gallery is still one tab stop on ${preset}`)
+    check((await section.locator('[data-testid=canvas-preview] .react-flow').count()) === 1, `the preview still draws on ${preset}`)
+    await shot(`settings-${preset}`)
+  }
+
+  // Default entry: Blueprint, then arrow back to Default restores the way OrgAI starts.
+  await section.locator('[data-preset=blueprint]').click()
+  await sleep(500)
+  check((await html('data-canvas-pattern')) === 'blueprint', 'picking Blueprint applies it')
+  await section.locator('[data-preset=blueprint]').focus()
+  await page.keyboard.press('ArrowLeft')
+  await sleep(500)
+  check((await section.locator('[data-preset=default]').getAttribute('aria-checked')) === 'true', 'ArrowLeft from Blueprint checks Default')
+  check((await html('data-canvas-pattern')) === 'dots' && (await html('data-canvas-node-style')) === 'card', 'Default sets dots and cards on <html>')
+  check((await section.locator('[data-testid=canvas-announce]').innerText()).trim() === 'Canvas style: Default.', 'Default is announced')
+
+  // The preview stays in view while Customise controls scroll (one column, 1024x640).
+  await resizeTo(1024, 640)
+  if ((await customise.getAttribute('aria-expanded')) !== 'true') await customise.click()
+  const minimapSwitch = section.locator('[data-testid=canvas-minimap]')
+  await minimapSwitch.focus()
+  await page.evaluate(() => {
+    const sc = document.querySelector('.settings-scroll')
+    const m = document.querySelector('[data-testid=canvas-minimap]')
+    if (sc && m) sc.scrollTop += m.getBoundingClientRect().bottom - sc.getBoundingClientRect().bottom + 24
+  })
+  await sleep(300)
+  const stick = await page.evaluate(() => {
+    const sc = document.querySelector('.settings-scroll').getBoundingClientRect()
+    const p = document.querySelector('[data-testid=canvas-preview]').getBoundingClientRect()
+    const m = document.querySelector('[data-testid=canvas-minimap]').getBoundingClientRect()
+    return { sc: { top: sc.top, bottom: sc.bottom }, p: { top: p.top, bottom: p.bottom }, m: { top: m.top, bottom: m.bottom }, scrolled: document.querySelector('.settings-scroll').scrollTop }
+  })
+  check(stick.scrolled > 0 && stick.p.top >= stick.sc.top - 1 && stick.p.bottom <= stick.sc.bottom + 1, 'at 1024x640 the preview stays inside the settings view after scrolling to Minimap', JSON.stringify(stick))
+  check(stick.m.top >= stick.p.bottom - 1 && stick.m.bottom <= stick.sc.bottom + 1, 'the focused Minimap switch is not covered by the preview', JSON.stringify(stick))
+  await shot('settings-sticky-preview')
+  check((await windowShift(page)).ok, 'scrolling the settings does not shift the window')
 
   // ---------- Live run: a deep tree ----------
   await openProject(page, NAME)
@@ -264,6 +346,29 @@ try {
   const pills = await page.locator(`${STAGE} .agent-node`).evaluateAll((els) => els.map((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })))
   check(pills.length === 4 && pills.every((p) => p.s === 'compact' && Math.abs(p.w - 160) <= 1 && Math.abs(p.h - 40) <= 1), 'name tags are data-style=compact and 160 x 40', JSON.stringify(pills))
   check(!!(await page.locator(`${STAGE} .agent-node`).first().getAttribute('title')), 'a name tag carries the card text in its tooltip')
+  // H1 (ux-review-canvas-themes-2): the tag shows the handle (the tooltip's first line), so two reports of one role differ.
+  const tags = await page.locator(`${STAGE} .react-flow__node`).evaluateAll((els) =>
+    els
+      .filter((e) => (e.getAttribute('data-id') ?? '').startsWith('mock-lead-report'))
+      .map((e) => {
+        const n = e.querySelector('.agent-node .name')
+        return { text: (n?.textContent ?? '').replace(/\s+/g, ''), first: (e.querySelector('.agent-node')?.getAttribute('title') ?? '').split('\n')[0] }
+      })
+  )
+  check(
+    tags.length === 2 && tags[0].text !== tags[1].text && tags.every((t) => t.text.split('…').every((part) => t.first.includes(part))),
+    'name tags show each report\'s handle, so two reports of one role read differently',
+    JSON.stringify(tags)
+  )
+  // H1: Enter on a focused node selects it (keyboard users reach the side panel).
+  await page.locator(`${STAGE} .react-flow__node[data-id="mock-lead"]`).focus()
+  await page.keyboard.press('Enter')
+  await sleep(300)
+  check((await page.locator(`${STAGE} .react-flow__node[data-id="mock-lead"] .agent-node.selected`).count()) === 1, 'Enter on a focused name tag selects it')
+  await page.locator(`${STAGE} .react-flow__node[data-id="${rootId}"]`).focus()
+  await page.keyboard.press('Space')
+  await sleep(300)
+  check((await page.locator(`${STAGE} .react-flow__node[data-id="${rootId}"] .agent-node.selected`).count()) === 1, 'Space on a focused name tag selects it')
   await fold.click()
   await sleep(900)
   const grp = await page.locator(`${STAGE} [data-testid=done-group]`).first().evaluate((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })).catch(() => null)
@@ -304,6 +409,75 @@ try {
   check((await page.locator(`${STAGE} .react-flow__edge.animated`).count()) === 0, 'reduced motion leaves no animated edge')
   await setAppearance({ reduceMotion: 'system' })
 
+  // ---------- Phase B: Subway (station) and Hive (hex) on the deep-tree run ----------
+  await resizeTo(1024, 640)
+  await setAppearance({ theme: 'dark' }, { pattern: 'none', edges: 'orthogonal', layout: 'left-right', nodeStyle: 'station', tint: false })
+  await sleep(700)
+  const styleOf = (sel) => page.locator(sel).evaluateAll((els) => els.map((e) => e.getAttribute('data-style')))
+  let st = await styleOf(`${STAGE} .agent-node`)
+  check(st.length === 4 && st.every((s) => s === 'station'), 'Subway: every agent is data-style=station', JSON.stringify(st))
+  const leadLines = await Promise.all(reportIds.map((r) => edgeInfo(STAGE, 'mock-lead', r)))
+  const rootLine = await edgeInfo(STAGE, rootId, 'mock-lead')
+  check(leadLines.length === 2 && leadLines.every((l) => !!l && l.stroke === l.expected), 'Subway: the lines leaving mock-lead are the lead\'s role colour mixed by edgeStroke', JSON.stringify(leadLines))
+  check(!!leadLines[0] && !!leadLines[1] && leadLines[0].stroke === leadLines[1].stroke, 'Subway: both lines leaving mock-lead share one stroke')
+  check(!!rootLine && rootLine.stroke === rootLine.expected, 'Subway: the root line is the root\'s role colour mixed by edgeStroke', JSON.stringify(rootLine))
+  if (rootLine && leadLines[0] && rootLine.role !== leadLines[0].role) check(rootLine.stroke !== leadLines[0].stroke, 'Subway: the line into mock-lead differs from its own lines', JSON.stringify({ rootLine, lead: leadLines[0] }))
+  check([rootLine, ...leadLines].every((l) => !!l && l.width === '6px' && (!l.marker || l.marker === 'none')), 'Subway: lines are 6 px with no arrow', JSON.stringify([rootLine, ...leadLines]))
+  await fold.click()
+  await sleep(900)
+  st = await styleOf(`${STAGE} [data-testid=done-group]`)
+  check(st.length >= 1 && st.every((s) => s === 'station'), 'Subway: the folded group is data-style=station', JSON.stringify(st))
+  check((await page.locator(`${STAGE} [data-testid=done-group] .station-terminus`).count()) >= 1, 'Subway: a folded group draws a terminus bar')
+  await fold.click()
+  await sleep(700)
+
+  await setCanvas({ pattern: 'isometric', edges: 'straight', layout: 'radial', nodeStyle: 'hex', tint: false })
+  await sleep(900)
+  st = await styleOf(`${STAGE} .agent-node`)
+  check(st.length === 4 && st.every((s) => s === 'hex'), 'Hive: every agent is data-style=hex', JSON.stringify(st))
+  check((await page.locator(`${STAGE} .react-flow[data-layout=radial]`).count()) === 1, 'Hive: the canvas is radial')
+  check((await page.locator(`${STAGE} circle.canvas-ring`).count()) === 0, 'Hive: no ring guides (the honeycomb replaces them)')
+  const hexBoxes = await flowBoxes(STAGE)
+  const hexIds = Object.keys(hexBoxes)
+  check(hexIds.length === 4 && hexIds.every((id) => Math.abs(hexBoxes[id].w - 120) <= 1 && Math.abs(hexBoxes[id].h - 104) <= 1), 'Hive: tiles are 120 x 104', JSON.stringify(hexBoxes))
+  const overlaps = []
+  for (let i = 0; i < hexIds.length; i++)
+    for (let j = i + 1; j < hexIds.length; j++) {
+      const p = hexBoxes[hexIds[i]]
+      const q = hexBoxes[hexIds[j]]
+      const ox = Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x)
+      const oy = Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y)
+      if (ox >= 1 && oy >= 1) overlaps.push(`${hexIds[i]}/${hexIds[j]}`)
+    }
+  check(overlaps.length === 0, 'Hive: no two tiles overlap', overlaps.join(',') + ' ' + JSON.stringify(hexBoxes))
+
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await resizeTo(w, h)
+    for (const theme of ['dark', 'light']) {
+      await setAppearance({ theme })
+      for (const [name, canvas] of [
+        ['Subway', { pattern: 'none', edges: 'orthogonal', layout: 'left-right', nodeStyle: 'station' }],
+        ['Hive', { pattern: 'isometric', edges: 'straight', layout: 'radial', nodeStyle: 'hex' }]
+      ]) {
+        await setCanvas(canvas)
+        await sleep(500)
+        check(await noPageScroll(), `${name} run view has no page scroll at ${w}x${h} ${theme}`, JSON.stringify(await pageScroll()))
+        await shot(`live-${name.toLowerCase()}-${w}x${h}-${theme}`)
+        if (theme === 'light' || w === 1024) {
+          await page.locator('[data-testid=canvas-legend-trigger]').click()
+          await page.locator('[data-testid=canvas-legend]').waitFor({ timeout: 5000 })
+          await sleep(250)
+          check(await noPageScroll(), `${name} legend open: no page scroll at ${w}x${h} ${theme}`)
+          await shot(`legend-${name.toLowerCase()}-${w}x${h}-${theme}`)
+          await page.keyboard.press('Escape')
+          await sleep(200)
+        }
+      }
+    }
+  }
+  await resizeTo(1024, 640)
+  await setAppearance({ theme: 'dark' })
+
   // ---------- The toolbar "Canvas style" popover ----------
   await setCanvas({ pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card' })
   const styleBtn = page.locator('.run-body [data-testid=canvas-style-button]')
@@ -311,7 +485,8 @@ try {
   const pop = page.locator('[data-testid=canvas-style-popover]')
   await pop.waitFor({ timeout: 5000 })
   await sleep(300)
-  check(await page.evaluate(() => document.activeElement?.getAttribute('data-preset') === 'custom'), 'opening the popover focuses the checked option')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-preset') === 'default'), 'opening the popover focuses the checked option (Default)')
+  check((await pop.locator('[data-preset=default]').count()) === 1 && (await pop.locator('[data-preset]').first().getAttribute('data-preset')) === 'default', 'the popover lists Default first')
   const popBox = await pop.boundingBox()
   check(!intersects(miniBox, popBox), 'the style popover does not land on the minimap', JSON.stringify({ miniBox, popBox }))
   await page.keyboard.press('ArrowDown')
@@ -422,6 +597,14 @@ try {
   await sleep(500)
   const roles = await page.locator(`${TEAM} .role-node`).evaluateAll((els) => els.map((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })))
   check(roles.length > 1 && roles.every((r) => r.s === 'compact' && Math.abs(r.w - 160) <= 1 && Math.abs(r.h - 40) <= 1), 'Team role nodes are 160 x 40 name tags', JSON.stringify(roles))
+  for (const style of ['station', 'hex']) {
+    await setCanvas({ nodeStyle: style, layout: 'top-down' })
+    await sleep(600)
+    const rs = await styleOf(`${TEAM} .role-node`)
+    check(rs.length > 1 && rs.every((s) => s === style), `Team role nodes are data-style=${style}`, JSON.stringify(rs))
+    await shot(`team-${style}`)
+  }
+  await setCanvas({ nodeStyle: 'compact' })
   const autoLayout = page.locator('.editor').getByRole('button', { name: 'Auto-layout', exact: true })
   const teamRoot = async () => {
     const name = NAME

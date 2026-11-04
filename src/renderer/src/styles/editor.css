@@ -76,9 +76,29 @@
   box-shadow: var(--elev-1);
   transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
 }
-.role-node.selected {
+/* Selected: a role-colour border with an inner line plus a shape cue that does not depend on colour, so it never reads
+ * as keyboard focus (the outline): a 4 px bar on the card's leading edge, a 3 px border on the name tag. */
+.role-node[data-style='card'].selected,
+.role-node[data-style='compact'].selected {
   border-color: var(--role);
   box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
+}
+.role-node[data-style='compact'].selected {
+  box-shadow: inset 0 0 0 2px var(--role), var(--elev-2);
+}
+.role-node[data-style='card'] {
+  position: relative;
+}
+.role-node[data-style='card'].selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 4px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--role);
+  pointer-events: none;
 }
 .role-node .avatar {
   background: color-mix(in oklab, var(--role) 24%, var(--canvas-node-bg));
@@ -109,6 +129,22 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Station and hex: a transparent box; the circle, name pill and tile are styled with the agent nodes (run.css). */
+.role-node[data-style='station'],
+.role-node[data-style='hex'] {
+  box-sizing: border-box;
+  display: block;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-md);
+  position: relative;
+}
+.role-node[data-style='hex'] {
+  width: 120px;
+  height: 104px;
 }
 .role-node .head {
   display: flex;

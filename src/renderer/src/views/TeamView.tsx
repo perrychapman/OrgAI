@@ -11,7 +11,7 @@ import {
   type NodeChange,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentImportScan, Project, Role } from '@shared/types'
+import type { AgentImportScan, CanvasLayout, CanvasNodeStyle, Project, Role } from '@shared/types'
 import { ROLE_COLORS, modelForTier, newId, projectConnection, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
@@ -33,10 +33,21 @@ import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
-import { EDGE_TYPE, edgeStroke, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, edgeStroke, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
 
 /** Role node box per node style for layout and fit (section 4): cards 220 wide, name tags 160 x 40. */
 const ROLE_NODE_SIZE = { card: { width: 220, height: 96 }, compact: { width: 160, height: 40 } } as const
+
+/** Role node box per node style: stations follow the layout (stationGeometry), hex is the tile. */
+function roleNodeSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: number; height: number } {
+  if (style === 'station') {
+    const g = stationGeometry(layout)
+    return { width: g.width, height: g.height }
+  }
+  if (style === 'hex') return { width: HEX_TILE.width, height: HEX_TILE.height }
+  return ROLE_NODE_SIZE[style === 'compact' ? 'compact' : 'card']
+}
 import { nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
 import { cleanIpcError } from '../lib/ipcError'
 import { useCssVar } from '../lib/useCssVar'
@@ -121,7 +132,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const nodeDims = useNodeDims()
   const radial = options.layout === 'radial'
   const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
-  const roleSize = ROLE_NODE_SIZE[options.nodeStyle === 'compact' ? 'compact' : 'card']
+  const roleSize = useMemo(() => roleNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
+  const station = options.nodeStyle === 'station'
+  const roundedCorners = useMemo(() => (station && options.edges === 'orthogonal' && !radial ? { pathOptions: { borderRadius: STATION_CORNER_RADIUS } } : {}), [station, options.edges, radial])
 
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ roleId: string; text: string } | null>(null)
@@ -246,26 +259,32 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           const parent = project.roles.find((x) => x.id === r.reportsTo)!
           const allowed = parent.canSpawn && parent.spawnable.includes(r.id)
           const id = `e-${parent.id}-${r.id}`
-          const color = edgeStroke(r.color, edgeMix, edgeInk)
+          const color = edgeStroke(reportingLineRole(options.nodeStyle, parent.color, r.color), edgeMix, edgeInk)
+          const subway = station && allowed
           return {
             id,
             source: parent.id,
             target: r.id,
             type: edgeType,
+            ...(subway ? roundedCorners : {}),
             selected: id === selectedEdgeId,
             ariaLabel:
               parent.id === root?.id
                 ? `${parent.name} manages ${r.name}.`
                 : `${parent.name} manages ${r.name}. Press Delete to make ${r.name} report to ${root?.name ?? 'the root'} instead.`,
-            style: allowed ? { stroke: color, strokeWidth: 1.6 } : { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' },
-            // The "cannot delegate" line has no arrow (section 5).
-            markerEnd: allowed ? { type: MarkerType.ArrowClosed, color } : undefined,
+            style: subway
+              ? { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round' }
+              : allowed
+                ? { stroke: color, strokeWidth: 1.6 }
+                : { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' },
+            // The "cannot delegate" line has no arrow (section 5); subway lines have none either.
+            markerEnd: allowed && !station ? { type: MarkerType.ArrowClosed, color } : undefined,
             label: allowed ? undefined : 'not delegable',
             labelStyle: { fill: faintColor, fontSize: 11 },
             labelBgStyle: { fill: labelBg }
           }
         }),
-    [project.roles, selectedEdgeId, root, faintColor, labelBg, edgeType, edgeMix, edgeInk, groupEdgeColor]
+    [project.roles, selectedEdgeId, root, faintColor, labelBg, edgeType, edgeMix, edgeInk, groupEdgeColor, station, roundedCorners, options.nodeStyle]
   )
 
   const reparentToRoot = useCallback(
@@ -455,7 +474,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     const { positions: pos } = layoutCanvas(
       options.layout,
       project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: roleSize.width, height: roleSize.height })),
-      { nodesep: 60, ranksep: 110, ringStep: ringStepFor(options.nodeStyle) }
+      { nodesep: 60, ranksep: 110, ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
     )
     updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
     window.setTimeout(() => {

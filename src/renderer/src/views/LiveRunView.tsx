@@ -14,8 +14,9 @@ import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
-import { EDGE_TYPE, agentNodeSize, edgeStroke, groupNodeSize, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
-import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
+import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, edgeStroke, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
@@ -44,7 +45,9 @@ import { useCssVar } from '../lib/useCssVar'
 import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
 import { CHAIN_EAGER_MEMBERS, canContinueIn, chainKeyOf, chainOf, continuedByIn, earlierMembersToLoad, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
-import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
+import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
+import { messageSides, msgHandleId, type PlacedBox } from '../lib/canvasShapes'
+import { fitOptions } from '../lib/canvasFit'
 import { DoneGroupNode, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
@@ -74,9 +77,13 @@ const NEUTRAL_ROLE_TOKEN = '--text-tertiary'
  * 0.8 or more and the chart pans. The radial layout fits with less padding (spec section 3).
  */
 function fitOpts(o: { duration: number }): FitViewOptions {
-  const h = document.querySelector('.frame-stage')?.clientHeight ?? 1000
-  const radial = !!document.querySelector('.frame-stage .react-flow[data-layout="radial"]')
-  return { padding: radial ? 0.12 : 0.25, maxZoom: 1, duration: o.duration, ...(h < 300 ? { minZoom: 0.8 } : {}) }
+  const style = document.querySelector('.frame-stage .agent-node[data-style]')?.getAttribute('data-style') as CanvasNodeStyle | null | undefined
+  return fitOptions({
+    stageHeight: document.querySelector('.frame-stage')?.clientHeight ?? 1000,
+    radial: !!document.querySelector('.frame-stage .react-flow[data-layout="radial"]'),
+    nodeStyle: style ?? undefined,
+    duration: o.duration
+  })
 }
 
 /** The canvas controls, shared by the toolbar buttons and the application menu handlers. */
@@ -204,8 +211,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const stageHidden = (): boolean => (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
   const radial = options.layout === 'radial'
   const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
-  const agentSize = agentNodeSize(options.nodeStyle)
-  const groupSize = groupNodeSize(options.nodeStyle)
+  const agentSize = useMemo(() => agentNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
+  const groupSize = useMemo(() => groupNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
+  const station = options.nodeStyle === 'station'
+  // Right angle lines turn with a rounded corner on the subway map.
+  const roundedCorners = useMemo(() => (station && options.edges === 'orthogonal' && !radial ? { pathOptions: { borderRadius: STATION_CORNER_RADIUS } } : {}), [station, options.edges, radial])
 
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
@@ -412,7 +422,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
           ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: groupParent(p), width: groupSize.width, height: groupSize.height }))
         ],
-        { ringStep: ringStepFor(options.nodeStyle) }
+        { ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [layoutKey]
@@ -455,6 +465,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       initialWidth: agentSize.width,
       initialHeight: agentSize.height,
       ...(nodeDims.dims[agent.id] ? { measured: nodeDims.dims[agent.id] } : {}),
+      // Name tags, stations and hexes: the accessible name leads with the label the node shows (handle, then role name).
+      ...(options.nodeStyle !== 'card' ? { ariaLabel: agentLabel(agent) === agent.name ? agent.name : `${agentLabel(agent)}, ${agent.name}` } : {}),
       data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
     }))
     const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
@@ -473,10 +485,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims, options.nodeStyle])
 
   // Controlled nodes: keep React Flow's measured sizes so the minimap draws every node (H1).
-  const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => nodeDims.apply(changes as NodeChange[]), [nodeDims.apply])
+  // Enter or Space on a focused node arrives as a 'select' change (React Flow's own key handler); it selects like a click.
+  const onNodesChange = useCallback(
+    (changes: NodeChange<CanvasNode>[]) => {
+      nodeDims.apply(changes as NodeChange[])
+      const picked = changes.find((c) => c.type === 'select' && c.selected)
+      if (picked && picked.type === 'select' && useAppStore.getState().selectedAgentId !== picked.id) selectAgent(picked.id)
+    },
+    [nodeDims.apply, selectAgent]
+  )
 
   const edges: Edge[] = useMemo(() => {
     const shown = new Set(visibleAgents.map((a) => a.id))
@@ -484,9 +504,21 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       .filter((a) => a.parentId && shown.has(a.parentId))
       .map((a) => {
         // Role colour mixed toward the ink; the marker takes the same literal colour (section 5).
-        const color = edgeStroke(roleColor(a.roleId, a.roleSlug), edgeMix, edgeInk)
+        const parentAgent = agentLookup.get(a.parentId as string)
+        const color = edgeStroke(reportingLineRole(options.nodeStyle, parentAgent ? roleColor(parentAgent.roleId, parentAgent.roleSlug) : roleColor(a.roleId, a.roleSlug), roleColor(a.roleId, a.roleSlug)), edgeMix, edgeInk)
         const live = LIVE_STATES.has(a.state)
         const finished = a.state === 'done'
+        if (station) {
+          // Subway: one thick coloured line per lead; working shows on the station, never on the line.
+          return {
+            id: `e-${a.parentId}-${a.id}`,
+            source: a.parentId as string,
+            target: a.id,
+            type: edgeType,
+            style: { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round', opacity: finished ? edgeDoneOpacity : 1 },
+            ...roundedCorners
+          }
+        }
         return {
           id: `e-${a.parentId}-${a.id}`,
           source: a.parentId as string,
@@ -504,13 +536,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       })
     const groupEdges: Edge[] = [...groups.keys()]
       .filter((p) => shown.has(groupParent(p) ?? ''))
-      .map((p) => ({
-        id: `e-${p}-${groupId(p)}`,
-        source: groupParent(p) as string,
-        target: groupId(p),
-        type: edgeType,
-        style: { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' }
-      }))
+      .map((p) => {
+        const base = { id: `e-${p}-${groupId(p)}`, source: groupParent(p) as string, target: groupId(p), type: edgeType }
+        if (!station) return { ...base, style: { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' } }
+        const lead = agentLookup.get(groupParent(p) ?? '')
+        const color = edgeStroke(lead ? roleColor(lead.roleId, lead.roleSlug) : neutralRoleColor, edgeMix, edgeInk)
+        return { ...base, style: { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, opacity: edgeDoneOpacity }, ...roundedCorners }
+      })
     // Recent messages: a dashed, animated side-to-side edge. A folded agent's end attaches to its group node;
     // a message whose ends are not on the canvas (or land on the same node) is skipped.
     const groupOf = new Map<string, string>()
@@ -530,18 +562,32 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       return null
     }
     const messageEdges = new Map<string, Edge>()
+    const boxOf = (nodeId: string): PlacedBox | null => {
+      const at = positions[nodeId]
+      if (!at) return null
+      const size = nodeId.startsWith('group:') ? groupSize : agentSize
+      const m = nodeDims.dims[nodeId]
+      return { x: at.x, y: at.y, width: m?.width ?? size.width, height: m?.height ?? size.height }
+    }
+    const parentOfNode = (nodeId: string): string | null => (nodeId.startsWith('group:') ? groupParent(nodeId.slice('group:'.length)) : (agentLookup.get(nodeId)?.parentId ?? null))
     for (const m of messages ?? []) {
       if (msgNow - m.at > MESSAGE_EDGE_MS) continue
       const source = onCanvas(m.from)
       const target = onCanvas(m.to)
       if (!source || !target || source === target) continue
       const id = `msg-${source}-${target}`
+      // The side of each end that faces the other node, from the laid-out boxes; a parent and child take the axis
+      // their reporting line does not use. Radial edges ignore handles (centre to centre, clipped at the shapes).
+      const a = boxOf(source)
+      const b = boxOf(target)
+      const reportingAxis = parentOfNode(source) === target || parentOfNode(target) === source ? (handlesFor(options.layout).source === 'bottom' ? 'y' : 'x') : undefined
+      const sides = a && b ? messageSides(a, b, reportingAxis) : null
       messageEdges.set(id, {
         id,
         source,
         target,
-        sourceHandle: MSG_OUT,
-        targetHandle: MSG_IN,
+        sourceHandle: msgHandleId('out', sides?.out ?? 'right'),
+        targetHandle: msgHandleId('in', sides?.in ?? 'left'),
         type: edgeType,
         data: { message: true },
         className: msgNow - m.at < MESSAGE_FRESH_MS ? 'msg-edge msg-fresh' : 'msg-edge',
@@ -550,7 +596,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       })
     }
     return [...agentEdges, ...groupEdges, ...messageEdges.values()]
-  }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, groupEdgeColor, messageColor, edgeMix, edgeInk, edgeDoneOpacity, liveDash, messageDash])
+  }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, agentLookup, neutralRoleColor, edgeType, station, roundedCorners, options.nodeStyle, reducedMotion, groupEdgeColor, messageColor, edgeMix, edgeInk, edgeDoneOpacity, liveDash, messageDash, positions, agentSize, groupSize, nodeDims.dims, options.layout])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
 
@@ -741,6 +787,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Keyboard zoom while the canvas has focus: + / - and 0 to fit (the toolbar buttons do the same).
   const onCanvasKey = (e: React.KeyboardEvent): void => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
+    // Enter / Space on a focused node select it even when it already looks selected (a done group holding the
+    // selected agent): React Flow only emits a 'select' change for an unselected node. Buttons inside a node keep the key.
+    const target = e.target as HTMLElement
+    if ((e.key === 'Enter' || e.key === ' ') && target.classList.contains('react-flow__node')) {
+      const nodeId = target.getAttribute('data-id')
+      if (nodeId && useAppStore.getState().selectedAgentId !== nodeId) selectAgent(nodeId)
+      return
+    }
     if (e.key === '+' || e.key === '=') void zoomIn({ duration: reducedMotion ? 0 : 150 })
     else if (e.key === '-' || e.key === '_') void zoomOut({ duration: reducedMotion ? 0 : 150 })
     else if (e.key === '0' && !stageHidden()) void fitView(fitOpts({ duration: reducedMotion ? 0 : 150 }))
@@ -1097,6 +1151,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 function CanvasTools(): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow()
   const reduced = useReducedMotion()
+  const options = useCanvasOptions()
+  const station = options.nodeStyle === 'station'
   const stageShown = (): boolean => (document.querySelector('.frame-stage')?.clientHeight ?? 1) >= 8
   return (
     <span className="canvas-tools">
@@ -1130,7 +1186,7 @@ function CanvasTools(): ReactElement {
           </li>
           <li>
             <span className="legend-shape legend-ok">
-              <Icon icon={CircleCheck} size="sm" />
+              {station ? <span className="legend-dot" aria-hidden="true" /> : <Icon icon={CircleCheck} size="sm" />}
             </span>
             Finished
           </li>
@@ -1148,15 +1204,15 @@ function CanvasTools(): ReactElement {
           </li>
           <li>
             <span className="legend-shape legend-wide">
-              <span className="legend-folded" aria-hidden="true">3 done</span>
+              <span className="legend-folded" data-style={options.nodeStyle} aria-hidden="true">3 done</span>
             </span>
             Folded finished agents
           </li>
           <li>
             <span className="legend-shape legend-wide">
-              <span className="legend-report" />
+              <span className={station ? 'legend-report legend-report-station' : 'legend-report'} />
             </span>
-            Reporting line
+            {station ? "Reporting line (the lead's colour)" : 'Reporting line'}
           </li>
           <li>
             <span className="legend-shape legend-wide">

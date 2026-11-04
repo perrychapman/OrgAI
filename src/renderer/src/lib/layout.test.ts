@@ -130,3 +130,51 @@ describe('layoutCanvas', () => {
     expect(layoutCanvas('radial', items, { ringStep: 300 }).rings?.radii).toEqual([300])
   })
 })
+
+describe('honeycomb layout', () => {
+  const hex = { width: 120, height: 104, gap: 12 }
+  const tile = (id: string, parentId: string | null) => ({ id, parentId, width: 120, height: 104 })
+  const run = (items: ReturnType<typeof tile>[]) => layoutCanvas('radial', items, { ringStep: 116, honeycomb: hex })
+  const centre = (out: ReturnType<typeof run>, id: string) => ({ x: out.positions[id].x + 60, y: out.positions[id].y + 52 })
+  const tree = (n: number) => [tile('r', null), ...Array.from({ length: n }, (_, i) => tile(`c${i}`, 'r'))]
+
+  it('puts the root on cell (0, 0) and returns no rings', () => {
+    const out = run(tree(3))
+    expect(centre(out, 'r')).toEqual({ x: 0, y: 0 })
+    expect(out.rings).toBeUndefined()
+  })
+  it('puts a node with six reports on the six neighbour cells', () => {
+    const out = run(tree(6))
+    const cells = new Set<string>()
+    for (let i = 0; i < 6; i++) {
+      const c = centre(out, `c${i}`)
+      expect(Math.hypot(c.x, c.y)).toBeCloseTo(116, 0)
+      cells.add(`${Math.round(c.x)},${Math.round(c.y)}`)
+    }
+    expect(cells.size).toBe(6)
+  })
+  it('never shares a cell and keeps every centre on the lattice', () => {
+    const items = [tile('r', null)]
+    for (let i = 0; i < 5; i++) {
+      items.push(tile(`a${i}`, 'r'))
+      for (let j = 0; j < 4; j++) items.push(tile(`b${i}${j}`, `a${i}`))
+    }
+    const out = run(items)
+    const seen = new Set<string>()
+    const dx = 0.75 * 120 + 12 * Math.cos(Math.PI / 6)
+    for (const it of items) {
+      const c = centre(out, it.id)
+      const col = Math.round(c.x / dx)
+      const y = c.y - (Math.abs(col) % 2 === 1 ? 58 : 0)
+      expect(Math.abs(c.x - col * dx)).toBeLessThan(1e-6)
+      expect(Math.abs(y / 116 - Math.round(y / 116))).toBeLessThan(1e-6)
+      const key = `${col},${Math.round(y / 116)}`
+      expect(seen.has(key)).toBe(false)
+      seen.add(key)
+    }
+    expect(seen.size).toBe(items.length)
+  })
+  it('is stable across calls', () => {
+    expect(run(tree(9))).toEqual(run(tree(9)))
+  })
+})

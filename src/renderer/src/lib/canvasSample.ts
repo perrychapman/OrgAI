@@ -1,7 +1,8 @@
 import { MarkerType, type Edge, type Node } from '@xyflow/react'
 import type { AgentInstance, AgentState } from '@shared/types'
 import { ROLE_COLORS } from '@shared/defaults'
-import { EDGE_TYPE, agentNodeSize, edgeStroke, groupNodeSize, ringStepFor, type CanvasOptions } from './canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, edgeStroke, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, type CanvasOptions } from './canvas'
+import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH, messageSides, msgHandleId, type PlacedBox } from './canvasShapes'
 import { layoutCanvas, type RingGuides } from './layout'
 
 /**
@@ -30,10 +31,6 @@ export interface SampleGraph {
   edges: Edge[]
   rings?: RingGuides
 }
-
-/** Handle ids the agent and group nodes expose for messages (twins of AgentNode's MSG_OUT / MSG_IN). */
-const MSG_OUT_ID = 'msg-out'
-const MSG_IN_ID = 'msg-in'
 
 interface SampleAgent {
   id: string
@@ -101,12 +98,16 @@ const WORKING: ReadonlySet<AgentState> = new Set<AgentState>(['starting', 'think
 
 /** Nodes, edges and ring guides of the sample for the given canvas options. */
 export function buildSample(opts: Pick<CanvasOptions, 'layout' | 'nodeStyle' | 'edges'>, inks: SampleInks): SampleGraph {
-  const agentSize = agentNodeSize(opts.nodeStyle)
-  const groupSize = groupNodeSize(opts.nodeStyle)
+  const agentSize = agentNodeSize(opts.nodeStyle, opts.layout)
+  const groupSize = groupNodeSize(opts.nodeStyle, opts.layout)
+  const station = opts.nodeStyle === 'station'
   const result = layoutCanvas(opts.layout, [
     ...AGENTS.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
     { id: GROUP_NODE_ID, parentId: GROUP_PARENT, width: groupSize.width, height: groupSize.height }
-  ], { ringStep: ringStepFor(opts.nodeStyle) })
+  ], {
+    ringStep: ringStepFor(opts.nodeStyle),
+    ...(opts.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {})
+  })
   const at = (id: string): { x: number; y: number } => result.positions[id] ?? { x: 0, y: 0 }
   const colorOf = (id: string): string => AGENTS.find((a) => a.id === id)?.color ?? ROLE_COLORS[0]
   const agents = AGENTS.map(instance)
@@ -139,10 +140,24 @@ export function buildSample(opts: Pick<CanvasOptions, 'layout' | 'nodeStyle' | '
   ]
 
   const type = opts.layout === 'radial' ? 'radial' : EDGE_TYPE[opts.edges]
+  const doneOpacity = inks.doneOpacity ?? 0.8
+  const corners = station && opts.edges === 'orthogonal' && opts.layout !== 'radial' ? { pathOptions: { borderRadius: STATION_CORNER_RADIUS } } : {}
   const reporting: Edge[] = AGENTS.filter((a) => a.parentId).map((a) => {
-    const stroke = edgeStroke(a.color, inks.edgeMix, inks.edgeInk)
+    const stroke = edgeStroke(reportingLineRole(opts.nodeStyle, colorOf(a.parentId as string), a.color), inks.edgeMix, inks.edgeInk)
     const live = WORKING.has(a.state)
     const finished = a.state === 'done'
+    if (station) {
+      return {
+        id: `e-${a.parentId}-${a.id}`,
+        source: a.parentId as string,
+        target: a.id,
+        type,
+        selectable: false,
+        focusable: false,
+        style: { stroke, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round', ...(finished ? { opacity: doneOpacity } : {}) },
+        ...corners
+      }
+    }
     return {
       id: `e-${a.parentId}-${a.id}`,
       source: a.parentId as string,
@@ -167,14 +182,21 @@ export function buildSample(opts: Pick<CanvasOptions, 'layout' | 'nodeStyle' | '
     type,
     selectable: false,
     focusable: false,
-    style: { stroke: inks.groupEdge, strokeWidth: 1.4, strokeDasharray: '4 4' }
+    style: station
+      ? { stroke: edgeStroke(colorOf(GROUP_PARENT), inks.edgeMix, inks.edgeInk), strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round', opacity: doneOpacity }
+      : { stroke: inks.groupEdge, strokeWidth: 1.4, strokeDasharray: '4 4' },
+    ...(station ? corners : {})
   }
+  // The sides facing each other, as the Live canvas picks them; the reviewer reports to the orchestrator, so the
+  // message takes the axis the reporting line does not use.
+  const box = (id: string, size: { width: number; height: number }): PlacedBox => ({ ...at(id), width: size.width, height: size.height })
+  const sides = messageSides(box(GROUP_PARENT, agentSize), box('sample-root', agentSize), handlesFor(opts.layout).source === 'bottom' ? 'y' : 'x')
   const message: Edge = {
     id: 'msg-sample-reviewer-sample-root',
     source: GROUP_PARENT,
     target: 'sample-root',
-    sourceHandle: MSG_OUT_ID,
-    targetHandle: MSG_IN_ID,
+    sourceHandle: msgHandleId('out', sides.out),
+    targetHandle: msgHandleId('in', sides.in),
     type,
     selectable: false,
     focusable: false,

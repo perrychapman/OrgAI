@@ -1,51 +1,41 @@
 import type { ReactElement } from 'react'
 import { BaseEdge, useInternalNode, type EdgeProps, type InternalNode } from '@xyflow/react'
-import { useCanvasOptions } from '../../lib/canvas'
+import type { CanvasLayout, CanvasNodeStyle } from '@shared/types'
+import { stationGeometry, useCanvasOptions } from '../../lib/canvas'
+import { exitPoint, type NodeShape } from '../../lib/canvasShapes'
 
 /** Reporting lines bow clockwise by this share of their length in the "Curved" style; message edges counter-clockwise. */
 const BOW_REPORTING = 0.12
 const BOW_MESSAGE = -0.2
-/** Gap left between the line and a node's box so the arrow tip does not touch the border. */
-const CLIP_GAP = 2
-
-interface Box {
-  cx: number
-  cy: number
-  hw: number
-  hh: number
-}
-
-function boxOf(node: InternalNode | undefined): Box | null {
+/**
+ * The outline of a node: the station circle for the Stations style (centre inside the box from stationGeometry), the
+ * flat-top hexagon for Honeycomb, the box otherwise.
+ */
+function shapeOf(node: InternalNode | undefined, nodeStyle: CanvasNodeStyle, layout: CanvasLayout): NodeShape | null {
   if (!node) return null
   const w = node.measured?.width ?? node.width ?? 0
   const h = node.measured?.height ?? node.height ?? 0
   if (w <= 0 || h <= 0) return null
   const p = node.internals.positionAbsolute
-  return { cx: p.x + w / 2, cy: p.y + h / 2, hw: w / 2, hh: h / 2 }
-}
-
-/** Where the ray from the box centre toward (tx, ty) leaves the box. */
-function exitPoint(b: Box, tx: number, ty: number): { x: number; y: number } {
-  const dx = tx - b.cx
-  const dy = ty - b.cy
-  if (dx === 0 && dy === 0) return { x: b.cx, y: b.cy }
-  const sx = dx === 0 ? Infinity : (b.hw + CLIP_GAP) / Math.abs(dx)
-  const sy = dy === 0 ? Infinity : (b.hh + CLIP_GAP) / Math.abs(dy)
-  const t = Math.min(sx, sy)
-  return { x: b.cx + dx * t, y: b.cy + dy * t }
+  if (nodeStyle === 'station') {
+    const g = stationGeometry(layout)
+    return { kind: 'circle', cx: p.x + g.cx, cy: p.y + g.cy, r: g.r }
+  }
+  if (nodeStyle === 'hex') return { kind: 'hex', cx: p.x + w / 2, cy: p.y + h / 2, hw: w / 2, hh: h / 2 }
+  return { kind: 'box', cx: p.x + w / 2, cy: p.y + h / 2, hw: w / 2, hh: h / 2 }
 }
 
 /**
  * Edge type 'radial' (docs/design/canvas-themes.md section 3): from source centre to target centre, clipped where the
- * line leaves each node's box. "Curved" bows it clockwise 12% of its length (a quadratic control point at the
+ * line leaves each node's outline (box, station circle or hexagon, by the node style). "Curved" bows it clockwise 12% of its length (a quadratic control point at the
  * midpoint); "Right angle" and "Straight" draw it straight. Message edges (`data.message`) bow counter-clockwise 20%
  * so they never lie on a reporting line. Falls back to the handle points until both nodes are measured.
  */
 export function RadialEdge(props: EdgeProps): ReactElement {
   const { id, source, target, sourceX, sourceY, targetX, targetY, markerEnd, markerStart, style, data, label, labelStyle, labelBgStyle, interactionWidth } = props
-  const { edges } = useCanvasOptions()
-  const a = boxOf(useInternalNode(source))
-  const b = boxOf(useInternalNode(target))
+  const { edges, nodeStyle, layout } = useCanvasOptions()
+  const a = shapeOf(useInternalNode(source), nodeStyle, layout)
+  const b = shapeOf(useInternalNode(target), nodeStyle, layout)
   const message = (data as { message?: boolean } | undefined)?.message === true
   const start = a && b ? exitPoint(a, b.cx, b.cy) : { x: sourceX, y: sourceY }
   const end = a && b ? exitPoint(b, a.cx, a.cy) : { x: targetX, y: targetY }
