@@ -1,10 +1,14 @@
-# Checks every push to main or dev and every pull request into main or dev. Free: no smoke scripts and no
-# token-spending e2e (setup, history and worktree need the user's consent and never run here).
+# Checks every push to main or dev (docs-only pushes, docs/** and Markdown, are skipped) and every pull request into
+# main or dev (always runs). Free: no smoke scripts and no token-spending e2e (setup, history and worktree need the
+# user's consent and never run here).
 name: CI
 
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
     branches: [main, dev]
 
