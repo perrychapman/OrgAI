@@ -26,10 +26,12 @@ import {
 } from '@shared/types'
 import { isValidMcpServerName } from '@shared/defaults'
 import type { FileData } from '../skills/files'
+import { dropPrivateFiles, skippedNote } from '../capabilities/localSkills'
 import {
   fullTarget,
   parseKit,
   presetSignature,
+  presetVariantRefusal,
   presetTarget,
   renamedSkill,
   rolesDigestOf,
@@ -245,7 +247,10 @@ export class KitService {
     for (const info of pick(include.skills, this.deps.skills.libraryList().map((i) => ({ id: i.entry.id, name: i.entry.name })), 'skill')) {
       try {
         const s = this.deps.skills.libraryFilesForKit(info.id)
-        const r = skillToKit(s.name, s.description, s.files)
+        // Dotfiles, .env*, *.pem and *.key never leave (the capabilities apply path's list).
+        const { kept, skipped } = dropPrivateFiles(s.files)
+        if (skipped.length) notes.push(`The skill ${safeText(info.name)}: ${skippedNote(skipped)}.`)
+        const r = skillToKit(s.name, s.description, kept)
         if ('skip' in r) notes.push(`Left out the skill ${safeText(info.name)}: ${r.skip}`)
         else doc.skills.push(r.doc)
       } catch (e) {
@@ -268,6 +273,11 @@ export class KitService {
     for (const p of pick(include.connectorPresets, this.deps.mcp.connectorPresetsList(), 'preset')) {
       const { origin: _origin, ...rest } = p
       void _origin
+      const bad = p.variants.map((v) => presetVariantRefusal(v)).find((r) => r !== null)
+      if (bad) {
+        notes.push(`Left out the connector preset ${safeText(p.name)}: ${bad}`)
+        continue
+      }
       doc.connectorPresets.push(rest as UserConnectorDef)
     }
 
@@ -376,7 +386,10 @@ export class KitService {
         out.files = it.skill.files.filter((f) => f.path !== 'SKILL.md').map((f) => f.path)
         if (it.skill.scripts.length) out.scripts = it.skill.scripts
       }
-      if (it.template) out.roleNames = it.template.roleNames
+      if (it.template) {
+        out.roleNames = it.template.roleNames
+        out.roles = it.template.roles.map((r) => ({ ...r, elevatedTools: [...r.elevatedTools] }))
+      }
       return out
     })
     const notes: string[] = []

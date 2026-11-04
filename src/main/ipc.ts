@@ -95,7 +95,7 @@ import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOve
 import { KIT_IPC, MCP_SCOPE_IPC } from '@shared/types'
 import type { KitApplyResult, KitExportResult, KitImportPreview } from '@shared/types'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
-import { PickedPaths, kitExportPath } from './kit/pickedPaths'
+import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
@@ -617,7 +617,7 @@ function registerKitIpc(kit: KitService): void {
     const options = { title: 'Save a practice kit', defaultPath: 'practice.orgai-kit.json', filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
     const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
     if (result.canceled || !result.filePath) return null
-    const path = kitExportPath(result.filePath)
+    const path = kitExportTarget(result.filePath, existsSync)
     rememberKitPath(kitExportPicks, e.sender, path)
     return path
   })

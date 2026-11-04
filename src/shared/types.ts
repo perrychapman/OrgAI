@@ -4926,6 +4926,16 @@ export interface KitPreviewItem {
   scripts?: string[]
   /** Templates: role names. */
   roleNames?: string[]
+  /** Templates: each role's whole prompt (at most 20,000 characters) and elevated grants, so they can be read before apply. */
+  roles?: KitPreviewRole[]
+}
+
+/** One template role as the preview shows it. */
+export interface KitPreviewRole {
+  name: string
+  slug: string
+  prompt: string
+  elevatedTools: ('Bash' | 'Edit' | 'Write' | 'NotebookEdit' | 'canSpawn' | 'mcp')[]
 }
 
 export interface KitImportPreview {

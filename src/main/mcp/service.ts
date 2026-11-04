@@ -58,6 +58,7 @@ import { insideWorkspace, removeBuildDir, rewritePath, stageBuild, type Installe
 import { scratchDirFor } from '../quick/scratch'
 import type { ConnectorAddInput, ConnectorInfo, ConnectorPresetRemoveInput, ConnectorState, ConnectorTokenInput, ConnectorDef, ConnectorVariant, McpProjectOverridesInput, UserConnectorDef } from '@shared/types'
 import { USER_CONNECTOR_PRESETS_MAX } from '@shared/types'
+import { presetVariantRefusal } from '../kit/format'
 import { ConnectorPresetStore, buildPresetEntry, presetConnectorDef, validateUserPreset } from './presets'
 
 /** Connector fields and buildDigest are written by the main process only: drop whatever an input carries. */
@@ -585,6 +586,11 @@ export class McpService {
   connectorPresetsKitSave(input: unknown): UserConnectorDef {
     if (!this.presets) throw new Error('Custom connectors are not available.')
     const def = validateUserPreset(typeof input === 'object' && input ? { ...(input as object), origin: 'kit' } : input, { allowOrigin: true })
+    // A kit is outside input: plain values, addresses and token slot names get the same rules as an imported server.
+    for (const v of def.variants) {
+      const refusal = presetVariantRefusal(v)
+      if (refusal) throw new Error(refusal)
+    }
     if (!this.presets.get(def.id) && this.presets.list().length >= USER_CONNECTOR_PRESETS_MAX) {
       throw new Error(`You can keep at most ${USER_CONNECTOR_PRESETS_MAX} custom connectors. Remove one first.`)
     }

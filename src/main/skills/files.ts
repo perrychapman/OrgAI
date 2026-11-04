@@ -49,6 +49,18 @@ export function safeRelPath(p: string): boolean {
   return p.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..')
 }
 
+const WIN_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i
+
+/**
+ * `safeRelPath` plus what a file from outside (a kit) must not name on Windows: reserved device names (CON, NUL,
+ * COM1-9, LPT1-9, with or without an extension), ':' in a segment (drive and stream syntax), a trailing dot or space,
+ * and the characters Windows forbids in a name.
+ */
+export function safeKitRelPath(p: string): boolean {
+  if (!safeRelPath(p)) return false
+  return p.split('/').every((seg) => !seg.includes(':') && !/[. ]$/.test(seg) && !WIN_RESERVED.test(seg) && !/[<>"|?*]/.test(seg))
+}
+
 function byPath(a: { path: string }, b: { path: string }): number {
   return a.path < b.path ? -1 : a.path > b.path ? 1 : 0
 }

@@ -10,17 +10,21 @@ import {
   SKILL_MAX_TOTAL_BYTES,
   isProjectKind,
   type KitItemKind,
+  type KitPreviewRole,
   type McpLibraryEntry,
   type ProjectKind,
   type UserConnectorDef
 } from '@shared/types'
-import { hiddenCharIn, hiddenCharProblem } from '../capabilities/sanitize'
+import { hiddenCharIn, hiddenCharProblem, isKeyLikeValue, reviewTarget } from '../capabilities/sanitize'
+import { isPrivateHost } from '../mcp/oauth'
+import { maskKeyLike } from '../runtime/codexAppServer'
 import { credentialLikeName, riskyEnvName, validateLibraryEntry } from '../mcp/validate'
 import { validateUserPreset } from '../mcp/presets'
-import { digestFiles, safeRelPath, SKILL_MAX_DEPTH, type FileData } from '../skills/files'
+import { digestFiles, safeKitRelPath, SKILL_MAX_DEPTH, type FileData } from '../skills/files'
 import { buildScannedSkill } from '../skills/scan'
 import { composeSkillMd, skillFromMd } from '../skills/skillMd'
 import { parseOrgExport } from '../setup/import/parsers'
+import type { ImportedAgent } from '../setup/import/types'
 import { inGitDir } from '../setup/import/scan'
 import { cleanTemplateDescription, cleanTemplateName } from '../setup/templates'
 
@@ -158,6 +162,25 @@ export function serverFieldsOf(e: McpLibraryEntry): KitServerFields {
 
 const CREDENTIAL_ARG = /^-{0,2}[\w.-]*(?:token|secret|passw|api[-_]?key|credential|bearer)[\w.-]*=./i
 const CREDENTIAL_QUERY = /(secret|token|passw|api[-_]?key|credential|auth|sig)/i
+const credentialQueryKey = (k: string): boolean => CREDENTIAL_QUERY.test(k) || kitCredentialName(k)
+const USERINFO_URL = /[a-z][a-z0-9+.-]*:\/\/[^/\s]*@/i
+const URL_START = /^[a-z][a-z0-9+.-]*:\/\//i
+/** Name words that say credential beyond what the store rules catch (AWS_ACCESS_KEY_ID, GITHUB_PAT, DATABASE_DSN, PRIVATE_KEY). */
+const CREDENTIAL_WORDS = new Set(['key', 'keys', 'pat', 'pats', 'dsn', 'private', 'pwd', 'pass', 'passcode'])
+const CREDENTIAL_JOINED = /(apikey|accesskey|secretkey|privatekey|authkey|signingkey)/i
+/** Headers that change where a request goes or how it is framed; never a secret slot. */
+const ROUTING_HEADER = /^(?:host|forwarded|x-forwarded-\w+|proxy-\w+|content-length|transfer-encoding|connection|upgrade|te)$/i
+
+/** A name that looks like a credential: the store rules plus the whole-word forms (key, pat, dsn, private). */
+export function kitCredentialName(name: string, header = false): boolean {
+  if (credentialLikeName(name, header)) return true
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((w) => w.toLowerCase())
+  return words.some((w) => CREDENTIAL_WORDS.has(w)) || CREDENTIAL_JOINED.test(name)
+}
 
 /**
  * A kit's plain env variables and headers follow the preset rules: none changes what runs (NODE_OPTIONS, PATH, *_PROXY
@@ -167,30 +190,123 @@ export function serverRiskRefusal(f: Pick<McpLibraryEntry, 'env' | 'headers'>): 
   const name = (k: string): string => (/^[\w.-]{1,64}$/.test(k) ? ` (${k})` : '')
   for (const k of Object.keys(f.env ?? {})) {
     if (riskyEnvName(k)) return `An environment variable${name(k)} changes what runs and cannot be part of a kit.`
-    if (credentialLikeName(k)) return `An environment variable${name(k)} looks like a credential; keep it as a secret variable instead.`
+    if (kitCredentialName(k)) return `An environment variable${name(k)} looks like a credential; keep it as a secret variable instead.`
   }
   for (const k of Object.keys(f.headers ?? {})) {
-    if (credentialLikeName(k, true)) return `A header${name(k)} looks like a credential; keep it as a secret header instead.`
+    if (kitCredentialName(k, true)) return `A header${name(k)} looks like a credential; keep it as a secret header instead.`
   }
   return null
 }
 
-/** Why a stored server cannot go into a kit, or null. */
-export function serverExportRefusal(e: McpLibraryEntry): string | null {
-  if (e.connectorId) return 'It is a connector. Add the connector again from the gallery on the other computer.'
-  if (e.buildDigest) return 'It is a server built by the assistant; its files stay on this computer.'
-  const risk = serverRiskRefusal(e)
-  if (risk) return risk
-  if (e.transport === 'stdio') {
-    if ((e.args ?? []).some((a) => CREDENTIAL_ARG.test(a))) return 'An argument looks like it carries a secret value; move it to a secret variable first.'
-  } else if (e.url) {
+/** One plain value (argument, env value, header value, address) that carries a credential, or null. */
+function valueCredentialProblem(v: string, what: 'argument' | 'variable' | 'header'): string | null {
+  const move = what === 'header' ? 'a secret header' : 'a secret variable'
+  const place = what === 'argument' ? 'An argument' : what === 'variable' ? 'An environment variable value' : 'A header value'
+  if (USERINFO_URL.test(v)) return `${place} carries a user name or password in an address; move it to ${move} first.`
+  if (URL_START.test(v)) {
     try {
-      const u = new URL(e.url)
+      const u = new URL(v)
+      for (const [k, val] of u.searchParams) {
+        if (credentialQueryKey(k) || isKeyLikeValue(val)) return `${place} carries a key in an address; move it to ${move} first.`
+      }
+    } catch {
+      /* not a parsable address: the other checks still apply */
+    }
+  }
+  if (maskKeyLike(v) !== v || isKeyLikeValue(v) || CREDENTIAL_ARG.test(v)) return `${place} looks like it carries a secret value; move it to ${move} first.`
+  return null
+}
+
+type ValueFields = Pick<McpLibraryEntry, 'transport' | 'args' | 'url' | 'env' | 'headers'>
+
+/** Credentials kept in plain values: every argument, env value, header value and the address. Names are checked elsewhere. */
+export function serverValueRefusal(f: ValueFields): string | null {
+  for (const a of f.args ?? []) {
+    const p = valueCredentialProblem(a, 'argument')
+    if (p) return p
+  }
+  for (const v of Object.values(f.env ?? {})) {
+    const p = valueCredentialProblem(v, 'variable')
+    if (p) return p
+  }
+  for (const v of Object.values(f.headers ?? {})) {
+    const p = valueCredentialProblem(v, 'header')
+    if (p) return p
+  }
+  if (f.transport !== 'stdio' && f.url) {
+    try {
+      const u = new URL(f.url)
       if (u.username || u.password) return 'Its address carries a user name or password; move it to a secret header first.'
-      for (const k of u.searchParams.keys()) if (CREDENTIAL_QUERY.test(k)) return 'Its address carries a key in the query; move it to a secret header first.'
+      for (const [k, val] of u.searchParams) {
+        if (credentialQueryKey(k) || isKeyLikeValue(val)) return 'Its address carries a key in the query; move it to a secret header first.'
+      }
+      if (maskKeyLike(f.url) !== f.url) return 'Its address looks like it carries a secret value; move it to a secret header first.'
     } catch {
       return 'Its address is not valid.'
     }
+  }
+  return null
+}
+
+/** Why a stored server (or kit fields) cannot go into a kit, or null. */
+export function serverExportRefusal(e: ValueFields & Partial<Pick<McpLibraryEntry, 'connectorId' | 'buildDigest'>>): string | null {
+  if (e.connectorId) return 'It is a connector. Add the connector again from the gallery on the other computer.'
+  if (e.buildDigest) return 'It is a server built by the assistant; its files stay on this computer.'
+  return serverRiskRefusal(e) ?? serverValueRefusal(e)
+}
+
+/** A remote address a kit may carry: https, not a private-network literal or localhost, and short and plain enough to review. */
+function remoteAddressRefusal(f: Pick<McpLibraryEntry, 'url' | 'headers'>): string | null {
+  let host = ''
+  let https = false
+  try {
+    const u = new URL(f.url ?? '')
+    host = u.hostname
+    https = u.protocol === 'https:'
+  } catch {
+    return 'Its address is not valid.'
+  }
+  if (!https) return 'Its address is not https.'
+  if (isPrivateHost(host)) return 'Its address points to this computer or a private network.'
+  const review = reviewTarget({ transport: 'http', url: f.url, headers: f.headers })
+  if (review.blockedReason) return `Its address cannot be reviewed: ${review.blockedReason.replace(/\.$/, '')}.`
+  return null
+}
+
+/** Slot names that would change what runs or where a request goes (NODE_OPTIONS as a secret variable, Host as a secret header). */
+function slotRefusal(transport: McpLibraryEntry['transport'], env: readonly string[] | undefined, headers: readonly string[] | undefined): string | null {
+  const name = (k: string): string => (/^[\w.-]{1,64}$/.test(k) ? ` (${k})` : '')
+  for (const k of env ?? []) if (riskyEnvName(k)) return `A secret variable${name(k)} changes what runs and cannot be part of a kit.`
+  for (const k of headers ?? []) if (ROUTING_HEADER.test(k)) return `A secret header${name(k)} changes where requests go and cannot be part of a kit.`
+  void transport
+  return null
+}
+
+/** What an imported server must pass beyond the library rules: the export checks, the outside-source address rules and the slot names. */
+export function serverImportRefusal(f: KitServerFields): string | null {
+  const exp = serverExportRefusal(f)
+  if (exp) return exp
+  if (f.transport !== 'stdio') {
+    const addr = remoteAddressRefusal(f)
+    if (addr) return addr
+  }
+  return slotRefusal(f.transport, f.secretEnv, f.secretHeaders) ?? slotRefusal(f.transport, f.perProjectEnv, undefined)
+}
+
+/** The same value, address and slot rules for one custom-connector variant (kit import and connectorPresetsKitSave). */
+export function presetVariantRefusal(v: UserConnectorDef['variants'][number]): string | null {
+  const fields: ValueFields = { transport: v.transport, args: v.args, url: v.url, env: v.env, headers: v.headers }
+  const where = `Variant "${safeText(v.id, 32)}": `
+  const risk = serverRiskRefusal(fields) ?? serverValueRefusal(fields)
+  if (risk) return where + risk
+  if (v.transport !== 'stdio') {
+    const addr = remoteAddressRefusal(fields)
+    if (addr) return where + addr
+  }
+  if (v.auth.kind === 'token') {
+    const stdio = v.transport === 'stdio'
+    const slot = slotRefusal(v.transport, stdio ? [v.auth.header] : undefined, stdio ? undefined : [v.auth.header])
+    if (slot) return where + slot
   }
   return null
 }
@@ -255,6 +371,7 @@ export interface ParsedTemplate {
   orgText: string
   rolesDigest: string
   roleNames: string[]
+  roles: KitPreviewRole[]
 }
 
 export interface ParsedItem {
@@ -360,7 +477,7 @@ function parseSkill(raw: unknown, index: number): ParsedItem {
     const path = own(f, 'path')
     const t = own(f, 'text')
     if (typeof path !== 'string' || typeof t !== 'string') return refuse(head, 'A file entry is not valid.')
-    if (!safeRelPath(path) || path.length > 200 || hiddenCharIn(path)) return refuse(head, `The file path "${safeText(path, 60)}" is not allowed.`)
+    if (!safeKitRelPath(path) || path.length > 200 || hiddenCharIn(path)) return refuse(head, `The file path "${safeText(path, 60)}" is not allowed.`)
     if (inGitDir(path)) return refuse(head, 'It contains git internals.')
     if (path.split('/').length - 1 > SKILL_MAX_DEPTH) return refuse(head, `Folders nested deeper than ${SKILL_MAX_DEPTH} levels.`)
     if (lower.has(path.toLowerCase())) return refuse(head, 'Two files have the same path.')
@@ -461,6 +578,9 @@ function parseServer(raw: unknown, index: number): ParsedItem {
   if (problems.length) return refuse(head, problems[0])
   const risk = serverRiskRefusal(fields)
   if (risk) return refuse(head, risk)
+  // A kit is outside input like a registry entry: values, address and slot names get the outside-source rules.
+  const outside = serverImportRefusal(fields)
+  if (outside) return refuse(head, outside)
   const notes: string[] = []
   const slots = [...(fields.secretEnv ?? []), ...(fields.secretHeaders ?? [])]
   if (slots.length) notes.push(fields.perProjectSecrets ? 'Each project that uses it enters its own secret values.' : 'Needs secret values after import.')
@@ -474,6 +594,10 @@ function parsePreset(raw: unknown, index: number): ParsedItem {
   head.size = Buffer.byteLength(JSON.stringify(raw))
   try {
     const def = validateUserPreset(raw)
+    for (const v of def.variants) {
+      const refusal = presetVariantRefusal(v)
+      if (refusal) throw new KitFileError(refusal)
+    }
     return { ...head, name: def.name, description: def.description, notes: [], preset: def }
   } catch (e) {
     return refuse(head, e instanceof Error ? e.message : 'The preset is not valid.')
@@ -518,29 +642,83 @@ function parseTemplate(raw: unknown, index: number): ParsedItem {
     const hidden = scanStrings(org)
     if (hidden) throw new KitFileError(hidden)
     const roles = own(org, 'roles') as unknown[]
-    const orgText = JSON.stringify({ format: 'orgai.org/1', exportedAt: new Date(0).toISOString(), project: { name }, roles }, null, 2)
-    if (orgText.length > TEMPLATE_ORG_MAX_CHARS) throw new KitFileError('The org chart is too large.')
-    const parsed = parseOrgExport(orgText, 'org.json')
+    const rawText = JSON.stringify({ format: 'orgai.org/1', exportedAt: new Date(0).toISOString(), project: { name }, roles })
+    if (rawText.length > TEMPLATE_ORG_MAX_CHARS) throw new KitFileError('The org chart is too large.')
+    const parsed = parseOrgExport(rawText, 'org.json')
     if (!parsed.agents.length) throw new KitFileError(parsed.warnings[0] ?? 'The template has no roles.')
+    // What is stored is rebuilt from the parsed roles (known fields only, like buildOrgExport): ids, grants, unknown
+    // fields and odd keys in the file never reach the template.
+    const orgText = JSON.stringify({ format: 'orgai.org/1', exportedAt: new Date(0).toISOString(), project: { name }, roles: orgRolesFromAgents(parsed.agents) }, null, 2)
+    if (orgText.length > TEMPLATE_ORG_MAX_CHARS) throw new KitFileError('The org chart is too large.')
     const roleNames = parsed.agents.map((a) => safeText(a.name, 80)).filter(Boolean).slice(0, 40)
+    const previewRoles = parsed.agents.slice(0, 40).map((a, i) => ({
+      name: safeText(a.name, 80),
+      slug: safeText(a.slug ?? slugFor(a.name, i), 64),
+      prompt: a.prompt.length > ROLE_PROMPT_PREVIEW_MAX ? a.prompt.slice(0, ROLE_PROMPT_PREVIEW_MAX) : a.prompt,
+      elevatedTools: elevatedOf(a)
+    }))
+    const granted = (roles as unknown[]).some(
+      (r) =>
+        isPlain(r) &&
+        ['mcpServers', 'skills'].some((k) => {
+          const v = own(r, k)
+          return Array.isArray(v) && v.length > 0
+        })
+    )
     return {
       ...head,
       name,
       description,
       size: Buffer.byteLength(orgText),
-      notes: [],
-      template: { name, description, kind: kind as ProjectKind, orgText, rolesDigest: rolesDigestOf(orgText), roleNames }
+      notes: granted ? ['Access to services and skills named in the file is left out; grant it after importing.'] : [],
+      template: { name, description, kind: kind as ProjectKind, orgText, rolesDigest: rolesDigestOf(orgText), roleNames, roles: previewRoles }
     }
   } catch (e) {
     return refuse(head, e instanceof Error ? e.message : 'The template is not valid.')
   }
 }
 
-/** sha256 of an org.json text's roles array, so a stored template and a kit one compare. */
+const ROLE_PROMPT_PREVIEW_MAX = 20_000
+const ELEVATED_TOOLS = ['Bash', 'Edit', 'Write', 'NotebookEdit'] as const
+
+function slugFor(name: string, index: number): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `role-${index + 1}`
+}
+
+/** Elevated grants of a parsed role (the shell and file-writing tools, and spawning). Service grants are never kept. */
+function elevatedOf(a: ImportedAgent): KitPreviewRole['elevatedTools'] {
+  const out: KitPreviewRole['elevatedTools'] = ELEVATED_TOOLS.filter((t) => a.tools?.includes(t))
+  if (a.canSpawn) out.push('canSpawn')
+  return out
+}
+
+/**
+ * The roles of an 'orgai.org/1' file rebuilt from parsed agents, known fields in buildOrgExport's order (setup/import/
+ * export.ts). Ids, service and skill grants, unknown fields and prototype keys cannot survive this.
+ */
+export function orgRolesFromAgents(agents: ImportedAgent[]): Record<string, unknown>[] {
+  return agents.map((a, i) => ({
+    slug: a.slug ?? slugFor(a.name, i),
+    name: a.name,
+    description: a.description,
+    responsibilities: [...(a.responsibilities ?? [])],
+    prompt: a.prompt,
+    ...(a.tools ? { tools: [...a.tools] } : {}),
+    ...(a.model ? { model: a.model } : {}),
+    ...(a.tier ? { tier: a.tier } : {}),
+    ...(a.effort ? { effort: a.effort } : {}),
+    ...(a.canSpawn !== undefined ? { canSpawn: a.canSpawn } : {}),
+    spawnable: [...(a.spawnable ?? [])],
+    ...(a.reportsTo !== undefined ? { reportsTo: a.reportsTo } : {}),
+    ...(a.color ? { color: a.color } : {})
+  }))
+}
+
+/** sha256 of an org.json text's roles as rebuilt above, so a stored template and a kit one compare. */
 export function rolesDigestOf(orgText: string): string {
   try {
-    const org = JSON.parse(orgText) as { roles?: unknown }
-    return sha256(JSON.stringify(org.roles ?? null))
+    const parsed = parseOrgExport(orgText, 'org.json')
+    return parsed.agents.length ? sha256(JSON.stringify(orgRolesFromAgents(parsed.agents))) : ''
   } catch {
     return ''
   }
