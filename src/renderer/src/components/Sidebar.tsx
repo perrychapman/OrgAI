@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
@@ -48,6 +48,8 @@ interface NavEntry {
   railMark: ReactNode
   /** Rail accessible name; default is "<name>, N need you". */
   accessibleName?: (decisions: number, needsLabel: string) => string
+  /** 'engagement' rows carry a kind mark (icon in the full list, tooltip and name in the rail). */
+  kind?: 'engagement'
   onOpen(): void
 }
 
@@ -199,7 +201,9 @@ export default function Sidebar({
     const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
     const active = selectedId === id && inProject(view)
     const viewedId = draftPage[id] ? undefined : viewedByProject[id]
-    const accessibleName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
+    const baseName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
+    // In the rail the name replaces the visible content, so it says the kind; the full row's icon carries the label.
+    const accessibleName = rail && entry.kind === 'engagement' ? `${baseName}, engagement` : baseName
     return (
       <div key={id} className="nav-project">
         <div className="nav-row">
@@ -223,7 +227,8 @@ export default function Sidebar({
             aria-label={rail ? accessibleName : undefined}
             data-testid={entry.testId}
             {...entry.dataAttr}
-            title={[rail ? accessibleName : '', ...entry.titleLines, st.subtitle].filter(Boolean).join('\n')}
+            data-kind={entry.kind}
+            title={[rail ? (entry.kind === 'engagement' ? `${baseName} · Engagement` : baseName) : '', ...entry.titleLines, st.subtitle].filter(Boolean).join('\n')}
             onClick={entry.onOpen}
           >
             {rail ? (
@@ -234,6 +239,11 @@ export default function Sidebar({
             ) : (
               <>
                 <span className={`dot ${st.dot}`} aria-hidden="true" />
+                {entry.kind === 'engagement' && (
+                  <span className="nav-kind" data-testid="nav-kind-mark">
+                    <Icon icon={Briefcase} size="xs" label="Engagement" />
+                  </span>
+                )}
                 <span className="nav-text">
                   <span className="nav-name">{name}</span>
                   {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
@@ -288,6 +298,7 @@ export default function Sidebar({
     dataAttr: { 'data-name': p.name },
     titleLines: [p.path],
     railMark: initials(p.name, names),
+    kind: projectKindOf(p) === 'engagement' ? 'engagement' : undefined,
     onOpen: () => {
       void openProject(p.id)
       if (!inProject(view)) setView('run')

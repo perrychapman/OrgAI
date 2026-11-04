@@ -69,10 +69,10 @@ const openSettingsPane = async (pane) => {
   await sleep(300)
 }
 /** Poll the saved project until its client matches (the save is debounced), up to 10 s. */
-const waitForClient = async (expected) => {
+const waitForClient = async (expected, name = AUDIT) => {
   const end = Date.now() + 10_000
   while (Date.now() < end) {
-    if ((await findProject(page, AUDIT))?.client === expected) return true
+    if ((await findProject(page, name))?.client === expected) return true
     await sleep(200)
   }
   return false
@@ -261,6 +261,28 @@ try {
   await sleep(200)
   check((await page.locator('.sidebar [data-testid=nav-client-group][data-client="Acme Corp"]').getAttribute('aria-expanded')) === 'true' && (await auditRow.isVisible()), 'Enter on a focused header expands it again')
 
+  // Engagement rows carry a kind mark; code rows do not.
+  check((await auditRow.getAttribute('data-kind')) === 'engagement' && (await auditRow.locator('[data-testid=nav-kind-mark]').count()) === 1, 'sidebar: an engagement row has data-kind=engagement and a kind mark')
+  check(clean(await auditRow.locator('[data-testid=nav-kind-mark] [role=img]').getAttribute('aria-label')) === 'Engagement', 'sidebar: the kind mark is labelled "Engagement"')
+  const codeRow = page.locator(`.sidebar [data-testid=nav-project][data-name="${CODE}"]`)
+  check((await codeRow.getAttribute('data-kind')) === null && (await codeRow.locator('[data-testid=nav-kind-mark]').count()) === 0, 'sidebar: a code row has no kind mark')
+
+  // One client plus a code project still shows headers (the engagements are told apart from code).
+  await openProject(page, BIRCH)
+  await openSettingsPane('General')
+  const taxClient = await page.locator('[data-testid=project-client-input]').inputValue()
+  await page.locator('[data-testid=project-client-input]').fill('Acme Corp')
+  await page.locator('[data-testid=project-client-input]').press('Tab')
+  await waitForClient('Acme Corp', BIRCH)
+  await sleep(300)
+  check((await page.locator('.sidebar [data-testid=nav-client-group]').count()) === 1 && clean(await page.locator('.sidebar [data-testid=nav-client-code-label]').innerText().catch(() => '')) === 'Code', 'sidebar: one client plus a code project shows a client header and the Code label')
+  await shot('sidebar-one-client-dark')
+  await page.locator('[data-testid=project-client-input]').fill(taxClient)
+  await page.locator('[data-testid=project-client-input]').press('Tab')
+  await waitForClient(taxClient, BIRCH)
+  await sleep(300)
+  check((await page.locator('.sidebar [data-testid=nav-client-group]').count()) === 2, 'sidebar: the second client is back, two headers again')
+
   // ---- Dashboard tile ----
   await gotoProjects(page)
   const tileClient = page.locator(`[data-testid=project-tile][data-name="${AUDIT}"] [data-testid=tile-client]`)
@@ -336,6 +358,16 @@ try {
       const headerCount = await page.locator('.sidebar [data-testid=nav-client-group]').count()
       const dividers = await page.locator('.sidebar hr.nav-client-divider').count()
       check(rail ? headerCount === 0 && dividers >= 1 : headerCount === 2 && dividers === 0, `${tag}: sidebar ${rail ? 'rail has dividers and no headers' : 'shows client headers'}`, `headers ${headerCount}, dividers ${dividers}`)
+      const marks = await page.locator('.sidebar [data-testid=nav-project][data-kind=engagement]').count()
+      const codeMarks = await page.locator(`.sidebar [data-testid=nav-project][data-name="${CODE}"][data-kind]`).count()
+      check(marks >= 3 && codeMarks === 0, `${tag}: engagement rows are marked in the ${rail ? 'rail' : 'list'}, the code row is not`, `${marks} marked, ${codeMarks} code marked`)
+      if (rail) {
+        const t = (await page.locator(`.sidebar [data-testid=nav-project][data-name="${AUDIT}"]`).getAttribute('title')) ?? ''
+        const lbl = (await page.locator(`.sidebar [data-testid=nav-project][data-name="${AUDIT}"]`).getAttribute('aria-label')) ?? ''
+        check(t.startsWith(`${AUDIT} · Engagement`) && /engagement$/.test(lbl), `${tag}: the rail tooltip and name say Engagement`, `${t} | ${lbl}`)
+      } else {
+        check((await page.locator('.sidebar [data-testid=nav-kind-mark]').first().isVisible()), `${tag}: the kind mark is visible`)
+      }
       const tileBox = await page.evaluate((n) => {
         const t = document.querySelector(`[data-testid=project-tile][data-name="${n}"]`)
         const c = t?.querySelector('[data-testid=tile-client]')

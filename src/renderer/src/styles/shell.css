@@ -95,6 +95,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.nav-kind {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-tertiary);
+}
 .nav-counts {
   overflow: hidden;
   text-overflow: ellipsis;
