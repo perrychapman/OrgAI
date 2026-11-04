@@ -7,7 +7,7 @@ import { emptyKnowledgeGraph } from '@shared/knowledge'
 import type { KnowledgeFilter, KnowledgeItem, RunFacts } from '../lib/knowledge'
 import { EMPTY_FILTER, countLine, groupItems, idAfterRemoval, isFilterActive, itemName, itemsOf, kindCounts, originCounts, resolveFocus, runNamesOf, searchItems } from '../lib/knowledge'
 import type { RecordedBatch } from '../lib/knowledgeList'
-import { EMPTY_BATCH, addRecorded, emptyKind, eventItemIds, flushRecorded, hiddenNewIds, isOwnEvent, itemsCapText, notesCapText } from '../lib/knowledgeList'
+import { EMPTY_BATCH, NOTICE_MS, addRecorded, emptyKind, eventItemIds, flushRecorded, hiddenNewIds, isOwnEvent, itemsCapText, notesCapText, restoreReady, retireNoticeText } from '../lib/knowledgeList'
 import { cleanIpcError } from '../lib/ipcError'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -47,6 +47,71 @@ function writePref(key: string, value: string): void {
 
 /** The count line is spoken this long after the last filter change (spec 2). */
 const COUNT_ANNOUNCE_MS = 400
+
+/** After a History run link opens the run (this view unmounts): land focus on a real element unless something already has it. */
+function settleRunFocus(): void {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      const composer = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+      if (composer && !composer.disabled) {
+        composer.focus({ preventScroll: true })
+        return
+      }
+      const tab = document.querySelector<HTMLElement>('.run-tab[aria-selected=true]')
+      if (tab) {
+        tab.focus({ preventScroll: true })
+        return
+      }
+      const h = document.querySelector<HTMLElement>('main .topbar h1')
+      if (!h) return
+      h.tabIndex = -1
+      h.focus({ preventScroll: true })
+    })
+  )
+}
+
+/** The retire / delete notice: a labelled region (the announcement itself goes through `knowledge-status`). The timer pauses while pointer or focus is inside. */
+function WriteNotice({ text, undoable, onUndo, onDismiss, onExpire }: { text: string; undoable: boolean; onUndo: () => void; onDismiss: () => void; onExpire: () => void }): ReactElement {
+  const [pointer, setPointer] = useState(false)
+  const [focus, setFocus] = useState(false)
+  const held = pointer || focus
+  useEffect(() => {
+    if (held) return undefined
+    const t = window.setTimeout(onExpire, NOTICE_MS)
+    return () => window.clearTimeout(t)
+    // Restarted when a new notice replaces this one or the hold ends.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [held, text])
+  return (
+    <div
+      className="knowledge-notice-wrap"
+      onPointerEnter={() => setPointer(true)}
+      onPointerLeave={() => setPointer(false)}
+      onFocus={() => setFocus(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocus(false)
+      }}
+    >
+      <Banner
+        tone="info"
+        label="Last change"
+        testId="knowledge-notice"
+        onDismiss={onDismiss}
+        actions={
+          undoable ? (
+            <Button size="sm" testId="knowledge-notice-undo" onClick={onUndo}>
+              Undo
+            </Button>
+          ) : undefined
+        }
+      >
+        {text}
+      </Banner>
+    </div>
+  )
+}
 
 /**
  * The Knowledge tab (docs/design/knowledge.md): the engagement's items (entities of the graph and context notes) as
@@ -118,6 +183,10 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     [projectId]
   )
   const shown = useMemo(() => searchItems(items, filter), [items, filter])
+  useEffect(() => {
+    // A pending restore focus is spent when the filter changes (the item may now be filtered out).
+    setPendingRestore(null)
+  }, [filter.query, filter.kinds, filter.origins])
   const groups = useMemo(() => groupItems(shown), [shown])
   const kinds = useMemo(() => kindCounts(items, filter.showRetired), [items, filter.showRetired])
   const origins = useMemo(() => originCounts(items, filter.showRetired), [items, filter.showRetired])
@@ -185,7 +254,59 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       else listRef.current?.focusCurrent()
     })
   }, [])
-  const focusAddNote = (): void => focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-add-note]'))
+  /** A real element when no row or node can take focus: Add a note, else Add an item (disabled at the cap), else the view switch. */
+  const focusAddNote = (): void =>
+    focusLater(
+      () =>
+        document.querySelector<HTMLElement>('[data-testid=knowledge-add-note]:not(:disabled)') ??
+        document.querySelector<HTMLElement>('[data-testid=knowledge-add-item]:not(:disabled)') ??
+        document.querySelector<HTMLElement>('[data-testid=knowledge-view-switch] input:checked')
+    )
+
+  // ---- the write notice (retire / delete) ----
+  const [notice, setNotice] = useState<{ id: string; item: KnowledgeItem; text: string; undoable: boolean } | null>(null)
+  /** A restored item takes focus once the refetch shows it live in the list. */
+  const [pendingRestore, setPendingRestore] = useState<string | null>(null)
+  useEffect(() => {
+    setNotice(null)
+    setPendingRestore(null)
+  }, [projectId])
+  /** Focus a node of the graph once React Flow has mounted it (bounded wait on the element, no fixed delay). */
+  const focusGraphNode = (tries = 40): void => {
+    requestAnimationFrame(() => {
+      const root = document.querySelector('[data-testid=knowledge-graph]')
+      const node = root?.querySelector<HTMLElement>('.react-flow__node.selected') ?? root?.querySelector<HTMLElement>('.react-flow__node')
+      if (node) node.focus({ preventScroll: true })
+      else if (tries > 0) focusGraphNode(tries - 1)
+      else focusAddNote()
+    })
+  }
+  /** A request with no (or a vanished) target: land focus without opening the pane. */
+  const landFallback = (): void => {
+    if (view === 'graph') {
+      focusGraphNode()
+      return
+    }
+    requestAnimationFrame(() => {
+      if (!listRef.current) focusAddNote()
+      else if (selectedId && shown.some((i) => i.id === selectedId)) listRef.current.focusRow(selectedId)
+      else listRef.current.focusCurrent()
+    })
+  }
+  const landRef = useRef(landFallback)
+  landRef.current = landFallback
+  useEffect(() => {
+    if (!pendingRestore || !restoreReady(shown, pendingRestore)) return
+    setPendingRestore(null)
+    if (view === 'graph') focusAddNote()
+    else focusRow(pendingRestore)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRestore, shown, view])
+  const dismissNotice = (): void => {
+    setNotice(null)
+    if (view === 'graph' || shown.length === 0) focusAddNote()
+    else focusRow(selectedId)
+  }
 
   // ---- writes (own ids, in-flight count, refetch) ----
   const ownIds = useRef(new Map<string, number>())
@@ -273,6 +394,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     const id = resolveFocus(items, knowledgeFocus)
     clearKnowledgeFocus()
     if (id) openItem(id)
+    else landRef.current()
   }, [knowledgeFocus, projectId, loaded, items, openItem, clearKnowledgeFocus])
 
   // ---- notes dialog ----
@@ -303,13 +425,22 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
         const full = await window.orgai.engagement.getNote({ projectId, noteId: item.id })
         await writes.saveNote({ noteId: item.id, title: full.title, text: full.text, retired })
       }
-      announce(retired ? `Retired ${name}.` : `Restored ${name}.`)
-      if (retired && !filter.showRetired) {
-        const next = idAfterRemoval(shownIds, item.id)
-        selectItem(next)
-        if (next) focusRow(next)
-        else focusAddNote()
-      } else focusRow(item.id)
+      if (retired) {
+        announce(retireNoticeText(name, 'retired'))
+        setPendingRestore(null)
+        setNotice({ id: item.id, item, text: retireNoticeText(name, 'retired'), undoable: true })
+        // The pane stays on the retired item (Retired badge, Restore): the selection never jumps to the next one.
+        if (view === 'graph') focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-notice-undo]'))
+        else if (!filter.showRetired) {
+          const next = idAfterRemoval(shownIds, item.id)
+          if (next) focusRow(next)
+          else focusAddNote()
+        } else focusRow(item.id)
+      } else {
+        announce(`Restored ${name}.`)
+        setNotice((n) => (n?.id === item.id ? null : n))
+        setPendingRestore(item.id)
+      }
     } catch (e) {
       setError(cleanIpcError(e))
     }
@@ -325,10 +456,12 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     try {
       if (item.type === 'node') await writes.removeNode(item.id)
       else await writes.removeNote(item.id)
-      announce(`Deleted ${name}.`)
+      announce(retireNoticeText(name, 'deleted'))
+      setNotice({ id: item.id, item, text: retireNoticeText(name, 'deleted'), undoable: false })
       const next = idAfterRemoval(shownIds, item.id)
       selectItem(next)
-      if (next) focusRow(next)
+      if (view === 'graph') focusAddNote()
+      else if (next) focusRow(next)
       else focusAddNote()
     } catch (e) {
       setError(cleanIpcError(e))
@@ -393,6 +526,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       </div>
       <KnowledgeFilters domId={filtersDomId} filter={filter} kinds={kinds} origins={origins} onChange={changeFilter} countText={countText} hiddenNew={hiddenNew.length} onShowNew={showNew} />
       <div className="knowledge-main" data-testid="knowledge-main">
+        {notice && <WriteNotice text={notice.text} undoable={notice.undoable} onUndo={() => void setRetired(notice.item, false)} onDismiss={dismissNotice} onExpire={() => setNotice(null)} />}
         {(loadError || error) && (
           <Banner
             tone="danger"
@@ -468,7 +602,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           showRetired={filter.showRetired}
           writes={writes}
           onSelect={openItem}
-          onOpenRun={(runId) => void focusRun(projectId, runId)}
+          onOpenRun={(runId) => void focusRun(projectId, runId).then(settleRunFocus)}
           onEditNote={(id) => void editNote(id, 'detail')}
           onRetire={(item, retired) => void setRetired(item, retired)}
           onDelete={(item) => void remove(item)}

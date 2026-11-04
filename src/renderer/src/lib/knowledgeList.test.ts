@@ -29,6 +29,8 @@ import {
   parseAliases,
   relationCandidates,
   relationsInUse,
+  restoreReady,
+  retireNoticeText,
   rowIndexOf,
   scrollTopFor,
   stepRow,
@@ -106,6 +108,20 @@ describe('flat list and windowing', () => {
     expect(edgeRow(entries, 'first')).toBe(1)
     expect(edgeRow(entries, 'last')).toBe(4)
     expect(edgeRow([], 'first')).toBe(-1)
+  })
+})
+
+describe('retire notice', () => {
+  it('words the notice like the announcement', () => {
+    expect(retireNoticeText('Jane Doe', 'retired')).toBe('Retired Jane Doe.')
+    expect(retireNoticeText('Jane Doe', 'deleted')).toBe('Deleted Jane Doe.')
+  })
+  it('is ready to focus only when the item is shown and live', () => {
+    const live = itemsOf({ nodes: [acme] }, [])
+    const retired = itemsOf({ nodes: [{ ...acme, retired: true }] }, [])
+    expect(restoreReady(live, 'kn_a')).toBe(true)
+    expect(restoreReady(retired, 'kn_a')).toBe(false)
+    expect(restoreReady([], 'kn_a')).toBe(false)
   })
 })
 
