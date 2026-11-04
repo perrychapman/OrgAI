@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { ArrowRight, FolderOpen, MoreHorizontal, Trash2 } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
+import { projectKindOf } from '@shared/defaults'
+import { clientOf } from '../../lib/clientGroups'
 import { costView, type CostInput } from '../../lib/cost'
 import { folderName } from '../../lib/paths'
 import { Badge } from '../ui/Badge'
@@ -56,6 +58,7 @@ export function ProjectTile({
   const { project, decisions, live, statusLine, newestRun, weekCost } = model
   const [error, setError] = useState<string | null>(null)
   const folder = folderName(project.path)
+  const client = projectKindOf(project) === 'engagement' ? clientOf(project) : ''
   const pending = setupPending(project)
   const state = decisions > 0 ? 'decisions' : live > 0 ? 'live' : 'quiet'
   const roles = project.roles.length
@@ -79,6 +82,11 @@ export function ProjectTile({
 
   return (
     <li className="project-tile" data-testid="project-tile" data-name={project.name} data-id={project.id} data-state={state}>
+      {client && (
+        <p className="project-tile-client" data-testid="tile-client" title={client}>
+          {client}
+        </p>
+      )}
       <div className="project-tile-head">
         <h3 className="project-tile-title">
           <button

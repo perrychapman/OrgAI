@@ -26,6 +26,7 @@ import { waitingItems } from './lib/needsYou'
 import { runName, runTag } from './lib/runLabels'
 import { folderName } from './lib/paths'
 import { assistantLabel } from './lib/assistants'
+import ProjectClient from './components/ProjectClient'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
@@ -163,6 +164,7 @@ export default function App(): ReactElement {
             <>
               <div className="topbar project-topbar">
                 <h1 title={isVirtual ? undefined : project.name}>{selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project.name}</h1>
+                <ProjectClient project={project} />
                 {showFolder && (
                   <span className="project-folder" data-testid="project-folder" title={project.path}>
                     <Icon icon={Folder} size="xs" />

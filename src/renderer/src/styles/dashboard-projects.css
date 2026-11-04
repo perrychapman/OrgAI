@@ -146,6 +146,7 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
 }
 
 .project-tile-folder,
+.project-tile-client,
 .project-tile-run {
   margin: 0;
   overflow: hidden;
