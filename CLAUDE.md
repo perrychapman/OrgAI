@@ -34,26 +34,29 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   so `id === action`. Routing is `menuActionTarget(action)`: navigation actions (new-project, new-chat, assistants,
   settings/connections/connectors/skill library/about, show-live/history/team/project-settings, toggle-sidebar,
   keyboard-shortcuts) are 'main' and go to the live unscoped main window (restored, focused; created through the
-  injected `createMain` when it was closed, sent after `did-finish-load`); run actions (new-run, close-tab,
-  interrupt-run, end-session, go-to-decision, show-needs-you, org-retrospective, save-chat-as-project,
+  injected `createMain` when it was closed); show-needs-you is 'main' too; run actions (new-run, close-tab,
+  interrupt-run, end-session, go-to-decision, org-retrospective, save-chat-as-project,
   open-run-window, toggle-conversation, toggle-hide-finished, canvas-fit, canvas-zoom-in/out) are 'focused' and go to
   the focused live window, else main, else the first live window. The action is re-checked, destroyed windows are
   skipped. Enablement: the renderer reports `MenuState { hasProject, hasRun, runLive, chatRun, hasDecision }` through
   `menu.setState` (`IPC.menuSetState`, ipc.ts rebuilds it with `cleanMenuState`: booleans only); main keeps one per
-  window, the focused window's drives `menuItemEnabled` and the menu is rebuilt on `setMenuState` for the focused
-  window and on `browser-window-focus` (a window with no state counts as empty). The renderer must call
-  `menu.setState` whenever the state changes. Accelerators: new-project CmdOrCtrl+N, open-app-settings CmdOrCtrl+,
+  window; the focused window's drives the 'focused' items and the main window's the 'main' items. The menu is
+  rebuilt on `setMenuState` for the focused or main window, on `browser-window-focus` and when a window closes (empty
+  when none is focused); a window with no state counts as empty and an equal state is a no-op. The renderer must call
+  `menu.setState` once on mount and on every change: the first call marks the window ready. Actions for a window
+  that is not ready queue (at most 8, newest of each action, oldest dropped) and flush in order on that call. Accelerators: new-project CmdOrCtrl+N, open-app-settings CmdOrCtrl+,
   and Live/History/Team/Project settings CmdOrCtrl+1..4 register normally, and linux Quit has Ctrl+Q; the keys the
   renderer already handles (CmdOrCtrl+B toggle-sidebar, Shift+N new-chat, T new-run, W close-tab, `.` go-to-decision)
   set `registerAccelerator: false` on win32 / linux (hint shown, key not consumed, Playwright `keyboard.press` keeps
   working) while darwin consumes key equivalents natively, so there they arrive only as menu actions and the renderer
-  router must handle them on every platform (that the keydown handler does not also fire on darwin is UNVERIFIED, see
+  router (not built yet; it lands with the UI Lead, and until then menu items and the registered Ctrl+N / Ctrl+, keys
+  do nothing and on darwin Cmd+B/Shift+N/T/W/. reach only the menu) must handle them on every platform (that the keydown handler does not also fire on darwin is UNVERIFIED, see
   docs/macos-testing.md). Cmd/Ctrl+W is close-tab's only (never a window close); Window > Close window is a plain item
   with no accelerator, not the `close` role. Help opens only the fixed `DOCS_URL` / `ISSUES_URL` (guarded by
   `openHelpUrl`) and "Open data folder" opens `app.getPath('userData')` (ORGAI_DATA_DIR replaces it). Window
   `minHeight` is 706 (the Windows menu bar takes about 26 px at 100%, keeping 680 of content; measured by the UX
   researcher, not by a test).
-  Unit-tested only; the live menu bars, the enablement greying and the renderer router are unverified until QA or a pack.
+  Unit-tested only; the live menu bars, the enablement greying are unverified until QA or a pack.
 - Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry
