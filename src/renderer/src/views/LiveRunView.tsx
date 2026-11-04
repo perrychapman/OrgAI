@@ -654,7 +654,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const jump = (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key === '.') || (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'd')
-      if (!jump || !bodyRef.current?.querySelector('.frame-tray')) return
+      // No tray guard: with nothing waiting the registered handler answers "No decision is waiting on this run.".
+      if (!jump) return
       e.preventDefault()
       runMenuAction('go-to-decision')
     }

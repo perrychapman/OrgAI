@@ -99,7 +99,7 @@ let announceClear: ReturnType<typeof setTimeout> | null = null
  */
 export function announceMenu(text: string): void {
   const st = useAppStore.getState()
-  if (st.selectedProjectId && st.view === 'run') {
+  if (st.view === 'run' && menuStateFor(st).hasProject) {
     st.setTabNotice(text)
     return
   }

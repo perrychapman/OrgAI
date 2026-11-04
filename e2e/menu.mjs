@@ -1,6 +1,8 @@
 // Token-free. Mock adapter, temp ORGAI_DATA_DIR. The native application menu: items are clicked from main
 // (Menu.getMenuItemById(id).click(), item ids equal the MenuAction names) and the renderer's router acts on them.
-// Checks File > New chat, View > Team, Help > About, Run > Interrupt turn on an idle run (announced, not silent),
+// Checks File > New chat, View > Team, Help > About, Show conversation, Interrupt turn enabled while
+// the session is open, Org retrospective on a live run announced in the run tabs' status line,
+// Ctrl+T on the Projects page announced in the app-wide status region,
 // Keyboard shortcuts (open, Esc, focus returns), one draft for Ctrl+T and New run, and that main's item state follows
 // the screen (show-team enabled in a project, disabled on the Projects page). 1024x640 and 1600x1000, dark and light.
 import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openProject, removeFixture, sleep, gotoProjects } from './lib.mjs'
@@ -92,11 +94,25 @@ try {
       await page.locator('.run-tablist [role="tab"]').first().click()
       await sleep(300)
 
-      // Run > Interrupt turn on a run that is not working: announced, not silent.
-      await menu('interrupt-run')
-      await sleep(500)
-      const said = `${await text('.run-tabs-notice')} ${await text('[data-testid=menu-announce]')}`
-      check(/not working right now/i.test(said), `Interrupt turn on an idle run says why it did nothing ${tag}`, said)
+      // View > Canvas > Show conversation (a 'focused' run action) switches the layout and back.
+      const layout = () => page.evaluate(() => document.querySelector('.run-body')?.getAttribute('data-layout') ?? '')
+      const before = await layout()
+      await menu('toggle-conversation')
+      await page.waitForFunction((b) => (document.querySelector('.run-body')?.getAttribute('data-layout') ?? '') !== b, before, { timeout: 3000 }).catch(() => {})
+      const after = await layout()
+      check(!!before && after !== before, `View > Show conversation switches the run layout ${tag}`, `${before} -> ${after}`)
+      await menu('toggle-conversation')
+      await sleep(300)
+
+      // The mock run waits on a card with its session open: Interrupt turn and End session are enabled (runLive).
+      // (Not clicked: they would really interrupt or end the run.)
+      check(await waitEnabled('interrupt-run', true), `Run > Interrupt turn is enabled while the session is open ${tag}`)
+      // Run > Org retrospective on a live run: enabled (a run tab is shown) but it does not apply, so the router says
+      // why in the run tabs' status line.
+      await menu('org-retrospective')
+      await page.waitForFunction(() => /Not available for this run/.test(document.querySelector('.run-tabs-notice')?.textContent ?? ''), null, { timeout: 3000 }).catch(() => {})
+      const said = await text('.run-tabs-notice')
+      check(/Not available for this run/.test(said), `Run > Org retrospective on a live run says it does not apply ${tag}`, said)
 
       // Keyboard shortcuts dialog: open, Esc, focus returns somewhere real.
       await menu('keyboard-shortcuts')
@@ -104,7 +120,7 @@ try {
       check(await visible('[data-testid=keyboard-shortcuts-dialog]'), `Keyboard shortcuts opens its dialog ${tag}`)
       await shot(`shortcuts-${w}x${h}-${theme}`)
       await page.keyboard.press('Escape')
-      await page.locator('[data-testid=keyboard-shortcuts-dialog]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+      await page.locator('[data-testid=keyboard-shortcuts-dialog]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
       check(!(await visible('[data-testid=keyboard-shortcuts-dialog]')), `Esc closes the shortcuts dialog ${tag}`)
       const focused = await page.evaluate(() => document.activeElement?.tagName ?? '')
       check(focused !== '' && focused !== 'BODY', `focus returns to a real element after the dialog ${tag}`, focused)
@@ -122,6 +138,11 @@ try {
       // Projects page: show-team is off.
       await gotoProjects(page)
       check(await waitEnabled('show-team', false), `View > Team is disabled on the Projects page ${tag}`)
+
+      // A key press that reaches the renderer for something that does not apply is announced (Ctrl+T, no project).
+      await page.keyboard.press('Control+t')
+      await page.waitForFunction(() => /Open a project first/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 }).catch(() => {})
+      check(/Open a project first/.test(await text('[data-testid=menu-announce]')), `Ctrl+T on the Projects page announces "Open a project first." ${tag}`, await text('[data-testid=menu-announce]'))
     }
   }
 } finally {

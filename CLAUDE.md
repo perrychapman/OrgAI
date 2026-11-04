@@ -465,8 +465,16 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   fallback runs. Announcements use the run tabs' `tabNotice` when a project is in the run view, else the app-wide sr-only
   status region `menu-announce` in `components/AppMenuLayer.tsx` (which also mounts `KeyboardShortcutsDialog`,
   `keyboard-shortcuts-dialog`, styles in `styles/menu.css`). `useRunTabShortcuts` routes Ctrl+T / Ctrl+W through
-  `runMenuAction('new-run' | 'close-tab')`. Unit-tested (menuActions.test.ts, mocked store and window); the dialog, the live
-  region and the real menu round trip are not driven by e2e from this change.
+  `runMenuAction('new-run' | 'close-tab')`; LiveRunView registers the canvas, Hide finished, Show conversation and Go to
+  decision handlers (Ctrl+. / Alt+D call `runMenuAction('go-to-decision')`, no tray guard), RunActions registers Save chat
+  as project and Org retrospective only while they apply. The `run-tabs-notice` status span is always mounted and
+  `setTabNotice` clears and re-sets a repeated text (a per-call sequence, so an older timer never clears a newer notice;
+  Reviewer M1). A click on a greyed native item never reaches the renderer; only key presses or stale commands announce.
+  Unit-tested (menuActions.test.ts, mocked store and window) and e2e/menu.mjs (in e2e:free; mock, 1024x640 and 1600x1000,
+  dark and light: items clicked through `Menu.getMenuItemById(id).click()`; Team enabled/greyed, View > Team, New run and
+  Ctrl+T one draft, Show conversation, Interrupt enabled while the session is open, Org retrospective on a live run
+  announced, the shortcuts dialog with Esc and focus back, New chat, About, Ctrl+T on Projects announced). Not driven:
+  macOS (Cmd keys may run twice if both the menu and the keydown fire; reviewer L2), run-scoped windows, canvas zoom/fit.
 - "Needs you" counts decisions (cards), never runs: the bell, the Needs-you row, the project row badge and subtitle
   ("3 decisions · 1 run") and the topbar all come from `lib/needsYou.ts` `waitingItems` / `decisionCount`. A run row's dot
   is the run's status. A Needs-you item names the kind and the ask first, then the location, and opens that card.
