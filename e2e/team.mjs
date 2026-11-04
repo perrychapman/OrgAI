@@ -63,6 +63,10 @@ async function sectionExactModel(page) {
   const roleSel = page.locator('[data-testid=role-model]')
   const exactSel = page.locator('[data-testid=role-exact-model]')
   await roleSel.waitFor({ timeout: 10_000 })
+  if (await roleSel.isDisabled()) {
+    log('SKIP Exact model checks: no connection connected')
+    return
+  }
   await page.evaluate(() => {
     const d = document.querySelector('[data-testid=role-model-advanced]')
     if (d) d.open = true
