@@ -58,4 +58,25 @@ describe('McpLibraryStore', () => {
     writeFileSync(join(dir, 'mcp-library.json'), JSON.stringify({ entries: [entry('ok'), { id: 5 }, null] }))
     expect(new McpLibraryStore(dir).list().map((e) => e.id)).toEqual(['ok'])
   })
+
+  it('filters per-project fields on read', () => {
+    const stdio = (id: string, over: Partial<McpLibraryEntry>): McpLibraryEntry => ({ ...entry(id), transport: 'stdio', url: undefined, command: 'npx', args: ['pkg@1.0.0'], secretEnv: ['VENDOR_KEY'], ...over })
+    writeFileSync(
+      join(dir, 'mcp-library.json'),
+      JSON.stringify({
+        entries: [
+          stdio('a', { perProjectSecrets: true, perProjectEnv: ['BASE_URL', 'vendor_key', 'API_TOKEN', 'NODE_OPTIONS', 'base_url', 'TENANT'] }),
+          stdio('b', { perProjectSecrets: false as unknown as true, perProjectEnv: ['PATH'] }),
+          { ...entry('c', { connectorId: 'github' }), perProjectSecrets: true, perProjectEnv: ['X-Tenant'] }
+        ]
+      })
+    )
+    const s = new McpLibraryStore(dir)
+    expect(s.get('a')?.perProjectSecrets).toBe(true)
+    expect(s.get('a')?.perProjectEnv).toEqual(['BASE_URL', 'TENANT'])
+    expect(s.get('b')).not.toHaveProperty('perProjectSecrets')
+    expect(s.get('b')).not.toHaveProperty('perProjectEnv')
+    expect(s.get('c')).not.toHaveProperty('perProjectSecrets')
+    expect(s.get('c')).not.toHaveProperty('perProjectEnv')
+  })
 })

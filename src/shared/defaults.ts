@@ -465,7 +465,7 @@ export function mcpSupportsOAuth(spec: Pick<McpServerSpec, 'transport'>): boolea
 export const MCP_OAUTH_REFRESH_SKEW_MS = 5 * 60_000
 
 /** The project-owned fields of a linked server; everything else comes from its library entry. */
-export type McpLinkFields = Pick<McpServerSpec, 'id' | 'enabled' | 'roles' | 'addedAt'>
+export type McpLinkFields = Pick<McpServerSpec, 'id' | 'enabled' | 'roles' | 'addedAt'> & Partial<Pick<McpServerSpec, 'envOverrides' | 'headerOverrides'>>
 
 /**
  * The project copy of a linked library entry: the entry's fields plus the project-owned ones, source 'library'
@@ -478,6 +478,8 @@ export function linkedSpec(entry: McpLibraryEntry, own: McpLinkFields): McpServe
     id: own.id,
     enabled: own.enabled,
     ...(own.roles ? { roles: [...own.roles] } : {}),
+    ...(own.envOverrides && Object.keys(own.envOverrides).length ? { envOverrides: { ...own.envOverrides } } : {}),
+    ...(own.headerOverrides && Object.keys(own.headerOverrides).length ? { headerOverrides: { ...own.headerOverrides } } : {}),
     source: 'library',
     libraryId: entry.id,
     addedAt: own.addedAt
@@ -489,7 +491,7 @@ export function linkedSpec(entry: McpLibraryEntry, own: McpLinkFields): McpServe
  * the project-owned fields are dropped, and a linked spec's 'library' source becomes 'user'.
  */
 export function libraryEntryFromSpec(spec: McpServerSpec, id: string): McpLibraryEntry {
-  const { enabled: _enabled, roles: _roles, libraryId: _libraryId, ...rest } = spec
+  const { enabled: _enabled, roles: _roles, libraryId: _libraryId, envOverrides: _eo, headerOverrides: _ho, ...rest } = spec
   return { ...rest, id, source: spec.source === 'library' ? 'user' : spec.source }
 }
 

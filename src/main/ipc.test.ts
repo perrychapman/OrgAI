@@ -18,6 +18,95 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs'
 const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
+const { mcpCopyArgs } = await import('./ipc')
+
+describe('mcpCopyArgs (mcp:copyFromLibrary)', () => {
+  it('rebuilds the three fields and drops the rest', () => {
+    expect(mcpCopyArgs({ projectId: 'p_1', serverId: 'mcp-1', copySecrets: false, extra: 'x', roles: ['a'] })).toEqual({ projectId: 'p_1', serverId: 'mcp-1', copySecrets: false })
+  })
+  it('refuses a wrong shape', () => {
+    for (const bad of [null, undefined, 'x', [], {}, { projectId: 'p', serverId: 's' }, { projectId: 'p', serverId: 's', copySecrets: 'true' }, { projectId: '../x', serverId: 's', copySecrets: true }, { projectId: 'p', serverId: '', copySecrets: true }, { projectId: 5, serverId: 's', copySecrets: true }]) {
+      expect(() => mcpCopyArgs(bad), JSON.stringify(bad)).toThrow('Invalid copy request.')
+    }
+  })
+})
+
+const { mcpSecretArgs, mcpLibrarySecretArgs } = await import('./ipc')
+
+describe('mcpSecretArgs / mcpLibrarySecretArgs', () => {
+  it('rebuilds the fields and drops extras', () => {
+    expect(mcpSecretArgs({ projectId: 'p_1', serverId: 's-1', kind: 'env', name: 'TOKEN', value: 'abc', extra: 1 })).toEqual({ projectId: 'p_1', serverId: 's-1', kind: 'env', name: 'TOKEN', value: 'abc' })
+    expect(mcpSecretArgs({ projectId: 'p_1', serverId: 's-1', kind: 'header', name: 'X-Key', value: null })).toEqual({ projectId: 'p_1', serverId: 's-1', kind: 'header', name: 'X-Key', value: null })
+    expect(mcpLibrarySecretArgs({ libraryId: 'lib_1', kind: 'env', name: 'T', value: 'v', junk: true })).toEqual({ libraryId: 'lib_1', kind: 'env', name: 'T', value: 'v' })
+  })
+  it('refuses bad shapes without echoing the value', () => {
+    const base = { projectId: 'p_1', serverId: 's-1', kind: 'env', name: 'T', value: 'v' }
+    const bads: unknown[] = [null, 'x', [], { ...base, projectId: '../x' }, { ...base, serverId: '' }, { ...base, kind: 'other' }, { ...base, name: '' }, { ...base, name: 'n'.repeat(129) }, { ...base, value: 5 }, { ...base, value: undefined }, { ...base, value: 'a'.repeat(4001) }, { ...base, value: 'line\nbreak' }, { ...base, value: 'zero​width' }]
+    for (const bad of bads) {
+      expect(() => mcpSecretArgs(bad)).toThrow('Invalid secret.')
+    }
+    try {
+      mcpSecretArgs({ ...base, value: 'sekrit\nvalue' })
+    } catch (e) {
+      expect((e as Error).message).not.toContain('sekrit')
+    }
+    expect(() => mcpLibrarySecretArgs({ ...base, libraryId: '' })).toThrow('Invalid secret.')
+    expect(() => mcpLibrarySecretArgs({ libraryId: 'l', kind: 'env', name: 'T' })).toThrow('Invalid secret.')
+  })
+})
+
+const { mcpOverridesArgs, presetRemoveArgs, OVERRIDES_MAX_KEYS } = await import('./ipc')
+
+describe('mcpOverridesArgs (mcp:setProjectOverrides)', () => {
+  it('rebuilds the fields, keeps absent maps absent and drops extras', () => {
+    expect(mcpOverridesArgs({ projectId: 'p_1', serverId: 'mcp-1', env: { A: 'b' }, headers: {}, roles: ['x'] })).toEqual({ projectId: 'p_1', serverId: 'mcp-1', env: { A: 'b' }, headers: {} })
+    const only = mcpOverridesArgs({ projectId: 'p_1', serverId: 'mcp-1' })
+    expect(only).toEqual({ projectId: 'p_1', serverId: 'mcp-1' })
+    expect(only).not.toHaveProperty('env')
+    expect(mcpOverridesArgs({ projectId: 'p', serverId: 's', env: undefined })).toEqual({ projectId: 'p', serverId: 's' })
+  })
+  it('returns copies, never the input maps', () => {
+    const env = { A: 'b' }
+    const out = mcpOverridesArgs({ projectId: 'p', serverId: 's', env })
+    expect(out.env).toEqual(env)
+    expect(out.env).not.toBe(env)
+  })
+  it('refuses a wrong shape', () => {
+    const many = Object.fromEntries(Array.from({ length: OVERRIDES_MAX_KEYS + 1 }, (_, i) => [`K${i}`, 'v']))
+    const proto = JSON.parse('{"__proto__": "x"}') as Record<string, string>
+    for (const bad of [
+      null,
+      undefined,
+      'x',
+      [],
+      {},
+      { projectId: 'p' },
+      { projectId: '../x', serverId: 's' },
+      { projectId: 'p', serverId: 5 },
+      { projectId: 'p', serverId: 's', env: null },
+      { projectId: 'p', serverId: 's', env: 'A=b' },
+      { projectId: 'p', serverId: 's', env: ['A'] },
+      { projectId: 'p', serverId: 's', env: { A: 5 } },
+      { projectId: 'p', serverId: 's', headers: { A: null } },
+      { projectId: 'p', serverId: 's', env: many },
+      { projectId: 'p', serverId: 's', env: proto },
+      { projectId: 'p', serverId: 's', env: new Map() }
+    ]) {
+      expect(() => mcpOverridesArgs(bad), JSON.stringify(bad)).toThrow('Invalid overrides.')
+    }
+    expect(mcpOverridesArgs({ projectId: 'p', serverId: 's', env: Object.fromEntries(Array.from({ length: OVERRIDES_MAX_KEYS }, (_, i) => [`K${i}`, 'v'])) }).env).toBeDefined()
+  })
+})
+
+describe('presetRemoveArgs (connectorPresets:remove)', () => {
+  it('rebuilds { id } and refuses anything else', () => {
+    expect(presetRemoveArgs({ id: 'acme-crm', extra: 1 })).toEqual({ id: 'acme-crm' })
+    for (const bad of [null, undefined, 'x', [], {}, { id: 5 }, { id: '' }, { id: 'Acme' }, { id: '-a' }, { id: 'a'.repeat(65) }, { id: '../x' }]) {
+      expect(() => presetRemoveArgs(bad), JSON.stringify(bad)).toThrow('Unknown connector.')
+    }
+  })
+})
+
 describe('openPathRefusal (app:openPath)', () => {
   const root = mkdtempSync(join(tmpdir(), 'orgai-open-'))
   const data = join(root, 'data')

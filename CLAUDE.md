@@ -1023,6 +1023,25 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     `resolve`), its secrets and tokens are the entry's, and a link whose entry is gone is kept but never passed to runs.
     Secret keys: project `mcp:<projectId>:<serverId>:{env|header|oauth}:<name>`, library `mcplib:<entryId>:...`.
     Verified by unit tests.
+  - Per-project values (engagement phase 2; types.ts section "MCP per-project secrets and custom connector presets"):
+    `McpLibraryEntry.perProjectSecrets: true` = each link reads its env / header secrets only from its project key
+    (`secretOwnerOf` in mcp/service.ts; never the entry's values; OAuth stays the entry's), written through
+    `mcp:setSecret` on the link; `McpServerInfo.secretScope`, `McpLibraryInfo.projectSecrets` and a "needs X for this
+    project" run warning show empty slots. `perProjectEnv` lists non-secret env / header names a link may override
+    (`envOverrides` / `headerOverrides` via `mcp:setProjectOverrides` or mcp:upsert on the link; validate.ts
+    `cleanOverrides` / `perProjectEnvProblems`: unlisted names dropped, hidden characters and long values refused,
+    credential-like and launch-changing names refused), merged at resolve (secrets win). User-only fields: proposals
+    and installs never set or clear them; refused on connector entries. On mcpLibrary:upsert an absent field keeps
+    the stored value (`perProjectSecrets: false` / `perProjectEnv: []` clear); while the flag is set the entry holds
+    no env / header values of its own (turning it on deletes them, mcpLibrary:setSecret and library-session proposal
+    secrets refuse them, its missingSecrets is empty). A new server id never inherits keys left under that id (the
+    prefix is cleared on every removal and before every add). mcp:setSecret / mcpLibrary:setSecret inputs are rebuilt
+    (`mcpSecretArgs`). Preset env / headers refuse credential-like and launch-changing names. Retarget (`sameLaunch`) clears the links'
+    project values too; removing a link or its entry deletes them. `mcp:copyFromLibrary({ projectId, serverId,
+    copySecrets })` replaces a link with a project-only copy (overrides baked in, grants moved, OAuth never copied,
+    built servers refused). Renderer API: `window.orgai.mcpProject`; no renderer uses it yet. Not covered: a
+    per-project URL or OAuth token. Unit-tested only (serviceProjectScope.test.ts, servicePresets.test.ts,
+    validate.test.ts, ipc.test.ts).
   - OAuth (`src/main/mcp/oauth.ts`): RFC 9728 discovery from the 401 `WWW-Authenticate`, RFC 8414 / OIDC metadata,
     a user-entered client id first, then DCR, else `needsClientId`; PKCE S256, RFC 8707 `resource`, a one-shot
     loopback redirect on 127.0.0.1, refresh with rotation (a missing refresh_token is tolerated). DCR sends
@@ -1080,6 +1099,17 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     set, or add of a 'none' preset; cleared by revokeAuth, token null, or losing the connector; stripped from renderer
     writes and linked specs; malformed values dropped on read) surfaced as `ConnectorInfo.connectedAt` only while the
     card is 'connected'.
+  - Custom presets (engagement phase 2, `src/main/mcp/presets.ts`): `UserConnectorDef` in `<data>/connector-presets.json`
+    (at most 100; `connectorPresets:list / upsert / remove`, `window.orgai.connectorPresets`), validated on write and
+    read (`validateUserPreset`: kebab id not a curated id, hidden characters, caps, https urls, pinned stdio, auth
+    none / oauth scopes only / token, publisher 'user', verified false, `origin` kept only as 'kit'). connectors:list
+    appends them after the catalog with `custom: true`, `preset` and a ConnectorDef projection (`presetConnectorDef`;
+    publisher widened to 'official' | 'user', variant transport to McpTransport with url '' for stdio);
+    connectors:add / setToken work the same (`buildPresetEntry`, main-written `McpLibraryEntry.connectorCustom` so
+    connectorOf looks only among custom presets; a stdio token fills secretEnv). Editing a preset never rewrites an
+    entry made from it; an entry whose variant left the preset is judged from the entry alone; removing a preset with
+    an entry refuses. The Team assistant catalog lists curated presets only. Unit-tested only (presets.test.ts,
+    servicePresets.test.ts, connectors.test.ts).
   - Catalog (41 entries): added Google Docs, Sheets, Slides, Chat (People omitted), Intercom (US/EU), Supabase
     (read-only `?read_only=true` default), DeepWiki and Exa (keyless 'none' default; Exa also an `x-api-key` token
     variant), Cloudflare (oauth + token), Datadog (US1, EU1, US3, US5, AP1), Vercel (reviewed clients only), Asana,

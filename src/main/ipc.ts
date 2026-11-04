@@ -91,6 +91,8 @@ import type {
   TeamReviewInput
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
+import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
+import { MCP_SCOPE_IPC } from '@shared/types'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
@@ -99,7 +101,7 @@ import { harnessProject as buildHarnessProject } from './mcp/assist'
 import { createScratchDir, isInsideEither, samePath, scratchDirFor, validateQuickFolder } from './quick/scratch'
 import { existsSync, lstatSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import { hiddenCharProblem } from './capabilities/sanitize'
+import { hiddenCharIn, hiddenCharProblem } from './capabilities/sanitize'
 import type { QuickRunService } from './quick/quickRuns'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -1008,7 +1010,7 @@ function registerMcpIpc(
   ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
   ipcMain.handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
   ipcMain.handle(IPC.mcpRemove, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.remove(input))
-  ipcMain.handle(IPC.mcpSetSecret, (_e, input: McpSecretInput): McpMutationResult => mcp.setSecret(input))
+  ipcMain.handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   ipcMain.handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
   ipcMain.handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
   ipcMain.handle(IPC.mcpAnswerInstall, (_e, input: McpAnswerInstallInput): void => runs.answerMcpInstall(input.runId, input.requestId, input.decision))
@@ -1042,7 +1044,7 @@ function registerMcpIpc(
   ipcMain.handle(IPC.mcpLibraryList, (): McpLibraryInfo[] => mcp.libraryList())
   ipcMain.handle(IPC.mcpLibraryUpsert, (_e, entry: McpLibraryEntry): McpLibraryInfo[] => mcp.libraryUpsert(entry))
   ipcMain.handle(IPC.mcpLibraryRemove, (_e, input: { libraryId: string }): McpLibraryInfo[] => mcp.libraryRemove(input))
-  ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: McpLibrarySecretInput): McpLibraryInfo[] => mcp.librarySetSecret(input))
+  ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: unknown): McpLibraryInfo[] => mcp.librarySetSecret(mcpLibrarySecretArgs(input)))
   ipcMain.handle(IPC.mcpLibraryTest, (_e, input: { libraryId: string }): Promise<McpTestResult> => mcp.libraryTest(input))
   // Connectors: the renderer names a preset (and a variant); main builds the entry from src/shared/connectors.ts.
   ipcMain.handle(IPC.connectorsList, (): ConnectorInfo[] => mcp.connectorsList())
@@ -1050,6 +1052,14 @@ function registerMcpIpc(
   ipcMain.handle(IPC.connectorsSetToken, (_e, input: unknown): McpLibraryInfo => mcp.connectorsSetToken(connectorArgs.setToken(input)))
   ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
   ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
+
+  // ---- MCP per-project secrets and custom connector presets ----
+  ipcMain.handle(MCP_SCOPE_IPC.mcpCopyFromLibrary, (_e, input: unknown) => mcp.copyFromLibrary(mcpCopyArgs(input)))
+  ipcMain.handle(MCP_SCOPE_IPC.mcpSetProjectOverrides, (_e, input: unknown) => mcp.setProjectOverrides(mcpOverridesArgs(input)))
+  ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsList, () => mcp.connectorPresetsList())
+  // The service validates the whole definition (validateUserPreset); the handler passes the raw structured-clone input.
+  ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsUpsert, (_e, input: unknown) => mcp.connectorPresetsUpsert(input))
+  ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsRemove, (_e, input: unknown) => mcp.connectorPresetsRemove(presetRemoveArgs(input)))
 }
 
 /**
@@ -1215,6 +1225,98 @@ export const connectorArgs = {
     if (i.token.length > CONNECTOR_TOKEN_MAX_CHARS) throw new Error(`The token is too long (at most ${CONNECTOR_TOKEN_MAX_CHARS} characters).`)
     return { connectorId: i.connectorId, token: i.token }
   }
+}
+
+/**
+ * mcp:copyFromLibrary input rebuilt field by field: a plain object with projectId and serverId matching SAFE_ID and a
+ * boolean copySecrets; extra fields are dropped, anything else is refused. Exported for tests.
+ */
+export function mcpCopyArgs(input: unknown): McpCopyFromLibraryInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid copy request.')
+  const i = input as Record<string, unknown>
+  if (!isSafeId(i.projectId) || !isSafeId(i.serverId) || typeof i.copySecrets !== 'boolean') throw new Error('Invalid copy request.')
+  return { projectId: i.projectId, serverId: i.serverId, copySecrets: i.copySecrets }
+}
+
+function secretArgs(input: unknown, idField: 'projectId' | 'libraryId'): Record<string, unknown> {
+  const bad = (): never => {
+    throw new Error('Invalid secret.')
+  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return bad()
+  const proto = Object.getPrototypeOf(input)
+  if (proto !== Object.prototype && proto !== null) return bad()
+  const i = input as Record<string, unknown>
+  const own = (k: string): unknown => (Object.hasOwn(i, k) ? i[k] : undefined)
+  if (!isSafeId(own(idField))) return bad()
+  const kind = own('kind')
+  if (kind !== 'env' && kind !== 'header') return bad()
+  const name = own('name')
+  if (typeof name !== 'string' || name.length < 1 || name.length > 128) return bad()
+  const value = own('value')
+  if (value !== null) {
+    if (typeof value !== 'string' || value.length > 4000 || hiddenCharIn(value)) return bad()
+  }
+  const out: Record<string, unknown> = { [idField]: own(idField), kind, name, value }
+  if (idField === 'projectId') {
+    if (!isSafeId(own('serverId'))) return bad()
+    out.serverId = own('serverId')
+  }
+  return out
+}
+
+/** mcp:setSecret input rebuilt field by field; "Invalid secret." never echoes the value. Exported for tests. */
+export function mcpSecretArgs(input: unknown): McpSecretInput {
+  return secretArgs(input, 'projectId') as unknown as McpSecretInput
+}
+
+/** mcpLibrary:setSecret input rebuilt field by field. Exported for tests. */
+export function mcpLibrarySecretArgs(input: unknown): McpLibrarySecretInput {
+  return secretArgs(input, 'libraryId') as unknown as McpLibrarySecretInput
+}
+
+/** Most names one mcp:setProjectOverrides map may carry (the entry's perProjectEnv is capped at 20 anyway). */
+export const OVERRIDES_MAX_KEYS = 50
+
+/**
+ * mcp:setProjectOverrides input rebuilt field by field: a plain object with SAFE_ID projectId and serverId and, for
+ * env and headers each, absent or a plain object of at most OVERRIDES_MAX_KEYS string values; anything else is refused
+ * ("Invalid overrides."), extra fields are dropped. McpService.setProjectOverrides filters names and checks values.
+ * Exported for tests.
+ */
+export function mcpOverridesArgs(input: unknown): McpProjectOverridesInput {
+  const bad = (): never => {
+    throw new Error('Invalid overrides.')
+  }
+  const isPlainObject = (v: unknown): v is Record<string, unknown> => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+    const proto = Object.getPrototypeOf(v)
+    return proto === Object.prototype || proto === null
+  }
+  if (!isPlainObject(input)) return bad()
+  if (!isSafeId(input.projectId) || !isSafeId(input.serverId)) return bad()
+  const out: McpProjectOverridesInput = { projectId: input.projectId, serverId: input.serverId }
+  for (const field of ['env', 'headers'] as const) {
+    const given = Object.hasOwn(input, field) ? input[field] : undefined
+    if (given === undefined) continue
+    if (!isPlainObject(given)) return bad()
+    const entries = Object.entries(given)
+    if (entries.length > OVERRIDES_MAX_KEYS) return bad()
+    const map: Record<string, string> = {}
+    for (const [k, v] of entries) {
+      if (typeof v !== 'string' || k === '__proto__') return bad()
+      map[k] = v
+    }
+    out[field] = map
+  }
+  return out
+}
+
+/** connectorPresets:remove input rebuilt as `{ id }`: a kebab-case id of at most 64 characters, else "Unknown connector." Exported for tests. */
+export function presetRemoveArgs(input: unknown): ConnectorPresetRemoveInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Unknown connector.')
+  const id = (input as Record<string, unknown>).id
+  if (typeof id !== 'string' || !CONNECTOR_ID_RE.test(id)) throw new Error('Unknown connector.')
+  return { id }
 }
 
 /** Longest permission rule accepted over IPC (permissions:add / permissions:remove). */

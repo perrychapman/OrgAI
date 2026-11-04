@@ -21,6 +21,7 @@ import type {
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
+import { MCP_SCOPE_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -266,6 +267,16 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)
     ipcRenderer.on(IPC.projectsEngagementChanged, listener)
     return () => ipcRenderer.removeListener(IPC.projectsEngagementChanged, listener)
+  },
+  // ---- MCP per-project secrets and custom connector presets ----
+  mcpProject: {
+    copyFromLibrary: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpCopyFromLibrary, input),
+    setOverrides: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpSetProjectOverrides, input)
+  },
+  connectorPresets: {
+    list: () => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsList),
+    upsert: (def) => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsUpsert, def),
+    remove: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsRemove, input)
   }
 }
 

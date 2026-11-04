@@ -846,8 +846,9 @@ export interface ConnectorVariant {
   id: string
   label: string
   description?: string
-  transport: 'http' | 'sse'
-  /** https only. */
+  /** Curated presets: 'http' | 'sse'. 'stdio' only on a custom preset's variant (command / args / env, url ''). */
+  transport: McpTransport
+  /** https only; '' for a custom preset's stdio variant. */
   url: string
   /** Non-secret headers sent with every request, e.g. GitHub's X-MCP-Readonly. */
   headers?: Record<string, string>
@@ -866,8 +867,8 @@ export interface ConnectorDef {
   name: string
   /** Who runs the server, e.g. "Google". */
   vendor: string
-  /** Every preset points at the vendor's own server. */
-  publisher: 'official'
+  /** Curated presets point at the vendor's own server ('official'); 'user' = a custom preset (UserConnectorDef). */
+  publisher: 'official' | 'user'
   category: ConnectorCategory
   /** One line for the gallery card. */
   description: string
@@ -932,7 +933,7 @@ export interface ConnectorTokenInput {
  * credentials and OAuth authorization live with it, and projects link it (McpServerSpec.libraryId). The name
  * is unique within the library.
  */
-export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'> & {
+export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId' | 'envOverrides' | 'headerOverrides'> & {
   /**
    * Connector entries only, written by the main process: epoch ms when its auth last succeeded (OAuth authorize,
    * connectors:setToken with a token, or connectors:add for an auth kind 'none' preset). Cleared by mcp:revokeAuth,
@@ -4584,3 +4585,207 @@ export const IPC = {
   /** main -> renderer push channel carrying TeamReviewSummary. */
   capabilitiesReviewUpdated: 'capabilities:reviewUpdated'
 } as const
+
+// ---- MCP per-project secrets and custom connector presets ----
+//
+// Engagement kind, phase 2. A vendor-platform MCP server is a practice asset (one library entry); the tenant values
+// and credentials are client assets (per project). The interfaces below MERGE into the declarations of the same name
+// above (TypeScript declaration merging), so every field here is part of McpServerSpec / McpServerInfo / ... .
+
+/** Most names McpLibraryEntry.perProjectEnv may list. */
+export const MCP_PER_PROJECT_ENV_MAX = 20
+/** Longest value of one envOverrides / headerOverrides entry. */
+export const MCP_OVERRIDE_VALUE_MAX = 2000
+
+export interface McpServerSpec {
+  /**
+   * Library entries only (set by the user through mcpLibrary:upsert; a linked spec carries the entry's value as part of
+   * its snapshot). True = every project that links the entry keeps its OWN env / header secret values under the
+   * project key `mcp:<projectId>:<serverId>:{env|header}:<name>`; the entry's own values are never used for those
+   * links (no fallback: one client's credential never reaches another client's runs). Missing = the link uses the
+   * entry's values (unchanged behaviour). OAuth tokens stay with the entry either way. Refused on connector entries.
+   * Proposals and installs never set or clear it (an approved redefinition keeps the stored value). On
+   * mcpLibrary:upsert: true sets it, false clears it, absent KEEPS the stored value (a form that does not know the
+   * field never turns it off). Stored and returned only as true. While set, the entry takes no env / header values of
+   * its own (mcpLibrary:setSecret and library-scope proposal secrets refuse them; turning it on deletes any stored
+   * ones) and its McpLibraryInfo.missingSecrets is empty (see projectSecrets).
+   */
+  perProjectSecrets?: boolean
+  /**
+   * Library entries only (user-set, like perProjectSecrets): names of NON-secret env vars (stdio) or headers (http /
+   * sse) a linking project may override, e.g. a tenant base URL. At most MCP_PER_PROJECT_ENV_MAX valid env / header
+   * names, none a secret slot, none credential-like (authorization, cookie, *token*, *secret*, *password*, *key*...)
+   * and none that changes what runs (NODE_OPTIONS, PATH, LD_*, *_PROXY ...). Refused on connector entries. On
+   * mcpLibrary:upsert: absent KEEPS the stored list, [] clears it.
+   */
+  perProjectEnv?: string[]
+  /**
+   * Linked project servers only: this project's values for names in the entry's perProjectEnv (stdio env). Set
+   * through mcp:upsert on the linked server (present = replace, `{}` clears, absent = keep). Names not in the entry's
+   * list are dropped; a value with control or hidden characters, or longer than MCP_OVERRIDE_VALUE_MAX, is refused.
+   * Merged over the entry's env at resolve, filtered again against the entry's current list (secret values still win).
+   * Plain text in projects.json: never put a credential here. Proposals and installs never carry it.
+   */
+  envOverrides?: Record<string, string>
+  /** Linked project servers only: like envOverrides for http / sse headers (single-line values). */
+  headerOverrides?: Record<string, string>
+  /**
+   * Written by the main process only, with connectorId: the entry was made from a custom preset (UserConnectorDef in
+   * <data>/connector-presets.json), so connectorId is looked up there and never in the curated catalog.
+   */
+  connectorCustom?: true
+}
+
+export interface McpServerInfo {
+  /**
+   * Where envSet / headersSet / missingSecrets were read: 'project' for a project-only server or a link whose entry
+   * sets perProjectSecrets (this project's own values); 'library' for any other link (the entry's values).
+   */
+  secretScope?: 'project' | 'library'
+}
+
+export interface McpLibraryInfo {
+  /**
+   * Entries with perProjectSecrets only: every linking project with the secret slot names still empty there (empty
+   * list = all set). The entry's own envSet / headersSet / missingSecrets then describe values no run uses.
+   */
+  projectSecrets?: { projectId: string; projectName: string; serverId: string; missingSecrets: string[] }[]
+}
+
+/**
+ * mcp:copyFromLibrary input: replace a linked server with a project-only copy (new id, source 'user', same
+ * definition with this project's overrides baked into env / headers, enabled and roles kept, Role.mcpServers grants
+ * moved to the new id). OAuth state is never copied (the copy starts unauthorized). copySecrets true copies the
+ * library entry's env / header values into the copy's project slots; false leaves them empty. A link whose entry sets
+ * perProjectSecrets always moves this project's own values to the copy. Refused for a missing entry or a built
+ * server (buildDigest: its files live with the entry). Returns the saved project and refreshed list.
+ */
+export interface McpCopyFromLibraryInput {
+  projectId: string
+  serverId: string
+  copySecrets: boolean
+}
+
+/** Most custom connector presets (<data>/connector-presets.json). */
+export const USER_CONNECTOR_PRESETS_MAX = 100
+
+/**
+ * How a custom preset's variant authenticates: a subset of ConnectorAuth (no oauthClient, no OAuth overrides).
+ * 'token' on a stdio variant: `header` names the secret ENV var (the slot goes into secretEnv), else a secret header.
+ * 'oauth' only on http / sse variants.
+ */
+export type UserConnectorAuth =
+  | { kind: 'none' }
+  | { kind: 'oauth'; scopes?: string[] }
+  | { kind: 'token'; header: string; prefix?: string; label: string; help: string; link?: string }
+
+/** One variant of a custom preset: http / sse with an https url, or stdio with a command (pinned like any stdio server). */
+export interface UserConnectorVariant {
+  /** Kebab-case, unique within the preset. */
+  id: string
+  label: string
+  description?: string
+  transport: McpTransport
+  /** http / sse only: https. */
+  url?: string
+  /** http / sse only: non-secret headers. */
+  headers?: Record<string, string>
+  /** stdio only. */
+  command?: string
+  args?: string[]
+  /** stdio only: non-secret env. */
+  env?: Record<string, string>
+  readOnly: boolean
+  auth: UserConnectorAuth
+}
+
+/**
+ * A user-defined connector preset: a tile in the Connectors gallery like a curated one. Validated on every write and
+ * read: kebab-case id (also the library entry name) that is not a curated id, every string field single line (the
+ * description prose) without hidden characters and length-capped, category from CONNECTOR_CATEGORIES, 1-5 variants,
+ * defaultVariant one of them, at most USER_CONNECTOR_PRESETS_MAX presets. publisher is always 'user' and verified
+ * always false (main sets both).
+ */
+export interface UserConnectorDef {
+  id: string
+  name: string
+  vendor: string
+  publisher: 'user'
+  category: ConnectorCategory
+  description: string
+  status?: 'preview' | 'stable'
+  /** https. */
+  docsUrl?: string
+  variants: UserConnectorVariant[]
+  defaultVariant: string
+  setup?: string[]
+  notes?: string[]
+  /** Lowercase search words. */
+  aliases?: string[]
+  verified: false
+  /** Reserved for the practice-kit importer, which sets 'kit'. Kept as stored; connectorPresets:upsert drops any other value. */
+  origin?: 'kit'
+}
+
+/**
+ * mcp:setProjectOverrides input: this project's non-secret values for a linked server's perProjectEnv names (env for
+ * stdio, headers for http / sse). Each map given replaces the stored one (`{}` clears it; an omitted map is kept).
+ * Names outside the entry's perProjectEnv are dropped; a value with control or hidden characters, or longer than
+ * MCP_OVERRIDE_VALUE_MAX, is refused. Refused for a project-only server or a missing entry. Returns the saved project
+ * and refreshed list. (mcp:upsert on a linked server still accepts envOverrides / headerOverrides the same way.)
+ */
+export interface McpProjectOverridesInput {
+  projectId: string
+  serverId: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+}
+
+export interface ConnectorInfo {
+  /**
+   * A custom preset: `connector` is its ConnectorDef projection (publisher 'user', status 'stable' and setup [] when
+   * unset, docsUrl '' when unset (show no link), stdio variants with url '') and `preset` the stored definition.
+   * connectors:list lists curated presets in catalog order, then custom ones in store order.
+   */
+  custom?: true
+  preset?: UserConnectorDef
+}
+
+/**
+ * Editing a custom preset (connectorPresets:upsert) never rewrites a library entry already added from it: the entry
+ * keeps its own definition and secrets, and the tile shows the current preset. When the entry's variant id is no
+ * longer in the preset, its card state is derived from the entry alone (secrets set and OAuth authorized if it uses
+ * OAuth = connected). connectors:add with a new variant follows the curated rules (a not-yet-connected entry switches).
+ *
+ * connectorPresets:remove input. Refused while a library entry made from the preset exists.
+ */
+export interface ConnectorPresetRemoveInput {
+  id: string
+}
+
+/** IPC channels of this section (kept apart from IPC so the two phase-2 branches merge cleanly). */
+export const MCP_SCOPE_IPC = {
+  mcpCopyFromLibrary: 'mcp:copyFromLibrary',
+  mcpSetProjectOverrides: 'mcp:setProjectOverrides',
+  connectorPresetsList: 'connectorPresets:list',
+  connectorPresetsUpsert: 'connectorPresets:upsert',
+  connectorPresetsRemove: 'connectorPresets:remove'
+} as const
+
+export interface OrgAIApi {
+  /** Per-project handling of linked MCP servers. */
+  mcpProject: {
+    /** Replace a linked server with a project-only copy (McpCopyFromLibraryInput). Rejects for a project-only server, a missing entry or a built server. */
+    copyFromLibrary(input: McpCopyFromLibraryInput): Promise<McpMutationResult>
+    /** Set this project's non-secret values for the entry's perProjectEnv names (McpProjectOverridesInput). */
+    setOverrides(input: McpProjectOverridesInput): Promise<McpMutationResult>
+  }
+  /** Custom connector presets. Every mutation broadcasts mcpLibrary:changed (re-read connectors.list then). */
+  connectorPresets: {
+    list(): Promise<UserConnectorDef[]>
+    /** Add (new id) or replace one preset. Rejects with a readable message. Existing library entries made from it are never rewritten. */
+    upsert(def: UserConnectorDef): Promise<UserConnectorDef[]>
+    /** Rejects while a library entry made from it exists ("Remove <name> from the MCP library first."). */
+    remove(input: ConnectorPresetRemoveInput): Promise<UserConnectorDef[]>
+  }
+}

@@ -496,7 +496,7 @@ export interface RunManagerOptions {
     /** Refresh expiring OAuth tokens before servers start; resolves with the names still without a usable token. */
     prepareForRun?(projectId: string, specs: McpServerSpec[]): Promise<string[]>
     /** Enabled servers `enabledServers` left out because a secret slot has no value (the run warns once each). */
-    skippedServers?(project: Project): { name: string; missing: string[] }[]
+    skippedServers?(project: Project): { name: string; missing: string[]; scope?: 'project' }[]
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
     /**
@@ -1108,7 +1108,7 @@ export class RunManager {
     const prepareServers = async (specs: McpServerSpec[]): Promise<void> => {
       // Servers left out because a secret slot is empty (enabledServers skips them): one warning each per run.
       if (!bare && mcp?.skippedServers) {
-        let skipped: { name: string; missing: string[] }[] = []
+        let skipped: { name: string; missing: string[]; scope?: 'project' }[] = []
         try {
           skipped = mcp.skippedServers(live)
         } catch (e) {
@@ -1122,7 +1122,10 @@ export class RunManager {
             type: 'log',
             runId: summary.id,
             level: 'warn',
-            message: `MCP server "${s.name}" has no value for ${s.missing.join(', ')}: open Settings > MCP servers and fill it in. It does not start in this run.`
+            message:
+              s.scope === 'project'
+                ? `MCP server "${s.name}" needs ${s.missing.join(', ')} for this project: open Project settings > MCP servers and fill it in. It does not start in this run.`
+                : `MCP server "${s.name}" has no value for ${s.missing.join(', ')}: open Settings > MCP servers and fill it in. It does not start in this run.`
           })
         }
       }

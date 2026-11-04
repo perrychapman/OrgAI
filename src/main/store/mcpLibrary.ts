@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { McpLibraryEntry } from '@shared/types'
+import { MCP_PER_PROJECT_ENV_MAX } from '@shared/types'
+import { perProjectEnvProblems } from '../mcp/validate'
 
 /**
  * The app-wide MCP library (<data>/mcp-library.json): harness-level server definitions that projects link by
@@ -12,6 +14,34 @@ function normalizeEntry(e: McpLibraryEntry): McpLibraryEntry {
   // buildDigest is main-written: a malformed value (not 64 hex chars) is dropped.
   if ('buildDigest' in e && !(typeof e.buildDigest === 'string' && /^[0-9a-f]{64}$/.test(e.buildDigest))) {
     const { buildDigest: _bd, ...r } = e
+    e = r
+  }
+  // perProjectSecrets / perProjectEnv are user-set: junk is dropped (McpService validates the names themselves).
+  if ('perProjectSecrets' in e && e.perProjectSecrets !== true) {
+    const { perProjectSecrets: _p, ...r } = e
+    e = r
+  }
+  if ('perProjectEnv' in e && !(Array.isArray(e.perProjectEnv) && e.perProjectEnv.length <= MCP_PER_PROJECT_ENV_MAX && e.perProjectEnv.every((n) => typeof n === 'string'))) {
+    const { perProjectEnv: _p, ...r } = e
+    e = r
+  }
+  // Names that would fail the per-project rules (secret slot, credential-like, run-changing, duplicate, connector) are dropped.
+  if (e.connectorId) {
+    const { perProjectEnv: _a, perProjectSecrets: _b, ...r } = e
+    e = r
+  } else if (Array.isArray(e.perProjectEnv)) {
+    const kept: string[] = []
+    for (const n of e.perProjectEnv) {
+      if (perProjectEnvProblems({ ...e, perProjectEnv: [...kept, n] }).length === 0) kept.push(n)
+    }
+    if (kept.length !== e.perProjectEnv.length) {
+      const { perProjectEnv: _p, ...r } = e
+      e = kept.length ? { ...r, perProjectEnv: kept } : r
+    }
+  }
+  // connectorCustom is main-written and only means something next to a connectorId.
+  if ('connectorCustom' in e && !(e.connectorCustom === true && typeof e.connectorId === 'string')) {
+    const { connectorCustom: _c, ...r } = e
     e = r
   }
   if (!('connectedAt' in e)) return e
