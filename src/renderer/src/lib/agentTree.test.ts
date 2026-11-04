@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance } from '@shared/types'
-import { AGENT_LABEL_MAX, agentLabel, ancestorsOf, hasLiveDescendant, normalizeParents } from './agentTree'
+import { AGENT_LABEL_MAX, agentLabel, ancestorsOf, hasLiveDescendant, normalizeParents, splitLabelTail } from './agentTree'
+
+describe('splitLabelTail', () => {
+  it('keeps a short label whole', () => {
+    expect(splitLabelTail('Implementer')).toEqual({ head: 'Implementer', tail: '' })
+  })
+  it('keeps the end of a long handle apart so two reports stay different when clipped', () => {
+    expect(splitLabelTail('mock-lead-report-1')).toEqual({ head: 'mock-lead-rep', tail: 'ort-1' })
+    expect(splitLabelTail('mock-lead-report-1').tail).not.toBe(splitLabelTail('mock-lead-report-2').tail)
+  })
+})
 
 const ag = (id: string, parentId: string | null, state = 'done'): AgentInstance => ({ id, parentId, state }) as unknown as AgentInstance
 const map = (list: AgentInstance[]): Map<string, AgentInstance> => new Map(list.map((a) => [a.id, a]))

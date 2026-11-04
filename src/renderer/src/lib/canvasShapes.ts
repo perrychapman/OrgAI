@@ -14,6 +14,44 @@ export const STATION_CORNER_RADIUS = 12
 /** Gap left between the line and the outline so an arrow tip does not touch the border. */
 export const CLIP_GAP = 2
 
+export type Side = 'top' | 'right' | 'bottom' | 'left'
+
+/** A laid-out node: top-left corner and size. */
+export interface PlacedBox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Message handle ids: every node exposes one hidden source and one hidden target per side. */
+export const MSG_OUT = 'msg-out'
+export const MSG_IN = 'msg-in'
+export const SIDES: readonly Side[] = ['top', 'right', 'bottom', 'left']
+export function msgHandleId(kind: 'out' | 'in', side: Side): string {
+  return `${kind === 'out' ? MSG_OUT : MSG_IN}-${side}`
+}
+
+/**
+ * The sides a message edge leaves and enters by, from the laid-out boxes, so the line runs through open space instead
+ * of behind the bodies it joins. The axis is the one with more room between the two boxes (siblings side by side use
+ * right to left or left to right, a report below uses bottom to top). A pair joined by a reporting line
+ * (`reportingAxis`: 'y' top-down, 'x' left-right) takes the other axis so the message never lies on that line; if the
+ * boxes overlap on that axis the message leaves and enters by the same side and loops out and back. Pure.
+ */
+export function messageSides(from: PlacedBox, to: PlacedBox, reportingAxis?: 'x' | 'y'): { out: Side; in: Side } {
+  const dx = to.x + to.width / 2 - (from.x + from.width / 2)
+  const dy = to.y + to.height / 2 - (from.y + from.height / 2)
+  const gapX = Math.abs(dx) - (from.width + to.width) / 2
+  const gapY = Math.abs(dy) - (from.height + to.height) / 2
+  const horizontal = reportingAxis ? reportingAxis === 'y' : gapX >= gapY
+  const gap = horizontal ? gapX : gapY
+  const d = horizontal ? dx : dy
+  const [plus, minus]: [Side, Side] = horizontal ? ['right', 'left'] : ['bottom', 'top']
+  if (gap < 0) return d >= 0 ? { out: plus, in: plus } : { out: minus, in: minus }
+  return d >= 0 ? { out: plus, in: minus } : { out: minus, in: plus }
+}
+
 /** Where the ray from the shape's centre toward (tx, ty) leaves the shape grown by `gap`. */
 export function exitPoint(shape: NodeShape, tx: number, ty: number, gap: number = CLIP_GAP): { x: number; y: number } {
   const dx = tx - shape.cx

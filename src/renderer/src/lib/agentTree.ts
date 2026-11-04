@@ -25,6 +25,16 @@ export function agentLabel(a: Pick<AgentInstance, 'name' | 'handle'>): string {
   return chars.length > AGENT_LABEL_MAX ? `${chars.slice(0, AGENT_LABEL_MAX - 1).join('')}…` : h
 }
 
+/**
+ * A label split so a clipped name tag keeps its end: handles read `mock-lead-report-1` and `-2`, which a plain trailing
+ * ellipsis makes identical. A short label stays whole (empty tail); a longer one keeps its last `tail` characters apart.
+ */
+export function splitLabelTail(label: string, tail = 5): { head: string; tail: string } {
+  const chars = [...label]
+  if (chars.length <= tail * 2 + 2) return { head: label, tail: '' }
+  return { head: chars.slice(0, -tail).join(''), tail: chars.slice(-tail).join('') }
+}
+
 /** Ancestor ids from the direct parent upward. Cycle-safe; stops at null or an unknown parent. */
 export function ancestorsOf(byId: AgentLookup, id: string): string[] {
   const out: string[] = []

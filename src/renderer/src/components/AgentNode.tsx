@@ -2,6 +2,8 @@ import type { CSSProperties, ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { SIDES, msgHandleId } from '../lib/canvasShapes'
+import { agentLabel, splitLabelTail } from '../lib/agentTree'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
@@ -15,9 +17,34 @@ export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: 
 
 const WORKING = new Set(['starting', 'thinking', 'tool', 'delegating'])
 
-/** Handle ids message edges use (see LiveRunView). */
-export const MSG_OUT = 'msg-out'
-export const MSG_IN = 'msg-in'
+/** A label that clips in the middle: the head takes the ellipsis, the last characters stay (see splitLabelTail). */
+function ClippedLabel({ label }: { label: string }): ReactElement {
+  const { head, tail } = splitLabelTail(label)
+  if (!tail) return <>{label}</>
+  return (
+    <span className="clip-label">
+      <span className="clip-head">{head}</span>
+      <span className="clip-tail">{tail}</span>
+    </span>
+  )
+}
+
+/**
+ * Hidden message handles on all four sides (ids `msg-out-top` ... `msg-in-left`, see msgHandleId): LiveRunView picks the
+ * side of each end that faces the other node (messageSides), so a message never runs behind the bodies it joins.
+ */
+export function MessageHandles({ hs }: { hs: (side: string) => { style?: CSSProperties } }): ReactElement {
+  return (
+    <>
+      {SIDES.map((side) => (
+        <Handle key={`out-${side}`} id={msgHandleId('out', side)} type="source" position={side as Position} className="msg-handle" isConnectable={false} {...hs(side)} />
+      ))}
+      {SIDES.map((side) => (
+        <Handle key={`in-${side}`} id={msgHandleId('in', side)} type="target" position={side as Position} className="msg-handle" isConnectable={false} {...hs(side)} />
+      ))}
+    </>
+  )
+}
 
 const WORKTREE_LABEL: Record<NonNullable<AgentInstance['worktree']>['status'], string> = {
   active: 'isolated worktree',
@@ -86,10 +113,13 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   const worktreeText = agent.worktree
     ? worktreeLabel(agent.worktree) + (agent.worktree.changedFiles?.length ? ` · ${agent.worktree.changedFiles.length} file${agent.worktree.changedFiles.length === 1 ? '' : 's'}` : '')
     : ''
-  // The compact pill shows the name only; everything the card shows moves here, in the card's order.
+  // Name tags, stations and hexes show the agent's label (its handle, as the card names it; else the role name) so
+  // three "Implementer" agents read apart. The tooltip leads with it, then the role name as a caption.
+  const label = agentLabel(agent)
   const compactTip = [
-    `${agent.name}`,
-    [agent.handle ?? agent.roleSlug, shortModel].filter(Boolean).join(' · '),
+    label,
+    label === agent.name ? '' : agent.name,
+    [agent.handle ? '' : agent.roleSlug, shortModel].filter(Boolean).join(' · '),
     activity,
     worktreeText,
     `${tokensText} · ${tail}`
@@ -112,7 +142,9 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             <div className="ring" />
             {badges}
           </div>
-          <div className="station-name">{agent.name}</div>
+          <div className="station-name">
+            <ClippedLabel label={label} />
+          </div>
           <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
         </>
       )}
@@ -123,24 +155,24 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           </div>
           <div className="hex-content">
             <div className="avatar-wrap">
-              <div className="avatar">{initials(agent.name)}</div>
+              <div className="avatar" aria-hidden="true">{initials(agent.name)}</div>
               <div className="ring" />
               {badges}
             </div>
-            <div className="hex-name">{agent.name}</div>
+            <div className="hex-name">{label}</div>
             <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
           </div>
         </>
       )}
       {!station && !hex && <div className="head">
         <div className="avatar-wrap">
-          <div className="avatar">{initials(agent.name)}</div>
+          <div className="avatar" aria-hidden={compact ? 'true' : undefined}>{initials(agent.name)}</div>
           <div className="ring" />
           {badges}
         </div>
         <div className="title">
           <div className="name" title={compact ? undefined : agent.name}>
-            {agent.name}
+            {compact ? <ClippedLabel label={label} /> : agent.name}
           </div>
           {/* The tooltip is not read by keyboard or screen-reader users: say what the card would show. */}
           {compact && <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>}
@@ -169,9 +201,8 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
         </>
       )}
       <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
-      {/* Agent-to-agent messages attach on the other two sides, after the reporting-line handles so those stay the defaults. */}
-      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgOut)} />
-      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgIn)} />
+      {/* Agent-to-agent messages attach on the side facing the other node, after the reporting-line handles so those stay the defaults. */}
+      <MessageHandles hs={hs} />
     </div>
   )
 }
