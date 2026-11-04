@@ -423,9 +423,39 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   agents through their prompt, maintenance's repository tools do nothing, isolateWriters is off unless the user sets
   it (`isolateWritersOn`), run messaging is off unless set (`runMessagingOn`). Reference folders: every adapter denies
   Edit / Write / MultiEdit / NotebookEdit and Codex file changes under one before any allow path
-  (runtime/referenceDirectories.ts); Bash writes there are NOT gated. Verified by unit tests (fake query(), fake Codex
-  app-server, `[mock:reference-edit]`, store, RunManager, profiler, setup service, prompt and nudge wording) only;
-  nothing live, no renderer code yet.
+  (runtime/referenceDirectories.ts). A Bash / PowerShell call is reference-touching when its effective cwd (Claude hook
+  `input.cwd`, Codex `req.cwd`, else the project path, followed through cd / pushd / Set-Location segments) is inside a
+  reference folder or any word names a path at, under or above one (quotes removed, both separators, case folded on
+  win32 and darwin, `~` expanded, prefix-safe). Such a call never matches a saved or session rule, gets no suggestion,
+  is answered 'ask' with "<folder> is a reference folder: agents may read it, not change it; this command names it" (or
+  "runs inside it"), carries `PermissionRequest.referenceFolder`, and RunManager (every adapter) drops its suggestions
+  and ruleLabels and narrows any session or project allow to once (`permission.resolved` never has `savedToProject`).
+  Reads are not told apart from writes (a `type` / `cat` asks too). A Read / Glob / Grep under a reference folder gets no
+  suggestion. Edit-tool denials and Codex declined file changes write one harness transcript row "Refused: <file> is in
+  a reference folder (read only)" (the folder in the detail). Engagements start on permission mode 'default'
+  (`newProject`) and the engagement Architect recommends it; it proposes 'auto' only on request and says OrgAI still
+  refuses edits in reference folders and asks before a command that names one. The Analyst keeps Bash and its prompt
+  says to write only in the working folder. Shell check hardening (review fix): a UNC or device word (`\\host\share`,
+  `//host/s`, `\\?\...`, `\\.\...`) counts as touching the first folder with no file-system access (resolving it would
+  open an SMB connection), as does a UNC edit path, cwd or reference folder; `-Path:X`, `FileSystem::X` and bash `\x`
+  spellings are checked, `HKCU:`-style non-file-system providers are not touching and (PowerShell only) any other
+  `Name:\` word is; URLs (`://`) and `Foo::bar` words never are; a cd's own words are scanned (a cd into an ancestor of a folder, `cd ..` to a
+  sibling's parent, asks; `Push-Location` counts as a cd), and after `cd -`, `popd`, `Pop-Location`, a bare cd or an
+  untrackable target (a variable) EVERY later segment asks until a tracked cd (fail closed); a command over 32 KB asks
+  with no file-system work, one with over 2,000 words or parts asks once that count is hit. `scratch.ts` `canonicalDeep`
+  (every caller) never calls the file system for a network path (`isNetworkPath`: on win32 anything starting with two
+  separators, on darwin `/net/` and `/Network/`) and returns it resolved lexically only. The refusal-row cleaner also
+  strips U+E0100-E01EF. A `Bash` whole-tool rule
+  never allows a touching command. Honest limits: a command that reaches a reference folder through a variable
+  ($HOME, %USERPROFILE%), a link created at run time, a program's own config / script file, or a provider deciding by
+  itself for calls OrgAI never sees (Codex commands that run inside its sandbox without an approval request; reference
+  folders go to Claude as additionalDirectories, so the CLI may treat them as working folders for its own read-only
+  command approval) is not detected; the permission mode decides those, and on Claude 'auto' the classifier still
+  decides for them. Codex answers 'accept' (never acceptForSession) on runs with reference folders. Mock markers: `[mock:reference-edit]` (also writes the refusal row), `[mock:reference-shell]` (a root Bash
+  `del "<first ref>\brief.md"` that asks with referenceFolder set). Verified by unit tests (fake query(), fake Codex
+  app-server, mock, store, RunManager, profiler, setup service, prompt and nudge wording) only; unverified live: that a
+  PreToolUse 'ask' prompts under 'auto' / 'bypassPermissions', and that Claude's hook `input.cwd` follows the Bash
+  tool's cd.
 
 ## Renderer
 

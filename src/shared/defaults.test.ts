@@ -227,6 +227,11 @@ describe('run defaults', () => {
     // The deprecated app default no longer reaches new projects.
     expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPreferEverydayNearLimit: true }).preferEverydayNearLimit).toBeUndefined()
     expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'dontAsk' }).permissionMode).toBe('dontAsk')
+    // An engagement starts on 'default' whatever the app default is; code keeps the app default.
+    const auto = { ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'auto' as const }
+    expect(newProject({ name: 'X', path: '/x', brief: '', kind: 'engagement' }, auto).permissionMode).toBe('default')
+    expect(newProject({ name: 'X', path: '/x', brief: '', kind: 'engagement' }).permissionMode).toBe('default')
+    expect(newProject({ name: 'X', path: '/x', brief: '' }, auto).permissionMode).toBe('auto')
   })
 })
 

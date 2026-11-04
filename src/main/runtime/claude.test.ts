@@ -95,7 +95,7 @@ import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHel
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
 import { refreshRoleGrants } from './runManager'
-import { allowScopePersist, claudeAdditionalDirectories } from './claude'
+import { REFERENCE_COPY_HINT, allowScopePersist, claudeAdditionalDirectories } from './claude'
 import { buildRolePrompt } from './prompts'
 
 // buildRolePrompt is the real one, wrapped so tests can read the flags the adapter passes.
@@ -1674,10 +1674,11 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
       const { ctx } = start({ referenceDirectories: () => [ref] })
       const q = await firstQuery()
       const msg = `${ref} is a reference folder: agents may read it, not change it`
+      const deny = `${msg}${REFERENCE_COPY_HINT}`
       for (const tool of ['Edit', 'Write', 'MultiEdit']) {
-        expect((await refHook(q, tool, { file_path: join(ref, 'sub', 'a.md') })).hookSpecificOutput, tool).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: msg })
+        expect((await refHook(q, tool, { file_path: join(ref, 'sub', 'a.md') })).hookSpecificOutput, tool).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: deny })
       }
-      expect((await refHook(q, 'NotebookEdit', { notebook_path: join(ref, 'n.ipynb') })).hookSpecificOutput?.permissionDecisionReason).toBe(msg)
+      expect((await refHook(q, 'NotebookEdit', { notebook_path: join(ref, 'n.ipynb') })).hookSpecificOutput?.permissionDecisionReason).toBe(deny)
       // A relative path resolves against the calling agent's cwd.
       expect((await refHook(q, 'Edit', { file_path: join('sub', 'a.md') }, ref)).hookSpecificOutput?.permissionDecision).toBe('deny')
       // Fails closed: no path at all while reference folders exist.
@@ -1701,7 +1702,7 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
         const q = await firstQuery()
         expect((await refHook(q, 'Edit', { file_path: join(ref, 'a.md') })).hookSpecificOutput?.permissionDecision, permissionMode).toBe('deny')
         const out = await canUseTool(q)('Write', { file_path: join(ref, 'b.md') }, { signal: new AbortController().signal })
-        expect(out).toMatchObject({ behavior: 'deny', message: `${ref} is a reference folder: agents may read it, not change it` })
+        expect(out).toMatchObject({ behavior: 'deny', message: `${ref} is a reference folder: agents may read it, not change it${REFERENCE_COPY_HINT}` })
         expect(vi.mocked(ctx.requestPermission)).not.toHaveBeenCalled()
         await sessions.pop()!.stop()
         sdk.queries.length = 0
@@ -1727,8 +1728,178 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
       await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
       const q2 = sdk.queries[1]!
       expect(q2.options.additionalDirectories).toEqual([ref, later])
-      expect((await refHook(q2, 'Write', { file_path: join(ref, 'x.md') })).hookSpecificOutput?.permissionDecisionReason).toBe(`${ref} is a reference folder: agents may read it, not change it`)
+      expect((await refHook(q2, 'Write', { file_path: join(ref, 'x.md') })).hookSpecificOutput?.permissionDecisionReason).toBe(`${ref} is a reference folder: agents may read it, not change it${REFERENCE_COPY_HINT}`)
     }, 10_000)
+
+    const refusalRows = (ctx: ReturnType<typeof fakeCtx>) =>
+      ctx.events.filter((e) => e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' && e.entry.block.text.startsWith('Refused:'))
+
+    it('shell guard (H1): a saved rule never allows a command naming a reference file; the hook asks with the reason in every mode', async () => {
+      for (const permissionMode of ['default', 'acceptEdits', 'auto'] as const) {
+        const ref = newRef()
+        const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-refsh-')))
+        const ctx = fakeCtx({ project: project({ path: dir, permissionMode }), autoContinue: false, allowedRules: () => ['Bash(del:*)', 'Bash(npm test:*)'], referenceDirectories: () => [ref] })
+        sessions.push(new ClaudeSession(ctx))
+        const q = await firstQuery()
+        const cmd = `del "${join(ref, 'brief.md')}"`
+        expect((await refHook(q, 'Bash', { command: cmd }, dir)).hookSpecificOutput, permissionMode).toEqual({
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'ask',
+          permissionDecisionReason: `${ref} is a reference folder: agents may read it, not change it; this command names it`
+        })
+        // The same rule still allows a command elsewhere.
+        expect((await refHook(q, 'Bash', { command: 'del notes.md' }, dir)).hookSpecificOutput?.permissionDecision).toBe('allow')
+        expect((await refHook(q, 'Bash', { command: 'npm test' }, dir)).hookSpecificOutput?.permissionDecision).toBe('allow')
+        // npm test run from inside the reference folder (the hook's cwd) asks: "runs inside it".
+        expect((await refHook(q, 'Bash', { command: 'npm test' }, join(ref, 'sub'))).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'ask',
+          permissionDecisionReason: `${ref} is a reference folder: agents may read it, not change it; this command runs inside it`
+        })
+        expect(ctx.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes('this command names it'))).toBe(true)
+        await sessions.pop()!.stop()
+        sdk.queries.length = 0
+      }
+    })
+
+    it('shell guard (H1): the card names the folder, offers no rule, and an allow grants that call only', async () => {
+      const ref = newRef()
+      const { ctx, dir } = start({ referenceDirectories: () => [ref] })
+      vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+      const q = await firstQuery()
+      const input = { command: `del "${join(ref, 'brief.md')}"` }
+      expect((await refHook(q, 'Bash', input, dir)).hookSpecificOutput?.permissionDecision).toBe('ask')
+      const out = await canUseTool(q)('Bash', input, { signal: new AbortController().signal, suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'del:*' }], behavior: 'allow', destination: 'session' }] })
+      const req = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+      expect(req.referenceFolder).toBe(ref)
+      expect(req.suggestions).toBeUndefined()
+      expect(req.ruleLabels).toBeUndefined()
+      expect(out).toEqual({ behavior: 'allow', updatedInput: input })
+      // Nothing was kept: the same command asks again.
+      expect((await refHook(q, 'Bash', input, dir)).hookSpecificOutput?.permissionDecision).toBe('ask')
+      // The hook's finding wins in canUseTool: npm test from inside the folder (cwd known only to the hook).
+      const inside = { command: 'npm test' }
+      await refHook(q, 'Bash', inside, ref)
+      await canUseTool(q)('Bash', inside, { signal: new AbortController().signal })
+      expect(vi.mocked(ctx.requestPermission).mock.calls[1]![0]).toMatchObject({ referenceFolder: ref })
+      expect(vi.mocked(ctx.requestPermission).mock.calls[1]![0].suggestions).toBeUndefined()
+      // A command elsewhere still gets its suggestions and no referenceFolder.
+      await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal })
+      const plain = vi.mocked(ctx.requestPermission).mock.calls[2]![0]
+      expect(plain.referenceFolder).toBeUndefined()
+      expect(plain.suggestions?.length).toBeGreaterThan(0)
+    })
+
+    it('an unreadable reference list makes a shell call ask (no folder named) and never allows it by rule', async () => {
+      // Breaks only after the query starts (building the options reads the list too).
+      let boom = false
+      const { ctx, dir } = start({ allowedRules: () => ['Bash(npm test:*)'], referenceDirectories: () => { if (boom) throw new Error('boom'); return [] } })
+      const q = await firstQuery()
+      boom = true
+      const out = (await refHook(q, 'Bash', { command: 'npm test' }, dir)).hookSpecificOutput
+      expect(out).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: 'OrgAI could not check the reference folders, so this command needs your approval.' })
+      await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal })
+      const req = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+      expect(req.referenceFolder).toBeUndefined()
+      expect(req.suggestions).toBeUndefined()
+    })
+
+    it('L1: folder lists that throw on the second read ask a shell call, give other tools no rule allow, and never reject', async () => {
+      let reads = 0
+      let armed = false
+      const { ctx, dir } = start({
+        allowedRules: () => ['Bash(npm test:*)', 'WebSearch'],
+        referenceDirectories: () => {
+          if (armed && ++reads >= 2) throw new Error('boom')
+          return []
+        }
+      })
+      const q = await firstQuery()
+      vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+      armed = true
+      // The shell touch check reads the list fine (none); matchOptionsFor's read throws: asked, not allowed by the rule.
+      const out = (await refHook(q, 'Bash', { command: 'npm test' }, dir)).hookSpecificOutput
+      expect(out).toMatchObject({ permissionDecision: 'ask', permissionDecisionReason: "OrgAI could not check the run's folders, so this command needs your approval." })
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's folders for Bash"))).toBe(true)
+      // canUseTool: no suggestions and an allow grants that call only.
+      expect(await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal })).toEqual({ behavior: 'allow', updatedInput: { command: 'npm test' } })
+      const req = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+      expect(req.suggestions).toBeUndefined()
+      expect(req.referenceFolder).toBeUndefined()
+      // Another tool: the saved WebSearch rule is not used by the hook ({}: the normal permission flow decides) ...
+      reads = 1
+      expect(await refHook(q, 'WebSearch', { query: 'x' }, dir)).toEqual({})
+      // ... and canUseTool's card has no suggestions; a session allow keeps nothing.
+      reads = 1
+      const web = await canUseTool(q)('WebSearch', { query: 'x' }, { signal: new AbortController().signal, suggestions: [{ type: 'addRules', rules: [{ toolName: 'WebSearch' }], behavior: 'allow', destination: 'session' }] })
+      expect(web).toEqual({ behavior: 'allow', updatedInput: { query: 'x' } })
+      expect(vi.mocked(ctx.requestPermission).mock.calls[1]![0].suggestions).toBeUndefined()
+    })
+
+    it('L6: the hook finding is keyed by tool_use id, so identical calls from different agents keep their own folder', async () => {
+      const ref = newRef()
+      const { ctx, dir, session } = start({ referenceDirectories: () => [ref] })
+      const q = await firstQuery()
+      const hook = q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>
+      const call = (agent: string, id: string, cwd: string) =>
+        hook({ hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd, tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: id, agent_id: agent, agent_type: 'lead' }, 'x', {})
+      // Agent a1 runs npm test inside the reference folder (asked); a2 runs the same command in the project.
+      expect((await call('a1', 'tu-a1', join(ref, 'sub'))).hookSpecificOutput?.permissionDecision).toBe('ask')
+      await call('a2', 'tu-a2', dir)
+      // canUseTool for a2's call first: no reference folder (a key-only stash would have handed it a1's finding).
+      await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal, toolUseID: 'tu-a2' })
+      const first = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+      expect(first.referenceFolder).toBeUndefined()
+      expect(first.suggestions?.length).toBeGreaterThan(0)
+      // a1's call still gets its own finding.
+      await canUseTool(q)('Bash', { command: 'npm test' }, { signal: new AbortController().signal, toolUseID: 'tu-a1' })
+      const second = vi.mocked(ctx.requestPermission).mock.calls[1]![0]
+      expect(second.referenceFolder).toBe(ref)
+      expect(second.suggestions).toBeUndefined()
+      // Taken once: the stash is empty again.
+      expect((session as unknown as { referenceTouches: Map<string, unknown> }).referenceTouches.size).toBe(0)
+    })
+
+    it('a Read / Grep card under a reference folder carries referenceFolder and no suggestions (M2)', async () => {
+      const ref = newRef()
+      const { ctx, dir } = start({ referenceDirectories: () => [ref] })
+      const q = await firstQuery()
+      await canUseTool(q)('Read', { file_path: join(ref, 'brief.md') }, { signal: new AbortController().signal })
+      await canUseTool(q)('Grep', { pattern: 'x', path: ref }, { signal: new AbortController().signal })
+      await canUseTool(q)('Read', { file_path: join(dir, '..', 'elsewhere', 'a.md') }, { signal: new AbortController().signal })
+      const calls = vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0])
+      for (const req of calls.slice(0, 2)) {
+        expect(req.referenceFolder).toBe(ref)
+        expect(req.suggestions).toBeUndefined()
+      }
+      expect(calls[2]!.referenceFolder).toBeUndefined()
+    })
+
+    it('refusal row (H2): one harness row per refused edit, never twice when canUseTool also sees the call', async () => {
+      const ref = newRef()
+      const { ctx } = start({ referenceDirectories: () => [ref] })
+      const q = await firstQuery()
+      const input = { file_path: join(ref, 'brief.md'), old_string: 'a', new_string: 'b' }
+      await refHook(q, 'Edit', input)
+      const rows = refusalRows(ctx)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ entry: { agentId: 'root', block: { kind: 'system', text: 'Refused: brief.md is in a reference folder (read only)' } } })
+      const detail = (rows[0]!.type === 'transcript' && rows[0]!.entry.block.kind === 'system' && rows[0]!.entry.block.detail) || ''
+      expect(detail).toContain(join(ref, 'brief.md'))
+      expect(detail).toContain(`${ref} is a reference folder: agents may read it, not change it`)
+      // Should the CLI also call canUseTool for the call the hook denied: denied again, no second row.
+      expect(await canUseTool(q)('Edit', input, { signal: new AbortController().signal })).toMatchObject({ behavior: 'deny' })
+      expect(refusalRows(ctx)).toHaveLength(1)
+      // The backstop alone (the hook did not see it) writes its own row.
+      await canUseTool(q)('Write', { file_path: join(ref, 'notes.md'), content: 'x' }, { signal: new AbortController().signal })
+      expect(refusalRows(ctx).map((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.block.text)).toEqual([
+        'Refused: brief.md is in a reference folder (read only)',
+        'Refused: notes.md is in a reference folder (read only)'
+      ])
+      // A missing path names no file.
+      await refHook(q, 'Write', {})
+      expect(refusalRows(ctx).at(-1)).toMatchObject({ entry: { block: { text: 'Refused: an edit that names no file (reference folders are read only)' } } })
+      expect(vi.mocked(ctx.requestPermission)).not.toHaveBeenCalled()
+    })
   })
 })
 

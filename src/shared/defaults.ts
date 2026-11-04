@@ -907,7 +907,7 @@ Plan before acting, then delegate. Give each report a precise brief: the questio
       'Compare, calculate and summarise with the method stated',
       'Save results in the working folder'
     ],
-    prompt: `You are an analyst on this engagement. Read the brief, then work from the data in the reference folders and the working folder. State your method, check your numbers a second way where you can, and keep source files untouched: reference folders are read-only client material, so write results only into the working folder, in the files your brief names. Report the conclusion first, then how you reached it, any data problems you found, and every file you created or changed.`,
+    prompt: `You are an analyst on this engagement. Read the brief, then work from the data in the reference folders and the working folder. State your method, check your numbers a second way where you can, and keep source files untouched: reference folders are read-only client material that you read from only. Write every file (results, extracts, spreadsheets) in the working folder, in the files your brief names, never in a reference folder. Any shell command that names a reference folder asks the user first, so keep such commands to the few you need. Report the conclusion first, then how you reached it, any data problems you found, and every file you created or changed.`,
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write'],
     ...modelOf('everyday'),
     canSpawn: false,
@@ -984,7 +984,8 @@ export function newProject(input: { name: string; path: string; brief: string; s
       kind,
       brief: input.brief,
       provider: { id: 'claude', label: claudeProviderLabel(auth), auth, connection: 'anthropic' },
-      permissionMode: settings.defaultPermissionMode,
+      // Engagements start on 'default' (ask for risky actions) whatever the app default is: client work.
+      permissionMode: kind === 'engagement' ? 'default' : settings.defaultPermissionMode,
       maxBudgetUsd: settings.defaultMaxBudgetUsd,
       // Engagements leave it unset (off by default, isolateWritersOn); only the user's explicit true turns it on.
       ...(kind === 'engagement' ? {} : { isolateWriters: settings.defaultIsolateWriters }),
@@ -1004,7 +1005,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
     kind,
     brief: input.brief,
     provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' }, connection: 'anthropic' },
-    permissionMode: 'auto',
+    permissionMode: kind === 'engagement' ? 'default' : 'auto',
     ...(kind === 'engagement' ? {} : { isolateWriters: true }),
     roles: kind === 'engagement' ? engagementRoles() : defaultRoles(),
     setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,

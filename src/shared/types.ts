@@ -2748,6 +2748,14 @@ export interface PermissionRequest {
   suggestions?: PermissionSuggestion[]
   /** Human-readable rules the suggestions grant, e.g. "Bash(npm test:*)". Shown on the card. */
   ruleLabels?: string[]
+  /**
+   * The reference folder (Project.referenceDirectories, read only) this call touches, as the run resolved it: a shell
+   * command whose effective cwd is inside one or whose words name a path at, under or above one
+   * (runtime/referenceDirectories.ts `commandTouchesReference`), or a Read / Glob / Grep of a path under one. Set by
+   * every adapter. Such a request carries no suggestions or ruleLabels and RunManager narrows any allow to 'once', so
+   * the card offers Allow once and Deny only ("Touches a reference folder (read only)").
+   */
+  referenceFolder?: string
 }
 
 /** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */

@@ -1793,6 +1793,11 @@ export class RunManager {
     req: Omit<PermissionRequest, 'id' | 'runId'>
   ): Promise<PermissionDecision> {
     const request: PermissionRequest = { ...req, id: newId('perm'), runId: active.summary.id }
+    // A call that touches a reference folder offers Allow once and Deny only, whatever the adapter sent.
+    if (typeof request.referenceFolder === 'string' && request.referenceFolder) {
+      delete request.suggestions
+      delete request.ruleLabels
+    } else if ('referenceFolder' in request) delete request.referenceFolder
     logPermission(active.summary, request)
     return new Promise((resolve) => {
       active.pending.set(request.id, {
@@ -1818,8 +1823,13 @@ export class RunManager {
     active.pending.delete(requestId)
     // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
     // save rules into it. Narrow to the session here so every adapter is covered.
-    const narrowed: PermissionDecision =
+    let narrowed: PermissionDecision =
       decision?.behavior === 'allow' && decision.scope === 'project' && this.isRestricted(active.summary) ? { ...decision, scope: 'session' } : decision
+    // A call that touches a reference folder is allowed once at most: never a session or project grant.
+    if (pending.request.referenceFolder && narrowed?.behavior === 'allow' && (narrowed.scope === 'session' || narrowed.scope === 'project')) {
+      log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
+      narrowed = { ...narrowed, scope: 'once' }
+    }
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
     this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}) })

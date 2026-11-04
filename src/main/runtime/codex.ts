@@ -54,7 +54,7 @@ import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
-import { referenceFolderMessage, referenceFolderOf } from './referenceDirectories'
+import { commandReferenceTouch, referenceCommandMessage, referenceFolderMessage, referenceFolderOf, referenceRefusalEntry } from './referenceDirectories'
 
 /**
  * sandbox_workspace_write.writable_roots for a run: the allowed folders only, never on a trust-restricted run, and
@@ -880,14 +880,28 @@ class CodexSession implements RuntimeSession {
   }
 
   /**
-   * MatchOptions right now: the project, the allowed folders (live) and the folders granted for this session. On
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * callers then ask with no rule allow and no suggestions, and an allow accepts that one call.
+   */
+  private safeMatchOptions(): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders, so this needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /**
+   * MatchOptions right now (null: see safeMatchOptions): the project, the allowed folders (live) and the folders granted for this session. On
    * win32 Codex runs commands through PowerShell, so MSYS `/c/...` cd targets are never free (review re-check L7).
    */
-  private matchOpts(cwd?: string): MatchOptions {
-    const base = matchOptionsFor(this.ctx)
+  private matchOpts(cwd?: string): MatchOptions | null {
+    const base = this.safeMatchOptions()
+    if (!base) return null
     return {
       ...base,
-      ...(cwd && isAbsolute(cwd) ? { cwd } : {}),
+      ...(cwd && isAbsolute(cwd) ? { cwd, effectiveCwd: cwd } : {}),
       freeDirs: [...(base.freeDirs ?? []), ...this.sessionDirs],
       ...(process.platform === 'win32' ? { shell: 'powershell' as const } : {})
     }
@@ -910,6 +924,7 @@ class CodexSession implements RuntimeSession {
       }
     }
     const opts = this.matchOpts()
+    if (!opts) return false
     return paths.every((p) => {
       if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
       if (refs.length && referenceFolderOf(p, refs, this.ctx.project.path)) return false
@@ -933,12 +948,18 @@ class CodexSession implements RuntimeSession {
     return this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
   }
 
-  private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>, cwd?: string) {
+  /**
+   * A card for one call. `referenceFolder` (a command touching a reference folder, or null when the list could not be
+   * read): no suggestions, the folder on the request, and an allow grants this call only (never a rule or a scope).
+   */
+  private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>, cwd?: string, referenceFolder?: string | null) {
     const summary = describePermission(toolName, input)
     this.setState(agentId, 'waiting', `Needs approval: ${summary}`)
     const restricted = isTrustRestrictedRun(this.ctx.run)
-    const callOpts = this.matchOpts(cwd)
-    const chosen = chooseSuggestions(toolName, input, undefined, false, callOpts)
+    const touching = referenceFolder !== undefined
+    // Unreadable folder lists (null) ask like a touching call: no suggestions, and an allow accepts this call only.
+    const callOpts = touching ? undefined : (this.matchOpts(cwd) ?? undefined)
+    const chosen = callOpts ? chooseSuggestions(toolName, input, undefined, false, callOpts) : []
     // A restricted run never turns on accept-edits: its folder is not the user's project.
     const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
     try {
@@ -947,10 +968,11 @@ class CodexSession implements RuntimeSession {
         toolName,
         input,
         summary,
-        ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
+        ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+        ...(referenceFolder ? { referenceFolder } : {})
       })
       let granted = false
-      if (decision.behavior === 'allow') {
+      if (decision.behavior === 'allow' && callOpts) {
         // Never write rules into an untrusted folder: a 'project' grant becomes a run grant (RunManager downgrades first).
         const safe = isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' as const } : decision
         const persist = {
@@ -963,10 +985,10 @@ class CodexSession implements RuntimeSession {
         if (scoped) {
           granted = true
           this.sessionRules.push(...allowRuleStrings(scoped))
-          const offer = matchOptionsFor(this.ctx)
+          const offer = this.safeMatchOptions()
           for (const s of scoped) {
             if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
-            if (s.type === 'addDirectories') {
+            if (s.type === 'addDirectories' && offer) {
               // Checked as written and by real path (reviewer-3 M3: a link or another case spelling of ~/.ssh).
               for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer) && offerableByRealPath(d, offer)) this.sessionDirs.push(d)
             }
@@ -989,14 +1011,56 @@ class CodexSession implements RuntimeSession {
       this.log('info', `Declined a command in ${this.ctx.project.permissionMode} mode: ${req.command.slice(0, 120)}`)
       return { decision: 'decline' }
     }
+    const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
+    // Reference folders (H1): a command that runs inside one (req.cwd) or names a path at, under or above one is never
+    // accepted by a rule; it is asked with the folder named and no suggestions, and an allow accepts this command only.
+    // An unreadable list asks the same way (no folder named).
+    const touch = this.referenceTouchOfCommand(req.command, req.cwd)
+    if (touch) {
+      this.log('info', `Asking about a command by ${this.agents.get(agentId)?.name ?? agentId}: ${touch.folder ? referenceCommandMessage(touch.folder, touch.how ?? 'names') : 'the reference folders could not be read'}`)
+      const { decision } = await this.ask(agentId, 'Bash', input, req.cwd, touch.folder)
+      return { decision: decision.behavior === 'allow' ? 'accept' : 'decline' }
+    }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
     const rules = [...(this.ctx.allowedRules?.() ?? this.savedRules()), ...this.sessionRules]
     const opts = this.matchOpts(req.cwd)
+    if (!opts) {
+      // The folder lists could not be read (review L1): asked like an unreadable reference list, this command only.
+      const { decision } = await this.ask(agentId, 'Bash', input, req.cwd, null)
+      return { decision: decision.behavior === 'allow' ? 'accept' : 'decline' }
+    }
     if (req.command && matchesBashRule(req.command, rules, opts)) return { decision: 'accept' }
-    const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
     const { decision, granted } = await this.ask(agentId, 'Bash', input, req.cwd)
     if (decision.behavior === 'deny') return { decision: 'decline' }
-    return { decision: granted ? 'acceptForSession' : 'accept' }
+    return { decision: this.sessionDecision(granted) }
+  }
+
+  /**
+   * The approval answer for an allowed card. 'acceptForSession' only when the run has no reference folders (read live;
+   * an unreadable list counts as having some): Codex would otherwise reuse its cached approval for a later call whose
+   * cwd or paths sit inside a reference folder, without asking OrgAI (review M4). With reference folders the grant is
+   * kept only in this session's own rules (sessionRules, matched by OrgAI per call after the reference check).
+   */
+  private sessionDecision(granted: boolean): 'accept' | 'acceptForSession' {
+    return granted && !this.hasReferenceFolders() ? 'acceptForSession' : 'accept'
+  }
+
+  /**
+   * The reference folder a command approval touches (commandReferenceTouch from req.cwd, else the project folder; the
+   * shell is PowerShell on win32), `{ folder: null }` when the list cannot be read, null when none.
+   */
+  private referenceTouchOfCommand(command: string, cwd: string | undefined): { folder: string | null; how?: 'names' | 'runs-in' } | null {
+    if (!this.ctx.referenceDirectories) return null
+    let refs: string[]
+    try {
+      refs = this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return { folder: null }
+    }
+    if (!refs.length || typeof command !== 'string') return null
+    const from = typeof cwd === 'string' && cwd && isAbsolute(cwd) ? cwd : this.ctx.project.path
+    return commandReferenceTouch(command, from, refs, { shell: process.platform === 'win32' ? 'powershell' : 'bash' })
   }
 
   /**
@@ -1005,27 +1069,31 @@ class CodexSession implements RuntimeSession {
    * usable path, or a request naming neither changes nor a grantRoot (fails closed). Relative paths resolve against
    * the agent's worktree, else the project folder.
    */
-  private referenceChangeDenial(agentId: string, changes: ReadonlyArray<{ path: string }>, grantRoot: string | undefined): string | null {
+  private referenceChangeDenial(
+    agentId: string,
+    changes: ReadonlyArray<{ path: string }>,
+    grantRoot: string | undefined
+  ): { reason: string; entry: { text: string; detail: string } } | null {
     if (!this.ctx.referenceDirectories) return null
     let refs: string[]
     try {
       refs = this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
     } catch (e) {
       this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
-      return 'OrgAI could not check the reference folders, so this change was declined.'
+      return { reason: 'OrgAI could not check the reference folders, so this change was declined.', entry: referenceRefusalEntry(undefined, 'a reference folder') }
     }
     if (!refs.length) return null
     const cwd = this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
-    const unnamed = `${referenceFolderMessage(refs[0]!)}; this change names no file path, so it was declined`
+    const unnamed = { reason: `${referenceFolderMessage(refs[0]!)}; this change names no file path, so it was declined`, entry: referenceRefusalEntry(undefined, refs[0]!) }
     if (!changes.length && !grantRoot) return unnamed
     for (const c of changes) {
       if (typeof c.path !== 'string' || !c.path) return unnamed
       const hit = referenceFolderOf(c.path, refs, cwd)
-      if (hit) return referenceFolderMessage(hit)
+      if (hit) return { reason: referenceFolderMessage(hit), entry: referenceRefusalEntry(c.path, hit) }
     }
     if (grantRoot) {
       const hit = referenceFolderOf(grantRoot, refs, cwd) ?? refs.find((r) => referenceFolderOf(r, [isAbsolute(grantRoot) ? grantRoot : join(cwd, grantRoot)]))
-      if (hit) return referenceFolderMessage(hit)
+      if (hit) return { reason: referenceFolderMessage(hit), entry: referenceRefusalEntry(grantRoot, hit) }
     }
     return null
   }
@@ -1041,8 +1109,10 @@ class CodexSession implements RuntimeSession {
     // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
     const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
     if (refDenial) {
-      this.log('warn', `Declined a file change by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
-      this.transcript(agentId, { kind: 'system', text: refDenial }, { source: 'harness' })
+      // One harness row on the calling agent: "Refused: <file> is in a reference folder (read only)" (H2). The decline
+      // itself carries no text to the agent (the approval answer is a bare decision).
+      this.log('warn', `Declined a file change by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial.reason}`)
+      this.transcript(agentId, { kind: 'system', ...refDenial.entry }, { source: 'harness' })
       return { decision: 'decline' }
     }
     const buildWorkspace = this.ctx.run.buildWorkspace
@@ -1083,7 +1153,7 @@ class CodexSession implements RuntimeSession {
     }
     const { decision, granted } = await this.ask(agentId, 'Edit', input)
     if (decision.behavior === 'deny') return { decision: 'decline' }
-    return { decision: granted ? 'acceptForSession' : 'accept' }
+    return { decision: this.sessionDecision(granted) }
   }
 
   private async onPermissionsApproval(params: unknown): Promise<unknown> {

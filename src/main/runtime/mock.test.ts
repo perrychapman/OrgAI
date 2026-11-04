@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -868,7 +868,10 @@ describe('mock [mock:reference-edit]', () => {
     const { ctx, session, statuses } = await play(() => [ref])
     const msg = `${ref} is a reference folder: agents may read it, not change it`
     const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.agentId === MOCK_REFERENCE_REPORT ? [e.entry.block] : []))
-    expect(results).toEqual([expect.objectContaining({ content: '# Client brief\n' }), expect.objectContaining({ content: msg, isError: true })])
+    expect(results).toEqual([expect.objectContaining({ content: '# Client brief\n' }), expect.objectContaining({ content: `${msg}${MOCK_REFERENCE_COPY_HINT}`, isError: true })])
+    // H2: exactly one harness row on the report, file name first, the path and the folder message as detail.
+    const rows = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.source === 'harness' && e.entry.block.kind === 'system' && e.entry.block.text.startsWith('Refused:') ? [e.entry] : []))
+    expect(rows).toEqual([expect.objectContaining({ agentId: MOCK_REFERENCE_REPORT, block: { kind: 'system', text: 'Refused: brief.md is in a reference folder (read only)', detail: `${join(ref, 'brief.md')}\n${msg}` } })])
     // Denied before the saved Edit rule, acceptEdits or a card.
     expect(ctx.requestPermission).not.toHaveBeenCalled()
     expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg))).toBe(true)
@@ -915,6 +918,109 @@ describe('mock [mock:reference-edit]', () => {
     expect(results[1]).toMatchObject({ content: 'read' })
     expect(ctx.requestPermission).not.toHaveBeenCalled()
     expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's reference folders: boom"))).toBe(true)
+    await session.stop()
+  })
+})
+
+describe('mock reference shell guard', () => {
+  const idle = async (ctx: ReturnType<typeof fakeCtx>) => {
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+  }
+  const results = (ctx: ReturnType<typeof fakeCtx>) => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+
+  it('[mock:reference-shell]: the del command asks with referenceFolder and no suggestions, without step.ask, and allow gives ok', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-refsh-'))
+    // Unattended mode plus saved rules that would cover the command elsewhere: still a card.
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Tidy up ${REFERENCE_SHELL_TOKEN}`, project: project({ roles: defaultRoles(), permissionMode: 'auto' }), allowedRules: () => ['Bash(del:*)'], referenceDirectories: () => [ref] })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await idle(ctx)
+    expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    const req = vi.mocked(ctx.requestPermission).mock.calls[0]![0]
+    expect(req).toMatchObject({ agentId: 'root', toolName: 'Bash', input: { command: `del "${join(ref, 'brief.md')}"` }, referenceFolder: ref })
+    expect(req.suggestions).toBeUndefined()
+    expect(req.ruleLabels).toBeUndefined()
+    expect(results(ctx)).toEqual([expect.objectContaining({ content: 'ok', isError: false })])
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes(`${ref} is a reference folder: agents may read it, not change it; this command names it`))).toBe(true)
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'Mock: the reference-shell script is done.')).toBe(true)
+    await session.stop()
+  })
+
+  it('[mock:reference-shell]: a deny gives the deny text; without a reference folder the step is skipped with an info log', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-refsh-'))
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Tidy up ${REFERENCE_SHELL_TOKEN}`, project: project({ roles: defaultRoles() }), referenceDirectories: () => [ref] })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'deny', message: 'Not in the client folder.' })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    await idle(ctx)
+    expect(results(ctx)).toEqual([expect.objectContaining({ content: 'Not in the client folder.', isError: true })])
+    await session.stop()
+    const none = fakeCtx({ autoContinue: false, prompt: `Tidy up ${REFERENCE_SHELL_TOKEN}`, project: project({ roles: defaultRoles() }) })
+    const s2 = await new MockAdapter({ script: { delayMs: 0 } }).start(none)
+    await idle(none)
+    expect(none.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes('[mock:reference-shell]: this run has no reference folder'))).toBe(true)
+    expect(none.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_use')).toBe(false)
+    expect(none.requestPermission).not.toHaveBeenCalled()
+    await s2.stop()
+  })
+
+  it('a session grant never pre-approves a touching command; npm test from inside the folder asks; elsewhere the rule holds; Read cards name the folder', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-refsh-'))
+    const ctx = fakeCtx({ autoContinue: false, allowedRules: () => ['Bash(npm test:*)'], referenceDirectories: () => [ref] })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const work = [
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test', cwd: join(ref, 'sub') }, result: 'inside' },
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'elsewhere' },
+      { type: 'tool' as const, name: 'Read', input: { file_path: join(ref, 'brief.md') }, ask: true, result: 'read' },
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test', cwd: join(ref, 'sub') }, result: 'inside again' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    await idle(ctx)
+    const cards = vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0])
+    // inside (forced, no step.ask), Read (card with the folder), inside again (a session allow kept nothing); elsewhere matched its rule.
+    expect(cards.map((c) => [c.toolName, c.referenceFolder])).toEqual([['Bash', ref], ['Read', ref], ['Bash', ref]])
+    for (const c of cards) expect(c.suggestions).toBeUndefined()
+    expect(results(ctx).map((r) => r.content)).toEqual(['inside', 'elsewhere', 'read', 'inside again'])
+    await session.stop()
+  })
+
+  it('an unreadable list makes a shell step ask (no folder named), even without step.ask', async () => {
+    let boom = false
+    const ctx = fakeCtx({ autoContinue: false, allowedRules: () => ['Bash(npm test:*)'], referenceDirectories: () => { if (boom) throw new Error('boom'); return [] } })
+    boom = true
+    const session = await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'tool' as const, name: 'Bash', input: { command: 'npm test' }, result: 'ran' }] } }).start(ctx)
+    await idle(ctx)
+    expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(ctx.requestPermission).mock.calls[0]![0].referenceFolder).toBeUndefined()
+    await session.stop()
+  })
+
+  it('L1: a list that throws on the second read asks with no suggestions, keeps no grant, and never rejects', async () => {
+    // Every second read throws: the step's reference check reads fine, matchOptionsFor's read throws.
+    let reads = 0
+    const ctx = fakeCtx({
+      autoContinue: false,
+      allowedRules: () => ['Bash(npm test:*)', 'Read'],
+      referenceDirectories: () => {
+        if (++reads % 2 === 0) throw new Error('boom')
+        return []
+      }
+    })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+    const work = [
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'first' },
+      { type: 'tool' as const, name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'second' },
+      { type: 'tool' as const, name: 'Read', input: { file_path: join(tmpdir(), 'elsewhere', 'a.md') }, ask: true, result: 'read' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    await idle(ctx)
+    const cards = vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0])
+    // Neither the saved rules nor a session grant allowed anything: three cards, none with suggestions or a folder.
+    expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Bash', 'Read'])
+    for (const c of cards) {
+      expect(c.suggestions).toBeUndefined()
+      expect(c.referenceFolder).toBeUndefined()
+    }
+    expect(results(ctx).map((r) => r.content)).toEqual(['first', 'second', 'read'])
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's folders for Bash"))).toBe(true)
     await session.stop()
   })
 })

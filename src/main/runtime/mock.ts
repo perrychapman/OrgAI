@@ -6,7 +6,16 @@ import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
-import { REFERENCE_EDIT_TOOLS, referenceEditDenial } from './referenceDirectories'
+import {
+  REFERENCE_EDIT_TOOLS,
+  commandReferenceTouch,
+  editTargetOf as referenceEditTarget,
+  referenceCommandMessage,
+  referenceEditDenial,
+  referenceFolderOf,
+  referenceRefusalEntry,
+  referenceTouchOf
+} from './referenceDirectories'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
@@ -14,7 +23,7 @@ import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
-import { isFreeCdTarget, matchOptionsFor, matchingRule } from './ruleMatch'
+import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
 
 /**
@@ -30,7 +39,13 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
  * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
  * granted; the free cd needs no rule). [mock:reference-edit] (referenceEditSteps): a report tries an Edit under the
- * run's first reference folder and gets the reference gate's refusal; the run goes on to its usual end.
+ * run's first reference folder and gets the reference gate's refusal plus one harness row "Refused: brief.md is in a
+ * reference folder (read only)"; the run goes on to its usual end. [mock:reference-shell] (referenceShellSteps): the
+ * root runs Bash `del "<first reference folder>/brief.md"` with no `ask` on the step; the reference shell guard forces
+ * a card with referenceFolder and no suggestions (allow: result 'ok', nothing runs; deny: the deny text).
+ *
+ * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
+ * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
  *
  * Permission asks follow the Claude adapter: saved, session and live rules (matchingRule with matchOptionsFor, so a
  * `cd` into the project or an allowed directory needs no rule), and an edit is pre-approved when its file is inside
@@ -341,6 +356,25 @@ export function referenceEditSteps(ref: string | undefined): MockStep[] {
       : []),
     { type: 'finish', id: MOCK_REFERENCE_REPORT, result: 'Reviewed the client material; it is read-only, so notes go in the project folder.' },
     { type: 'text', text: 'Mock: the reference-edit script is done.' }
+  ]
+}
+
+/** Appended to the deny text for an edit under a reference folder (same as claude.ts REFERENCE_COPY_HINT). */
+export const MOCK_REFERENCE_COPY_HINT = '; write a copy in the working folder instead'
+
+/** Trigger token (work runs, default script): the root runs a shell command naming a file in the first reference folder (referenceShellSteps). */
+export const REFERENCE_SHELL_TOKEN = '[mock:reference-shell]'
+
+/**
+ * The [mock:reference-shell] turn: the root runs Bash `del "<ref>/brief.md"` with no `ask` on the step; the reference
+ * shell guard forces a card with referenceFolder and no suggestions. Allow gives result 'ok' (the mock executes
+ * nothing), Deny the deny text. Without a reference folder the command step is left out.
+ */
+export function referenceShellSteps(ref: string | undefined): MockStep[] {
+  return [
+    { type: 'text', text: 'Tidying the client material.' },
+    ...(ref ? ([{ type: 'tool', name: 'Bash', input: { command: `del "${join(ref, 'brief.md')}"` } }] satisfies MockStep[]) : []),
+    { type: 'text', text: 'Mock: the reference-shell script is done.' }
   ]
 }
 
@@ -831,9 +865,16 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_EDIT_TOKEN)) {
-      const ref = this.ctx.referenceDirectories?.()[0]
+      const list = this.referenceList()
+      const ref = Array.isArray(list) ? list[0] : undefined
       if (!ref) this.log('info', 'Mock [mock:reference-edit]: this run has no reference folder, so the edit step is skipped.')
       return referenceEditSteps(ref)
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_SHELL_TOKEN)) {
+      const list = this.referenceList()
+      const ref = Array.isArray(list) ? list[0] : undefined
+      if (!ref) this.log('info', 'Mock [mock:reference-shell]: this run has no reference folder, so the command step is skipped.')
+      return referenceShellSteps(ref)
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
@@ -991,19 +1032,13 @@ export class MockSession implements RuntimeSession {
     }
     // Same reference-folder gate as the Claude adapter's PreToolUse: edit tools under a reference folder (or naming no
     // path while any exist) are refused before any rule, mode or card. The list is live; the mock's cwd is the project.
-    // An unreadable list refuses an edit tool (same wording as the Claude adapter's referenceDenial).
-    let refDenial: string | null = null
-    if (this.ctx.referenceDirectories && REFERENCE_EDIT_TOOLS.has(step.name)) {
-      try {
-        refDenial = referenceEditDenial(step.name, input, this.ctx.referenceDirectories(), this.ctx.project.path)
-      } catch (e) {
-        this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
-        refDenial = 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.'
-      }
-    }
-    if (refDenial) {
-      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
-      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: refDenial, isError: true })
+    // An unreadable list refuses an edit tool (same wording as the Claude adapter). The refusal also writes one harness
+    // row on the agent ("Refused: <file> is in a reference folder (read only)").
+    const refusal = this.referenceEditRefusal(step.name, input)
+    if (refusal) {
+      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${refusal.reason}`)
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: refusal.reason, isError: true })
+      this.transcript(agentId, { kind: 'system', ...refusal.entry }, { source: 'harness' })
       this.setState(agentId, 'thinking', 'Thinking…')
       return
     }
@@ -1016,10 +1051,16 @@ export class MockSession implements RuntimeSession {
       this.setState(agentId, 'thinking', 'Thinking…')
       return
     }
+    // Reference folders (same as the Claude adapter): a shell command touching one always asks (even a step without
+    // `ask`), never through a rule, suggestion shortcut or mode; a Read / Glob / Grep card under one names the folder.
+    // Such cards carry referenceFolder and no suggestions, and an allow grants this call only.
+    const ref = this.referenceTouch(step.name, input)
+    if (ref?.forced) this.log('info', `Asking about ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${ref.folder ? referenceCommandMessage(ref.folder, ref.how ?? 'names') : 'the reference folders could not be read'}`)
+    const refField = ref?.folder ? { referenceFolder: ref.folder } : {}
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
-      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input) }).then((decision) => {
+      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input), ...refField }).then((decision) => {
         if (this.stopped) return
         const denied = decision.behavior === 'deny'
         this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: denied ? decision.message : step.result ?? 'ok', isError: denied })
@@ -1028,31 +1069,42 @@ export class MockSession implements RuntimeSession {
       })
       return
     }
-    if (step.ask) {
+    if (step.ask || ref?.forced) {
       const restricted = isTrustRestrictedRun(this.ctx.run)
-      const opts = matchOptionsFor(this.ctx)
-      // Same as the Claude adapter: server-level rules are offered for the user's MCP servers only (never one an agent
-      // installed this run, never orgai), and a trust-restricted run never gets a setMode suggestion.
-      const installedAll = agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name))
-      const userMcpServers = [...new Set(this.liveMcpServers().filter((s) => s.enabled && s.name !== 'orgai' && !installedAll.has(s.name)).map((s) => s.name))]
-      const chosen = chooseSuggestions(step.name, input, step.suggestions, false, { ...opts, userMcpServers })
-      const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
-      const rules = allowRuleStrings(suggestions)
-      // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
-      // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
-      const savedRules = isTrustRestrictedRun(this.ctx.run) ? [] : this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
-      const saved = new Set([...savedRules, ...this.sessionRules])
-      // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
-      // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
-      const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
-      // The suggestion shortcut stands in for the CLI's own match of allowedTools and session updates, which never
-      // carry Bash / PowerShell rules (Claude adapter H-A / H1): shell calls are approved only through matchingRule.
-      const savedUsable = new Set(withoutServerRules([...saved], installed).filter((r) => !/^(Bash|PowerShell)(\(|$)/.test(r.trim())))
-      const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
-      const preApproved =
-        (rules.length > 0 && rules.every((r) => savedUsable.has(r))) ||
-        matchingRule(step.name, input, usable, opts) !== undefined ||
-        this.editPreApproved(step.name, input, restricted)
+      let suggestions: PermissionSuggestion[] = []
+      let preApproved = false
+      let opts: MatchOptions | undefined
+      // A touching shell command skips every allow path (and never reads matchOptionsFor, which an unreadable list breaks).
+      // When the folder lists cannot be read now (safeMatchOptions null, review L1) the call is asked with no suggestions
+      // and no rule allow, and an allow grants this call only (same as the Claude adapter).
+      const base = ref?.forced ? null : this.safeMatchOptions(step.name)
+      if (base) {
+        const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : undefined
+        opts = { ...base, ...(cwd ? { effectiveCwd: cwd } : {}) }
+        // Same as the Claude adapter: server-level rules are offered for the user's MCP servers only (never one an agent
+        // installed this run, never orgai), and a trust-restricted run never gets a setMode suggestion.
+        const installedAll = agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name))
+        const userMcpServers = [...new Set(this.liveMcpServers().filter((s) => s.enabled && s.name !== 'orgai' && !installedAll.has(s.name)).map((s) => s.name))]
+        // A read under a reference folder gets no suggestions (M2).
+        const chosen = ref ? [] : chooseSuggestions(step.name, input, step.suggestions, false, { ...opts, userMcpServers })
+        suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
+        const rules = allowRuleStrings(suggestions)
+        // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
+        // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
+        const savedRules = isTrustRestrictedRun(this.ctx.run) ? [] : this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
+        const saved = new Set([...savedRules, ...this.sessionRules])
+        // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
+        // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
+        const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
+        // The suggestion shortcut stands in for the CLI's own match of allowedTools and session updates, which never
+        // carry Bash / PowerShell rules (Claude adapter H-A / H1): shell calls are approved only through matchingRule.
+        const savedUsable = new Set(withoutServerRules([...saved], installed).filter((r) => !/^(Bash|PowerShell)(\(|$)/.test(r.trim())))
+        const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
+        preApproved =
+          (rules.length > 0 && rules.every((r) => savedUsable.has(r))) ||
+          matchingRule(step.name, input, usable, opts) !== undefined ||
+          this.editPreApproved(step.name, input, restricted)
+      }
       if (!preApproved) {
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(
@@ -1061,7 +1113,8 @@ export class MockSession implements RuntimeSession {
             toolName: step.name,
             input,
             summary: describeTool(step.name, input),
-            ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
+            ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+            ...refField
           })
         )
         if (decision === STOPPED) return
@@ -1069,6 +1122,12 @@ export class MockSession implements RuntimeSession {
         if (a && a.state === 'waiting') this.setState(agentId, 'tool', describeTool(step.name, input))
         if (decision.behavior === 'deny') {
           this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: decision.message, isError: true })
+          this.setState(agentId, 'thinking', 'Thinking…')
+          return
+        }
+        // A reference-folder card grants this call only: no rule, folder or mode is kept.
+        if (ref || !opts) {
+          this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
           this.setState(agentId, 'thinking', 'Thinking…')
           return
         }
@@ -1095,6 +1154,72 @@ export class MockSession implements RuntimeSession {
   }
 
   /**
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * the caller then asks, with no rule allow and no suggestions. Same as the Claude and Codex adapters.
+   */
+  private safeMatchOptions(toolName: string): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders for ${toolName}, so it needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /** The run's reference folders now (live): undefined when the run has no list, 'unreadable' when reading it throws. */
+  private referenceList(): string[] | 'unreadable' | undefined {
+    if (!this.ctx.referenceDirectories) return undefined
+    try {
+      return this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'unreadable'
+    }
+  }
+
+  /**
+   * Same as the Claude adapter's referenceEditRefusal: the deny text for an edit tool under a reference folder (plus
+   * MOCK_REFERENCE_COPY_HINT) and its harness row. The mock's cwd is the project folder.
+   */
+  private referenceEditRefusal(toolName: string, input: Record<string, unknown>): { reason: string; entry: { text: string; detail: string } } | null {
+    if (!REFERENCE_EDIT_TOOLS.has(toolName)) return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') {
+      return { reason: 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.', entry: referenceRefusalEntry(undefined, 'a reference folder') }
+    }
+    const cwd = this.ctx.project.path
+    const denial = referenceEditDenial(toolName, input, refs, cwd)
+    if (!denial) return null
+    const target = referenceEditTarget(toolName, input)
+    const hit = referenceFolderOf(target, refs, cwd)
+    return { reason: `${denial}${MOCK_REFERENCE_COPY_HINT}`, entry: referenceRefusalEntry(hit ? target : undefined, hit ?? refs[0] ?? 'a reference folder') }
+  }
+
+  /**
+   * The reference folder a call touches, for the permission path. Shell tools (forced: always asked): commandReferenceTouch
+   * from input.cwd, else the project folder; an unreadable list counts as touching with no folder. Read / Glob / Grep
+   * (not forced): referenceTouchOf. null otherwise.
+   */
+  private referenceTouch(toolName: string, input: Record<string, unknown>): { folder: string | null; how?: 'names' | 'runs-in'; forced: boolean } | null {
+    const shell = SHELL_TOOLS.has(toolName)
+    if (!shell && toolName !== 'Read' && toolName !== 'Glob' && toolName !== 'Grep') return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') return shell ? { folder: null, forced: true } : null
+    if (!refs.length) return null
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
+    const opts = { shell: toolName === 'PowerShell' ? ('powershell' as const) : ('bash' as const) }
+    if (shell) {
+      if (typeof input.command !== 'string') return null
+      const touch = commandReferenceTouch(input.command, cwd, refs, opts)
+      return touch ? { ...touch, forced: true } : null
+    }
+    const folder = referenceTouchOf(toolName, input, refs, cwd, opts)
+    return folder ? { folder, forced: false } : null
+  }
+
+  /**
    * An edit the CLI would auto-accept: the file is inside the project, an allowed directory or a session directory,
    * and the session runs in acceptEdits (project mode, not on a trust-restricted run, or a session grant). The
    * project's 'auto' mode deliberately does not count (see the header comment).
@@ -1105,7 +1230,8 @@ export class MockSession implements RuntimeSession {
     if (!acceptEdits) return false
     const target = editTargetOf(input)
     if (!target) return false
-    const opts = matchOptionsFor(this.ctx)
+    const opts = this.safeMatchOptions(toolName)
+    if (!opts) return false
     return isFreeCdTarget(target, { ...opts, freeDirs: [...(opts.freeDirs ?? []), ...this.sessionDirs] })
   }
 
