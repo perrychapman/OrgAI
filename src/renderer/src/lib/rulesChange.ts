@@ -11,5 +11,9 @@ export function rulesChangedProject(e: RunEvent, projectOfRun: (runId: string) =
     if (e.cancelled || e.decision.behavior !== 'grant' || e.decision.scope !== 'project') return null
     return projectOfRun(e.runId) ?? null
   }
+  if (e.type === 'permission.resolved') {
+    if (e.cancelled || e.savedToProject !== true) return null
+    return projectOfRun(e.runId) ?? null
+  }
   return null
 }
